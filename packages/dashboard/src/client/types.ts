@@ -204,9 +204,26 @@ export interface PerToolStatRow {
   avgDurationMs: number | null;
 }
 
+/** Run count + failure count for one agent, part of {@link RunReliability.byAgent}. */
+export interface RunAgentBreakdownRow {
+  agentName: string | null;
+  runs: number;
+  failed: number;
+  /** completed / runs for this agent, 0 when runs = 0. */
+  successRate: number;
+}
+
+/** One day's run volume + failure count, part of {@link RunReliability.trend}. */
+export interface RunTrendPoint {
+  day: string;
+  runs: number;
+  failed: number;
+}
+
 /**
  * `GET /agent/governance/reliability` — aggregated run reliability over a range (success / failure /
- * cancel rates + mean settled duration).
+ * cancel rates + mean settled duration), plus an optional per-agent breakdown and daily trend (an
+ * older server may omit both).
  */
 export interface RunReliability {
   runs: number;
@@ -222,4 +239,46 @@ export interface RunReliability {
   cancelRate: number;
   /** Mean duration of settled (completed/failed/cancelled) runs in ms; `null` when none settled. */
   avgDurationMs: number | null;
+  /** Run/failure counts grouped by agent, highest call count first. */
+  byAgent?: RunAgentBreakdownRow[];
+  /** Daily run/failure counts over the same range, oldest first. */
+  trend?: RunTrendPoint[];
+}
+
+/** Thread metadata + LIFETIME usage rollup (not range-scoped) for the thread governance drill-down. */
+export interface GovernanceThreadDetail {
+  threadId: string;
+  title: string;
+  actorRef: string;
+  createdAt: string;
+  updatedAt: string;
+  /** `true` when the thread has been soft-deleted (the record is still readable here). */
+  deleted: boolean;
+  usage: {
+    totalTokens: number;
+    /** `null` when the thread has no priced usage at all (not the same as a $0 total). */
+    costUsd: number | null;
+    runCount: number;
+    messageCount: number;
+  };
+  /** Newest-first, capped by the server. */
+  runs: RunSummaryRow[];
+  /** Newest-first, capped by the server. */
+  messages: RunMessageRow[];
+}
+
+/** A per-1M-token price for one model, for `POST /agent/governance/pricing`. */
+export interface ModelPriceInput {
+  modelId: string;
+  inputPricePer1m: number;
+  outputPricePer1m: number;
+  /** Per-1M price for cache-write (prompt-cache) input tokens. Omit → priced at the input rate. */
+  cacheWritePricePer1m?: number;
+  /** Per-1M price for cache-read (prompt-cache) input tokens. Omit → priced at the input rate. */
+  cacheReadPricePer1m?: number;
+}
+
+/** A current price row as read back from `GET /agent/governance/pricing`. */
+export interface CurrentModelPrice extends ModelPriceInput {
+  effectiveFrom: string;
 }

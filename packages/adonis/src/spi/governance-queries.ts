@@ -195,6 +195,23 @@ export interface PerToolStatRow {
   avgDurationMs: number | null;
 }
 
+/** Run count + failure count for one agent, part of {@link RunReliability.byAgent}. */
+export interface RunAgentBreakdownRow {
+  /** `"—"`-free; a run recorded before agent tracking (or with no agent set) is grouped as `null`. */
+  agentName: string | null;
+  runs: number;
+  failed: number;
+  /** completed / runs for this agent, 0 when runs = 0. */
+  successRate: number;
+}
+
+/** One day's run volume + failure count, part of {@link RunReliability.trend}. */
+export interface RunTrendPoint {
+  day: string;
+  runs: number;
+  failed: number;
+}
+
 /** Aggregated run reliability over a range — success / failure / cancel rates. */
 export interface RunReliability {
   runs: number;
@@ -210,6 +227,35 @@ export interface RunReliability {
   cancelRate: number;
   /** Mean duration of settled (completed/failed/cancelled) runs in ms; `null` when none settled. */
   avgDurationMs: number | null;
+  /**
+   * Run/failure counts grouped by `agentName`, highest call count first. Optional: an adapter that
+   * predates this breakdown may omit it; the dashboard renders an empty section when absent.
+   */
+  byAgent?: RunAgentBreakdownRow[];
+  /** Daily run/failure counts over the same range, oldest first. Optional, same reason as {@link byAgent}. */
+  trend?: RunTrendPoint[];
+}
+
+/** Thread metadata + LIFETIME usage rollup (not range-scoped) for the thread governance drill-down. */
+export interface GovernanceThreadDetail {
+  threadId: string;
+  title: string;
+  actorRef: string;
+  createdAt: string;
+  updatedAt: string;
+  /** `true` when the thread has been soft-deleted (the record is still readable here). */
+  deleted: boolean;
+  usage: {
+    totalTokens: number;
+    /** `null` when the thread has no priced usage at all (not the same as a $0 total). */
+    costUsd: number | null;
+    runCount: number;
+    messageCount: number;
+  };
+  /** Newest-first, capped by the adapter (mirrors {@link ListRunsResult} page sizing). */
+  runs: RunSummaryRow[];
+  /** Newest-first, capped by the adapter. */
+  messages: RunMessageRow[];
 }
 
 /**
@@ -236,4 +282,10 @@ export interface AgentGovernanceQueries {
   perToolStats(range?: ToolStatsRange): Promise<PerToolStatRow[]>;
   /** Success/failure/cancel rates + mean settled duration over the range. */
   runReliability(range?: ToolStatsRange): Promise<RunReliability>;
+  /**
+   * The thread governance drill-down: metadata + lifetime usage rollup + recent runs/messages, or
+   * `null` when unknown. Optional — an adapter that predates this method leaves the route unmounted
+   * with a `501` rather than the dashboard breaking on a missing function.
+   */
+  threadDetail?(threadId: string): Promise<GovernanceThreadDetail | null>;
 }

@@ -2,8 +2,11 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { type ReactNode, StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentClient } from '../client/agent-client.js';
+import { AgentApiError } from '../client/agent-client.js';
 import type {
   ActorSpendRow,
+  CurrentModelPrice,
+  GovernanceThreadDetail,
   ListRunsResult,
   ModelSpendRow,
   PendingApprovalRow,
@@ -17,9 +20,11 @@ import type {
 } from '../client/types.js';
 import { ApprovalsSection } from './ApprovalsSection.js';
 import { Overview } from './Overview.js';
+import { PricingSection } from './PricingSection.js';
 import { ReliabilitySection } from './ReliabilitySection.js';
 import { RunDetailView } from './RunDetailView.js';
 import { RunsSection } from './RunsSection.js';
+import { ThreadDetailView } from './ThreadDetailView.js';
 import { ThreadsSection } from './ThreadsSection.js';
 import { ToolCallsSection } from './ToolCallsSection.js';
 import { ToolsSection } from './ToolsSection.js';
@@ -160,6 +165,32 @@ const reliability: RunReliability = {
   cancelRate: 0.05,
   avgDurationMs: 4200,
 };
+const threadDetail: GovernanceThreadDetail = {
+  threadId: 'thread-abc12345',
+  title: 'Refund request',
+  actorRef: 'user:alice',
+  createdAt: '2026-03-01T00:00:00.000Z',
+  updatedAt: '2026-03-07T10:00:00.000Z',
+  deleted: false,
+  usage: { totalTokens: 9000, costUsd: 12.5, runCount: 3, messageCount: 5 },
+  runs: runRows,
+  messages: [
+    {
+      id: 'm1',
+      role: 'user',
+      content: 'Where is my order?',
+      createdAt: '2026-03-07T10:00:00.000Z',
+    },
+  ],
+};
+const prices: CurrentModelPrice[] = [
+  {
+    modelId: 'gpt-4o',
+    inputPricePer1m: 3,
+    outputPricePer1m: 15,
+    effectiveFrom: '2026-03-01T00:00:00.000Z',
+  },
+];
 
 function fakeClient(overrides: Partial<AgentClient> = {}): AgentClient {
   return {
@@ -171,11 +202,14 @@ function fakeClient(overrides: Partial<AgentClient> = {}): AgentClient {
     quotaToday: vi.fn().mockResolvedValue({ usedTokens: 123 }),
     listRuns: vi.fn().mockResolvedValue({ runs: runRows, nextCursor: null } as ListRunsResult),
     runDetail: vi.fn().mockResolvedValue(runDetail),
+    threadDetail: vi.fn().mockResolvedValue(threadDetail),
     pendingApprovals: vi.fn().mockResolvedValue(pendingRows),
     perToolStats: vi.fn().mockResolvedValue(toolStatRows),
     runReliability: vi.fn().mockResolvedValue(reliability),
     approveToolCall: vi.fn().mockResolvedValue({ ok: true }),
     rejectToolCall: vi.fn().mockResolvedValue({ ok: true }),
+    pricing: vi.fn().mockResolvedValue(prices),
+    upsertPrice: vi.fn().mockResolvedValue({ ok: true }),
     ...overrides,
   } as unknown as AgentClient;
 }
@@ -238,6 +272,45 @@ describe('ThreadsSection', () => {
     renderWith(client, <ThreadsSection />);
     await waitFor(() => expect(screen.getByText('Refund request')).toBeTruthy());
     expect(client.recentThreads).toHaveBeenCalled();
+  });
+
+  it('opens a thread detail on row click', async () => {
+    const client = fakeClient();
+    renderWith(client, <ThreadsSection />);
+    await waitFor(() => expect(screen.getByText('Refund request')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Refund request'));
+    await waitFor(() => expect(screen.getByText('Where is my order?')).toBeTruthy());
+    expect(client.threadDetail).toHaveBeenCalledWith('thread-abc12345');
+    expect(screen.getByText('← Back to threads')).toBeTruthy();
+  });
+});
+
+describe('ThreadDetailView', () => {
+  it('assembles the lifetime usage rollup, recent runs and recent messages', async () => {
+    const client = fakeClient();
+    renderWith(client, <ThreadDetailView threadId="thread-abc12345" onBack={() => {}} />);
+
+    await waitFor(() => expect(screen.getByText('Where is my order?')).toBeTruthy());
+    expect(client.threadDetail).toHaveBeenCalledWith('thread-abc12345');
+    expect(screen.getByText('Lifetime tokens')).toBeTruthy();
+    expect(screen.getByText('support')).toBeTruthy();
+  });
+
+  it('shows a deleted-thread banner', async () => {
+    const client = fakeClient({
+      threadDetail: vi.fn().mockResolvedValue({ ...threadDetail, deleted: true }),
+    } as Partial<AgentClient>);
+    renderWith(client, <ThreadDetailView threadId="thread-abc12345" onBack={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/has been deleted/)).toBeTruthy());
+  });
+
+  it('shows an empty state when the thread is unknown', async () => {
+    const client = fakeClient({
+      threadDetail: vi.fn().mockResolvedValue(null),
+    } as Partial<AgentClient>);
+    renderWith(client, <ThreadDetailView threadId="nope" onBack={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Thread not found.')).toBeTruthy());
   });
 });
 
@@ -402,5 +475,62 @@ describe('ReliabilitySection', () => {
     } as Partial<AgentClient>);
     renderWith(client, <ReliabilitySection />);
     await waitFor(() => expect(screen.getByText('No runs recorded yet.')).toBeTruthy());
+  });
+
+  it('renders the by-agent breakdown and the trend chart when the server provides them', async () => {
+    const client = fakeClient({
+      runReliability: vi.fn().mockResolvedValue({
+        ...reliability,
+        byAgent: [{ agentName: 'support', runs: 80, failed: 5, successRate: 0.9 }],
+        trend: [
+          { day: '2026-03-01', runs: 10, failed: 1 },
+          { day: '2026-03-02', runs: 12, failed: 0 },
+        ],
+      } as RunReliability),
+    } as Partial<AgentClient>);
+    renderWith(client, <ReliabilitySection />);
+
+    await waitFor(() => expect(screen.getByText('By agent')).toBeTruthy());
+    expect(screen.getByText('support')).toBeTruthy();
+    expect(screen.getByText('Runs vs failed')).toBeTruthy();
+  });
+
+  it('omits the by-agent and trend panels when the server predates them', async () => {
+    const client = fakeClient();
+    renderWith(client, <ReliabilitySection />);
+    await waitFor(() => expect(screen.getByText('Success rate')).toBeTruthy());
+    expect(screen.queryByText('By agent')).toBeNull();
+    expect(screen.queryByText('Runs vs failed')).toBeNull();
+  });
+});
+
+describe('PricingSection', () => {
+  it('lists current model prices and upserts a new one', async () => {
+    const client = fakeClient();
+    renderWith(client, <PricingSection />);
+
+    await waitFor(() => expect(screen.getByText('gpt-4o')).toBeTruthy());
+    expect(client.pricing).toHaveBeenCalled();
+
+    fireEvent.change(screen.getByPlaceholderText('model id (e.g. gpt-4o)'), {
+      target: { value: 'claude-x' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('input $/1M'), { target: { value: '3' } });
+    fireEvent.change(screen.getByPlaceholderText('output $/1M'), { target: { value: '15' } });
+    fireEvent.click(screen.getByText('Save price'));
+
+    await waitFor(() =>
+      expect(client.upsertPrice).toHaveBeenCalledWith(
+        expect.objectContaining({ modelId: 'claude-x', inputPricePer1m: 3, outputPricePer1m: 15 }),
+      ),
+    );
+  });
+
+  it('shows a distinct panel when no pricing store is bound (501)', async () => {
+    const client = fakeClient({
+      pricing: vi.fn().mockRejectedValue(new AgentApiError('nope', 501)),
+    } as Partial<AgentClient>);
+    renderWith(client, <PricingSection />);
+    await waitFor(() => expect(screen.getByText(/No pricing store is bound/)).toBeTruthy());
   });
 });

@@ -97,6 +97,28 @@ describe('AgentClient', () => {
     });
   });
 
+  it('maps thread detail + pricing reads and the pricing upsert to their real routes', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(null)));
+    const client = new AgentClient({ baseUrl: '/agent', fetch: fetchMock });
+
+    await client.threadDetail('th/1 with space');
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    await client.pricing();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+    await client.upsertPrice({ modelId: 'gpt-4o', inputPricePer1m: 3, outputPricePer1m: 15 });
+
+    const calls = fetchMock.mock.calls;
+    expect(calls[0]![0]).toBe('/agent/governance/threads/th%2F1%20with%20space');
+    expect(calls[1]![0]).toBe('/agent/governance/pricing');
+    expect(calls[2]![0]).toBe('/agent/governance/pricing');
+    expect(calls[2]![1]).toMatchObject({ method: 'POST' });
+    expect(JSON.parse((calls[2]![1] as RequestInit).body as string)).toEqual({
+      modelId: 'gpt-4o',
+      inputPricePer1m: 3,
+      outputPricePer1m: 15,
+    });
+  });
+
   it('throws AgentApiError carrying the status on a non-2xx', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ error: 'nope' }, 401));
     const client = new AgentClient({ baseUrl: '/agent', fetch: fetchMock });

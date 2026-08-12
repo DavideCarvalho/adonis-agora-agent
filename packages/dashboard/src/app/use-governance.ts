@@ -218,3 +218,13 @@ export function useReliability(range: ToolStatsRange = {}) {
   const client = useAgentClient();
   return useAsync(() => client.runReliability(range), [client, range.from ?? '', range.to ?? '']);
 }
+
+export function useThreadDetail(threadId: string) {
+  const client = useAgentClient();
+  return useAsync(() => client.threadDetail(threadId), [client, threadId]);
+}
+
+export function usePricing() {
+  const client = useAgentClient();
+  return useAsync(() => client.pricing(), [client]);
+}

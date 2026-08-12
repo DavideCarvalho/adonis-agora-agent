@@ -3,6 +3,7 @@ import { defaultRange, isIsoDay, normalizeRange } from '../client/default-range.
 import type { GovernanceRange } from '../client/types.js';
 import { ApprovalsSection } from './ApprovalsSection.js';
 import { Overview } from './Overview.js';
+import { PricingSection } from './PricingSection.js';
 import { QuotaSection } from './QuotaSection.js';
 import { ReliabilitySection } from './ReliabilitySection.js';
 import { RunsSection } from './RunsSection.js';
@@ -18,7 +19,8 @@ type SectionKey =
   | 'approvals'
   | 'toolstats'
   | 'reliability'
-  | 'quota';
+  | 'quota'
+  | 'pricing';
 
 const SECTIONS: { key: SectionKey; label: string }[] = [
   { key: 'overview', label: 'Overview' },
@@ -29,6 +31,7 @@ const SECTIONS: { key: SectionKey; label: string }[] = [
   { key: 'toolstats', label: 'Tools' },
   { key: 'reliability', label: 'Reliability' },
   { key: 'quota', label: 'Quota' },
+  { key: 'pricing', label: 'Pricing' },
 ];
 
 function sectionFromHash(hash: string): SectionKey {
@@ -133,6 +136,7 @@ export function App() {
           {section === 'toolstats' && <ToolsSection />}
           {section === 'reliability' && <ReliabilitySection />}
           {section === 'quota' && <QuotaSection />}
+          {section === 'pricing' && <PricingSection />}
         </main>
 
         <div className="foot">

@@ -2,16 +2,19 @@ import type {
   ActorSpendRow,
   AgentGovernanceQueries,
   GovernanceRange,
+  GovernanceThreadDetail,
   ListRunsFilter,
   ListRunsResult,
   ModelSpendRow,
   PendingApprovalRow,
   PendingApprovalsFilter,
   PerToolStatRow,
+  RunAgentBreakdownRow,
   RunDetail,
   RunReliability,
   RunSummaryRow,
   RunToolCallRow,
+  RunTrendPoint,
   ThreadActivityRow,
   ToolCallActivityRow,
   ToolStatsRange,
@@ -415,6 +418,8 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
     let durationSum = 0;
     let durationCount = 0;
     let total = 0;
+    const byAgent = new Map<string | null, { runs: number; failed: number; completed: number }>();
+    const byDay = new Map<string, { runs: number; failed: number }>();
     for (const run of this.store.governanceRuns()) {
       if (!withinOptionalRange(run.startedAt.slice(0, 10), range)) continue;
       total += 1;
@@ -426,7 +431,36 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
         durationSum += Date.parse(run.finishedAt) - Date.parse(run.startedAt);
         durationCount += 1;
       }
+
+      const agentName = run.agentName ?? null;
+      const agentBucket = byAgent.get(agentName) ?? { runs: 0, failed: 0, completed: 0 };
+      agentBucket.runs += 1;
+      if (run.status === 'failed') agentBucket.failed += 1;
+      if (run.status === 'completed') agentBucket.completed += 1;
+      byAgent.set(agentName, agentBucket);
+
+      const day = run.startedAt.slice(0, 10);
+      const dayBucket = byDay.get(day) ?? { runs: 0, failed: 0 };
+      dayBucket.runs += 1;
+      if (run.status === 'failed') dayBucket.failed += 1;
+      byDay.set(day, dayBucket);
     }
+
+    const byAgentRows: RunAgentBreakdownRow[] = [...byAgent.entries()]
+      .map(([agentName, bucket]) => ({
+        agentName,
+        runs: bucket.runs,
+        failed: bucket.failed,
+        successRate: bucket.runs === 0 ? 0 : bucket.completed / bucket.runs,
+      }))
+      .sort(
+        (left, right) =>
+          right.runs - left.runs || (left.agentName ?? '').localeCompare(right.agentName ?? ''),
+      );
+    const trend: RunTrendPoint[] = [...byDay.entries()]
+      .map(([day, bucket]) => ({ day, runs: bucket.runs, failed: bucket.failed }))
+      .sort((left, right) => left.day.localeCompare(right.day));
+
     return {
       runs: total,
       completed,
@@ -437,6 +471,57 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
       failureRate: total === 0 ? 0 : failed / total,
       cancelRate: total === 0 ? 0 : cancelled / total,
       avgDurationMs: durationCount === 0 ? null : durationSum / durationCount,
+      byAgent: byAgentRows,
+      trend,
+    };
+  }
+
+  /**
+   * The thread governance drill-down (behavioral twin of `LucidGovernanceQueries.threadDetail`):
+   * metadata + a LIFETIME usage rollup + the most recent runs/messages. `null` when unknown. The
+   * in-memory store never returns a soft-deleted thread from `governanceThreads()` at all, so
+   * `deleted` is always `false` here — mirroring the store's own delete semantics.
+   */
+  async threadDetail(threadId: string): Promise<GovernanceThreadDetail | null> {
+    const thread = this.store.governanceThreads().find((t) => t.threadId === threadId);
+    if (thread === undefined) return null;
+
+    const usage = this.store.governanceUsage().filter((row) => row.threadId === threadId);
+    const totalTokens = usage.reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0);
+    const costUsd =
+      usage.length === 0 ? null : usage.reduce((sum, row) => sum + this.rowCost(row), 0);
+
+    const runs = this.store
+      .governanceRuns()
+      .filter((run) => run.threadId === threadId)
+      .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+    const messages = this.store
+      .governanceMessages()
+      .filter((message) => message.threadId === threadId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+
+    return {
+      threadId: thread.threadId,
+      title: thread.title,
+      actorRef: thread.actorRef,
+      // GovernanceThreadRow carries no separate createdAt — updatedAt is the closest fact the
+      // in-memory store tracks, unlike the Lucid twin which reads the real thread row.
+      createdAt: thread.updatedAt,
+      updatedAt: thread.updatedAt,
+      deleted: false,
+      usage: {
+        totalTokens,
+        costUsd,
+        runCount: runs.length,
+        messageCount: messages.length,
+      },
+      runs: runs.slice(0, 20).map(runToSummary),
+      messages: messages.slice(0, 50).map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        createdAt: message.createdAt,
+      })),
     };
   }
 }

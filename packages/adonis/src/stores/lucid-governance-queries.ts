@@ -2,17 +2,20 @@ import type {
   ActorSpendRow,
   AgentGovernanceQueries,
   GovernanceRange,
+  GovernanceThreadDetail,
   ListRunsFilter,
   ListRunsResult,
   ModelSpendRow,
   PendingApprovalRow,
   PendingApprovalsFilter,
   PerToolStatRow,
+  RunAgentBreakdownRow,
   RunDetail,
   RunMessageRow,
   RunReliability,
   RunSummaryRow,
   RunToolCallRow,
+  RunTrendPoint,
   RunUsageRow,
   ThreadActivityRow,
   ToolCallActivityRow,
@@ -565,7 +568,8 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
 
   /**
    * Success / failure / cancel rates + mean settled-run duration over the (optional) range, bucketed
-   * on `started_at`. A store without recorded runs yields all zeros / `null` duration.
+   * on `started_at`, plus a per-agent breakdown and a daily runs/failed trend over the same rows. A
+   * store without recorded runs yields all zeros / `null` duration / empty breakdown+trend.
    */
   async runReliability(range: ToolStatsRange = {}): Promise<RunReliability> {
     await this.ready();
@@ -581,6 +585,8 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     let running = 0;
     let durationSum = 0;
     let durationCount = 0;
+    const byAgent = new Map<string | null, { runs: number; failed: number; completed: number }>();
+    const byDay = new Map<string, { runs: number; failed: number }>();
     for (const run of runs) {
       const status = String(run.status);
       if (status === 'completed') completed += 1;
@@ -592,8 +598,38 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
         durationSum += toInt(finishedAt) - toInt(run.started_at);
         durationCount += 1;
       }
+
+      const agentName =
+        run.agent_name === null || run.agent_name === undefined ? null : String(run.agent_name);
+      const agentBucket = byAgent.get(agentName) ?? { runs: 0, failed: 0, completed: 0 };
+      agentBucket.runs += 1;
+      if (status === 'failed') agentBucket.failed += 1;
+      if (status === 'completed') agentBucket.completed += 1;
+      byAgent.set(agentName, agentBucket);
+
+      const day = new Date(toInt(run.started_at)).toISOString().slice(0, 10);
+      const dayBucket = byDay.get(day) ?? { runs: 0, failed: 0 };
+      dayBucket.runs += 1;
+      if (status === 'failed') dayBucket.failed += 1;
+      byDay.set(day, dayBucket);
     }
     const total = runs.length;
+
+    const byAgentRows: RunAgentBreakdownRow[] = [...byAgent.entries()]
+      .map(([agentName, bucket]) => ({
+        agentName,
+        runs: bucket.runs,
+        failed: bucket.failed,
+        successRate: bucket.runs === 0 ? 0 : bucket.completed / bucket.runs,
+      }))
+      .sort(
+        (left, right) =>
+          right.runs - left.runs || (left.agentName ?? '').localeCompare(right.agentName ?? ''),
+      );
+    const trend: RunTrendPoint[] = [...byDay.entries()]
+      .map(([day, bucket]) => ({ day, runs: bucket.runs, failed: bucket.failed }))
+      .sort((left, right) => left.day.localeCompare(right.day));
+
     return {
       runs: total,
       completed,
@@ -604,6 +640,73 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       failureRate: total === 0 ? 0 : failed / total,
       cancelRate: total === 0 ? 0 : cancelled / total,
       avgDurationMs: durationCount === 0 ? null : durationSum / durationCount,
+      byAgent: byAgentRows,
+      trend,
+    };
+  }
+
+  /**
+   * The thread governance drill-down: metadata + a LIFETIME usage rollup (every usage row ever
+   * recorded for the thread, not range-scoped) + its most recent runs/messages. `null` when the
+   * thread is unknown. Soft-deleted threads still resolve (with `deleted: true`), mirroring
+   * `runDetail`'s "the record exists, render it" posture.
+   */
+  async threadDetail(threadId: string): Promise<GovernanceThreadDetail | null> {
+    await this.ready();
+    const threadRow = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
+    if (threadRow === null || threadRow === undefined) return null;
+
+    const pricing = await this.loadPricing();
+    const usageRows = await this.db
+      .from(AGENT_TABLES.tokenUsage)
+      .where('thread_id', threadId)
+      .select('*');
+    const usage = usageRows.map(rowToUsage);
+    const totalTokens = usage.reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0);
+    const costUsd =
+      usage.length === 0 ? null : usage.reduce((sum, row) => sum + this.rowCost(row, pricing), 0);
+
+    const runRows = await this.db
+      .from(AGENT_TABLES.runs)
+      .where('thread_id', threadId)
+      .orderBy('started_at', 'desc')
+      .limit(20)
+      .select('*');
+    const messageRows = await this.db
+      .from(AGENT_TABLES.messages)
+      .where('thread_id', threadId)
+      .orderBy('created_at', 'desc')
+      .limit(50)
+      .select('*');
+    const allRunIds = await this.db
+      .from(AGENT_TABLES.runs)
+      .where('thread_id', threadId)
+      .select('id');
+    const allMessageIds = await this.db
+      .from(AGENT_TABLES.messages)
+      .where('thread_id', threadId)
+      .select('id');
+
+    return {
+      threadId: String(threadRow.id),
+      title: String(threadRow.title),
+      actorRef: String(threadRow.actor_ref),
+      createdAt: new Date(toInt(threadRow.created_at)).toISOString(),
+      updatedAt: new Date(toInt(threadRow.updated_at)).toISOString(),
+      deleted: threadRow.deleted_at !== null && threadRow.deleted_at !== undefined,
+      usage: {
+        totalTokens,
+        costUsd,
+        runCount: allRunIds.length,
+        messageCount: allMessageIds.length,
+      },
+      runs: runRows.map(runRowToSummary),
+      messages: messageRows.map((row) => ({
+        id: String(row.id),
+        role: String(row.role),
+        content: String(row.content),
+        createdAt: new Date(toInt(row.created_at)).toISOString(),
+      })),
     };
   }
 }

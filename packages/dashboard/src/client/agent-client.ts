@@ -1,9 +1,12 @@
 import { resolveApiBase } from './api-base.js';
 import type {
   ActorSpendRow,
+  CurrentModelPrice,
   GovernanceRange,
+  GovernanceThreadDetail,
   ListRunsFilter,
   ListRunsResult,
+  ModelPriceInput,
   ModelSpendRow,
   PendingApprovalRow,
   PendingApprovalsFilter,
@@ -114,6 +117,13 @@ export class AgentClient {
     return this.get<ThreadActivityRow[]>('/governance/threads/recent', { limit: String(limit) });
   }
 
+  /** `GET /agent/governance/threads/:id` — one thread's governance drill-down, or `null` if unknown. */
+  threadDetail(threadId: string): Promise<GovernanceThreadDetail | null> {
+    return this.get<GovernanceThreadDetail | null>(
+      `/governance/threads/${encodeURIComponent(threadId)}`,
+    );
+  }
+
   quotaToday(): Promise<QuotaToday> {
     return this.get<QuotaToday>('/quota/today');
   }
@@ -174,5 +184,17 @@ export class AgentClient {
       toolCallId,
       ...(reason ? { reason } : {}),
     });
+  }
+
+  // ── Model pricing — mounted only when the server binds a pricing store alongside governance. ──
+
+  /** `GET /agent/governance/pricing` — every model's current per-1M rates. */
+  pricing(): Promise<CurrentModelPrice[]> {
+    return this.get<CurrentModelPrice[]>('/governance/pricing');
+  }
+
+  /** `POST /agent/governance/pricing` — upsert one model's rate (atomic supersede). */
+  upsertPrice(input: ModelPriceInput): Promise<{ ok: boolean }> {
+    return this.post<{ ok: boolean }>('/governance/pricing', input);
   }
 }

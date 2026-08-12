@@ -198,6 +198,7 @@ export default class AgentProvider {
       attachmentStaging,
       governance,
       config.governanceAuthorize,
+      pricingStore,
     );
   }
 
@@ -373,6 +374,7 @@ export default class AgentProvider {
     attachmentStaging: AttachmentStagingStore | undefined,
     governance: AgentGovernanceQueries | undefined,
     governanceAuthorize: AgentGovernanceAuthorize | undefined,
+    pricingStore: AgentPricingStore | undefined,
   ): Promise<void> {
     const router = await this.app.container.make('router');
     const path = (config.path ?? 'agent').replace(/^\/+|\/+$/g, '');
@@ -649,6 +651,20 @@ export default class AgentProvider {
         return ctx.response.json(await gov.recentThreads(limitOf(ctx)));
       });
 
+      // GET /agent/governance/threads/:id — one thread's governance drill-down (metadata + lifetime
+      // usage rollup + recent runs/messages), or `null` when unknown. `501` when the bound governance
+      // adapter predates `threadDetail` (an optional SPI method — a third-party adapter may omit it).
+      router.get(g('threads/:id'), async (ctx: HttpContext) => {
+        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
+        if (actor === null) return;
+        if (gov.threadDetail === undefined) {
+          return ctx.response
+            .status(501)
+            .json({ error: 'this governance adapter does not support thread detail' });
+        }
+        return ctx.response.json(await gov.threadDetail(String(ctx.params.id)));
+      });
+
       // ── Run lifecycle governance (the run tracking read-model). Same read-only + authenticated +
       // authorized envelope; the runs are cross-actor governance data.
       const optionalRange = (ctx: HttpContext) => {
@@ -719,6 +735,60 @@ export default class AgentProvider {
         if (actor === null) return;
         return ctx.response.json(await gov.runReliability(optionalRange(ctx)));
       });
+
+      // ── Model pricing CRUD — OPTIONAL within the already-optional governance block: mounted only
+      // when a pricing store is ALSO bound (`pricingStore: false` disables it). The store already
+      // exists and is wired into the loop's cost fold (`#resolvePricing`); these two routes are the
+      // only thing missing for the console's Pricing panel to read/write it, gated the same as every
+      // other cross-actor governance surface.
+      if (pricingStore !== undefined) {
+        const pricing = pricingStore;
+
+        // GET /agent/governance/pricing — every model's current per-1M rates.
+        router.get(g('pricing'), async (ctx: HttpContext) => {
+          const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
+          if (actor === null) return;
+          return ctx.response.json(await pricing.listCurrentPrices());
+        });
+
+        // POST /agent/governance/pricing — upsert one model's rate (atomic supersede; see
+        // `AgentPricingStore.upsertModelPrice`). Body: `{modelId, inputPricePer1m, outputPricePer1m,
+        // cacheWritePricePer1m?, cacheReadPricePer1m?}`.
+        router.post(g('pricing'), async (ctx: HttpContext) => {
+          const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
+          if (actor === null) return;
+          const body = (ctx.request.body() ?? {}) as {
+            modelId?: unknown;
+            inputPricePer1m?: unknown;
+            outputPricePer1m?: unknown;
+            cacheWritePricePer1m?: unknown;
+            cacheReadPricePer1m?: unknown;
+          };
+          if (
+            typeof body.modelId !== 'string' ||
+            body.modelId.length === 0 ||
+            typeof body.inputPricePer1m !== 'number' ||
+            typeof body.outputPricePer1m !== 'number'
+          ) {
+            return ctx.response.status(400).json({
+              error:
+                'body must be {modelId: string, inputPricePer1m: number, outputPricePer1m: number, cacheWritePricePer1m?: number, cacheReadPricePer1m?: number}',
+            });
+          }
+          await pricing.upsertModelPrice({
+            modelId: body.modelId,
+            inputPricePer1m: body.inputPricePer1m,
+            outputPricePer1m: body.outputPricePer1m,
+            ...(typeof body.cacheWritePricePer1m === 'number'
+              ? { cacheWritePricePer1m: body.cacheWritePricePer1m }
+              : {}),
+            ...(typeof body.cacheReadPricePer1m === 'number'
+              ? { cacheReadPricePer1m: body.cacheReadPricePer1m }
+              : {}),
+          });
+          return ctx.response.json({ ok: true });
+        });
+      }
     }
   }
 

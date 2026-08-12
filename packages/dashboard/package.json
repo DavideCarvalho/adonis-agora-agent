@@ -50,16 +50,16 @@
     }
   },
   "devDependencies": {
-    "@adonisjs/core": "^7.3.0",
+    "@adonisjs/core": "7.4.0",
     "@adonis-agora/agent": "workspace:*",
     "@testing-library/react": "^16.1.0",
     "@types/node": "^22.0.0",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
     "@vitejs/plugin-react": "^4.3.4",
     "jsdom": "^25.0.1",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "typescript": "^5.4.0",
     "vite": "^7.0.0",
     "vitest": "^3.0.0"
