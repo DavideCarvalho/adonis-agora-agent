@@ -54,7 +54,7 @@
     "@adonisjs/core": "7.4.0",
     "@adonis-agora/agent": "workspace:*",
     "@testing-library/react": "^16.1.0",
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.20.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "@vitejs/plugin-react": "^4.3.4",
