@@ -9,13 +9,13 @@ importers:
   .:
     devDependencies:
       '@biomejs/biome':
-        specifier: ^1.9.0
+        specifier: 1.9.4
         version: 1.9.4
       '@changesets/changelog-github':
-        specifier: ^0.7.0
+        specifier: 0.7.0
         version: 0.7.0
       '@changesets/cli':
-        specifier: ^2.31.0
+        specifier: 2.31.0
         version: 2.31.0(@types/node@22.20.0)
       '@swc/core':
         specifier: 1.15.47
@@ -24,13 +24,13 @@ importers:
         specifier: 2.10.9
         version: 2.10.9
       typescript:
-        specifier: ^5.4.0
+        specifier: 5.9.3
         version: 5.9.3
       unplugin-swc:
         specifier: 1.5.10
         version: 1.5.10(@swc/core@1.15.47)(rollup@4.62.2)
       vitest:
-        specifier: ^3.0.0
+        specifier: 3.2.7
         version: 3.2.7(@types/node@22.20.0)(jsdom@25.0.1(supports-color@10.2.2))(supports-color@10.2.2)
 
   packages/adonis:
@@ -39,38 +39,38 @@ importers:
         specifier: ^9.2.0
         version: 9.2.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2)
       '@modelcontextprotocol/sdk':
-        specifier: ^1.30.0
+        specifier: 1.30.0
         version: 1.30.0(supports-color@10.2.2)(zod@3.25.76)
       '@standard-schema/spec':
-        specifier: ^1.0.0
+        specifier: 1.1.0
         version: 1.1.0
     devDependencies:
       '@adonis-agora/authz':
-        specifier: ^0.10.1
+        specifier: 0.10.1
         version: 0.10.1(@adonis-agora/diagnostics@0.2.5(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/redis@9.2.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2))(ioredis@5.11.1(supports-color@10.2.2)))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@11.10.0)(luxon@3.7.2)(supports-color@10.2.2))
       '@adonis-agora/diagnostics':
-        specifier: ^0.2.5
+        specifier: 0.2.5
         version: 0.2.5(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/redis@9.2.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2))(ioredis@5.11.1(supports-color@10.2.2))
       '@adonis-agora/durable':
         specifier: 0.21.0
         version: 0.21.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@11.10.0)(luxon@3.7.2)(supports-color@10.2.2))(@adonisjs/redis@9.2.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2))(ioredis@5.11.1(supports-color@10.2.2))(vitest@3.2.7(@types/node@22.20.0)(jsdom@25.0.1(supports-color@10.2.2))(supports-color@10.2.2))
       '@adonis-agora/telescope':
-        specifier: ^0.6.0
+        specifier: 0.6.0
         version: 0.6.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@11.10.0)(luxon@3.7.2)(supports-color@10.2.2))
       '@adonisjs/assembler':
-        specifier: ^8.4.0
+        specifier: 8.4.0
         version: 8.4.0(typescript@5.9.3)
       '@adonisjs/core':
         specifier: 7.4.0
         version: 7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1)
       '@adonisjs/lucid':
-        specifier: ^22.4.0
+        specifier: 22.4.2
         version: 22.4.2(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@11.10.0)(luxon@3.7.2)(supports-color@10.2.2)
       '@qdrant/js-client-rest':
         specifier: 1.19.0
         version: 1.19.0(typescript@5.9.3)
       '@types/node':
-        specifier: ^22.20.0
+        specifier: 22.20.0
         version: 22.20.0
       '@types/react':
         specifier: 19.2.18
@@ -79,25 +79,25 @@ importers:
         specifier: 7.0.59
         version: 7.0.59(zod@3.25.76)
       better-sqlite3:
-        specifier: ^11.0.0
+        specifier: 11.10.0
         version: 11.10.0
       luxon:
-        specifier: ^3.4.0
+        specifier: 3.7.2
         version: 3.7.2
       node-sql-parser:
-        specifier: ^5.3.0
+        specifier: 5.4.0
         version: 5.4.0
       react:
         specifier: 19.2.8
         version: 19.2.8
       typescript:
-        specifier: ^5.4.0
+        specifier: 5.9.3
         version: 5.9.3
       vitest:
-        specifier: ^3.0.0
+        specifier: 3.2.7
         version: 3.2.7(@types/node@22.20.0)(jsdom@25.0.1(supports-color@10.2.2))(supports-color@10.2.2)
       zod:
-        specifier: ^3.25.0
+        specifier: 3.25.76
         version: 3.25.76
 
   packages/dashboard:
@@ -109,10 +109,10 @@ importers:
         specifier: 7.4.0
         version: 7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1)
       '@testing-library/react':
-        specifier: ^16.1.0
+        specifier: 16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@types/node':
-        specifier: ^22.20.0
+        specifier: 22.20.0
         version: 22.20.0
       '@types/react':
         specifier: 19.2.18
@@ -121,10 +121,10 @@ importers:
         specifier: 19.2.4
         version: 19.2.4(@types/react@19.2.18)
       '@vitejs/plugin-react':
-        specifier: ^4.3.4
+        specifier: 4.7.0
         version: 4.7.0(supports-color@10.2.2)(vite@7.3.6(@types/node@22.20.0))
       jsdom:
-        specifier: ^25.0.1
+        specifier: 25.0.1
         version: 25.0.1(supports-color@10.2.2)
       react:
         specifier: 19.2.8
@@ -133,13 +133,13 @@ importers:
         specifier: 19.2.8
         version: 19.2.8(react@19.2.8)
       typescript:
-        specifier: ^5.4.0
+        specifier: 5.9.3
         version: 5.9.3
       vite:
-        specifier: ^7.0.0
+        specifier: 7.3.6
         version: 7.3.6(@types/node@22.20.0)
       vitest:
-        specifier: ^3.0.0
+        specifier: 3.2.7
         version: 3.2.7(@types/node@22.20.0)(jsdom@25.0.1(supports-color@10.2.2))(supports-color@10.2.2)
 
 packages:
@@ -4136,7 +4136,7 @@ snapshots:
       cli-truncate: 5.2.0
       log-update: 7.2.0
       pretty-hrtime: 1.0.3
-      string-width: 8.2.1
+      string-width: 8.2.2
       supports-color: 10.2.2
       terminal-size: 4.0.1
 
@@ -4714,7 +4714,7 @@ snapshots:
   cli-truncate@5.2.0:
     dependencies:
       slice-ansi: 8.0.0
-      string-width: 8.2.1
+      string-width: 8.2.2
 
   cluster-key-slot@1.1.1: {}
 
@@ -6231,7 +6231,7 @@ snapshots:
   wrap-ansi@10.0.0:
     dependencies:
       ansi-styles: 6.2.3
-      string-width: 8.2.1
+      string-width: 8.2.2
       strip-ansi: 7.2.0
 
   wrappy@1.0.2: {}
