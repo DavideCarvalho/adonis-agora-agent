@@ -5,6 +5,13 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
     },
+    "@adonis-agora/agent-dashboard#build:spa": {
+      "outputs": ["dist/spa/**"]
+    },
+    "@adonis-agora/agent#build": {
+      "dependsOn": ["^build", "@adonis-agora/agent-dashboard#build:spa"],
+      "outputs": ["dist/**"]
+    },
     "test": {
       "dependsOn": ["^build"],
       "outputs": ["coverage/**"]

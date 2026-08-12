@@ -20,7 +20,17 @@ All data comes from the agent provider's **real** routes — the SPA is a pure c
 
 ## Install
 
+As of `@adonis-agora/agent@0.21.0`, **you don't need to install this package at all**:
+`node ace configure @adonis-agora/agent` registers an embedded dashboard provider that serves this
+exact SPA (bundled straight into `@adonis-agora/agent`'s own `dist/` at build time) at
+`<agentPath>/dashboard` — no separate install, no separate provider registration. See the
+[`@adonis-agora/agent` README's Dashboard section](../adonis/README.md#dashboard).
+
+This package still ships and installs standalone, for apps that configured it before the embedded
+provider existed, or that want its independent release cadence:
+
 ```sh
+pnpm add @adonis-agora/agent-dashboard
 node ace add @adonis-agora/agent-dashboard
 ```
 
@@ -35,7 +45,8 @@ providers: [
 
 The dashboard reads `config/agent.ts` for the agent `path` and `actorResolver`, mounts the SPA at
 `<agentPath>/dashboard` (default `/agent/dashboard`), and gates every request through the **same**
-actor resolver as the governance routes. Toggle or relocate it with an optional block:
+actor resolver as the governance routes. Toggle or relocate it with an optional block — the SAME block
+the embedded provider reads, so switching between the two needs no config change:
 
 ```ts
 // config/agent.ts
@@ -44,6 +55,9 @@ export default defineConfig({
   dashboard: { enabled: true, path: '/agent/dashboard' },
 })
 ```
+
+Register only ONE of the two providers (the embedded one from `@adonis-agora/agent`, or this
+package's): mounting both at the same path throws AdonisJS's "duplicate route" error at boot.
 
 ## Browser client
 

@@ -187,6 +187,44 @@ const { text } = await runAgentLoop(
 )
 ```
 
+## Dashboard
+
+`node ace configure @adonis-agora/agent` also registers an embedded governance console — the
+`@adonis-agora/agent-dashboard` React SPA, bundled straight into `@adonis-agora/agent`'s own `dist/`
+at build time. **No separate install, no separate provider registration.** It mounts at
+`<path>/dashboard` (default `/agent/dashboard`) once `governanceAuthorize` is configured — every panel
+but Quota reads the cross-actor `/agent/governance/*` routes, and those don't exist without that gate
+either, so the console refuses to mount (with a boot warning explaining why) rather than load and 404
+on every panel:
+
+```ts
+// config/agent.ts
+export default defineConfig({
+  // ...
+  governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
+  // dashboard: { enabled: true, path: '/agent/dashboard', authorize: (actor) => actor.roles?.includes('ADMIN') ?? false },
+})
+```
+
+See [Governance dashboard](./docs/governance/dashboard.mdx) for the full config shape.
+
+<details>
+<summary>Standalone install (still supported)</summary>
+
+`@adonis-agora/agent-dashboard` also ships as its own installable package with its own provider, for
+apps that want its independent release cadence or that configured it before the embedded provider
+existed:
+
+```sh
+pnpm add @adonis-agora/agent-dashboard
+node ace add @adonis-agora/agent-dashboard
+```
+
+It reads the SAME `config('agent').dashboard` block. Register only ONE of the two providers — mounting
+both at the same path throws AdonisJS's "duplicate route" error at boot.
+
+</details>
+
 ## Diagnostics
 
 Runtime events flow through `@adonis-agora/agent/telescope`'s watcher when
@@ -203,7 +241,7 @@ or a real model provider.
 
 - Repo: https://github.com/DavideCarvalho/adonis-agent
 - Changelog: https://github.com/DavideCarvalho/adonis-agent/blob/master/packages/adonis/CHANGELOG.md
-- Companion package: [`@adonis-agora/agent-dashboard`](https://github.com/DavideCarvalho/adonis-agent/tree/master/packages/dashboard)
+- Companion package (also embedded automatically, see [Dashboard](#dashboard) above): [`@adonis-agora/agent-dashboard`](https://github.com/DavideCarvalho/adonis-agent/tree/master/packages/dashboard)
 
 ## License
 

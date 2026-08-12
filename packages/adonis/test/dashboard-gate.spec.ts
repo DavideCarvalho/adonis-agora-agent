@@ -1,8 +1,15 @@
-import type { ActorResolver } from '@adonis-agora/agent';
 import type { HttpContext } from '@adonisjs/core/http';
 import { describe, expect, it } from 'vitest';
-import { resolveDashboardConfig } from './define_config.js';
-import { evaluateDashboardGate } from './gate.js';
+import { evaluateDashboardGate, resolveDashboardConfig } from '../src/dashboard/index.js';
+import type { ActorResolver } from '../src/spi/actor-resolver.js';
+
+/**
+ * Moved verbatim from `@adonis-agora/agent-dashboard`'s `src/server/gate.spec.ts` when
+ * `evaluateDashboardGate`/`resolveDashboardConfig` moved into this package (`src/dashboard/`) so both
+ * the embedded (`providers/dashboard_provider.ts`) and standalone (`agent-dashboard`'s
+ * `agent_dashboard_provider.ts`) dashboard providers share one implementation. See
+ * `providers/dashboard_provider.ts`'s module doc for why the shared logic lives here.
+ */
 
 const ctx = {} as HttpContext;
 const resolverFor = (actor: { id: string; roles?: string[] }): ActorResolver => ({

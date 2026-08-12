@@ -1,25 +1,25 @@
 // @vitest-environment node
 import { type Server, createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { AgentGovernanceAuthorize } from '@adonis-agora/agent';
-import type { AgentDashboardAuthorize } from '@adonis-agora/agent/dashboard';
 import { IgnitorFactory } from '@adonisjs/core/factories/core/ignitor';
 import type { HttpContext } from '@adonisjs/core/http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AgentDashboardAuthorize } from '../src/dashboard/index.js';
+import type { AgentGovernanceAuthorize } from '../src/governance-gate.js';
 
 /**
- * Boots a real AdonisJS app with ONLY the dashboard provider and hits the mount over HTTP, so a
- * console that was not mounted answers the router's own `404` rather than a stubbed assertion about
- * registration. The agent provider is deliberately absent: the dashboard reads `config('agent')`
- * directly and never touches the agent provider at runtime, so leaving it out keeps this spec off the
- * agent package's build output.
+ * Boots a real AdonisJS app with ONLY `providers/dashboard_provider.ts` (this package's OWN embedded
+ * dashboard, NOT `@adonis-agora/agent-dashboard`'s standalone provider) and hits the mount over HTTP —
+ * mirrors `@adonis-agora/agent-dashboard`'s `test/dashboard-mount.spec.ts` byte-for-byte in structure,
+ * since both providers share the exact same mount/gate decision logic (`src/dashboard/index.js`).
  *
  * The observable used throughout is the response to an UNAUTHENTICATED request at the mount:
  * - mounted  → the dashboard's own gate runs first and replies `401` (no resolvable actor)
  * - unmounted → the router replies `404`
  *
- * That discriminator needs no built SPA (`dist/spa` only exists after `vite build`), which is what
- * makes it usable in a plain test run.
+ * That discriminator needs no built SPA (`dist/assets/spa` only exists after the package's own build
+ * copies it in from `@adonis-agora/agent-dashboard`'s `dist/spa`), which is what makes it usable in a
+ * plain test run — this suite never reads `index.html`/assets off disk.
  */
 
 /** Reads the caller from `x-actor-id` / `x-actor-roles`; throws (→ 401) when absent. */
@@ -49,7 +49,7 @@ async function bootApp(options: {
     .withCoreConfig()
     .merge({
       rcFileContents: {
-        providers: [() => import('../providers/agent_dashboard_provider.js')],
+        providers: [() => import('../providers/dashboard_provider.js')],
       },
       config: {
         agent: {
@@ -108,11 +108,10 @@ afterEach(async () => {
 
 const warnings = () => warn.mock.calls.map((call) => String(call[0]));
 
-describe('dashboard mount vs. the agent governance gate', () => {
+describe('embedded dashboard_provider mount vs. the agent governance gate', () => {
   it('does not mount the console when the agent has no governanceAuthorize', async () => {
     booted = await bootApp({});
 
-    // Every panel of this console reads `/agent/governance/*`, which is not mounted without a gate.
     for (const path of ['/agent/dashboard', '/agent/dashboard/assets/index.js']) {
       const response = await fetch(`${booted.url}${path}`);
       expect(response.status, `GET ${path}`).toBe(404);
@@ -133,7 +132,8 @@ describe('dashboard mount vs. the agent governance gate', () => {
     booted = await bootApp({ governanceAuthorize: adminOnly });
 
     // Mounted: the dashboard's own gate answers first, so an unauthenticated caller gets 401 — not
-    // the router's 404. Both the shell route and the asset wildcard are registered.
+    // the router's 404. Both the shell route and the asset wildcard are registered. `sendIndex`/
+    // `sendAsset` (which would need the built SPA on disk) never run: the gate short-circuits first.
     for (const path of ['/agent/dashboard', '/agent/dashboard/assets/index.js']) {
       const response = await fetch(`${booted.url}${path}`);
       expect(response.status, `GET ${path}`).toBe(401);
@@ -158,12 +158,6 @@ describe('dashboard mount vs. the agent governance gate', () => {
     expect(warnings().filter((text) => text.includes('agent-dashboard'))).toEqual([]);
   });
 
-  // The second door to the same broken console: a gate IS configured, so the previous check passes,
-  // but `governanceQueries: false` means the read-model was never built — so the cross-actor routes
-  // do not exist and every panel but Quota would 404 anyway. Note `governanceQueries: undefined` is
-  // NOT this case: the agent provider defaults it to the Lucid read-model when the main store is
-  // Lucid (`agent_provider.ts` `#resolveGovernance`), so only an explicit `false` is decidable from
-  // config alone.
   it('does not mount when governanceQueries is false, even with a gate configured', async () => {
     booted = await bootApp({ governanceAuthorize: adminOnly, governanceQueries: false });
 
@@ -171,8 +165,6 @@ describe('dashboard mount vs. the agent governance gate', () => {
     expect(response.status, 'GET /agent/dashboard').toBe(404);
   });
 
-  // The operator must be able to tell the two causes apart from the log alone — a generic
-  // "governance is not configured" would recreate the diagnosability problem this check exists for.
   it('names governanceQueries — not the gate — as the cause in the boot warning', async () => {
     booted = await bootApp({ governanceAuthorize: adminOnly, governanceQueries: false });
 

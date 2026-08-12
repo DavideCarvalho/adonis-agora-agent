@@ -1,6 +1,11 @@
 /**
- * Pure path/asset helpers for the dashboard provider — extracted so they can be unit-tested without
- * booting an AdonisJS app. The provider composes these; it holds only the router wiring + I/O.
+ * Pure path/asset helpers for serving the `@adonis-agora/agent-dashboard` governance SPA — extracted
+ * so they can be unit-tested without booting an AdonisJS app. Both dashboard providers compose these;
+ * each holds only the router wiring + I/O. Owned here (rather than in `@adonis-agora/agent-dashboard`)
+ * so `packages/adonis`'s OWN embedded dashboard provider (`providers/dashboard_provider.ts`) can reuse
+ * them without depending on the dashboard package at runtime — the dashboard package already depends
+ * on THIS one (for `AgentConfig`/`ActorResolver`/...), and a package.json edge the other way would be
+ * circular. See `providers/dashboard_provider.ts`'s module doc for the full story.
  */
 
 /** Collapse duplicate slashes and strip leading/trailing ones: `/agent//` → `agent`. */

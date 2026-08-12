@@ -7,6 +7,6 @@
     "tsBuildInfoFile": null,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["src/client/**/*.ts", "src/server/**/*.ts", "providers/**/*.ts", "test/**/*.ts"],
+  "include": ["src/client/**/*.ts", "providers/**/*.ts", "test/**/*.ts"],
   "exclude": ["src/app/**", "dist/**"]
 }

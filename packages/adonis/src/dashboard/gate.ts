@@ -1,5 +1,5 @@
-import type { ActorResolver } from '@adonis-agora/agent';
 import type { HttpContext } from '@adonisjs/core/http';
+import type { ActorResolver } from '../spi/actor-resolver.js';
 import type { AgentDashboardAuthorize } from './define_config.js';
 
 /** The outcome of the dashboard access gate: proceed, or deny with an HTTP status + message. */

@@ -1,5 +1,6 @@
-import type { Actor, AgentGovernanceAuthorize } from '@adonis-agora/agent';
 import type { HttpContext } from '@adonisjs/core/http';
+import type { AgentGovernanceAuthorize } from '../governance-gate.js';
+import type { Actor } from '../types.js';
 
 /**
  * An extra authorization gate for the dashboard, run AFTER the agent config's `actorResolver` has
@@ -16,6 +17,11 @@ export type AgentDashboardAuthorize = (
  * Optional `config('agent').dashboard` block. The dashboard reuses the agent config's `path` and
  * `actorResolver` (so it sits behind the SAME actor gating as the governance routes); this block
  * toggles it on/off, optionally overrides the mount path, and optionally adds an `authorize` gate.
+ *
+ * Shared by BOTH the embedded dashboard provider (`@adonis-agora/agent/dashboard_provider`, wired
+ * automatically when you `node ace configure @adonis-agora/agent`) and the standalone
+ * `@adonis-agora/agent-dashboard` package's provider — one config block controls whichever one is
+ * registered.
  */
 export interface AgentDashboardConfig {
   /**

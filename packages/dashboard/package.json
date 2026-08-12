@@ -32,7 +32,8 @@
   "files": ["dist/", "README.md", "CHANGELOG.md"],
   "sideEffects": false,
   "scripts": {
-    "build": "pnpm run clean && vite build && tsc -p tsconfig.build.json && pnpm run check:dist",
+    "build": "pnpm run clean && pnpm run build:spa && tsc -p tsconfig.build.json && pnpm run check:dist",
+    "build:spa": "vite build",
     "check:dist": "node ../../scripts/assert-build-output.mjs dist providers/agent_dashboard_provider.js",
     "clean": "rm -rf dist",
     "prepack": "pnpm run check:dist",
@@ -42,7 +43,7 @@
   },
   "peerDependencies": {
     "@adonisjs/core": "^7.3.0",
-    "@adonis-agora/agent": ">=0.4.0 <1.0.0"
+    "@adonis-agora/agent": ">=0.21.0 <1.0.0"
   },
   "peerDependenciesMeta": {
     "@adonisjs/core": {

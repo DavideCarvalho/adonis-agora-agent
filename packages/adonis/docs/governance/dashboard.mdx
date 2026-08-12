@@ -6,15 +6,18 @@ icon: LayoutDashboard
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-`@adonis-agora/agent-dashboard` is a **separate package**: a dependency-light React SPA that visualizes the agent's own [governance read-model](/docs/agent/governance/read-model) — spend by model and by actor, the daily usage/cost trend, recent runs, threads and tool calls, a reliability panel, an approvals inbox, and today's quota. It's a pure consumer of the agent provider's *real* routes; the provider that serves it is a thin static server, no bundled API.
+A dependency-light React SPA (`@adonis-agora/agent-dashboard`) that visualizes the agent's own [governance read-model](/docs/agent/governance/read-model) — spend by model and by actor, the daily usage/cost trend, recent runs, threads and tool calls, a reliability panel, an approvals inbox, and today's quota. It's a pure consumer of the agent provider's *real* routes; the provider that serves it is a thin static server, no bundled API.
 
 ## Install & mount
+
+`node ace configure @adonis-agora/agent` already registers an **embedded** dashboard provider — the SPA is bundled straight into `@adonis-agora/agent`'s own `dist/` at build time, so there is nothing extra to install or register. It mounts at `<agentPath>/dashboard` (default `/agent/dashboard`), reading `config/agent.ts` for the agent `path` and `actorResolver`, and gates every request through the **same** actor resolver as the governance routes — an app that never configured a resolver exposes nothing.
+
+<Callout type="info" title="Standalone install still works">
+`@adonis-agora/agent-dashboard` also ships as its own installable package with its own provider, serving the identical SPA, for apps that configured it before the embedded provider existed or that want its independent release cadence:
 
 ```bash
 node ace add @adonis-agora/agent-dashboard
 ```
-
-Register the provider **after** the agent provider in `adonisrc.ts`:
 
 ```ts title="adonisrc.ts"
 providers: [
@@ -23,7 +26,8 @@ providers: [
 ]
 ```
 
-The dashboard reads `config/agent.ts` for the agent `path` and `actorResolver`, mounts the SPA at `<agentPath>/dashboard` (default `/agent/dashboard`), and gates every request through the **same** actor resolver as the governance routes — an app that never configured a resolver exposes nothing.
+Both providers read the exact same `config('agent').dashboard` block below. Register only ONE of the two — mounting both at the same path throws AdonisJS's "duplicate route" error at boot.
+</Callout>
 
 <Callout type="warn" title="It mounts only when the read-model it reads does">
 The console consumes `/agent/governance/*` and `/agent/quota/today`. Those governance routes exist only when the agent config carries a `governanceAuthorize` gate, so **the console refuses to mount without that gate too** — it would otherwise load and `404` on every panel but Quota. Set `governanceAuthorize` in `config/agent.ts` (e.g. an ADMIN check) to bring back the routes and the console together, or `governanceAuthorize: () => true` to deliberately restore the old behaviour of letting ANY authenticated actor read them. The provider logs a boot warning when it declines. (`pricingStore` is what fills in cost.) See [Governance read-model](/docs/agent/governance/read-model).

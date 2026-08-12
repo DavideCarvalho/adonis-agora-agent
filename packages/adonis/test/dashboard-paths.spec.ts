@@ -7,7 +7,14 @@ import {
   mountPathFor,
   safeAssetSegments,
   trimSlashes,
-} from './paths.js';
+} from '../src/dashboard/index.js';
+
+/**
+ * Moved verbatim from `@adonis-agora/agent-dashboard`'s `src/server/paths.spec.ts` when these helpers
+ * moved into this package (`src/dashboard/paths.ts`) so both the embedded
+ * (`providers/dashboard_provider.ts`) and standalone (`agent-dashboard`'s
+ * `agent_dashboard_provider.ts`) dashboard providers share one implementation.
+ */
 
 describe('trimSlashes', () => {
   it('collapses and strips slashes', () => {

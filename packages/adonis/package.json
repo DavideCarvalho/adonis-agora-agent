@@ -58,6 +58,16 @@
       "import": "./dist/providers/agent_provider.js",
       "default": "./dist/providers/agent_provider.js"
     },
+    "./dashboard_provider": {
+      "types": "./dist/providers/dashboard_provider.d.ts",
+      "import": "./dist/providers/dashboard_provider.js",
+      "default": "./dist/providers/dashboard_provider.js"
+    },
+    "./dashboard": {
+      "types": "./dist/src/dashboard/index.d.ts",
+      "import": "./dist/src/dashboard/index.js",
+      "default": "./dist/src/dashboard/index.js"
+    },
     "./configure": {
       "types": "./dist/configure.d.ts",
       "import": "./dist/configure.js",
@@ -105,7 +115,7 @@
     "build": "pnpm run clean && tsc -p tsconfig.build.json && pnpm run copy:stubs && pnpm run check:dist",
     "check:dist": "node ../../scripts/assert-build-output.mjs dist src/index.js",
     "clean": "rm -rf dist",
-    "copy:stubs": "mkdir -p dist/stubs/config dist/stubs/database/migrations && cp stubs/config/agent.stub dist/stubs/config/agent.stub && cp stubs/config/mcp.stub dist/stubs/config/mcp.stub && cp -r stubs/database/migrations/. dist/stubs/database/migrations/",
+    "copy:stubs": "mkdir -p dist/stubs/config dist/stubs/database/migrations dist/assets && cp stubs/config/agent.stub dist/stubs/config/agent.stub && cp stubs/config/mcp.stub dist/stubs/config/mcp.stub && cp -r stubs/database/migrations/. dist/stubs/database/migrations/ && rm -rf dist/assets/spa && cp -r ../dashboard/dist/spa dist/assets/spa",
     "prepack": "pnpm run check:dist",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",

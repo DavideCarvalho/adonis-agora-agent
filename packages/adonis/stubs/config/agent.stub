@@ -39,6 +39,13 @@ export default defineConfig({
   // defaultRoles: ['ADMIN'],  // roles a tool requires when it declares none (fail-closed)
   // maxSteps: 8,              // cap on model↔tool iterations per turn
 
+  // Governance console — served automatically at <path>/dashboard (default /agent/dashboard), no
+  // separate install. It only mounts once `governanceAuthorize` is set (every panel but Quota reads
+  // the cross-actor governance routes, which need that gate too — see the docs). Toggle it off,
+  // relocate it, or add an extra gate on top of governanceAuthorize:
+  // dashboard: { enabled: true, path: '/agent/dashboard', authorize: (actor) => actor.roles?.includes('ADMIN') ?? false },
+  // governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
+
   // Multimodal uploads — mounts POST /agent/attachments, which stages a file into a model-fetchable
   // MessageAttachment the client sends back with its next chat message. Bind your own store (presign
   // S3/GCS or wrap your media pipeline); `attachmentStores.memory()` inlines bytes as a data: URL.

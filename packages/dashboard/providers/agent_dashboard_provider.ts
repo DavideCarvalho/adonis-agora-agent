@@ -1,22 +1,20 @@
 import { readFile } from 'node:fs/promises';
 import type { ActorResolver, AgentConfig } from '@adonis-agora/agent';
-import type { HttpContext } from '@adonisjs/core/http';
-import type { ApplicationService } from '@adonisjs/core/types';
 import {
   type AgentDashboardAuthorize,
   type AgentDashboardConfig,
-  decideDashboardMount,
-  resolveDashboardConfig,
-} from '../src/server/define_config.js';
-import { evaluateDashboardGate } from '../src/server/gate.js';
-import {
   apiBaseFor,
   contentTypeFor,
+  decideDashboardMount,
+  evaluateDashboardGate,
   injectApiBase,
   injectBaseHref,
   mountPathFor,
+  resolveDashboardConfig,
   safeAssetSegments,
-} from '../src/server/paths.js';
+} from '@adonis-agora/agent/dashboard';
+import type { HttpContext } from '@adonisjs/core/http';
+import type { ApplicationService } from '@adonisjs/core/types';
 
 /**
  * Serves the `@adonis-agora/agent-dashboard` governance SPA (a Vite build in `dist/spa`) as static
@@ -36,6 +34,16 @@ import {
  * every panel but Quota. The provider declines and logs why (see `decideDashboardMount`).
  *
  * Enable/disable and override the mount via the optional `config('agent').dashboard` block.
+ *
+ * As of `@adonis-agora/agent@0.21.0`, THIS is no longer the only way to get the console: the agent
+ * package now ALSO ships its own embedded `@adonis-agora/agent/dashboard_provider`, wired
+ * automatically by `node ace configure @adonis-agora/agent`, that serves the identical SPA bundled
+ * straight into `@adonis-agora/agent`'s own `dist/`. This standalone package keeps working exactly as
+ * before for apps that already install and register it directly — nothing here changed except WHERE
+ * the shared config/gate/path logic lives (`@adonis-agora/agent/dashboard`, imported above, rather
+ * than a local `src/server/*` copy) so both providers stay byte-for-byte identical in behavior. An
+ * app should register ONE of the two: registering both at the same mount path throws AdonisJS's
+ * "duplicate route" error at boot.
  */
 export default class AgentDashboardProvider {
   constructor(protected app: ApplicationService) {}

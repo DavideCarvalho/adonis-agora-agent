@@ -15,6 +15,6 @@
     "types": ["node"],
     "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
-  "include": ["src/client/**/*.ts", "src/server/**/*.ts", "providers/**/*.ts"],
+  "include": ["src/client/**/*.ts", "providers/**/*.ts"],
   "exclude": ["src/app/**", "**/*.spec.ts", "**/*.spec.tsx", "**/*.test.ts", "test/**", "dist/**"]
 }
