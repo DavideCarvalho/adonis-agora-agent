@@ -1,6 +1,6 @@
 {
   "name": "@adonis-agora/agent",
-  "version": "0.19.1",
+  "version": "0.20.0",
   "description": "Governed, durable-backed AI agent (chat + tool-calling + governance) for AdonisJS — part of the Agora ecosystem.",
   "license": "MIT",
   "repository": {

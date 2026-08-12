@@ -1,5 +1,37 @@
 # @adonis-agora/agent-dashboard
 
+## 0.5.0
+
+### Minor Changes
+
+- [`4e3a372`](https://github.com/DavideCarvalho/adonis-agent/commit/4e3a372e9ecf53ec4c34bbe31ab6177262b0dcd5) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Add `GET`/`POST /agent/governance/pricing` and a Pricing panel in the console.
+
+  The `pricingStore` bound to the agent (default-mirrored from a Lucid `store`, or opt-in for other
+  backends) was already driving cost accounting for runs, but had no read/write surface of its own —
+  operators had to reach for the database directly to see or change a model's per-1M-token rates. The
+  two new routes expose `AgentPricingStore.listCurrentPrices()`/`upsertModelPrice()` behind the same
+  authenticated + authorized governance gate as every other `/agent/governance/*` route, mounted only
+  when a pricing store is bound. The dashboard's new "Pricing" section reads and edits rates through
+  them.
+
+- [`4e3a372`](https://github.com/DavideCarvalho/adonis-agent/commit/4e3a372e9ecf53ec4c34bbe31ab6177262b0dcd5) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Add a thread governance drill-down: `GET /agent/governance/threads/:id` and a `ThreadDetailView` you
+  reach by clicking a row in the console's Recent threads table.
+
+  `AgentGovernanceQueries` gets a new optional `threadDetail(threadId)` method returning the thread's
+  metadata plus a lifetime usage rollup (total tokens, cost, run/message counts) and its most recent
+  runs/messages — implemented in both `LucidGovernanceQueries` and `InMemoryGovernanceQueries`. It's
+  optional so a third-party or pre-existing adapter that predates it doesn't break: the route responds
+  `501` instead of the dashboard hitting a missing endpoint.
+
+  The Recent threads and Tool calls panels also gain "Load more" pagination instead of a fixed row cap.
+
+- [`4e3a372`](https://github.com/DavideCarvalho/adonis-agent/commit/4e3a372e9ecf53ec4c34bbe31ab6177262b0dcd5) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `RunReliability` (from `GET /agent/governance/reliability`) gains two optional fields: `byAgent` (run
+  and failure counts per agent, highest call count first) and `trend` (daily run/failure counts over the
+  same range, oldest first) — implemented in both `LucidGovernanceQueries` and
+  `InMemoryGovernanceQueries`. Both are optional so an adapter that predates them can keep returning the
+  existing shape; the dashboard's Reliability section renders a trend chart and a by-agent breakdown when
+  present and stays as before when absent.
+
 ## 0.4.0
 
 ### Minor Changes
