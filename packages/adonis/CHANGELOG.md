@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.22.1
+
+### Patch Changes
+
+- [`f0a622a`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/f0a622aeadec938355f9b5f5f515e335b406e712) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Republishes with the updated `agent-dashboard` embed (`packages/adonis/dist/assets/spa`, copied at build time from `@adonis-agora/agent-dashboard`'s own `dist/spa`) — the console's visual-identity fix from `ce1d08f` (dark-by-default, Aviary token/font/radius parity) has no effect on hosts until this package is rebuilt and republished, since it embeds the dashboard's built assets rather than depending on it at runtime. No source change in `packages/adonis` itself.
+
 ## 0.22.0
 
 ### Minor Changes
