@@ -95,7 +95,23 @@ export type Panel =
       style?: 'area' | 'stacked';
     }
   | { kind: 'topN'; title: string; data: DataBinding; limit?: number }
-  | { kind: 'table'; title: string; data: DataBinding; columns: Column[] }
+  | {
+      kind: 'table';
+      title: string;
+      data: DataBinding;
+      columns: Column[];
+      /**
+       * Opt into paged-table mode: the UI renders prev/next controls and re-resolves this panel's
+       * provider with `query.page` (1-based) and `query.limit` merged in. The provider must then
+       * return `{ rows, total, page, limit }` instead of a bare `{ rows }`. Omit (or `false`) for
+       * the existing bare-rows table. Mirrors `@adonis-agora/telescope`'s `Panel` (table variant) —
+       * kept here so a host on a telescope version that ships it doesn't excess-property-error.
+       * None of this extension's OWN table providers opt in yet: see `agent-governance-providers.ts`
+       * for why (the governance read-model doesn't expose a page+total query for every table this
+       * would apply to).
+       */
+      paged?: boolean;
+    }
   | {
       kind: 'distribution';
       title: string;

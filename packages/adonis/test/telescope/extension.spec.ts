@@ -14,7 +14,11 @@ import {
   agentToolCallsOverTimeProvider,
 } from '../../src/telescope/data-providers.js';
 import { agentTelescopeExtension } from '../../src/telescope/extension.js';
-import type { ExtensionContext, TelescopeEntryLike } from '../../src/telescope/telescope-sdk.js';
+import type {
+  DataProvider,
+  ExtensionContext,
+  TelescopeEntryLike,
+} from '../../src/telescope/telescope-sdk.js';
 
 /**
  * A captured `agora:agent:<event>` diagnostic entry, exactly as `@adonis-agora/telescope`'s generic
@@ -73,6 +77,7 @@ describe('agentTelescopeExtension registration', () => {
     const names = (agentTelescopeExtension().dataProviders?.(makeCtx()) ?? []).map((p) => p.name);
     expect(names).toEqual(
       expect.arrayContaining([
+        // Entry-backed.
         'agent.activeRuns',
         'agent.tokenUsage',
         'agent.toolCallSuccessRate',
@@ -84,8 +89,38 @@ describe('agentTelescopeExtension registration', () => {
         'agent.recentApprovals',
         'agent.delegationsOverTime',
         'agent.recentDelegations',
+        // Governance-backed.
+        'agent.spend.totalCost',
+        'agent.spend.totalTokens',
+        'agent.spend.byModel',
+        'agent.spend.byModelTable',
+        'agent.usage.trend',
+        'agent.spend.byActor',
+        'agent.spend.byActorShare',
+        'agent.runs.total',
+        'agent.runs.successRate',
+        'agent.runs.failed',
+        'agent.runs.duration',
+        'agent.runs.byAgent',
+        'agent.runs.trend',
+        'agent.runs.recent',
+        'agent.tools.recent',
+        'agent.threads.recent',
+        'agent.approvals.pending',
+        'agent.approvals.recent',
+        'agent.tools.stats',
+        // RAG.
+        'agent.rag.retrievals',
+        'agent.rag.zeroHitRate',
+        'agent.rag.chunks',
+        'agent.rag.trend',
       ]),
     );
+  });
+
+  it('registers no duplicate provider names', () => {
+    const names = (agentTelescopeExtension().dataProviders?.(makeCtx()) ?? []).map((p) => p.name);
+    expect(new Set(names).size).toBe(names.length);
   });
 
   it('emits a LinkSpec on the run/thread columns when hrefs are configured', () => {
@@ -279,5 +314,76 @@ describe('no-op when unconfigured / no telescope data', () => {
     expect(await agentRecentDelegationsProvider().resolve(undefined, ctx)).toMatchObject({
       rows: [],
     });
+  });
+});
+
+describe('host extensibility (providers / sections)', () => {
+  it('appends host-contributed providers alongside the built-ins', () => {
+    const hostProvider: DataProvider = {
+      name: 'myapp.custom.stat',
+      resolve: async () => ({ value: 1 }),
+    };
+    const names = (
+      agentTelescopeExtension({ providers: [hostProvider] }).dataProviders?.(makeCtx()) ?? []
+    ).map((p) => p.name);
+    expect(names).toContain('myapp.custom.stat');
+    // Built-ins are still all there — a host provider doesn't replace anything.
+    expect(names).toContain('agent.activeRuns');
+    expect(names).toContain('agent.spend.totalCost');
+  });
+
+  it('refuses a host provider under the reserved "agent." prefix', () => {
+    const badProvider: DataProvider = {
+      name: 'agent.notMine',
+      resolve: async () => ({ value: 1 }),
+    };
+    expect(() => agentTelescopeExtension({ providers: [badProvider] })).toThrow(
+      /reserved "agent\." /,
+    );
+  });
+
+  it('appends host-contributed dashboard sections after the built-in ones', () => {
+    const hostSection = {
+      title: 'My section',
+      cols: 2 as const,
+      panels: [
+        { kind: 'stat' as const, title: 'Custom', data: { provider: 'myapp.custom.stat' } },
+        { kind: 'stat' as const, title: 'Custom 2', data: { provider: 'myapp.custom.stat' } },
+      ],
+    };
+    const [dash] =
+      agentTelescopeExtension({ sections: [hostSection] }).dashboards?.(makeCtx()) ?? [];
+    expect(dash?.sections?.at(-1)?.title).toBe('My section');
+    // Built-in sections are unaffected — the host section is appended, not spliced in.
+    expect(dash?.sections?.[0]?.title).toBe('Runs');
+  });
+
+  it('every built-in panel binds to a provider the extension actually registers', () => {
+    const ext = agentTelescopeExtension();
+    const providerNames = new Set((ext.dataProviders?.(makeCtx()) ?? []).map((p) => p.name));
+    const [dash] = ext.dashboards?.(makeCtx()) ?? [];
+    const boundProviders = (dash?.sections ?? []).flatMap((s) =>
+      s.panels.map((p) => p.data.provider),
+    );
+    expect(boundProviders.length).toBeGreaterThan(0);
+    for (const name of boundProviders) expect(providerNames.has(name)).toBe(true);
+  });
+
+  it('applies runHref/threadHref to the governance-backed tables too (threadId key)', () => {
+    const [dash] =
+      agentTelescopeExtension({
+        runHref: '/agent/runs/{runId}',
+        threadHref: '/agent/threads/{threadId}',
+      }).dashboards?.(makeCtx()) ?? [];
+    const columns = (dash?.sections ?? []).flatMap((s) =>
+      s.panels.flatMap((p) => (p.kind === 'table' ? p.columns : [])),
+    );
+    const threadIdCol = columns.find((c) => c.key === 'threadId');
+    expect(threadIdCol?.link).toEqual({ href: '/agent/threads/{threadId}' });
+  });
+
+  it('still contributes no entryTypes with host options set (no SDK support for a custom entry type)', () => {
+    const ext = agentTelescopeExtension({ providers: [], sections: [] });
+    expect(ext.entryTypes).toBeUndefined();
   });
 });

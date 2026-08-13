@@ -1,5 +1,28 @@
+export {
+  agentActorSpendTableProvider,
+  agentModelSpendTableProvider,
+  agentPendingApprovalsCountProvider,
+  agentPendingApprovalsTableProvider,
+  agentRecentRunsTableProvider,
+  agentRecentThreadsTableProvider,
+  agentRecentToolCallsTableProvider,
+  agentRunsByAgentTableProvider,
+  agentRunsDurationProvider,
+  agentRunsFailedProvider,
+  agentRunsSuccessRateProvider,
+  agentRunsTotalProvider,
+  agentRunsTrendProvider,
+  agentSpendByActorProvider,
+  agentSpendByModelProvider,
+  agentSpendTotalProvider,
+  agentTokensTotalProvider,
+  agentToolStatsTableProvider,
+  agentUsageTrendProvider,
+  capErrorMessage,
+  resolveRange,
+  shiftUtcDay,
+} from './agent-governance-providers.js';
 export { type AgentDashboardOptions, agentDashboard } from './dashboard.js';
-export { agentTelescopeExtension } from './extension.js';
 export {
   agentActiveRunsProvider,
   agentDelegationsOverTimeProvider,
@@ -13,13 +36,26 @@ export {
   agentToolCallSuccessRateProvider,
   agentToolCallsOverTimeProvider,
 } from './data-providers.js';
+export { type AgentTelescopeExtensionOptions, agentTelescopeExtension } from './extension.js';
+export {
+  ragChunksProvider,
+  ragRetrievalsProvider,
+  ragTrendProvider,
+  ragZeroHitRateProvider,
+  zeroHitRate,
+  meanChunks,
+} from './rag-data-providers.js';
 export type {
   Column,
   ContainerLike,
-  DataProvider,
+  DashboardSection,
   DashboardSpec,
+  DataBinding,
+  DataProvider,
   ExtensionContext,
   LinkSpec,
+  Panel,
+  PanelThresholds,
   TelescopeExtension,
   TelescopeStoreLike,
   TelescopeEntryLike,

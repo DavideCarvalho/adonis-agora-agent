@@ -13,11 +13,16 @@ import type { DataProvider, ExtensionContext, TelescopeEntryLike } from './teles
  * DI/read-model resolution.
  */
 
-/** Newest-first cap on how many recorded agent entries a provider scans. */
-const ENTRY_LIMIT = 5_000;
+/**
+ * Newest-first cap on how many recorded agent entries a provider scans. Shared by every
+ * `lib:agent` consumer of `fetchEntries` — including `rag-data-providers.ts`, since retrieval
+ * events are recorded on this SAME generic slice (Adonis's diagnostics bridge has no per-event
+ * entry type to give RAG its own window; see that file's header for what this implies).
+ */
+export const ENTRY_LIMIT = 5_000;
 
 /** Default rollup window: 24h. */
-const DAY_MS = 24 * 60 * 60 * 1000;
+export const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * The Telescope diagnostic-entry `content` the generic watcher produces for an agent event. `event` is
@@ -48,13 +53,14 @@ interface AgentEntryContent {
 const contentOf = (e: TelescopeEntryLike): AgentEntryContent =>
   (e.content ?? {}) as AgentEntryContent;
 
-const atOf = (e: TelescopeEntryLike): number => (e.createdAt ? +new Date(e.createdAt) : 0);
+/** Epoch millis of an entry's `createdAt`, or `0` when absent. Exported for `rag-data-providers.ts`. */
+export const atOf = (e: TelescopeEntryLike): number => (e.createdAt ? +new Date(e.createdAt) : 0);
 
 const isoTime = (ms: number): string =>
   ms ? `${new Date(ms).toISOString().replace('T', ' ').slice(0, 19)}Z` : '';
 
 /** Fetch captured `agora:agent:*` entries from Telescope storage (newest-first). */
-async function fetchEntries(
+export async function fetchEntries(
   ctx: ExtensionContext,
   limit = ENTRY_LIMIT,
 ): Promise<TelescopeEntryLike[]> {
@@ -82,8 +88,12 @@ function splitWindows(
   };
 }
 
-/** Build N equal-width time buckets spanning from the oldest entry to now, each starting empty. */
-function timeBuckets<TRow extends Record<string, number>>(
+/**
+ * Build N equal-width time buckets spanning from the oldest entry to now, each starting empty.
+ * Exported so `rag-data-providers.ts` buckets retrieval entries the same way the agent providers
+ * bucket everything else, instead of a second, drifting bucketing scheme.
+ */
+export function timeBuckets<TRow extends Record<string, number>>(
   entries: TelescopeEntryLike[],
   count: number,
   emptyRow: () => TRow,
@@ -103,7 +113,8 @@ function timeBuckets<TRow extends Record<string, number>>(
   return { rows, minTime, bucketSize };
 }
 
-function bucketIndexFor(
+/** Which of `timeBuckets`'s N buckets `e` falls into, clamped to `[0, count-1]`. */
+export function bucketIndexFor(
   e: TelescopeEntryLike,
   minTime: number,
   bucketSize: number,

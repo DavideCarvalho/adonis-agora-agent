@@ -40,6 +40,7 @@ import {
   registerToolsFromBarrel,
   resolveActorResolver,
 } from '../src/index.js';
+import { setTelescopeGovernanceQueries } from '../src/telescope/governance-registry.js';
 
 interface ChatBody {
   message: string;
@@ -153,6 +154,11 @@ export default class AgentProvider {
     // Governance read-model is resolved after pricing so the Lucid read-model prices its rollups
     // against the same live prices the loop's cost fold uses.
     const governance = await this.#resolveGovernance(config, pricingStore);
+    // Push it into the telescope extension's internal registry so its governance-backed data
+    // providers can read the SAME authoritative read-model the `/agent/governance/*` routes use —
+    // see `src/telescope/governance-registry.ts` for why this isn't a container binding. A no-op
+    // import when the host never wires `agentTelescopeExtension()` into `config/telescope.ts`.
+    setTelescopeGovernanceQueries(governance);
     const retriever = await this.#resolveRetriever(config);
     const attachmentStaging = await this.#resolveAttachmentStaging(config);
     const authorizer = this.#resolveAuthorizer(config, defaultRoles);
