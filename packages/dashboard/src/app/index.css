@@ -182,6 +182,12 @@ body {
   font-size: 12px;
   font-family: inherit;
 }
+/* The "Set a price" form's cache-rate fields carry the longest placeholders ("cache write $/1M
+   (optional)") — without a floor, unconstrained flex-shrink clips them mid-word (e.g. "(opti"). The
+   panel's `.controls` already wraps, so widening these is never at the cost of a broken layout. */
+.price-input {
+  min-width: 225px;
+}
 .icon-btn {
   appearance: none;
   border: 1px solid var(--line);

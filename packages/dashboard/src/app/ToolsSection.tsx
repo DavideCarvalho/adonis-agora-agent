@@ -47,7 +47,7 @@ export function ToolsSection() {
       <AsyncBlock
         state={{ data: sorted, loading: stats.loading, error: stats.error }}
         isEmpty={(rows) => rows.length === 0}
-        empty="No tool calls recorded in this range."
+        empty="No tool calls recorded yet."
         skeletonRows={6}
       >
         {(rows) => (

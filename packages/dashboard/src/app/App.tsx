@@ -140,7 +140,16 @@ export function App() {
         </main>
 
         <div className="foot">
-          Read-only governance data · {range.fromDay} → {range.toDay}
+          {/* The fromDay/toDay range only scopes Overview's queries (every other section reads its
+              own unbounded or section-scoped feed) — showing it here on every tab would claim a
+              filter that is not actually in effect, so it only appears while Overview is active. */}
+          Read-only governance data
+          {section === 'overview' && (
+            <>
+              {' '}
+              · {range.fromDay} → {range.toDay}
+            </>
+          )}
         </div>
       </div>
     </>

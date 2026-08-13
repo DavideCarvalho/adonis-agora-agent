@@ -145,7 +145,7 @@ export function PricingSection() {
               onChange={(e) => setForm((f) => ({ ...f, outputPricePer1m: e.target.value }))}
             />
             <input
-              className="range-input"
+              className="range-input price-input"
               type="number"
               step="any"
               placeholder="cache write $/1M (optional)"
@@ -153,7 +153,7 @@ export function PricingSection() {
               onChange={(e) => setForm((f) => ({ ...f, cacheWritePricePer1m: e.target.value }))}
             />
             <input
-              className="range-input"
+              className="range-input price-input"
               type="number"
               step="any"
               placeholder="cache read $/1M (optional)"
