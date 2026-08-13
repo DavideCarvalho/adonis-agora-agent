@@ -55,8 +55,8 @@ importers:
         specifier: 0.21.0
         version: 0.21.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@11.10.0)(luxon@3.7.2)(supports-color@10.2.2))(@adonisjs/redis@9.2.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2))(ioredis@5.11.1(supports-color@10.2.2))(vitest@3.2.7(@types/node@22.20.1)(jsdom@25.0.1(supports-color@10.2.2))(supports-color@10.2.2))
       '@adonis-agora/telescope':
-        specifier: 0.6.0
-        version: 0.6.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@11.10.0)(luxon@3.7.2)(supports-color@10.2.2))
+        specifier: 0.7.0
+        version: 0.7.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@11.10.0)(luxon@3.7.2)(supports-color@10.2.2))
       '@adonisjs/assembler':
         specifier: 8.4.0
         version: 8.4.0(typescript@5.9.3)
@@ -213,8 +213,8 @@ packages:
       vitest:
         optional: true
 
-  '@adonis-agora/telescope@0.6.0':
-    resolution: {integrity: sha512-hjJgn2PABqftPN/R3Nn4mMMTznufeDn1NuGaDbrhDY1pQInmv9dhLIFY5Uyi14LerhNTVyIF4LFzOo7Xd3U6/g==}
+  '@adonis-agora/telescope@0.7.0':
+    resolution: {integrity: sha512-GBa2akCQVFZXJRCaOET/mv/KWvM79tiPcoPRXqcAuV+ry9luz2YW1G/8mvnyfETi8gRaCbD2NQpX75nFCiVmSw==}
     engines: {node: '>=20.6.0'}
     peerDependencies:
       '@adonisjs/cache': ^2.1.0
@@ -222,6 +222,7 @@ packages:
       '@adonisjs/lucid': ^22.4.0
       '@adonisjs/mail': ^10.2.0
       '@anthropic-ai/sdk': ^0.32.0
+      cron-parser: ^4.0.0 || ^5.0.0
     peerDependenciesMeta:
       '@adonisjs/cache':
         optional: true
@@ -230,6 +231,8 @@ packages:
       '@adonisjs/mail':
         optional: true
       '@anthropic-ai/sdk':
+        optional: true
+      cron-parser:
         optional: true
 
   '@adonisjs/ace@14.1.0':
@@ -3320,7 +3323,7 @@ snapshots:
       ioredis: 5.11.1(supports-color@10.2.2)
       vitest: 3.2.7(@types/node@22.20.1)(jsdom@25.0.1(supports-color@10.2.2))(supports-color@10.2.2)
 
-  '@adonis-agora/telescope@0.6.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@11.10.0)(luxon@3.7.2)(supports-color@10.2.2))':
+  '@adonis-agora/telescope@0.7.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@11.10.0)(luxon@3.7.2)(supports-color@10.2.2))':
     dependencies:
       '@adonisjs/core': 7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1)
     optionalDependencies:
