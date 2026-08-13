@@ -190,7 +190,7 @@
     "@adonisjs/core": "7.4.0",
     "@adonisjs/lucid": "22.4.2",
     "@qdrant/js-client-rest": "1.19.0",
-    "@types/node": "22.20.0",
+    "@types/node": "22.20.1",
     "@types/react": "19.2.18",
     "ai": "7.0.59",
     "better-sqlite3": "11.10.0",
