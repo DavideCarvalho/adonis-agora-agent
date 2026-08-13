@@ -1,23 +1,30 @@
 /* ------------------------------------------------------------------ *
- * Agora governance console — AdonisJS violet on a dusk-ink canvas,
- * warm-paper in light. Tokens mirror the Agora site (`--agora-*`).
+ * Agora governance console.
+ *
+ * Ported to match nestjs-agent/packages/dashboard's Aviary console 1:1 (see that repo's
+ * docs/AVIARY-UI.md, the cross-repo "Aviary console UI" spec). The shared neutrals and the
+ * agent console's accent (`#a78bfa`, violet) are copied byte-for-byte from that spec so this
+ * console reads as the same family as its Nest sibling rather than Agora's own, separate
+ * identity. Dark is the UNCONDITIONAL default (Nest's agent console has no light mode at all);
+ * light stays available here as an Agora-only extra capability, behind the explicit toggle only.
  * ------------------------------------------------------------------ */
 
 :root {
-  --agora-primary: #5a45ff;
-  --agora-primary-soft: hsl(250 74% 51% / 0.14);
-  --agora-accent: #06b6d4;
+  /* ── Shared Aviary neutrals + agent's per-console accent (docs/AVIARY-UI.md upstream). ── */
+  --bg: #09090b;
+  --panel: #0c0c0f;
+  --panel-2: #101017; /* elevated surface: modal/dialog, drawer, popover, menu */
+  --line: #1c1c22;
+  --line-soft: #16161a;
+  --text: #e7e7ea;
+  --muted: #76767f;
 
-  /* dark is the default canvas (deep dusk ink + warm bone text) */
-  --bg: hsl(240 10% 6.5%);
-  --panel: hsl(240 9% 9%);
-  --panel-2: hsl(240 9% 11%);
-  --line: hsl(40 30% 82% / 0.1);
-  --line-soft: hsl(40 30% 82% / 0.05);
-  --text: hsl(40 28% 92%);
-  --muted: hsl(40 12% 66%);
+  --agora-primary: #a78bfa; /* agent: violet — matches nestjs-agent's --accent exactly */
+  --agora-primary-soft: color-mix(in srgb, #a78bfa 14%, transparent);
+  --agora-accent: #60a5fa; /* "in flight" (running/pending): blue, not cyan — Aviary's --live */
+
   --primary: var(--agora-primary);
-  --primary-fg: hsl(40 40% 96%);
+  --primary-fg: #09090b;
   --good: #34d399;
   --warn: #fbbf24;
   --bad: #f87171;
@@ -26,26 +33,15 @@
 
 :root[data-theme="light"],
 :root:not([data-theme="dark"]) {
-  color-scheme: light;
+  color-scheme: dark;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
 }
 
-/* light theme (warm paper) — applied unless the viewer forces dark */
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    --bg: hsl(40 30% 96%);
-    --panel: hsl(40 28% 98%);
-    --panel-2: hsl(40 24% 95%);
-    --line: hsl(240 10% 14% / 0.12);
-    --line-soft: hsl(240 10% 14% / 0.06);
-    --text: hsl(240 14% 12%);
-    --muted: hsl(240 6% 42%);
-    --primary-fg: hsl(40 40% 97%);
-  }
-}
+/* light theme — an Agora-only extra: opt in only, never the default (see file header). */
 :root[data-theme="light"] {
+  color-scheme: light;
   --bg: hsl(40 30% 96%);
   --panel: hsl(40 28% 98%);
   --panel-2: hsl(40 24% 95%);
@@ -68,12 +64,12 @@ body,
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
 .mono {
-  font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 }
 .tnum {
   font-variant-numeric: tabular-nums;
@@ -115,25 +111,32 @@ body {
   align-items: center;
   gap: 12px;
 }
+/* A bordered, tinted tile — not a solid gradient fill. Aviary's language never fills a surface
+   solid with the brand hue; it borders and tints it at ~10-40% and lets the text carry the
+   colour instead (see `.tab[aria-selected]` and `.btn.approve`/`.btn.reject` below). */
 .brand-mark {
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
   display: grid;
   place-items: center;
-  color: var(--primary-fg);
-  background: linear-gradient(140deg, var(--agora-primary), #8b78ff);
-  box-shadow: 0 6px 20px hsl(250 74% 51% / 0.35);
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent);
   font-weight: 700;
 }
 .brand h1 {
-  font-size: 17px;
+  font-size: 14px;
+  font-weight: 600;
   margin: 0;
   letter-spacing: -0.01em;
 }
 .brand p {
   margin: 1px 0 0;
-  font-size: 12px;
+  font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
   color: var(--muted);
 }
 
@@ -149,9 +152,9 @@ body {
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--muted);
-  border-radius: 999px;
-  padding: 7px 14px;
-  font-size: 13px;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -161,10 +164,12 @@ body {
 .tab:hover {
   color: var(--text);
 }
+/* Active = a subtle brand-tinted outline, not a solid fill — the text stays the console's
+   normal foreground colour, same pattern as the primitives above. */
 .tab[aria-selected="true"] {
-  color: var(--primary-fg);
-  background: var(--primary);
-  border-color: var(--primary);
+  color: var(--text);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  border-color: color-mix(in srgb, var(--primary) 50%, var(--line));
 }
 
 .controls {
@@ -208,7 +213,7 @@ body {
 .panel {
   background: linear-gradient(180deg, var(--panel-2), var(--panel));
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 12px;
   padding: 18px;
 }
 .grid {
@@ -278,7 +283,13 @@ body {
 .table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 12px;
+}
+/* The whole body reads as monospace data, not just the numeric columns — same as the
+   reference console's `TableBody` primitive (`mono tnum` on the row group, not per-cell). */
+.table tbody {
+  font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
 }
 .table th {
   text-align: left;
@@ -390,7 +401,7 @@ body {
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--text);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 6px 12px;
   font-size: 12px;
   font-family: inherit;
@@ -404,13 +415,17 @@ body {
   opacity: 0.45;
   cursor: not-allowed;
 }
+/* Tinted, not just outlined — a soft fill of the semantic colour behind the border, matching
+   the console's `success`/`danger` button variants. */
 .btn.approve {
   color: var(--good);
-  border-color: color-mix(in srgb, var(--good) 40%, var(--line));
+  background: color-mix(in srgb, var(--good) 10%, var(--panel));
+  border-color: color-mix(in srgb, var(--good) 50%, var(--line));
 }
 .btn.reject {
   color: var(--bad);
-  border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
+  background: color-mix(in srgb, var(--bad) 10%, var(--panel));
+  border-color: color-mix(in srgb, var(--bad) 50%, var(--line));
 }
 .rowbtns {
   display: inline-flex;
