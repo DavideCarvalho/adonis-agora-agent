@@ -77,7 +77,8 @@ export function resolveDashboardConfig(
   const resolved: ResolvedAgentDashboardConfig = { enabled: config?.enabled ?? true };
   if (config?.path !== undefined) resolved.path = config.path;
   if (config?.authorize !== undefined) resolved.authorize = config.authorize;
-  if (config?.onUnauthenticated !== undefined) resolved.onUnauthenticated = config.onUnauthenticated;
+  if (config?.onUnauthenticated !== undefined)
+    resolved.onUnauthenticated = config.onUnauthenticated;
   return resolved;
 }
 

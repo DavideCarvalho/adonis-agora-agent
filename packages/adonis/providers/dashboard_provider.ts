@@ -119,14 +119,16 @@ export default class DashboardProvider {
     // `<base href="${mount}/">`, so the SPA's relative `./assets/*` URLs resolve against the mount
     // directory regardless of whether the browser's URL carries a trailing slash.
     router.get(mount, async (ctx) => {
-      if (!(await this.#gate(ctx, actorResolver, authorize, dashboardConfig.onUnauthenticated))) return;
+      if (!(await this.#gate(ctx, actorResolver, authorize, dashboardConfig.onUnauthenticated)))
+        return;
       await this.#sendIndex(ctx, apiBase, mount);
     });
 
     // Built assets (JS/CSS/fonts/...), with an index fallback for any unmatched path so the
     // client-rendered console still boots on a deep link.
     router.get(`${mount}/*`, async (ctx) => {
-      if (!(await this.#gate(ctx, actorResolver, authorize, dashboardConfig.onUnauthenticated))) return;
+      if (!(await this.#gate(ctx, actorResolver, authorize, dashboardConfig.onUnauthenticated)))
+        return;
       const segments = safeAssetSegments(ctx.params['*']);
       if (segments === null) {
         return ctx.response.status(400).json({ error: 'bad asset path' });

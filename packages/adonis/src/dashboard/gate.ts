@@ -1,6 +1,9 @@
 import type { HttpContext } from '@adonisjs/core/http';
 import type { ActorResolver } from '../spi/actor-resolver.js';
-import type { AgentDashboardAuthorize, AgentDashboardUnauthenticatedHook } from './define_config.js';
+import type {
+  AgentDashboardAuthorize,
+  AgentDashboardUnauthenticatedHook,
+} from './define_config.js';
 
 /** The outcome of the dashboard access gate: proceed, or deny with an HTTP status + message. */
 export type DashboardGateVerdict = { ok: true } | { ok: false; status: 401 | 403; error: string };
