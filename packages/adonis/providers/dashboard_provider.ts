@@ -145,7 +145,12 @@ export default class DashboardProvider {
     actorResolver: ActorResolver | undefined,
     authorize?: AgentDashboardAuthorize,
   ): Promise<boolean> {
-    const verdict = await evaluateDashboardGate(ctx, actorResolver, authorize);
+    const verdict = await evaluateDashboardGate(
+      ctx,
+      actorResolver,
+      authorize,
+      !this.app.inProduction,
+    );
     if (!verdict.ok) {
       ctx.response.status(verdict.status).json({ error: verdict.error });
       return false;

@@ -27,13 +27,26 @@ describe('evaluateDashboardGate', () => {
     });
   });
 
-  it('denies with 401 when the resolver throws (unauthenticated)', async () => {
+  it('denies with 401 when the resolver throws (unauthenticated), generic message by default', async () => {
     const resolver: ActorResolver = {
       resolve: async () => {
         throw new Error('no session');
       },
     };
     expect(await evaluateDashboardGate(ctx, resolver)).toEqual({
+      ok: false,
+      status: 401,
+      error: 'unauthorized',
+    });
+  });
+
+  it('surfaces the resolver-thrown message only when debug is true', async () => {
+    const resolver: ActorResolver = {
+      resolve: async () => {
+        throw new Error('no session');
+      },
+    };
+    expect(await evaluateDashboardGate(ctx, resolver, undefined, true)).toEqual({
       ok: false,
       status: 401,
       error: 'no session',
@@ -62,10 +75,22 @@ describe('evaluateDashboardGate', () => {
     expect(verdict).toEqual({ ok: false, status: 403, error: 'forbidden' });
   });
 
-  it('denies with 403 when authorize throws', async () => {
+  it('denies with 403 when authorize throws, generic message by default', async () => {
     const verdict = await evaluateDashboardGate(ctx, resolverFor(admin), () => {
       throw new Error('policy blew up');
     });
+    expect(verdict).toEqual({ ok: false, status: 403, error: 'forbidden' });
+  });
+
+  it('surfaces the authorize-thrown message only when debug is true', async () => {
+    const verdict = await evaluateDashboardGate(
+      ctx,
+      resolverFor(admin),
+      () => {
+        throw new Error('policy blew up');
+      },
+      true,
+    );
     expect(verdict).toEqual({ ok: false, status: 403, error: 'policy blew up' });
   });
 

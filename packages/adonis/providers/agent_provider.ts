@@ -813,9 +813,13 @@ export default class AgentProvider {
       }
       return actor;
     } catch (error) {
+      // The resolver's `.message` is meant for the developer wiring `actorResolver`, not the caller —
+      // in production, every request here is untrusted by definition, so the detail stays server-side
+      // (dev/test keeps it, matching `evaluateDashboardGate`/`evaluateGovernanceGate`'s `debug` knob).
+      const debug = !this.app.inProduction;
       ctx.response
         .status(401)
-        .json({ error: error instanceof Error ? error.message : 'unauthorized' });
+        .json({ error: debug && error instanceof Error ? error.message : 'unauthorized' });
       return null;
     }
   }
@@ -833,7 +837,12 @@ export default class AgentProvider {
   ) {
     const actor = await this.#resolveActor(ctx, actorResolver);
     if (actor === null) return null;
-    const verdict = await evaluateGovernanceGate(actor, ctx, governanceAuthorize);
+    const verdict = await evaluateGovernanceGate(
+      actor,
+      ctx,
+      governanceAuthorize,
+      !this.app.inProduction,
+    );
     if (!verdict.ok) {
       ctx.response.status(verdict.status).json({ error: verdict.error });
       return null;
@@ -859,7 +868,9 @@ export default class AgentProvider {
   ): Promise<boolean> {
     let privileged = false;
     if (governanceAuthorize !== undefined) {
-      privileged = (await evaluateGovernanceGate(actor, ctx, governanceAuthorize)).ok;
+      privileged = (
+        await evaluateGovernanceGate(actor, ctx, governanceAuthorize, !this.app.inProduction)
+      ).ok;
     }
     const verdict = evaluateOwnership(actor.id, ownerRef, privileged);
     if (!verdict.ok) {

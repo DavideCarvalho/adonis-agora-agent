@@ -24,11 +24,23 @@ export type DashboardGateVerdict = { ok: true } | { ok: false; status: 401 | 403
  *
  * Omitting BOTH the resolver and `authorize` would expose the shell to any request; the provider is
  * expected to short-circuit on a missing resolver via the `401` here.
+ *
+ * `debug` controls whether a THROWN error's `.message` reaches the client, for the two per-request
+ * failure paths (the resolver rejecting a caller, `authorize` throwing): the resolver's job is
+ * exactly to reject unauthenticated/unauthorized callers, and its message is meant for the developer
+ * wiring the config (e.g. `AuthActorResolver`'s "no authenticated user on ctx.auth.user...") — not
+ * for whoever is making the request, which in production is an untrusted, possibly anonymous,
+ * possibly adversarial caller. Default `false` (generic `'unauthorized'`/`'forbidden'`, matching
+ * `@adonis-agora/durable`'s dashboard convention of a uniform message on every credential failure);
+ * the provider passes `!app.inProduction` so local/dev boots keep the diagnostic detail. The "no
+ * actor resolver configured" branch is unaffected — that is a static config error, not a per-request
+ * one, identical for every caller, and useful for the operator to see even in production.
  */
 export async function evaluateDashboardGate(
   ctx: HttpContext,
   actorResolver: ActorResolver | undefined,
   authorize?: AgentDashboardAuthorize,
+  debug = false,
 ): Promise<DashboardGateVerdict> {
   if (actorResolver === undefined) {
     return { ok: false, status: 401, error: 'no actor resolver configured' };
@@ -40,7 +52,7 @@ export async function evaluateDashboardGate(
     return {
       ok: false,
       status: 401,
-      error: error instanceof Error ? error.message : 'unauthorized',
+      error: debug && error instanceof Error ? error.message : 'unauthorized',
     };
   }
   if (authorize !== undefined) {
@@ -52,7 +64,7 @@ export async function evaluateDashboardGate(
       return {
         ok: false,
         status: 403,
-        error: error instanceof Error ? error.message : 'forbidden',
+        error: debug && error instanceof Error ? error.message : 'forbidden',
       };
     }
   }

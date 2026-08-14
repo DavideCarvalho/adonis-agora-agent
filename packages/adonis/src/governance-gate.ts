@@ -36,7 +36,12 @@ export interface GovernanceGateVerdict {
  * - No `authorize` configured → `{ ok: true }` (see the caveat below — the provider never gets here).
  * - `authorize` returns truthy → `{ ok: true }`.
  * - `authorize` returns falsy → `{ ok: false, status: 403 }`.
- * - `authorize` throws → `{ ok: false, status: 403 }` (fail-closed; the error message is surfaced).
+ * - `authorize` throws → `{ ok: false, status: 403 }` (fail-closed). `debug` decides whether the
+ *   thrown `.message` reaches the client (`true`, e.g. local dev — the message is meant for whoever
+ *   is wiring `governanceAuthorize`, useful to see while testing it) or a generic `'forbidden'`
+ *   (`false`, the default — this predicate runs on every request from a caller who is, by
+ *   definition, not yet proven trustworthy; matches `@adonis-agora/durable`'s dashboard convention of
+ *   a uniform message on every credential failure). The provider passes `!app.inProduction`.
  *
  * The `undefined` branch is a pure-function convenience, NOT a claim that governance is readable
  * without a gate. Neither provider caller can reach it: `#resolveGovernanceActor` backs the
@@ -53,6 +58,7 @@ export async function evaluateGovernanceGate(
   actor: Actor,
   ctx: HttpContext,
   authorize?: AgentGovernanceAuthorize,
+  debug = false,
 ): Promise<GovernanceGateVerdict> {
   if (authorize === undefined) return { ok: true, status: 200 };
   try {
@@ -62,7 +68,7 @@ export async function evaluateGovernanceGate(
     return {
       ok: false,
       status: 403,
-      error: error instanceof Error ? error.message : 'forbidden',
+      error: debug && error instanceof Error ? error.message : 'forbidden',
     };
   }
 }

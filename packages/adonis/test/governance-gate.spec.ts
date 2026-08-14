@@ -51,10 +51,22 @@ describe('evaluateGovernanceGate', () => {
     expect(seenCtx).toBe(ctx);
   });
 
-  it('fails closed (403) when authorize throws, surfacing the message', async () => {
+  it('fails closed (403) when authorize throws, generic message by default', async () => {
     const verdict = await evaluateGovernanceGate(member, ctx, () => {
       throw new Error('boom');
     });
+    expect(verdict).toEqual({ ok: false, status: 403, error: 'forbidden' });
+  });
+
+  it('surfaces the thrown message only when debug is true', async () => {
+    const verdict = await evaluateGovernanceGate(
+      member,
+      ctx,
+      () => {
+        throw new Error('boom');
+      },
+      true,
+    );
     expect(verdict).toEqual({ ok: false, status: 403, error: 'boom' });
   });
 
