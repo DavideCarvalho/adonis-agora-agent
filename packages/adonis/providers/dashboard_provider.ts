@@ -6,6 +6,7 @@ import type { ApplicationService } from '@adonisjs/core/types';
 import {
   type AgentDashboardAuthorize,
   type AgentDashboardConfig,
+  type AgentDashboardUnauthenticatedHook,
   apiBaseFor,
   contentTypeFor,
   decideDashboardMount,
@@ -118,14 +119,14 @@ export default class DashboardProvider {
     // `<base href="${mount}/">`, so the SPA's relative `./assets/*` URLs resolve against the mount
     // directory regardless of whether the browser's URL carries a trailing slash.
     router.get(mount, async (ctx) => {
-      if (!(await this.#gate(ctx, actorResolver, authorize))) return;
+      if (!(await this.#gate(ctx, actorResolver, authorize, dashboardConfig.onUnauthenticated))) return;
       await this.#sendIndex(ctx, apiBase, mount);
     });
 
     // Built assets (JS/CSS/fonts/...), with an index fallback for any unmatched path so the
     // client-rendered console still boots on a deep link.
     router.get(`${mount}/*`, async (ctx) => {
-      if (!(await this.#gate(ctx, actorResolver, authorize))) return;
+      if (!(await this.#gate(ctx, actorResolver, authorize, dashboardConfig.onUnauthenticated))) return;
       const segments = safeAssetSegments(ctx.params['*']);
       if (segments === null) {
         return ctx.response.status(400).json({ error: 'bad asset path' });
@@ -138,20 +139,27 @@ export default class DashboardProvider {
    * Resolve the actor through the agent config's resolver, mirroring the governance routes, then run
    * the optional `authorize` gate. Returns `true` to proceed; replies `401` on a missing/failed
    * resolver and `403` when `authorize` denies the resolved actor. The decision itself lives in the
-   * router-free {@link evaluateDashboardGate} so it can be unit tested; this only writes the response.
+   * router-free {@link evaluateDashboardGate} so it can be unit tested; this only writes the response —
+   * and, mirroring `@adonis-agora/durable`'s dashboard, ONLY when neither `onUnauthenticated` nor
+   * `authorize` already answered the request themselves: if either set a `location` header (typically
+   * via `ctx.response.redirect(...)`, e.g. to the app's own login page), that redirect stands and this
+   * skips writing its own `401`/`403` JSON on top of it.
    */
   async #gate(
     ctx: HttpContext,
     actorResolver: ActorResolver | undefined,
     authorize?: AgentDashboardAuthorize,
+    onUnauthenticated?: AgentDashboardUnauthenticatedHook,
   ): Promise<boolean> {
     const verdict = await evaluateDashboardGate(
       ctx,
       actorResolver,
       authorize,
       !this.app.inProduction,
+      onUnauthenticated,
     );
     if (!verdict.ok) {
+      if (ctx.response.getHeader('location')) return false;
       ctx.response.status(verdict.status).json({ error: verdict.error });
       return false;
     }

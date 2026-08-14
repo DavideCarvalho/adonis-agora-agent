@@ -1,6 +1,6 @@
 import type { HttpContext } from '@adonisjs/core/http';
 import type { ActorResolver } from '../spi/actor-resolver.js';
-import type { AgentDashboardAuthorize } from './define_config.js';
+import type { AgentDashboardAuthorize, AgentDashboardUnauthenticatedHook } from './define_config.js';
 
 /** The outcome of the dashboard access gate: proceed, or deny with an HTTP status + message. */
 export type DashboardGateVerdict = { ok: true } | { ok: false; status: 401 | 403; error: string };
@@ -35,20 +35,29 @@ export type DashboardGateVerdict = { ok: true } | { ok: false; status: 401 | 403
  * the provider passes `!app.inProduction` so local/dev boots keep the diagnostic detail. The "no
  * actor resolver configured" branch is unaffected — that is a static config error, not a per-request
  * one, identical for every caller, and useful for the operator to see even in production.
+ *
+ * `onUnauthenticated`, when set, runs on EITHER failure-to-resolve branch (no resolver configured, or
+ * `resolve(ctx)` threw) before this returns its verdict — it never sees a fabricated actor, since
+ * there isn't one. The provider (not this function) is what actually decides whether to skip its
+ * default JSON write in favour of whatever the hook did to `ctx.response` (redirect, custom render);
+ * this function only guarantees the hook runs before the verdict is handed back.
  */
 export async function evaluateDashboardGate(
   ctx: HttpContext,
   actorResolver: ActorResolver | undefined,
   authorize?: AgentDashboardAuthorize,
   debug = false,
+  onUnauthenticated?: AgentDashboardUnauthenticatedHook,
 ): Promise<DashboardGateVerdict> {
   if (actorResolver === undefined) {
+    await onUnauthenticated?.(ctx);
     return { ok: false, status: 401, error: 'no actor resolver configured' };
   }
   let actor: Awaited<ReturnType<ActorResolver['resolve']>>;
   try {
     actor = await actorResolver.resolve(ctx);
   } catch (error) {
+    await onUnauthenticated?.(ctx);
     return {
       ok: false,
       status: 401,

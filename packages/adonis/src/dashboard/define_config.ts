@@ -14,6 +14,21 @@ export type AgentDashboardAuthorize = (
 ) => boolean | Promise<boolean>;
 
 /**
+ * Runs when the agent config's `actorResolver` itself rejects the caller — no resolver configured, or
+ * `resolve(ctx)` threw (e.g. `AuthActorResolver` over an anonymous `ctx.auth`) — so there is no
+ * resolved {@link Actor} to hand to {@link AgentDashboardAuthorize}. Deliberately ctx-only, never a
+ * fabricated actor: the resolver's whole contract is "never invent an identity", and this hook must
+ * not undermine that.
+ *
+ * Called BEFORE the gate writes its default `401 { error }` JSON. To show something other than that
+ * JSON — a redirect to the app's own login page, most commonly — set a response header inside this
+ * hook (typically via `ctx.response.redirect(...)`); the gate detects the `location` header and skips
+ * its own write. Anything else (return normally without touching the response) falls through to the
+ * default JSON, so this is safe to omit or to use only for side effects (e.g. logging).
+ */
+export type AgentDashboardUnauthenticatedHook = (ctx: HttpContext) => void | Promise<void>;
+
+/**
  * Optional `config('agent').dashboard` block. The dashboard reuses the agent config's `path` and
  * `actorResolver` (so it sits behind the SAME actor gating as the governance routes); this block
  * toggles it on/off, optionally overrides the mount path, and optionally adds an `authorize` gate.
@@ -39,12 +54,20 @@ export interface AgentDashboardConfig {
    * `governanceAuthorize`.
    */
   authorize?: AgentDashboardAuthorize;
+  /**
+   * Runs when the actor resolver itself rejects the caller (no resolver, or `resolve(ctx)` threw) —
+   * the one denial `authorize` never sees, since there is no resolved actor to hand it. Set a
+   * response header inside (e.g. `ctx.response.redirect('/login')`) to replace the default
+   * `401 { error }` JSON with a custom page/redirect. See {@link AgentDashboardUnauthenticatedHook}.
+   */
+  onUnauthenticated?: AgentDashboardUnauthenticatedHook;
 }
 
 export interface ResolvedAgentDashboardConfig {
   enabled: boolean;
   path?: string;
   authorize?: AgentDashboardAuthorize;
+  onUnauthenticated?: AgentDashboardUnauthenticatedHook;
 }
 
 /** Fill defaults for the optional dashboard config block. */
@@ -54,6 +77,7 @@ export function resolveDashboardConfig(
   const resolved: ResolvedAgentDashboardConfig = { enabled: config?.enabled ?? true };
   if (config?.path !== undefined) resolved.path = config.path;
   if (config?.authorize !== undefined) resolved.authorize = config.authorize;
+  if (config?.onUnauthenticated !== undefined) resolved.onUnauthenticated = config.onUnauthenticated;
   return resolved;
 }
 

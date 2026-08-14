@@ -4,7 +4,10 @@ import type { AddressInfo } from 'node:net';
 import { IgnitorFactory } from '@adonisjs/core/factories/core/ignitor';
 import type { HttpContext } from '@adonisjs/core/http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentDashboardAuthorize } from '../src/dashboard/index.js';
+import type {
+  AgentDashboardAuthorize,
+  AgentDashboardUnauthenticatedHook,
+} from '../src/dashboard/index.js';
 import type { AgentGovernanceAuthorize } from '../src/governance-gate.js';
 
 /**
@@ -41,6 +44,7 @@ interface BootedApp {
 async function bootApp(options: {
   governanceAuthorize?: AgentGovernanceAuthorize;
   dashboardAuthorize?: AgentDashboardAuthorize;
+  dashboardOnUnauthenticated?: AgentDashboardUnauthenticatedHook;
   dashboardEnabled?: boolean;
   governanceQueries?: false;
 }): Promise<BootedApp> {
@@ -64,6 +68,9 @@ async function bootApp(options: {
               : {}),
             ...(options.dashboardAuthorize !== undefined
               ? { authorize: options.dashboardAuthorize }
+              : {}),
+            ...(options.dashboardOnUnauthenticated !== undefined
+              ? { onUnauthenticated: options.dashboardOnUnauthenticated }
               : {}),
           },
         },
@@ -172,5 +179,52 @@ describe('embedded dashboard_provider mount vs. the agent governance gate', () =
     expect(mine).toHaveLength(1);
     expect(mine[0]).toContain('governanceQueries');
     expect(mine[0]).not.toContain('no `governanceAuthorize` gate is configured');
+  });
+
+  it('redirects instead of the default 401 JSON when onUnauthenticated sets one (no actor resolved)', async () => {
+    booted = await bootApp({
+      governanceAuthorize: adminOnly,
+      dashboardOnUnauthenticated: (ctx) => {
+        ctx.response.redirect().toPath('/login');
+      },
+    });
+
+    // No x-actor-id header → headerActorResolver throws → onUnauthenticated runs.
+    const response = await fetch(`${booted.url}/agent/dashboard`, { redirect: 'manual' });
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe('/login');
+  });
+
+  it('falls back to the default 401 JSON when onUnauthenticated does not touch the response', async () => {
+    booted = await bootApp({
+      governanceAuthorize: adminOnly,
+      dashboardOnUnauthenticated: () => {
+        /* logging only, no redirect */
+      },
+    });
+
+    const response = await fetch(`${booted.url}/agent/dashboard`, { redirect: 'manual' });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'unauthorized' });
+  });
+
+  it('redirects instead of the default 403 JSON when authorize sets one (actor resolved, denied)', async () => {
+    booted = await bootApp({
+      governanceAuthorize: adminOnly,
+      dashboardAuthorize: (actor, ctx) => {
+        if (!adminOnly(actor)) {
+          ctx.response.redirect().toPath('/acesso-negado');
+          return false;
+        }
+        return true;
+      },
+    });
+
+    const response = await fetch(`${booted.url}/agent/dashboard`, {
+      redirect: 'manual',
+      headers: { 'x-actor-id': 'patient-1', 'x-actor-roles': 'PATIENT' },
+    });
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe('/acesso-negado');
   });
 });

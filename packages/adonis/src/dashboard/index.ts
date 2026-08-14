@@ -17,6 +17,7 @@
 export {
   type AgentDashboardAuthorize,
   type AgentDashboardConfig,
+  type AgentDashboardUnauthenticatedHook,
   type DashboardMountDecision,
   type ResolvedAgentDashboardConfig,
   decideDashboardMount,

@@ -102,6 +102,36 @@ describe('evaluateDashboardGate', () => {
     });
     expect(seen).toEqual(admin);
   });
+
+  it('runs onUnauthenticated when no resolver is configured, before returning the verdict', async () => {
+    let called = false;
+    const verdict = await evaluateDashboardGate(ctx, undefined, undefined, false, async () => {
+      called = true;
+    });
+    expect(called).toBe(true);
+    expect(verdict).toEqual({ ok: false, status: 401, error: 'no actor resolver configured' });
+  });
+
+  it('runs onUnauthenticated when the resolver throws, passing ctx (never a fabricated actor)', async () => {
+    let seenCtx: unknown;
+    const resolver: ActorResolver = {
+      resolve: async () => {
+        throw new Error('no session');
+      },
+    };
+    await evaluateDashboardGate(ctx, resolver, undefined, false, async (c) => {
+      seenCtx = c;
+    });
+    expect(seenCtx).toBe(ctx);
+  });
+
+  it('does NOT run onUnauthenticated when the resolver succeeds', async () => {
+    let called = false;
+    await evaluateDashboardGate(ctx, resolverFor(admin), undefined, false, async () => {
+      called = true;
+    });
+    expect(called).toBe(false);
+  });
 });
 
 describe('resolveDashboardConfig — authorize passthrough', () => {
