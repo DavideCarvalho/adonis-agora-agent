@@ -36,7 +36,7 @@ importers:
   packages/adonis:
     dependencies:
       '@adonisjs/redis':
-        specifier: ^9.2.0
+        specifier: ^9.2.0 || ^10.0.0
         version: 9.2.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2)
       '@modelcontextprotocol/sdk':
         specifier: 1.30.0
