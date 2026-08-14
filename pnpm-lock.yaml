@@ -52,8 +52,8 @@ importers:
         specifier: 0.2.5
         version: 0.2.5(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/redis@9.2.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2))(ioredis@5.11.1(supports-color@10.2.2))
       '@adonis-agora/durable':
-        specifier: 0.21.0
-        version: 0.21.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@11.10.0)(luxon@3.7.2)(supports-color@10.2.2))(@adonisjs/redis@9.2.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2))(ioredis@5.11.1(supports-color@10.2.2))(vitest@3.2.7(@types/node@22.20.1)(jsdom@25.0.1(supports-color@10.2.2))(supports-color@10.2.2))
+        specifier: 0.23.0
+        version: 0.23.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@11.10.0)(luxon@3.7.2)(supports-color@10.2.2))(@adonisjs/redis@9.2.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2))(ioredis@5.11.1(supports-color@10.2.2))(vitest@3.2.7(@types/node@22.20.1)(jsdom@25.0.1(supports-color@10.2.2))(supports-color@10.2.2))
       '@adonis-agora/telescope':
         specifier: 0.7.0
         version: 0.7.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@11.10.0)(luxon@3.7.2)(supports-color@10.2.2))
@@ -179,9 +179,9 @@ packages:
       ioredis:
         optional: true
 
-  '@adonis-agora/durable@0.21.0':
-    resolution: {integrity: sha512-a5+M8IDh2K8XMu9dl4GA1iY6mQ3UGpOqUFsQtUYz+oZb/BYB4CpY81jqI8iQoYgPgyteu6i9cnd/MktQXqO6dQ==}
-    engines: {node: '>=20.6.0 <23'}
+  '@adonis-agora/durable@0.23.0':
+    resolution: {integrity: sha512-a9Qeg3IuWF5z5yMPcxlJ2FFU3gVcY+iBO3KlGhegqNKwRdt/8fNUAsFiCFf2+kfqjraXBNImqXAw9eS3/SVoqA==}
+    engines: {node: v22.23.2}
     peerDependencies:
       '@adonisjs/assembler': ^8.4.0
       '@adonisjs/core': ^7.3.0
@@ -3336,7 +3336,7 @@ snapshots:
       '@adonisjs/redis': 9.2.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2)
       ioredis: 5.11.1(supports-color@10.2.2)
 
-  '@adonis-agora/durable@0.21.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@11.10.0)(luxon@3.7.2)(supports-color@10.2.2))(@adonisjs/redis@9.2.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2))(ioredis@5.11.1(supports-color@10.2.2))(vitest@3.2.7(@types/node@22.20.1)(jsdom@25.0.1(supports-color@10.2.2))(supports-color@10.2.2))':
+  '@adonis-agora/durable@0.23.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.4.0(typescript@5.9.3))(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@11.10.0)(luxon@3.7.2)(supports-color@10.2.2))(@adonisjs/redis@9.2.0(@adonisjs/core@7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2))(ioredis@5.11.1(supports-color@10.2.2))(vitest@3.2.7(@types/node@22.20.1)(jsdom@25.0.1(supports-color@10.2.2))(supports-color@10.2.2))':
     dependencies:
       '@adonisjs/core': 7.4.0(@adonisjs/assembler@8.4.0(typescript@5.9.3))(supports-color@10.2.2)(youch@4.1.1)
       zod: 3.25.76
