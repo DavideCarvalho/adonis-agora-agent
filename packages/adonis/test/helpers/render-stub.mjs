@@ -17,8 +17,11 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { AppFactory } from '@adonisjs/core/factories/app';
 
-/** Absolute path to this package's published stubs directory. */
+/** Absolute path to the SOURCE stubs directory. */
 export const stubsRoot = fileURLToPath(new URL('../../stubs/', import.meta.url));
+
+/** Absolute path to the BUILT stubs directory — the copy `copy:stubs` produces and consumers install. */
+export const distStubsRoot = fileURLToPath(new URL('../../dist/stubs/', import.meta.url));
 
 /**
  * The stubs `configure.ts` publishes, in the order it publishes them. Kept in sync with `configure.ts`
@@ -48,10 +51,10 @@ async function bootApp() {
  * Render one stub the way `configure` does. Returns `{ contents, destination }`.
  * Throws whatever the real engine throws — which is the point.
  */
-export async function renderStub(stubPath, stubState = {}) {
+export async function renderStub(stubPath, stubState = {}, source = stubsRoot) {
   const { app, appRoot } = await bootApp();
   try {
-    const stub = await (await app.stubs.create()).build(stubPath, { source: stubsRoot });
+    const stub = await (await app.stubs.create()).build(stubPath, { source });
     const prepared = await stub.prepare(stubState);
     return { contents: prepared.contents, destination: prepared.destination };
   } finally {
@@ -59,13 +62,16 @@ export async function renderStub(stubPath, stubState = {}) {
   }
 }
 
-/** Render every published stub in one booted app. Returns a `Map<stubPath, { contents, destination }>`. */
-export async function renderAllStubs(stubState = {}) {
+/**
+ * Render every published stub in one booted app. Returns a `Map<stubPath, { contents, destination }>`.
+ * Pass `distStubsRoot` as `source` to render what was actually BUILT rather than what is in `stubs/`.
+ */
+export async function renderAllStubs(stubState = {}, source = stubsRoot) {
   const { app, appRoot } = await bootApp();
   try {
     const rendered = new Map();
     for (const stubPath of PUBLISHED_STUBS) {
-      const stub = await (await app.stubs.create()).build(stubPath, { source: stubsRoot });
+      const stub = await (await app.stubs.create()).build(stubPath, { source });
       const prepared = await stub.prepare(stubState);
       rendered.set(stubPath, { contents: prepared.contents, destination: prepared.destination });
     }
