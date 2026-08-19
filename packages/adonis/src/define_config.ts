@@ -1,4 +1,5 @@
 import type { BrandedFunctionalTool } from './ai-tool-ref.js';
+import type { AgentDashboardConfig } from './dashboard/define_config.js';
 import type { AgentGovernanceAuthorize } from './governance-gate.js';
 import type { ActorDirectory } from './spi/actor-directory.js';
 import type { ActorResolver } from './spi/actor-resolver.js';
@@ -170,7 +171,13 @@ export interface AgentConfig {
   attachmentStaging?: AttachmentStagingStore | AttachmentStagingFactory;
   /** Per-file byte cap the upload route enforces. Default 20 MiB. */
   attachmentMaxBytes?: number;
-  /** Allowed upload content types. Default: common image types + `application/pdf` + `text/*`. */
+  /**
+   * Allowed upload content types, matched EXACTLY (no wildcards, no `text/*` prefix rule). Default:
+   * `['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf', 'text/plain',
+   * 'text/csv']` — what multimodal providers commonly accept as native image/file parts. Anything
+   * else, `text/markdown` included, is rejected with `415`. Passing this REPLACES the default list
+   * rather than extending it, so spread the types you still want.
+   */
   attachmentAllowedContentTypes?: string[];
   /**
    * Tool authorization gate. Defaults to `DefaultToolAuthorizer` (fail-closed, ADMIN-only; role-set
@@ -222,6 +229,17 @@ export interface AgentConfig {
   toolTransientRetry?: ToolTransientRetrySetting;
   /** Emit `agora:agent:*` diagnostics events when `@adonis-agora/diagnostics` is installed. Default true. */
   emitDiagnostics?: boolean;
+  /**
+   * The bundled governance console (`@adonis-agora/agent/dashboard_provider`). Read at
+   * `agent.dashboard`, so it belongs in this same `config/agent.ts` object rather than a file of its
+   * own. Defaults to `{ enabled: true }`, mounting the SPA at `<path>/dashboard`.
+   *
+   * The console is NOT mounted unless {@link AgentConfig.governanceAuthorize} is set — it reads the
+   * same cross-actor governance data those routes serve — and it refuses to mount when
+   * `governanceQueries: false` explicitly turns the read-model off. Both refusals log a warning
+   * naming the responsible knob.
+   */
+  dashboard?: AgentDashboardConfig;
 }
 
 /** Identity helper giving `config/agent.ts` full type-checking. */
