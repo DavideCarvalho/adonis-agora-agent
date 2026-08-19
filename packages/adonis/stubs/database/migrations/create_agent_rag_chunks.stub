@@ -2,37 +2,42 @@
   exports({ to: app.migrationsPath(`${new Date().getTime()}_create_agent_rag_chunks.ts`) })
 }}}
 import { BaseSchema } from '@adonisjs/lucid/schema'
+import db from '@adonisjs/lucid/services/db'
+import { PgVectorStore } from '@adonis-agora/agent'
 
 /**
  * The pgvector chunk table for the @adonis-agora/agent `retrievers.pgvector({...})` store: one row per
  * embedded chunk (id `${documentId}#<n>`), the chunk text, an optional citation source, a `jsonb`
  * metadata column filtered with `@>`, and the `vector(N)` embedding ranked with the `<=>`/`<->`/`<#>`
- * operators. Requires the pgvector extension (`CREATE EXTENSION vector`) — Postgres only.
+ * operators. Requires the pgvector extension — Postgres only. Delete this file if you do not use
+ * pgvector RAG.
  *
- * Set `DIMENSION` to your embedding model's width (e.g. 1536 for text-embedding-3-small) and `OPCLASS`
- * to the index operator class matching the store's metric: `vector_cosine_ops` (default),
- * `vector_l2_ops`, or `vector_ip_ops`.
+ * Like the agent tables migration, this DELEGATES rather than copying DDL: `PgVectorStore` owns the
+ * column names and the index operator class its own queries depend on, and it exposes the same
+ * provisioning the store runs for itself under `ensureSchema: true`. Every statement is
+ * `IF NOT EXISTS`, so this is safe against a database that already has the table.
+ *
+ * SET THESE to match your retriever config in `config/agent.ts` — they must agree, or the store will
+ * query a table shaped differently from the one this created:
+ *   - `DIMENSION` — your embedding model's width (1536 for text-embedding-3-small).
+ *   - `METRIC` — 'cosine' (default), 'l2', or 'inner'. Picks the index operator class.
+ *   - `TABLE` — only if you overrode `table` on the retriever.
  */
 const TABLE = 'agent_rag_chunks'
 const DIMENSION = 1536
-const OPCLASS = 'vector_cosine_ops'
+const METRIC = 'cosine'
 
 export default class extends BaseSchema {
+  /** Same reason as the agent tables migration: the DDL runs on the manager's own pooled connection. */
+  static disableTransactions = true
+
   async up() {
-    this.schema.raw('CREATE EXTENSION IF NOT EXISTS vector')
-
-    this.schema.createTable(TABLE, (table) => {
-      table.text('id').primary()
-      table.text('text').notNullable()
-      table.text('source')
-      table.jsonb('metadata')
-      table.specificType('embedding', `vector(${DIMENSION})`).notNullable()
+    const store = new PgVectorStore(db.connection(this.db.connectionName), {
+      table: TABLE,
+      dimension: DIMENSION,
+      metric: METRIC,
     })
-
-    // Approximate-nearest-neighbour index for the configured metric. Drop it to fall back to an exact scan.
-    this.schema.raw(
-      `CREATE INDEX IF NOT EXISTS ${TABLE}_embedding_idx ON ${TABLE} USING hnsw (embedding ${OPCLASS})`
-    )
+    await store.ensureSchema()
   }
 
   async down() {

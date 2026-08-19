@@ -243,8 +243,8 @@ It reads the same store as the governance inbox — `pendingApprovals({ actor })
 
 Both runners record each run (turn) to an `agent_run` table through `store.recordRunStart(...)` / `recordRunEnd(...)`, tracked through `running → completed | failed | cancelled` with `stepCount`, token totals, an `error`, and a `durable` flag (true under the [durable runner](/docs/agent/durability/durable-runner)). A run's messages, tool calls, and usage back-reference its `run_id`.
 
-<Callout type="info" title="Run tracking is an additive migration">
-`node ace configure @adonis-agora/agent` publishes a `create_agent_run_tracking` migration alongside the core tables — the `agent_run` table plus the `run_id` back-references. Run it after the base migration. Adapters backed by a store without run recording return an empty page / `null` / zeros from the run-lifecycle methods, so the surface degrades gracefully.
+<Callout type="info" title="The run tables come with the rest">
+`agent_run` and the `run_id` back-references are part of the one `create_agent_tables` migration — there is no separate run-tracking migration to remember. On a database provisioned before run tracking existed, that migration ALTERs the missing `run_id` columns in rather than skipping them. Adapters backed by a store without run recording return an empty page / `null` / zeros from the run-lifecycle methods, so the surface degrades gracefully.
 </Callout>
 
 ## Actor labels

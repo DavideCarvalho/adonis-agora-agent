@@ -2,112 +2,48 @@
   exports({ to: app.migrationsPath(`${new Date().getTime()}_create_agent_tables.ts`) })
 }}}
 import { BaseSchema } from '@adonisjs/lucid/schema'
+import db from '@adonisjs/lucid/services/db'
+import { createAgentTables, dropAgentTables } from '@adonis-agora/agent'
 
 /**
- * The five tables for the @adonis-agora/agent `lucid` store: threads, messages, tool calls, token
- * usage and model pricing. JSON payloads (tool calls/results, follow-ups, usage, tool input/output)
- * are stored as TEXT — the store (de)serializes them — booleans as INTEGER (0/1), and timestamps as
- * epoch-ms integers, so the schema is portable across SQLite / Postgres / MySQL. The `agent_tool_call`
- * primary key is the model-supplied `toolCallId`, not a generated id.
+ * The six tables for the @adonis-agora/agent `lucid` store: threads, messages, tool calls, token
+ * usage, model pricing, and the run lifecycle — plus their indexes.
+ *
+ * This migration DELEGATES to the library instead of reproducing its DDL. The schema belongs to the
+ * library: `LucidAgentStore`, the pricing store and the governance read-model all decide together what
+ * columns they read and write, so a hand-copied snapshot here can only ever be right until the next
+ * release. It was already wrong in two ways. It reproduced `createTable(...)` with no existence guard,
+ * which THROWS on a database where the tables are already there — and they usually are, because
+ * `autoCreateTables` defaults to `true` and any of those three stores provisions the shared schema on
+ * its first use. And it took two files to say what the library says in one: a second additive migration
+ * existed purely to ALTER in the `run_id` columns this one had been written before.
+ *
+ * `createAgentTables` is idempotent (`CREATE TABLE IF NOT EXISTS`) and additive-only: it creates what
+ * is missing and ALTERs the `run_id` columns into a database that predates run tracking. So it is safe
+ * against an empty database, against one the library already auto-created, and against one left over
+ * from an older version — which is exactly the set of states a real app is in.
+ *
+ * `db` (the `Database` manager from `@adonisjs/lucid/services/db`) rather than `this.db`: the manager
+ * checks out its own connection from the pool, which is what keeps the DDL out of the migrator's
+ * transaction (see `disableTransactions` below). `this.db` still supplies the connection NAME, so
+ * `node ace migration:run --connection=x` provisions the tables on connection `x` and not on the default.
  */
 export default class extends BaseSchema {
+  /**
+   * REQUIRED, not a preference. The DDL below runs on a connection the `Database` manager checks out
+   * itself — it is not part of the transaction the migrator would otherwise open for this migration.
+   * With `pool: { max: 1 }` (Adonis's own SQLite guidance) that transaction would hold the only
+   * connection while `createAgentTables` waited for a free one, and the migration would hang until the
+   * acquire timeout. Nothing is lost by opting out: the statements were never inside that transaction
+   * anyway, and re-running an interrupted `createAgentTables` is a no-op.
+   */
+  static disableTransactions = true
+
   async up() {
-    this.schema.createTable('agent_thread', (table) => {
-      table.string('id').primary()
-      table.string('actor_ref').notNullable()
-      table.string('tenant_ref')
-      table.text('title').notNullable()
-      table.string('persona').notNullable().defaultTo('default')
-      table.integer('transient').notNullable().defaultTo(0)
-      table.bigInteger('pinned_at')
-      table.text('summary')
-      table.integer('summary_message_count').notNullable().defaultTo(0)
-      table.string('active_stream_id')
-      table.bigInteger('created_at').notNullable()
-      table.bigInteger('updated_at').notNullable()
-      table.bigInteger('deleted_at')
-      table.index(['actor_ref', 'updated_at'], 'agent_thread_actor_updated_idx')
-    })
-
-    this.schema.createTable('agent_message', (table) => {
-      table.string('id').primary()
-      table
-        .string('thread_id')
-        .notNullable()
-        .references('id')
-        .inTable('agent_thread')
-        .onDelete('CASCADE')
-      table.string('role').notNullable()
-      table.text('content').notNullable()
-      table.text('tool_calls')
-      table.text('tool_results')
-      table.text('attachments')
-      table.text('follow_ups')
-      table.text('usage')
-      table.string('persona')
-      table.bigInteger('created_at').notNullable()
-      table.index(['thread_id', 'created_at'], 'agent_message_thread_created_idx')
-    })
-
-    this.schema.createTable('agent_tool_call', (table) => {
-      // PK = the model-supplied toolCallId, not a generated id.
-      table.string('id').primary()
-      table
-        .string('message_id')
-        .notNullable()
-        .references('id')
-        .inTable('agent_message')
-        .onDelete('CASCADE')
-      table.string('tool_name').notNullable()
-      table.string('tool_type').notNullable()
-      table.text('input')
-      table.text('output')
-      table.string('status').notNullable()
-      table.string('executed_by_ref')
-      table.integer('execution_ms')
-      table.text('error')
-      table.bigInteger('created_at').notNullable()
-      table.bigInteger('executed_at')
-    })
-
-    this.schema.createTable('agent_token_usage', (table) => {
-      table.string('id').primary()
-      table
-        .string('thread_id')
-        .notNullable()
-        .references('id')
-        .inTable('agent_thread')
-        .onDelete('CASCADE')
-      table.string('actor_ref').notNullable()
-      table.string('message_id')
-      table.string('model_id').notNullable()
-      table.string('purpose').notNullable()
-      table.integer('input_tokens').notNullable()
-      table.integer('output_tokens').notNullable()
-      table.integer('cache_write_tokens')
-      table.integer('cache_read_tokens')
-      table.double('cost_usd')
-      table.bigInteger('created_at').notNullable()
-      table.index(['actor_ref', 'created_at'], 'agent_token_usage_actor_created_idx')
-    })
-
-    this.schema.createTable('agent_model_pricing', (table) => {
-      table.string('id').primary()
-      table.string('model_id').notNullable()
-      table.double('input_price_per_1m').notNullable()
-      table.double('output_price_per_1m').notNullable()
-      table.double('cache_write_price_per_1m')
-      table.double('cache_read_price_per_1m')
-      table.bigInteger('effective_from').notNullable()
-      table.integer('is_current').notNullable()
-    })
+    await createAgentTables(db.connection(this.db.connectionName))
   }
 
   async down() {
-    this.schema.dropTableIfExists('agent_model_pricing')
-    this.schema.dropTableIfExists('agent_token_usage')
-    this.schema.dropTableIfExists('agent_tool_call')
-    this.schema.dropTableIfExists('agent_message')
-    this.schema.dropTableIfExists('agent_thread')
+    await dropAgentTables(db.connection(this.db.connectionName))
   }
 }

@@ -15,11 +15,10 @@ import { stubsRoot } from './stubs/main.js';
  *    runtime scan when the barrel is absent);
  * 4. publishes `config/agent.ts`;
  * 5. publishes `config/mcp.ts` (the MCP endpoint config; the MCP provider is separate);
- * 6. publishes the Lucid migration for the five agent tables (run `node ace migration:run`; delete it
- *    if you only use the in-memory store);
- * 7. publishes the additive run-tracking migration (`agent_run` table + `run_id` columns) — run it
- *    after the base migration; delete it with the base one if you only use the in-memory store;
- * 8. publishes the pgvector migration for the RAG chunk table (Postgres + pgvector only; delete it
+ * 6. publishes the Lucid migration for the six agent tables (run `node ace migration:run`; delete it
+ *    if you only use the in-memory store). It delegates to `createAgentTables`, so it is idempotent
+ *    and safe to run against a database the library already auto-created;
+ * 7. publishes the pgvector migration for the RAG chunk table (Postgres + pgvector only; delete it
  *    unless you use `retrievers.pgvector({...})`).
  */
 export async function configure(command: Configure) {
@@ -35,6 +34,5 @@ export async function configure(command: Configure) {
   await codemods.makeUsingStub(stubsRoot, 'config/agent.stub', {});
   await codemods.makeUsingStub(stubsRoot, 'config/mcp.stub', {});
   await codemods.makeUsingStub(stubsRoot, 'database/migrations/create_agent_tables.stub', {});
-  await codemods.makeUsingStub(stubsRoot, 'database/migrations/create_agent_run_tracking.stub', {});
   await codemods.makeUsingStub(stubsRoot, 'database/migrations/create_agent_rag_chunks.stub', {});
 }
