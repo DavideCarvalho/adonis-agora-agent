@@ -1,9 +1,13 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error -- plain ESM helper, shared with the .mjs child-process harnesses.
-import { PUBLISHED_STUBS, renderAllStubs, stubsRoot } from './helpers/render-stub.mjs';
+import {
+  PUBLISHED_STUBS,
+  distStubsRoot,
+  renderAllStubs,
+  stubsRoot,
+} from './helpers/render-stub.mjs';
 
 /**
  * Every stub `node ace configure` publishes must actually render through the REAL engine.
@@ -41,7 +45,9 @@ describe('every published stub renders through the real configure engine', () =>
     const rendered = await renderAllStubs();
     for (const stubPath of PUBLISHED_STUBS) {
       const output = rendered.get(stubPath);
-      expect(output, `${stubPath} did not render`).toBeDefined();
+      if (output === undefined) {
+        expect.fail(`${stubPath} did not render`);
+      }
       expect(output.contents.length, `${stubPath} rendered empty`).toBeGreaterThan(0);
       expect(output.destination, `${stubPath} has no destination`).toMatch(/\.ts$/);
     }
@@ -57,10 +63,10 @@ describe('every published stub renders through the real configure engine', () =>
       expect(contents, `${stubPath} leaked an escape into its output`).not.toContain('\\${');
     }
     // And the backticks really do survive, rather than having been quietly stripped.
-    expect(rendered.get('database/migrations/create_agent_tables.stub').contents).toContain(
+    expect(rendered.get('database/migrations/create_agent_tables.stub')?.contents).toContain(
       '`createAgentTables`',
     );
-    expect(rendered.get('database/migrations/create_agent_rag_chunks.stub').contents).toContain(
+    expect(rendered.get('database/migrations/create_agent_rag_chunks.stub')?.contents).toContain(
       '`${documentId}#<n>`',
     );
   });
@@ -83,4 +89,70 @@ describe('every published stub renders through the real configure engine', () =>
       .map((entry) => relative('.', entry).split('\\').join('/'));
     expect(onDisk.sort()).toEqual([...PUBLISHED_STUBS].sort());
   });
+});
+
+/**
+ * `dist/stubs/**` must be the same set, with the same bytes, as `stubs/**`.
+ *
+ * `copy:stubs` is a plain `cp` chain in the build script — outside the compiler's knowledge, and
+ * invisible to `assert-build-output.mjs`, which walks `package.json` `exports` and stubs are not
+ * exported. So nothing fails if it skips a file. The two config stubs are worse than the migrations:
+ * they are copied by NAME (`cp stubs/config/agent.stub …`), so a third config stub ships only if
+ * someone also remembers to edit the build script.
+ *
+ * Set equality alone would not be enough. The failure this family of bugs actually produced was a
+ * CONTENT divergence — a de-backticking pass that left the source looking fine while the published
+ * copy was the broken one. So this compares bytes, and then renders the BUILT copy through the real
+ * engine: rendering the source proves nothing about what a consumer installs.
+ */
+describe('dist/stubs is a faithful copy of stubs/', () => {
+  /** Every `.stub` under a root, as forward-slashed paths relative to it. */
+  function stubFiles(root: string): string[] {
+    return readdirSync(root, { recursive: true, encoding: 'utf8' })
+      .filter((entry) => entry.endsWith('.stub'))
+      .map((entry) => entry.split('\\').join('/'))
+      .sort();
+  }
+
+  // Same policy as the other dist-dependent specs: under CI a missing build is a failure (where
+  // `pnpm test` gates the publish), on a developer machine it is a convenience skip.
+  if (!existsSync(distStubsRoot)) {
+    if (process.env.CI) {
+      it('compares dist/stubs against stubs/', () => {
+        expect.fail(
+          `${distStubsRoot} does not exist, so this spec cannot check anything. Run \`pnpm build\` before \`pnpm test\`.`,
+        );
+      });
+    } else {
+      it.skip('dist/ does not exist — run `pnpm --filter @adonis-agora/agent build` first', () => {});
+    }
+  } else {
+    it('ships exactly the stubs that exist in source', () => {
+      expect(
+        stubFiles(distStubsRoot),
+        'dist/stubs differs from stubs/ — `copy:stubs` in package.json missed a file',
+      ).toEqual(stubFiles(stubsRoot));
+    });
+
+    it('ships them byte for byte', () => {
+      for (const file of stubFiles(stubsRoot)) {
+        expect(
+          readFileSync(join(distStubsRoot, file), 'utf8'),
+          `dist/stubs/${file} differs from the source — the published copy is the one consumers get`,
+        ).toBe(readFileSync(join(stubsRoot, file), 'utf8'));
+      }
+    });
+
+    it('renders the BUILT copy, not just the source', async () => {
+      // The source rendering above says nothing about what `node ace configure` reaches at runtime,
+      // which resolves `stubsRoot` inside `dist/`.
+      const rendered = await renderAllStubs({}, distStubsRoot);
+      for (const stubPath of PUBLISHED_STUBS) {
+        expect(
+          rendered.get(stubPath)?.contents.length,
+          `${stubPath} rendered empty from dist`,
+        ).toBeGreaterThan(0);
+      }
+    });
+  }
 });
