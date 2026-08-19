@@ -22,14 +22,14 @@ Three provider-agnostic SPIs, all exported from the package root:
 A retrieved `Passage` is `{ id, text, score, source?, metadata? }` — `source` is the human/citation-facing origin and `score` is impl-defined relevance.
 
 <Callout type="info" title="Embedding & reranker adapters are bring-your-own">
-The `EmbeddingProvider` and `Reranker` are SPIs — the bundled retrievers take whichever embedder you pass. A first-party `aiSdkEmbedding` adapter over the Vercel AI SDK's `embedMany` (and provider rerankers) are deferred this round, so wire your own `embed(...)`, or use the deterministic `FakeEmbeddingProvider` / `FakeReranker` / `inMemoryRetriever` from [`@adonis-agora/agent/testing`](/docs/agent/testing) for offline work.
+The `EmbeddingProvider` and `Reranker` are SPIs — the bundled retrievers take whichever embedder you pass. There is no first-party embedding or reranking adapter: wire your own `embed(...)` (a few lines over the Vercel AI SDK's `embedMany`, or any provider's REST API), or use the deterministic `FakeEmbeddingProvider` / `FakeReranker` / `inMemoryRetriever` from [`@adonis-agora/agent/testing`](/docs/agent/testing) for offline work.
 </Callout>
 
 ## The bundled retrievers
 
 Build one with the `retrievers` factory namespace (a lazy thunk, like `stores`):
 
-<Tabs items={['memory', 'pgvector']}>
+<Tabs items={['memory', 'pgvector', 'qdrant']}>
 
 <Tab value="memory">
 
@@ -70,6 +70,27 @@ export default defineConfig({
 ```
 
 The production store — cosine/L2/inner similarity over a `vector(N)` column via `@adonisjs/lucid` + pgvector. See [pgvector store](/docs/agent/retrieval/pgvector) for the migration and full config.
+
+</Tab>
+
+<Tab value="qdrant">
+
+```ts title="config/agent.ts"
+import { defineConfig, retrievers } from '@adonis-agora/agent'
+
+export default defineConfig({
+  model: () => aiSdkModel(openai('gpt-4o-mini')),
+  retriever: retrievers.qdrant({
+    embedder: myEmbedder,
+    url: env.get('QDRANT_URL'),
+    apiKey: env.get('QDRANT_API_KEY'),
+    collection: 'agent_rag_chunks', // default
+    dimension: 1536,
+  }),
+})
+```
+
+A managed vector database, for a corpus large enough that a column in your app's Postgres is the wrong home. See [Qdrant store](/docs/agent/retrieval/qdrant).
 
 </Tab>
 
@@ -180,7 +201,7 @@ await ingestDocuments(
 // Retrieve: pass only the tokens THIS actor holds.
 const passages = await retriever.retrieve(query, {
   topK: 5,
-  filter: { audience: ['public', ...actor.roles.map((r) => `role:${r}`), `base:${actor.tenantRef}`] },
+  filter: { audience: ['public', ...(actor.roles ?? []).map((r) => `role:${r}`), `base:${actor.tenantRef}`] },
 })
 // A chunk whose audience shares no token with the filter can never come back.
 ```
@@ -232,6 +253,27 @@ export default defineConfig({
 - With no `retrievalFilter` configured, `filter` is omitted from the options passed to `retriever.retrieve(...)` entirely — not set to `undefined` — so existing single-tenant deployments are unaffected.
 - If the hook throws, the turn fails outright rather than falling back to unfiltered retrieval — a filter that silently fails open is worse than no filter, because the operator believes it is on.
 
+## A relevance floor — `minScore`
+
+`RetrieveOptions` carries a third knob alongside `topK` and `filter`:
+
+```ts
+const passages = await retriever.retrieve(query, { topK: 5, minScore: 0.75 })
+```
+
+`minScore` drops every passage scoring below it. Scores are higher-is-more-relevant across this library — cosine *similarity* for the vector stores, a negated distance for L2 and inner product — so it reads as a similarity threshold regardless of the metric you chose.
+
+Two properties matter:
+
+- **The floor is applied before the top-K cut**, not after, so `topK: 5, minScore: 0.75` returns *up to* five passages that all clear the bar — never five passages of which two are noise. It may return zero, which is the point: for strict-grounding RAG, "I don't have a source for that" is a better answer than a confidently-cited weak match.
+- **It pushes down into the store.** The memory store filters in JS before slicing, pgvector adds a `>= ?` clause to the `WHERE` so the floor happens before `LIMIT`, and Qdrant sends it as `score_threshold`. You are not paying for passages you then discard.
+
+<Callout type="warn" title="Only the vector path honours it">
+`EmbeddingRetriever` (and its pgvector/Qdrant subclasses) thread `minScore` into the store's `search`. `KeywordRetriever`, `HybridRetriever` and `RerankingRetriever` ignore it — BM25 and RRF-fused scores are not on a similarity scale, so a threshold calibrated for cosine would mean nothing there. Filter a hybrid or reranked result yourself if you need a floor.
+
+Inject mode also never sets it: the loop passes `topK` and `filter` only, so a floor is reachable from agentic retrieval (your own tool calling `retrieve`) but not from `retrievalFilter`.
+</Callout>
+
 ## Ingestion helpers
 
 For runtime ingestion (outside the factory's boot-time `documents`), the RAG helpers are exported from the root:
@@ -247,3 +289,37 @@ await ingestDocuments(
 ```
 
 To index files from a media library automatically, see [RAG media ingestion](/docs/agent/retrieval/media-ingestion).
+
+### Chunking prose vs. chunking records
+
+`chunkText(text, options)` defaults to `chunkSize: 800`, `overlap: 100`, and a prose heuristic: it fills the window greedily, then backs up to the nearest paragraph → sentence → word boundary in the back half so a chunk rarely cuts mid-sentence, and carries `overlap` characters forward so context survives the seam.
+
+That heuristic is wrong for machine-generated text. A JSONL export, a CSV, a log dump — these have *known* record boundaries, and guessing at sentence endings inside them produces chunks that open on half a field:
+
+```text
+ty=Manchester","country":"UK"}
+```
+
+An embedding of that is close to useless, and it is the kind of corruption you only notice as mysteriously bad retrieval months later. Pass `separator` and the splitter cuts **only** there:
+
+```ts
+import { chunkText } from '@adonis-agora/agent'
+
+// One JSON object per line.
+const chunks = chunkText(jsonl, { separator: '\n', chunkSize: 2000, overlap: 200 })
+
+// A custom record delimiter.
+const records = chunkText(dump, { separator: '---', chunkSize: 1200 })
+```
+
+Records are packed whole, as many as fit, rejoined with the separator. Empty and whitespace-only records are dropped.
+
+<Callout type="warn" title="With a separator, `chunkSize` is a target rather than a cap">
+Two deliberate deviations come with the record path.
+
+**A record longer than `chunkSize` is emitted whole**, as its own oversized chunk. It is never cut, never falls back to the prose heuristic, and never drags a neighbour over the limit — it always chunks alone. Splitting a record would defeat the reason you named a separator, so the size limit is the thing that yields. Size your `chunkSize` for the *typical* record and check that your embedding model's token limit tolerates the largest one.
+
+**`overlap` is spent on whole records too** — a character budget filled with entire trailing records, never a partial one. So `overlap: 200` over 60-character records carries three of them, and over 300-character records carries none. It also never carries so much that a chunk fails to advance, so an oversized `overlap` cannot stall the split.
+
+Passing an empty string is treated as not passing one, and the prose path is byte-for-byte unchanged when `separator` is omitted — so existing indexes never shift under you.
+</Callout>

@@ -26,11 +26,25 @@ export default defineConfig({
 })
 ```
 
-Configuring `governanceQueries` **mounts the `/agent/governance/*` read routes**. Omit it and they're never mounted (read-only surface; safe to leave off). The factory receives the already-resolved `pricingStore`, so the read-model prices its cost rollups against the *same* live prices the loop's cost fold uses. See [Quota & cost](/docs/agent/governance/quota-and-cost) for pricing.
+The factory receives the already-resolved `pricingStore`, so the read-model prices its cost rollups against the *same* live prices the loop's cost fold uses. See [Quota & cost](/docs/agent/governance/quota-and-cost) for pricing.
+
+<Callout type="warn" title="Omitting `governanceQueries` does not turn the read-model off">
+It **defaults** to the Lucid read-model whenever your main store is Lucid — that is the useful default, since the read-model reads the very tables the store just wrote. Setting it explicitly, as above, is documentation rather than activation.
+
+To actually have no read-model, say so: `governanceQueries: false`. With no Lucid main store there is nothing to default to, and it stays absent either way.
+
+And note that the read-model alone does **not** mount the routes. Mounting requires the read-model **and** a `governanceAuthorize` gate — see below.
+</Callout>
 
 ## Who may read it
 
-These routes serve **cross-actor** data — every actor's spend, usage, threads, runs, and pending approvals — so unlike the chat routes they are not owner-scoped. They sit behind the [`governanceAuthorize`](/docs/agent/governance/authorization#governance-route-authorization) gate — and that gate is also what **mounts** them:
+These routes serve **cross-actor** data — every actor's spend, usage, threads, runs, and pending approvals — so unlike the chat routes they are not owner-scoped. Mounting them takes **both** halves:
+
+```ts
+governance !== undefined && governanceAuthorize !== undefined
+```
+
+The read-model is what there is to read; the gate is who may read it. Neither alone mounts anything. The read-model is usually already there by default, so in practice the gate is the switch:
 
 - **Omit `governanceAuthorize`** and `/agent/governance/*` is **not mounted at all**: every one of these paths answers `404`. Fail-closed by omission — an ungated cross-actor read-model would hand every actor's spend, usage, threads and approvals to any authenticated caller. The provider logs a boot warning naming both ways forward.
 - **Set it** — typically an ADMIN check — and the routes mount **gated**: each resolves the actor through the same resolver as the chat routes (`401` on failure), then runs `governanceAuthorize` (`403` on deny — the gate is **fail-closed**, so a throw denies too).
@@ -59,7 +73,161 @@ All read-only (`GET`), all mounted only when a `governanceAuthorize` gate exists
 | `GET /agent/governance/tools/stats` | Per-tool call/failure/rejection/latency rollup. Query: `from?`, `to?`. |
 | `GET /agent/governance/reliability` | Success/failure/cancel rates + mean settled duration. Query: `from?`, `to?`. |
 
-The matching `AgentGovernanceQueries` methods are `spendByModel`, `spendByActor`, `usageTrend`, `recentToolCalls`, `recentThreads`, `listRuns`, `runDetail`, `pendingApprovals`, `perToolStats`, and `runReliability`.
+Two more mount **only when a `pricingStore` is also bound** — the store already exists for the loop's cost fold, and these expose it:
+
+| Method & path | Purpose |
+| --- | --- |
+| `GET /agent/governance/pricing` | Every model's current per-1M rates. |
+| `POST /agent/governance/pricing` | Upsert one model's rates. Body: `{ modelId, inputPricePer1m, outputPricePer1m, cacheWritePricePer1m?, cacheReadPricePer1m? }`. A malformed body is `400`; the write is an atomic supersede, so the previous current row is retired in the same breath. |
+
+And one route answers `501` rather than `404` when it is unsupported:
+
+| Method & path | Purpose |
+| --- | --- |
+| `GET /agent/governance/threads/:id` | One thread's drill-down: metadata, lifetime usage rollup, recent runs and messages — or `null` when unknown. `threadDetail` is an **optional** SPI method, so a third-party adapter that predates it gets a `501` instead of a crash. |
+
+## The response payloads
+
+Every route returns the return value of its `AgentGovernanceQueries` method verbatim. These are the shapes a client can rely on.
+
+### Rollups
+
+`spendByModel` → `ModelSpendRow[]`, `spendByActor` → `ActorSpendRow[]`, `usageTrend` → `UsageTrendPoint[]`:
+
+```ts
+interface ModelSpendRow  { modelId: string; requests: number; inputTokens: number; outputTokens: number; costUsd: number }
+interface ActorSpendRow  { actorRef: string; actorLabel?: string; requests: number; totalTokens: number; costUsd: number }
+interface UsageTrendPoint { day: string; totalTokens: number; costUsd: number }
+```
+
+`costUsd` here is **non-nullable**, and an unpriced model contributes `0` — see the warning in [Quota & cost](/docs/agent/governance/quota-and-cost#cost--real-when-known-estimated-otherwise).
+
+### Activity feeds
+
+```ts
+interface ToolCallActivityRow { toolCallId: string; toolName: string; toolType: string; status: string; threadId: string; createdAt: string }
+
+interface ThreadActivityRow {
+  threadId: string; title: string
+  actorRef: string; actorLabel?: string
+  messageCount: number; totalTokens: number; lastActivityAt: string
+}
+```
+
+### Runs
+
+`listRuns` returns one page plus an opaque forward cursor:
+
+```ts
+interface ListRunsResult { runs: RunSummaryRow[]; nextCursor: string | null }
+
+interface RunSummaryRow {
+  runId: string; threadId: string
+  actorRef: string; actorLabel?: string; tenantRef: string | null
+  agentName: string | null
+  status: 'running' | 'completed' | 'failed' | 'cancelled'
+  startedAt: string
+  finishedAt: string | null      // null while still running
+  durationMs: number | null      // likewise
+  stepCount: number
+  inputTokens: number; outputTokens: number
+  costUsd: number | null         // null when nothing priced it
+  error: string | null
+  durable: boolean               // true under the durable runner
+}
+```
+
+Pass `nextCursor` back as `?cursor=` for the next page; `null` means that was the last one.
+
+`runDetail` is the full trace, or `null`:
+
+```ts
+interface RunDetail {
+  run: RunSummaryRow
+  messages: RunMessageRow[]      // { id, role, content, createdAt }
+  toolCalls: RunToolCallRow[]    // { toolCallId, toolName, toolType, status, input, output, error, executionMs, createdAt }
+  approvals: RunToolCallRow[]    // the subset of toolCalls still `pending_approval`
+  usage: RunUsageRow[]           // { modelId, purpose, inputTokens, outputTokens, costUsd, createdAt }
+}
+```
+
+### Approvals, tools, reliability
+
+```ts
+interface PendingApprovalRow {
+  toolCallId: string; toolName: string; input: unknown
+  threadId: string
+  runId: string | null           // null for a call recorded before run tracking existed
+  actorRef: string; actorLabel?: string
+  requestedAt: string
+}
+
+interface PerToolStatRow {
+  toolName: string; toolType: string
+  calls: number; failed: number; rejected: number
+  avgDurationMs: number | null   // null when no call recorded a duration
+}
+
+interface RunReliability {
+  runs: number; completed: number; failed: number; cancelled: number; running: number
+  successRate: number; failureRate: number; cancelRate: number  // 0 when runs === 0
+  avgDurationMs: number | null   // mean over SETTLED runs, null when none settled
+  byAgent?: RunAgentBreakdownRow[]   // { agentName: string | null, runs, failed, successRate }
+  trend?: RunTrendPoint[]            // { day, runs, failed }, oldest first
+}
+```
+
+`byAgent` and `trend` are **optional** so an adapter written before they existed stays valid; a consumer renders an empty section rather than failing when they are absent.
+
+### Thread detail
+
+```ts
+interface GovernanceThreadDetail {
+  threadId: string; title: string
+  actorRef: string; actorLabel?: string
+  createdAt: string; updatedAt: string
+  deleted: boolean               // soft-deleted threads are still readable here
+  usage: {
+    totalTokens: number
+    costUsd: number | null       // null when the thread has no usage rows at all
+    runCount: number
+    messageCount: number
+  }
+  runs: RunSummaryRow[]          // newest-first, capped by the adapter
+  messages: RunMessageRow[]      // likewise
+}
+```
+
+Unlike the rollups, this one keeps a `null` cost when there is nothing to sum — though a thread whose rows are all *unpriced* still totals `0`, same as everywhere else.
+
+## Pricing
+
+The pricing store is a two-method SPI, and the routes above are a thin shell over it:
+
+```ts
+interface AgentPricingStore {
+  upsertModelPrice(input: ModelPriceInput): Promise<void>
+  listCurrentPrices(): Promise<CurrentModelPrice[]>
+}
+
+interface ModelPriceInput {
+  modelId: string
+  inputPricePer1m: number
+  outputPricePer1m: number
+  cacheWritePricePer1m?: number  // omitted → priced at the input rate
+  cacheReadPricePer1m?: number   // likewise
+}
+
+interface CurrentModelPrice extends ModelPriceInput {
+  effectiveFrom: string
+}
+```
+
+`upsertModelPrice` is an **atomic supersede**: the model's prior current row is retired and the new one inserted as current in one step, so the cost fold always joins to exactly one live price per model with no window where two rows race. For a batch, `seedModelPrices(store, [...])` applies them in order.
+
+`estimateCost(usage, price)` is the pure function every surface shares — the SQL adapter and the in-memory one both call it, so a rollup and a run detail can never disagree about what a turn cost. Its arithmetic is documented in [Quota & cost](/docs/agent/governance/quota-and-cost#cost--real-when-known-estimated-otherwise).
+
+The matching `AgentGovernanceQueries` methods for the read routes are `spendByModel`, `spendByActor`, `usageTrend`, `recentToolCalls`, `recentThreads`, `threadDetail?`, `listRuns`, `runDetail`, `pendingApprovals`, `perToolStats`, and `runReliability`.
 
 ## The per-actor approvals inbox
 
@@ -92,7 +260,37 @@ export default defineConfig({
 })
 ```
 
-`ActorDirectory.resolveDisplay(refs)` returns a `ref → label` map; an unknown ref is simply omitted (surfaces fall back to the raw ref) and it never throws. Bind your own over the host's user table, or omit it entirely.
+`ActorDirectory.resolveDisplay(refs)` returns a `ref → label` map. Every route above that returns an `actorRef` then also returns an optional `actorLabel`:
+
+```json
+{
+  "actorRef": "u_8f21c3",
+  "actorLabel": "Ada Lovelace",
+  "requests": 42,
+  "costUsd": 1.87
+}
+```
+
+Three properties are worth relying on:
+
+- **One lookup per page.** The distinct refs in a response are resolved in a single batched call, not one per row — so a 200-row run list is one query against your user table, not 200.
+- **An unknown ref omits the field entirely** — not `null`, not a copy of the ref. `actorLabel ?? actorRef` is the whole rendering rule, and an unresolved ref stays visibly unresolved.
+- **A failure is invisible.** If your directory throws, the rows come back with their raw refs and the request succeeds. A display name is never worth failing a governance page over.
+
+Bind one over your own user table:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  actorDirectory: {
+    async resolveDisplay(refs) {
+      const users = await User.query().whereIn('id', [...refs])
+      return Object.fromEntries(users.map((user) => [user.id, user.fullName]))
+    },
+  },
+})
+```
+
+Omit it and every surface renders raw refs, which is a perfectly reasonable default for an internal console.
 
 ## In tests
 

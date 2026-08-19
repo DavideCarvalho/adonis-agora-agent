@@ -44,11 +44,29 @@ export default defineConfig({
   model: () => aiSdkModel(openai('gpt-4o')),
   attachmentStaging: attachmentStores.memory(), // encodes bytes into a data: URL (tests/dev)
   attachmentMaxBytes: 20 * 1024 * 1024, // default 20 MiB
-  // attachmentAllowedContentTypes: [...] // default: common images + application/pdf + text/*
+  // attachmentAllowedContentTypes: [...] // replaces the 7-entry default below
 })
 ```
 
 The route buffers the multipart `file` field, validates it against the size cap (`413` on overflow) and the content-type allow-list (`415` when disallowed), resolves the actor (the same fail-closed resolver as chat), stages it, and returns the `MessageAttachment`. The client then sends that reference on its next `chat` call.
+
+### The content-type allow-list
+
+The default is an **exact-match list of seven types** — what multimodal providers commonly accept as native image or file parts:
+
+```ts
+['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf', 'text/plain', 'text/csv']
+```
+
+There is no wildcard and no prefix rule: the uploaded type must be one of those strings. `text/markdown`, `image/svg+xml`, `image/heic`, and `application/json` are all `415`.
+
+Setting `attachmentAllowedContentTypes` **replaces** the list rather than extending it, so spread what you want to keep:
+
+```ts
+attachmentAllowedContentTypes: ['image/png', 'image/jpeg', 'application/pdf', 'text/markdown'],
+```
+
+Widen it only to types your model provider actually renders. An accepted upload that the provider cannot read fails later, in the model call, where the error is far less obvious than a `415` at the door.
 
 <Callout type="info" title="The route is opt-in">
 Omit `attachmentStaging` and no upload surface is exposed — a client sends already-staged `MessageAttachment` references directly on `chat`. `attachmentStores.memory()` covers tests and dev (it `data:`-encodes the bytes); a real deployment binds its own store presigning against S3/GCS or wrapping the host's media pipeline.

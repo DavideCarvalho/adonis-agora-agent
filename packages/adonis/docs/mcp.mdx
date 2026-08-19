@@ -1,0 +1,241 @@
+---
+title: MCP server
+description: Expose your governed tool registry to Claude, Cursor, and any other MCP client over Streamable HTTP — with OAuth or API-key auth, fail-closed by default, and the same role checks the agent loop applies.
+icon: Plug
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+import { Steps, Step } from 'fumadocs-ui/components/steps';
+
+Your tools are already governed: each one declares a `kind`, an input schema, and the roles or ability required to call it, and the `ToolRegistry` enforces that on every invocation. The [Model Context Protocol](https://modelcontextprotocol.io) is a standard way for an external assistant — Claude Desktop, Cursor, an internal copilot — to discover and call exactly that kind of surface.
+
+`@adonis-agora/agent/mcp_provider` mounts an MCP server that reads from the same `ToolRegistry` the agent loop uses. Not a copy, not an export: the same singleton. A tool you write once is reachable from your `/agent/chat` endpoint and from an MCP client, under the same authorization, with the same input validation.
+
+## Mounting it
+
+<Steps>
+<Step>
+
+`node ace add @adonis-agora/agent` already publishes `config/mcp.ts`. The MCP provider, however, is **not** registered for you — it is opt-in, because mounting an unconfigured MCP endpoint on every app that installs the package would be surprising. Add it by hand:
+
+```ts title="adonisrc.ts"
+providers: [
+  // ...
+  () => import('@adonis-agora/agent/agent_provider'),
+  () => import('@adonis-agora/agent/mcp_provider'),
+]
+```
+
+The agent provider must come first — it owns the `ToolRegistry` singleton the MCP provider resolves.
+
+</Step>
+<Step>
+
+Point `config/mcp.ts` at an auth strategy:
+
+```ts title="config/mcp.ts"
+import { defineMcpConfig, authKitAuth } from '@adonis-agora/agent/mcp'
+
+export default defineMcpConfig({
+  name: 'Acme Agent',
+  version: '1.0.0',
+
+  auth: authKitAuth({
+    toActor: ({ accountId, scopes }) => ({
+      id: accountId,
+      roles: scopes.includes('admin') ? ['ADMIN'] : ['MEMBER'],
+    }),
+  }),
+})
+```
+
+</Step>
+<Step>
+
+Point an MCP client at `http://localhost:3333/mcp`. It will discover the OAuth flow, log the user in, and see the tools that user's roles permit.
+
+</Step>
+</Steps>
+
+## Configuration
+
+`McpConfig` has eight keys — two required, six optional.
+
+| Key | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `name` | `string` | — | Server name reported in the MCP `initialize` handshake. |
+| `version` | `string` | — | Server version reported in the handshake. |
+| `path` | `string` | `'mcp'` | Route prefix. Leading/trailing slashes are stripped, so `'/mcp/'` and `'mcp'` are the same. |
+| `auth` | `McpAuth \| McpAuthFactory` | — | How clients authenticate. Omit for open mode (see below). |
+| `actor` | `{ id, roles?, tenantRef? }` | — | The fixed identity for open mode. |
+| `authorizer` | `RolesPolicy` | `DefaultToolAuthorizer(defaultRoles)` | The tool gate. Pass the authz Bouncer adapter here to run MCP under abilities. |
+| `defaultRoles` | `string[]` | `['ADMIN']` | Roles a tool requires when it declares none. Only consulted by the default authorizer. |
+| `allowedTools` | `string[]` | — | Restrict which tools are *listed*. |
+
+<Callout type="warn" title="Fail-closed: no auth and no actor means 401">
+With neither `auth` nor `actor` configured, **every** request to `/mcp` is rejected with `401 {"error":"unauthorized: no auth configured and no fallback actor"}`. That is the default an empty `config/mcp.ts` produces, and it is deliberate: an MCP endpoint is a remote tool-execution surface, so it never opens itself.
+</Callout>
+
+## Authentication
+
+### OAuth via authkit
+
+`authKitAuth()` validates the bearer token against `@adonis-agora/authkit-server` and advertises the OAuth metadata MCP clients use to discover the login flow.
+
+```ts
+auth: authKitAuth({
+  scopes: ['openid', 'profile', 'email', 'offline_access', 'roles'],
+  resourceName: 'Acme Agent',
+  toActor: async ({ accountId, scopes, clientId }) => ({
+    id: accountId,
+    roles: await rolesFor(accountId),
+    tenantRef: await tenantFor(accountId),
+  }),
+}),
+```
+
+The token must resolve through the authkit provider and must not be expired; anything else is a `401` carrying the reason. The authkit service is resolved lazily from the container on first use (`'authkit.server'`), so the peer only has to be bootable by the time the first MCP request arrives — not at provider boot.
+
+<Callout type="warn" title="Always supply `toActor`">
+The default `toActor` returns `{ id: accountId }` — an actor with **no roles**. Against the default ADMIN-only authorizer that actor sees an empty tool list and cannot call anything. `toActor` is where your authorization model meets MCP; treat it as required in any real deployment.
+</Callout>
+
+### Static API keys
+
+For a trusted gateway or a machine integration, `apiKeyAuth` skips OAuth entirely:
+
+```ts
+auth: apiKeyAuth({
+  apiKeys: [env.get('MCP_GATEWAY_KEY')],
+  toActor: () => ({ id: 'gateway', roles: ['SERVICE'] }),
+}),
+```
+
+Keys are compared in constant time over their bytes. Because this strategy exposes no OAuth metadata, the `.well-known` route is not mounted — clients must be configured with the key directly.
+
+### Open mode
+
+For local development, drop `auth` and name a fixed identity instead:
+
+```ts
+// Dev only. Every request runs as this actor, with no token check at all.
+actor: { id: 'mcp-dev', roles: ['ADMIN'] },
+```
+
+## The routes
+
+| Method & path | Purpose |
+| --- | --- |
+| `POST /mcp` | The Streamable HTTP endpoint: `initialize`, `tools/list`, `tools/call`. |
+| `GET /mcp` | The SSE channel for server→client notifications on an established session. |
+| `DELETE /mcp` | Terminate the session and release its transport. |
+| `GET /.well-known/oauth-protected-resource/mcp` | RFC 9728 protected-resource metadata. **Mounted only when `auth` exposes OAuth metadata** — i.e. with `authKitAuth()`, not with `apiKeyAuth()` or open mode. |
+
+The well-known document is deliberately minimal and unauthenticated:
+
+```json
+{
+  "resource": "https://app.example.com/mcp",
+  "authorization_servers": ["https://app.example.com/oidc"],
+  "scopes_supported": ["openid", "profile", "email", "offline_access", "roles"],
+  "resource_name": "Acme Agent"
+}
+```
+
+`resource` is built from the request's protocol and `Host` header, so it is correct behind a reverse proxy that forwards them. The metadata itself is resolved per request rather than at boot, because authkit's issuer may not be readable until the app is fully booted.
+
+### Sessions
+
+The transport is stateful. A client `initialize`s without a session id; the server mints one, returns it in the `Mcp-Session-Id` response header, and keeps a transport (and its own `Server` instance) in memory keyed by that id. Subsequent requests carry the header. `DELETE /mcp` closes the session and evicts it; provider shutdown closes them all.
+
+<Callout type="warn" title="Sessions are per-process">
+Session state lives in the provider's own memory, so a multi-replica deployment needs sticky sessions on the `Mcp-Session-Id` header. A request routed to a pod that does not hold the session gets `400 Invalid or missing session ID`.
+</Callout>
+
+Authentication is re-verified on **every** request, not only at `initialize` — so a revoked or expired token stops working mid-session, and the acting actor is re-resolved from fresh auth info each time.
+
+## How authorization flows
+
+The token is verified, the resulting `McpAuthInfo` carries `extra.actor`, and that actor reaches the tool layer through the transport. From there it is the same two gates the agent loop applies:
+
+- **`tools/list`** returns `registry.definitionsFor(actor, policy, allowedTools)` — the role/ability filter first, then the `allowedTools` allow-list. An actor sees only the tools it may call.
+- **`tools/call`** goes through `registry.invoke`, which **re-checks** `policy.can(actor, spec)` before validating the input against the tool's Standard Schema and running the handler.
+
+To run MCP under abilities instead of roles, hand it the same Bouncer adapter you gave the agent:
+
+```ts title="config/mcp.ts"
+import { authzToolAuthorizer } from '@adonis-agora/agent/authz'
+import authz from '@adonis-agora/authz/services/main'
+
+export default defineMcpConfig({
+  name: 'Acme Agent',
+  version: '1.0.0',
+  auth: authKitAuth({ toActor: ({ accountId }) => ({ id: accountId }) }),
+  authorizer: authzToolAuthorizer({ authz }),
+})
+```
+
+See [Bouncer-backed authorization](/docs/agent/governance/authz-bouncer). The same fail-closed rule applies here: a tool that declares no `ability` is never reachable under that adapter.
+
+<Callout type="warn" title="`allowedTools` is a visibility control, not a boundary">
+`allowedTools` filters `tools/list` only. `tools/call` does not consult it, so a client that already knows a name outside the list can still call it if its **roles** permit. Use it to keep an assistant's tool menu focused; use `roles`/`ability` to keep a tool unreachable.
+</Callout>
+
+### Two things MCP does not carry over
+
+**`action` tools are not gated by HITL over MCP.** `tools/call` runs the handler directly — there is no approval suspend, because MCP has no channel to route an approval decision through. If a tool must never run without a human in the loop, either keep it out of `allowedTools` **and** out of the actor's roles, or move the approval inside the tool's own handler.
+
+**The tool context is thinner.** MCP calls get `{ actor, threadId, runId, requestId }` derived from the session id (`mcp:<sessionId>`), and nothing else: no `persona`, no `pageContext`, no `host`, and no `emitComponent`. A tool that reads any of those must tolerate their absence — they are optional on `AiToolCtx` precisely for this reason.
+
+## Connecting a client
+
+Any MCP client that speaks Streamable HTTP works. For Claude Desktop, add the server to its config:
+
+```json
+{
+  "mcpServers": {
+    "acme-agent": {
+      "url": "https://app.example.com/mcp"
+    }
+  }
+}
+```
+
+With `authKitAuth()` the client discovers `/.well-known/oauth-protected-resource/mcp`, walks the OAuth flow against your issuer, and thereafter sends `Authorization: Bearer <token>`. With `apiKeyAuth`, configure the header directly.
+
+To try it against a local app without a client, the handshake is plain HTTP:
+
+```bash
+# 1. initialize — note the Mcp-Session-Id in the response headers
+curl -i http://localhost:3333/mcp \
+  -H 'authorization: Bearer <token>' \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
+
+# 2. list the tools this actor may call
+curl http://localhost:3333/mcp \
+  -H 'authorization: Bearer <token>' \
+  -H 'mcp-session-id: <the id from step 1>' \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+
+# 3. call one
+curl http://localhost:3333/mcp \
+  -H 'authorization: Bearer <token>' \
+  -H 'mcp-session-id: <the id from step 1>' \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"getWeather","arguments":{"city":"Lisbon"}}}'
+```
+
+A tool that throws comes back as `isError: true` content carrying the message, not as a JSON-RPC error — so a `ToolForbiddenError` reads as a normal (failed) tool result to the assistant, which is what lets a model recover rather than abort.
+
+## Schemas over the wire
+
+MCP clients need JSON Schema for each tool's input. The server derives it from the tool's Standard Schema: Zod schemas are converted directly, and any schema exposing `~standard.jsonSchema.input` (Valibot, ArkType, Zod 4) is asked for its own. Anything else advertises a permissive `{ type: 'object', additionalProperties: true }` — the real schema is still enforced on the call, so a mis-shaped argument is rejected server-side either way. It just means the client's autocomplete is less helpful, which is a good reason to prefer a convertible schema for tools you intend to expose.
+
+## The dependency
+
+`@modelcontextprotocol/sdk` is a **hard dependency** of `@adonis-agora/agent`, not an optional peer — it installs whether or not you mount the provider. Nothing is loaded at runtime unless the MCP provider is registered, but it does show up in your lockfile.

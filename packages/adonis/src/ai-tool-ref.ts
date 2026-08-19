@@ -79,8 +79,8 @@ function staticToolMeta(target: unknown): AiToolMeta | undefined {
   if (typeof target !== 'function') return undefined;
   const config = (target as { tool?: Partial<AiToolOptions> }).tool;
   if (config && typeof config === 'object' && typeof config.name === 'string') {
-    // `kind` pode vir do próprio config (BaseTool / @AiTool) ou da estática do base kind-específico
-    // (ReadTool → 'read', ActionTool → 'action'), que o deixa fora do `static tool` da subclasse.
+    // `kind` may come from the config itself (BaseTool / @AiTool) or from the kind-specific base's static
+    // (ReadTool → 'read', ActionTool → 'action'), which keeps it out of the subclass's `static tool`.
     const kind = config.kind ?? (target as { kind?: AiToolOptions['kind'] }).kind;
     return { ...config, kind } as AiToolMeta;
   }

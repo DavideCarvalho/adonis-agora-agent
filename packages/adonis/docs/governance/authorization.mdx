@@ -59,8 +59,8 @@ Authorization runs **twice** through the same `can(actor, tool)`, which is what 
 1. **Offered-tools filter.** Before each model turn, `ToolRegistry.definitionsFor(actor, policy, allowedTools)` drops every tool the actor's role can't invoke — so a forbidden tool is never even described to the model. The persona/agent allow-list is applied on top as a second filter layer.
 2. **Invoke-time re-check.** When the loop actually runs a tool, `ToolRegistry.invoke` re-checks `policy.can(...)` (and re-validates the input schema) before calling the handler. Even if a tool leaked into a call, it's refused with `ToolForbiddenError`.
 
-<Callout type="info" title="The seam is stable so the policy is swappable">
-`DefaultToolAuthorizer` is a thin, explicitly-named binding over core's `DefaultRolesPolicy`. Apps that want an ability-aware gate swap only the binding, never the seam — so both filter layers pick up the new policy automatically.
+<Callout type="info" title="One policy, both layers">
+Both checks call the same `can(actor, tool)`, so swapping the policy — for the ability-aware authz adapter, or your own — changes offer and invoke together. They can never disagree about what an actor may reach.
 </Callout>
 
 ## Ability-aware authorization
@@ -118,7 +118,43 @@ export default defineConfig({
 })
 ```
 
-Its type is `AgentGovernanceAuthorize = (actor, ctx) => boolean | Promise<boolean>`, and it is applied by the router-free `evaluateGovernanceGate` (also exported), which is **fail-closed**: an `authorize` that *throws* denies with `403` (and surfaces the message), exactly like a `false` return.
+Its type is `AgentGovernanceAuthorize = (actor, ctx) => boolean | Promise<boolean>`, and it is applied by `evaluateGovernanceGate`, which is **fail-closed**: an `authorize` that *throws* denies with `403` exactly like a `false` return.
+
+<Callout type="warn" title="A thrown message never reaches production clients">
+When `authorize` throws, the `403` body carries the error's message **only outside production**. In
+production it is always the generic `{ "error": "forbidden" }`, because an authorization predicate
+routinely throws with details a caller must not see — a missing tenant, a user id, a policy name. So
+throw freely for your own logs, but don't design a client around reading that message: outside dev it
+will not be there.
+</Callout>
+
+`evaluateGovernanceGate` is exported for tests and for gating your own routes with the same predicate:
+
+```ts
+import { evaluateGovernanceGate } from '@adonis-agora/agent'
+import type { GovernanceGateVerdict } from '@adonis-agora/agent'
+
+// evaluateGovernanceGate(actor, ctx, authorize?, debug?): Promise<GovernanceGateVerdict>
+const verdict = await evaluateGovernanceGate(actor, ctx, config.governanceAuthorize, !app.inProduction)
+
+if (!verdict.ok) {
+  return ctx.response.status(verdict.status).json({ error: verdict.error })
+}
+```
+
+Three branches, and the first is the one to know about:
+
+| `authorize` | Outcome |
+| --- | --- |
+| `undefined` | `{ ok: true, status: 200 }` — **no gate means no denial.** |
+| returns falsy | `{ ok: false, status: 403, error: 'forbidden' }` |
+| throws | `{ ok: false, status: 403, error: debug ? message : 'forbidden' }` |
+
+That first row looks like a fail-open, and it would be if the routes mounted without a gate. They
+don't: with no `governanceAuthorize` the `/agent/governance/*` routes are never registered, so the
+gate is only ever consulted on a route that exists *because* a gate exists. If you call
+`evaluateGovernanceGate` yourself on a route of your own, that guarantee is yours to keep — pass a
+predicate, or check for one before mounting.
 
 - **Omit it** and `/agent/governance/*` is **not mounted at all** — every one of those paths answers `404`, so an ungated cross-actor read-model can never be served by accident. The provider logs a boot warning naming both ways forward: set the gate (typically an ADMIN check) to mount the routes gated, or `governanceAuthorize: () => true` to deliberately restore the old behaviour of letting ANY authenticated actor read them.
 - The gate **does not** cover `GET /agent/approvals/mine`, which is **unaffected** — it stays mounted whenever the read-model resolves, gate or no gate, and is always scoped to the calling actor's own pending approvals, so a non-admin surface can poll its own approvals even while the cross-actor read-model is ADMIN-only.

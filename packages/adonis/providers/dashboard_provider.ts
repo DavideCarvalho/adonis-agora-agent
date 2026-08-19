@@ -5,7 +5,6 @@ import type { HttpContext } from '@adonisjs/core/http';
 import type { ApplicationService } from '@adonisjs/core/types';
 import {
   type AgentDashboardAuthorize,
-  type AgentDashboardConfig,
   type AgentDashboardUnauthenticatedHook,
   apiBaseFor,
   contentTypeFor,
@@ -84,9 +83,9 @@ export default class DashboardProvider {
 
   async boot() {
     const agentConfig = this.app.config.get<AgentConfig>('agent', {} as AgentConfig);
-    const dashboardConfig = resolveDashboardConfig(
-      this.app.config.get<AgentDashboardConfig>('agent.dashboard', {}),
-    );
+    // Read off the typed `AgentConfig` (the `dashboard` key is part of it) rather than through an
+    // untyped `config.get('agent.dashboard')` string path, so `config/agent.ts` type-checks the block.
+    const dashboardConfig = resolveDashboardConfig(agentConfig.dashboard);
 
     // Mount only when the console can actually work: every panel but Quota reads the agent's
     // cross-actor `/agent/governance/*` routes, and those do not exist without a `governanceAuthorize`

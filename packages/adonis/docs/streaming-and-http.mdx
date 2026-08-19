@@ -1,18 +1,28 @@
 ---
 title: Streaming & HTTP
-description: The eleven /agent routes, the byte-for-byte SSE envelope, human-in-the-loop approve/reject, re-attaching to a live run, and consuming the stream from React.
+description: The eleven core /agent routes, the five optional surfaces, the SSE envelope, human-in-the-loop approve/reject, and re-attaching to a live run.
 icon: MessageSquareText
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-The provider mounts eleven core routes under `config.path` (default `agent`) at boot. They cover the full chat lifecycle — start, stream, cancel, HITL, threads, and quota. No controllers to write; the provider resolves the actor, calls the framework-agnostic `AgentService`, and pipes the SSE. Three optional route groups mount only when their config is present: `POST /agent/attachments` (when `attachmentStaging` is set — see [Attachments](/docs/agent/authoring/attachments)), `GET /agent/approvals/mine` (when `governanceQueries` is set), and the cross-actor `/agent/governance/*` read routes (when `governanceQueries` is set **and** a `governanceAuthorize` gate is configured — without the gate they are **not mounted at all** and answer `404`; see [Governance read-model](/docs/agent/governance/read-model)).
+The provider mounts eleven core routes under `config.path` (default `agent`) at boot. They cover the full chat lifecycle — start, stream, cancel, HITL, threads, and quota. No controllers to write; the provider resolves the actor, calls the framework-agnostic `AgentService`, and pipes the SSE.
+
+**Five optional surfaces** mount only when their configuration is present:
+
+| Surface | Mounts when |
+| --- | --- |
+| `POST /agent/attachments` | `attachmentStaging` is set — see [Attachments](/docs/agent/authoring/attachments). |
+| `GET /agent/approvals/mine` | a governance read-model resolves. Not behind `governanceAuthorize`; always scoped to the caller. |
+| `/agent/governance/*` (11 routes) | a read-model resolves **and** a `governanceAuthorize` gate is configured. Without the gate they are **not mounted at all** and answer `404` — see [Governance read-model](/docs/agent/governance/read-model). |
+| `GET\|POST /agent/governance/pricing` | the above, **plus** a `pricingStore`. |
+| `POST\|GET\|DELETE /mcp` | the [MCP provider](/docs/agent/mcp) is registered in `adonisrc.ts`. A separate mount point, with its own identity path. |
 
 ## The routes
 
 | # | Method & path | Purpose |
 | --- | --- | --- |
-| 1 | `POST /agent/chat` | Start a run. Resolves the actor, creates or continues a thread, and **streams the reply as SSE**. Body: `{ message, threadId?, agent?, persona?, pageContext? }`. |
+| 1 | `POST /agent/chat` | Start a run. Resolves the actor, creates or continues a thread, and **streams the reply as SSE**. Body: `{ message, threadId?, agent?, persona?, attachments?, pageContext? }`. |
 | 2 | `GET /agent/chat/:runId/stream` | **Re-attach** to a run's live token stream (reconnect / resume). |
 | 3 | `POST /agent/chat/:runId/cancel` | Abort a run. Returns `{ aborted: true }`. |
 | 4 | `POST /agent/tool-call/approve` | Approve a pending `action` tool call. Body: `{ runId, toolCallId }`. |
@@ -79,7 +89,7 @@ curl http://localhost:3333/agent/tool-call/reject \
   -d '{"runId":"<runId>","toolCallId":"<toolCallId>","reason":"not this account"}'
 ```
 
-On approve, the loop runs the tool and continues; the `executed_by_ref` records who approved it. On reject, it records the rejection and feeds a rejection result back to the model, which continues the turn. Under the inline runner the decision resolves an in-memory promise keyed `${runId}:${toolCallId}`, so one run can never approve another's call.
+On approve, the loop runs the tool and continues, recording who approved it. On reject, it records the rejection and feeds a rejection result back to the model, which continues the turn. A decision is always scoped to one `(runId, toolCallId)` pair, so one run can never approve another's call.
 
 ## Re-attaching to a run
 
@@ -89,21 +99,19 @@ Streams survive a dropped connection. A late subscriber to `GET /agent/chat/:run
 Re-attach works because the default token sink buffers per run in process memory. That makes it single-replica: a run started on one instance can only be re-attached on that same instance. Switch to the [Redis sink](/docs/agent/redis-streaming) so any pod can serve any run's stream, and pair it with the [durable runner](/docs/agent/durability/durable-runner) for cross-instance resume.
 </Callout>
 
-## Consuming from React
+## Consuming the stream
 
-The routes deliberately reproduce the SSE contract of the reference NestJS agent **byte-for-byte** — the same `meta` / `delta` / `done` envelope and the same run/thread headers. So the existing framework-agnostic React client, `@dudousxd/nestjs-agent-react`, works **unchanged** against these AdonisJS routes: point its `AgentChatTransport` at your `/agent` base URL and drive the UI with the `useAgentChat` hook.
+The package ships the client. `@adonis-agora/agent/client` posts a turn, decodes the envelope above into typed frames, and re-attaches automatically when the connection drops; `@adonis-agora/agent/react` wraps it in a `useAgentChat` hook:
 
 ```tsx
-import { useAgentChat, AgentChatTransport } from '@dudousxd/nestjs-agent-react'
-
-const transport = new AgentChatTransport({ baseUrl: '/agent' })
+import { useAgentChat } from '@adonis-agora/agent/react'
 
 function Chat() {
-  const { messages, send, pending, approve, reject } = useAgentChat({ transport })
-  // pending exposes any action tool call awaiting a decision → approve/reject
+  const { messages, status, error, send, cancel } = useAgentChat({ basePath: '/agent' })
+  // messages[].parts is ChatPart[] — text and component parts in emission order
 }
 ```
 
-<Callout type="info" title="Why it just works">
-The client speaks to the HTTP + SSE contract, not to NestJS. Because this library preserves that contract exactly, no fork is needed today. An **Agora-scoped republish** of the React package (so the branding and imports match the rest of the ecosystem) is on the [Roadmap](/docs/agent/roadmap) — but it's ergonomics, not a capability gap.
-</Callout>
+Both are covered in full — options, resume semantics, component frames, and the HITL calls the client deliberately leaves to you — in [Browser client & React](/docs/agent/browser-client).
+
+For a non-JavaScript consumer, or a bespoke reader, the envelope above is the whole contract: read `text/event-stream`, dispatch on the `event:` name, and treat an unnamed event as a text `delta`.

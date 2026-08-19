@@ -17,34 +17,35 @@ import type {
   VectorStore,
 } from './vector-store.js';
 
-/** Similaridade → nome de distância do Qdrant. Cosine (default), Dot (inner), Euclid (l2). */
+/** Similarity → Qdrant distance name. Cosine (default), Dot (inner), Euclid (l2). */
 export type QdrantMetric = 'cosine' | 'inner' | 'l2';
 const DISTANCE: Record<QdrantMetric, string> = { cosine: 'Cosine', inner: 'Dot', l2: 'Euclid' };
 
 export interface QdrantStoreOptions {
-  /** Nome da collection. Default `agent_rag_chunks`. */
+  /** Collection name. Default `agent_rag_chunks`. */
   collection?: string;
-  /** Largura do embedding — deve casar com o modelo (1536 p/ text-embedding-3-small). Default 1536. */
+  /** Embedding width — must match the model (1536 for text-embedding-3-small). Default 1536. */
   dimension?: number;
-  /** Métrica de similaridade. Default `cosine`. */
+  /** Similarity metric. Default `cosine`. */
   metric?: QdrantMetric;
   /**
-   * Máximo de pontos por request de upsert. Fontes grandes viram MUITOS chunks (ex.: um PDF de
-   * ~200 páginas → ~700 pontos); enviar tudo num único request estoura o timeout default do client
-   * (`@qdrant/js-client-rest`, 300s) porque um corpo de vários MB estola no caminho. Fatiar em lotes
-   * mantém cada request pequeno e previsível. Default 100 (validado ~4-6s/lote de 100). 0/negativo → sem fatiamento.
+   * Maximum points per upsert request. Large sources become MANY chunks (a ~200-page PDF is
+   * ~700 points); sending them in a single request blows the client's default timeout
+   * (`@qdrant/js-client-rest`, 300s) because a multi-megabyte body stalls on the way. Slicing into
+   * batches keeps every request small and predictable. Default 100 (measured at ~4-6s per batch of
+   * 100). Zero or negative → no slicing.
    */
   upsertBatchSize?: number;
 }
 
-/** Ponto do Qdrant (id UUID, vetor, payload). */
+/** A Qdrant point (UUID id, vector, payload). */
 export interface QdrantPoint {
   id: string;
   vector: number[];
   payload: Record<string, unknown>;
 }
 
-/** Filtro do Qdrant (subconjunto usado). */
+/** A Qdrant filter (the subset this store uses). */
 export interface QdrantCondition {
   key: string;
   match: { value: unknown } | { any: unknown[] } | { except: unknown[] };
@@ -54,9 +55,9 @@ export interface QdrantFilter {
 }
 
 /**
- * O subconjunto do client `@qdrant/js-client-rest` que a {@link QdrantStore} usa — estrutural, para
- * manter o pacote como peer OPCIONAL (a factory importa o client real e o passa aqui) e permitir um
- * fake nos testes. Espelha `LucidDatabaseLike` do pgvector.
+ * The subset of the `@qdrant/js-client-rest` client {@link QdrantStore} uses — structural, so the
+ * package stays an OPTIONAL peer (the factory imports the real client and hands it in) and tests can
+ * pass a fake. Mirrors pgvector's `LucidDatabaseLike`.
  */
 export interface QdrantClientLike {
   getCollections(): Promise<{ collections: { name: string }[] }>;
@@ -117,11 +118,12 @@ export interface QdrantClientLike {
 }
 
 /**
- * Traduz o filtro de metadata (`Record<string, unknown>`) para um {@link QdrantFilter}, preservando a
- * semântica de ACL por token: scalar = match exato; array = match-any (set membership; casa o
- * `jsonb_exists_any` do pgvector — o `any` do Qdrant testa interseção com campo scalar OU array);
- * array vazio = nega tudo (`any: []` nunca casa). Chaves miram `metadata.<k>` (o payload aninha o
- * metadata sob `metadata`). Múltiplas chaves entram em `must` (AND). Vazio/ausente → undefined.
+ * Translates a metadata filter (`Record<string, unknown>`) into a {@link QdrantFilter}, preserving
+ * token-ACL semantics: a scalar is an exact match; an array is match-any (set membership — it mirrors
+ * pgvector's `jsonb_exists_any`, since Qdrant's `any` tests intersection against a scalar OR an array
+ * field); an empty array denies everything (`any: []` never matches). Keys target `metadata.<k>` (the
+ * payload nests metadata under `metadata`). Multiple keys are ANDed into `must`. Empty or absent →
+ * undefined.
  */
 export function buildQdrantFilter(
   filter: Record<string, unknown> | undefined,
@@ -134,30 +136,30 @@ export function buildQdrantFilter(
   return { must };
 }
 
-/** Teto defensivo de páginas no scroll do `listDocuments` — protege contra um client mal
- *  comportado cujo `next_page_offset` nunca vira null/undefined (paginação que não termina). */
+/** Defensive page ceiling on the scroll loops — guards against a misbehaving client whose
+ *  `next_page_offset` never becomes null/undefined (pagination that never terminates). */
 const MAX_SCROLL_PAGES = 10_000;
 
-/** Namespace UUID fixo da lib para derivar ids de ponto determinísticos (RFC 4122 §4.3). */
+/** The library's fixed UUID namespace for deriving deterministic point ids (RFC 4122 §4.3). */
 const NAMESPACE = 'b9d5a5f2-1c3e-5e7a-9b2d-6f4c8a1e0d3b';
 
-/** UUIDv5(NAMESPACE, name) via SHA-1 — determinístico, sem dep externa. */
+/** UUIDv5(NAMESPACE, name) via SHA-1 — deterministic, with no external dependency. */
 export function chunkIdToPointId(chunkId: string): string {
   const ns = Buffer.from(NAMESPACE.replace(/-/g, ''), 'hex');
   const hash = createHash('sha1').update(ns).update(chunkId).digest();
   const bytes = hash.subarray(0, 16);
   // readUInt8/writeUInt8 (not indexed access) so this stays clean under noUncheckedIndexedAccess.
-  bytes.writeUInt8((bytes.readUInt8(6) & 0x0f) | 0x50, 6); // versão 5
-  bytes.writeUInt8((bytes.readUInt8(8) & 0x3f) | 0x80, 8); // variante RFC 4122
+  bytes.writeUInt8((bytes.readUInt8(6) & 0x0f) | 0x50, 6); // version 5
+  bytes.writeUInt8((bytes.readUInt8(8) & 0x3f) | 0x80, 8); // RFC 4122 variant
   const hex = bytes.toString('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /**
- * Um {@link VectorStore} sobre o Qdrant — o gêmeo do {@link import('./pg-vector-store.js').PgVectorStore}
- * para bancos de vetor gerenciados (ex.: GuaraCloud). Fala com o client via {@link QdrantClientLike}
- * estrutural (o `@qdrant/js-client-rest` fica peer opcional). Uma collection, escopo por filtro de
- * payload. O chunk id (`${documentId}#<n>`) vira UUIDv5 no ponto e volta pelo payload.
+ * A {@link VectorStore} over Qdrant — the twin of {@link import('./pg-vector-store.js').PgVectorStore}
+ * for managed vector databases. It talks to the client through the structural {@link QdrantClientLike}
+ * (so `@qdrant/js-client-rest` stays an optional peer). One collection, scoped by payload filter. The
+ * chunk id (`${documentId}#<n>`) becomes the point's UUIDv5 and travels back in the payload.
  */
 export class QdrantStore implements VectorStore {
   private readonly collection: string;
@@ -175,7 +177,7 @@ export class QdrantStore implements VectorStore {
     this.upsertBatchSize = options.upsertBatchSize ?? 100;
   }
 
-  /** Idempotente: cria a collection (dimensão + métrica) se ainda não existir. */
+  /** Idempotent: creates the collection (dimension + metric) if it does not exist yet. */
   async ensureCollection(): Promise<void> {
     const { collections } = await this.client.getCollections();
     if (collections.some((c) => c.name === this.collection)) return;
@@ -197,7 +199,7 @@ export class QdrantStore implements VectorStore {
         ...(r.metadata !== undefined ? { metadata: r.metadata } : {}),
       },
     }));
-    // Fatiar em lotes: um request gigante estola no timeout de 300s do client (ver upsertBatchSize).
+    // Slice into batches: one huge request stalls against the client's 300s timeout (see upsertBatchSize).
     const step = this.upsertBatchSize > 0 ? this.upsertBatchSize : points.length;
     for (let i = 0; i < points.length; i += step) {
       await this.client.upsert(this.collection, { points: points.slice(i, i + step) });
@@ -293,7 +295,9 @@ export class QdrantStore implements VectorStore {
     let offset: unknown = undefined;
     for (let pageCount = 0; ; pageCount++) {
       if (pageCount >= MAX_SCROLL_PAGES) {
-        throw new Error('updateMetadata: scroll excedeu MAX_SCROLL_PAGES (offset não terminou)');
+        throw new Error(
+          'updateMetadata: scroll exceeded MAX_SCROLL_PAGES (the page offset never terminated)',
+        );
       }
       const page = await this.client.scroll(this.collection, {
         filter: { must: [{ key: 'documentId', match: { value: documentId } }] },
@@ -345,7 +349,9 @@ export class QdrantStore implements VectorStore {
     let offset: unknown = undefined;
     for (let pageCount = 0; ; pageCount++) {
       if (pageCount >= MAX_SCROLL_PAGES) {
-        throw new Error('listDocumentIds: scroll excedeu MAX_SCROLL_PAGES (offset não terminou)');
+        throw new Error(
+          'listDocumentIds: scroll exceeded MAX_SCROLL_PAGES (the page offset never terminated)',
+        );
       }
       const page = await this.client.scroll(this.collection, {
         with_payload: ['documentId'],
@@ -407,10 +413,12 @@ export class QdrantStore implements VectorStore {
     const qFilter = buildQdrantFilter(filter);
     const seen = new Map<string, IndexedDocument>();
     let offset: unknown = undefined;
-    // Pagina via scroll até esgotar. Corpus ~1500 chunks → poucas páginas.
+    // Page through the scroll cursor until it is exhausted. A ~1500-chunk corpus is a few pages.
     for (let pageCount = 0; ; pageCount++) {
       if (pageCount >= MAX_SCROLL_PAGES) {
-        throw new Error('listDocuments: scroll excedeu MAX_SCROLL_PAGES (offset não terminou)');
+        throw new Error(
+          'listDocuments: scroll exceeded MAX_SCROLL_PAGES (the page offset never terminated)',
+        );
       }
       const page = await this.client.scroll(this.collection, {
         with_payload: true,
@@ -440,8 +448,8 @@ export class QdrantStore implements VectorStore {
   }
 }
 
-/** Um {@link import('../spi/retriever.js').Retriever} sobre uma {@link QdrantStore}: embeda a query,
- *  depois busca no Qdrant. Gêmeo de `PgVectorRetriever`. */
+/** A {@link import('../spi/retriever.js').Retriever} over a {@link QdrantStore}: embeds the query,
+ *  then searches Qdrant. Twin of `PgVectorRetriever`. */
 export class QdrantRetriever extends EmbeddingRetriever {
   // biome-ignore lint/complexity/noUselessConstructor: not useless — it NARROWS `store` from the base's `VectorStore` to `QdrantStore`, which is this subclass's whole point. Delete it and `new QdrantRetriever(embedder, anyInMemoryStore)` starts compiling.
   constructor(embedder: EmbeddingProvider, store: QdrantStore) {

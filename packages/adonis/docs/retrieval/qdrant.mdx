@@ -1,0 +1,159 @@
+---
+title: Qdrant store
+description: A managed vector database as the RAG backend — collection provisioning, payload-filter ACLs, batched upserts, and the metric handling that keeps scores comparable with pgvector.
+icon: Boxes
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+[Qdrant](https://qdrant.tech) is the third RAG backend, alongside the in-memory store and [pgvector](/docs/agent/retrieval/pgvector). Reach for it when the corpus has outgrown a column in your application database — a dedicated vector database gives you horizontal scaling, snapshots, and quantization that a `vector(N)` column beside your users table does not.
+
+It implements the same `VectorStore` contract as the other two, so switching is a config change: the retrieval semantics, the metadata filters, and the passage shape are identical.
+
+## Select it
+
+```ts title="config/agent.ts"
+import { defineConfig, retrievers } from '@adonis-agora/agent'
+import env from '#start/env'
+
+export default defineConfig({
+  model: () => aiSdkModel(openai('gpt-4o-mini')),
+  retriever: retrievers.qdrant({
+    embedder: myEmbedder,
+    url: env.get('QDRANT_URL'),
+    apiKey: env.get('QDRANT_API_KEY'),
+    collection: 'agent_rag_chunks',
+    dimension: 1536,
+    metric: 'cosine',
+  }),
+  retrievalTopK: 5,
+  retrievalFilter: (actor) => ({ tenantRef: actor.tenantRef }),
+})
+```
+
+Install the peer:
+
+```bash
+npm i @qdrant/js-client-rest
+```
+
+It is an **optional** peer, imported lazily inside the factory thunk — an app that never selects `retrievers.qdrant` never loads it.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `embedder` | — | An `EmbeddingProvider`, or a lazy factory returning one. Required. |
+| `url` | `http://localhost:6333` | Qdrant endpoint, used when no `client` is passed. |
+| `apiKey` | — | Qdrant API key. |
+| `client` | — | A ready client, for programmatic use or a test double. When set, `url`/`apiKey` are ignored and the peer is never imported. |
+| `collection` | `agent_rag_chunks` | Collection name. |
+| `dimension` | `1536` | Vector width. **Must match your embedding model.** |
+| `metric` | `'cosine'` | `'cosine'`, `'inner'`, or `'l2'`. |
+| `ensureCollection` | `false` | Create the collection at boot if it does not exist. |
+| `documents` | — | Documents to chunk, embed and index at boot. |
+| `chunkSize` / `overlap` | `800` / `100` | Chunking parameters for `documents`. |
+
+## Provisioning the collection
+
+`ensureCollection: true` creates the collection with the configured dimension and metric if it is not already there. It is idempotent and cheap — one `getCollections` call — so it is safe on every boot.
+
+```ts
+retrievers.qdrant({ embedder, url, ensureCollection: true })
+```
+
+<Callout type="warn" title="It creates, it never migrates">
+An existing collection is accepted as-is, whatever its dimension or metric. If you change `dimension` in config against a collection built at a different width, nothing warns you at boot — the upsert fails later, at ingestion time, when the vector length does not match. Changing the embedding model means a new collection and a re-index, not a config edit.
+</Callout>
+
+For a managed deployment where a provisioning pipeline owns the collection, leave it `false` and create the collection out of band.
+
+## How documents map to points
+
+Each chunk becomes one Qdrant point:
+
+```json
+{
+  "id": "3f2a91c4-…",
+  "vector": [0.021, -0.118, …],
+  "payload": {
+    "id": "q3-plan#4",
+    "documentId": "q3-plan",
+    "text": "…the chunk's text…",
+    "source": "plan.md",
+    "metadata": { "audience": ["public", "role:ADMIN"], "tenantRef": "acme" }
+  }
+}
+```
+
+Qdrant requires point ids to be UUIDs or unsigned integers, and chunk ids are neither — they are `${documentId}#<n>`. The store derives the point id as a **UUIDv5** of the chunk id under a fixed namespace, which makes it deterministic: re-ingesting the same chunk overwrites the same point rather than duplicating it, and the store never has to read a point id back off the wire to update or delete one. The original chunk id travels in `payload.id` and is what comes back on a `Passage`.
+
+`documentId` sits at the top level so `remove(documentId)` is one filtered delete; your own metadata is nested under `payload.metadata`, which is why filter keys target `metadata.<key>`.
+
+## Metadata filters
+
+Filters behave exactly as they do on the other backends — a scalar is an exact match, an array is set membership, an empty array denies everything:
+
+```ts
+await retriever.retrieve(query, {
+  topK: 5,
+  filter: {
+    tenantRef: 'acme',                                  // exact match
+    audience: ['public', 'role:ADMIN', 'base:acme'],    // any-of
+  },
+})
+```
+
+Multiple keys are ANDed. The array case maps onto Qdrant's `any`, which tests intersection against a scalar field *or* an array field — the same semantics pgvector gets from `jsonb_exists_any`, so an ACL written for one backend behaves identically on the other. That parity is deliberate and load-bearing: a filter is a security boundary, and a backend swap must not quietly widen it.
+
+See [Metadata filters as an ACL](/docs/agent/retrieval/rag#metadata-filters-as-an-acl) for the pattern.
+
+## Metrics and scores
+
+| `metric` | Qdrant distance | Notes |
+| --- | --- | --- |
+| `cosine` | `Cosine` | The default. Vectors are normalized by Qdrant. |
+| `inner` | `Dot` | Dot product; assumes you normalize yourself if you want cosine-like behaviour. |
+| `l2` | `Euclid` | Euclidean distance — **lower is closer**. |
+
+`Passage.score` is always higher-is-more-relevant, so the L2 score is negated on the way out (and a `minScore` floor is negated on the way in). A relevance threshold calibrated on one backend therefore transfers to another with the same metric.
+
+## Batched upserts
+
+Ingestion slices points into batches of 100 by default. This is not a micro-optimisation: a 200-page PDF chunks into roughly 700 points, and sending them in one request produces a multi-megabyte body that stalls against the client's 300-second timeout. Batching keeps each request small and predictable — around 4–6 seconds per batch of 100.
+
+The knob lives on `QdrantStore` rather than the retriever factory, so tuning it means constructing the store directly:
+
+```ts
+import { QdrantStore, QdrantRetriever, ingestDocuments } from '@adonis-agora/agent'
+import { QdrantClient } from '@qdrant/js-client-rest'
+
+const store = new QdrantStore(new QdrantClient({ url: env.get('QDRANT_URL') }), {
+  collection: 'agent_rag_chunks',
+  dimension: 1536,
+  upsertBatchSize: 250,   // 0 or negative disables slicing
+})
+
+await store.ensureCollection()
+await ingestDocuments(documents, { embedder, store, chunkSize: 800, overlap: 100 })
+
+const retriever = new QdrantRetriever(embedder, store)
+```
+
+## Corpus maintenance
+
+Qdrant implements the full [corpus lifecycle API](/docs/agent/retrieval/corpus-lifecycle) — `updateMetadata`, `listDocumentIds`, `removeWhere`. Two of its implementations have properties worth knowing:
+
+- **`updateMetadata` uses `set_payload`, never a re-upsert**, so the vector is untouched by construction rather than by care — re-embedding a document just to relabel it would be both slow and lossy. It merges in memory (Qdrant's `set_payload` merges only at the top level, and metadata is nested one level down), then issues one write per distinct resulting metadata, which is normally one.
+- **`removeWhere` costs one extra round trip** that the other backends do not: Qdrant's delete response carries no count, so the number of removed chunks comes from a preceding `count` call. It is an aggregate — no payloads, no vectors — but under concurrent writes the count can be very slightly stale. The memory and pgvector stores report exact counts.
+
+Both refuse rather than degrade if the client lacks `setPayload` or `count`. A silent fallback to `upsert` would rewrite the embeddings `updateMetadata` exists to preserve.
+
+## Testing against a real Qdrant
+
+The unit tests run against a structural fake, but the live suite is gated behind an environment variable:
+
+```bash
+docker run -d -p 6399:6333 qdrant/qdrant
+AGENT_QDRANT_URL=http://127.0.0.1:6399 npx vitest run test/rag-qdrant-live.spec.ts
+```
+
+Without `AGENT_QDRANT_URL` the suite skips. It creates a throwaway collection, exercises the filter parity and the metadata-preservation guarantees against the real server, and deletes it afterwards. Worth running before you trust a change to the filter translation — a fake cannot prove that Qdrant treats `any: []` as a deny.

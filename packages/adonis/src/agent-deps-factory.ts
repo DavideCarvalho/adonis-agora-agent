@@ -10,7 +10,7 @@ import type { RolesPolicy } from './spi/roles-policy.js';
 import type { TokenStreamSink } from './spi/token-stream-sink.js';
 import type { ToolRegistry } from './tool-registry.js';
 import type { ToolTransientRetrySetting } from './tool-retry.js';
-import type { Actor, AgentDefinition, Persona } from './types.js';
+import type { Actor, AgentDefinition, DelegateEdge, Persona } from './types.js';
 
 /** The synthesized `agent`-kind tool name an orchestrator uses to delegate to `target`. */
 export function delegateToolName(target: string): string {
@@ -40,16 +40,28 @@ const delegateInputSchema: StandardSchemaV1<{ task: string }, { task: string }> 
   },
 };
 
+/** Normalize a `delegatesTo` entry: a bare string is the edge with no authorization annotation. */
+export function normalizeDelegateEdge(edge: string | DelegateEdge): DelegateEdge {
+  return typeof edge === 'string' ? { agent: edge } : edge;
+}
+
 /**
  * Synthesize an `agent`-kind delegate tool for each `agent→agent` edge declared via `delegatesTo`, so
  * an orchestrator can call `ask_<target>({ task })` to hand work to another registered agent. The loop
  * handles delegation itself (never the handler), so the handler is a no-op. Skips names already taken.
  * Returns the number of delegate tools registered.
+ *
+ * Authorization: the synthesized spec carries the edge's `roles`/`ability` verbatim, so delegation is
+ * gated by the SAME `RolesPolicy` as every other tool — no special case, no implicit grant. An edge
+ * declared as a bare string carries neither, which means ADMIN-only under `DefaultToolAuthorizer` and
+ * an outright deny under the ability-aware authz adapter. That is deliberate (fail-closed), and the
+ * {@link DelegateEdge} object form is how an app opens the edge to the actors it intends.
  */
 export function registerDelegateTools(registry: ToolRegistry, agents: AgentRegistry): number {
   let count = 0;
   for (const definition of agents.list()) {
-    for (const target of definition.delegatesTo ?? []) {
+    for (const edge of definition.delegatesTo ?? []) {
+      const { agent: target, roles, ability } = normalizeDelegateEdge(edge);
       const name = delegateToolName(target);
       if (registry.has(name)) continue;
       const targetDefinition = agents.get(target);
@@ -65,6 +77,8 @@ export function registerDelegateTools(registry: ToolRegistry, agents: AgentRegis
           targetAgent: target,
           description: `Delegate a task to the "${target}" agent and get its answer.${blurb}`,
           inputSchema: delegateInputSchema,
+          ...(roles !== undefined ? { roles } : {}),
+          ...(ability !== undefined ? { ability } : {}),
         },
         // Loop-handled (kind 'agent'); the handler is never called.
         { execute: async () => ({}) },
@@ -123,7 +137,9 @@ export class AgentDepsFactory {
     if (definition === undefined) {
       return undefined;
     }
-    const delegated = (definition.delegatesTo ?? []).map(delegateToolName);
+    const delegated = (definition.delegatesTo ?? []).map((edge) =>
+      delegateToolName(normalizeDelegateEdge(edge).agent),
+    );
     if (definition.tools === undefined && delegated.length === 0) {
       return undefined; // no restriction
     }

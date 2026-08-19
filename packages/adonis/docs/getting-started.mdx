@@ -20,7 +20,14 @@ This guide gets a governed, streaming agent running in an AdonisJS app in a few 
 node ace add @adonis-agora/agent
 ```
 
-`add` installs the package, registers `@adonis-agora/agent/agent_provider` in `adonisrc.ts`, registers the Assembler `init` hook that generates the typed `app/agent_tools` barrel, and publishes both `config/agent.ts` and the Lucid migration for the five agent tables.
+`add` installs the package and then runs the same codemods `configure` does:
+
+- registers `@adonis-agora/agent/agent_provider` and `@adonis-agora/agent/dashboard_provider` in `adonisrc.ts`;
+- registers the Assembler `init` hook that generates the typed `app/agent_tools` barrel;
+- publishes `config/agent.ts` and `config/mcp.ts`;
+- publishes **three** migrations: the five core agent tables, the run-tracking table, and the pgvector RAG chunk table.
+
+The [MCP provider](/docs/agent/mcp) is *not* registered — it is opt-in, and `config/mcp.ts` carries the one-line snippet for `adonisrc.ts` when you want it. The pgvector migration is Postgres-only; delete it if you are not using [pgvector RAG](/docs/agent/retrieval/pgvector).
 
 </Tab>
 
@@ -31,7 +38,7 @@ npm i @adonis-agora/agent
 node ace configure @adonis-agora/agent
 ```
 
-`configure` runs the same codemods as `add` — register the provider, register the tools barrel hook, publish the config and the migration.
+`configure` runs the codemods without the install step — the two providers, the tools barrel hook, both config files, and the three migrations.
 
 </Tab>
 
@@ -82,11 +89,13 @@ The actor resolver defaults to one that **throws on every request**. The agent w
 
 ## 3. Run the migration
 
-The `lucid` store persists to five tables (threads, messages, tool calls, token usage, model pricing). Apply the published migration:
+The `lucid` store persists to five tables (threads, messages, tool calls, token usage, model pricing), plus the run-tracking table from the second migration. Apply them:
 
 ```bash
 node ace migration:run
 ```
+
+You can also skip this step: the Lucid store creates its tables on first use by default, which is why a fresh app works before you have run anything. See [Auto-created tables](/docs/agent/stores/lucid#auto-created-tables-and-turning-that-off) for when to turn that off.
 
 Omitting `store` entirely uses the in-memory store — single-process, no migration — which is perfect for a first spin or for tests. See [State stores](/docs/agent/stores/lucid).
 
@@ -170,4 +179,5 @@ The `X-Agent-Run-Id` and `X-Agent-Thread-Id` response headers carry the same ids
 - [Authoring tools](/docs/agent/authoring/tools) — kinds, schemas, discovery, and roles.
 - [Personas & agents](/docs/agent/authoring/personas-and-agents) — personas and multi-agent delegation.
 - [Streaming & HTTP](/docs/agent/streaming-and-http) — every route, the SSE envelope, and HITL.
+- [Browser client & React](/docs/agent/browser-client) — the shipped SSE client and the `useAgentChat` hook.
 - [Configuration reference](/docs/agent/config-reference) — every `AgentConfig` field.

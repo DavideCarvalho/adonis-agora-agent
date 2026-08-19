@@ -26,6 +26,9 @@ export default defineConfig({
   maxSteps: 8,
   path: 'agent',
 
+  governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
+  dashboard: { authorize: (actor) => actor.roles?.includes('ADMIN') ?? false },
+
   defaultAgent: {
     systemPrompt: 'You are a helpful assistant.',
     defaultPersona: 'default',
@@ -62,23 +65,39 @@ export default defineConfig({
 
 ### `governanceQueries`
 
-`AgentGovernanceQueries | GovernanceQueriesFactory | false`. The read-model the optional `/agent/governance/*` routes serve from — cost/usage rollups, run lifecycle, tool stats, reliability, and the approvals inbox. Defaults to mirroring a `stores.lucid()` `store` on the same connection (so the routes mount with no extra config); pass a lazy `governanceQueries.lucid()` to override, or `false` to disable. **With it off (or a non-Lucid store and no explicit value) the governance routes aren't mounted.** See [Governance read-model](/docs/agent/governance/read-model).
+`AgentGovernanceQueries | GovernanceQueriesFactory | false`. The read-model the optional `/agent/governance/*` routes serve from — cost/usage rollups, run lifecycle, tool stats, reliability, and the approvals inbox. **Omitting it does not disable it**: it defaults to mirroring a `stores.lucid()` `store` on the same connection. Pass a lazy `governanceQueries.lucid()` to point it elsewhere, or `false` to actually turn it off. Mounting the routes needs this **and** `governanceAuthorize` — a read-model with no gate mounts nothing. See [Governance read-model](/docs/agent/governance/read-model).
 
 ### `governanceAuthorize`
 
 `AgentGovernanceAuthorize` — `(actor, ctx) => boolean | Promise<boolean>`. The authorization gate for the **cross-actor** `/agent/governance/*` read routes. It runs *after* the actor is resolved (the caller is authenticated) and decides whether this actor may read the platform-wide governance read-model — every actor's spend, usage, threads, and pending approvals. Return `false` (or throw — it's **fail-closed**) → the route replies `403`. **Omit → the routes are not mounted at all** — every `/agent/governance/*` path answers `404`, and the provider logs a boot warning. Typically you set it to an ADMIN check to mount them gated; set `governanceAuthorize: () => true` to deliberately restore the old behaviour of letting ANY authenticated actor read them. The [dashboard](/docs/agent/governance/dashboard) console is a pure consumer of these routes, so it refuses to mount without the gate too. It does **not** gate the per-actor `GET /agent/approvals/mine` route, which is **unaffected** — it stays mounted whenever the read-model resolves — and the same predicate feeds the [object-level ownership](/docs/agent/governance/authorization#object-level-ownership) check (passing it makes a caller cross-actor **privileged**). Mirrors the [dashboard](/docs/agent/governance/dashboard)'s `authorize` hook. See [Governance route authorization](/docs/agent/governance/authorization#governance-route-authorization).
 
-### `retriever` / `retrievalTopK`
+### `retriever` / `retrievalTopK` / `retrievalFilter`
 
-`retriever`: `Retriever | RetrieverFactory`. Enables always-on ("inject") RAG — before each turn the loop retrieves passages for the user message and folds them into the system prompt. Use `retrievers.pgvector({...})` or `retrievers.memory({...})`. **Omit → no injection.** `retrievalTopK`: `number` — how many passages inject-mode requests per run (**default `5`**). See [RAG & retrieval](/docs/agent/retrieval/rag).
+`retriever`: `Retriever | RetrieverFactory`. Enables always-on ("inject") RAG — before each turn the loop retrieves passages for the user message and folds them into the system prompt. Use `retrievers.pgvector({...})`, `retrievers.qdrant({...})`, or `retrievers.memory({...})`. **Omit → no injection.**
+
+`retrievalTopK`: `number` — how many passages inject-mode requests per run (**default `5`**).
+
+`retrievalFilter`: `(actor: Actor) => Record<string, unknown>`. Derives the metadata filter for each run's retrieval from the acting identity — the control that keeps one tenant's passages out of another tenant's context window:
+
+```ts
+retrievalFilter: (actor) => ({ tenantRef: actor.tenantRef }),
+```
+
+**Omit and inject-mode retrieval is UNSCOPED**: every actor retrieves over the whole corpus. That is fine for a single-tenant corpus and a leak in any other. See [RAG & retrieval](/docs/agent/retrieval/rag#scoping-retrieval-to-the-actor).
 
 ### `attachmentStaging` / `attachmentMaxBytes` / `attachmentAllowedContentTypes`
 
-`attachmentStaging`: `AttachmentStagingStore | AttachmentStagingFactory`. Upload-side seam for message attachments (image/PDF). When set, the provider mounts `POST /agent/attachments`. Use `attachmentStores.memory()` for tests, or your own store. **Omit → no upload route.** `attachmentMaxBytes`: per-file cap (**default 20 MiB**). `attachmentAllowedContentTypes`: allowed upload types (**default** common images + `application/pdf` + `text/*`). See [Attachments & multimodal](/docs/agent/authoring/attachments).
+`attachmentStaging`: `AttachmentStagingStore | AttachmentStagingFactory`. Upload-side seam for message attachments (image/PDF). When set, the provider mounts `POST /agent/attachments`. Use `attachmentStores.memory()` for tests, or your own store. **Omit → no upload route.** `attachmentMaxBytes`: per-file cap (**default 20 MiB**). `attachmentAllowedContentTypes`: allowed upload types, matched **exactly** — no wildcards, no prefix rule. The default is these seven:
+
+```ts
+['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf', 'text/plain', 'text/csv']
+```
+
+Anything else is `415`, `text/markdown` included. Passing this **replaces** the list rather than extending it, so spread the defaults you still want. See [Attachments & multimodal](/docs/agent/authoring/attachments).
 
 ### `actorDirectory`
 
-`ActorDirectory | ActorDirectoryFactory`. Read-side lookup from opaque `actorRef`s to human display labels for governance/dashboard surfaces (the read dual of `actorResolver`). Use `actorDirectories.memory({ labels })` or your own. **Omit → surfaces render raw refs.** See [Governance read-model](/docs/agent/governance/read-model#actor-labels).
+`ActorDirectory | ActorDirectoryFactory`. Read-side lookup from opaque `actorRef`s to human display labels (the read dual of `actorResolver`). When bound, every governance route returning an `actorRef` also returns an `actorLabel`, resolved in one batched lookup per response. Use `actorDirectories.memory({ labels })` or your own over the host's user table. **Omit → surfaces render raw refs.** See [Actor labels](/docs/agent/governance/read-model#actor-labels).
 
 ### `toolTransientRetry`
 
@@ -124,8 +143,25 @@ Leaving `actorResolver` unset makes every actor-scoped route reply `401`. This i
 
 `number`. The cap on model↔tool iterations per turn. **Default `8`.** A per-agent `AgentDefinition.maxSteps` overrides it for that agent.
 
+### `dashboard`
+
+`AgentDashboardConfig`. The bundled [governance console](/docs/agent/governance/dashboard). **Defaults to `{ enabled: true }`**, mounting the SPA at `<path>/dashboard`.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | `true` | `false` keeps the console's routes off entirely. |
+| `path` | `string` | `<path>/dashboard` | Where the SPA mounts. |
+| `authorize` | `(actor, ctx) => boolean \| Promise<boolean>` | — | An extra gate run after the actor resolves. Falsy or throwing → `403`. Same shape as `governanceAuthorize`, so one predicate can gate both. |
+| `onUnauthenticated` | `(ctx) => void \| Promise<void>` | — | Runs when the actor resolver itself rejects the caller. Set a `Location` header here (`ctx.response.redirect('/login')`) and the provider stands down so the redirect goes through, instead of writing its `401` JSON. |
+
+The console is **not mounted** without `governanceAuthorize`, and refuses to mount when `governanceQueries: false` — it is a browser client of routes that would not exist. Both refusals log a boot warning naming the responsible knob.
+
+<Callout type="warn">
+The console is not read-only: its Approvals section decides pending HITL calls and its Pricing section writes model rates. `authorize` is the switch that decides who can do that.
+</Callout>
+
 ### `emitDiagnostics`
 
-`boolean`. Emit `agora:agent:*` lifecycle events when [`@adonis-agora/diagnostics`](/docs/diagnostics) is installed. **Default `true`** (a no-op when the diagnostics package is absent).
+`boolean`. Emit `agora:agent:*` lifecycle events when [`@adonis-agora/diagnostics`](/docs/diagnostics) is installed. **Default `true`** (a no-op when the diagnostics package is absent). See [Diagnostics & tracing](/docs/agent/diagnostics) for the event names and payloads.
 
 <style>{`[data-req]{font-size:.7em;vertical-align:middle;margin-left:.4em;padding:.1em .5em;border-radius:999px;background:color-mix(in srgb, var(--color-fd-primary) 15%, transparent);color:var(--color-fd-primary);font-weight:600;text-transform:uppercase;letter-spacing:.03em}`}</style>

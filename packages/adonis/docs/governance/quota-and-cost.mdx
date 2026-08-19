@@ -22,9 +22,26 @@ interface QuotaStore {
 The loop uses it in two places:
 
 - **`check` runs before the first model call.** If the actor is over budget for the day, the turn throws `QuotaExceededError` and **no tokens are spent** — the model is never called. This is the fail-closed, pre-model gate.
-- **`bump` runs after each model turn**, adding that turn's `inputTokens + outputTokens` to the day's total.
+- **`bump` runs after each model turn**, handing the store that turn's `inputTokens + outputTokens`.
 
 The `day` (`YYYY-MM-DD`, UTC) is stamped once by the runner and threaded through the loop, so quota-by-day stays deterministic under replay.
+
+<Callout type="warn" title="`bump` is a notification, not necessarily an increment">
+The loop calls `bump` after every turn, but what the store does with it is the store's business — and
+the recommended `quotas.ledger` implements it as a **deliberate no-op**:
+
+```ts
+async bump(): Promise<void> {
+  // No-op: the ledger is the source of truth — recordUsage already persisted this turn's tokens.
+}
+```
+
+That is not an oversight. `store.recordUsage(...)` has already written the turn's tokens to
+`agent_token_usage`, which is what `check` reads; incrementing a second counter would double-count
+every turn. So if you write your own `QuotaStore` over the persisted ledger, `bump` should stay empty
+too. Only a store that keeps its **own** tally — `quotas.memory`, a bespoke Redis counter — should
+actually add anything in `bump`.
+</Callout>
 
 <Callout type="warn" title="Quota is opt-in, and off means open">
 Omit `quota` in the config and quotas are **disabled** — the loop skips the check and bump entirely (fail-open on budget). When you *do* configure a quota store, the budget gate is fail-closed. Wire one with the `quotas` factory to enforce spend limits:
@@ -41,7 +58,11 @@ export default defineConfig({
 `quotas.ledger` enforces the budget off the persisted token-usage ledger (one source of truth across replicas); `quotas.memory({ limitTokens })` is a single-process budget for tests and small apps. Any custom `QuotaStore` (e.g. a bespoke Redis counter) satisfies the same two methods.
 </Callout>
 
-A client reads its remaining budget from `GET /agent/quota/today`, which returns `{ usedTokens }` for the actor — summed from the usage ledger over the UTC day.
+`GET /agent/quota/today` reports what the calling actor has **spent** today: the response is exactly
+`{ usedTokens }`, summed from the usage ledger over the UTC day. It does not carry the limit or the
+remainder — the route reads the store directly and never consults the configured `QuotaStore`, so it
+answers the same way whether or not a budget is enforced. A UI that wants to show "820k of 1M used"
+needs the limit from its own config.
 
 ## The usage ledger
 
@@ -64,10 +85,35 @@ There are two ways a turn gets a dollar figure:
 2. **Estimated from the pricing table.** A direct provider (Anthropic / OpenAI / Bedrock) reports only tokens. When you configure a `pricingStore` (`pricingStores.lucid()`), cost is estimated from the `agent_model_pricing` table (the current price rows are fetched once per run and folded into `usage.costUsd`):
 
    ```text
-   cost = inputTokens/1e6 * inputPricePer1m + outputTokens/1e6 * outputPricePer1m
+   uncachedInput = inputTokens - cacheWriteTokens - cacheReadTokens
+
+   cost = uncachedInput/1e6    * inputPricePer1m
+        + cacheWriteTokens/1e6 * (cacheWritePricePer1m ?? inputPricePer1m)
+        + cacheReadTokens/1e6  * (cacheReadPricePer1m  ?? inputPricePer1m)
+        + outputTokens/1e6     * outputPricePer1m
    ```
 
-   against the *current* pricing row for the model. With no `pricingStore` bound, or for a model with no price row, `cost_usd` stays **`null`** (never a fabricated `0` — a real $0 turn and "we don't know" stay distinguishable); the tokens still count toward quota and totals. Seed prices once with `seedModelPrices(store, [...])`.
+   against the *current* pricing row for the model. Cache tokens are **subsets** of `inputTokens`, so
+   they are subtracted out before the input rate applies and then billed at their own rates — which is
+   the whole reason the pricing table carries those two extra columns. A cache rate left unset falls
+   back to the input rate, so a partially-filled row degrades to the naive formula rather than pricing
+   cached tokens at zero. Reasoning tokens are a subset of `outputTokens` and are already billed at the
+   output rate, so they never change the estimate.
+
+   Seed prices once with `seedModelPrices(store, [...])`.
+
+<Callout type="warn" title="`null` in the ledger, `0` in the rollups">
+An unpriced turn — no `pricingStore` bound, or no price row for that model — leaves `cost_usd`
+**`null`** in the ledger. That is deliberate: a genuinely free turn and "we have no idea what this
+cost" are different facts, and `null` keeps them apart.
+
+The **rollups** cannot preserve that distinction, because they are sums. `spendByModel`,
+`spendByActor` and `usageTrend` all declare a non-nullable `costUsd`, and an unpriced row contributes
+`0` to it — so a model you never priced shows real token counts next to `$0.00` of spend, which reads
+exactly like a free model. If a rollup total looks implausibly low, check the pricing table before you
+believe it. The per-run and per-usage rows (`GET /agent/governance/runs`, a run's `usage` ledger) keep
+their `null`s and are where you can tell the two apart.
+</Callout>
 
 ### The pricing table
 

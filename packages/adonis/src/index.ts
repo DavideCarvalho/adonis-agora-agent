@@ -12,6 +12,7 @@ export * from './spi/pricing-store.js';
 export * from './spi/agent-runner.js';
 export * from './spi/actor-resolver.js';
 export * from './spi/actor-directory.js';
+export * from './actor-labels.js';
 export * from './spi/attachment-staging.js';
 export * from './spi/governance-queries.js';
 export * from './spi/embedding-provider.js';
@@ -132,7 +133,12 @@ export {
   registerToolsFromBarrel,
 } from './tool-discovery.js';
 export type { ToolsBarrel, RegisteredTool } from './tool-discovery.js';
-export { AgentDepsFactory, delegateToolName, registerDelegateTools } from './agent-deps-factory.js';
+export {
+  AgentDepsFactory,
+  delegateToolName,
+  normalizeDelegateEdge,
+  registerDelegateTools,
+} from './agent-deps-factory.js';
 export type { AgentDepsFactoryConfig } from './agent-deps-factory.js';
 export { utcDay } from './agent-deps.js';
 export type { AgentDeps } from './agent-deps.js';

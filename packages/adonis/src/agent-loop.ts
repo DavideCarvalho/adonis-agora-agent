@@ -465,11 +465,12 @@ export async function runAgentLoop(
       //
       // This bypasses `ToolRegistry.invoke`, so it must apply the same two gates `invoke` applies
       // itself — the role/ability re-check AND the offered-tools (persona/agent allow-list) filter
-      // — BEFORE any persistence or event publication. Synthesized delegate specs
-      // (`registerDelegateTools` in agent-deps-factory.ts) carry no `roles`/`ability` on purpose —
-      // under `DefaultRolesPolicy` that is ADMIN-only, under an authz posture a tool with no
-      // `ability` is always denied — so an unauthorized delegate call must fail closed here exactly
-      // like `ToolRegistry.invoke` fails closed for every other tool kind.
+      // — BEFORE any persistence or event publication. A synthesized delegate spec
+      // (`registerDelegateTools` in agent-deps-factory.ts) carries whatever `roles`/`ability` its
+      // `delegatesTo` edge declared, and nothing when the edge is a bare string — under
+      // `DefaultRolesPolicy` that is ADMIN-only, under an authz posture a tool with no `ability` is
+      // always denied — so an unauthorized delegate call must fail closed here exactly like
+      // `ToolRegistry.invoke` fails closed for every other tool kind.
       if (toolType === 'agent') {
         const targetAgent = spec?.targetAgent ?? call.name;
         let task: string;

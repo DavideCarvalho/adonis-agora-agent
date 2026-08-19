@@ -83,9 +83,48 @@ A persisted tool call is addressable by exactly the id the model emitted — the
 - **`appendMessage` bumps the thread's `updated_at`**, so thread lists reflect the latest activity.
 - **`quotaToday` sums input + output tokens over the inclusive UTC day.** Cache tokens are subsets and are never re-added, so the sum is the whole-day spend.
 
-## Own the schema yourself
+## Auto-created tables, and turning that off
 
-Prefer to build the tables from your own migration or a setup hook? The package exports `createAgentTables(db)` and the `createTableStatements()` DDL (plus `AGENT_TABLES`), so you can provision them directly. For quick starts and scripts, `stores.lucid({ autoCreateTables: true })` runs the idempotent `CREATE TABLE IF NOT EXISTS` DDL on first use — convenient for tests, but production should prefer the versioned migration.
+`stores.lucid()` provisions the agent tables **on first use**, by running the idempotent
+`CREATE TABLE IF NOT EXISTS` DDL. That is the default — `autoCreateTables` is `true` unless you say
+otherwise, matching the convention `@adonis-agora/durable` and `@adonis-agora/authz` follow: a library
+manages its own tables so a fresh app, a test database, or a `node ace repl` script works without a
+migration step first. It is also what lets a pricing seed run before the very first agent turn.
+
+The setting governs the pricing store and the governance read-model too, since all three share the
+same tables.
+
+For a deployment where migrations are the only thing allowed to touch schema, turn it off and run the
+published migration instead:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  store: 'lucid',
+  stores: { lucid: stores.lucid({ autoCreateTables: false }) },
+  pricingStore: pricingStores.lucid({ autoCreateTables: false }),
+})
+```
+
+### Provisioning them yourself
+
+If you want the tables created from your own migration or setup hook rather than either mechanism,
+the DDL is exported:
+
+```ts
+import { ensureAgentTables, createAgentTables, createTableStatements, AGENT_TABLES } from '@adonis-agora/agent'
+
+// Idempotent: create anything missing, no-op when everything exists.
+await ensureAgentTables(db)
+
+// Or take the raw statements and run them however you like.
+for (const statement of createTableStatements()) {
+  await db.rawQuery(statement)
+}
+```
+
+`ensureAgentTables(db)` is exactly what `autoCreateTables: true` calls, so a migration built on it can
+never drift from the auto-created shape. `AGENT_TABLES` is the name map, useful for a migration that
+needs to reference a table it did not write.
 
 ## The in-memory store for tests
 

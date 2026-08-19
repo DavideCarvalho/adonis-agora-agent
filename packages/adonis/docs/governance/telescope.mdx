@@ -1,12 +1,12 @@
 ---
 title: Telescope "Agent" tab
-description: Add a first-party Telescope extension — an "Agent" dashboard surfacing recent runs, tool calls, approvals, delegations, and token usage, read from the agora:agent:* diagnostics the agent already publishes.
+description: A first-party Telescope extension — nine sections spanning live activity, spend, run reliability, governance and RAG, plus the provider/section API for adding your own panels.
 icon: Telescope
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-`agentTelescopeExtension` is the first-class [`@adonis-agora/telescope`](/docs/telescope) extension for the agent — an **"Agent" dashboard** surfacing recent runs, tool calls, approval decisions, delegations, and token usage. It lives on the `@adonis-agora/agent/telescope` subpath.
+`agentTelescopeExtension` contributes an **"Agent" dashboard** to [`@adonis-agora/telescope`](/docs/telescope): nine sections covering live run activity, spend and usage, run reliability, the governance feeds, and RAG retrieval quality. It lives on the `@adonis-agora/agent/telescope` subpath.
 
 ## Wire it
 
@@ -19,16 +19,134 @@ export default defineConfig({
 })
 ```
 
-That's it — one line adds the tab.
+One line adds the tab. Nothing else is required — but the tab is richer when the [governance read-model](/docs/agent/governance/read-model) is configured, for the reason below.
 
-## How it captures data
+## Two data sources, one tab
 
-<Callout type="info" title="Entirely entry-backed — no watcher, no read-model">
-The agent already publishes `agora:agent:*` lifecycle events onto the diagnostics bus. Telescope's generic diagnostics watcher records them as `type: 'diagnostic'`, `tag: 'lib:agent'`, and the extension's data providers read those recorded entries. The extension contributes **no watcher and no entry type** — the "Agent" dashboard is the entry point. `@adonis-agora/telescope` stays an optional, never-imported peer; the returned object structurally satisfies its `TelescopeExtension` contract.
+The panels read from two different places, and knowing which is which explains why some go blank and others don't.
+
+**Diagnostics entries** back the live-activity sections. The agent publishes `agora:agent:*` lifecycle events; Telescope's generic diagnostics watcher records them, and the providers read those entries back. This is a **capped rolling window** — the most recent 5,000 agent entries — so it shows what is happening now, not what happened last month. It needs no configuration at all.
+
+**The governance read-model** backs the spend, reliability, governance-activity and drill-down sections. Those providers query `AgentGovernanceQueries` directly, which means they read the persisted tables and survive restarts, deploys, and the entry window rolling over.
+
+<Callout type="info" title="Without the read-model, those panels are empty — not broken">
+When `governanceQueries` is unset (or `false`), the governance-backed providers each return their empty-but-valid shape — zeros, empty tables, a 0% success rate. The tab always mounts and the entry-backed sections keep working; you just get no spend or reliability numbers. Configure [`governanceQueries`](/docs/agent/governance/read-model) to fill them, and a [`pricingStore`](/docs/agent/governance/quota-and-cost) to put dollars in the spend panels rather than zeros.
 </Callout>
 
-The panels bind to these providers: active runs, token usage, tool-call success rate, runs / tokens / tool-calls / delegations over time, and recent runs / tool calls / approvals / delegations.
+## The sections
 
-## Live vs. durable
+| Section | Source | Panels |
+| --- | --- | --- |
+| **Runs** | entries | Active runs, 24h token usage, tool-call success rate |
+| **Run activity** | entries | Runs over time, tokens over time |
+| **Tools & approvals** | entries | Tool calls over time, recent tool calls, recent approvals |
+| **Delegations & tokens** | entries | Delegations over time, recent delegations |
+| **Spend & usage** | read-model | Total spend (USD), total tokens, spend by model (donut) |
+| **Spend detail** | read-model | Spend by model and by actor (tables + donut), usage trend |
+| **Run reliability** | read-model | Runs, success rate (gauge), failed runs, average duration, runs by agent, runs trend |
+| **Governance activity** | read-model | Recent runs, recent tool calls, recent threads, pending approvals, the approvals inbox, per-tool stats |
+| **RAG** | entries | Retrievals, zero-hit rate (gauge), mean chunks, retrieval trend |
 
-The Telescope tab shows **live activity** off the diagnostics stream — in-flight runs, streaming tool calls, forbidden attempts. For the durable, restart-surviving *history* and cost analytics, use the [governance read-model](/docs/agent/governance/read-model) and the [dashboard SPA](/docs/agent/governance/dashboard). The two are complementary surfaces over the same agent.
+A few of the numbers have caveats worth knowing before you act on them:
+
+- **Success rate** is `completed / runs`, gauged with warn at 95% and bad at 90%.
+- **Average run duration** is a mean over settled runs, not a percentile — a single very slow run moves it.
+- **Pending approvals** counts the inbox up to 500 rows, so a backlog larger than that reads as exactly 500.
+- **Zero-hit rate** is the fraction of retrievals that returned no passages, gauged with warn at 10% and bad at 25%. A rising line usually means the corpus lost coverage or a [retrieval filter](/docs/agent/retrieval/rag) is scoping too tightly.
+- The **spend rollups price an unpriced model at $0**, so seed the pricing table before reading a total as authoritative.
+
+Time-ranged read-model panels default to a trailing 30-day UTC window.
+
+## Deep links
+
+Run and thread ids render as plain text by default. Pass an href template and they become links into your own console:
+
+```ts
+agentTelescopeExtension({
+  runHref: '/admin/agent/runs/{runId}',
+  threadHref: '/admin/agent/threads/{threadId}',
+})
+```
+
+`{key}` placeholders are filled from the row. `runHref` is applied to every table's run column and `threadHref` to every thread column, in both the entry-backed and read-model sections — so one setting wires up the whole tab. Omit either and those cells stay plain. Point them at the [bundled console](/docs/agent/governance/dashboard) (`/agent/dashboard`) to jump straight from a Telescope panel into the full run trace.
+
+## Adding your own panels
+
+The extension takes host contributions on both axes: `providers` supply data, `sections` lay it out.
+
+```ts title="config/telescope.ts"
+import { agentTelescopeExtension } from '@adonis-agora/agent/telescope'
+import type { DataProvider, DashboardSection } from '@adonis-agora/agent/telescope'
+
+const supportEscalations: DataProvider = {
+  name: 'support.escalations',
+  async resolve(query, ctx) {
+    const rows = await countEscalations(query)
+    return { value: rows.length }
+  },
+}
+
+const supportSection: DashboardSection = {
+  title: 'Support',
+  cols: 2,
+  panels: [
+    { kind: 'stat', title: 'Escalations', data: { provider: 'support.escalations' } },
+    {
+      kind: 'table',
+      title: 'Recent escalations',
+      data: { provider: 'support.escalationRows' },
+      columns: [
+        { key: 'at', label: 'When' },
+        { key: 'threadId', label: 'Thread', link: { href: '/admin/agent/threads/{threadId}' } },
+      ],
+      paged: true,
+    },
+  ],
+}
+
+export default defineConfig({
+  extensions: [
+    agentTelescopeExtension({
+      providers: [supportEscalations],
+      sections: [supportSection],
+    }),
+  ],
+})
+```
+
+Both are **appended**, never spliced in: your providers come after the built-ins and your sections after the ninth, so the tab's own layout is stable across upgrades and a name collision is impossible in the direction that matters.
+
+<Callout type="warn" title="The `agent.` prefix is reserved, and it throws">
+Every built-in provider is named `agent.<something>`. A host provider whose `name` starts with `agent.` would shadow or be shadowed by one, so `agentTelescopeExtension()` **throws at construction** rather than resolving the ambiguity silently:
+
+```text
+agentTelescopeExtension: host-contributed data providers may not use the reserved "agent." prefix —
+rename "agent.mySpend" to your own namespace.
+```
+
+Namespace yours under your app or package (`support.`, `acme.`) and the collision cannot happen.
+</Callout>
+
+### The panel types
+
+`Panel` is a discriminated union on `kind`:
+
+| `kind` | Data shape the provider must return | Extras |
+| --- | --- | --- |
+| `stat` | `{ value: number }` | `format`, `accent`, `spark`, `thresholds` |
+| `gauge` | `{ value: number }` | `min`, `max`, `format`, `thresholds` |
+| `timeseries` | `{ rows: [{ label, ...series }] }` | `series` (required), `style: 'area' \| 'stacked'` |
+| `table` | `{ rows }` — or `{ rows, total, page, limit }` when `paged` | `columns` (required), `paged` |
+| `breakdown` | `{ segments: [{ label, value }] }` | `style: 'donut' \| 'bar'` |
+| `topN` | `{ rows }` | `limit` |
+| `distribution` | a distribution payload | `markers: ('p50' \| 'p95' \| 'p99')[]`, `format` |
+
+`format` is `'number' | 'percent' | 'duration' | 'rate'`. `thresholds` is `{ warn, bad, direction }`, where `direction` says which way is bad — `'down-bad'` for a success rate, `'up-bad'` for an error rate — so the colouring follows the metric's meaning rather than its sign.
+
+`paged: true` opts a table into prev/next controls: the UI re-resolves the provider with `query.page` (1-based) and `query.limit` merged in, and the provider must then return `{ rows, total, page, limit }` instead of a bare `{ rows }`. None of the built-in tables use it; it is there for host tables over data large enough to need it.
+
+`DataBinding` is `{ provider, query? }` — the `query` object is passed straight to `resolve(query, ctx)`, which is how a panel asks its provider for a specific window or bucket count.
+
+## Alongside the console
+
+The Telescope tab and the [bundled console](/docs/agent/governance/dashboard) read overlapping data and are still worth having both. Telescope is where the agent sits next to everything else in your app — one place to notice that runs spiked when a deploy went out. The console is agent-specific and goes deeper: full run traces, thread drill-downs, an approvals inbox you can act on, and a pricing editor. Use `runHref`/`threadHref` to make the first hand off to the second.

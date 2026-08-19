@@ -1,0 +1,152 @@
+---
+title: Programmatic API
+description: Run a turn from a job, a queue, or a command instead of an HTTP request — the AgentService facade, what it does and does not enforce, and passing model settings through to the AI SDK.
+icon: Terminal
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The `/agent/*` routes are a thin shell: they resolve the actor, check ownership, and delegate to `AgentService`. That service owns no HTTP, so anything else in your app can call it — a queue worker summarising a document overnight, an Ace command backfilling a dataset, a webhook handler that answers a question and posts the reply somewhere else.
+
+## Resolving the service
+
+It is bound in the container under its own class:
+
+```ts title="app/jobs/summarize_thread.ts"
+import { inject } from '@adonisjs/core'
+import { AgentService } from '@adonis-agora/agent'
+
+@inject()
+export default class SummarizeThread {
+  constructor(private readonly agent: AgentService) {}
+
+  async handle(payload: { userId: string; documentId: string }) {
+    const { runId, threadId } = await this.agent.chat({
+      actor: { id: payload.userId, roles: ['MEMBER'] },
+      message: `Summarize document ${payload.documentId} in three bullets.`,
+      agentName: 'summarizer',
+    })
+  }
+}
+```
+
+Outside a class, `await app.container.make(AgentService)` does the same thing. There is no `services/main` module for this package — import the class and resolve it.
+
+## Starting a turn
+
+```ts
+interface ChatParams {
+  actor: Actor                       // required, already resolved
+  message: string
+  threadId?: string                  // omit to create a new thread
+  agentName?: string                 // omit for the default agent
+  personaId?: string
+  pageContext?: PageContext
+  attachments?: MessageAttachment[]  // already staged
+}
+
+await agent.chat(params)  // → { runId, threadId }
+```
+
+<Callout type="warn" title="`chat` starts the turn, it does not await it">
+It returns as soon as the run has been handed to the runner. Under the inline runner the loop then runs detached in-process — so a worker that returns immediately after `chat()` can exit mid-turn and lose the run.
+
+Consume the stream to know when it is done:
+
+```ts
+const { runId } = await agent.chat({ actor, message })
+
+let text = ''
+for await (const frame of agent.subscribe(runId)) {
+  if (frame.t === 'text') text += frame.v
+}
+// The stream closes when the run completes.
+```
+
+Or set [`durable: true`](/docs/agent/durability/durable-runner), which is the right shape for queue work anyway: the turn becomes a replay-safe workflow that survives the worker restarting.
+</Callout>
+
+## The rest of the surface
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `chat(params)` | `{ runId, threadId }` | Starts a turn. |
+| `subscribe(runId)` | `AsyncIterable<StreamFrame>` | The live token stream — `{ t: 'text', v }` and `{ t: 'component', name, data }`. |
+| `approve(runId, toolCallId)` | `void` | Deliver a HITL approval. |
+| `reject(runId, toolCallId, reason?)` | `void` | Deliver a rejection; `reason` is fed back to the model. |
+| `cancel(runId)` | `void` | Abort a run. |
+| `runOwner(runId)` | `string \| null` | The owning `actorRef`, for your own ownership checks. |
+| `threadOwner(threadId)` | `string \| null` | Likewise. |
+| `listThreads(actorRef)` | `ThreadSummary[]` | |
+| `getThread(threadId)` | `ThreadDetail \| null` | |
+| `deleteThread(threadId)` | `void` | Soft delete. |
+| `forkThread(threadId, fromMessageId)` | `ThreadSummary` | Branch or regenerate. |
+| `quotaToday(actorRef)` | `{ usedTokens }` | |
+| `resolvePersona(agentName?, id?)` | `Persona \| undefined` | Synchronous. |
+| `personaCatalog(agentName?)` | `{ id, label }[]` | Synchronous. |
+
+## What it does not enforce
+
+`AgentService` is the orchestration layer, not the security layer. Three checks live in the route handlers and **do not run** when you call the service directly:
+
+- **Identity.** `params.actor` is whatever you pass. There is no `ActorResolver`, no `401` — you are asserting who the caller is, so derive it from something trustworthy. Passing an actor with roles it does not hold silently grants those tools.
+- **Ownership.** Nothing stops `approve(runId, …)` on a run belonging to someone else, or `getThread` on a thread the actor does not own. `runOwner`/`threadOwner` are there so you can apply the check yourself:
+
+  ```ts
+  const owner = await agent.runOwner(runId)
+  if (owner !== actor.id) throw new ForbiddenException()
+  await agent.approve(runId, toolCallId)
+  ```
+
+- **Per-agent actor resolvers.** An `AgentDefinition.actorResolver` is a `POST /agent/chat` concern; the service never consults one.
+
+What **does** still apply is everything inside the loop: the tool authorizer gates every tool call, `action` tools still suspend for approval, and the quota is still checked before the model runs. The governance the agent enforces is intact; the governance the HTTP layer enforces is yours to reproduce.
+
+<Callout type="warn" title="HITL from a job will hang">
+An `action` tool suspends the run waiting for a decision. From a job with nobody watching, that is a run that never finishes. Either keep human-approval tools off the agent a job invokes (`tools:` on its definition), or have the job deliver the decision itself.
+
+A *delegated* sub-agent is handled for you: a nested run has no human to ask, so its `action` tools are auto-declined rather than left hanging.
+</Callout>
+
+## Model settings
+
+`aiSdkModel(model, options)` takes a second argument that is passed straight through to the AI SDK's `streamText`:
+
+```ts title="config/agent.ts"
+import { aiSdkModel } from '@adonis-agora/agent/ai-sdk'
+import { anthropic } from '@ai-sdk/anthropic'
+
+export default defineConfig({
+  model: () => aiSdkModel(anthropic('claude-sonnet-4-5'), {
+    temperature: 0.2,
+    maxOutputTokens: 4096,
+    maxRetries: 3,
+    headers: { 'anthropic-beta': 'context-1m-2025-08-07' },
+    providerOptions: {
+      anthropic: { thinking: { type: 'enabled', budgetTokens: 2048 } },
+    },
+  }),
+})
+```
+
+`AiSdkModelOptions` **is** the SDK's `CallSettings` — `temperature`, `topP`, `topK`, `maxOutputTokens`, `presencePenalty`, `frequencyPenalty`, `stopSequences`, `seed`, `maxRetries`, `headers`, `providerOptions` — plus one extra field below. Whatever the SDK accepts there, this accepts.
+
+<Callout type="info" title="Five keys the adapter owns">
+`model`, `instructions`, `messages`, `tools`, and `abortSignal` are set by the adapter from the turn and always win over anything you pass. Everything else is yours.
+</Callout>
+
+### `experimental_download`
+
+The one non-`CallSettings` field. The AI SDK's default file downloader refuses localhost and private hostnames as an SSRF guard, which breaks [attachments](/docs/agent/authoring/attachments) presigned against a local object store — MinIO in dev, typically — with `AI_DownloadError: URL with hostname localhost is not allowed`.
+
+Attachment URLs come from your own staging store, never from user input, so relaxing that guard is a legitimate call to make. A ready-made downloader ships for it:
+
+```ts
+import { aiSdkModel, attachmentFetchDownloader } from '@adonis-agora/agent/ai-sdk'
+
+model: () => aiSdkModel(openai('gpt-4o'), {
+  experimental_download: attachmentFetchDownloader,
+})
+```
+
+Set it only where you need it — in development, or wherever your staging store is genuinely private-network. In production against S3 or GCS, the default guard is doing useful work.

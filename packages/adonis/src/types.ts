@@ -34,8 +34,9 @@ export interface ToolSpec {
   roles?: string[];
   /**
    * An authorization ability name (e.g. 'cache.purge'). Consumed by an ability-aware RolesPolicy
-   * such as the `@dudousxd/nestjs-agent-authz` Gate adapter. Apps that don't use authz ignore it
-   * and rely on `roles` instead — both live on the same SPI, so neither is required.
+   * such as the `@adonis-agora/agent/authz` Bouncer adapter (`authzToolAuthorizer`), which denies
+   * every tool that declares none. Apps that don't use authz ignore it and rely on `roles` instead —
+   * both live on the same SPI, so neither is required.
    */
   ability?: string;
 }
@@ -194,10 +195,40 @@ export interface AgentRunInput {
 }
 
 /**
- * A named agent: its prompt, the tools it may use, and its personas. Multiple definitions are
- * registered via `AgentModule.forFeature([...])`; an orchestrator delegates to others through
- * `ctx.runAgent(name, task)`. Model/store/sink/governance are shared from the module unless
- * overridden here.
+ * One `agent → agent` delegation edge, with the authorization the synthesized `ask_<target>` tool
+ * carries. The object form exists because delegation goes through the same {@link ToolSpec} gate as
+ * every other tool: a spec with neither `roles` nor `ability` is denied by both shipped authorizers,
+ * so an orchestrator that must actually delegate has to say who may.
+ *
+ * ```ts
+ * // Role-based (the default `DefaultToolAuthorizer`):
+ * { name: 'orchestrator', delegatesTo: [{ agent: 'researcher', roles: ['ANALYST', 'ADMIN'] }] }
+ *
+ * // Ability-based (the `@adonis-agora/agent/authz` Bouncer adapter):
+ * { name: 'orchestrator', delegatesTo: [{ agent: 'researcher', ability: 'agent.delegate' }] }
+ * ```
+ */
+export interface DelegateEdge {
+  /** Name of the agent to delegate to — the `target` in `ask_<target>`. */
+  agent: string;
+  /**
+   * Roles allowed to invoke the synthesized delegate tool. Omitted → the `RolesPolicy` default,
+   * which is ADMIN-only under {@link import('./authorizer.js').DefaultToolAuthorizer}.
+   */
+  roles?: string[];
+  /**
+   * Ability the synthesized delegate tool declares. REQUIRED under an ability-aware authorizer such
+   * as `authzToolAuthorizer`, which denies every tool that declares none — omit it there and the
+   * delegation is denied on every call.
+   */
+  ability?: string;
+}
+
+/**
+ * A named agent: its prompt, the tools it may use, and its personas. Definitions are registered in
+ * `config/agent.ts` under `agents: [...]`; an orchestrator delegates to the others it names in
+ * {@link AgentDefinition.delegatesTo}, which the factory turns into `ask_<target>` tools. Model,
+ * store, sink and governance are shared from the module config unless overridden here.
  */
 export interface AgentDefinition {
   name: string;
@@ -205,8 +236,18 @@ export interface AgentDefinition {
   systemPrompt?: string | PromptBuilder;
   /** Allow-list of tool names this agent may use (subset of all registered tools). */
   tools?: string[];
-  /** Names of other agents this agent may delegate to (auto-registered as `agent`-kind tools). */
-  delegatesTo?: string[];
+  /**
+   * Other agents this agent may delegate to. Each edge is auto-registered as an `agent`-kind tool
+   * named `ask_<target>`, which the loop authorizes exactly like any other tool.
+   *
+   * A bare string declares the edge with no authorization annotation, which is fail-closed on
+   * purpose: under the default {@link import('./authorizer.js').DefaultToolAuthorizer} a tool with
+   * no `roles` is ADMIN-only, and under the `@adonis-agora/agent/authz` adapter a tool with no
+   * `ability` is denied outright — so under authz a bare edge can never be called. Use the
+   * {@link DelegateEdge} object form to declare the `roles` and/or `ability` the delegate tool
+   * carries.
+   */
+  delegatesTo?: (string | DelegateEdge)[];
   personas?: Persona[];
   defaultPersona?: string;
   modelId?: string;

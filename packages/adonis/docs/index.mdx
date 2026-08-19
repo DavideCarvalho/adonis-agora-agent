@@ -10,8 +10,9 @@ import { Cards, Card } from 'fumadocs-ui/components/card';
 
 **`@adonis-agora/agent`** adds an AI agent to your AdonisJS app: streaming chat, tool-calling, and multi-agent delegation — all behind a governance layer that is **fail-closed by default**. A tool a user's role can't reach is never even offered to the model; an `action` tool never runs without a human approving it; the caller's identity is never fabricated. You wire a model, declare a few tools, and get a governed `/agent/chat` endpoint that streams tokens over SSE.
 
-<Callout type="info" title="Alpha">
-  This package is published as `0.12.0`. Everything the initial `0.1.0` deferred — the durable runner, RAG (memory + pgvector), the governance read-model, the dashboard SPA, the Telescope tab, the `@adonis-agora/authz` (Bouncer) adapter, the governed SQL data satellite, multimodal attachments, and Redis streaming — has since shipped. The API documented here reflects the current shipped surface — grounded in the code, not a wishlist. Pin a version and expect refinements before `1.0`.
+<Callout type="info" title="Pre-1.0">
+  Everything documented here is in the published package — this is a description of the code, not a
+  wishlist. The surface is still moving, though: pin a version and expect refinements before `1.0`.
 </Callout>
 
 ## The problem it solves
@@ -19,7 +20,7 @@ import { Cards, Card } from 'fumadocs-ui/components/card';
 Bolting an LLM onto a real app is rarely "call the API and stream the reply". You need the model to *do* things — read a record, purge a cache, book a slot — and the moment it can act, you inherit a governance problem: which tools may this user reach, which actions need a human's sign-off, how do you meter token spend per tenant, and how do you keep a full transcript. `@adonis-agora/agent` collapses that into a few guarantees:
 
 - **Governed by construction.** Tool visibility is a role/persona intersection, `action` tools require human approval (HITL), quotas are checked *before* the model runs, and the acting identity comes from your auth — never invented.
-- **The loop is one thing.** A single provider-agnostic agent loop drives `model → tools → approval → model` until the turn settles. The same loop body runs in-process today and is designed to run as a durable workflow later — no rewrite.
+- **The loop is one thing.** A single provider-agnostic agent loop drives `model → tools → approval → model` until the turn settles. The same loop body runs in-process or as a durable workflow — one flag, no rewrite.
 - **Everything is recorded.** Threads, messages, tool calls, and token/cost usage persist to SQL through Lucid, so you have a durable transcript and a governance ledger from day one.
 
 ## One loop, two runners
@@ -113,6 +114,9 @@ The response is an SSE stream: an `event: meta` frame with the run and thread id
 - **Multi-agent delegation** — declare `delegatesTo` and an orchestrator gets synthesized `ask_<agent>` tools that hand work to other named agents.
 - **Cost & quota accounting** — a per-turn usage ledger, a daily token quota checked before the model runs, and a pricing table for cost estimates.
 - **Durable persistence** — the agent tables on Postgres / MySQL / SQLite via Lucid, plus an in-memory twin for tests.
+- **A shipped browser client** — a framework-free SSE client that resumes across a dropped connection, and a `useAgentChat` React hook over it.
+- **An MCP server** — the same governed registry exposed to external assistants over Streamable HTTP, with OAuth or API-key auth.
+- **Retrieval** — memory, pgvector, and Qdrant backends behind one `Retriever` SPI, with tenant-scoped metadata filters.
 
 ## Where to go next
 
@@ -127,7 +131,8 @@ The response is an SSE stream: an `event: meta` frame with the run and thread id
   <Card title="RAG & retrieval" href="/docs/agent/retrieval/rag" description="Retriever/embedding/reranker SPIs, memory & pgvector stores, and always-on inject retrieval." />
   <Card title="Governance read-model" href="/docs/agent/governance/read-model" description="Spend, run lifecycle, tool stats, reliability, and the approvals inbox over /agent/governance/*." />
   <Card title="State store" href="/docs/agent/stores/lucid" description="The Lucid tables, the migration, and the in-memory store." />
-  <Card title="Streaming & HTTP" href="/docs/agent/streaming-and-http" description="The routes, the SSE envelope, HITL, re-attach, and consuming from React." />
+  <Card title="Streaming & HTTP" href="/docs/agent/streaming-and-http" description="The routes, the SSE envelope, HITL, and re-attaching to a live run." />
+  <Card title="Browser client & React" href="/docs/agent/browser-client" description="The shipped SSE client and the useAgentChat hook — streaming, resume, and component frames." />
+  <Card title="MCP server" href="/docs/agent/mcp" description="Expose the same governed tool registry to Claude, Cursor, and any other MCP client." />
   <Card title="Testing" href="/docs/agent/testing" description="The FakeModelProvider, echoScript, and in-memory doubles." />
-  <Card title="Roadmap" href="/docs/agent/roadmap" description="What @adonis-agora/agent ships — the durable runner, RAG, dashboards, the authz adapter, and more — and the few things still deferred." />
 </Cards>

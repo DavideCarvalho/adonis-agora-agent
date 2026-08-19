@@ -1,23 +1,129 @@
 ---
-title: Governance dashboard
-description: Mount @adonis-agora/agent-dashboard — a read-only React governance console served by a thin AdonisJS provider, gated by the same actor resolver as the governance routes.
+title: Governance console
+description: The bundled React console — nine sections over the governance read-model, an approvals inbox that decides, a pricing editor, and the gate that decides whether it mounts at all.
 icon: LayoutDashboard
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-A dependency-light React SPA (`@adonis-agora/agent-dashboard`) that visualizes the agent's own [governance read-model](/docs/agent/governance/read-model) — spend by model and by actor, the daily usage/cost trend, recent runs, threads and tool calls, a reliability panel, an approvals inbox, and today's quota. It's a pure consumer of the agent provider's *real* routes; the provider that serves it is a thin static server, no bundled API.
+A dependency-light React SPA over the agent's own [governance read-model](/docs/agent/governance/read-model) — spend by model and by actor, the usage trend, a filterable run list with full traces, thread drill-downs, per-tool stats, reliability, an approvals inbox, today's quota, and a model-pricing editor. It is bundled into `@adonis-agora/agent` itself and served by a thin static provider; there is no bundled API, every panel reads the same routes your own client could.
 
-## Install & mount
+## It is already registered
 
-`node ace configure @adonis-agora/agent` already registers an **embedded** dashboard provider — the SPA is bundled straight into `@adonis-agora/agent`'s own `dist/` at build time, so there is nothing extra to install or register. It mounts at `<agentPath>/dashboard` (default `/agent/dashboard`), reading `config/agent.ts` for the agent `path` and `actorResolver`, and gates every request through the **same** actor resolver as the governance routes — an app that never configured a resolver exposes nothing.
+`node ace add @adonis-agora/agent` registers the dashboard provider along with the agent provider, so there is nothing to install. It mounts at `<agentPath>/dashboard` — `/agent/dashboard` by default — reading `config/agent.ts` for the agent `path` and `actorResolver`.
 
-<Callout type="info" title="Standalone install still works">
-`@adonis-agora/agent-dashboard` also ships as its own installable package with its own provider, serving the identical SPA, for apps that configured it before the embedded provider existed or that want its independent release cadence:
+<Callout type="warn" title="Two gates decide whether it mounts at all">
+The console is a browser client of `/agent/governance/*`, so it refuses to mount when those routes would not exist:
 
-```bash
-node ace add @adonis-agora/agent-dashboard
+- **No `governanceAuthorize`** → not mounted. Every panel but Quota would `404`, which is worse than no console. Set the gate in `config/agent.ts` (typically an ADMIN check) to bring the routes and the console back together, or `governanceAuthorize: () => true` to deliberately restore the old behaviour of letting any authenticated actor read them.
+- **`governanceQueries: false`** → not mounted. You turned the read-model off explicitly; the console has nothing to show.
+
+Both log a boot warning naming the responsible knob. (`governanceQueries` left *unset* is fine — it defaults to the Lucid read-model when your main store is Lucid.)
+</Callout>
+
+## Configuration
+
+The console's settings live in the same `config/agent.ts` object, under `dashboard`:
+
+```ts title="config/agent.ts"
+import { defineConfig } from '@adonis-agora/agent'
+
+export default defineConfig({
+  // ...
+  governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
+
+  dashboard: {
+    enabled: true,
+    path: '/ops/agent',
+    authorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
+    onUnauthenticated: (ctx) => ctx.response.redirect('/login'),
+  },
+})
 ```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | `false` keeps the routes off entirely. |
+| `path` | `<agentPath>/dashboard` | Where the SPA mounts. |
+| `authorize` | — | An **extra** gate, run after the actor resolves. Return `false` (or throw) → `403`. |
+| `onUnauthenticated` | — | Runs when the actor resolver itself rejects the caller. |
+
+`authorize` and `governanceAuthorize` take the same shape deliberately, so one predicate can gate both the JSON routes and the console:
+
+```ts
+const isAdmin = (actor: Actor) => actor.roles?.includes('ADMIN') ?? false
+
+export default defineConfig({
+  governanceAuthorize: isAdmin,
+  dashboard: { authorize: isAdmin },
+})
+```
+
+Note the asymmetry: `governanceAuthorize` gates the data, `dashboard.authorize` gates the page. Omitting the latter means any actor your resolver accepts can *load* the console — but every panel in it still goes through `governanceAuthorize`, so they will see an empty shell of `403`s. Setting both is what produces a coherent experience.
+
+### Redirecting instead of returning JSON
+
+By default a rejected request gets `{ "error": ... }` with a `401` or `403`. For a console a human opens in a browser, a redirect to your login page is friendlier. `onUnauthenticated` gets the `HttpContext`, and if it sets a `Location` header the provider stands down and lets the redirect through:
+
+```ts
+dashboard: {
+  onUnauthenticated: (ctx) => ctx.response.redirect('/login?next=/agent/dashboard'),
+}
+```
+
+The same applies on the `403` path: an `authorize` that redirects instead of returning `false` sends the caller wherever you point it. The hook is context-only and never receives an actor — it runs precisely when there isn't one, and the resolver's contract is that it never invents an identity.
+
+<Callout type="info" title="Thrown messages are dev-only">
+When the resolver or `authorize` throws, the response body carries the error message only outside production. In production it is the generic `unauthorized` / `forbidden`.
+</Callout>
+
+## What is in it
+
+Nine sections, reachable by hash (`#runs`, `#approvals`, …), with a from/to day picker scoping the Overview and a light/dark toggle.
+
+| Section | What it shows |
+| --- | --- |
+| **Overview** | Spend and token stats, spend by model (donut + table), the usage trend, spend by actor. |
+| **Runs** | Filterable, cursor-paginated run list (status, agent, actor, date range). A row opens the full trace. |
+| **Threads** | Recent threads, and a drill-down with lifetime usage, recent runs and recent messages. |
+| **Tool calls** | The recent tool-call feed. |
+| **Approvals** | The cross-actor HITL inbox — **and the approve/reject buttons.** |
+| **Tools** | Per-tool rollup: calls, failures, rejections, mean duration. Sortable. |
+| **Reliability** | Run-outcome breakdown and reliability stats. |
+| **Quota** | Today's spend for the calling actor — the one per-actor panel. |
+| **Pricing** | Current per-1M model rates, **and an editor to upsert them.** |
+
+<Callout type="warn" title="It is not a read-only console">
+Two sections write. **Approvals** posts to `/agent/tool-call/approve` and `/agent/tool-call/reject`, which resumes or rejects a suspended run — a real, irreversible side effect on someone else's conversation. **Pricing** posts to `/agent/governance/pricing`, which changes what every subsequent turn costs and, because rollups are computed against current prices, what your spend reports say.
+
+Gate it accordingly. `dashboard.authorize` is the switch, and "anyone authenticated" is not the right value for it.
+</Callout>
+
+The **run trace** (a row in Runs) is where most investigations end up: the run's summary stats, its message timeline, every tool call with the pending-approval subset called out, and the usage ledger row by row — which is where you can see a `null` cost and know the model was unpriced rather than free.
+
+**Pricing** shows its own panel rather than a generic error when the API answers `501`; that means no `pricingStore` is bound, so there is nothing to edit. See [Quota & cost](/docs/agent/governance/quota-and-cost).
+
+## Reading the routes yourself
+
+The console's fetch client is exported, so your own admin UI can read the same data without reimplementing the endpoints:
+
+```ts
+import { AgentClient } from '@adonis-agora/agent-dashboard/client'
+
+const client = new AgentClient({ baseUrl: '/agent' })
+
+const spend = await client.spendByModel({ fromDay: '2026-03-01', toDay: '2026-03-07' })
+const runs = await client.runs({ status: 'failed', limit: 50 })
+const trace = await client.runDetail(runs.runs[0].runId)
+const thread = await client.threadDetail(trace.run.threadId)
+const prices = await client.pricing()
+```
+
+Twelve read methods and three writes (`approveToolCall`, `rejectToolCall`, `upsertPrice`). It is a plain `fetch` wrapper — no React, no state — so it works from a server-side script as readily as from a browser.
+
+## The standalone package
+
+`@adonis-agora/agent-dashboard` also ships as its own package with its own provider, serving the identical SPA, for apps that wired it before the bundled provider existed or that want its independent release cadence. Register it by hand:
 
 ```ts title="adonisrc.ts"
 providers: [
@@ -26,35 +132,10 @@ providers: [
 ]
 ```
 
-Both providers read the exact same `config('agent').dashboard` block below. Register only ONE of the two — mounting both at the same path throws AdonisJS's "duplicate route" error at boot.
+Both providers read the same `agent.dashboard` block and run the same gating logic. **Register only one** — mounting both at the same path throws AdonisJS's duplicate-route error at boot, so if you add the standalone one, drop `@adonis-agora/agent/dashboard_provider` from `adonisrc.ts` first.
+
+<Callout type="info" title="No `node ace add` for the standalone package">
+It exposes no `configure` hook, so `node ace add @adonis-agora/agent-dashboard` has nothing to run. Install it and register the provider manually as above.
 </Callout>
 
-<Callout type="warn" title="It mounts only when the read-model it reads does">
-The console consumes `/agent/governance/*` and `/agent/quota/today`. Those governance routes exist only when the agent config carries a `governanceAuthorize` gate, so **the console refuses to mount without that gate too** — it would otherwise load and `404` on every panel but Quota. Set `governanceAuthorize` in `config/agent.ts` (e.g. an ADMIN check) to bring back the routes and the console together, or `governanceAuthorize: () => true` to deliberately restore the old behaviour of letting ANY authenticated actor read them. The provider logs a boot warning when it declines. (`pricingStore` is what fills in cost.) See [Governance read-model](/docs/agent/governance/read-model).
-</Callout>
-
-## Toggle & relocate
-
-An optional `config('agent').dashboard` block toggles the SPA and overrides its mount path (it reuses the agent's `path` and `actorResolver`, so it stays behind the same gating):
-
-```ts title="config/agent.ts"
-export default defineConfig({
-  // ...
-  dashboard: { enabled: true, path: '/agent/dashboard' },
-})
-```
-
-Set `enabled: false` to keep the routes off entirely.
-
-## Reuse the browser client
-
-The framework-free fetch client is exported for your own UI:
-
-```ts
-import { AgentClient } from '@adonis-agora/agent-dashboard/client'
-
-const client = new AgentClient({ baseUrl: '/agent' })
-const spend = await client.spendByModel({ fromDay: '2026-03-01', toDay: '2026-03-07' })
-```
-
-For a live-activity view (in-flight runs, streaming tool calls) rather than the durable history, see the [Telescope "Agent" tab](/docs/agent/governance/telescope).
+For live in-flight activity alongside the rest of your app's instrumentation, see the [Telescope "Agent" tab](/docs/agent/governance/telescope) — and set its `runHref`/`threadHref` to `/agent/dashboard` so a Telescope panel links straight into a full trace here.

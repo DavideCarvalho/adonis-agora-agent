@@ -1,5 +1,5 @@
 {
   "title": "Retrieval (RAG)",
   "icon": "Search",
-  "pages": ["rag", "pgvector", "media-ingestion"]
+  "pages": ["rag", "pgvector", "qdrant", "corpus-lifecycle", "media-ingestion"]
 }

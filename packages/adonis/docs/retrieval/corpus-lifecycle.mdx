@@ -1,0 +1,167 @@
+---
+title: Corpus lifecycle
+description: Keeping an index correct after ingestion — relabel metadata without re-embedding, enumerate what is indexed, delete by filter, and the guard that refuses to wipe the corpus.
+icon: RefreshCw
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Ingestion is the easy half. The hard half arrives later: a document's ACL changes, a tenant offboards, a source is retired, and the index has to follow. Re-ingesting everything is the obvious answer and the wrong one — it re-embeds text that has not changed, which costs money, takes time, and can shift chunk boundaries under a corpus your users are querying right now.
+
+`VectorStore` carries three optional methods for exactly this, implemented by all three shipped backends.
+
+## Relabel without re-embedding
+
+`updateMetadata(documentId, patch)` rewrites the metadata on every chunk of a document and **leaves the vectors and text untouched**. That is the entire point: an ACL change is a metadata change, and it should not cost an embedding call.
+
+```ts
+// The Q3 plan is no longer internal-only.
+const chunks = await store.updateMetadata?.('q3-plan', {
+  audience: ['public', 'role:MEMBER'],
+  reviewedAt: '2026-08-18',
+})
+// → number of chunks written
+```
+
+The patch is a **shallow JSON Merge Patch**:
+
+| Value | Effect |
+| --- | --- |
+| any non-null value | Replaces that key **wholesale**. Arrays and nested objects are replaced, never merged into. |
+| `null` | **Deletes** the key. |
+| `undefined` | Ignored — treated as "not present", since JSON has no `undefined`. |
+| key absent | Left alone. |
+
+```ts
+await store.updateMetadata?.('q3-plan', {
+  audience: ['public'],   // replaces the whole array — not appended to
+  draft: null,            // removes the key entirely
+  reviewedBy: undefined,  // no-op
+})
+```
+
+Shallow is deliberate. A recursive merge would make `{ acl: { roles: ['ADMIN'] } }` ambiguous — is that a replacement or an addition? — and an ACL is the last place to want ambiguity.
+
+Return value and edge cases:
+
+- Returns the **number of chunks written**.
+- An unknown `documentId` returns `0` without throwing.
+- A patch with no effective keys returns `0` and issues no write at all.
+- The new metadata is immediately filterable — a `retrieve` with the new value finds the document on the next call.
+
+## Enumerate what is indexed
+
+`listDocumentIds(filter?)` returns the distinct document ids matching a filter, using the **same filter semantics as `retrieve`**:
+
+```ts
+// Every document this tenant can see.
+const ids = await store.listDocumentIds?.({ tenantRef: 'acme' })
+
+// Everything indexed.
+const all = await store.listDocumentIds?.()
+```
+
+It is the cheap counterpart to `listDocuments`, which returns ids *and* metadata: `listDocumentIds` never fetches the payload blob, so it is what you want for a reconciliation loop over a large corpus.
+
+Because it shares the filter path with `retrieve`, it answers the question that actually matters during an audit — "what can this actor reach?" — rather than an approximation of it. An empty-array filter value denies everything here too, so `listDocumentIds({ audience: [] })` is `[]`, exactly as a search with that filter returns nothing.
+
+## Delete by filter
+
+`removeWhere(filter)` deletes every chunk matching a filter and returns how many it removed:
+
+```ts
+// Offboard a tenant.
+const removed = await store.removeWhere?.({ tenantRef: 'acme' })
+
+// Retire one source.
+await store.removeWhere?.({ source: 'legacy-handbook.pdf' })
+```
+
+It is one operation, not an enumerate-then-loop: pgvector issues a single `DELETE … RETURNING`, and Qdrant a single filtered delete. On a large corpus that is the difference between a query and a job.
+
+<Callout type="warn" title="`removeWhere({})` throws, on purpose">
+An empty filter would match every chunk in the store. Far more often than not, that is a filter object built wrong — a variable that came back `undefined`, a spread of an empty result — rather than someone deliberately asking to erase the corpus. So it refuses:
+
+```ts
+import { UnsafeRemovalError } from '@adonis-agora/agent'
+
+try {
+  await store.removeWhere?.(buildFilter(input))
+} catch (error) {
+  if (error instanceof UnsafeRemovalError && error.reason === 'empty-filter') {
+    // The filter scoped nothing — that is a bug upstream, not a deletion request.
+  }
+}
+```
+
+All three backends refuse identically, with no query issued at all, because the guard is shared rather than reimplemented per store.
+
+For a genuine wipe, be explicit: loop `remove` over `listDocumentIds()`, or drop the table/collection.
+</Callout>
+
+The other guard rail runs the opposite way: an **empty-array filter value denies everything**, so `removeWhere({ audience: [] })` removes `0` chunks and issues no query. A deny filter means "nothing matches", and that has to mean "delete nothing" — anywhere else it would be a spectacular way to lose a corpus.
+
+## Feature detection
+
+The three methods are **optional** on `VectorStore`, so a custom or third-party store can implement only `upsert`, `search`, `remove` and `listDocuments`. Call them through the optional chain:
+
+```ts
+if (store.removeWhere) {
+  await store.removeWhere({ tenantRef })
+} else {
+  for (const id of await store.listDocuments({ tenantRef })) {
+    await store.remove(id.id)
+  }
+}
+```
+
+All three shipped backends — memory, pgvector, and Qdrant — implement all three.
+
+## The helpers underneath
+
+The pure functions the stores share are exported, which makes them useful for a bespoke store or for unit-testing your own patch logic:
+
+```ts
+import {
+  applyMetadataPatch,   // (metadata, patch) → new metadata — pure, never mutates its input
+  effectivePatchKeys,   // (patch) → the keys that will actually change something
+  assertRemovalFilter,  // (filter) → throws UnsafeRemovalError on `{}`
+  filterDeniesAll,      // (filter) → true when some value is an empty array
+  documentIdOf,         // ('q3-plan#4') → 'q3-plan'
+  UnsafeRemovalError,
+} from '@adonis-agora/agent'
+
+import type { MetadataPatch, IndexedDocument } from '@adonis-agora/agent'
+```
+
+A store built on these behaves the same way the shipped ones do, which is the point — the empty-filter refusal and the merge-patch semantics are contracts, not per-backend choices.
+
+## A reconciliation sketch
+
+Putting it together: a job that keeps the index in step with the source of truth.
+
+```ts
+const indexed = new Set(await store.listDocumentIds?.({ tenantRef }) ?? [])
+const current = await Document.query().where('tenant_ref', tenantRef)
+
+for (const doc of current) {
+  if (!indexed.has(doc.id)) {
+    // New — chunk, embed, index.
+    await ingestDocuments([{ id: doc.id, text: doc.body, source: doc.title, metadata: aclFor(doc) }], {
+      embedder,
+      store,
+    })
+  } else if (doc.aclChangedAt > lastRun) {
+    // Same text, different ACL — relabel, no embedding call.
+    await store.updateMetadata?.(doc.id, aclFor(doc))
+  }
+  indexed.delete(doc.id)
+}
+
+// Whatever is left was deleted upstream.
+for (const staleId of indexed) {
+  await store.remove(staleId)
+}
+```
+
+The `updateMetadata` branch is what makes this affordable to run often. Without it, every ACL change would be a full re-embed of the document.
