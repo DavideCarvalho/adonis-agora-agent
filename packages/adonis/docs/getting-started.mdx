@@ -25,7 +25,7 @@ node ace add @adonis-agora/agent
 - registers `@adonis-agora/agent/agent_provider` and `@adonis-agora/agent/dashboard_provider` in `adonisrc.ts`;
 - registers the Assembler `init` hook that generates the typed `app/agent_tools` barrel;
 - publishes `config/agent.ts` and `config/mcp.ts`;
-- publishes **three** migrations: the five core agent tables, the run-tracking table, and the pgvector RAG chunk table.
+- publishes **two** migrations: the agent tables, and the pgvector RAG chunk table.
 
 The [MCP provider](/docs/agent/mcp) is *not* registered — it is opt-in, and `config/mcp.ts` carries the one-line snippet for `adonisrc.ts` when you want it. The pgvector migration is Postgres-only; delete it if you are not using [pgvector RAG](/docs/agent/retrieval/pgvector).
 
@@ -38,7 +38,7 @@ npm i @adonis-agora/agent
 node ace configure @adonis-agora/agent
 ```
 
-`configure` runs the codemods without the install step — the two providers, the tools barrel hook, both config files, and the three migrations.
+`configure` runs the codemods without the install step — the two providers, the tools barrel hook, both config files, and the two migrations.
 
 </Tab>
 
@@ -89,7 +89,7 @@ The actor resolver defaults to one that **throws on every request**. The agent w
 
 ## 3. Run the migration
 
-The `lucid` store persists to five tables (threads, messages, tool calls, token usage, model pricing), plus the run-tracking table from the second migration. Apply them:
+The `lucid` store persists to six tables (threads, messages, tool calls, token usage, model pricing, and the run lifecycle). Apply the migration:
 
 ```bash
 node ace migration:run

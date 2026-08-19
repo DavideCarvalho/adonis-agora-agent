@@ -171,6 +171,8 @@ export type {
 export {
   createTableStatements,
   createAgentTables,
+  dropTableStatements,
+  dropAgentTables,
   ensureAgentTables,
   AGENT_TABLES,
 } from './stores/lucid-schema.js';

@@ -1,6 +1,6 @@
 ---
 title: Lucid
-description: Persist threads, messages, tool calls, and token usage to Postgres, MySQL, or SQLite through @adonisjs/lucid — the five agent tables, the published migration, and the in-memory twin for tests.
+description: Persist threads, messages, tool calls, and token usage to Postgres, MySQL, or SQLite through @adonisjs/lucid — the six agent tables, the published migration, and the in-memory twin for tests.
 icon: HardDrive
 ---
 
@@ -18,7 +18,7 @@ The `lucid` store persists an agent's durable state — threads, messages, tool 
 node ace configure @adonis-agora/agent
 ```
 
-`configure` (run by `add`) registers the provider, publishes `config/agent.ts`, and publishes the migration that creates the five agent tables.
+`configure` (run by `add`) registers the provider, publishes `config/agent.ts`, and publishes the migration that creates the six agent tables.
 
 </Step>
 <Step>
@@ -69,7 +69,16 @@ Five tables (names from the `AGENT_TABLES` constant):
 | `agent_token_usage` | the usage ledger: input/output tokens, cache breakdown, `model_id`, `purpose`, and `cost_usd` |
 | `agent_model_pricing` | per-model pricing rows for cost estimation (see [Quota & cost](/docs/agent/governance/quota-and-cost)) |
 
-`configure` also publishes two **additive** migrations run alongside the core five: `create_agent_run_tracking` (the `agent_run` lifecycle table plus `run_id` back-references — see [Governance read-model](/docs/agent/governance/read-model#run-lifecycle-tracking)) and `create_agent_rag_chunks` (the [pgvector](/docs/agent/retrieval/pgvector) RAG chunk table, Postgres-only — delete it if you don't use pgvector RAG).
+`configure` also publishes `create_agent_rag_chunks` — the [pgvector](/docs/agent/retrieval/pgvector) RAG chunk table, Postgres-only. Delete it if you don't use pgvector RAG.
+
+<Callout type="info" title="The migration delegates to the library">
+`create_agent_tables` does not contain DDL. It calls `createAgentTables(db)`, the same helper
+`autoCreateTables` runs, so the migration and the auto-created schema can never disagree — and the
+migration is **idempotent**: safe against an empty database, against one the library already
+provisioned, and against one left over from a version that predates run tracking (it ALTERs the
+missing `run_id` columns in). It sets `disableTransactions = true` because the helper takes its own
+connection from the pool.
+</Callout>
 
 Threads are indexed on `(actor_ref, updated_at)` for list ordering, messages on `(thread_id, created_at)` for load, and usage on `(actor_ref, created_at)` so the daily quota scan stays fast. Booleans are stored as `INTEGER` (0/1) and timestamps as `BIGINT` epoch-ms — no dialect-only types.
 
