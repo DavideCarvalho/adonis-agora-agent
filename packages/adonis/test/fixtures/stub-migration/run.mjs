@@ -20,7 +20,7 @@
  *
  * Exits 0 on success, non-zero with a message on failure. Driven by `migration-stub-runs.spec.ts`.
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -30,9 +30,10 @@ import { Logger } from '@adonisjs/core/logger';
 import { setApp } from '@adonisjs/core/services/app';
 import { Database } from '@adonisjs/lucid/database';
 import { MigrationRunner } from '@adonisjs/lucid/migration';
+import { renderStub } from '../../helpers/render-stub.mjs';
 
 const pkgRoot = fileURLToPath(new URL('../../../', import.meta.url));
-const stubPath = join(pkgRoot, 'stubs/database/migrations/create_agent_tables.stub');
+const STUB = 'database/migrations/create_agent_tables.stub';
 
 /**
  * `pool.max = 1` on purpose. It is the tightest pool an app can configure (and what Adonis's own
@@ -58,16 +59,8 @@ const check = (ok, message) => {
   return ok;
 };
 
-/** Render the stub exactly as `node ace configure` does: strip the header, keep every other byte. */
-function renderStub() {
-  const source = readFileSync(stubPath, 'utf8');
-  const rendered = source.replace(/^\{\{\{[\s\S]*?\}\}\}\n/, '');
-  if (rendered === source) throw new Error('stub header not found — render assumption broken');
-  return rendered;
-}
-
 /** A scratch consumer app that depends on the package by NAME, so it resolves through `exports` into dist/. */
-function makeScratchApp() {
+async function makeScratchApp() {
   const appRoot = mkdtempSync(join(tmpdir(), 'agent-stub-migration-'));
   mkdirSync(join(appRoot, 'database/migrations'), { recursive: true });
   mkdirSync(join(appRoot, 'node_modules/@adonis-agora'), { recursive: true });
@@ -79,10 +72,14 @@ function makeScratchApp() {
   for (const dep of ['@adonisjs', 'better-sqlite3']) {
     symlinkSync(join(pkgRoot, 'node_modules', dep), join(appRoot, 'node_modules', dep));
   }
+  // Rendered by the REAL configure engine, so this harness also fails when the stub cannot be
+  // generated at all — a regex renderer here could never see that, and did not.
+  //
   // Written as `.js`: a scratch app has no TypeScript loader, and the stub's body carries no type
   // syntax, so the executed statements are byte-identical to what a consumer runs.
   const migrationName = '1785200000000_create_agent_tables';
-  writeFileSync(join(appRoot, `database/migrations/${migrationName}.js`), renderStub());
+  const { contents } = await renderStub(STUB);
+  writeFileSync(join(appRoot, `database/migrations/${migrationName}.js`), contents);
   return { appRoot, migrationName };
 }
 
@@ -139,7 +136,7 @@ const schemaOf = (db) => () => db.connection('primary').schema;
 
 // ── scenario 1: an EMPTY database ────────────────────────────────────────────────────────────────
 async function emptyDatabase() {
-  const { appRoot, migrationName } = makeScratchApp();
+  const { appRoot, migrationName } = await makeScratchApp();
   try {
     const db = makeDatabase(join(appRoot, 'app.sqlite'));
     const bootedApp = await bootApp(appRoot, db);
@@ -199,7 +196,7 @@ async function emptyDatabase() {
 
 // ── scenario 2: a database autoCreateTables ALREADY provisioned ──────────────────────────────────
 async function alreadyProvisionedDatabase() {
-  const { appRoot } = makeScratchApp();
+  const { appRoot } = await makeScratchApp();
   try {
     const db = makeDatabase(join(appRoot, 'app.sqlite'));
     const bootedApp = await bootApp(appRoot, db);
@@ -249,7 +246,7 @@ async function alreadyProvisionedDatabase() {
 
 // ── scenario 3: a database that predates run tracking ────────────────────────────────────────────
 async function preRunTrackingDatabase() {
-  const { appRoot } = makeScratchApp();
+  const { appRoot } = await makeScratchApp();
   try {
     const db = makeDatabase(join(appRoot, 'app.sqlite'));
     const bootedApp = await bootApp(appRoot, db);
