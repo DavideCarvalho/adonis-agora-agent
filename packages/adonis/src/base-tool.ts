@@ -30,20 +30,20 @@ export abstract class BaseTool<I = unknown, O = unknown> implements ToolHandler<
   abstract execute(input: I, ctx: AiToolCtx): Promise<O> | O;
 }
 
-/** A config de um tool nas bases kind-específicas: {@link AiToolOptions} sem o `kind` (o base o fixa). */
+/** A tool's config on the kind-specific bases: {@link AiToolOptions} minus `kind` (the base pins it). */
 export type BaseToolOptions = Omit<AiToolOptions, 'kind'>;
 
 /**
- * Bases kind-específicas — `ReadTool` fixa `kind: 'read'`, `ActionTool` fixa `kind: 'action'`. Como a
- * subclasse NÃO declara `kind`, o `static tool = { name, description, input, ability }` fica sem nenhum
- * campo de união e type-checa **truly bare** — sem `satisfies AiToolOptions` e sem a anotação
- * `: AiToolOptions` (que o `kind: 'read' | 'action'` do {@link BaseTool} exigiria, já que a estática
- * herdada não dá contextual-typing e o literal alargaria `kind` para `string`). A descoberta lê o
- * `kind` da estática do base. Continua tipando `execute` por `<I, O>`.
+ * Kind-specific bases — `ReadTool` pins `kind: 'read'`, `ActionTool` pins `kind: 'action'`. Because the
+ * subclass does NOT declare `kind`, its `static tool = { name, description, input, ability }` carries no
+ * union field and type-checks **truly bare** — no `satisfies AiToolOptions`, no `: AiToolOptions`
+ * annotation (which {@link BaseTool}'s `kind: 'read' | 'action'` would demand, since an inherited static
+ * gives no contextual typing and the literal would widen `kind` to `string`). Discovery reads `kind` off
+ * the base's own static. `execute` is still typed through `<I, O>`.
  *
  * ```ts
- * export default class FilaDeAlocacao extends ReadTool<Input, Row[]> {
- *   static tool = { name: 'fila_de_alocacao', description: '…', input: z.object({}), ability: '…' }
+ * export default class AllocationQueue extends ReadTool<Input, Row[]> {
+ *   static tool = { name: 'allocation_queue', description: '…', input: z.object({}), ability: '…' }
  *   async execute(_input: Input, ctx: AiToolCtx): Promise<Row[]> { … }
  * }
  * ```
@@ -54,7 +54,7 @@ export abstract class ReadTool<I = unknown, O = unknown> implements ToolHandler<
   abstract execute(input: I, ctx: AiToolCtx): Promise<O> | O;
 }
 
-/** Base kind-específica para tools `action` (exigem aprovação humana). Ver {@link ReadTool}. */
+/** Kind-specific base for `action` tools (they require human approval). See {@link ReadTool}. */
 export abstract class ActionTool<I = unknown, O = unknown> implements ToolHandler<I, O> {
   static readonly kind = 'action';
   static tool?: BaseToolOptions;

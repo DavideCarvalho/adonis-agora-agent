@@ -1,9 +1,9 @@
 import type { StreamFrame } from './spi/token-stream-sink.js';
 
 /**
- * Serializa um {@link StreamFrame} pro envelope SSE do provider. Texto vira o
- * frame `data: {"delta":...}` (byte-idêntico ao envelope legado só-texto);
- * componente vira `event: component\ndata: {name,data}`.
+ * Serializes a {@link StreamFrame} into the provider's SSE envelope. A text frame becomes
+ * `data: {"delta":...}` (byte-identical to the legacy text-only envelope); a component frame
+ * becomes `event: component\ndata: {name,data}`.
  */
 export function frameToSse(frame: StreamFrame): string {
   if (frame.t === 'component') {

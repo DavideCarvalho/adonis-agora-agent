@@ -380,22 +380,27 @@ export interface PgVectorRetrieverConfig {
 
 /** Options for the Qdrant-backed retriever (production RAG over a managed vector DB, e.g. GuaraCloud). */
 export interface QdrantRetrieverConfig {
-  /** Embedder (ou factory lazy) — mesmo padrão de `pgvector`/`memory`. */
+  /** Embedder (or a lazy factory) — the same shape as `pgvector`/`memory`. */
   embedder: EmbeddingProvider | (() => Promise<EmbeddingProvider>);
-  /** URL do Qdrant (usado quando `client` não é passado). */
+  /** Qdrant URL, used when no `client` is passed. Default `http://localhost:6333`. */
   url?: string;
-  /** API key do Qdrant (opcional). */
+  /** Qdrant API key (optional). */
   apiKey?: string;
-  /** Client estrutural pronto — para uso programático/testes; se ausente, monta do `url`/`apiKey`. */
+  /** A ready structural client — for programmatic use and tests; absent → built from `url`/`apiKey`. */
   client?: QdrantClientLike;
+  /** Collection name. Default `agent_rag_chunks`. */
   collection?: string;
+  /** Embedding width — must match the model. Default 1536. */
   dimension?: number;
+  /** Similarity metric. Default `cosine`. */
   metric?: QdrantMetric;
-  /** Provisiona a collection (dim/métrica) no boot — útil p/ testes/ingestão. */
+  /** Provision the collection (dimension + metric) at boot — handy for tests and ingestion. */
   ensureCollection?: boolean;
-  /** Documentos p/ ingestão no boot (opcional, mesmo padrão de `pgvector`). */
+  /** Documents to ingest at boot (optional, same shape as `pgvector`). */
   documents?: IngestDocument[];
+  /** Target max characters per chunk. Default 800. */
   chunkSize?: number;
+  /** Characters of overlap between chunks. Default 100. */
   overlap?: number;
 }
 
@@ -410,8 +415,8 @@ export interface QdrantRetrieverConfig {
  * })
  * ```
  *
- * Use `retrievers.pgvector({...})` for the production pgvector/Lucid store; `retrievers.memory` covers
- * tests and small/embedded corpora.
+ * Use `retrievers.pgvector({...})` for the production pgvector/Lucid store or `retrievers.qdrant({...})`
+ * for a managed Qdrant collection; `retrievers.memory` covers tests and small/embedded corpora.
  */
 export const retrievers = {
   /** In-memory embedding retriever — cosine over a Map, single-process. Handy for tests and dev apps. */
@@ -477,9 +482,9 @@ export const retrievers = {
   },
 
   /**
-   * Retriever de produção sobre o Qdrant — cosine/dot/euclid via `@qdrant/js-client-rest`. O client
-   * é importado LAZY dentro do thunk (a menos que um `client` estrutural seja passado), então o pacote
-   * fica peer OPCIONAL. Passe `ensureCollection: true` p/ provisionar a collection no boot.
+   * Production Qdrant retriever — cosine/dot/euclid via `@qdrant/js-client-rest`. The client is
+   * imported LAZILY inside the thunk (unless a structural `client` is passed), so the package stays an
+   * OPTIONAL peer. Pass `ensureCollection: true` to provision the collection at boot.
    */
   qdrant(config: QdrantRetrieverConfig): RetrieverFactory {
     return async () => {
