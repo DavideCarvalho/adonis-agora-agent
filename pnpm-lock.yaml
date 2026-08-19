@@ -76,8 +76,8 @@ importers:
         specifier: 19.2.18
         version: 19.2.18
       ai:
-        specifier: 7.0.59
-        version: 7.0.59(zod@3.25.76)
+        specifier: 7.0.68
+        version: 7.0.68(zod@3.25.76)
       better-sqlite3:
         specifier: 11.10.0
         version: 11.10.0
@@ -392,14 +392,14 @@ packages:
     resolution: {integrity: sha512-cPp0w5svYUA3M1gdxQBO2Mx5g+SZfPweqKCAxk7C1Os/Qu67JKgWqXqNnl1q0Tzv/l0L19Ms1C7ivzQxeBNajg==}
     engines: {node: '>=24.0.0'}
 
-  '@ai-sdk/gateway@4.0.47':
-    resolution: {integrity: sha512-BuWWlA8atWEnEJzN4eamCpGZWkoK9V3TCyNaMwgRIazhqkgWkA1Wp36si3j2JeVYzlvlEAOWrJ92dr92j/Vkqg==}
+  '@ai-sdk/gateway@4.0.54':
+    resolution: {integrity: sha512-x4fAXDqCtYzB/M5vsIQLYcyrzpJuaRgcIwDSw+lpTMMbgH19fU3ds75GSlHNLzfx6Z5yL4Z9+EMr0GJcqVy9QA==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/provider-utils@5.0.26':
-    resolution: {integrity: sha512-0mqhqx+Dcv+msI84+zkbLXmnCHb/mpkYJ9DU3HBvB1px+UjFQss4lLZqRCSzJ0w3NxwQk4Ishk7cP0r8wEQD5w==}
+  '@ai-sdk/provider-utils@5.0.27':
+    resolution: {integrity: sha512-EzAn4pdgG5g0xXtH6lE2zyNmfjDQIDjATkfqzuidEI35g++hh4+07vnjzkT/RmGmIClPZiRj/Q2GMPV2V7mkHw==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -1440,8 +1440,8 @@ packages:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
 
-  ai@7.0.59:
-    resolution: {integrity: sha512-p10cqg8KvLIZi7Gk+XsQjoYoLENoDdEYvehP0rSo6Wg15nbCmP+nwIy1rOIX+WGIDWGdI+jmhjVx5fXShBVC3w==}
+  ai@7.0.68:
+    resolution: {integrity: sha512-9QuZOT77wzoxxUC0NcueXhCo3HUHA/1pApIJ9VRyE+9/K+3Innkq4kVhrd9aEnwIviJz2Nga063m+UTsPSdOyw==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -3579,14 +3579,14 @@ snapshots:
       '@poppinss/colors': 4.1.6
       string-width: 8.2.1
 
-  '@ai-sdk/gateway@4.0.47(zod@3.25.76)':
+  '@ai-sdk/gateway@4.0.54(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 4.0.7
-      '@ai-sdk/provider-utils': 5.0.26(zod@3.25.76)
+      '@ai-sdk/provider-utils': 5.0.27(zod@3.25.76)
       '@vercel/oidc': 3.2.0
       zod: 3.25.76
 
-  '@ai-sdk/provider-utils@5.0.26(zod@3.25.76)':
+  '@ai-sdk/provider-utils@5.0.27(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 4.0.7
       '@standard-schema/spec': 1.1.0
@@ -4570,11 +4570,11 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  ai@7.0.59(zod@3.25.76):
+  ai@7.0.68(zod@3.25.76):
     dependencies:
-      '@ai-sdk/gateway': 4.0.47(zod@3.25.76)
+      '@ai-sdk/gateway': 4.0.54(zod@3.25.76)
       '@ai-sdk/provider': 4.0.7
-      '@ai-sdk/provider-utils': 5.0.26(zod@3.25.76)
+      '@ai-sdk/provider-utils': 5.0.27(zod@3.25.76)
       zod: 3.25.76
 
   ajv-formats@3.0.1(ajv@8.20.0):
