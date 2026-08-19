@@ -3,8 +3,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
+  AgentDepsFactory,
   AgentRegistry,
   AiTool,
+  DefaultRolesPolicy,
   ToolRegistry,
   defineTool,
   delegateToolName,
@@ -201,5 +203,101 @@ describe('tool discovery', () => {
     expect(registerToolExport(registry, GetTimeTool, ['ADMIN'])).not.toBeNull();
     const out = await registry.invoke('getTime', {}, anyCtx, allowAll as never);
     expect(out).toEqual({ iso: '2020-01-01T00:00:00Z' });
+  });
+});
+
+describe('delegate edge authorization', () => {
+  /**
+   * A synthesized `ask_<target>` tool goes through the SAME `RolesPolicy` gate as every other tool.
+   * A bare-string edge declares no `roles` and no `ability`, which is ADMIN-only under the default
+   * authorizer and an outright DENY under the ability-aware authz adapter — so the object form of
+   * `delegatesTo` is the only way to open the edge to a non-ADMIN actor, and these tests pin that the
+   * annotation actually reaches the spec rather than being silently dropped.
+   */
+  it('leaves a bare-string edge with no roles and no ability (fail-closed)', () => {
+    const registry = new ToolRegistry();
+    const agents = new AgentRegistry();
+    agents.register({ name: 'orchestrator', delegatesTo: ['researcher'] });
+    agents.register({ name: 'researcher' });
+
+    registerDelegateTools(registry, agents);
+    const spec = registry.spec(delegateToolName('researcher'));
+
+    expect(spec?.roles).toBeUndefined();
+    expect(spec?.ability).toBeUndefined();
+  });
+
+  it('carries the edge`s roles onto the synthesized delegate tool', () => {
+    const registry = new ToolRegistry();
+    const agents = new AgentRegistry();
+    agents.register({
+      name: 'orchestrator',
+      delegatesTo: [{ agent: 'researcher', roles: ['ANALYST', 'ADMIN'] }],
+    });
+    agents.register({ name: 'researcher' });
+
+    registerDelegateTools(registry, agents);
+    const spec = registry.spec(delegateToolName('researcher'));
+
+    expect(spec?.kind).toBe('agent');
+    expect(spec?.targetAgent).toBe('researcher');
+    expect(spec?.roles).toEqual(['ANALYST', 'ADMIN']);
+  });
+
+  it('carries the edge`s ability, which is what makes delegation reachable under authz', () => {
+    const registry = new ToolRegistry();
+    const agents = new AgentRegistry();
+    agents.register({
+      name: 'orchestrator',
+      delegatesTo: [{ agent: 'researcher', ability: 'agent.delegate' }],
+    });
+    agents.register({ name: 'researcher' });
+
+    registerDelegateTools(registry, agents);
+
+    expect(registry.spec(delegateToolName('researcher'))?.ability).toBe('agent.delegate');
+  });
+
+  it('an annotated edge passes the default role gate that a bare edge fails', async () => {
+    const registry = new ToolRegistry();
+    const agents = new AgentRegistry();
+    agents.register({
+      name: 'orchestrator',
+      delegatesTo: ['bare', { agent: 'annotated', roles: ['ANALYST'] }],
+    });
+    agents.register({ name: 'bare' });
+    agents.register({ name: 'annotated' });
+    registerDelegateTools(registry, agents);
+
+    const policy = new DefaultRolesPolicy(['ADMIN']);
+    const analyst = { id: 'u_1', roles: ['ANALYST'] };
+
+    // Non-null asserted: both specs were just registered above.
+    expect(await policy.can(analyst, registry.spec(delegateToolName('bare'))!)).toBe(false);
+    expect(await policy.can(analyst, registry.spec(delegateToolName('annotated'))!)).toBe(true);
+  });
+
+  it('keeps the object form in the agent`s effective tool allow-list', () => {
+    const registry = new ToolRegistry();
+    const agents = new AgentRegistry();
+    agents.register({
+      name: 'orchestrator',
+      delegatesTo: [{ agent: 'researcher', ability: 'agent.delegate' }],
+    });
+    agents.register({ name: 'researcher' });
+    registerDelegateTools(registry, agents);
+
+    const factory = new AgentDepsFactory({
+      model: {} as never,
+      store: {} as never,
+      sink: {} as never,
+      rolesPolicy: {} as never,
+      registry,
+      agents,
+    });
+
+    // The delegate tool must be OFFERED to the orchestrator, or the loop's offered-tools filter
+    // rejects the call before the role gate ever runs.
+    expect(factory.forAgent('orchestrator').toolAllowList).toContain('ask_researcher');
   });
 });
