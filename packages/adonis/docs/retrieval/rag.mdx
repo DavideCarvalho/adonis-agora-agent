@@ -125,7 +125,7 @@ const retriever = new EmbeddingRetriever(myEmbedder, store)
 const passages = await retriever.retrieve('how do refunds work?', { topK: 5 })
 ```
 
-`PgVectorStore` is the production `VectorStore` — raw pgvector SQL over the structural `LucidDatabaseLike`, with `cosine`/`l2`/`inner` metrics and strict identifier validation on every table/column name. See [pgvector store](/docs/agent/retrieval/pgvector) for its schema and full options. (`PgVectorRetriever`, what `retrievers.pgvector()` builds, is `EmbeddingRetriever` narrowed to a `PgVectorStore`.)
+`PgVectorStore` is the production `VectorStore` — raw pgvector SQL over the structural `LucidRawRunner`, with `cosine`/`l2`/`inner` metrics and strict identifier validation on every table/column name. See [pgvector store](/docs/agent/retrieval/pgvector) for its schema and full options. (`PgVectorRetriever`, what `retrievers.pgvector()` builds, is `EmbeddingRetriever` narrowed to a `PgVectorStore`.)
 
 ### `KeywordRetriever` — BM25 lexical search
 

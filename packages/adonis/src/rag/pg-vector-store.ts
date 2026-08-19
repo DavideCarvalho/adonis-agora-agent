@@ -1,6 +1,6 @@
 import type { EmbeddingProvider } from '../spi/embedding-provider.js';
 import type { Passage } from '../spi/retriever.js';
-import type { LucidDatabaseLike } from '../stores/lucid.js';
+import type { LucidRawRunner } from '../stores/lucid.js';
 import { EmbeddingRetriever } from './embedding-retriever.js';
 import { assertRemovalFilter, effectivePatchKeys, filterDeniesAll } from './vector-store.js';
 import type {
@@ -195,7 +195,7 @@ function documentIdExpr(col: string): string {
 /**
  * A pgvector-backed {@link VectorStore} — the production RAG adapter, the durable twin of
  * {@link import('./memory-vector-store.js').MemoryVectorStore}. It runs over the structural
- * {@link LucidDatabaseLike} (so `@adonisjs/lucid` stays an optional peer — this file imports no Lucid
+ * {@link LucidRawRunner} (so `@adonisjs/lucid` stays an optional peer — this file imports no Lucid
  * types) with raw SQL for the pgvector operators. Similarity ranks via the `<=>`/`<->`/`<#>` operator for
  * the configured {@link PgVectorMetric}; the query embedding is always a `?::vector` positional binding
  * (NEVER string-interpolated). Scalar metadata filters are an `@> ?::jsonb` containment binding; an
@@ -215,7 +215,7 @@ export class PgVectorStore implements VectorStore {
   private readonly col: Required<PgVectorColumns>;
 
   constructor(
-    private readonly db: LucidDatabaseLike,
+    private readonly db: LucidRawRunner,
     options: PgVectorStoreOptions = {},
   ) {
     this.table = assertIdentifier(options.table ?? 'agent_rag_chunks', 'table');
