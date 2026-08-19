@@ -4,6 +4,11 @@
   "rangeStrategy": "pin",
   "packageRules": [
     {
+      "_comment": "`rangeStrategy: pin` above must never touch `engines`: pinning it rewrites the supported-runtime RANGE into whatever exact version the bot saw, which warns on install for every consumer on any other Node (and hard-fails under engine-strict). Renovate did exactly that in #45.",
+      "matchDepTypes": ["engines"],
+      "enabled": false
+    },
+    {
       "matchDepTypes": ["dependencies", "devDependencies"],
       "matchUpdateTypes": ["patch", "minor"],
       "automerge": true
