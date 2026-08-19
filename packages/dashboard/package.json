@@ -1,6 +1,6 @@
 {
   "name": "@adonis-agora/agent-dashboard",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Read-only governance console (spend by model/actor, usage trend, recent threads & tool calls, quota) for @adonis-agora/agent — a dependency-light React SPA served by a thin AdonisJS provider. Part of the Agora ecosystem.",
   "license": "MIT",
   "repository": {
