@@ -164,6 +164,8 @@ export { LucidAgentStore } from './stores/lucid.js';
 export type {
   LucidAgentStoreOptions,
   LucidDatabaseLike,
+  LucidRawRunner,
+  LucidRawBindings,
   LucidClientLike,
   LucidQueryBuilderLike,
   LucidInsertBuilderLike,

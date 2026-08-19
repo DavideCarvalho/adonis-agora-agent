@@ -101,6 +101,14 @@ describe('the pgvector migration stub delegates too', () => {
     expect(stub).toMatch(/ensureSchema\(\)/);
     expect(stub).toMatch(/static disableTransactions = true/);
   });
+
+  it('scopes the DDL to the migration connection', () => {
+    // Same reason as the agent tables stub: without this, `migration:run --connection=x` provisions
+    // the DEFAULT connection instead of x. Passing a per-connection client is only possible because
+    // the store asks for `LucidRawRunner`; when it asked for the wider `LucidDatabaseLike`, this line
+    // did not type-check and the obvious "fix" was to drop back to the bare manager and lose `--connection`.
+    expect(stub).toMatch(/db\.connection\(this\.db\.connectionName\)/);
+  });
 });
 
 describe('one stub, one schema', () => {

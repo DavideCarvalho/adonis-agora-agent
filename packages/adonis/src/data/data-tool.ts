@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { BrandedFunctionalTool } from '../ai-tool-ref.js';
 import { defineTool } from '../ai-tool-ref.js';
 import type { AiToolCtx } from '../spi/tool.js';
-import type { LucidDatabaseLike } from '../stores/lucid.js';
+import type { LucidRawRunner } from '../stores/lucid.js';
 import { injectLimit } from './limit.js';
 import { loadSqlParser } from './parser.js';
 import { SqlValidator } from './sql-validator.js';
@@ -21,7 +21,7 @@ export interface QueryRunner {
 /**
  * Configuration for {@link dataTool} — the governed read-only SQL agent tool. Mirrors the reference
  * `ExecuteSqlDeps`, adapted to the AdonisJS `defineConfig`/factory idiom. Supply the DB handle as a
- * structural {@link LucidDatabaseLike} (so `@adonisjs/lucid` stays an optional peer) or a custom
+ * structural {@link LucidRawRunner} (so `@adonisjs/lucid` stays an optional peer) or a custom
  * {@link QueryRunner}.
  */
 export interface DataToolConfig {
@@ -29,7 +29,7 @@ export interface DataToolConfig {
    * Read-only Lucid DB handle (structural). Queries run through `db.rawQuery(sql)`. Point it at a
    * read-only connection/replica. Provide this OR {@link DataToolConfig.runner}.
    */
-  db?: LucidDatabaseLike;
+  db?: LucidRawRunner;
   /** Custom query runner. Overrides {@link DataToolConfig.db} when both are given. */
   runner?: QueryRunner;
   /**

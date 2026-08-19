@@ -49,9 +49,38 @@ export interface LucidClientLike {
   table(table: string): LucidInsertBuilderLike;
 }
 
+/**
+ * Bindings a raw query accepts: positional (an array) or named (an object). Deliberately a SUPERTYPE
+ * of Lucid's own `RawQueryBindings` (`StrictValues[] | { [key: string]: StrictValues }`) rather than a
+ * narrower guess.
+ *
+ * It used to be `unknown[]`, and that silently excluded the very client the migration stub passes in.
+ * A method parameter is checked bivariantly, so a candidate satisfies this interface if EITHER
+ * direction assigns — but `unknown[]` assigned in neither: not to `StrictValues[]` (an `unknown`
+ * element is not a `StrictValue`), and `RawQueryBindings` not to `unknown[]` (the named-bindings
+ * object is not an array). So `QueryClientContract` — what `db.connection(name)` returns — failed to
+ * match, only the `Database` manager did (its `bindings?: any` matches anything), and the published
+ * migration did not compile in a consumer app.
+ *
+ * Widening to `readonly unknown[] | Record<string, unknown>` makes `RawQueryBindings` assignable in
+ * the outward direction, so every real Lucid client matches. It stays a structural mirror: nothing
+ * here imports `@adonisjs/lucid`, which is what keeps it an optional peer.
+ */
+export type LucidRawBindings = readonly unknown[] | Record<string, unknown>;
+
+/**
+ * A raw SQL runner — the ONLY capability the schema helpers need. Kept separate from
+ * {@link LucidDatabaseLike} so `createAgentTables` and friends ask for exactly what they use: both the
+ * `Database` manager and a per-connection `QueryClientContract` satisfy it, which is what lets the
+ * published migration scope its DDL with `db.connection(this.db.connectionName)` and honour
+ * `migration:run --connection=x`.
+ */
+export interface LucidRawRunner {
+  rawQuery(sql: string, bindings?: LucidRawBindings): Promise<unknown>;
+}
+
 /** The `Database` facade slice: a client plus raw SQL (DDL) and transactions. */
-export interface LucidDatabaseLike extends LucidClientLike {
-  rawQuery(sql: string, bindings?: unknown[]): Promise<unknown>;
+export interface LucidDatabaseLike extends LucidClientLike, LucidRawRunner {
   transaction<T>(callback: (trx: LucidClientLike) => Promise<T>): Promise<T>;
 }
 

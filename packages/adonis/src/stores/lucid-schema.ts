@@ -1,4 +1,4 @@
-import type { LucidDatabaseLike } from './lucid.js';
+import type { LucidRawRunner } from './lucid.js';
 
 /**
  * The six agent table names. They match the cross-adapter snake_case contract the reference Drizzle
@@ -152,7 +152,7 @@ const RUN_ID_COLUMNS: readonly string[] = [
  * failure, a lock timeout, and a typo, leaving a schema that is still wrong and a migration that
  * reported success.
  */
-async function hasColumn(db: LucidDatabaseLike, table: string, column: string): Promise<boolean> {
+async function hasColumn(db: LucidRawRunner, table: string, column: string): Promise<boolean> {
   try {
     await db.rawQuery(`SELECT "${column}" FROM "${table}" WHERE 1 = 0`);
     return true;
@@ -177,7 +177,7 @@ async function hasColumn(db: LucidDatabaseLike, table: string, column: string): 
  * (`node ace configure @adonis-agora/agent`); this helper is what that migration calls, and what the
  * stores call themselves when `autoCreateTables` is on.
  */
-export async function createAgentTables(db: LucidDatabaseLike): Promise<string[]> {
+export async function createAgentTables(db: LucidRawRunner): Promise<string[]> {
   const statements = createTableStatements();
 
   // Order matters, in three phases rather than one pass. Tables first, then the `run_id` repair, then
@@ -216,7 +216,7 @@ export function dropTableStatements(): string[] {
 }
 
 /** Drop the six agent tables. Destructive and irreversible — this erases every thread and every ledger row. */
-export async function dropAgentTables(db: LucidDatabaseLike): Promise<void> {
+export async function dropAgentTables(db: LucidRawRunner): Promise<void> {
   for (const stmt of dropTableStatements()) {
     await db.rawQuery(stmt);
   }
@@ -237,7 +237,7 @@ const provisioned = new WeakMap<object, Promise<void>>();
  * connection first provisions the shared schema, so pricing seeds and governance reads work even
  * before the first agent run.
  */
-export function ensureAgentTables(db: LucidDatabaseLike): Promise<void> {
+export function ensureAgentTables(db: LucidRawRunner): Promise<void> {
   const key = db as unknown as object;
   let ready = provisioned.get(key);
   if (ready === undefined) {
