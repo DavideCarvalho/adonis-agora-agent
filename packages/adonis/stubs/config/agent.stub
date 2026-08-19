@@ -7,17 +7,17 @@ import { defineConfig, stores, AuthActorResolver } from '@adonis-agora/agent'
 // import { openai } from '@ai-sdk/openai'
 
 /**
- * Configuration for @adonis-agora/agent. Only `model` is required. Pick a `store` by name from the
- * `stores` map (each driver's peer is imported lazily, only when selected); omit `store` for the
- * in-memory store. The runner is in-process by default (`durable` is deferred). The actor resolver
+ * Configuration for @adonis-agora/agent. Only \`model\` is required. Pick a \`store\` by name from the
+ * \`stores\` map (each driver's peer is imported lazily, only when selected); omit \`store\` for the
+ * in-memory store. The runner is in-process by default (\`durable\` is deferred). The actor resolver
  * defaults to one that THROWS — the agent never fabricates a caller — so wire a real one.
  *
- * Publish the tables with `node ace migration:run` after configuring.
+ * Publish the tables with \`node ace migration:run\` after configuring.
  */
 export default defineConfig({
   /**
-   * The LLM provider. Wrap the Vercel AI SDK via `aiSdkModel(...)` (from `@adonis-agora/agent/ai-sdk`)
-   * or supply any `ModelProvider`. A lazy thunk keeps the provider SDK peer imported only at boot:
+   * The LLM provider. Wrap the Vercel AI SDK via \`aiSdkModel(...)\` (from \`@adonis-agora/agent/ai-sdk\`)
+   * or supply any \`ModelProvider\`. A lazy thunk keeps the provider SDK peer imported only at boot:
    *
    *   model: () => aiSdkModel({ model: openai('gpt-4o-mini') }),
    */
@@ -40,7 +40,7 @@ export default defineConfig({
   // maxSteps: 8,              // cap on model↔tool iterations per turn
 
   // Governance console — served automatically at <path>/dashboard (default /agent/dashboard), no
-  // separate install. It only mounts once `governanceAuthorize` is set (every panel but Quota reads
+  // separate install. It only mounts once \`governanceAuthorize\` is set (every panel but Quota reads
   // the cross-actor governance routes, which need that gate too — see the docs). Toggle it off,
   // relocate it, or add an extra gate on top of governanceAuthorize:
   // dashboard: { enabled: true, path: '/agent/dashboard', authorize: (actor) => actor.roles?.includes('ADMIN') ?? false },
@@ -48,7 +48,7 @@ export default defineConfig({
 
   // Multimodal uploads — mounts POST /agent/attachments, which stages a file into a model-fetchable
   // MessageAttachment the client sends back with its next chat message. Bind your own store (presign
-  // S3/GCS or wrap your media pipeline); `attachmentStores.memory()` inlines bytes as a data: URL.
+  // S3/GCS or wrap your media pipeline); \`attachmentStores.memory()\` inlines bytes as a data: URL.
   // attachmentStaging: attachmentStores.memory(),
   // attachmentMaxBytes: 20 * 1024 * 1024,
   // attachmentAllowedContentTypes: ['image/png', 'image/jpeg', 'application/pdf'],

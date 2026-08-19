@@ -13,29 +13,25 @@
  *
  * Only a compile against the REAL Lucid types can catch that, which is what this does.
  *
+ * The stubs are rendered by the REAL configure engine (`test/helpers/render-stub.mjs`), not by a
+ * regex over the `{{{ }}}` header. A harness that renders differently from the generator is not
+ * testing the generator — and this one used to, which is how four unrenderable stubs stayed green.
+ *
  * Exits 0 on success; on failure prints tsc's diagnostics and exits non-zero.
  * Driven by `migration-stub-typecheck.spec.ts`.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { renderStub } from '../../helpers/render-stub.mjs';
 
 const pkgRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../../../../../', import.meta.url));
-const migrationsDir = join(pkgRoot, 'stubs/database/migrations');
 
-/** The stubs a consumer actually receives from `node ace configure`. */
+/** The migration stubs a consumer receives from `node ace configure`. */
 const STUBS = ['create_agent_tables', 'create_agent_rag_chunks'];
-
-/** Render a stub exactly as `configure` does: strip the `{{{ exports() }}}` header, keep every byte. */
-function renderStub(name) {
-  const source = readFileSync(join(migrationsDir, `${name}.stub`), 'utf8');
-  const rendered = source.replace(/^\{\{\{[\s\S]*?\}\}\}\n/, '');
-  if (rendered === source) throw new Error(`stub header not found in ${name} — render broken`);
-  return rendered;
-}
 
 const appRoot = mkdtempSync(join(tmpdir(), 'agent-stub-typecheck-'));
 try {
@@ -81,10 +77,10 @@ try {
   );
 
   for (const [index, name] of STUBS.entries()) {
-    writeFileSync(
-      join(appRoot, `database/migrations/17852000000${index}0_${name}.ts`),
-      renderStub(name),
-    );
+    // Rendered by the REAL engine, so this harness also fails if the stub cannot be generated at all —
+    // which is precisely what a regex renderer here could never see.
+    const { contents } = await renderStub(`database/migrations/${name}.stub`);
+    writeFileSync(join(appRoot, `database/migrations/17852000000${index}0_${name}.ts`), contents);
   }
 
   try {

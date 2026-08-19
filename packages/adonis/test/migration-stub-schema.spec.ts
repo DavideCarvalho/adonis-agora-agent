@@ -1,8 +1,10 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { AGENT_TABLES, createTableStatements } from '../src/index.js';
+// @ts-expect-error -- plain ESM helper, shared with the .mjs child-process harnesses.
+import { renderStub as renderThroughEngine } from './helpers/render-stub.mjs';
 
 /**
  * The published migration stub used to be a hand-copied snapshot of the library's DDL, and a snapshot
@@ -26,12 +28,15 @@ import { AGENT_TABLES, createTableStatements } from '../src/index.js';
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(currentDir, '..', 'stubs', 'database', 'migrations');
 
-/** A stub's body, with the `{{{ exports() }}}` codemod header `configure` strips off. */
-function renderStub(name: string): string {
-  const source = readFileSync(join(migrationsDir, `${name}.stub`), 'utf8');
-  const body = source.replace(/^\{\{\{[\s\S]*?\}\}\}\n/, '');
-  expect(body, 'the stub must start with the {{{ exports() }}} header').not.toBe(source);
-  return body;
+/**
+ * The migration a consumer actually receives, rendered by the REAL engine rather than by a regex over
+ * the `{{{ }}}` header. These assertions are about the generated file, so they must run against what
+ * the generator generates — a harness that renders differently is not testing the generator, which is
+ * how four unrenderable stubs once passed every gate here.
+ */
+async function renderStub(name: string): Promise<string> {
+  const { contents } = await renderThroughEngine(`database/migrations/${name}.stub`);
+  return contents as string;
 }
 
 /**
@@ -40,15 +45,13 @@ function renderStub(name: string): string {
  * contains in order to explain why — so matching raw text would fail on the explanation rather than
  * on a regression.
  */
-function renderStubCode(name: string): string {
-  return renderStub(name)
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/^\s*\/\/.*$/gm, '');
+async function renderStubCode(name: string): Promise<string> {
+  return (await renderStub(name)).replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 }
 
-describe('the agent migration stub delegates instead of copying the DDL', () => {
-  const stub = renderStub('create_agent_tables');
-  const code = renderStubCode('create_agent_tables');
+describe('the agent migration stub delegates instead of copying the DDL', async () => {
+  const stub = await renderStub('create_agent_tables');
+  const code = await renderStubCode('create_agent_tables');
 
   it('declares no tables and no columns of its own', () => {
     // A `createTable` / `table.string(...)` in here would mean a THIRD copy of the schema is back:
@@ -88,9 +91,9 @@ describe('the agent migration stub delegates instead of copying the DDL', () => 
   });
 });
 
-describe('the pgvector migration stub delegates too', () => {
-  const stub = renderStub('create_agent_rag_chunks');
-  const code = renderStubCode('create_agent_rag_chunks');
+describe('the pgvector migration stub delegates too', async () => {
+  const stub = await renderStub('create_agent_rag_chunks');
+  const code = await renderStubCode('create_agent_rag_chunks');
 
   it('provisions through PgVectorStore rather than its own createTable', () => {
     // Same bug class as the agent tables stub: an unguarded `createTable` throws against a database

@@ -6,10 +6,10 @@ import { defineMcpConfig, authKitAuth } from '@adonis-agora/agent/mcp'
 
 /**
  * Configuration for the MCP (Model Context Protocol) endpoint. The provider exposes the agent's tool
- * registry over Streamable HTTP: `tools/list` mirrors the tools the acting actor may call and
- * `tools/call` runs them through the same role-checked registry the agent loop uses.
+ * registry over Streamable HTTP: \`tools/list\` mirrors the tools the acting actor may call and
+ * \`tools/call\` runs them through the same role-checked registry the agent loop uses.
  *
- * Requires `@adonis-agora/agent`'s agent provider (which owns the ToolRegistry singleton) to be
+ * Requires \`@adonis-agora/agent\`'s agent provider (which owns the ToolRegistry singleton) to be
  * registered. Register the MCP provider in adonisrc.ts:
  *
  *   providers: [
@@ -17,8 +17,8 @@ import { defineMcpConfig, authKitAuth } from '@adonis-agora/agent/mcp'
  *     () => import('@adonis-agora/agent/mcp_provider'),
  *   ]
  *
- * The endpoint mounts at `/mcp`. When `auth` exposes OAuth metadata (authKitAuth), MCP clients discover
- * the login flow at `/.well-known/oauth-protected-resource/mcp`.
+ * The endpoint mounts at \`/mcp\`. When \`auth\` exposes OAuth metadata (authKitAuth), MCP clients discover
+ * the login flow at \`/.well-known/oauth-protected-resource/mcp\`.
  */
 export default defineMcpConfig({
   name: 'Agent MCP Server',
