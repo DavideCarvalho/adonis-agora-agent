@@ -104,9 +104,12 @@ const { runId } = await runner.start({
 
 // collect the streamed text
 let text = ''
-const decoder = new TextDecoder()
-for await (const chunk of sink.subscribe(runId)) text += decoder.decode(chunk)
+for await (const frame of sink.subscribe(runId)) {
+  if (frame.t === 'text') text += frame.v
+}
 ```
+
+`subscribe()` yields typed `StreamFrame` objects, not bytes — `{ t: 'text', v }` for a token chunk and `{ t: 'component', name, data }` for a [Generative UI](/docs/agent/generative-ui) frame. Narrowing on `t` is what lets one loop assert on the prose and the emitted components separately. (The SSE encoding happens later, in the provider's route handler; a test never sees it.)
 
 <Callout type="info" title="Because the fakes are behavioral twins">
 The in-memory store, sink, and quota implement the same SPIs as their production counterparts, so a test that passes against the fakes exercises the identical loop, governance, and accounting code paths — you're testing the real thing, just without the network or a database.

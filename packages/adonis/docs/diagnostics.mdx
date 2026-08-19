@@ -1,0 +1,158 @@
+---
+title: Diagnostics & tracing
+description: The eight lifecycle events and four span channels the agent publishes — their exact names and payloads, what is deliberately redacted, and how to subscribe.
+icon: Activity
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The agent publishes structured telemetry as it runs: **point events** for lifecycle moments, and **spans** for the operations worth timing. Both are opt-out (`emitDiagnostics: false`) and both are inert when [`@adonis-agora/diagnostics`](/docs/diagnostics) is not installed — the package holds no import of it.
+
+They feed the [Telescope "Agent" tab](/docs/agent/governance/telescope), but nothing stops you subscribing directly: pipe them to OpenTelemetry, alert on a failure rate, or log a run's shape during a debugging session.
+
+## Subscribing
+
+Install the peer, then subscribe by library or by exact event:
+
+```ts title="start/agent_diagnostics.ts"
+import { onDiagnostic } from '@adonis-agora/diagnostics'
+
+// Every agent event.
+onDiagnostic('agent', (event) => {
+  logger.debug({ event: event.event, payload: event.payload }, 'agent')
+})
+
+// One event.
+onDiagnostic('agent', 'run.finished', (event) => {
+  metrics.increment('agent.runs.finished')
+})
+```
+
+Both forms return an unsubscribe thunk. On the wire the channel names are `agora:agent:<event>`.
+
+## The events
+
+Eight names, each with a fixed payload shape.
+
+### `run.started`
+
+Fires once, at the top of a turn, before the quota check.
+
+```ts
+{ runId: string; threadId: string; actorId: string; persona?: string }
+```
+
+### `message`
+
+Fires when an assistant message is persisted.
+
+```ts
+{ runId: string; threadId: string; role: 'user' | 'assistant'; textLength: number }
+```
+
+<Callout type="info" title="Only `role: 'assistant'` is ever emitted">
+The type allows `'user'`, but the loop publishes only the assistant side. If you are counting messages from this event, you are counting replies.
+</Callout>
+
+### `tool-call`
+
+Note the hyphen — it is `tool-call`, not `tool.call`. Fires once per tool call, after it settles.
+
+```ts
+{ runId: string; toolName: string; toolType: 'read' | 'action'; status: string; durationMs?: number }
+```
+
+`status` is `'executed'`, `'failed'`, or `'rejected'` (a HITL denial). `durationMs` is declared but **never populated** — timing lives on the `tool.execution` span instead, where it is measured rather than reported.
+
+### `run.finished`
+
+Fires once, when the turn settles.
+
+```ts
+{ runId: string; threadId: string; steps: number; inputTokens: number; outputTokens: number }
+```
+
+### `delegated`
+
+Fires when an orchestrator hands work to another agent. A *denied* delegation does not emit this — see [Authorizing a delegation](/docs/agent/authoring/personas-and-agents#authorizing-a-delegation).
+
+```ts
+{ runId: string; fromAgent?: string; toAgent: string }
+```
+
+### `retrieved`
+
+Fires once per inject-mode retrieval.
+
+```ts
+{ runId: string; queryLength: number; count: number }
+```
+
+`count: 0` is a zero-hit retrieval — the signal behind the Telescope RAG panel's zero-hit rate.
+
+### `tool.retry`
+
+Fires once per [transient retry](/docs/agent/authoring/transient-retry) — on the attempt that *failed and is about to be retried*, not on the final outcome.
+
+```ts
+{ runId: string; toolName: string; toolCallId: string; attempt: number; message: string }
+```
+
+### `quota.exceeded`
+
+```ts
+{ actorId: string; usedTokens: number; limitTokens: number }
+```
+
+<Callout type="warn" title="Never emitted today">
+This one is part of the typed contract but the loop does not publish it — it throws `QuotaExceededError` without emitting. Do not build an alert on it. To detect an over-budget turn today, watch for a `run.started` with no matching `run.finished`, or catch the error at your own boundary.
+</Callout>
+
+## What is redacted, and why
+
+Every payload above carries **lengths and counts, never content**. `message` carries `textLength`, not the text. `retrieved` carries `queryLength`, not the query. `tool-call` carries the name and status, not the input or output.
+
+This is not squeamishness: diagnostics are the least-guarded surface in the stack. They fan out to log aggregators, APM vendors, and a browser-facing dashboard, all of which sit outside whatever access control the conversation itself has. A prompt or a tool result routinely carries exactly the data your governance layer exists to protect, so the safe default is that it never leaves the loop through this channel. The full content is in the [governance read-model](/docs/agent/governance/read-model), behind the gate.
+
+`tool.retry` is the one exception: it carries the failed attempt's error `message`, because a retry you cannot diagnose is not worth recording. Tool error messages are yours, so keep them free of caller data if that matters to you.
+
+## Spans
+
+Four operations are traced with a full span lifecycle over `node:diagnostics_channel`:
+
+| Channel | Start payload | End result |
+| --- | --- | --- |
+| `agora:agent:turn` | `{ runId }` | `{ textLength }` |
+| `agora:agent:llm.turn` | `{ runId, step }` | `{ modelId?, inputTokens, outputTokens, textLength, toolCalls }` |
+| `agora:agent:tool.execution` | `{ runId, toolCallId, toolName, toolType }` | `{}` |
+| `agora:agent:retrieval` | `{ runId, queryLength, topK }` | `{ count }` |
+
+Each publishes on five sub-channels — `:start`, `:end`, `:asyncStart`, `:asyncEnd`, `:error` — carrying an envelope with `v`, `ts`, `lib`, `event`, `phase`, `spanId`, `traceId`, and a phase-specific field (`payload` on start, `durationMs` on end, `result` on `asyncEnd`, `error` on `error`).
+
+**`traceId` is always the `runId`**, so every span from one turn groups without any correlation work. Duration lands on `asyncEnd` (or `error`), which is the phase to read for timing.
+
+`tool.execution` wraps the whole invocation *including* its transient retries, so its duration is wall-clock cost to the run, not the cost of the last attempt. Its result is deliberately empty — tool output never rides a span, for the reason above.
+
+Spans are **zero-cost when nobody is listening**: with no subscriber on any sub-channel, the operation runs with no span id allocated and no publish. Subscribe with the raw builtin if you want them without the diagnostics package:
+
+```ts
+import diagnostics_channel from 'node:diagnostics_channel'
+
+diagnostics_channel.subscribe('agora:agent:llm.turn:asyncEnd', (message) => {
+  otelHistogram.record(message.durationMs, { model: message.result?.modelId })
+})
+```
+
+<Callout type="info" title="Spans and durable replay">
+Spans are emitted from inside memoized steps, which durable replay skips — so a replayed run does not re-emit spans for work it is not redoing. One consequence: under the [durable runner](/docs/agent/durability/durable-runner) there is no root `turn` span, because a turn spans multiple replay slices. Group by `traceId` instead.
+</Callout>
+
+## Turning it off
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  emitDiagnostics: false,
+})
+```
+
+The default is `true`, and it is already a no-op when the diagnostics package is absent, so there is rarely a reason to set it. Do it if you have the package installed for another library and want the agent to stay quiet.

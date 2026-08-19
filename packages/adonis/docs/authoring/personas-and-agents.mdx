@@ -92,14 +92,95 @@ export default defineConfig({
 })
 ```
 
-A request targets an agent by name via the `agent` field on `POST /agent/chat` (omit it for the default). Model, store, sink, and governance are shared across all agents; each definition overrides only its own prompt, tools, personas, `defaultPersona`, `modelId`, and `maxSteps`.
+A request targets an agent by name via the `agent` field on `POST /agent/chat` (omit it for the default). Model, store, sink, and governance are shared across all agents; each definition overrides only its own prompt, tools, personas, `defaultPersona`, `modelId`, `maxSteps`, and `actorResolver`.
+
+### Per-agent identity
+
+`actorResolver` on a definition overrides the module-global one for that agent's turns — for an agent
+whose caller arrives differently from the rest of the app, e.g. a machine-facing agent that reads its
+principal from the request body while your human-facing agents read `ctx.auth`:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  actorResolver: new AuthActorResolver(),       // the default for every agent
+  agents: [
+    { name: 'webhook', actorResolver: new BodyActorResolver() },  // only this one
+  ],
+})
+```
+
+Precedence is simply "the agent's own, else the global", so an agent that declares none behaves
+exactly as it did before per-agent resolvers existed.
+
+<Callout type="warn" title="The override applies to `POST /agent/chat` only">
+That route reads the body first precisely so it knows which agent — and therefore which resolver — a
+turn belongs to. Every other route has no agent in scope: `GET /agent/chat/:runId/stream`, cancel,
+approve/reject, the threads routes, quota, attachments, `approvals/mine`, and all of
+`/agent/governance/*` resolve the caller with the **global** resolver, as do the MCP endpoint (which
+has its own identity path entirely) and any turn started through `AgentService` from a job.
+
+So a per-agent resolver must produce an actor the global resolver can also produce for the same
+caller — otherwise that caller starts a run it then cannot stream, cancel, or approve, because
+[ownership](/docs/agent/governance/authorization#object-level-ownership) compares against a different
+`actor.id`.
+</Callout>
 
 ## Multi-agent delegation
 
 `delegatesTo` declares which other agents an agent may hand work to. For each edge, the provider **synthesizes an `agent`-kind delegate tool** named `ask_<target>` (non-alphanumeric characters become underscores). The orchestrator calls it like any tool — `ask_researcher({ task: '...' })` — and the loop runs the target agent and feeds its answer back. You never write the delegate handler; the loop handles delegation itself.
 
 <Callout type="info" title="How a delegate tool is named and described">
-`delegateToolName('researcher')` → `ask_researcher`. Its description is auto-generated ("Delegate a task to the 'researcher' agent and get its answer.") and, when the target has a flat-string base prompt, that prompt is appended so the orchestrator's model knows what the specialist is for. Its input is a zero-dependency `{ task: string }` Standard Schema — synthesizing delegate tools never pulls in Zod.
+`delegatesTo: ['researcher']` produces `ask_researcher` (non-alphanumeric characters become
+underscores). Its description is generated — "Delegate a task to the 'researcher' agent and get its
+answer." — and when the target has a flat-string base prompt, that prompt is appended, so the
+orchestrator's model knows what the specialist is *for* without you restating it.
+
+Its input is `{ task: string }`, validated before the delegation runs exactly like any other tool's
+input. A model that calls `ask_researcher({ topic: '...' })` gets a validation error back, not a
+delegation with an undefined task.
+</Callout>
+
+### Authorizing a delegation
+
+A delegate tool is a tool, and it goes through the **same authorization gate** as every other one. It
+is not implicitly allowed because you declared the edge.
+
+A bare-string edge declares no `roles` and no `ability`, which means:
+
+- under the default `DefaultToolAuthorizer`, it is **ADMIN-only** (the fallback for any tool with no
+  declared roles);
+- under the [authz Bouncer adapter](/docs/agent/governance/authz-bouncer), it is **always denied** —
+  that adapter has no role fallback, and a tool with no `ability` is unreachable by construction.
+
+If your orchestrator's callers are not ADMINs, or you use the authz adapter at all, say who may
+delegate by giving the edge the object form:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  defaultAgent: {
+    name: 'orchestrator',
+    systemPrompt: 'You coordinate specialists. Delegate work, then summarize.',
+    delegatesTo: [
+      // Role-based (the default authorizer):
+      { agent: 'researcher', roles: ['ANALYST', 'ADMIN'] },
+      // Ability-based (the authz adapter):
+      { agent: 'billing', ability: 'agent.delegate.billing' },
+    ],
+  },
+  agents: [/* ... */],
+})
+```
+
+`roles` and `ability` mean exactly what they mean on a hand-written tool, so both can be present and
+the active policy picks the one it understands. The bare string stays supported and stays fail-closed;
+it is the right form when only admins should orchestrate.
+
+<Callout type="warn" title="A denied delegation is recorded, not retried">
+When the gate denies, the tool call is persisted `failed` — never `auto_executed`, not even
+transiently — no `agent.delegated` event is published, and the error is fed back to the model as a
+tool result. The model usually apologizes and answers on its own, which is why a mis-authorized
+delegation looks like "the orchestrator ignored the specialist" rather than a visible error. Check the
+[tool-call feed](/docs/agent/governance/read-model) if delegation seems to be silently not happening.
 </Callout>
 
 Under the **inline runner**, delegation runs as a nested in-process loop on a transient sub-thread. Because a nested sub-agent has no human to prompt, its `action` tools are auto-declined rather than left hanging — so keep human-approval actions on the top-level agent. Under the **durable runner**, the same delegation maps to a tracked durable child workflow (`ctx.child`). See the [agent loop](/docs/agent/concepts/agent-loop) and [The durable runner](/docs/agent/durability/durable-runner).

@@ -1,0 +1,257 @@
+---
+title: Browser client & React
+description: The framework-agnostic SSE client and the useAgentChat React hook shipped in the package — streaming chat, automatic resume across a dropped connection, component frames, and the HITL calls the client deliberately leaves to you.
+icon: MonitorSmartphone
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The `/agent/chat` SSE envelope is simple enough to parse by hand, and for a long time that was the only option. It no longer is. The package ships the consumer side in two subpaths:
+
+- **`@adonis-agora/agent/client`** — a framework-agnostic client. No React, no Adonis, no runtime dependencies. It posts a turn, decodes the SSE envelope into typed frames, folds them into renderable parts, and silently re-attaches when the connection drops.
+- **`@adonis-agora/agent/react`** — one hook, `useAgentChat`, that wraps the client in transcript state.
+
+Both are published from the same package that emits the envelope, which is the point: the wire format has exactly one owner, so a change to `frameToSse` on the server and a change to `decodeFrame` in the browser can never drift apart across two release trains.
+
+<Callout type="info" title="React is an optional peer">
+`react` is declared as an optional peer (`^18 || ^19`). An app that never imports `@adonis-agora/agent/react` never needs it installed — the `./client` subpath has no dependencies at all, so a Vue composable, a Svelte store, or a plain `fetch` loop can use it just as well.
+</Callout>
+
+## The hook
+
+`useAgentChat` is the fastest path from an installed package to a working chat box. It owns the transcript, the streaming status, and the thread id across turns.
+
+```tsx title="resources/js/components/chat.tsx"
+import { useAgentChat } from '@adonis-agora/agent/react'
+import type { ChatPart } from '@adonis-agora/agent/client'
+import { useState } from 'react'
+
+export function Chat() {
+  const { messages, status, error, send, cancel } = useAgentChat({ basePath: '/agent' })
+  const [draft, setDraft] = useState('')
+
+  return (
+    <div>
+      {messages.map((message) => (
+        <article key={message.id} data-role={message.role}>
+          {message.parts.map(renderPart)}
+          {message.streaming ? <Cursor /> : null}
+        </article>
+      ))}
+
+      {error ? <p role="alert">{error}</p> : null}
+
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          void send(draft)
+          setDraft('')
+        }}
+      >
+        <input value={draft} onChange={(event) => setDraft(event.target.value)} />
+        <button type="submit" disabled={status === 'streaming'}>Send</button>
+        {status === 'streaming' ? <button type="button" onClick={cancel}>Stop</button> : null}
+      </form>
+    </div>
+  )
+}
+```
+
+### What the hook returns
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `messages` | `AgentChatMessage[]` | The transcript. Each entry is `{ id, role: 'user' \| 'assistant', parts, streaming? }`. |
+| `status` | `'idle' \| 'streaming' \| 'error'` | Exactly three states — there is no `'submitted'` or `'ready'`. |
+| `error` | `string \| null` | A **message**, not an `Error`. Cleared at the start of every `send`. |
+| `send` | `(text: string) => Promise<void>` | Takes a bare string. Never rejects — failures land in `error`/`status`. |
+| `cancel` | `() => void` | Drops the client's connection and keeps the partial parts rendered. |
+
+Two behaviours are worth internalising before you build on it.
+
+**`send` is a silent no-op in two cases**: an empty (post-`trim`) string, and a turn already in flight. It does not throw and does not set `error` — so a UI that wants to explain "wait for the reply" must gate on `status === 'streaming'` itself rather than expect a rejection.
+
+**`cancel` is client-side only.** It aborts the browser's fetch. It does *not* call `POST /agent/chat/:runId/cancel`, so the run keeps executing on the server, keeps burning quota, and still persists its assistant message. Wire the HTTP cancel route yourself if "stop" is supposed to mean *stop the run*, not *stop watching it*.
+
+### Options
+
+`UseAgentChatOptions` extends `AgentChatClientOptions`, so every client option is accepted at the top level, plus one hook-specific field:
+
+```ts
+useAgentChat({
+  // client options
+  basePath: '/agent',                       // default '/agent'
+  fetch: myFetch,                           // default globalThis.fetch
+  getHeaders: () => ({ 'X-XSRF-TOKEN': csrf() }),
+  resume: { maxAttempts: 6 },               // or `false` to fail on the first drop
+
+  // hook-specific
+  buildBody: (message) => ({ message, agent: 'support', persona: 'concise' }),
+})
+```
+
+`buildBody` is how you attach `agent`, `persona`, `pageContext`, or `attachments` to every turn. Do **not** set `threadId` in it — the hook injects its own after the first turn and spreads it last, so yours would be overwritten anyway.
+
+`getHeaders` is called fresh on every request, so a rotating CSRF token is always current. The other options are read **once**, when the client is constructed on first render: changing `basePath`, `fetch`, or `resume` later has no effect.
+
+<Callout type="warn" title="The hook has no transcript seeding">
+`messages` is internal state with no setter. There is no way to hydrate a previously persisted thread into the hook, and no `runId` is surfaced, so the client's `resume(runId)` is unreachable from it. A UI that reloads into an existing conversation should fetch `GET /agent/threads/:id` for the history and drive the stream with the raw client below.
+</Callout>
+
+## The raw client
+
+`createAgentChatClient` is the whole hook minus React. Use it for a non-React framework, for a server-side consumer, or whenever you need `resume`.
+
+```ts title="resources/js/agent.ts"
+import { createAgentChatClient, AgentChatDisconnectedError } from '@adonis-agora/agent/client'
+import type { ChatPart } from '@adonis-agora/agent/client'
+
+const client = createAgentChatClient({
+  basePath: '/agent',
+  getHeaders: () => ({ 'X-XSRF-TOKEN': csrfToken() }),
+})
+
+try {
+  const result = await client.send({
+    body: { message: 'What is the weather in Lisbon?' },
+    onParts: (parts) => render(parts),
+    onRunId: (runId) => sessionStorage.setItem('agent:lastRun', runId),
+    onThreadId: (threadId) => sessionStorage.setItem('agent:thread', threadId),
+  })
+  console.log(result.runId, result.threadId, result.parts)
+} catch (error) {
+  if (error instanceof AgentChatDisconnectedError) {
+    // The stream dropped and could not be resumed — but `error.parts` holds
+    // everything that did arrive, so the partial answer is not lost.
+    render(error.parts)
+  }
+}
+```
+
+Both requests it makes carry `credentials: 'include'`, matching the cookie/session auth the default `AuthActorResolver` expects.
+
+### `send`
+
+`send({ body, signal?, ...handlers })` posts `body` to `POST {basePath}/chat` and drains the stream, resolving to `{ runId?, threadId?, parts }`. The four handlers are all optional:
+
+| Handler | Fires |
+| --- | --- |
+| `onParts(parts)` | On every frame, with the assistant message rebuilt from scratch — safe to render directly. |
+| `onFrame(frame)` | Once per decoded frame, in wire order. |
+| `onRunId(runId)` | As soon as the run id is known: from the `X-Agent-Run-Id` response header, before the first byte of body. |
+| `onThreadId(threadId)` | Likewise, from `X-Agent-Thread-Id` and then the `meta` frame. |
+
+If the POST itself is rejected, `send` throws a plain `Error('Failed to start agent chat (HTTP <status>).')`. That is the shape a `401`, `403`, or `429` takes — the status is only in the message string, so branch on it by re-checking the endpoint yourself if you need typed handling.
+
+### Resume, twice over
+
+The word means two related things.
+
+**The `resume` option** is an automatic reconnection *policy*. When a stream ends without a `done` frame, `send` waits `backoffMs(attempt)` (default `min(400 * n, 3000)` ms) and re-attaches to `GET {basePath}/chat/:runId/stream`, up to `maxAttempts` (default `6`) **consecutive** failures — a successful reconnect resets the counter, so a flaky network never exhausts the budget as long as it keeps recovering. Set `resume: false` to disable it and fail on the first drop.
+
+That endpoint **replays the run from its first chunk and then follows live**, so the client discards its accumulated parts and rebuilds them from the replay. This is why the reconnect is invisible: you get the complete message, never `"Hel" + "Hello world"`.
+
+**The `resume` method** is for a cold start — a page reload where you persisted the run id:
+
+```ts
+const runId = sessionStorage.getItem('agent:lastRun')
+if (runId) {
+  const result = await client.resume(runId, { onParts: (parts) => render(parts) })
+}
+```
+
+It sends no POST at all; it goes straight into the same re-attach loop. Note that the first attempt is also delayed by `backoffMs(1)` — with the defaults that is a 400 ms wait before the very first GET, so seed your UI with a loading state.
+
+### `AgentChatDisconnectedError`
+
+The one typed error the client exports. It is thrown when the retry budget is exhausted, and it carries the partial result rather than discarding it:
+
+```ts
+class AgentChatDisconnectedError extends Error {
+  readonly runId: string | undefined
+  readonly threadId: string | undefined
+  readonly parts: ChatPart[]
+}
+```
+
+Rendering `error.parts` and offering "try again" is a strictly better failure mode than an empty bubble, and the data is right there.
+
+## Frames and parts
+
+The SSE layer is exported piecemeal so you can build your own consumer over it. Four decoded frame types, two renderable part types — and that is the complete enumeration, not a subset:
+
+```ts
+type ChatFrame =
+  | { type: 'text'; delta: string }
+  | { type: 'component'; name: string; data: unknown }
+  | { type: 'meta'; runId?: string; threadId?: string }
+  | { type: 'done' }
+
+type ChatPart =
+  | { type: 'text'; text: string }
+  | { type: 'component'; name: string; data: unknown }
+```
+
+`foldPart(parts, frame)` is the pure reducer that turns the first into the second: consecutive `text` frames concatenate into one part, a `component` frame appends a new part, and `meta`/`done` return the array untouched. It never mutates.
+
+Rendering a `component` part is a `name` → component lookup you own:
+
+```tsx
+const REGISTRY = { metric_card: MetricCard, bar_chart: BarChart } as const
+
+function renderPart(part: ChatPart, index: number) {
+  if (part.type === 'text') return <p key={index}>{part.text}</p>
+  const Component = REGISTRY[part.name as keyof typeof REGISTRY]
+  return Component ? <Component key={index} {...(part.data as object)} /> : null
+}
+```
+
+That is all Generative UI needs on the client — the decoder already handles the `event: component` frames. See [Generative UI](/docs/agent/generative-ui) for the tool side.
+
+### Building your own consumer
+
+For a non-React framework, three functions compose into a reader:
+
+```ts
+import { readSseStream, decodeFrame, foldPart } from '@adonis-agora/agent/client'
+import type { ChatPart } from '@adonis-agora/agent/client'
+
+const response = await fetch('/agent/chat', {
+  method: 'POST',
+  credentials: 'include',
+  headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+  body: JSON.stringify({ message: 'hi' }),
+})
+
+let parts: ChatPart[] = []
+for await (const event of readSseStream(response.body!)) {
+  const frame = decodeFrame(event)
+  if (frame === null) continue
+  parts = foldPart(parts, frame)
+  render(parts)
+  if (frame.type === 'done') break
+}
+```
+
+`readSseStream` buffers across chunk boundaries (a `\n\n` separator split between two network packets is handled) and releases the reader lock on exit. `parseSseEvent` is the same parser one frame at a time, if you already have the framing. `decodeFrame` never throws: malformed JSON, an empty `delta`, and a `component` frame with no `name` all return `null`, so a corrupt frame degrades to a skipped frame rather than a crashed loop.
+
+## What the client does not do
+
+Two gaps are deliberate, and both matter for planning a UI.
+
+**No approvals.** The client has exactly two endpoints: `POST {basePath}/chat` and `GET {basePath}/chat/:runId/stream`. Human-in-the-loop is not one of them, and no frame type carries approval state — so when the model calls an `action` tool, the stream simply goes quiet until a decision arrives out of band. Poll `GET /agent/approvals/mine` for the calling actor's own pending calls and post the decision yourself:
+
+```ts
+const pending = await fetch('/agent/approvals/mine', { credentials: 'include' }).then((r) => r.json())
+
+await fetch('/agent/tool-call/approve', {
+  method: 'POST',
+  credentials: 'include',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ runId, toolCallId }),
+})
+```
+
+See [Streaming & HTTP](/docs/agent/streaming-and-http#human-in-the-loop) for the full HITL contract, and [the console](/docs/agent/governance/dashboard) for a ready-made approvals inbox.
+
+**No components.** The `./react` subpath exports the hook and its types — there is no `<Chat>`, no message renderer, no context provider. Chat UI is where every app's design system diverges, so the package stops at the state and hands you the parts.

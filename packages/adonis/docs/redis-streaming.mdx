@@ -19,19 +19,22 @@ export default defineConfig({
 })
 ```
 
-`tokenSinks.redis` (aliased `streamTransports.redis`) fans a run's tokens across replicas over Redis pub/sub plus a replayable list, so a late or cross-instance subscriber replays the buffered chunks first and then follows live. Requires `@adonis-agora/redis` installed and configured (`config/redis.ts`).
+`tokenSinks.redis` (aliased `streamTransports.redis`) fans a run's tokens across replicas over Redis pub/sub plus a replayable list, so a late or cross-instance subscriber replays the buffered chunks first and then follows live. Requires `@adonisjs/redis` installed and configured (`config/redis.ts`).
 
 <Callout type="info" title="The default stays single-replica">
-Omit `sink` entirely to keep the in-process sink (`tokenSinks.memory()` selects it explicitly). Nothing about the SSE contract, the routes, or the client changes when you switch — only where the buffer lives. The `@adonis-agora/redis` peer is imported only inside the `redis` thunk, so it stays fully optional.
+Omit `sink` entirely to keep the in-process sink (`tokenSinks.memory()` selects it explicitly). Nothing about the SSE contract, the routes, or the client changes when you switch — only where the buffer lives. The `@adonisjs/redis` peer is imported only inside the `redis` thunk, so it stays fully optional.
 </Callout>
 
 ## Configuration
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `connection` | default connection | `@adonis-agora/redis` connection name. |
+| `connection` | default connection | `@adonisjs/redis` connection name. |
 | `keyPrefix` | `agent:stream` | Key/channel namespace. |
-| `client` | — | Bring-your-own `RedisStreamClient` adapter (over `ioredis`, `node-redis`, …). When set, `@adonis-agora/redis` is **not** imported. |
+| `ttlSeconds` | `3600` | Sliding TTL on a run's replay keys, refreshed on every write. Set `0` to keep them until you clean up yourself. |
+| `client` | — | Bring-your-own `RedisStreamClient` adapter (over `ioredis`, `node-redis`, …). When set, `@adonisjs/redis` is **not** imported. |
+
+`ttlSeconds` is the knob that keeps Redis from filling up: the framework never calls the sink's `close()`, so a run's replay buffer has no natural end of life. One hour is long enough that a client re-attaching after a browser restart still replays the whole run, and short enough that yesterday's transcripts aren't sitting in memory. Raise it if you re-attach on a longer horizon; set `0` only if something else prunes the keys.
 
 Passing a `client` lets you drive a non-Adonis Redis driver or a test double directly — the factory uses it verbatim. Under the hood the adapter uses a dedicated duplicated connection per subscribe (a subscribed Redis connection can't run other commands).
 

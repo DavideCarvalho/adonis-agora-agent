@@ -13,11 +13,14 @@
     "stores",
     "---Operations---",
     "streaming-and-http",
+    "browser-client",
+    "mcp",
     "redis-streaming",
+    "diagnostics",
     "testing",
     "---Reference---",
     "config-reference",
-    "roadmap"
+    "programmatic-api"
   ],
   "root": true,
   "description": "A governed, durable-ready AI agent for AdonisJS — streaming chat, tool-calling, HITL, and multi-agent delegation.",

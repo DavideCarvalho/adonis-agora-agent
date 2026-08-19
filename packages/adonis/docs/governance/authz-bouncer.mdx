@@ -6,7 +6,7 @@ icon: KeyRound
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-Every tool can declare an `ability` (e.g. `'refund.issue'`). The default [role-based policy](/docs/agent/governance/authorization) ignores it and gates on `roles`; the **authz adapter** consults it instead, resolving each decision through [`@adonis-agora/authz`](/docs/authz) (AdonisJS Bouncer) with wildcard matching and tenant scoping. It lives on the `@adonis-agora/agent/authz` subpath — the load boundary that keeps `@adonis-agora/authz` an optional peer.
+Every tool can declare an `ability` (e.g. `'refund.issue'`). The default [role-based policy](/docs/agent/governance/authorization) ignores it and gates on `roles`; the **authz adapter** consults it instead, resolving each decision through [`@adonis-agora/authz`](/docs/authz) (AdonisJS Bouncer) with wildcard matching and tenant scoping. It lives on the `@adonis-agora/agent/authz` subpath, so apps that don't use authz never load it.
 
 ## Wire it
 
@@ -15,14 +15,16 @@ Replace the ADMIN-only `DefaultToolAuthorizer` with `authzToolAuthorizer`, passi
 ```ts title="config/agent.ts"
 import { defineConfig } from '@adonis-agora/agent'
 import { authzToolAuthorizer } from '@adonis-agora/agent/authz'
+import authz from '@adonis-agora/authz/services/main'
 
 export default defineConfig({
   model: () => aiSdkModel(openai('gpt-4o-mini')),
-  authorizer: authzToolAuthorizer({
-    authz: await app.container.make('authz.service'),
-  }),
+  authorizer: authzToolAuthorizer({ authz }),
 })
 ```
+
+`@adonis-agora/authz/services/main` is the canonical way to reach the service: it is the already-resolved
+singleton, so a config file gets it with a plain import and no container access at module scope.
 
 For each tool it checks the actor against the tool's declared `ability` via `authz.can(user, ability, { scope })`, with wildcard matching (`posts.*` ⊇ `posts.edit`). Declare abilities on your tools:
 
@@ -45,6 +47,31 @@ Unlike the role-based default, the authz adapter has **no ADMIN escape hatch**: 
 - **Tenant isolation.** `actor.tenantRef` is passed as the authz **scope** (`{ tenantId }`), so a permission granted in one tenant never authorizes a tool call in another. No `tenantRef` → the check runs against authz's global scope.
 - **The double check applies.** The [offered-tools filter and the invoke-time re-check](/docs/agent/governance/authorization#the-double-check) both run through this same `can(actor, tool)`, so offer and invoke stay consistent.
 
+### Delegation needs an ability too
+
+The "no ability, no access" rule has one consequence that surprises people: a **delegate tool** is a
+tool. When an orchestrator declares `delegatesTo: ['researcher']`, the synthesized `ask_researcher`
+carries no ability — so under this adapter, every delegation is denied, and the model gets a
+`ToolForbiddenError` back on each attempt.
+
+Declare the ability on the edge:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  authorizer: authzToolAuthorizer({ authz }),
+  agents: [
+    { name: 'orchestrator', delegatesTo: [{ agent: 'researcher', ability: 'agent.delegate' }] },
+    { name: 'researcher', systemPrompt: 'You research things.' },
+  ],
+})
+```
+
+Then grant `agent.delegate` to whoever may orchestrate. Because it is an ordinary ability, wildcards
+and tenant scoping apply as usual — `agent.*` covers it, and a grant made in one tenant does not let
+an actor delegate in another. Give each edge its own ability (`agent.delegate.researcher`) when
+different callers should reach different sub-agents. See
+[Multi-agent delegation](/docs/agent/authoring/personas-and-agents#delegation).
+
 By default the adapter maps an `Actor` onto `{ id: actor.id }` (enough for authz's `defaultResolveUserRef`). Pass `userFromActor` to attach a polymorphic `type` or a host user entity:
 
 ```ts
@@ -54,7 +81,7 @@ authzToolAuthorizer({
 })
 ```
 
-Requires `@adonis-agora/authz` installed and configured (`config/authz.ts`); the adapter carries zero import of the package — it references only the structural `can(...)` slice — so apps that don't use authz never load it.
+Requires `@adonis-agora/authz` installed and configured (`config/authz.ts`).
 
 ## Resolving the actor from authz
 
@@ -63,8 +90,7 @@ The `@adonis-agora/agent/authz` subpath also exports a matching **actor resolver
 ```ts title="config/agent.ts"
 import { defineConfig } from '@adonis-agora/agent'
 import { authzActorResolver, authzToolAuthorizer } from '@adonis-agora/agent/authz'
-
-const authz = await app.container.make('authz.service')
+import authz from '@adonis-agora/authz/services/main'
 
 export default defineConfig({
   model: () => aiSdkModel(openai('gpt-4o-mini')),

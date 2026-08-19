@@ -5,10 +5,9 @@ icon: Blocks
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
-import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 
-Shipped in **0.12.0**. A tool no longer has to answer only in prose. It can push a **typed UI component frame** into the run's live stream — a weather card, a chart, a confirmation form — and the frontend renders your real React component in the transcript, right where the text would have gone. Text-only clients are untouched: the wire stays byte-for-byte backward compatible.
+A tool does not have to answer only in prose. It can push a **typed UI component frame** into the run's live stream — a weather card, a chart, a confirmation form — and the frontend renders your real React component in the transcript, right where the text would have gone. Text-only clients are untouched: the wire stays byte-for-byte backward compatible.
 
 ## What it is (and when to reach for it)
 
@@ -84,7 +83,7 @@ interface AiToolCtx {
 The signature is exactly `emitComponent?(name: string, data: unknown): void | Promise<void>`:
 
 - **`name`** — a string key the client resolves to a component. Choose stable names your frontend registry knows (`'weather_card'`, `'trend_chart'`). It has no server-side meaning beyond being echoed on the wire.
-- **`data`** — an arbitrary JSON-serializable payload. It is `JSON.stringify`'d into the SSE frame verbatim, so keep it serializable (no class instances, no functions).
+- **`data`** — an arbitrary payload, sent as JSON. Keep it serializable: no class instances, no functions, no circular references.
 
 <Callout type="warn" title="Call it through the optional chain">
 `emitComponent` is **optional** on `AiToolCtx` — the agent loop wires it, but some ctx constructors (tests, the container-less registration path) omit it. Always call it as `ctx.emitComponent?.(...)` so a tool stays runnable in a context that doesn't provide a stream. A tool that hard-requires generative UI should still degrade to its text return when the method is absent.
@@ -199,158 +198,79 @@ Because the only new thing on the wire is a *named* event (`event: component`), 
 
 ## Client side
 
-<Callout type="warn" title="No Agora-scoped React package yet">
-There is no first-party `@adonis-agora/agent-react` today. The existing framework-agnostic React client (`@dudousxd/nestjs-agent-react`, `useAgentChat`) consumes the **text** envelope unchanged — see [Consuming from React](/docs/agent/streaming-and-http#consuming-from-react) — but it renders `delta` text and HITL, not component frames. To render component frames today you consume the SSE stream directly and switch on the `component` event, as shown below. An Agora-scoped republish that surfaces component frames is on the [Roadmap](/docs/agent/roadmap).
-</Callout>
-
-The client work is two pieces: a **component registry** (name → React component) and an **SSE reader** that dispatches `component` events into it.
+The package ships the consumer: `@adonis-agora/agent/client` decodes component frames out of the box, and `@adonis-agora/agent/react` folds them into message parts. You supply one thing — a **registry** mapping each `name` to the React component that renders its `data`.
 
 ### 1. A component registry
 
-Map each server `name` to the React component that renders its `data`. The server never sends markup — you own every pixel here.
+The server never sends markup, so you own every pixel here.
 
 ```tsx title="app/registry.tsx"
+import type { ChatPart } from '@adonis-agora/agent/client'
 import { WeatherCard } from './components/WeatherCard'
 import { TrendChart } from './components/TrendChart'
 
-// Each entry renders the `data` payload the tool emitted for that name.
-export const componentRegistry: Record<string, React.ComponentType<{ data: any }>> = {
+const REGISTRY: Record<string, React.ComponentType<{ data: any }>> = {
   weather_card: ({ data }) => <WeatherCard {...data} />,
   trend_chart: ({ data }) => <TrendChart series={data.series} unit={data.unit} />,
 }
 
-export function renderComponentFrame(name: string, data: unknown) {
-  const Cmp = componentRegistry[name]
-  // Unknown name → render nothing (or a fallback). Never eval server strings.
-  return Cmp ? <Cmp data={data} /> : null
+export function renderPart(part: ChatPart, key: number) {
+  if (part.type === 'text') return <p key={key}>{part.text}</p>
+  const Component = REGISTRY[part.name]
+  // Unknown name → render nothing (or a fallback). Never eval a server-supplied string.
+  return Component ? <Component key={key} data={part.data} /> : null
 }
 ```
 
-### 2. Read the stream and dispatch on event type
+### 2. Render the parts
 
-`POST /agent/chat` is a POST, so `EventSource` (GET-only) can't drive it — use `fetch` + a streaming reader and parse the SSE frames yourself. Each parsed frame is either the default text event (append to the message) or a named `component` event (push a component node into the transcript).
+`useAgentChat` gives you a transcript whose assistant messages are already `ChatPart[]` — text and component parts, in emission order:
 
-<Tabs items={['fetch + manual SSE parse (POST /agent/chat)', 'EventSource (GET re-attach route)']}>
+```tsx title="app/Chat.tsx"
+import { useAgentChat } from '@adonis-agora/agent/react'
+import { renderPart } from './registry'
 
-<Tab value="fetch + manual SSE parse (POST /agent/chat)">
+export function Chat() {
+  const { messages, status, send } = useAgentChat({ basePath: '/agent' })
 
-```tsx title="app/useAgentStream.tsx"
-import { useState } from 'react'
-import { renderComponentFrame } from './registry'
-
-type Node = { kind: 'text'; text: string } | { kind: 'component'; el: React.ReactNode }
-
-export function useAgentStream() {
-  const [nodes, setNodes] = useState<Node[]>([])
-
-  async function send(message: string, threadId?: string) {
-    const res = await fetch('/agent/chat', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message, threadId }),
-    })
-    const reader = res.body!.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-
-      // SSE frames are separated by a blank line.
-      let sep: number
-      while ((sep = buf.indexOf('\n\n')) !== -1) {
-        const raw = buf.slice(0, sep)
-        buf = buf.slice(sep + 2)
-        handleFrame(parseFrame(raw))
-      }
-    }
-  }
-
-  function handleFrame(frame: { event: string; data: any }) {
-    if (frame.event === 'component') {
-      // { name, data } → render the registered component.
-      const el = renderComponentFrame(frame.data.name, frame.data.data)
-      if (el) setNodes((ns) => [...ns, { kind: 'component', el }])
-    } else if (frame.event === 'message') {
-      // default event → text delta: { delta: "..." }
-      const delta = frame.data.delta ?? ''
-      setNodes((ns) => appendText(ns, delta))
-    }
-    // 'meta' / 'done' → run lifecycle, handle as you like.
-  }
-
-  return { nodes, send }
-}
-
-// Parse one raw SSE frame ("event: x\ndata: {...}") into { event, data }.
-function parseFrame(raw: string): { event: string; data: any } {
-  let event = 'message'
-  const dataLines: string[] = []
-  for (const line of raw.split('\n')) {
-    if (line.startsWith('event:')) event = line.slice(6).trim()
-    else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
-  }
-  const dataStr = dataLines.join('\n')
-  return { event, data: dataStr ? JSON.parse(dataStr) : {} }
-}
-
-function appendText(ns: Node[], delta: string): Node[] {
-  const last = ns[ns.length - 1]
-  if (last?.kind === 'text') {
-    return [...ns.slice(0, -1), { kind: 'text', text: last.text + delta }]
-  }
-  return [...ns, { kind: 'text', text: delta }]
-}
-```
-
-</Tab>
-
-<Tab value="EventSource (GET re-attach route)">
-
-The re-attach route `GET /agent/chat/:runId/stream` is a GET, so `EventSource` works — and it exposes named events via `addEventListener`, which makes the `component` event trivial to consume:
-
-```tsx
-const es = new EventSource(`/agent/chat/${runId}/stream`)
-
-// Default (unnamed) event → text deltas.
-es.onmessage = (e) => {
-  const { delta } = JSON.parse(e.data)
-  appendText(delta)
-}
-
-// Named component event → { name, data }.
-es.addEventListener('component', (e) => {
-  const { name, data } = JSON.parse((e as MessageEvent).data)
-  renderComponentFrame(name, data)
-})
-
-es.addEventListener('done', () => es.close())
-```
-
-Use this to **re-attach** a reloading client to an in-flight run (find it via the thread's `activeStreamId`) — every component frame emitted so far replays in order before live frames follow.
-
-</Tab>
-
-</Tabs>
-
-Then render the transcript, painting text and component nodes inline in the order they arrived:
-
-```tsx title="app/Transcript.tsx"
-import { useAgentStream } from './useAgentStream'
-
-export function Transcript() {
-  const { nodes, send } = useAgentStream()
   return (
     <div>
-      {nodes.map((n, i) =>
-        n.kind === 'text' ? <p key={i}>{n.text}</p> : <div key={i}>{n.el}</div>,
-      )}
+      {messages.map((message) => (
+        <article key={message.id} data-role={message.role}>
+          {message.parts.map(renderPart)}
+        </article>
+      ))}
     </div>
   )
 }
 ```
+
+That is the whole client integration. The SSE parsing, the `component` event decoding, the folding of consecutive text deltas into one part, and the re-attach on a dropped connection are all handled — see [Browser client & React](/docs/agent/browser-client).
+
+### Without React
+
+The same decoding is available framework-free. `foldPart` is a pure reducer over the decoded frames:
+
+```ts
+import { createAgentChatClient } from '@adonis-agora/agent/client'
+import type { ChatPart } from '@adonis-agora/agent/client'
+
+const client = createAgentChatClient({ basePath: '/agent' })
+
+await client.send({
+  body: { message: 'How is my glucose trending?' },
+  onParts: (parts: ChatPart[]) => paint(parts),
+})
+
+function paint(parts: ChatPart[]) {
+  for (const part of parts) {
+    if (part.type === 'text') appendText(part.text)
+    else mountComponent(part.name, part.data)
+  }
+}
+```
+
+`onParts` fires on every frame with the message rebuilt from scratch, so `paint` can be a plain re-render rather than a diff. A re-attach after a dropped connection replays the run from its first frame — including every component frame — so the rebuilt transcript is always complete.
 
 ## Interleaving with text
 
@@ -437,6 +357,7 @@ frameToSse({ t: 'component', name: 'card', data: { a: 1 } })
 
 ## See also
 
+- [Browser client & React](/docs/agent/browser-client) — the shipped SSE client and the `useAgentChat` hook that decode these frames.
 - [Tools](/docs/agent/authoring/tools) — how to author the tool that calls `emitComponent`, and the full `AiToolCtx`.
 - [Streaming & HTTP](/docs/agent/streaming-and-http) — the SSE envelope, the routes that carry component frames, and re-attaching to a live run.
 - [Redis streaming](/docs/agent/redis-streaming) — the multi-replica sink that replays component frames across pods.
