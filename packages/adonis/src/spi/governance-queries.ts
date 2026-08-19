@@ -30,6 +30,8 @@ export interface ModelSpendRow {
 /** Spend + token totals for one acting ref (user/tenant) over a range. */
 export interface ActorSpendRow {
   actorRef: string;
+  /** Display label for `actorRef`, when an `actorDirectory` is bound and knows one. See {@link ActorSpendRow.actorRef}. */
+  actorLabel?: string;
   requests: number;
   totalTokens: number;
   costUsd: number;
@@ -57,6 +59,8 @@ export interface ThreadActivityRow {
   threadId: string;
   title: string;
   actorRef: string;
+  /** Display label for `actorRef`, when an `actorDirectory` is bound and knows one. */
+  actorLabel?: string;
   messageCount: number;
   totalTokens: number;
   lastActivityAt: string;
@@ -89,6 +93,8 @@ export interface RunSummaryRow {
   runId: string;
   threadId: string;
   actorRef: string;
+  /** Display label for `actorRef`, when an `actorDirectory` is bound and knows one. */
+  actorLabel?: string;
   tenantRef: string | null;
   agentName: string | null;
   status: string;
@@ -172,6 +178,8 @@ export interface PendingApprovalRow {
   runId: string | null;
   /** Who asked — the owning run's (or thread's) actor. */
   actorRef: string;
+  /** Display label for `actorRef`, when an `actorDirectory` is bound and knows one. */
+  actorLabel?: string;
   /** ISO timestamp the call was recorded (requested). */
   requestedAt: string;
 }
@@ -241,6 +249,8 @@ export interface GovernanceThreadDetail {
   threadId: string;
   title: string;
   actorRef: string;
+  /** Display label for `actorRef`, when an `actorDirectory` is bound and knows one. */
+  actorLabel?: string;
   createdAt: string;
   updatedAt: string;
   /** `true` when the thread has been soft-deleted (the record is still readable here). */
@@ -259,9 +269,21 @@ export interface GovernanceThreadDetail {
 }
 
 /**
- * The governance read-model. Cost is `inputTokens/1e6 * inputPricePer1m + outputTokens/1e6 *
- * outputPricePer1m` against the current pricing row per model; an unpriced model contributes 0 cost
- * (its tokens still count).
+ * The governance read-model.
+ *
+ * Cost per row: a provider-reported `costUsd` always wins. Otherwise it is the same cache-aware
+ * estimate {@link import('./pricing-store.js').estimateCost} computes against the model's current
+ * pricing row — the UNCACHED input (`inputTokens - cacheWriteTokens - cacheReadTokens`) at
+ * `inputPricePer1m`, each cache bucket at its own per-1M rate (falling back to the input rate when
+ * unpriced), plus output at `outputPricePer1m`, each divided by 1e6.
+ *
+ * A model with no pricing row contributes 0 to the ROLLUPS ({@link ModelSpendRow},
+ * {@link ActorSpendRow}, {@link UsageTrendPoint}, whose `costUsd` is non-nullable) while its tokens
+ * still count. The per-row ledger keeps the distinction: {@link RunSummaryRow.costUsd} and
+ * {@link RunUsageRow.costUsd} stay `null` when nothing priced them.
+ *
+ * The `actorLabel` on every row carrying an `actorRef` is filled by the HTTP layer from the
+ * configured `actorDirectory` — an adapter never sets it.
  */
 export interface AgentGovernanceQueries {
   spendByModel(range: GovernanceRange): Promise<ModelSpendRow[]>;

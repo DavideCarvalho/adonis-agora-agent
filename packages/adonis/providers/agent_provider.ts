@@ -39,6 +39,8 @@ import {
   registerFunctionalTool,
   registerToolsFromBarrel,
   resolveActorResolver,
+  withActorLabel,
+  withActorLabels,
 } from '../src/index.js';
 import { setTelescopeGovernanceQueries } from '../src/telescope/governance-registry.js';
 
@@ -205,6 +207,7 @@ export default class AgentProvider {
       governance,
       config.governanceAuthorize,
       pricingStore,
+      actorDirectory,
     );
   }
 
@@ -381,6 +384,8 @@ export default class AgentProvider {
     governance: AgentGovernanceQueries | undefined,
     governanceAuthorize: AgentGovernanceAuthorize | undefined,
     pricingStore: AgentPricingStore | undefined,
+    /** Read-side ref→label lookup; `null` when unbound, in which case rows keep their raw refs. */
+    actorDirectory: ActorDirectory | null,
   ): Promise<void> {
     const router = await this.app.container.make('router');
     const path = (config.path ?? 'agent').replace(/^\/+|\/+$/g, '');
@@ -593,7 +598,10 @@ export default class AgentProvider {
         const actor = await this.#resolveActor(ctx, actorResolver);
         if (actor === null) return;
         return ctx.response.json(
-          await gov.pendingApprovals({ limit: limitFor(ctx), actor: actor.id }),
+          await withActorLabels(
+            await gov.pendingApprovals({ limit: limitFor(ctx), actor: actor.id }),
+            actorDirectory,
+          ),
         );
       });
     }
@@ -633,7 +641,9 @@ export default class AgentProvider {
       router.get(g('spend/actor'), async (ctx: HttpContext) => {
         const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
         if (actor === null) return;
-        return ctx.response.json(await gov.spendByActor(range(ctx)));
+        return ctx.response.json(
+          await withActorLabels(await gov.spendByActor(range(ctx)), actorDirectory),
+        );
       });
 
       // GET /agent/governance/usage/trend — the daily token + cost trend over the range.
@@ -654,7 +664,9 @@ export default class AgentProvider {
       router.get(g('threads/recent'), async (ctx: HttpContext) => {
         const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
         if (actor === null) return;
-        return ctx.response.json(await gov.recentThreads(limitOf(ctx)));
+        return ctx.response.json(
+          await withActorLabels(await gov.recentThreads(limitOf(ctx)), actorDirectory),
+        );
       });
 
       // GET /agent/governance/threads/:id — one thread's governance drill-down (metadata + lifetime
@@ -668,7 +680,15 @@ export default class AgentProvider {
             .status(501)
             .json({ error: 'this governance adapter does not support thread detail' });
         }
-        return ctx.response.json(await gov.threadDetail(String(ctx.params.id)));
+        const detail = await withActorLabel(
+          await gov.threadDetail(String(ctx.params.id)),
+          actorDirectory,
+        );
+        if (detail === null) return ctx.response.json(null);
+        return ctx.response.json({
+          ...detail,
+          runs: await withActorLabels(detail.runs, actorDirectory),
+        });
       });
 
       // ── Run lifecycle governance (the run tracking read-model). Same read-only + authenticated +
@@ -692,17 +712,19 @@ export default class AgentProvider {
         const status = ctx.request.input('status');
         const cursor = ctx.request.input('cursor');
         const { from, to } = optionalRange(ctx);
-        return ctx.response.json(
-          await gov.listRuns({
-            limit: limitOf(ctx),
-            ...(filterActor !== undefined ? { actor: String(filterActor) } : {}),
-            ...(agent !== undefined ? { agent: String(agent) } : {}),
-            ...(status !== undefined ? { status: String(status) as never } : {}),
-            ...(cursor !== undefined ? { cursor: String(cursor) } : {}),
-            ...(from !== undefined ? { from } : {}),
-            ...(to !== undefined ? { to } : {}),
-          }),
-        );
+        const page = await gov.listRuns({
+          limit: limitOf(ctx),
+          ...(filterActor !== undefined ? { actor: String(filterActor) } : {}),
+          ...(agent !== undefined ? { agent: String(agent) } : {}),
+          ...(status !== undefined ? { status: String(status) as never } : {}),
+          ...(cursor !== undefined ? { cursor: String(cursor) } : {}),
+          ...(from !== undefined ? { from } : {}),
+          ...(to !== undefined ? { to } : {}),
+        });
+        return ctx.response.json({
+          ...page,
+          runs: await withActorLabels(page.runs, actorDirectory),
+        });
       });
 
       // GET /agent/governance/runs/:id — one run's full trace (run + messages + tool calls +
@@ -710,7 +732,12 @@ export default class AgentProvider {
       router.get(g('runs/:id'), async (ctx: HttpContext) => {
         const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
         if (actor === null) return;
-        return ctx.response.json(await gov.runDetail(String(ctx.params.id)));
+        const detail = await gov.runDetail(String(ctx.params.id));
+        if (detail === null) return ctx.response.json(null);
+        return ctx.response.json({
+          ...detail,
+          run: (await withActorLabel(detail.run, actorDirectory)) ?? detail.run,
+        });
       });
 
       // GET /agent/governance/approvals/pending — cross-actor HITL approvals inbox, oldest first. This
@@ -721,10 +748,13 @@ export default class AgentProvider {
         if (actor === null) return;
         const filterActor = ctx.request.input('actor');
         return ctx.response.json(
-          await gov.pendingApprovals({
-            limit: limitOf(ctx),
-            ...(filterActor !== undefined ? { actor: String(filterActor) } : {}),
-          }),
+          await withActorLabels(
+            await gov.pendingApprovals({
+              limit: limitOf(ctx),
+              ...(filterActor !== undefined ? { actor: String(filterActor) } : {}),
+            }),
+            actorDirectory,
+          ),
         );
       });
 
