@@ -1,5 +1,5 @@
 ---
-'@adonis-agora/agent': patch
+'@adonis-agora/agent': minor
 ---
 
 Fix the published migration, which threw against any database the library had already provisioned.
@@ -24,6 +24,8 @@ never added at all.
 
 `create_agent_rag_chunks` had the same unguarded `createTable`; it now provisions through
 `PgVectorStore.ensureSchema()`.
+
+`createAgentTables` now resolves to the list of repairs it applied (it returned nothing before). Callers that only `await` it are unaffected.
 
 **No action needed.** Migrations you have already run stay applied; this only changes what `configure`
 generates from here on. If your `migration:run` was failing, re-run `node ace configure` and delete the
