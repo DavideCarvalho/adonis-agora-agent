@@ -70,7 +70,7 @@ Then grant `agent.delegate` to whoever may orchestrate. Because it is an ordinar
 and tenant scoping apply as usual — `agent.*` covers it, and a grant made in one tenant does not let
 an actor delegate in another. Give each edge its own ability (`agent.delegate.researcher`) when
 different callers should reach different sub-agents. See
-[Multi-agent delegation](/docs/agent/authoring/personas-and-agents#delegation).
+[Multi-agent delegation](/docs/agent/authoring/personas-and-agents#multi-agent-delegation).
 
 By default the adapter maps an `Actor` onto `{ id: actor.id }` (enough for authz's `defaultResolveUserRef`). Pass `userFromActor` to attach a polymorphic `type` or a host user entity:
 

@@ -83,7 +83,7 @@ export default defineConfig({
 retrievalFilter: (actor) => ({ tenantRef: actor.tenantRef }),
 ```
 
-**Omit and inject-mode retrieval is UNSCOPED**: every actor retrieves over the whole corpus. That is fine for a single-tenant corpus and a leak in any other. See [RAG & retrieval](/docs/agent/retrieval/rag#scoping-retrieval-to-the-actor).
+**Omit and inject-mode retrieval is UNSCOPED**: every actor retrieves over the whole corpus. That is fine for a single-tenant corpus and a leak in any other. See [RAG & retrieval](/docs/agent/retrieval/rag#scoping-inject-mode-with-retrievalfilter).
 
 ### `attachmentStaging` / `attachmentMaxBytes` / `attachmentAllowedContentTypes`
 
