@@ -1,0 +1,51 @@
+# Skill tree for adonis-agent. Flat structure (skills/<name>/SKILL.md), no router.
+# Every skill is type `core`. Each entry carries its owning `package`.
+
+structure: flat
+router: false
+
+skills:
+  - name: agent-setup
+    type: core
+    package: "@adonis-agora/agent"
+    path: packages/adonis/skills/agent-setup/SKILL.md
+    summary: "defineConfig (model/store/quota/pricing/sink/actorResolver/path), Lucid vs
+      in-memory store, auto-created tables, cost fold + seedModelPrices, Redis sink,
+      the throwing-default identity seam."
+
+  - name: agent-tools
+    type: core
+    package: "@adonis-agora/agent"
+    path: packages/adonis/skills/agent-tools/SKILL.md
+    summary: "AiTool decorator / BaseTool / ReadTool / ActionTool / defineTool authoring,
+      discovery barrel vs runtime scan, toolsHook options, roles/ability fail-closed
+      gating, IoC DI, the governed dataTool."
+
+  - name: agent-governance
+    type: core
+    package: "@adonis-agora/agent"
+    path: packages/adonis/skills/agent-governance/SKILL.md
+    summary: "Actor resolvers, DefaultToolAuthorizer, offered+invoke double check,
+      evaluateOwnership, governanceAuthorize route-mount semantics, dashboard mount
+      refusals, approvals/mine exemption."
+
+  - name: agent-personas-agents
+    type: core
+    package: "@adonis-agora/agent"
+    path: packages/adonis/skills/agent-personas-agents/SKILL.md
+    summary: "Personas & PromptBuilders, named agents, delegatesTo ask_<target> synthesis
+      and authorization, HITL approve/reject, per-agent actorResolver override limits."
+
+  - name: agent-testing
+    type: core
+    package: "@adonis-agora/agent"
+    path: packages/adonis/skills/agent-testing/SKILL.md
+    summary: "FakeModelProvider/echoScript scripts, in-memory SPI doubles, runAgentLoop +
+      hooks seam, InlineAgentRunner, asserting on StreamFrames."
+
+  - name: agent-console-client
+    type: core
+    package: "@adonis-agora/agent-dashboard"
+    path: packages/dashboard/skills/agent-console-client/SKILL.md
+    summary: "Embedded vs standalone console provider, config('agent').dashboard block,
+      decideDashboardMount refusal reasons, AgentClient browser API and base-URL rules."

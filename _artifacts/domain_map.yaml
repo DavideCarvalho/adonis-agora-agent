@@ -1,0 +1,223 @@
+# Domain map for adonis-agent (TanStack Intent agent skills)
+# Generated autonomously by mining README.md, packages/adonis/docs/**, packages/*/src,
+# and stubs. ONE domain map for the whole monorepo; skills scoped to the consumer-facing
+# packages (@adonis-agora/agent primary, @adonis-agora/agent-dashboard secondary).
+# No maintainer interview was run (fully autonomous constraint); gaps recorded below.
+
+library: adonis-agent
+description: >-
+  Governed, durable-backed AI agent for AdonisJS. defineConfig wires a provider-agnostic
+  agent loop (runAgentLoop: model -> tools -> model) behind SPIs (model/store/quota/pricing/
+  roles/sink/runner/governance), auto-discovers governed tools from app/agent_tools
+  (read auto-executes, action gates on human approval, agent delegates), persists through
+  Lucid or in-memory stores, and serves the /agent HTTP+SSE routes plus a cross-actor
+  governance read-model and a React console.
+
+# Versions read from package.json at scaffolding time.
+versions:
+  "@adonis-agora/agent": "0.25.2"
+  "@adonis-agora/agent-dashboard": "0.7.1"
+
+# Consumer-facing packages a developer actually installs. Skills target these.
+primary_packages:
+  - name: "@adonis-agora/agent"
+    dir: packages/adonis
+    role: >-
+      Core module - defineConfig/config/agent.ts, the agent loop and runners, tool authoring
+      + discovery, actor resolvers and the fail-closed authorizers, stores/quotas/pricing/
+      retriever factory namespaces, Lucid store + migrations, /agent/* HTTP + SSE routes,
+      MCP server, RAG stack, data satellite, testing kit, and the embedded governance
+      console provider.
+  - name: "@adonis-agora/agent-dashboard"
+    dir: packages/dashboard
+    role: >-
+      Standalone governance console (React SPA served by a thin AdonisJS provider) plus the
+      framework-free AgentClient browser client. Since agent@0.21.0 the same SPA ships
+      embedded in @adonis-agora/agent, so this package is optional.
+
+# Agora ecosystem peers NOT covered by dedicated skills - each is its own repo/package.
+# Their integration seams are summarized inside the primary skills (see gaps).
+secondary_packages:
+  - "@adonis-agora/durable (optional peer: durable: true replay-safe runs)"
+  - "@adonis-agora/authz (optional peer: AuthzActorResolver / authzToolAuthorizer)"
+  - "@adonis-agora/telescope (optional peer: observability watcher extension)"
+  - "@adonis-agora/diagnostics (optional peer: agora:agent:* event emission)"
+  - "ai (Vercel AI SDK v7, adapted via @adonis-agora/agent/ai-sdk)"
+  - "@adonisjs/lucid, @adonisjs/redis, @qdrant/js-client-rest, node-sql-parser (infra peers)"
+
+domains:
+  - id: setup
+    title: Module setup & configuration
+    package: "@adonis-agora/agent"
+    surface:
+      - "defineConfig(config) shapes config/agent.ts; only `model` is required"
+      - "model: ModelProvider | ModelFactory (lazy thunk); aiSdkModel(model, opts?) from @adonis-agora/agent/ai-sdk"
+      - "stores.memory() / stores.lucid({ connection?, autoCreateTables? }); store names the key"
+      - "quotas.memory({ limitTokens }) / quotas.ledger({ limitTokens }) - opt-in; omitted = fail-open"
+      - "pricingStores.lucid() / pricingStores.memory(); seedModelPrices(store, prices); estimateCost"
+      - "sink: tokenSinks.redis({ connection?, keyPrefix?, ttlSeconds? }) for multi-replica SSE"
+      - "actorResolver: AuthActorResolver | HeaderActorResolver | UnconfiguredActorResolver (throwing default)"
+      - "path (route prefix, default 'agent'); durable: boolean; node ace configure @adonis-agora/agent"
+    key_facts:
+      - "The actor resolver defaults to UnconfiguredActorResolver, which THROWS on every request -
+         no identity is ever fabricated; an unresolvable route replies 401 before running the model."
+      - "Omitting `quota` disables budgeting entirely (fail-open); configuring one makes the gate
+         fail-closed (QuotaExceededError before the first model call)."
+      - "quotas.ledger.bump is a deliberate no-op - store.recordUsage already persisted the tokens;
+         a custom store that increments in bump double-counts every turn."
+      - "An unpriced turn persists cost_usd NULL, never 0; but the spend rollups are sums, so unpriced
+         rows contribute $0.00 - seed prices with seedModelPrices or the dashboards lie politely."
+      - "The default sink buffers per run in process memory (single replica); tokenSinks.redis()
+         lets any pod serve any run's SSE stream."
+      - "stores.lucid() provisions the six agent tables on first use (autoCreateTables default true);
+         the published migration delegates to the same createAgentTables helper, so they cannot drift."
+
+  - id: tools
+    title: Tool authoring & discovery
+    package: "@adonis-agora/agent"
+    surface:
+      - "@AiTool(options) decorator stamps AI_TOOL_META_KEY onto a class implementing execute(input, ctx)"
+      - "BaseTool<I, O> / ReadTool<I, O> / ActionTool<I, O> - static tool field, kind pinned by the base"
+      - "defineTool(options, execute) branded functional tool; pass via defineConfig({ tools: [...] })"
+      - "AiToolOptions { name, kind 'read'|'action', description, input StandardSchemaV1, roles?, ability? }"
+      - "AiToolCtx { actor, threadId, runId, requestId, persona?, pageContext?, host?, emitComponent? }"
+      - "discoverTools / registerToolsFromBarrel / toolsHook({ source?, importAlias?, output? })"
+      - "dataTool({ db|runner, tableAccess REQUIRED, tenant?, maxRows?, name? }) governed read-only SQL"
+    key_facts:
+      - "Discovery reads the Assembler-generated .adonisjs/agent/tools.js barrel, falling back to a
+         recursive runtime scan of app/agent_tools importing only the environment-appropriate extension."
+      - "Authorization runs BEFORE the model sees a tool - definitionsFor drops anything the actor's
+         role cannot invoke, so a forbidden tool is never offered, let alone run."
+      - "A tool with no `roles` inherits config defaultRoles - ['ADMIN'] by default (fail-closed)."
+      - "Input is Standard Schema (Zod/Valibot/ArkType); the loop re-validates via ~standard.validate
+         before the handler runs (ToolInputInvalidError)."
+      - "Class tools resolve through the IoC container lazily on first invocation, then cached."
+      - "Registration order is discovery first, then config `tools`, then delegate synthesis;
+         duplicate names skip (first wins)."
+      - "A tool file that throws at import time is logged and skipped - the rest still register."
+
+  - id: governance
+    title: Identity, authorization & governance surfaces
+    package: "@adonis-agora/agent"
+    surface:
+      - "AuthActorResolver({ toActor? }) reads ctx.auth.user; HeaderActorResolver trusts x-actor-* headers"
+      - "DefaultToolAuthorizer(defaultRoles = ['ADMIN']) role set intersection; alias authorizer/rolesPolicy"
+      - "evaluateGovernanceGate(actor, ctx, authorize?, debug?) -> GovernanceGateVerdict (403 fail-closed)"
+      - "evaluateOwnership(actorId, ownerRef, privileged) -> OwnershipVerdict (200 | 403 | 404)"
+      - "governanceAuthorize mounts (or omits) ALL /agent/governance/* routes"
+      - "config.dashboard AgentDashboardConfig { enabled?, path?, authorize?, onUnauthenticated? }"
+      - "@adonis-agora/agent/authz exports AuthzActorResolver / authzToolAuthorizer (ability-aware)"
+    key_facts:
+      - "The offered-tools filter AND the invoke-time re-check call the SAME can(actor, tool), so a
+         swapped policy changes both layers together; they can never disagree."
+      - "/agent/governance/* is NOT mounted unless governanceAuthorize exists (every path answers 404);
+         governanceQueries defaults to mirroring a Lucid main store and is OFF otherwise unless set."
+      - "With governanceQueries set to false the console refuses to mount for a DIFFERENT logged reason
+         than the missing gate - two deliberately distinct boot warnings, diagnosable from logs alone."
+      - "Ownership replies 404 (not 403) for unknown ids so a response never confirms an id exists;
+         privileged comes from the same governanceAuthorize gate."
+      - "A thrown authorize() denies with 403 like a false return; its message reaches the client only
+         outside production (debug), otherwise a generic 'forbidden'."
+      - "GET /agent/approvals/mine is deliberately NOT behind the gate - always scoped to the caller."
+
+  - id: personas_agents
+    title: Personas, named agents & delegation
+    package: "@adonis-agora/agent"
+    surface:
+      - "defaultAgent.personas[] / Persona { id, label, systemPrompt string | PromptBuilder, allowedTools? }"
+      - "PromptContext { actor, persona?, pageContext?, basePrompt } - a persona builder wraps the base"
+      - "agents AgentDefinition[] { name, systemPrompt?, tools?, delegatesTo?, personas?, maxSteps?, actorResolver? }"
+      - "delegatesTo (string | DelegateEdge)[] synthesizes ask_<target> agent-kind tools"
+      - "DelegateEdge { agent, roles?, ability? }; delegate input is { task: string }"
+      - "HITL POST /agent/tool-call/approve | reject { runId, toolCallId, reason? }; status pending_approval"
+      - "maxSteps default 8 caps model<->tool iterations per turn"
+    key_facts:
+      - "Effective tool set = registered tools INTERSECT actor roles INTERSECT persona allow-list
+         INTERSECT agent allow-list - allow-lists narrow, never grant."
+      - "A delegate edge goes through the same gate as any tool - a bare string declares nothing, so it
+         is ADMIN-only under DefaultToolAuthorizer and ALWAYS denied under the authz adapter."
+      - "A denied delegation is recorded failed (never auto_executed) and the error is fed back to the
+         model, which usually answers alone - mis-authorization looks like the orchestrator ignoring
+         the specialist, not like an error."
+      - "A per-agent actorResolver override applies ONLY to POST /agent/chat; every other route resolves
+         the GLOBAL resolver - mismatched actor ids strand a caller from its own run's stream/approvals."
+      - "Under the inline runner a delegated sub-agent has no human, so its action tools are
+         auto-declined - keep HITL actions on the top-level agent."
+      - "The prompt resolves once per turn from stable inputs; wall-clock/randomness inside a
+         PromptBuilder breaks durable replay determinism."
+
+  - id: testing
+    title: Offline testing with the in-memory kit
+    package: "@adonis-agora/agent"
+    surface:
+      - "@adonis-agora/agent/testing FakeModelProvider(script), echoScript(text)"
+      - "InMemoryAgentStore, InMemoryTokenStreamSink (.subscribe(runId)), InMemoryQuotaStore"
+      - "InMemoryPricingStore, InMemoryGovernanceQueries, InMemoryActorDirectory, InMemoryAttachmentStagingStore"
+      - "FakeEmbeddingProvider / FakeReranker / inMemoryRetriever; FakeMediaManager / fakePdfExtractor"
+      - "runAgentLoop(deps, input, hooks) driven directly; or AgentDepsFactory + InlineAgentRunner"
+      - "hooks { runId, openSink, awaitApproval, step } - step(name, fn) is the checkpoint seam"
+    key_facts:
+      - "FakeModelProvider's script is a PURE function of (args, turnIndex); turnIndex derives from the
+         assistant-turn count in history, so scripts stay deterministic and replay-safe."
+      - "Tests see typed StreamFrames ({ t 'text', v } / { t 'component', name, data }); the SSE wire
+         encoding happens later, in the provider's route handler (frameToSse)."
+      - "The in-memory doubles implement the SAME SPIs as production adapters, so a green test exercises
+         the real loop/governance/accounting code paths."
+
+  - id: dashboard
+    title: Governance console & browser client
+    package: "@adonis-agora/agent-dashboard"
+    surface:
+      - "Embedded default: node ace configure @adonis-agora/agent serves the SPA at <path>/dashboard"
+      - "Standalone: @adonis-agora/agent-dashboard provider registered AFTER @adonis-agora/agent/agent_provider"
+      - "config('agent').dashboard block - ONE shape controls whichever provider is registered"
+      - "decideDashboardMount(enabled, governanceAuthorize, governanceQueries) refusal logic"
+      - "@adonis-agora/agent-dashboard/client AgentClient { spendByModel, spendByActor, usageTrend,
+         quotaToday, recentThreads, recentToolCalls, threadDetail, listRuns, runDetail,
+         pendingApprovals, perToolStats, runReliability, approveToolCall, rejectToolCall,
+         pricing, upsertPrice }"
+      - "resolveApiBase / deriveApiBase - window.__AGENT_DASHBOARD_BASE__ wins, else pathname minus /dashboard"
+    key_facts:
+      - "The console is a pure consumer of the cross-actor /agent/governance/* routes - no gate, no
+         mount; dashboard.enabled true is necessary but NOT sufficient."
+      - "dashboard.authorize gates only the SPA shell; the DATA is gated by governanceAuthorize - one
+         predicate shape, typically the same ADMIN check for both."
+      - "Register exactly ONE of the two providers; both mounted at the same path throw AdonisJS's
+         duplicate-route error at boot."
+      - "AgentClient sends credentials same-origin, so the host's session cookie gates every call
+         exactly as the routes gate server-side."
+
+gaps:
+  # What a maintainer interview would have answered but could not be confirmed autonomously.
+  - skill: agent-setup
+    question: >-
+      Does the RAG stack deserve its own skill? retrievers.memory/pgvector/qdrant,
+      HybridRetriever/RerankingRetriever, minScore floor semantics, chunkText separator
+      behavior, and media ingestion are summarized only inside agent-setup; they plausibly
+      warrant dedicated coverage.
+    context: Kept out of scope to respect the ~4-6 skill budget for this monorepo.
+    status: open
+  - skill: agent-tools
+    question: >-
+      Do the MCP server (@adonis-agora/agent/mcp, config/mcp.ts) and the Telescope watcher
+      extension (@adonis-agora/agent/telescope) need skills?
+    context: Both are optional opt-in surfaces; their setup lives outside config/agent.ts.
+    status: open
+  - skill: agent-testing
+    question: >-
+      Should the durable runner (@adonis-agora/durable peer, durable: true) get its own skill
+      covering step memoization rules, suspend/resume signals, and child workflows?
+    context: Summarized across agent-personas-agents and agent-testing; the peer has its own repo.
+    status: open
+  - skill: agent-setup
+    question: >-
+      How often do attachments trip users (attachmentAllowedContentTypes REPLACE semantics,
+      the localhost SSRF downloader trap + attachmentFetchDownloader)?
+    context: Assumed from source JSDoc, not telemetry or issue reports.
+    status: open
+  - skill: agent-governance
+    question: >-
+      No GitHub issues were mined this session, so failure frequencies are inferred from source
+      comments and doc callouts rather than real reports.
+    context: gh search unavailable in this session; docs callouts are unusually detailed here.
+    status: open
