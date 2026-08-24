@@ -1,5 +1,17 @@
 # @adonis-agora/agent-dashboard
 
+## 0.7.2
+
+### Patch Changes
+
+- [#82](https://github.com/DavideCarvalho/adonis-agora-agent/pull/82) [`59be4e9`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/59be4e9943b47d79ce5f006c1d24b9b39e052f84) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Add TanStack Intent agent skills. Both packages now ship a `skills/` directory
+  (five skills under @adonis-agora/agent: setup, tools, governance, personas &
+  multi-agent delegation, offline testing; one under @adonis-agora/agent-dashboard:
+  the governance console client) that coding agents can load as structured,
+  verified documentation. The directories are included in each package's `files`
+  allowlist, and `@tanstack/intent` is added as a devDependency so CI can enforce
+  skill validity via `intent validate`.
+
 ## 0.7.1
 
 ### Patch Changes
