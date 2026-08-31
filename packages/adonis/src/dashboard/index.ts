@@ -19,8 +19,8 @@ export {
   type AgentDashboardConfig,
   type AgentDashboardUnauthenticatedHook,
   type DashboardMountDecision,
-  type ResolvedAgentDashboardConfig,
   decideDashboardMount,
+  type ResolvedAgentDashboardConfig,
   resolveDashboardConfig,
 } from './define_config.js';
 export { type DashboardGateVerdict, evaluateDashboardGate } from './gate.js';

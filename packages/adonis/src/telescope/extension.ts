@@ -28,8 +28,8 @@ import {
   agentRecentRunsProvider,
   agentRecentToolCallsProvider,
   agentRunsOverTimeProvider,
-  agentTokenUsageProvider,
   agentTokensOverTimeProvider,
+  agentTokenUsageProvider,
   agentToolCallSuccessRateProvider,
   agentToolCallsOverTimeProvider,
 } from './data-providers.js';

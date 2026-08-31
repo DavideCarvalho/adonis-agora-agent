@@ -8,9 +8,9 @@ import {
   type ModelProvider,
   type Persona,
   type PromptBuilder,
+  runAgentLoop,
   type StreamFrame,
   ToolRegistry,
-  runAgentLoop,
 } from '../src/index.js';
 import {
   FakeModelProvider,

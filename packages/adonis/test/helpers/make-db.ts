@@ -1,7 +1,7 @@
 import { Emitter } from '@adonisjs/core/events';
 import { Logger } from '@adonisjs/core/logger';
 import { Database } from '@adonisjs/lucid/database';
-import { type LucidDatabaseLike, createAgentTables } from '../../src/index.js';
+import { createAgentTables, type LucidDatabaseLike } from '../../src/index.js';
 
 /**
  * Build a standalone Lucid `Database` over an in-memory SQLite (`better-sqlite3`) — the "Lucid outside

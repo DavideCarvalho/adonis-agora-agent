@@ -5,9 +5,9 @@ import type { ApplicationService } from '@adonisjs/core/types';
 import {
   type AiToolMeta,
   type FunctionalTool,
-  type ToolClass,
   isBrandedFunctionalTool,
   readAiToolMeta,
+  type ToolClass,
 } from './ai-tool-ref.js';
 import type { ToolHandler } from './spi/tool.js';
 import type { ToolRegistry } from './tool-registry.js';

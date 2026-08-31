@@ -5,8 +5,8 @@ import {
   type AgentLoopHooks,
   DefaultRolesPolicy,
   type RolesPolicy,
-  ToolRegistry,
   runAgentLoop,
+  ToolRegistry,
 } from '../src/index.js';
 import {
   FakeModelProvider,
@@ -70,7 +70,7 @@ interface RunResult {
 
 async function run(
   script: FakeScript,
-  runAgent: ReturnType<typeof vi.fn>,
+  runAgent: NonNullable<AgentLoopHooks['runAgent']>,
   overrides: {
     actorRoles?: string[];
     toolAllowList?: string[];

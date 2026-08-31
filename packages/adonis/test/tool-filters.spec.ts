@@ -6,8 +6,8 @@ import {
   DefaultRolesPolicy,
   type ModelProvider,
   type ModelTurnArgs,
-  ToolRegistry,
   runAgentLoop,
+  ToolRegistry,
 } from '../src/index.js';
 import { InMemoryAgentStore, InMemoryTokenStreamSink } from '../src/testing/index.js';
 

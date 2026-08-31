@@ -1,5 +1,5 @@
-import type { AgentDepsFactory } from './agent-deps-factory.js';
 import { utcDay } from './agent-deps.js';
+import type { AgentDepsFactory } from './agent-deps-factory.js';
 import type { AgentRunner } from './spi/agent-runner.js';
 import type { AgentStore } from './spi/agent-store.js';
 import type { StreamFrame } from './spi/token-stream-sink.js';

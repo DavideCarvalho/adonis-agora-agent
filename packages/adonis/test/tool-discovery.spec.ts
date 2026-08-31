@@ -2,12 +2,12 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import type { AiToolCtx, ToolHandler } from '../src/index.js';
 import {
   AgentDepsFactory,
   AgentRegistry,
   AiTool,
   DefaultRolesPolicy,
-  ToolRegistry,
   defineTool,
   delegateToolName,
   discoverTools,
@@ -15,8 +15,8 @@ import {
   registerDelegateTools,
   registerToolExport,
   registerToolsFromBarrel,
+  ToolRegistry,
 } from '../src/index.js';
-import type { AiToolCtx, ToolHandler } from '../src/index.js';
 
 const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'agent_tools');
 

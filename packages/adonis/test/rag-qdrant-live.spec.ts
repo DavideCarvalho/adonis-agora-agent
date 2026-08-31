@@ -1,7 +1,7 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { QdrantStore, chunkIdToPointId } from '../src/index.js';
 import type { QdrantClientLike } from '../src/index.js';
+import { chunkIdToPointId, QdrantStore } from '../src/index.js';
 
 /**
  * Live-Qdrant verification for the store capabilities that a fake cannot honestly prove: whether

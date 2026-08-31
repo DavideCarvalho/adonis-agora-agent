@@ -1,6 +1,6 @@
 import diagnostics_channel from 'node:diagnostics_channel';
 import type { ChunkOptions } from '../rag/chunk.js';
-import { type IngestDocument, chunkDocuments, ingestChunks } from '../rag/ingest.js';
+import { chunkDocuments, type IngestDocument, ingestChunks } from '../rag/ingest.js';
 import type { VectorStore } from '../rag/vector-store.js';
 import type { EmbeddingProvider } from '../spi/embedding-provider.js';
 import {
@@ -10,16 +10,16 @@ import {
   publishRagMediaSkipped,
 } from './diagnostics.js';
 import {
-  UPLOAD_COMPLETE_CHANNEL,
-  type UploadCompletePayload,
   envelopePayload,
   isUploadCompleteEvent,
+  UPLOAD_COMPLETE_CHANNEL,
+  type UploadCompletePayload,
 } from './media-events.js';
 import {
-  type TextExtractor,
-  UnsupportedContentTypeError,
   defaultTextExtractor,
   normalizeContentType,
+  type TextExtractor,
+  UnsupportedContentTypeError,
 } from './text-extractor.js';
 
 /** The minimal, structural slice of an `@adonis-agora/media` disk this bridge reads bytes from. */

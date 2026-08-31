@@ -1,6 +1,6 @@
 import type { Database } from '@adonisjs/lucid/database';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { GroupTableAccessPolicy, dataTool } from '../src/index.js';
+import { dataTool, GroupTableAccessPolicy } from '../src/index.js';
 import type { AiToolCtx } from '../src/spi/tool.js';
 import { asStoreDb, makeMemoryDb } from './helpers/make-db.js';
 

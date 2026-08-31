@@ -2,19 +2,19 @@ import { createHash } from 'node:crypto';
 import type { EmbeddingProvider } from '../spi/embedding-provider.js';
 import type { Passage } from '../spi/retriever.js';
 import { EmbeddingRetriever } from './embedding-retriever.js';
-import {
-  applyMetadataPatch,
-  assertRemovalFilter,
-  documentIdOf,
-  effectivePatchKeys,
-  filterDeniesAll,
-} from './vector-store.js';
 import type {
   IndexedDocument,
   MetadataPatch,
   VectorRecord,
   VectorSearchOptions,
   VectorStore,
+} from './vector-store.js';
+import {
+  applyMetadataPatch,
+  assertRemovalFilter,
+  documentIdOf,
+  effectivePatchKeys,
+  filterDeniesAll,
 } from './vector-store.js';
 
 /** Similarity → Qdrant distance name. Cosine (default), Dot (inner), Euclid (l2). */
@@ -292,7 +292,7 @@ export class QdrantStore implements VectorStore {
     // Group by the RESULTING metadata so identical outcomes share one write — the normal case.
     const groups = new Map<string, { metadata: Record<string, unknown>; points: string[] }>();
     let written = 0;
-    let offset: unknown = undefined;
+    let offset: unknown;
     for (let pageCount = 0; ; pageCount++) {
       if (pageCount >= MAX_SCROLL_PAGES) {
         throw new Error(
@@ -346,7 +346,7 @@ export class QdrantStore implements VectorStore {
   async listDocumentIds(filter?: Record<string, unknown>): Promise<string[]> {
     const qFilter = buildQdrantFilter(filter);
     const ids = new Set<string>();
-    let offset: unknown = undefined;
+    let offset: unknown;
     for (let pageCount = 0; ; pageCount++) {
       if (pageCount >= MAX_SCROLL_PAGES) {
         throw new Error(
@@ -412,7 +412,7 @@ export class QdrantStore implements VectorStore {
   async listDocuments(filter?: Record<string, unknown>): Promise<IndexedDocument[]> {
     const qFilter = buildQdrantFilter(filter);
     const seen = new Map<string, IndexedDocument>();
-    let offset: unknown = undefined;
+    let offset: unknown;
     // Page through the scroll cursor until it is exhausted. A ~1500-chunk corpus is a few pages.
     for (let pageCount = 0; ; pageCount++) {
       if (pageCount >= MAX_SCROLL_PAGES) {

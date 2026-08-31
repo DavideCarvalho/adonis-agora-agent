@@ -3,8 +3,8 @@ import type {
   CurrentModelPrice,
   ModelPriceInput,
 } from '../spi/pricing-store.js';
-import { AGENT_TABLES, ensureAgentTables } from './lucid-schema.js';
 import type { LucidDatabaseLike } from './lucid.js';
+import { AGENT_TABLES, ensureAgentTables } from './lucid-schema.js';
 
 /** Options for {@link LucidPricingStore}. */
 export interface LucidPricingStoreOptions {

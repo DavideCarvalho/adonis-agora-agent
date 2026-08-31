@@ -119,7 +119,7 @@ export function createMcpServer(options: CreateMcpServerOptions): Server {
     return { actor, ...ids };
   };
 
-  server.setRequestHandler(ListToolsRequestSchema, async (request, extra) => {
+  server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
     const actor = actorFromAuth(extra.authInfo);
     const defs = await registry.definitionsFor(actor, policy, allowedTools);
     return {

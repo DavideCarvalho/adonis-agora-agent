@@ -20,15 +20,7 @@ export function Panel({ children, className }: { children: ReactNode; className?
   return <section className={`panel${className ? ` ${className}` : ''}`}>{children}</section>;
 }
 
-export function Stat({
-  label,
-  value,
-  sub,
-}: {
-  label: string;
-  value: ReactNode;
-  sub?: ReactNode;
-}) {
+export function Stat({ label, value, sub }: { label: string; value: ReactNode; sub?: ReactNode }) {
   return (
     <div className="panel stat">
       <div className="label">{label}</div>

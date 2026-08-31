@@ -5,8 +5,8 @@ import {
   type AgentPricingStore,
   DefaultRolesPolicy,
   type ModelProvider,
-  ToolRegistry,
   runAgentLoop,
+  ToolRegistry,
 } from '../src/index.js';
 import {
   FakeModelProvider,

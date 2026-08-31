@@ -10,7 +10,7 @@ import type { TrendMetric } from '../client/trend-path.js';
 import type { GovernanceRange } from '../client/types.js';
 import { Donut } from './Donut.js';
 import { TrendChart } from './TrendChart.js';
-import { AsyncBlock, Panel, SectionTitle, ShareBar, Stat, colorAt } from './ui.js';
+import { AsyncBlock, colorAt, Panel, SectionTitle, ShareBar, Stat } from './ui.js';
 import { useSpendByActor, useSpendByModel, useUsageTrend } from './use-governance.js';
 
 /**
@@ -116,9 +116,10 @@ export function Overview({ range }: { range: GovernanceRange }) {
         <SectionTitle
           title="Usage trend"
           hint={
-            <span className="controls">
+            <span className="controls" role="tablist">
               <button
                 type="button"
+                role="tab"
                 className="tab"
                 aria-selected={metric === 'costUsd'}
                 onClick={() => setMetric('costUsd')}
@@ -127,6 +128,7 @@ export function Overview({ range }: { range: GovernanceRange }) {
               </button>
               <button
                 type="button"
+                role="tab"
                 className="tab"
                 aria-selected={metric === 'totalTokens'}
                 onClick={() => setMetric('totalTokens')}

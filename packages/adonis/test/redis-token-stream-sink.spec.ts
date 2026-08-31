@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { InProcessTokenStreamSink, RedisTokenStreamSink } from '../src/index.js';
 import type { RedisStreamClient, StreamFrame } from '../src/index.js';
+import { InProcessTokenStreamSink, RedisTokenStreamSink } from '../src/index.js';
 
 /**
  * An in-memory stand-in for a Redis server (NOT a client) shared across sink instances — modelling the

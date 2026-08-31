@@ -21,7 +21,7 @@ import type { RolesPolicy } from './spi/roles-policy.js';
 import type { SinkWriter } from './spi/token-stream-sink.js';
 import type { AiToolCtx } from './spi/tool.js';
 import { ToolForbiddenError, ToolInputInvalidError, type ToolRegistry } from './tool-registry.js';
-import { type ToolTransientRetrySetting, invokeWithTransientRetry } from './tool-retry.js';
+import { invokeWithTransientRetry, type ToolTransientRetrySetting } from './tool-retry.js';
 import type {
   Actor,
   AgentRunInput,

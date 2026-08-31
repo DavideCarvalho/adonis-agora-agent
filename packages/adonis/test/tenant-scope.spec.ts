@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { type SqlParserLike, TenantScopeRewriter, loadSqlParser } from '../src/index.js';
+import { loadSqlParser, type SqlParserLike, TenantScopeRewriter } from '../src/index.js';
 
 /**
  * Focused spec for `TenantScopeRewriter`'s boolean-context handling — the `OR` bypass

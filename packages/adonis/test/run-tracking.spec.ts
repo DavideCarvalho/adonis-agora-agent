@@ -7,18 +7,18 @@ import {
   registerAgentWorkflow,
   setDurableAgentContext,
 } from '../src/durable/index.js';
+import type { Actor } from '../src/index.js';
 import {
   AgentDepsFactory,
   AgentRegistry,
   AgentService,
   DefaultToolAuthorizer,
-  InProcessTokenStreamSink,
   InlineAgentRunner,
+  InProcessTokenStreamSink,
   LucidAgentStore,
   LucidGovernanceQueries,
   ToolRegistry,
 } from '../src/index.js';
-import type { Actor } from '../src/index.js';
 import {
   FakeModelProvider,
   type FakeScript,

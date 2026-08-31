@@ -29,7 +29,12 @@
       "default": "./dist/src/client/index.js"
     }
   },
-  "files": ["dist/", "README.md", "CHANGELOG.md", "skills"],
+  "files": [
+    "dist/",
+    "README.md",
+    "CHANGELOG.md",
+    "skills"
+  ],
   "sideEffects": false,
   "scripts": {
     "build": "pnpm run clean && pnpm run build:spa && tsc -p tsconfig.build.json && pnpm run check:dist",
@@ -42,8 +47,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.tests.json"
   },
   "peerDependencies": {
-    "@adonisjs/core": "^7.3.0",
-    "@adonis-agora/agent": ">=0.21.0 <1.0.0"
+    "@adonis-agora/agent": ">=0.21.0 <1.0.0",
+    "@adonisjs/core": "^7.3.0"
   },
   "peerDependenciesMeta": {
     "@adonisjs/core": {
@@ -51,20 +56,20 @@
     }
   },
   "devDependencies": {
-    "@adonisjs/core": "7.4.0",
     "@adonis-agora/agent": "workspace:*",
-    "@tanstack/intent": "^0.3.2",
-    "@testing-library/react": "16.3.2",
-    "@types/node": "22.20.1",
+    "@adonisjs/core": "7.5.0",
+    "@tanstack/intent": "^0.3.7",
+    "@testing-library/react": "16.3.3",
+    "@types/node": "26.4.0",
     "@types/react": "19.2.18",
-    "@types/react-dom": "19.2.4",
-    "@vitejs/plugin-react": "4.7.0",
-    "jsdom": "25.0.1",
+    "@types/react-dom": "19.2.5",
+    "@vitejs/plugin-react": "6.1.1",
+    "jsdom": "30.0.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "typescript": "5.9.3",
-    "vite": "7.3.6",
-    "vitest": "3.2.7"
+    "typescript": "7.0.2",
+    "vite": "8.2.2",
+    "vitest": "4.1.11"
   },
   "engines": {
     "node": ">=20.6.0"

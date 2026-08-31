@@ -1,5 +1,5 @@
 import { formatCount, formatUsd } from '../client/format.js';
-import { type TrendMetric, buildTrendGeometry } from '../client/trend-path.js';
+import { buildTrendGeometry, type TrendMetric } from '../client/trend-path.js';
 import type { UsageTrendPoint } from '../client/types.js';
 
 const WIDTH = 720;
@@ -11,13 +11,7 @@ const PAD = 12;
  * computed by the pure {@link buildTrendGeometry}; this component only paints it (gradient fill,
  * stroke, vertex dots) and labels the endpoints. `viewBox` + `width:100%` make it fluid/responsive.
  */
-export function TrendChart({
-  points,
-  metric,
-}: {
-  points: UsageTrendPoint[];
-  metric: TrendMetric;
-}) {
+export function TrendChart({ points, metric }: { points: UsageTrendPoint[]; metric: TrendMetric }) {
   const innerW = WIDTH - PAD * 2;
   const innerH = HEIGHT - PAD * 2;
   const geo = buildTrendGeometry(points, metric, innerW, innerH);

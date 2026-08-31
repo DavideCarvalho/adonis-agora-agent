@@ -1,19 +1,19 @@
+import { EmbeddingRetriever } from '../rag/embedding-retriever.js';
+import { MemoryVectorStore } from '../rag/memory-vector-store.js';
+import type { VectorStore } from '../rag/vector-store.js';
 import {
   type DiskBytesReader,
   type MediaManagerHandle,
   MediaRagIngestion,
   type MediaRagIngestionConfig,
-  type ResolveMediaRef,
   mediaRagIngestion,
+  type ResolveMediaRef,
 } from '../rag-media/media-rag-ingestion.js';
 import {
+  defaultTextExtractor,
   type ExtractFn,
   MimeTextExtractor,
-  defaultTextExtractor,
 } from '../rag-media/text-extractor.js';
-import { EmbeddingRetriever } from '../rag/embedding-retriever.js';
-import { MemoryVectorStore } from '../rag/memory-vector-store.js';
-import type { VectorStore } from '../rag/vector-store.js';
 import type { EmbeddingProvider } from '../spi/embedding-provider.js';
 import { FakeEmbeddingProvider } from './fake-embedding-provider.js';
 

@@ -1,6 +1,6 @@
 import type { RolesPolicy } from '../spi/roles-policy.js';
-import { apiKeyAuth, authKitAuth } from './auth.js';
 import type { McpAuth, McpAuthFactory } from './auth.js';
+import { apiKeyAuth, authKitAuth } from './auth.js';
 
 /**
  * Shape of `config/mcp.ts`. The MCP provider exposes the agent's {@link ToolRegistry} over the Model
@@ -59,15 +59,15 @@ export function defineMcpConfig(config: McpConfig): McpConfig {
   return config;
 }
 
-export { authKitAuth, apiKeyAuth };
 export type {
-  McpAuth,
-  McpAuthFactory,
-  McpAuthContext,
-  McpOAuthMetadata,
-  AuthKitMcpAuthOptions,
-  AuthKitActorResolver,
-  ApiKeyMcpAuthOptions,
   ApiKeyActorResolver,
+  ApiKeyMcpAuthOptions,
+  AuthKitActorResolver,
+  AuthKitMcpAuthOptions,
+  McpAuth,
+  McpAuthContext,
+  McpAuthFactory,
+  McpOAuthMetadata,
 } from './auth.js';
 export { resolveMcpAuth } from './auth.js';
+export { apiKeyAuth, authKitAuth };

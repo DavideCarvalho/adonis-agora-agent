@@ -1,10 +1,10 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
-  PUBLISHED_STUBS,
   distStubsRoot,
+  PUBLISHED_STUBS,
   renderAllStubs,
   stubsRoot,
 } from './helpers/render-stub.mjs';

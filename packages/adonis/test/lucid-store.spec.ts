@@ -1,7 +1,7 @@
 import type { Database } from '@adonisjs/lucid/database';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { LucidAgentStore } from '../src/index.js';
 import type { Actor } from '../src/index.js';
+import { LucidAgentStore } from '../src/index.js';
 import { asStoreDb, makeStoreDb } from './helpers/make-db.js';
 
 let db: Database;

@@ -1,6 +1,6 @@
 import type { Database } from '@adonisjs/lucid/database';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { LucidPricingStore, estimateCost, seedModelPrices } from '../src/index.js';
+import { estimateCost, LucidPricingStore, seedModelPrices } from '../src/index.js';
 import { InMemoryPricingStore } from '../src/testing/index.js';
 import { asStoreDb, makeStoreDb } from './helpers/make-db.js';
 

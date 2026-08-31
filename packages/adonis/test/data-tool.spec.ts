@@ -1,11 +1,11 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  dataTool,
   GroupTableAccessPolicy,
+  loadSqlParser,
   type QueryRunner,
   type SqlParserLike,
   TenantScopeRewriter,
-  dataTool,
-  loadSqlParser,
 } from '../src/index.js';
 import type { AiToolCtx } from '../src/spi/tool.js';
 

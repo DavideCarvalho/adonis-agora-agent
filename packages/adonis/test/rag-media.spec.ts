@@ -1,14 +1,14 @@
 import diagnostics_channel from 'node:diagnostics_channel';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  defaultTextExtractor,
   MediaRagIngestion,
   MediaRagResolveRequiredError,
   type MediaRef,
   MemoryVectorStore,
+  mediaRagIngestion,
   UPLOAD_COMPLETE_CHANNEL,
   type UploadCompletePayload,
-  defaultTextExtractor,
-  mediaRagIngestion,
 } from '../src/index.js';
 import {
   FakeEmbeddingProvider,

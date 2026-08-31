@@ -1,9 +1,9 @@
 import type { Database } from '@adonisjs/lucid/database';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Actor } from '../src/index.js';
+import { LucidAgentStore } from '../src/stores/lucid.js';
 import { LucidGovernanceQueries } from '../src/stores/lucid-governance-queries.js';
 import { LucidPricingStore } from '../src/stores/lucid-pricing.js';
-import { LucidAgentStore } from '../src/stores/lucid.js';
 import { asStoreDb, makeMemoryDb } from './helpers/make-db.js';
 
 const actor: Actor = { id: 'user-1', roles: ['ADMIN'] };

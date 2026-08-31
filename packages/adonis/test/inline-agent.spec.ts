@@ -1,6 +1,7 @@
 import type { Database } from '@adonisjs/lucid/database';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import type { Actor, QuotaStore } from '../src/index.js';
 import {
   AgentDepsFactory,
   AgentRegistry,
@@ -8,13 +9,12 @@ import {
   AuthActorResolver,
   DefaultToolAuthorizer,
   HeaderActorResolver,
-  InProcessTokenStreamSink,
   InlineAgentRunner,
+  InProcessTokenStreamSink,
   LucidAgentStore,
   ToolRegistry,
   UnconfiguredActorResolver,
 } from '../src/index.js';
-import type { Actor, QuotaStore } from '../src/index.js';
 import { FakeModelProvider, type FakeScript, InMemoryQuotaStore } from '../src/testing/index.js';
 import { asStoreDb, makeStoreDb } from './helpers/make-db.js';
 

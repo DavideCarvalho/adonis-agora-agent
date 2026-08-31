@@ -1,4 +1,4 @@
-import { ENTRY_LIMIT, atOf, bucketIndexFor, fetchEntries, timeBuckets } from './data-providers.js';
+import { atOf, bucketIndexFor, ENTRY_LIMIT, fetchEntries, timeBuckets } from './data-providers.js';
 import type { DataProvider, ExtensionContext, TelescopeEntryLike } from './telescope-sdk.js';
 
 /**

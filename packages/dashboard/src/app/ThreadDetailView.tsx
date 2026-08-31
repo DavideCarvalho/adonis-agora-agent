@@ -8,13 +8,7 @@ import { useThreadDetail } from './use-governance.js';
  * doesn't reset with the header's day picker), its most recent runs, and its most recent messages. All
  * read-only, mirroring {@link import('./RunDetailView.js').RunDetailView}'s shape.
  */
-export function ThreadDetailView({
-  threadId,
-  onBack,
-}: {
-  threadId: string;
-  onBack: () => void;
-}) {
+export function ThreadDetailView({ threadId, onBack }: { threadId: string; onBack: () => void }) {
   const detail = useThreadDetail(threadId);
   return (
     <div className="stack">

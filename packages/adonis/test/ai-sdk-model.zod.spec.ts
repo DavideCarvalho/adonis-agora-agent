@@ -21,11 +21,12 @@ function createSink(): SinkWriter {
  * the annotation the chunk array widens to a union of literal shapes padded with `?: never` members,
  * which is not assignable to the SDK's stream-part union.
  */
-type StreamChunk = Awaited<ReturnType<MockLanguageModelV3['doStream']>> extends {
-  stream: ReadableStream<infer C>;
-}
-  ? C
-  : never;
+type StreamChunk =
+  Awaited<ReturnType<MockLanguageModelV3['doStream']>> extends {
+    stream: ReadableStream<infer C>;
+  }
+    ? C
+    : never;
 
 function recordingModel(): MockLanguageModelV3 {
   const chunks: StreamChunk[] = [
@@ -55,7 +56,7 @@ function recordingModel(): MockLanguageModelV3 {
 function schemaSeenByModel(model: MockLanguageModelV3, toolName: string): JSONSchema7 {
   const tools = model.doStreamCalls[0]?.tools ?? [];
   const match = tools.find((entry) => entry.type === 'function' && entry.name === toolName);
-  if (!match || match.type !== 'function') {
+  if (match?.type !== 'function') {
     throw new Error(`tool ${toolName} was not passed to the model`);
   }
   return match.inputSchema;
