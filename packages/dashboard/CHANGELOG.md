@@ -1,5 +1,12 @@
 # @adonis-agora/agent-dashboard
 
+## 0.7.3
+
+### Patch Changes
+
+- [#84](https://github.com/DavideCarvalho/adonis-agora-agent/pull/84) [`1f71789`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/1f71789d1d6d6a0e15f6c67ca0b51dc375de79a0) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Dashboard rebuilt on Vite 8 with the tab controls carrying proper `tablist`/`tab` roles — same
+  layout and tokens.
+
 ## 0.7.2
 
 ### Patch Changes
