@@ -1,6 +1,8 @@
 import type { HttpContext } from '@adonisjs/core/http';
 import type { ActorResolver } from '../spi/actor-resolver.js';
+import { type AccessDeniedInfo, resolveAccessDeniedPage } from './access_denied_page.js';
 import type {
+  AccessDeniedOption,
   AgentDashboardAuthorize,
   AgentDashboardUnauthenticatedHook,
 } from './define_config.js';
@@ -81,4 +83,70 @@ export async function evaluateDashboardGate(
     }
   }
   return { ok: true };
+}
+
+/** What {@link answerDashboardDenial} needs to serve (or delegate) the access-denied page. */
+export interface DashboardDenialOptions {
+  /** The console's mount (`/agent/dashboard`) — reported to a custom renderer as `basePath`. */
+  basePath: string;
+  /** The host's `dashboard.accessDenied` option — tweak the built-in page, or render it. */
+  accessDenied?: AccessDeniedOption | undefined;
+}
+
+/**
+ * Write a refused {@link DashboardGateVerdict} to the response — shared by BOTH dashboard providers
+ * (embedded and standalone) so they refuse identically. A browser is what hits these routes (the
+ * SPA shell and its assets), so the body is the built-in access-denied page (or the host's
+ * `accessDenied` customisation of it), not the JSON the governance API answers with.
+ *
+ * Stands down when the request is already answered: `onUnauthenticated`/`authorize` (or the
+ * renderer) writing a redirect keeps it — the `location`-header rule the providers have always
+ * honoured. The verdict's `error` is shown on the page as a developer detail only when it is more
+ * than the generic word (i.e. the `debug` message outside production, or the static "no actor
+ * resolver configured" operator hint).
+ */
+export async function answerDashboardDenial(
+  ctx: HttpContext,
+  verdict: Extract<DashboardGateVerdict, { ok: false }>,
+  options: DashboardDenialOptions,
+): Promise<void> {
+  const answered = () => responseAnswered(ctx);
+  if (answered()) return;
+  const nonce = cspNonce(ctx);
+  const generic = verdict.error === 'unauthorized' || verdict.error === 'forbidden';
+  const info: AccessDeniedInfo = {
+    status: verdict.status,
+    reason: verdict.status === 401 ? 'unauthenticated' : 'forbidden',
+    basePath: options.basePath,
+    ...(generic ? {} : { detail: verdict.error }),
+    ...(nonce !== undefined ? { nonce } : {}),
+  };
+  const html = await resolveAccessDeniedPage(info, options.accessDenied, ctx, answered);
+  if (html === null) return;
+  ctx.response
+    .status(info.status)
+    .header('content-type', 'text/html; charset=utf-8')
+    .header('cache-control', 'no-store, must-revalidate')
+    .send(html);
+}
+
+/**
+ * Whether something already answered this request: a redirect (`location` header) or a body queued
+ * on the response. The body check reads AdonisJS's `response.hasLazyBody` structurally so a
+ * plain-object `ctx` double in a unit test (which has neither) still works.
+ */
+function responseAnswered(ctx: HttpContext): boolean {
+  if (ctx.response.getHeader('location')) return true;
+  const response = ctx.response as unknown as { hasLazyBody?: unknown; headersSent?: unknown };
+  return response.hasLazyBody === true || response.headersSent === true;
+}
+
+/**
+ * The request's CSP nonce when the host runs `@adonisjs/shield` with `@nonce` in its policy (shield
+ * exposes it as `response.nonce`). Read structurally: this package neither depends on shield nor
+ * cares which middleware minted the nonce — only that the page's inline `<style>` carries it.
+ */
+function cspNonce(ctx: HttpContext): string | undefined {
+  const nonce = (ctx.response as unknown as { nonce?: unknown }).nonce;
+  return typeof nonce === 'string' && nonce !== '' ? nonce : undefined;
 }

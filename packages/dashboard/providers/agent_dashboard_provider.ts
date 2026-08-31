@@ -3,8 +3,10 @@ import type { ActorResolver, AgentConfig } from '@adonis-agora/agent';
 import {
   type AgentDashboardAuthorize,
   type AgentDashboardConfig,
+  answerDashboardDenial,
   apiBaseFor,
   contentTypeFor,
+  type DashboardDenialOptions,
   decideDashboardMount,
   evaluateDashboardGate,
   injectApiBase,
@@ -82,6 +84,11 @@ export default class AgentDashboardProvider {
     const actorResolver = agentConfig.actorResolver;
 
     const authorize = dashboardConfig.authorize;
+    // What a refused browser sees — the built-in access-denied page unless the host customised it.
+    const denial: DashboardDenialOptions = {
+      basePath: mount,
+      accessDenied: dashboardConfig.accessDenied,
+    };
 
     // The SPA shell, served at the bare mount. We do NOT redirect to a trailing-slash variant: the
     // AdonisJS router normalizes trailing slashes, so `mount` and `${mount}/` are the SAME route
@@ -89,14 +96,14 @@ export default class AgentDashboardProvider {
     // `<base href="${mount}/">`, so the SPA's relative `./assets/*` URLs resolve against the mount
     // directory regardless of whether the browser's URL carries a trailing slash.
     router.get(mount, async (ctx) => {
-      if (!(await this.gate(ctx, actorResolver, authorize))) return;
+      if (!(await this.gate(ctx, actorResolver, authorize, denial))) return;
       await this.sendIndex(ctx, apiBase, mount);
     });
 
     // Built assets (JS/CSS/fonts/...), with an index fallback for any unmatched path so the
     // client-rendered console still boots on a deep link.
     router.get(`${mount}/*`, async (ctx) => {
-      if (!(await this.gate(ctx, actorResolver, authorize))) return;
+      if (!(await this.gate(ctx, actorResolver, authorize, denial))) return;
       const segments = safeAssetSegments(ctx.params['*']);
       if (segments === null) {
         return ctx.response.status(400).json({ error: 'bad asset path' });
@@ -109,16 +116,19 @@ export default class AgentDashboardProvider {
    * Resolve the actor through the agent config's resolver, mirroring the governance routes, then run
    * the optional `authorize` gate. Returns `true` to proceed; replies `401` on a missing/failed
    * resolver and `403` when `authorize` denies the resolved actor. The decision itself lives in the
-   * router-free {@link evaluateDashboardGate} so it can be unit tested; this only writes the response.
+   * router-free {@link evaluateDashboardGate} so it can be unit tested; this only writes the response
+   * — the access-denied PAGE (a browser is what hits these routes), via the shared
+   * {@link answerDashboardDenial}, which also stands down when `authorize` already redirected.
    */
   private async gate(
     ctx: HttpContext,
     actorResolver: ActorResolver | undefined,
-    authorize?: AgentDashboardAuthorize,
+    authorize: AgentDashboardAuthorize | undefined,
+    denial: DashboardDenialOptions,
   ): Promise<boolean> {
     const verdict = await evaluateDashboardGate(ctx, actorResolver, authorize);
     if (!verdict.ok) {
-      ctx.response.status(verdict.status).json({ error: verdict.error });
+      await answerDashboardDenial(ctx, verdict, denial);
       return false;
     }
     return true;

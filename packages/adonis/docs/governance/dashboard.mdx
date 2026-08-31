@@ -47,6 +47,7 @@ export default defineConfig({
 | `path` | `<agentPath>/dashboard` | Where the SPA mounts. |
 | `authorize` | — | An **extra** gate, run after the actor resolves. Return `false` (or throw) → `403`. |
 | `onUnauthenticated` | — | Runs when the actor resolver itself rejects the caller. |
+| `accessDenied` | — | Tweak or replace the [access-denied page](#the-access-denied-page) a refused browser sees. |
 
 `authorize` and `governanceAuthorize` take the same shape deliberately, so one predicate can gate both the JSON routes and the console:
 
@@ -61,9 +62,42 @@ export default defineConfig({
 
 Note the asymmetry: `governanceAuthorize` gates the data, `dashboard.authorize` gates the page. Omitting the latter means any actor your resolver accepts can *load* the console — but every panel in it still goes through `governanceAuthorize`, so they will see an empty shell of `403`s. Setting both is what produces a coherent experience.
 
-### Redirecting instead of returning JSON
+### The access-denied page
 
-By default a rejected request gets `{ "error": ... }` with a `401` or `403`. For a console a human opens in a browser, a redirect to your login page is friendlier. `onUnauthenticated` gets the `HttpContext`, and if it sets a `Location` header the provider stands down and lets the redirect through:
+A rejected request gets a `401` (nobody resolved) or a `403` (`authorize` said no) — and, since the console's routes are only ever hit by a browser, the body is a real page rather than JSON: a dark card in the console's visual language showing the status, a sentence explaining the refusal and a "Back to app" link. It carries no inline script, so a nonce'd `script-src` CSP cannot break it (its one inline `<style>` picks up `@adonisjs/shield`'s request nonce). Outside production, a thrown resolver/`authorize` message is shown on it as a developer detail.
+
+Tweak it with `accessDenied` — every field optional:
+
+```ts title="config/agent.ts"
+dashboard: {
+  accessDenied: {
+    brand: 'Entre Textos',           // eyebrow + <title>; default "Agent"
+    title: 'Sem acesso',             // default depends on the refusal
+    message: 'Peça ao admin para liberar o console de governança.',
+    homeHref: '/admin',              // "Back to app"; default "/", `false` hides it
+    homeLabel: 'Voltar',
+    accent: '#f59e0b',               // any CSS colour; default: the console's violet
+  },
+}
+```
+
+Or replace it. Pass a function and it receives the refusal (`status`, `reason` — `'unauthenticated'` or `'forbidden'` — `basePath`, `detail`, and the CSP `nonce` when there is one) plus the `HttpContext`. Return an HTML string to have it served with the right status; answer the request yourself and return nothing to make the provider stand down:
+
+```ts title="config/agent.ts"
+dashboard: {
+  accessDenied: (info, ctx) => {
+    if (info.reason === 'unauthenticated') {
+      ctx.response.redirect(`/login?next=${encodeURIComponent(info.basePath)}`)
+      return
+    }
+    return `<!doctype html><title>${info.status}</title><h1>Sem acesso</h1>`
+  },
+}
+```
+
+### Redirecting instead of returning the page
+
+For a console a human opens in a browser, a redirect to your login page is often friendlier than any page. `onUnauthenticated` gets the `HttpContext`, and if it sets a `Location` header the provider stands down and lets the redirect through:
 
 ```ts
 dashboard: {
@@ -74,7 +108,7 @@ dashboard: {
 The same applies on the `403` path: an `authorize` that redirects instead of returning `false` sends the caller wherever you point it. The hook is context-only and never receives an actor — it runs precisely when there isn't one, and the resolver's contract is that it never invents an identity.
 
 <Callout type="info" title="Thrown messages are dev-only">
-When the resolver or `authorize` throws, the response body carries the error message only outside production. In production it is the generic `unauthorized` / `forbidden`.
+When the resolver or `authorize` throws, the page shows the error message only outside production. In production it is the generic `unauthorized` / `forbidden` copy.
 </Callout>
 
 ## What is in it

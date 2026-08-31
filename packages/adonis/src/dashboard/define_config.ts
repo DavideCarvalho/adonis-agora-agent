@@ -1,6 +1,22 @@
 import type { HttpContext } from '@adonisjs/core/http';
 import type { AgentGovernanceAuthorize } from '../governance-gate.js';
 import type { Actor } from '../types.js';
+import type {
+  AccessDeniedOption as GenericAccessDeniedOption,
+  AccessDeniedRenderer as GenericAccessDeniedRenderer,
+} from './access_denied_page.js';
+
+/**
+ * The function form of {@link AgentDashboardConfig.accessDenied}: render (or answer) a refused
+ * page navigation yourself. Receives the refusal ({@link AccessDeniedInfo}) and the AdonisJS
+ * {@link HttpContext}. Return an HTML string to have it served; answer the request yourself (a
+ * redirect, most commonly) and return nothing to make the provider stand down; return nothing
+ * WITHOUT answering and the built-in page is served.
+ */
+export type AccessDeniedRenderer = GenericAccessDeniedRenderer<HttpContext>;
+
+/** `accessDenied` in either form — an options object for the built-in page, or a renderer. */
+export type AccessDeniedOption = GenericAccessDeniedOption<HttpContext>;
 
 /**
  * An extra authorization gate for the dashboard, run AFTER the agent config's `actorResolver` has
@@ -61,6 +77,16 @@ export interface AgentDashboardConfig {
    * `401 { error }` JSON with a custom page/redirect. See {@link AgentDashboardUnauthenticatedHook}.
    */
   onUnauthenticated?: AgentDashboardUnauthenticatedHook;
+  /**
+   * What a BROWSER sees when the gate refuses — the SPA shell or its assets (the console has no
+   * JSON routes of its own; its data comes from the agent's `/agent/governance/*` routes, which are
+   * unaffected). Omit it for the built-in page — a dark card in the console's own visual language
+   * with the status, a sentence explaining the refusal and a "Back to app" link. Pass an object to
+   * tweak that page (`brand`, `title`, `message`, `homeHref`, `accent`, …), or a function to
+   * render/answer it yourself — see {@link AccessDeniedRenderer}. A redirect written by
+   * `onUnauthenticated` or `authorize` still wins: the provider never overwrites a `location` header.
+   */
+  accessDenied?: AccessDeniedOption;
 }
 
 export interface ResolvedAgentDashboardConfig {
@@ -68,6 +94,7 @@ export interface ResolvedAgentDashboardConfig {
   path?: string;
   authorize?: AgentDashboardAuthorize;
   onUnauthenticated?: AgentDashboardUnauthenticatedHook;
+  accessDenied?: AccessDeniedOption;
 }
 
 /** Fill defaults for the optional dashboard config block. */
@@ -79,6 +106,7 @@ export function resolveDashboardConfig(
   if (config?.authorize !== undefined) resolved.authorize = config.authorize;
   if (config?.onUnauthenticated !== undefined)
     resolved.onUnauthenticated = config.onUnauthenticated;
+  if (config?.accessDenied !== undefined) resolved.accessDenied = config.accessDenied;
   return resolved;
 }
 
