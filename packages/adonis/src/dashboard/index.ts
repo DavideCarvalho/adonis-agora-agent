@@ -26,6 +26,7 @@ export {
 export { type DashboardGateVerdict, evaluateDashboardGate } from './gate.js';
 export {
   apiBaseFor,
+  CONFIG_ELEMENT_ID,
   contentTypeFor,
   injectApiBase,
   injectBaseHref,
