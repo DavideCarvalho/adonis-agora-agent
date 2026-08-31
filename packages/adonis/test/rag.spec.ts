@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  EmbeddingRetriever,
-  MemoryVectorStore,
   chunkDocuments,
   chunkText,
   cosineSimilarity,
+  EmbeddingRetriever,
   ingestDocuments,
+  MemoryVectorStore,
 } from '../src/index.js';
 import { FakeEmbeddingProvider, inMemoryRetriever } from '../src/testing/index.js';
 

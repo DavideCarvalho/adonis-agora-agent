@@ -6,6 +6,7 @@ import {
   registerAgentWorkflow,
   setDurableAgentContext,
 } from '../src/durable/index.js';
+import type { Actor, MessageAttachment, ModelMessage } from '../src/index.js';
 import {
   AgentDepsFactory,
   AgentRegistry,
@@ -14,7 +15,6 @@ import {
   InlineAgentRunner,
   ToolRegistry,
 } from '../src/index.js';
-import type { Actor, MessageAttachment, ModelMessage } from '../src/index.js';
 import {
   FakeModelProvider,
   type FakeScript,

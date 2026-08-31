@@ -1,13 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import {
-  MemoryVectorStore,
-  PgVectorStore,
-  QdrantStore,
-  UnsafeRemovalError,
-  buildQdrantFilter,
-  chunkIdToPointId,
-  filterDeniesAll,
-} from '../src/index.js';
 import type {
   LucidClientLike,
   LucidDatabaseLike,
@@ -16,6 +7,15 @@ import type {
   QdrantClientLike,
   QdrantFilter,
   VectorStore,
+} from '../src/index.js';
+import {
+  buildQdrantFilter,
+  chunkIdToPointId,
+  filterDeniesAll,
+  MemoryVectorStore,
+  PgVectorStore,
+  QdrantStore,
+  UnsafeRemovalError,
 } from '../src/index.js';
 
 class RecordingDb implements LucidDatabaseLike {

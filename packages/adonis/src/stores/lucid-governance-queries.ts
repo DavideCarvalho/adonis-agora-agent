@@ -24,8 +24,8 @@ import type {
 } from '../spi/governance-queries.js';
 import type { AgentPricingStore, CurrentModelPrice } from '../spi/pricing-store.js';
 import { estimateCost } from '../spi/pricing-store.js';
-import { AGENT_TABLES, ensureAgentTables } from './lucid-schema.js';
 import type { LucidDatabaseLike } from './lucid.js';
+import { AGENT_TABLES, ensureAgentTables } from './lucid-schema.js';
 
 function toInt(value: unknown): number {
   if (typeof value === 'number') return value;

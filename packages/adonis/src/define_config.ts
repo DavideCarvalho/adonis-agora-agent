@@ -11,17 +11,6 @@ import type { QuotaStore } from './spi/quota-store.js';
 import type { Retriever } from './spi/retriever.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
 import type { TokenStreamSink } from './spi/token-stream-sink.js';
-import {
-  actorDirectories,
-  attachmentStores,
-  governanceQueries,
-  pricingStores,
-  quotas,
-  retrievers,
-  stores,
-  streamTransports,
-  tokenSinks,
-} from './stores/factory.js';
 import type {
   ActorDirectoryFactory,
   AttachmentStagingContext,
@@ -47,6 +36,17 @@ import type {
   StoreContext,
   StoreFactory,
   TokenSinkFactory,
+} from './stores/factory.js';
+import {
+  actorDirectories,
+  attachmentStores,
+  governanceQueries,
+  pricingStores,
+  quotas,
+  retrievers,
+  stores,
+  streamTransports,
+  tokenSinks,
 } from './stores/factory.js';
 import type { ToolTransientRetrySetting } from './tool-retry.js';
 import type { Actor, AgentDefinition } from './types.js';
@@ -247,40 +247,40 @@ export function defineConfig(config: AgentConfig): AgentConfig {
   return config;
 }
 
-export {
-  stores,
-  quotas,
-  pricingStores,
-  governanceQueries,
-  retrievers,
-  attachmentStores,
-  tokenSinks,
-  streamTransports,
-  actorDirectories,
-};
 export type {
-  StoreContext,
-  StoreFactory,
-  LucidStoreConfig,
-  MemoryStoreConfig,
-  QuotaContext,
-  QuotaFactory,
-  QuotaConfig,
-  PricingContext,
-  PricingFactory,
-  LucidPricingConfig,
+  ActorDirectoryFactory,
+  AttachmentStagingContext,
+  AttachmentStagingFactory,
+  EmbeddingFactory,
   GovernanceQueriesContext,
   GovernanceQueriesFactory,
   LucidGovernanceConfig,
+  LucidPricingConfig,
+  LucidStoreConfig,
+  MemoryActorDirectoryConfig,
+  MemoryRetrieverConfig,
+  MemoryStoreConfig,
+  PgVectorRetrieverConfig,
+  PricingContext,
+  PricingFactory,
+  QuotaConfig,
+  QuotaContext,
+  QuotaFactory,
+  RedisTokenSinkConfig,
   RetrieverContext,
   RetrieverFactory,
-  MemoryRetrieverConfig,
-  PgVectorRetrieverConfig,
-  EmbeddingFactory,
-  AttachmentStagingContext,
-  AttachmentStagingFactory,
+  StoreContext,
+  StoreFactory,
   TokenSinkFactory,
-  RedisTokenSinkConfig,
-  ActorDirectoryFactory,
-  MemoryActorDirectoryConfig,
+};
+export {
+  actorDirectories,
+  attachmentStores,
+  governanceQueries,
+  pricingStores,
+  quotas,
+  retrievers,
+  stores,
+  streamTransports,
+  tokenSinks,
 };

@@ -3,7 +3,7 @@
 // the package.json `version` that `changeset version` just wrote. Runs recursively over each
 // workspace package's `src/` so a stray VERSION literal anywhere under src can't silently drift
 // from the published version.
-import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 

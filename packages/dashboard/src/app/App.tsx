@@ -118,6 +118,7 @@ export function App() {
             <button
               key={s.key}
               type="button"
+              role="tab"
               className="tab"
               aria-selected={section === s.key}
               onClick={() => go(s.key)}

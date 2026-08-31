@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { SqlValidationError, SqlValidator, loadSqlParser } from '../src/index.js';
 import type { SqlParserLike } from '../src/index.js';
+import { loadSqlParser, SqlValidationError, SqlValidator } from '../src/index.js';
 
 let validator: SqlValidator;
 

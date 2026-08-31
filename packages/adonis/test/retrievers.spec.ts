@@ -1,19 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
+  chunkDocuments,
   EmbeddingRetriever,
   HybridRetriever,
+  ingestChunks,
   KeywordRetriever,
   MemoryVectorStore,
-  type Passage,
-  type RerankOptions,
   type Reranker,
   RerankingRetriever,
+  type RerankOptions,
   type RetrieveOptions,
   type Retriever,
   type VectorSearchOptions,
   type VectorStore,
-  chunkDocuments,
-  ingestChunks,
 } from '../src/index.js';
 import { FakeEmbeddingProvider, FakeReranker } from '../src/testing/index.js';
 

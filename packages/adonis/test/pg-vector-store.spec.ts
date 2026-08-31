@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import {
-  PgVectorRetriever,
-  PgVectorStore,
-  ingestDocuments,
-  toVectorLiteral,
-} from '../src/index.js';
 import type {
   LucidClientLike,
   LucidDatabaseLike,
   LucidInsertBuilderLike,
   LucidQueryBuilderLike,
+} from '../src/index.js';
+import {
+  ingestDocuments,
+  PgVectorRetriever,
+  PgVectorStore,
+  toVectorLiteral,
 } from '../src/index.js';
 import { FakeEmbeddingProvider } from '../src/testing/index.js';
 

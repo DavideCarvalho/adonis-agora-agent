@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  EmbeddingRetriever,
-  MemoryVectorStore,
   documentIdOf,
+  EmbeddingRetriever,
   ingestDocuments,
+  MemoryVectorStore,
   matchesFilter,
 } from '../src/index.js';
 import { FakeEmbeddingProvider } from '../src/testing/index.js';

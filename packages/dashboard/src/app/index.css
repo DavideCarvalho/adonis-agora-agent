@@ -81,11 +81,9 @@ body {
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background-image: radial-gradient(
-      900px 420px at 82% -10%,
-      hsl(250 74% 51% / 0.12),
-      transparent 70%
-    ), radial-gradient(700px 360px at 8% -12%, hsl(190 90% 50% / 0.06), transparent 70%);
+  background-image:
+    radial-gradient(900px 420px at 82% -10%, hsl(250 74% 51% / 0.12), transparent 70%),
+    radial-gradient(700px 360px at 8% -12%, hsl(190 90% 50% / 0.06), transparent 70%);
   opacity: 0.9;
 }
 
@@ -159,7 +157,10 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  transition:
+    color 0.15s,
+    border-color 0.15s,
+    background 0.15s;
 }
 .tab:hover {
   color: var(--text);
@@ -406,7 +407,10 @@ body {
   font-size: 12px;
   font-family: inherit;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  transition:
+    color 0.15s,
+    border-color 0.15s,
+    background 0.15s;
 }
 .btn:hover:not(:disabled) {
   border-color: var(--muted);

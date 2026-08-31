@@ -1,42 +1,42 @@
 export {
-  type TextExtractor,
-  type ExtractFn,
-  MimeTextExtractor,
-  UnsupportedContentTypeError,
-  defaultTextExtractor,
-  normalizeContentType,
-  decodeUtf8,
-  extractHtmlText,
-} from './text-extractor.js';
-export {
-  UPLOAD_COMPLETE_CHANNEL,
-  type UploadCompletePayload,
-  envelopePayload,
-  isUploadCompleteEvent,
-} from './media-events.js';
-export {
-  mediaRagIngestion,
-  MediaRagIngestion,
-  MediaRagResolveRequiredError,
-  type MediaRagIngestionConfig,
-  type MediaManagerHandle,
-  type DiskBytesReader,
-  type MediaRef,
-  type MediaIngestResult,
-  type MediaIngestSkipReason,
-  type ResolveMediaRef,
-} from './media-rag-ingestion.js';
-export {
   publishRagMedia,
+  publishRagMediaFailed,
   publishRagMediaIngested,
   publishRagMediaRemoved,
   publishRagMediaSkipped,
-  publishRagMediaFailed,
   type RagMediaDiagnosticEvent,
   type RagMediaDiagnosticPayloads,
+  type RagMediaFailedPayload,
   type RagMediaIngestedPayload,
   type RagMediaRemovedPayload,
   type RagMediaSkippedPayload,
-  type RagMediaFailedPayload,
   type RagMediaSkipReason,
 } from './diagnostics.js';
+export {
+  envelopePayload,
+  isUploadCompleteEvent,
+  UPLOAD_COMPLETE_CHANNEL,
+  type UploadCompletePayload,
+} from './media-events.js';
+export {
+  type DiskBytesReader,
+  type MediaIngestResult,
+  type MediaIngestSkipReason,
+  type MediaManagerHandle,
+  MediaRagIngestion,
+  type MediaRagIngestionConfig,
+  MediaRagResolveRequiredError,
+  type MediaRef,
+  mediaRagIngestion,
+  type ResolveMediaRef,
+} from './media-rag-ingestion.js';
+export {
+  decodeUtf8,
+  defaultTextExtractor,
+  type ExtractFn,
+  extractHtmlText,
+  MimeTextExtractor,
+  normalizeContentType,
+  type TextExtractor,
+  UnsupportedContentTypeError,
+} from './text-extractor.js';

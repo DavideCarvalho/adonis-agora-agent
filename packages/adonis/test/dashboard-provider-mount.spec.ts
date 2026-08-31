@@ -1,9 +1,9 @@
 // @vitest-environment node
-import { type Server, createServer } from 'node:http';
+import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { IgnitorFactory } from '@adonisjs/core/factories/core/ignitor';
 import type { HttpContext } from '@adonisjs/core/http';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 import type {
   AgentDashboardAuthorize,
   AgentDashboardUnauthenticatedHook,
@@ -101,7 +101,7 @@ async function bootApp(options: {
 const adminOnly = (actor: { roles?: string[] }) => actor.roles?.includes('ADMIN') ?? false;
 
 let booted: BootedApp | null = null;
-let warn: ReturnType<typeof vi.spyOn>;
+let warn: MockInstance<typeof console.warn>;
 
 beforeEach(() => {
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

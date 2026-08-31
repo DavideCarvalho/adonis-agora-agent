@@ -2,19 +2,19 @@ import diagnostics_channel from 'node:diagnostics_channel';
 import type { Database } from '@adonisjs/lucid/database';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import type { Actor } from '../src/index.js';
 import {
   AgentDepsFactory,
   AgentRegistry,
   AgentService,
   DefaultToolAuthorizer,
-  InProcessTokenStreamSink,
   InlineAgentRunner,
+  InProcessTokenStreamSink,
   LucidAgentStore,
   type Passage,
   type Retriever,
   ToolRegistry,
 } from '../src/index.js';
-import type { Actor } from '../src/index.js';
 import { FakeModelProvider, type FakeScript } from '../src/testing/index.js';
 import { asStoreDb, makeStoreDb } from './helpers/make-db.js';
 

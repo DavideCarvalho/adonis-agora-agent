@@ -1,7 +1,7 @@
 import type { Database } from '@adonisjs/lucid/database';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { LedgerQuotaStore, LucidAgentStore, utcDay } from '../src/index.js';
 import type { Actor, QuotaStore } from '../src/index.js';
+import { LedgerQuotaStore, LucidAgentStore, utcDay } from '../src/index.js';
 import { InMemoryAgentStore } from '../src/testing/index.js';
 import { asStoreDb, makeStoreDb } from './helpers/make-db.js';
 

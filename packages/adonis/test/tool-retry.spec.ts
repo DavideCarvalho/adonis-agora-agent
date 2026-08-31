@@ -4,10 +4,10 @@ import {
   type AgentLoopDeps,
   type AgentLoopHooks,
   DefaultRolesPolicy,
-  ToolRegistry,
   invokeWithTransientRetry,
   isTransientToolError,
   runAgentLoop,
+  ToolRegistry,
 } from '../src/index.js';
 import {
   FakeModelProvider,

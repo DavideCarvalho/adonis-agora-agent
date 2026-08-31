@@ -8,8 +8,8 @@ import {
   agentRecentRunsProvider,
   agentRecentToolCallsProvider,
   agentRunsOverTimeProvider,
-  agentTokenUsageProvider,
   agentTokensOverTimeProvider,
+  agentTokenUsageProvider,
   agentToolCallSuccessRateProvider,
   agentToolCallsOverTimeProvider,
 } from '../../src/telescope/data-providers.js';

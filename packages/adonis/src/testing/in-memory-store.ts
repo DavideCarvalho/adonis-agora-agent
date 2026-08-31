@@ -231,7 +231,6 @@ export class InMemoryAgentStore implements AgentStore {
     const row = this.threads.get(threadId);
     if (row !== undefined) {
       if (runId === null) {
-        // biome-ignore lint/performance/noDelete: exactOptionalPropertyTypes forbids assigning undefined to an optional prop
         delete row.activeStreamId;
       } else {
         row.activeStreamId = runId;

@@ -6,6 +6,7 @@ import {
   registerAgentWorkflow,
   setDurableAgentContext,
 } from '../src/durable/index.js';
+import type { Actor, Passage, RetrieveOptions, Retriever } from '../src/index.js';
 import {
   AgentDepsFactory,
   AgentRegistry,
@@ -14,7 +15,6 @@ import {
   InlineAgentRunner,
   ToolRegistry,
 } from '../src/index.js';
-import type { Actor, Passage, RetrieveOptions, Retriever } from '../src/index.js';
 import {
   FakeModelProvider,
   type FakeScript,
@@ -210,7 +210,7 @@ describe('inject-mode retrieval filter (retrievalFilter)', () => {
     expect(seenOptions).toHaveLength(1);
     // Assert on KEY PRESENCE, not value — `filter: undefined` would also fail `.filter` equality
     // checks but is NOT what existing single-tenant deployments must see: the key must be absent.
-    expect(Object.prototype.hasOwnProperty.call(seenOptions[0], 'filter')).toBe(false);
+    expect(Object.hasOwn(seenOptions[0]!, 'filter')).toBe(false);
   });
 
   it("3. the filter is derived from the RUN's actor, not cached across runs", async () => {

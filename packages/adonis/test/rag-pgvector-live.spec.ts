@@ -1,12 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PgVectorStore } from '../src/index.js';
 import type {
   LucidClientLike,
   LucidDatabaseLike,
   LucidInsertBuilderLike,
   LucidQueryBuilderLike,
 } from '../src/index.js';
+import { PgVectorStore } from '../src/index.js';
 
 /**
  * Live-Postgres verification: the REAL {@link PgVectorStore} emitting its REAL SQL against a real

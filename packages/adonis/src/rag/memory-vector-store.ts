@@ -1,16 +1,16 @@
 import type { Passage } from '../spi/retriever.js';
 import { matchesFilter } from './filter.js';
 import {
-  type IndexedDocument,
-  type MetadataPatch,
-  type VectorRecord,
-  type VectorSearchOptions,
-  type VectorStore,
   applyMetadataPatch,
   assertRemovalFilter,
   documentIdOf,
   effectivePatchKeys,
   filterDeniesAll,
+  type IndexedDocument,
+  type MetadataPatch,
+  type VectorRecord,
+  type VectorSearchOptions,
+  type VectorStore,
 } from './vector-store.js';
 
 /**

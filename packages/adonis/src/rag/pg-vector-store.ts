@@ -2,7 +2,6 @@ import type { EmbeddingProvider } from '../spi/embedding-provider.js';
 import type { Passage } from '../spi/retriever.js';
 import type { LucidRawRunner } from '../stores/lucid.js';
 import { EmbeddingRetriever } from './embedding-retriever.js';
-import { assertRemovalFilter, effectivePatchKeys, filterDeniesAll } from './vector-store.js';
 import type {
   IndexedDocument,
   MetadataPatch,
@@ -10,6 +9,7 @@ import type {
   VectorSearchOptions,
   VectorStore,
 } from './vector-store.js';
+import { assertRemovalFilter, effectivePatchKeys, filterDeniesAll } from './vector-store.js';
 
 /**
  * The similarity metric — which pgvector distance operator ranks results (and which index opclass the

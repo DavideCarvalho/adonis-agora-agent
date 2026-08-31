@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { InMemoryGovernanceQueries, type InMemoryModelPrice } from '../src/testing/index.js';
-import { InMemoryAgentStore } from '../src/testing/index.js';
+import {
+  InMemoryAgentStore,
+  InMemoryGovernanceQueries,
+  type InMemoryModelPrice,
+} from '../src/testing/index.js';
 
 // Records against a live InMemoryAgentStore, exactly as the agent loop would, then asserts the
 // read-model aggregations. A priced model (`gpt-x`) + an unpriced model (`free-y`) exercise the

@@ -2,6 +2,15 @@ import type { WorkflowEngine } from '@adonis-agora/durable';
 import { registerWorkflowClass } from '@adonis-agora/durable';
 import { AgentRunWorkflow } from './agent-run-workflow.js';
 
+export {
+  type DurableAgentContext,
+  getDurableAgentContext,
+  setDurableAgentContext,
+} from './agent-run-context.js';
+export {
+  AgentRunWorkflow,
+  type DurableAgentRunInput,
+} from './agent-run-workflow.js';
 /**
  * The durable agent runner surface, kept in its OWN entry point (`@adonis-agora/agent/durable`) so
  * the main package never eagerly pulls in the optional `@adonis-agora/durable` peer — the provider
@@ -9,15 +18,6 @@ import { AgentRunWorkflow } from './agent-run-workflow.js';
  * the optional `ai` peer.
  */
 export { DurableAgentRunner } from './durable-agent-runner.js';
-export {
-  AgentRunWorkflow,
-  type DurableAgentRunInput,
-} from './agent-run-workflow.js';
-export {
-  setDurableAgentContext,
-  getDurableAgentContext,
-  type DurableAgentContext,
-} from './agent-run-context.js';
 
 /**
  * Register {@link AgentRunWorkflow} on a durable engine so `engine.start(AgentRunWorkflow, …)` and a

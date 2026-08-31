@@ -1,5 +1,5 @@
-import type { AgentDepsFactory } from '../agent-deps-factory.js';
 import { type AgentDeps, utcDay } from '../agent-deps.js';
+import type { AgentDepsFactory } from '../agent-deps-factory.js';
 import { type AgentLoopHooks, runAgentLoop } from '../agent-loop.js';
 import { spannedAgent } from '../diagnostics.js';
 import type { AgentRunner } from '../spi/agent-runner.js';

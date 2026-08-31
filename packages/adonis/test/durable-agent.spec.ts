@@ -1,20 +1,20 @@
 import { InMemoryStateStore, WorkflowEngine } from '@adonis-agora/durable';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   DurableAgentRunner,
   registerAgentWorkflow,
   setDurableAgentContext,
 } from '../src/durable/index.js';
+import type { Actor } from '../src/index.js';
 import {
   AgentDepsFactory,
   AgentRegistry,
   AgentService,
   DefaultToolAuthorizer,
-  ToolRegistry,
   registerDelegateTools,
+  ToolRegistry,
 } from '../src/index.js';
-import type { Actor } from '../src/index.js';
 import {
   FakeModelProvider,
   type FakeScript,

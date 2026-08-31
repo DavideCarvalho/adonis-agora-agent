@@ -2,7 +2,7 @@ import { EmbeddingRetriever } from '../rag/embedding-retriever.js';
 import { type IngestDocument, ingestDocuments } from '../rag/ingest.js';
 import { MemoryVectorStore } from '../rag/memory-vector-store.js';
 import type { EmbeddingProvider } from '../spi/embedding-provider.js';
-import type { RerankOptions, Reranker } from '../spi/reranker.js';
+import type { Reranker, RerankOptions } from '../spi/reranker.js';
 import type { Passage } from '../spi/retriever.js';
 
 /**

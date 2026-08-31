@@ -31,19 +31,19 @@ export {
   agentRecentRunsProvider,
   agentRecentToolCallsProvider,
   agentRunsOverTimeProvider,
-  agentTokenUsageProvider,
   agentTokensOverTimeProvider,
+  agentTokenUsageProvider,
   agentToolCallSuccessRateProvider,
   agentToolCallsOverTimeProvider,
 } from './data-providers.js';
 export { type AgentTelescopeExtensionOptions, agentTelescopeExtension } from './extension.js';
 export {
+  meanChunks,
   ragChunksProvider,
   ragRetrievalsProvider,
   ragTrendProvider,
   ragZeroHitRateProvider,
   zeroHitRate,
-  meanChunks,
 } from './rag-data-providers.js';
 export type {
   Column,
@@ -56,7 +56,7 @@ export type {
   LinkSpec,
   Panel,
   PanelThresholds,
+  TelescopeEntryLike,
   TelescopeExtension,
   TelescopeStoreLike,
-  TelescopeEntryLike,
 } from './telescope-sdk.js';

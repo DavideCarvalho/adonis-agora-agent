@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import type { QdrantClientLike } from '../src/rag/qdrant-store.js';
 import {
-  QdrantRetriever,
-  QdrantStore,
   buildQdrantFilter,
   chunkIdToPointId,
+  QdrantRetriever,
+  QdrantStore,
 } from '../src/rag/qdrant-store.js';
-import type { QdrantClientLike } from '../src/rag/qdrant-store.js';
 import { FakeEmbeddingProvider } from '../src/testing/index.js';
 
 /** Shapes das respostas canned derivadas do próprio {@link QdrantClientLike} — assim o fake não
@@ -308,7 +308,7 @@ describe('QdrantStore.listDocuments', () => {
     ]);
     const scrollCalls = client.calls.filter((c) => c.method === 'scroll');
     expect(scrollCalls).toHaveLength(2);
-    const [, secondArgs] = scrollCalls[1]?.args as [string, any];
+    const [, secondArgs] = scrollCalls[1]!.args as [string, any];
     expect(secondArgs.offset).toBe(cursor);
   });
 });

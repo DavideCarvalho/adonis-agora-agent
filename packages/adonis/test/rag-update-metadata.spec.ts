@@ -1,12 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import {
-  MemoryVectorStore,
-  PgVectorStore,
-  QdrantStore,
-  applyMetadataPatch,
-  chunkIdToPointId,
-  effectivePatchKeys,
-} from '../src/index.js';
 import type {
   LucidClientLike,
   LucidDatabaseLike,
@@ -14,6 +6,14 @@ import type {
   LucidQueryBuilderLike,
   QdrantClientLike,
   QdrantFilter,
+} from '../src/index.js';
+import {
+  applyMetadataPatch,
+  chunkIdToPointId,
+  effectivePatchKeys,
+  MemoryVectorStore,
+  PgVectorStore,
+  QdrantStore,
 } from '../src/index.js';
 
 /** Recording {@link LucidDatabaseLike} — mirrors the one in pg-vector-store.spec.ts. */

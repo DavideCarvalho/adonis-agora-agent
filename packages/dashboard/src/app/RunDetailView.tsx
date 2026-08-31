@@ -186,6 +186,7 @@ export function RunDetailView({ runId, onBack }: { runId: string; onBack: () => 
                       </thead>
                       <tbody>
                         {usage.map((u, i) => (
+                          // biome-ignore lint/suspicious/noArrayIndexKey: usage rows have no stable id and (modelId, purpose) can repeat
                           <tr key={`${u.modelId}-${u.purpose}-${i}`}>
                             <td title={u.modelId}>{formatModelLabel(u.modelId)}</td>
                             <td className="muted">{u.purpose}</td>
