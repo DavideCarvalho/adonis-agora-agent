@@ -14,7 +14,21 @@
  * so a package.json edge back from here to there would be circular. See
  * `providers/dashboard_provider.ts`'s module doc for the full story.
  */
+export type {
+  AccessDeniedInfo,
+  AccessDeniedPageOptions,
+  AccessDeniedReason,
+} from './access_denied_page.js';
+// The built-in "access denied" page (what a browser sees on a refused page navigation).
 export {
+  CONSOLE as ACCESS_DENIED_CONSOLE,
+  escapeHtml,
+  renderAccessDeniedPage,
+  resolveAccessDeniedPage,
+} from './access_denied_page.js';
+export {
+  type AccessDeniedOption,
+  type AccessDeniedRenderer,
   type AgentDashboardAuthorize,
   type AgentDashboardConfig,
   type AgentDashboardUnauthenticatedHook,
@@ -23,7 +37,12 @@ export {
   type ResolvedAgentDashboardConfig,
   resolveDashboardConfig,
 } from './define_config.js';
-export { type DashboardGateVerdict, evaluateDashboardGate } from './gate.js';
+export {
+  answerDashboardDenial,
+  type DashboardDenialOptions,
+  type DashboardGateVerdict,
+  evaluateDashboardGate,
+} from './gate.js';
 export {
   apiBaseFor,
   CONFIG_ELEMENT_ID,

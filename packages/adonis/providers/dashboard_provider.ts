@@ -6,8 +6,10 @@ import type { ApplicationService } from '@adonisjs/core/types';
 import {
   type AgentDashboardAuthorize,
   type AgentDashboardUnauthenticatedHook,
+  answerDashboardDenial,
   apiBaseFor,
   contentTypeFor,
+  type DashboardDenialOptions,
   decideDashboardMount,
   evaluateDashboardGate,
   injectApiBase,
@@ -111,6 +113,11 @@ export default class DashboardProvider {
     const actorResolver = agentConfig.actorResolver;
 
     const authorize = dashboardConfig.authorize;
+    // What a refused browser sees — the built-in access-denied page unless the host customised it.
+    const denial: DashboardDenialOptions = {
+      basePath: mount,
+      accessDenied: dashboardConfig.accessDenied,
+    };
 
     // The SPA shell, served at the bare mount. We do NOT redirect to a trailing-slash variant: the
     // AdonisJS router normalizes trailing slashes, so `mount` and `${mount}/` are the SAME route
@@ -118,7 +125,15 @@ export default class DashboardProvider {
     // `<base href="${mount}/">`, so the SPA's relative `./assets/*` URLs resolve against the mount
     // directory regardless of whether the browser's URL carries a trailing slash.
     router.get(mount, async (ctx) => {
-      if (!(await this.#gate(ctx, actorResolver, authorize, dashboardConfig.onUnauthenticated)))
+      if (
+        !(await this.#gate(
+          ctx,
+          actorResolver,
+          authorize,
+          dashboardConfig.onUnauthenticated,
+          denial,
+        ))
+      )
         return;
       await this.#sendIndex(ctx, apiBase, mount);
     });
@@ -126,7 +141,15 @@ export default class DashboardProvider {
     // Built assets (JS/CSS/fonts/...), with an index fallback for any unmatched path so the
     // client-rendered console still boots on a deep link.
     router.get(`${mount}/*`, async (ctx) => {
-      if (!(await this.#gate(ctx, actorResolver, authorize, dashboardConfig.onUnauthenticated)))
+      if (
+        !(await this.#gate(
+          ctx,
+          actorResolver,
+          authorize,
+          dashboardConfig.onUnauthenticated,
+          denial,
+        ))
+      )
         return;
       const segments = safeAssetSegments(ctx.params['*']);
       if (segments === null) {
@@ -140,17 +163,19 @@ export default class DashboardProvider {
    * Resolve the actor through the agent config's resolver, mirroring the governance routes, then run
    * the optional `authorize` gate. Returns `true` to proceed; replies `401` on a missing/failed
    * resolver and `403` when `authorize` denies the resolved actor. The decision itself lives in the
-   * router-free {@link evaluateDashboardGate} so it can be unit tested; this only writes the response —
-   * and, mirroring `@adonis-agora/durable`'s dashboard, ONLY when neither `onUnauthenticated` nor
-   * `authorize` already answered the request themselves: if either set a `location` header (typically
-   * via `ctx.response.redirect(...)`, e.g. to the app's own login page), that redirect stands and this
-   * skips writing its own `401`/`403` JSON on top of it.
+   * router-free {@link evaluateDashboardGate} so it can be unit tested; this only writes the response
+   * — the access-denied PAGE (a browser is what hits these routes), via the shared
+   * {@link answerDashboardDenial} — and, mirroring `@adonis-agora/durable`'s dashboard, ONLY when
+   * neither `onUnauthenticated` nor `authorize` already answered the request themselves: if either
+   * set a `location` header (typically via `ctx.response.redirect(...)`, e.g. to the app's own login
+   * page), that redirect stands and this skips writing its own `401`/`403` page on top of it.
    */
   async #gate(
     ctx: HttpContext,
     actorResolver: ActorResolver | undefined,
-    authorize?: AgentDashboardAuthorize,
-    onUnauthenticated?: AgentDashboardUnauthenticatedHook,
+    authorize: AgentDashboardAuthorize | undefined,
+    onUnauthenticated: AgentDashboardUnauthenticatedHook | undefined,
+    denial: DashboardDenialOptions,
   ): Promise<boolean> {
     const verdict = await evaluateDashboardGate(
       ctx,
@@ -160,8 +185,7 @@ export default class DashboardProvider {
       onUnauthenticated,
     );
     if (!verdict.ok) {
-      if (ctx.response.getHeader('location')) return false;
-      ctx.response.status(verdict.status).json({ error: verdict.error });
+      await answerDashboardDenial(ctx, verdict, denial);
       return false;
     }
     return true;

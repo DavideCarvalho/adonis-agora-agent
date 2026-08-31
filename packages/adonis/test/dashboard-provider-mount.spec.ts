@@ -6,6 +6,7 @@ import type { HttpContext } from '@adonisjs/core/http';
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 import type {
   AgentDashboardAuthorize,
+  AgentDashboardConfig,
   AgentDashboardUnauthenticatedHook,
 } from '../src/dashboard/index.js';
 import type { AgentGovernanceAuthorize } from '../src/governance-gate.js';
@@ -45,6 +46,7 @@ async function bootApp(options: {
   governanceAuthorize?: AgentGovernanceAuthorize;
   dashboardAuthorize?: AgentDashboardAuthorize;
   dashboardOnUnauthenticated?: AgentDashboardUnauthenticatedHook;
+  dashboardAccessDenied?: AgentDashboardConfig['accessDenied'];
   dashboardEnabled?: boolean;
   governanceQueries?: false;
 }): Promise<BootedApp> {
@@ -71,6 +73,9 @@ async function bootApp(options: {
               : {}),
             ...(options.dashboardOnUnauthenticated !== undefined
               ? { onUnauthenticated: options.dashboardOnUnauthenticated }
+              : {}),
+            ...(options.dashboardAccessDenied !== undefined
+              ? { accessDenied: options.dashboardAccessDenied }
               : {}),
           },
         },
@@ -195,7 +200,7 @@ describe('embedded dashboard_provider mount vs. the agent governance gate', () =
     expect(response.headers.get('location')).toBe('/login');
   });
 
-  it('falls back to the default 401 JSON when onUnauthenticated does not touch the response', async () => {
+  it('falls back to the default 401 PAGE when onUnauthenticated does not touch the response', async () => {
     booted = await bootApp({
       governanceAuthorize: adminOnly,
       dashboardOnUnauthenticated: () => {
@@ -205,7 +210,47 @@ describe('embedded dashboard_provider mount vs. the agent governance gate', () =
 
     const response = await fetch(`${booted.url}/agent/dashboard`, { redirect: 'manual' });
     expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ error: 'unauthorized' });
+    expect(response.headers.get('content-type')).toContain('text/html');
+    const html = await response.text();
+    expect(html).toContain('<!doctype html>');
+    expect(html).toContain('<h1>Sign in required</h1>');
+    expect(html).toContain('Agent');
+  });
+
+  it('refuses a resolved-but-denied actor with the 403 page, honouring accessDenied options', async () => {
+    booted = await bootApp({
+      governanceAuthorize: adminOnly,
+      dashboardAuthorize: adminOnly,
+      dashboardAccessDenied: { brand: 'Entre Textos', title: 'Sem acesso', homeHref: '/admin' },
+    });
+
+    const response = await fetch(`${booted.url}/agent/dashboard/assets/index.js`, {
+      headers: { 'x-actor-id': 'patient-1', 'x-actor-roles': 'PATIENT' },
+    });
+    expect(response.status).toBe(403);
+    expect(response.headers.get('content-type')).toContain('text/html');
+    const html = await response.text();
+    expect(html).toContain('<h1>Sem acesso</h1>');
+    expect(html).toContain('Entre Textos');
+    expect(html).toContain('href="/admin"');
+    expect(html).not.toContain('<script');
+  });
+
+  it('serves an accessDenied renderer HTML, or stands down when it redirected', async () => {
+    booted = await bootApp({
+      governanceAuthorize: adminOnly,
+      dashboardAccessDenied: (info, ctx) => {
+        if (info.status === 401) {
+          ctx.response.redirect().toPath('/entrar');
+          return;
+        }
+        return `<p>custom ${info.status} ${info.basePath}</p>`;
+      },
+    });
+
+    const anonymous = await fetch(`${booted.url}/agent/dashboard`, { redirect: 'manual' });
+    expect(anonymous.status).toBe(302);
+    expect(anonymous.headers.get('location')).toBe('/entrar');
   });
 
   it('redirects instead of the default 403 JSON when authorize sets one (actor resolved, denied)', async () => {
