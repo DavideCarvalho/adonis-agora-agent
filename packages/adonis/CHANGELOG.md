@@ -1,5 +1,12 @@
 # @adonis-agora/agent
 
+## 0.25.4
+
+### Patch Changes
+
+- [#84](https://github.com/DavideCarvalho/adonis-agora-agent/pull/84) [`1f71789`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/1f71789d1d6d6a0e15f6c67ca0b51dc375de79a0) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Accept `@adonisjs/redis` 10 as a peer (`^9.2 || ^10`) for the redis stream client and token
+  sink. Nothing narrows; the suite runs against the new major.
+
 ## 0.25.3
 
 ### Patch Changes
