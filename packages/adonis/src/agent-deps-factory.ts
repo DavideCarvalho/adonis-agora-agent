@@ -23,6 +23,36 @@ export function delegateToolName(target: string): string {
  * against it in the delegation branch of `agent-loop.ts` before delegating, mirroring
  * `ToolRegistry.invoke`'s input gate for every other tool kind.
  */
+const DELEGATE_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    task: {
+      type: 'string',
+      description: 'What the delegate agent should do, in one self-contained instruction.',
+    },
+  },
+  required: ['task'],
+  additionalProperties: false,
+} as const;
+
+/**
+ * The delegate tool's input contract.
+ *
+ * `jsonSchema.input` is NOT optional decoration — it is what makes this tool usable.
+ * The SDK bridge can only derive parameter shapes from a Zod schema or from this
+ * Standard JSON Schema extension; anything else degrades to a permissive
+ * `{ properties: {} }`, which tells the model the tool takes NO arguments.
+ *
+ * Without it, the loop was unwinnable for the model: it was shown a tool with no
+ * parameters, sent `{}` — correctly, given what it was told — and then had the call
+ * rejected against a `validate` that demands `{ task: string }`. A production install
+ * showed four delegate tools at 121 calls and 121 failures each: a 100% failure rate
+ * that burned the actor's whole daily token budget re-trying a call it could not get
+ * right, because the requirement was never communicated.
+ *
+ * `validate` stays the authority (it is what actually gates execution); this is the
+ * same contract, expressed in the one form the model gets to see.
+ */
 const delegateInputSchema: StandardSchemaV1<{ task: string }, { task: string }> = {
   '~standard': {
     version: 1,
@@ -37,8 +67,12 @@ const delegateInputSchema: StandardSchemaV1<{ task: string }, { task: string }> 
       }
       return { issues: [{ message: 'expected { task: string }' }] };
     },
+    jsonSchema: {
+      input: () => DELEGATE_JSON_SCHEMA,
+      output: () => DELEGATE_JSON_SCHEMA,
+    },
   },
-};
+} as StandardSchemaV1<{ task: string }, { task: string }>;
 
 /** Normalize a `delegatesTo` entry: a bare string is the edge with no authorization annotation. */
 export function normalizeDelegateEdge(edge: string | DelegateEdge): DelegateEdge {
