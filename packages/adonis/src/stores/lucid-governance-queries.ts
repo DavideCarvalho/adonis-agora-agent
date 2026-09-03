@@ -23,7 +23,7 @@ import type {
   UsageTrendPoint,
 } from '../spi/governance-queries.js';
 import type { AgentPricingStore, CurrentModelPrice } from '../spi/pricing-store.js';
-import { estimateCost } from '../spi/pricing-store.js';
+import { estimateCost, resolveModelPrice } from '../spi/pricing-store.js';
 import type { LucidDatabaseLike } from './lucid.js';
 import { AGENT_TABLES, ensureAgentTables } from './lucid-schema.js';
 
@@ -195,7 +195,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
   /** Provider-reported cost wins per row; otherwise the cache-aware token estimate (0 when unpriced). */
   private rowCost(row: UsageRow, pricing: ReadonlyMap<string, CurrentModelPrice>): number {
     if (row.costUsd !== null) return row.costUsd;
-    const price = pricing.get(row.modelId);
+    const price = resolveModelPrice(pricing, row.modelId);
     if (price === undefined) return 0;
     return estimateCost(
       {

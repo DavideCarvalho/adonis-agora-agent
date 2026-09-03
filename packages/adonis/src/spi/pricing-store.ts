@@ -65,3 +65,61 @@ export function estimateCost(usage: MessageUsage, price: CurrentModelPrice): num
     (usage.outputTokens / 1_000_000) * price.outputPricePer1m
   );
 }
+
+/**
+ * The forms of a model id we will accept a price under, most specific first.
+ *
+ * Exists because the ledger and the price table are filled by two different parties. The ledger gets
+ * what the PROVIDER reports (`finalStep.response.modelId`), and OpenAI answers a request for
+ * `gpt-4o-mini` with the dated snapshot `gpt-4o-mini-2024-07-18`. The price table gets what an
+ * OPERATOR typed — and every example in these docs, and every published rate card, uses the alias.
+ * Matched by raw equality, those two never meet: the fold misses and the dashboard prints `$0.00`
+ * next to a real token count.
+ *
+ * Only DATE-shaped suffixes are stripped, and only from the end. That is the conservative line: a
+ * date suffix is unambiguously a snapshot of the same model, whereas a trailing `-002` or `-v2`
+ * could be a genuinely different model with a different price. Mispricing silently is worse than
+ * not pricing — so anything we are not sure about stays unpriced and stays visible.
+ *
+ * The exact id is always tried FIRST, so an operator who deliberately prices one snapshot
+ * differently from its alias keeps that.
+ */
+export function modelPriceCandidates(modelId: string): string[] {
+  const candidates: string[] = [modelId];
+
+  const add = (candidate: string): void => {
+    if (candidate.length > 0 && !candidates.includes(candidate)) candidates.push(candidate);
+  };
+
+  // `openai/gpt-4o-mini`, `bedrock/us.anthropic.claude-…` — the route prefix is addressing, not
+  // identity. Same shape the dashboard's `formatModelLabel` drops for display.
+  const withoutRoute = modelId.includes('/')
+    ? modelId.slice(modelId.lastIndexOf('/') + 1)
+    : modelId;
+  const withoutRegion = withoutRoute.replace(/^[a-z]{2}[a-z-]*\.[a-z0-9]+\./, '');
+
+  for (const base of [modelId, withoutRoute, withoutRegion]) {
+    // OpenAI: `gpt-4o-mini-2024-07-18`. Anthropic: `claude-3-5-sonnet-20241022`.
+    add(base.replace(/-\d{4}-\d{2}-\d{2}$/, '').replace(/-\d{8}$/, ''));
+  }
+
+  return candidates;
+}
+
+/**
+ * The price to use for `modelId`, or `undefined` when the model is genuinely unpriced.
+ *
+ * `undefined` is the honest answer for "we don't know", and callers must keep it distinguishable
+ * from zero: a run that cost nothing and a run nobody priced are different facts, and collapsing
+ * them is what made a whole dashboard read `$0.00` while tokens were being burned.
+ */
+export function resolveModelPrice(
+  pricing: ReadonlyMap<string, CurrentModelPrice>,
+  modelId: string,
+): CurrentModelPrice | undefined {
+  for (const candidate of modelPriceCandidates(modelId)) {
+    const price = pricing.get(candidate);
+    if (price !== undefined) return price;
+  }
+  return undefined;
+}

@@ -100,7 +100,8 @@ There are two ways a turn gets a dollar figure:
    cached tokens at zero. Reasoning tokens are a subset of `outputTokens` and are already billed at the
    output rate, so they never change the estimate.
 
-   Seed prices once with `seedModelPrices(store, [...])`.
+   Seed prices once with `seedPricesFromModelsDev(store, [...])`, or by hand with
+   `seedModelPrices(store, [...])`.
 
 <Callout type="warn" title="`null` in the ledger, `0` in the rollups">
 An unpriced turn — no `pricingStore` bound, or no price row for that model — leaves `cost_usd`
@@ -128,6 +129,45 @@ their `null`s and are where you can tell the two apart.
 | `is_current` | whether this is the active row for the model |
 
 Seed it with the current prices for the models you use; leave it empty and you still get token accounting, just no cost estimate.
+
+### Which id to price
+
+Price the model under the id the provider **publishes** — `gpt-4o-mini`, `claude-sonnet-5` — which is
+also the id you asked for. You do not need to know, or track, the dated snapshot the provider answers
+with.
+
+That distinction is real and it used to cost you the whole dashboard. The ledger records what the
+provider **reports** (`finalStep.response.modelId`), and OpenAI answers a request for `gpt-4o-mini`
+with `gpt-4o-mini-2024-07-18`. Matched by raw string equality, the alias you priced and the snapshot
+in the ledger never met: every rollup rendered `$0.00` next to a real token count. The fold now
+resolves the reported id down to its alias — exact id first, then the route prefix dropped, then a
+trailing date suffix (`-2024-07-18`, `-20241022`) stripped.
+
+Only **date-shaped** suffixes are stripped. A trailing `-002` or `-v2` can be a genuinely different
+model with a genuinely different price, so those stay unpriced and stay visible — mispricing in
+silence is worse than not pricing. And the exact id always wins, so pricing one snapshot differently
+from its alias still works.
+
+### Prices from models.dev
+
+`seedPricesFromModelsDev` fills the table from the open [models.dev](https://models.dev) catalog
+instead of numbers hand-copied off a rate card:
+
+```ts
+import { pricingStores, seedPricesFromModelsDev } from '@adonis-agora/agent'
+
+const store = await pricingStores.lucid({ connection: 'primary' })({ app })
+await seedPricesFromModelsDev(store, ['openai/gpt-4o-mini', 'anthropic/claude-sonnet-5'])
+```
+
+The `<provider>/<model>` prefix is required: the same model name exists under several providers at
+different prices, and guessing there would be guessing at a bill. A model missing from the catalog,
+or listed without a price, **throws** — a silently skipped row would come back later as `$0.00` in a
+panel, far from its cause. Nothing is written unless every requested model resolved.
+
+Run it from a command or a deploy step, not on a request path. Prices change monthly, not per second,
+and fetching one at charge time would trade a table you control for a third party in the middle of
+your accounting.
 
 ## The governance read-model
 

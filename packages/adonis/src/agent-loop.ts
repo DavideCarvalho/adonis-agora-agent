@@ -14,6 +14,7 @@ import {
   type AgentPricingStore,
   type CurrentModelPrice,
   estimateCost,
+  resolveModelPrice,
 } from './spi/pricing-store.js';
 import type { QuotaStore } from './spi/quota-store.js';
 import type { Passage, RetrieveOptions, Retriever } from './spi/retriever.js';
@@ -368,7 +369,13 @@ export async function runAgentLoop(
     const resolvedModelId = turn.modelId ?? deps.modelId ?? 'unknown';
     // Provider-reported spend wins; else an estimate from the (once-per-run cached) price list; else
     // `null` — stamped onto the persisted assistant message's `usage.costUsd` below.
-    const costUsd = resolveCostUsd(turn.usage, turn.costUsd, priceByModel.get(resolvedModelId));
+    // `resolveModelPrice` e não `priceByModel.get`: o provider responde com o snapshot datado
+    // (`gpt-4o-mini-2024-07-18`) e o operador precifica o alias (`gpt-4o-mini`). Ver o helper.
+    const costUsd = resolveCostUsd(
+      turn.usage,
+      turn.costUsd,
+      resolveModelPrice(priceByModel, resolvedModelId),
+    );
 
     await hooks.step(`persist:usage:${i}`, () =>
       deps.store.recordUsage({

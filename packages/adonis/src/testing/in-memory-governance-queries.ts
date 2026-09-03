@@ -20,6 +20,7 @@ import type {
   ToolStatsRange,
   UsageTrendPoint,
 } from '../index.js';
+import { modelPriceCandidates } from '../spi/pricing-store.js';
 import type {
   GovernanceRunRow,
   GovernanceToolCallRow,
@@ -98,7 +99,11 @@ function estimateFromTokens(
   pricing: ReadonlyMap<string, InMemoryModelPrice>,
   row: GovernanceUsageRow,
 ): number {
-  const price = pricing.get(row.modelId);
+  // Mesma resolução do adaptador Lucid — o dublê tem que errar e acertar nos MESMOS casos que a
+  // produção, senão ele deixa de ser um dublê e vira uma segunda implementação.
+  const price = modelPriceCandidates(row.modelId)
+    .map((candidate) => pricing.get(candidate))
+    .find((found) => found !== undefined);
   if (price === undefined) {
     return 0;
   }
