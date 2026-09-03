@@ -100,7 +100,16 @@ export interface MessageUsage {
   costUsd?: number | null;
 }
 
-export type UsagePurpose = 'chat' | 'title' | 'follow_ups' | 'summary';
+/**
+ * Para que serviu o consumo de uma linha do ledger.
+ *
+ * `embedding` é o gasto de RETRIEVAL: embedar a pergunta do usuário antes da busca vetorial. Ele
+ * entrou depois dos outros, e a razão é a que importa — sem ele, um agente com retrieval em modo
+ * inject gastava tokens em toda pergunta e nem o painel nem a COTA enxergavam. A cota soma o
+ * ledger inteiro, sem filtrar propósito, então registrar aqui é o que faz o gasto de RAG passar a
+ * contar contra o teto diário.
+ */
+export type UsagePurpose = 'chat' | 'title' | 'follow_ups' | 'summary' | 'embedding';
 
 export interface QuotaState {
   usedTokens: number;

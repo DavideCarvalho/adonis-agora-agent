@@ -1,4 +1,8 @@
-import type { EmbeddingProvider } from '../spi/embedding-provider.js';
+import {
+  type EmbeddingProvider,
+  type EmbeddingUsage,
+  embedCountingUsage,
+} from '../spi/embedding-provider.js';
 import { type ChunkOptions, chunkText } from './chunk.js';
 import type { VectorRecord, VectorStore } from './vector-store.js';
 
@@ -21,6 +25,19 @@ export interface ChunkRecord {
 export interface IngestChunksOptions {
   embedder: EmbeddingProvider;
   store: VectorStore;
+  /**
+   * Chamado com o consumo do lote, quando o provider sabe reportar.
+   *
+   * É um CALLBACK e não uma gravação no ledger, e a razão é estrutural:
+   * `agent_token_usage.thread_id` é NOT NULL com FK para as threads, e uma indexação em lote não
+   * acontece dentro de conversa nenhuma. Gravar exigiria afrouxar a FK — decisão de esquema que
+   * não cabe num callback de ingestão.
+   *
+   * Então o gasto de ingestão fica OBSERVÁVEL aqui, para o host contabilizar como preferir (uma
+   * métrica, uma tabela própria), em vez de invisível como era. O gasto de RETRIEVAL, que é o
+   * recorrente, esse vai para o ledger sozinho — ver o loop.
+   */
+  onUsage?: (usage: EmbeddingUsage) => void | Promise<void>;
 }
 
 export interface IngestOptions extends ChunkOptions, IngestChunksOptions {}
@@ -55,7 +72,13 @@ export async function ingestChunks(
   if (chunks.length === 0) {
     return 0;
   }
-  const embeddings = await options.embedder.embed(chunks.map((chunk) => chunk.text));
+  const { vectors: embeddings, usage } = await embedCountingUsage(
+    options.embedder,
+    chunks.map((chunk) => chunk.text),
+  );
+  if (usage !== undefined && options.onUsage !== undefined) {
+    await options.onUsage(usage);
+  }
   const records: VectorRecord[] = chunks.map((chunk, index) => ({
     ...chunk,
     embedding: embeddings[index] ?? [],

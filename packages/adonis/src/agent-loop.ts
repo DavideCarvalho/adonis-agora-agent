@@ -17,7 +17,7 @@ import {
   resolveModelPrice,
 } from './spi/pricing-store.js';
 import type { QuotaStore } from './spi/quota-store.js';
-import type { Passage, RetrieveOptions, Retriever } from './spi/retriever.js';
+import type { Passage, RetrievalResult, RetrieveOptions, Retriever } from './spi/retriever.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
 import type { SinkWriter } from './spi/token-stream-sink.js';
 import type { AiToolCtx } from './spi/tool.js';
@@ -301,7 +301,7 @@ export async function runAgentLoop(
     // filter that fails open is worse than no filter, because the operator believes it is on.
     // With no hook configured, `filter` is omitted from `options` entirely (not set to
     // `undefined`) so existing single-tenant deployments send byte-identical options.
-    const passages = await hooks.step('retrieve', async () => {
+    const retrieved = await hooks.step('retrieve', async () => {
       const options: RetrieveOptions = {
         topK,
         ...(deps.retrievalFilter !== undefined
@@ -312,10 +312,38 @@ export async function runAgentLoop(
         'retrieval',
         hooks.runId,
         { runId: hooks.runId, queryLength: input.userText.length, topK },
-        () => retriever.retrieve(input.userText, options),
-        (retrieved) => ({ count: retrieved.length }),
+        // `retrieveWithUsage` quando o retriever sabe contar; senão o `retrieve` de sempre,
+        // embrulhado no mesmo formato. É assim que um retriever de terceiro, escrito antes desta
+        // capacidade, continua funcionando sem mudar uma linha.
+        async (): Promise<RetrievalResult> =>
+          typeof retriever.retrieveWithUsage === 'function'
+            ? retriever.retrieveWithUsage(input.userText, options)
+            : { passages: await retriever.retrieve(input.userText, options) },
+        (result) => ({ count: result.passages.length }),
       );
     });
+    const passages = retrieved.passages;
+
+    // O embedding da consulta é gasto, e vai para o ledger como qualquer outro. Dentro de um
+    // `hooks.step` porque uma retomada durable NÃO pode cobrar duas vezes pelo mesmo embedding.
+    //
+    // O `modelId` vem do que o provider REPORTOU; sem ele não há como precificar, e gravar um
+    // placeholder faria a linha parecer precificável e sair como $0.00 — pior do que a ausência.
+    if (retrieved.usage !== undefined && retrieved.usage.inputTokens > 0) {
+      const embeddingUsage = retrieved.usage;
+      await hooks.step('persist:usage:embedding', () =>
+        deps.store.recordUsage({
+          threadId: input.threadId,
+          actorRef: input.actor.id,
+          runId: hooks.runId,
+          modelId: embeddingUsage.modelId ?? 'unknown',
+          purpose: 'embedding',
+          // Embedding só tem lado de entrada. `outputTokens: 0` é o fato, não um placeholder.
+          usage: { inputTokens: embeddingUsage.inputTokens, outputTokens: 0 },
+        }),
+      );
+    }
+
     if (passages.length > 0) {
       injectedPassages = passages;
       system = `${system}\n\n${buildContextBlock(passages)}`;

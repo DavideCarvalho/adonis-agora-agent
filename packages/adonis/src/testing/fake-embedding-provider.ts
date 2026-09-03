@@ -1,7 +1,7 @@
 import { EmbeddingRetriever } from '../rag/embedding-retriever.js';
 import { type IngestDocument, ingestDocuments } from '../rag/ingest.js';
 import { MemoryVectorStore } from '../rag/memory-vector-store.js';
-import type { EmbeddingProvider } from '../spi/embedding-provider.js';
+import type { EmbeddingProvider, EmbeddingResult } from '../spi/embedding-provider.js';
 import type { Reranker, RerankOptions } from '../spi/reranker.js';
 import type { Passage } from '../spi/retriever.js';
 
@@ -13,10 +13,40 @@ import type { Passage } from '../spi/retriever.js';
  * the input (replay-safe, reproducible across runs). Mirrors the reference deterministic fake.
  */
 export class FakeEmbeddingProvider implements EmbeddingProvider {
-  constructor(private readonly dimensions = 64) {}
+  /**
+   * @param dimensions tamanho do vetor.
+   * @param reportUsage se deve reportar consumo. Default `true`, para que o caminho contabilizado
+   *   seja o que os testes exercitam por padrão. Passe `false` para dublar um provider ANTIGO, sem
+   *   `embedWithUsage` — é assim que se prova que o fallback continua de pé.
+   */
+  constructor(
+    private readonly dimensions = 64,
+    private readonly reportUsage = true,
+  ) {}
 
   async embed(texts: string[]): Promise<number[][]> {
     return texts.map((text) => this.embedOne(text));
+  }
+
+  async embedWithUsage(texts: string[]): Promise<EmbeddingResult> {
+    if (!this.reportUsage) {
+      // Um provider sem a capacidade não teria o método; aqui ele existe mas se recusa a contar,
+      // que é o mesmo efeito para o chamador e mantém o dublê numa classe só.
+      return { vectors: await this.embed(texts) };
+    }
+    return {
+      vectors: await this.embed(texts),
+      usage: {
+        // Uma aproximação determinística: um "token" por palavra, somando o lote inteiro. Não
+        // precisa bater com tokenizador nenhum — o que os testes verificam é que a contagem
+        // ATRAVESSA até o ledger, não qual é o número.
+        inputTokens: texts.reduce(
+          (total, text) => total + (text.toLowerCase().match(/[a-z0-9]+/g) ?? []).length,
+          0,
+        ),
+        modelId: 'fake-embedding',
+      },
+    };
   }
 
   private embedOne(text: string): number[] {
