@@ -133,13 +133,30 @@ await seedModelPrices(pricing, [
 ])
 ```
 
+Or fill the table from the open [models.dev](https://models.dev) catalog instead of
+hand-copying rates — `<provider>/<model>` is required, and a model missing from the
+catalog throws rather than being skipped:
+
+```ts
+import { seedPricesFromModelsDev } from '@adonis-agora/agent'
+
+await seedPricesFromModelsDev(pricing, ['openai/gpt-4o-mini'])
+```
+
+Price the model under the id the provider **publishes** (`gpt-4o-mini`), not the dated
+snapshot it answers with (`gpt-4o-mini-2024-07-18`). The ledger records the reported id,
+and the fold resolves it back down to the alias — exact id first, then route prefix, then
+a trailing date suffix. Only date-shaped suffixes are stripped: a `-002` could be a
+different model at a different price, so it stays unpriced and stays visible.
+
 Cache tokens are subsets of `inputTokens`, subtracted before the input rate applies.
 Rollups (`spendByModel`/`spendByActor`) are sums, so an unpriced row contributes `$0.00`
 even though the ledger row keeps `cost_usd: null` — if a total looks implausibly low,
 check the pricing table first.
 
 Source: `packages/adonis/docs/governance/quota-and-cost.mdx`,
-`packages/adonis/src/spi/pricing-store.ts` (`seedModelPrices`, `estimateCost`).
+`packages/adonis/src/spi/pricing-store.ts` (`seedModelPrices`, `estimateCost`,
+`resolveModelPrice`), `packages/adonis/src/pricing/models-dev.ts`.
 
 ### Pattern 3 — multi-replica SSE with `tokenSinks.redis`
 

@@ -117,6 +117,7 @@ export { InProcessTokenStreamSink } from './in-process-sink.js';
 export type { OwnershipVerdict } from './ownership.js';
 export { evaluateOwnership } from './ownership.js';
 export * from './personas.js';
+export * from './pricing/models-dev.js';
 export * from './rag/index.js';
 export type {
   QdrantClientLike,
