@@ -369,12 +369,13 @@ export class InMemoryAgentStore implements AgentStore {
     return { usedTokens };
   }
 
-  /** Test helper: read the recorded usage rows (modelId + token totals). */
-  usageRows(): { actorRef: string; tokens: number; modelId: string }[] {
+  /** Test helper: read the recorded usage rows (modelId + purpose + token totals). */
+  usageRows(): { actorRef: string; tokens: number; modelId: string; purpose: string }[] {
     return this.usage.map((row) => ({
       actorRef: row.actorRef,
       tokens: row.inputTokens + row.outputTokens,
       modelId: row.modelId,
+      purpose: row.purpose,
     }));
   }
 

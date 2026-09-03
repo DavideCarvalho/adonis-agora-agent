@@ -169,6 +169,56 @@ Run it from a command or a deploy step, not on a request path. Prices change mon
 and fetching one at charge time would trade a table you control for a third party in the middle of
 your accounting.
 
+### Embeddings (RAG)
+
+Retrieval in inject mode embeds the user's question on **every turn**, and that embedding is spend
+like any other. It used to be invisible: `EmbeddingProvider.embed` returned vectors and nothing
+else, so nothing from RAG reached the ledger — or the **quota**, which sums the ledger without
+filtering by purpose. An agent with retrieval on burned tokens on every question while the panel
+swore it did not, which is worse than not measuring: it is measuring low, on the very number that
+decides when to cut someone off.
+
+The loop now records a `purpose: 'embedding'` row for the query embedding, so it shows up in the
+dashboard **and counts against the daily cap**.
+
+<Callout type="warn" title="Your daily quota now includes RAG">
+If your agent uses inject-mode retrieval, actors will reach the cap sooner than before — not
+because anything got more expensive, but because the embedding spend was always there and is now
+counted. If that pushes real users over, raise the limit deliberately rather than treating the
+older, lower number as the true one.
+</Callout>
+
+This needs a provider that can report token counts. The SPI keeps `embed` as-is and adds an
+**optional** `embedWithUsage`, so a provider written before this capability keeps working and
+simply produces no embedding rows — the runtime never fabricates a count it was not given.
+
+```ts
+export interface EmbeddingProvider {
+  embed(texts: string[]): Promise<number[][]>
+  embedWithUsage?(texts: string[]): Promise<EmbeddingResult> // { vectors, usage? }
+}
+```
+
+The same shape exists one level up: `Retriever` gains an optional `retrieveWithUsage`, which the
+loop prefers when present. A third-party retriever that only implements `retrieve` is unaffected.
+
+**Ingestion is different.** Bulk indexing does not happen inside a conversation, and
+`agent_token_usage.thread_id` is `NOT NULL` with a foreign key to threads — so an ingestion row has
+nowhere to go without loosening that constraint, which is a schema decision and not something an
+ingestion callback should make. `ingestChunks` therefore exposes the batch's usage through an
+`onUsage` callback for the host to account for as it sees fit:
+
+```ts
+await ingestChunks(chunks, {
+  embedder,
+  store,
+  onUsage: (usage) => metrics.increment('rag.ingest.tokens', usage.inputTokens),
+})
+```
+
+Observable rather than invisible, which is the honest half-step. Retrieval — the recurring cost —
+is fully accounted.
+
 ## The governance read-model
 
 Cost/usage aggregation lives behind one interface, `AgentGovernanceQueries` — `spendByModel`, `spendByActor`, `usageTrend`, run lifecycle, tool stats, reliability, and the approvals inbox — so a dashboard and a Telescope tab can consume the same rolled-up numbers. Wire `governanceQueries.lucid()` **and** a `governanceAuthorize` gate to mount the `/agent/governance/*` routes (priced against the same `pricingStore`) — without the gate they are not mounted at all — and consume them from the [dashboard SPA](/docs/agent/governance/dashboard) or the [Telescope tab](/docs/agent/governance/telescope). The in-memory implementation ships in the [testing kit](/docs/agent/testing). See [Governance read-model](/docs/agent/governance/read-model).

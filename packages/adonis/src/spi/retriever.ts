@@ -8,6 +8,8 @@
  * contract exactly.
  */
 
+import type { EmbeddingUsage } from './embedding-provider.js';
+
 /** One retrieved passage. `source` is a human/citation-facing origin; `score` is impl-defined relevance. */
 export interface Passage {
   id: string;
@@ -35,6 +37,25 @@ export interface RetrieveOptions {
   minScore?: number;
 }
 
+/** Passagens mais, quando o retriever sabe dizer, o que a busca consumiu. */
+export interface RetrievalResult {
+  passages: Passage[];
+  /**
+   * O consumo de EMBEDDING da consulta. Um retriever que não embeda nada (keyword, serviço remoto)
+   * simplesmente omite.
+   */
+  usage?: EmbeddingUsage;
+}
+
 export interface Retriever {
   retrieve(query: string, options?: RetrieveOptions): Promise<Passage[]>;
+  /**
+   * Same as {@link Retriever.retrieve}, plus what the query cost. OPTIONAL — o loop usa quando
+   * existe e cai para `retrieve` quando não.
+   *
+   * É por aqui que o gasto de embedding chega ao ledger e à cota. Retrieval em modo inject roda em
+   * TODA pergunta do usuário, então é o embedding recorrente: deixá-lo invisível fazia o painel
+   * afirmar um consumo menor do que o real, justamente na conta que decide quando barrar alguém.
+   */
+  retrieveWithUsage?(query: string, options?: RetrieveOptions): Promise<RetrievalResult>;
 }
