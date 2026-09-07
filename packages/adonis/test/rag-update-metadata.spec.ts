@@ -85,7 +85,10 @@ class FakeQdrantClient implements QdrantClientLike {
     },
   ) {
     this.calls.push({ method: 'scroll', args: [collection, args] });
-    const condition = args.filter?.must?.find((c) => c.key === 'documentId');
+    const condition = args.filter?.must?.find(
+      (c): c is import('../src/rag/qdrant-store.js').QdrantFieldCondition =>
+        'match' in c && c.key === 'documentId',
+    );
     const wanted =
       condition !== undefined && 'value' in condition.match ? condition.match.value : undefined;
     const points = [...this.points.entries()]

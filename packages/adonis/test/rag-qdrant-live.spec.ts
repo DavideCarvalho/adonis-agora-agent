@@ -188,3 +188,124 @@ describe.skipIf(URL === undefined)('QdrantStore against a live Qdrant', () => {
     expect(await store.listDocumentIds()).toEqual([]);
   });
 });
+
+/**
+ * Painel de inspeção ao vivo: `facetValues`/`countChunks`/`scrollChunks` com o filtro RAW
+ * estendido (`is_empty`/`must_not`/`should`) — exatamente a linguagem que a agregação
+ * server-side de um admin usa. O que só o server prova:
+ *
+ * - `facet` REAL exige índice de payload no campo — o primeiro facet numa coleção nova deve
+ *   falhar, o store deve PROVISIONAR o índice keyword e repetir (o retry auto-provisionado
+ *   acontece de verdade, não só no fake);
+ * - `is_empty` cobre ausente E null (o bucket `desconhecido` do painel depende disso);
+ * - `must_not: [is_empty]` é "campo presente" (a presença que habilita o GROUP BY);
+ * - facet com `filter` honra a PRIORIDADE da cadeia de chave (campos anteriores vazios).
+ */
+const FACET_COLLECTION = `agent_rag_facet_live_${process.pid}`;
+
+describe.skipIf(URL === undefined)('QdrantStore facets ao vivo (agregação de painel)', () => {
+  let raw: QdrantClient;
+  let store: QdrantStore;
+
+  beforeAll(async () => {
+    raw = new QdrantClient({ url: String(URL) });
+    store = new QdrantStore(raw as unknown as QdrantClientLike, {
+      collection: FACET_COLLECTION,
+      dimension: DIM,
+    });
+    await store.ensureCollection();
+    await store.upsert([
+      { id: 'bula-P#0', text: 'b1', embedding: A, metadata: { tipo: 'bula', numeroProcesso: 'P' } },
+      { id: 'bula-P#1', text: 'b2', embedding: B, metadata: { tipo: 'bula', numeroProcesso: 'P' } },
+      { id: 'exame-E#0', text: 'e1', embedding: C, metadata: { tipo: 'exame', examId: 'E' } },
+      // corpus real: SEM metadata.tipo, chave no campo `source` — o bucket `desconhecido`.
+      { id: 'src-S-p1', text: 'c1', embedding: A, source: 'S', metadata: { page: 1 } },
+      // cadeia com prioridade: tem numeroProcesso E examId E source — pertence só ao P.
+      {
+        id: 'mix#0',
+        text: 'm',
+        embedding: B,
+        source: 'M',
+        metadata: { tipo: 'exame', numeroProcesso: 'P', examId: 'E' },
+      },
+      // órfão de verdade: sem tipo E sem nenhum campo da cadeia — o `sem-chave` do painel.
+      { id: 'solto#0', text: 's', embedding: C, metadata: { nota: 'x' } },
+    ]);
+    for (let i = 0; i < 50; i++) {
+      const { count } = await raw.count(FACET_COLLECTION, { exact: true });
+      if (count === 6) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  });
+
+  afterAll(async () => {
+    if (raw !== undefined) {
+      await raw.deleteCollection(FACET_COLLECTION).catch(() => undefined);
+    }
+  });
+
+  it('facetValues: primeiro erro provisiona o índice keyword e o retry resolve com contagem EXATA', async () => {
+    // Coleção nova NÃO tem índice de payload → o server recusa o primeiro facet; o retry
+    // auto-provisionado tem que achar o índice recém-criado e contar certo.
+    const hits = await store.facetValues('metadata.numeroProcesso', {
+      filter: {
+        must: [{ key: 'metadata.tipo', match: { value: 'bula' } }],
+        must_not: [{ is_empty: { key: 'metadata.numeroProcesso' } }],
+      },
+    });
+    expect(hits).toEqual([{ value: 'P', count: 2 }]);
+  });
+
+  it('facet com cadeia exclui o cross-chunk do examId (só o PRIMEIRO campo não-vazio conta)', async () => {
+    const byExam = await store.facetValues('metadata.examId', {
+      filter: {
+        must: [
+          { key: 'metadata.tipo', match: { value: 'exame' } },
+          { is_empty: { key: 'metadata.numeroProcesso' } },
+        ],
+        must_not: [{ is_empty: { key: 'metadata.examId' } }],
+      },
+    });
+    // mix#0 tem tipo 'exame' + numeroProcesso 'P' → a prioridade da cadeia o joga fora do E.
+    expect(byExam).toEqual([{ value: 'E', count: 1 }]);
+    // pelo numeroProcesso, mix#0 conta no P (bula-P#* filtradas pelo tipo ficam fora daqui):
+    const byProcessoQualquerTipo = await store.facetValues('metadata.numeroProcesso', {
+      filter: { must_not: [{ is_empty: { key: 'metadata.numeroProcesso' } }] },
+    });
+    expect(byProcessoQualquerTipo).toEqual([{ value: 'P', count: 3 }]);
+  });
+
+  it('countChunks e should(is_empty|literal) cobrem o bucket `desconhecido` (tipo ausente de verdade)', async () => {
+    const desconhecidos = await store.countChunks({
+      filter: {
+        should: [
+          { key: 'metadata.tipo', match: { value: 'desconhecido' } },
+          { is_empty: { key: 'metadata.tipo' } },
+        ],
+      },
+    });
+    // corpus + órfão: tipo ausente nos dois (e nenhum dos dois é o literal 'desconhecido').
+    expect(desconhecidos).toBe(2);
+    // sem-chave: os campos da cadeia TODOS vazios — só o órfão se encaixa.
+    const chaveless = await store.countChunks({
+      filter: {
+        must: [
+          { is_empty: { key: 'metadata.numeroProcesso' } },
+          { is_empty: { key: 'metadata.examId' } },
+          { is_empty: { key: 'source' } },
+        ],
+      },
+    });
+    expect(chaveless).toBe(1);
+  });
+
+  it('scrollChunks narrow por filtro RAW sem nunca transferir vetor', async () => {
+    const payloads = await store.scrollChunks({
+      filter: { must: [{ key: 'metadata.tipo', match: { value: 'bula' } }] },
+      payloadKeys: ['id', 'text'],
+      pageSize: 1,
+    });
+    expect(payloads.map((p) => String(p.id)).sort()).toEqual(['bula-P#0', 'bula-P#1']);
+    expect(payloads[0]).not.toHaveProperty('embedding');
+  });
+});
