@@ -511,10 +511,15 @@ export class QdrantStore implements VectorStore {
    * the first call on a fresh collection pays one index build, every later call is a plain facet.
    * If the client lacks `facet` (too old) the error says so; if it lacks `createPayloadIndex` the
    * original server error propagates instead of a silent degrade.
+   *
+   * Counts are the server's FAST default (per-segment indexed statistics). `exact: true` asks for
+   * the expensive recount and can cost tens of seconds per call on a corpus of hundreds of
+   * thousands of points — which for a panel that fans out into a dozen facets is the difference
+   * between a page load and a hang. It stays opt-in for reconciliation-shaped uses.
    */
   async facetValues(
     field: string,
-    options?: { filter?: QdrantFilter; limit?: number },
+    options?: { filter?: QdrantFilter; limit?: number; exact?: boolean },
   ): Promise<FacetHit[]> {
     const facet = this.client.facet?.bind(this.client);
     if (facet === undefined) {
@@ -526,7 +531,7 @@ export class QdrantStore implements VectorStore {
     const args = {
       key: field,
       limit: options?.limit ?? 200,
-      exact: true,
+      ...(options?.exact === undefined ? {} : { exact: options.exact }),
       ...(options?.filter !== undefined ? { filter: options.filter } : {}),
     };
     const request = () => facet(this.collection, args);
@@ -550,9 +555,10 @@ export class QdrantStore implements VectorStore {
    * OPTIONAL capability. Count chunks matching a RAW {@link QdrantFilter} without transferring
    * any — the aggregate behind a panel row like "chunks with NO key field at all". Requires a
    * client with `count` (the real one has it; {@link QdrantStore.removeWhere} already depends on
-   * it).
+   * it). The count is the server's fast default; `exact: true` forces the expensive recount
+   * (same trade-off as {@link QdrantStore.facetValues}).
    */
-  async countChunks(options?: { filter?: QdrantFilter }): Promise<number> {
+  async countChunks(options?: { filter?: QdrantFilter; exact?: boolean }): Promise<number> {
     const count = this.client.count?.bind(this.client);
     if (count === undefined) {
       throw new Error(
@@ -561,7 +567,7 @@ export class QdrantStore implements VectorStore {
     }
     const { count: total } = await count(this.collection, {
       ...(options?.filter !== undefined ? { filter: options.filter } : {}),
-      exact: true,
+      ...(options?.exact === undefined ? {} : { exact: options.exact }),
     });
     return total;
   }

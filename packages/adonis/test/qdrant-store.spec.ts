@@ -350,7 +350,7 @@ describe('QdrantRetriever', () => {
 });
 
 describe('QdrantStore.facetValues', () => {
-  it('repassa campo, limit, exact e o filtro RAW para o client e devolve os hits', async () => {
+  it('repassa campo, limit e o filtro RAW para o client e devolve os hits', async () => {
     const client = new RecordingQdrantClient();
     client.facetResult = {
       hits: [
@@ -373,8 +373,19 @@ describe('QdrantStore.facetValues', () => {
     const [, args] = client.last('facet') as [string, any];
     expect(args.key).toBe('metadata.numeroProcesso');
     expect(args.limit).toBe(5000);
-    expect(args.exact).toBe(true);
+    // contagem APROXIMADA é o default do server e o único padrão da store: `exact:
+    // true` nela custa dezenas de segundos por facet num corpus de centenas de milhar
+    // de pontos (o hang do painel em produção), então não é mais enviada.
+    expect(args.exact).toBeUndefined();
     expect(args.filter.must_not).toEqual([{ is_empty: { key: 'metadata.numeroProcesso' } }]);
+  });
+
+  it('`exact: true` só via opt-in explícito', async () => {
+    const client = new RecordingQdrantClient();
+    const store = new QdrantStore(client, { collection: 'rag', dimension: 3 });
+    await store.facetValues('metadata.tipo', { exact: true });
+    const [, args] = client.last('facet') as [string, any];
+    expect(args.exact).toBe(true);
   });
 
   it('default de limit é 200 sem filter no request', async () => {
@@ -432,7 +443,8 @@ describe('QdrantStore.countChunks', () => {
     const n = await store.countChunks({ filter: { must: [{ is_empty: { key: 'source' } }] } });
     expect(n).toBe(7);
     const [, args] = client.last('count') as [string, any];
-    expect(args.exact).toBe(true);
+    // default aproximado (count exato varre os segmentos — o painel chama por grupo)
+    expect(args.exact).toBeUndefined();
     expect(args.filter.must).toEqual([{ is_empty: { key: 'source' } }]);
   });
 });
