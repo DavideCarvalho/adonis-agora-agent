@@ -1,6 +1,6 @@
 import type { ActorResolver } from '../spi/actor-resolver.js';
 import type { Actor } from '../types.js';
-import { readContextAccessor } from './agora-context.js';
+import { readContextAccessor, tenantIdFromContext, userRefFromContext } from './agora-context.js';
 import type { AuthzTenantScope } from './authz-tool-authorizer.js';
 
 /**
@@ -38,7 +38,7 @@ export class AuthzActorResolver implements ActorResolver {
 
   async resolve(_req: unknown): Promise<Actor> {
     const accessor = readContextAccessor();
-    const ref = accessor?.userRef;
+    const ref = userRefFromContext(accessor);
     if (ref?.id === undefined || ref.id === null || String(ref.id).length === 0) {
       throw new Error(
         'authzActorResolver: no authenticated identity in @agora/context. The agent route must ' +
@@ -47,15 +47,14 @@ export class AuthzActorResolver implements ActorResolver {
       );
     }
 
-    const scope: AuthzTenantScope | undefined = accessor?.tenantId
-      ? { tenantId: accessor.tenantId }
-      : undefined;
+    const tenantId = tenantIdFromContext(accessor);
+    const scope: AuthzTenantScope | undefined = tenantId ? { tenantId } : undefined;
     const roles = await this.#authz.effectiveRoles(ref, scope);
 
     return {
       id: String(ref.id),
       roles,
-      ...(accessor?.tenantId ? { tenantRef: accessor.tenantId } : {}),
+      ...(tenantId ? { tenantRef: tenantId } : {}),
     };
   }
 }
