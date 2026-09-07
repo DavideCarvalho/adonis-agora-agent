@@ -1,5 +1,41 @@
 # @adonis-agora/agent
 
+## 0.30.0
+
+### Minor Changes
+
+- [#102](https://github.com/DavideCarvalho/adonis-agora-agent/pull/102) [`4e95eeb`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/4e95eeb730feb944198a42d29bfc168b511868f4) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Nova seam `HistoryWindow` para compactar o histórico de uma thread antes de cada turno
+  
+  Sem isso, `runAgentLoop` mapeia a thread PERSISTIDA inteira em `ModelMessage[]` a cada turno — uma thread de vida longa acumula mensagens e o custo/latência de input cresce sem limite, até eventualmente estourar a janela de contexto do modelo.
+  
+  `AgentConfig.historyWindow` (e o equivalente em `AgentLoopDeps`/`AgentDepsFactoryConfig`) aceita qualquer impl de `HistoryWindow` — mesmo padrão seam do `Retriever` já existente. O pacote traz `SlidingWindowHistory`, um truncador simples que mantém só as últimas N mensagens (padrão 40), sem resumo. Quem quiser sumarização (condensar as mensagens descartadas via um modelo) implementa a interface diretamente.
+  
+  Aplicado dentro de `hooks.step`, então uma retomada durable reaproveita o MESMO resultado — necessário para uma impl que gasta tokens num modelo não pagar duas vezes no replay.
+  
+  **Não-quebrante**: sem `historyWindow` configurado, o comportamento é idêntico a antes — histórico completo em todo turno.
+
+- [#102](https://github.com/DavideCarvalho/adonis-agora-agent/pull/102) [`4e95eeb`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/4e95eeb730feb944198a42d29bfc168b511868f4) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Painéis de inspeção do RAG ganham agregação server-side: `facetValues`, `countChunks` e `scrollChunks` no `QdrantStore`
+  
+  Quem constrói um admin sobre a coleção (`quantos chunks por documento? por tipo? quais chunks deste documento?`) esbarrava num muro: a store só sabia `search` (vetor) e `listDocuments` (colapsado por `documentId`). A alternativa honesta era um scroll da coleção inteira por request — em corpus de dezenas de milhares de pontos isso não é uma listagem, é um hang (foi exatamente o que um painel em produção fez: centenas de round-trips sequenciais de scroll e o browser girando para sempre).
+  
+  **O que entra:**
+  
+  - O filtro estrutural cresce para a linguagem que o GROUP BY de cadeia de prioridade precisa: `QdrantCondition` vira união com `is_empty` (campo AUSENTE/null/empty — os buckets de fallback), `QdrantFilter` ganha `must_not` (com `is_empty`, "campo PRESENTE") e `should` (OR — o fallback que é ausente OU o literal).
+  - `facetValues(field, {filter?, limit?})` — o `POST /facet` do Qdrant: GROUP BY + contagem exata por valor, uma ida de rede. Qdrant exige índice de payload no campo; no primeiro erro o store PROVISIONA o índice `keyword` e repete o facet exatamente uma vez — a primeira chamada numa coleção nova paga o índice, as demais são facet puro. Sem `facet` no client injetado, o erro diz isso nominalmente; sem `createPayloadIndex`, o erro original do server propaga (nada de degradação silenciosa).
+  - `countChunks({filter?})` — o agregado por trás de linhas como "chunks sem chave nenhuma", sem enumeration.
+  - `scrollChunks({filter?, payloadKeys?, pageSize?, maxPages?})` — pagina os CHUNKS com o mesmo filtro raw do facet, vetor nunca atravessa o fio. Diferente de `listDocuments`: é por chunk e fala o filtro cru — existe para inspeção/deleção, onde o chamador conhece o payload que ele mesmo gravou.
+  - `delete` no shim aceita `points` (lista de ids de ponto), como o client real já aceita — apagar "o que a agregação contou" sem reapresentar filtro.
+  
+  **Não-quebrante por construção:** nada disso toca o `VectorStore` SPI — são capacidades concretas do `QdrantStore` (como `ensureCollection`), e os dois métodos novos do client shim são `OPTIONAL` (o mesmo padrão de `setPayload?`/`count?`), então host com client escrito à mão continua compilando.
+  
+  **Validado contra Qdrant vivo** (`rag-qdrant-live.spec.ts`, gate `AGENT_QDRANT_URL`): o auto-provisionamento do índice acontece de verdade no server, `is_empty` cobre ausente e null, `must_not: [is_empty]` é presença, e o facet com `filter` honra a prioridade da cadeia (chunk com `numeroProcesso` E `examId` só conta no primeiro). O fake grava as chamadas e cobre as paths de erro (client sem capacidade, erro persistente sem retry infinito, cursor com `maxPages`).
+
+- [#102](https://github.com/DavideCarvalho/adonis-agora-agent/pull/102) [`4e95eeb`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/4e95eeb730feb944198a42d29bfc168b511868f4) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Alarga o peer `@adonisjs/redis` para aceitar `^11.0.0`
+  
+  `@adonisjs/redis` era um peer opcional em `^9.2.0 || ^10.0.0`. O sink Redis (`tokenSinks.redis()`) nunca importou tipos do driver — ele resolve `redis` pelo container do Adonis e duck-tipa a conexão (`RedisManagerLike`/`IoRedisLike`), então não há superfície de tipos ou API própria deste pacote presa à versão do driver.
+  
+  **Nota**: `@adonis-agora/durable` e `@adonis-agora/diagnostics` (peers próprios deste pacote, usados quando o durable/telescope estão habilitados) ainda declaram `^9.2.0 || ^10.0.0` nas suas versões publicadas atuais — um consumidor rodando `@adonisjs/redis@11` com esses dois habilitados verá um aviso de peer não satisfeito do gerenciador de pacotes até esses pacotes alargarem o próprio range. É só aviso; não é erro de instalação nem quebra em runtime.
+
 ## 0.29.0
 
 ### Minor Changes
