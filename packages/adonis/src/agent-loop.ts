@@ -9,6 +9,7 @@ import {
   spannedAgent,
 } from './diagnostics.js';
 import type { AgentStore } from './spi/agent-store.js';
+import type { HistoryWindow } from './spi/history-window.js';
 import type { ModelProvider } from './spi/model-provider.js';
 import {
   type AgentPricingStore,
@@ -90,6 +91,13 @@ export interface AgentLoopDeps {
    * tool's other (non-transient) failures are unaffected — they remain a one-shot business outcome.
    */
   toolTransientRetry?: ToolTransientRetrySetting;
+  /**
+   * Compacts the persisted thread history into what actually rides the model call each turn.
+   * Applied once per run, inside `hooks.step` (so durable replay reuses the SAME windowed result —
+   * required for a summarizing impl that spends its own tokens). Undefined → the full thread history
+   * is sent every turn, unchanged from before this option existed.
+   */
+  historyWindow?: HistoryWindow;
 }
 
 /** Renders retrieved passages as a numbered, citable context block appended to the system prompt. */
@@ -257,13 +265,25 @@ export async function runAgentLoop(
   );
 
   const thread = await hooks.step('load:thread', () => deps.store.getThread(input.threadId));
-  const modelMessages: ModelMessage[] = (thread?.messages ?? []).map((message) => ({
+  const fullHistory: ModelMessage[] = (thread?.messages ?? []).map((message) => ({
     role: message.role,
     content: message.content,
     ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls } : {}),
     ...(message.toolResults !== undefined ? { toolResults: message.toolResults } : {}),
     ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
   }));
+  // Compaction runs INSIDE the step body (replay-safe): a summarizing impl spends its own tokens,
+  // which a durable replay must never pay twice. With no window configured this is the identity
+  // function, so an existing deployment sends byte-identical history.
+  const modelMessages: ModelMessage[] =
+    deps.historyWindow !== undefined
+      ? await hooks.step('history:window', async () =>
+          (deps.historyWindow as HistoryWindow).apply(fullHistory, {
+            actor: input.actor,
+            threadId: input.threadId,
+          }),
+        )
+      : fullHistory;
 
   const writer = await hooks.openSink();
   let lastText = '';

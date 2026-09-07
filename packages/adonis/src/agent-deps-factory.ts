@@ -2,6 +2,7 @@ import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { AgentDeps } from './agent-deps.js';
 import type { AgentRegistry } from './agent-registry.js';
 import type { AgentStore } from './spi/agent-store.js';
+import type { HistoryWindow } from './spi/history-window.js';
 import type { ModelProvider } from './spi/model-provider.js';
 import type { AgentPricingStore } from './spi/pricing-store.js';
 import type { QuotaStore } from './spi/quota-store.js';
@@ -151,6 +152,11 @@ export interface AgentDepsFactoryConfig {
    * lock-wait timeout / serialization failure). Undefined → the loop default; `false` disables it.
    */
   toolTransientRetry?: ToolTransientRetrySetting;
+  /**
+   * Shared history-compaction hook applied to every agent's thread before each turn. Omit → the
+   * full thread history rides every turn (unchanged from before this option existed).
+   */
+  historyWindow?: HistoryWindow;
   /** Name of the implicit default agent. Defaults to `'default'`. */
   defaultAgentName?: string;
 }
@@ -210,6 +216,9 @@ export class AgentDepsFactory {
         : {}),
       ...(this.config.toolTransientRetry !== undefined
         ? { toolTransientRetry: this.config.toolTransientRetry }
+        : {}),
+      ...(this.config.historyWindow !== undefined
+        ? { historyWindow: this.config.historyWindow }
         : {}),
       ...(toolAllowList !== undefined ? { toolAllowList } : {}),
     };

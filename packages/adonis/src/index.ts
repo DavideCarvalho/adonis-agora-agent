@@ -113,6 +113,7 @@ export {
 export * from './diagnostics.js';
 export type { AgentGovernanceAuthorize, GovernanceGateVerdict } from './governance-gate.js';
 export { evaluateGovernanceGate } from './governance-gate.js';
+export * from './history-window.js';
 export { InProcessTokenStreamSink } from './in-process-sink.js';
 export type { OwnershipVerdict } from './ownership.js';
 export { evaluateOwnership } from './ownership.js';
@@ -150,6 +151,7 @@ export * from './spi/agent-store.js';
 export * from './spi/attachment-staging.js';
 export * from './spi/embedding-provider.js';
 export * from './spi/governance-queries.js';
+export * from './spi/history-window.js';
 export * from './spi/model-provider.js';
 export * from './spi/pricing-store.js';
 export * from './spi/quota-store.js';

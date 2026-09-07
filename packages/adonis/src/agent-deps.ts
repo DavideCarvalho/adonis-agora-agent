@@ -1,4 +1,5 @@
 import type { AgentStore } from './spi/agent-store.js';
+import type { HistoryWindow } from './spi/history-window.js';
 import type { ModelProvider } from './spi/model-provider.js';
 import type { AgentPricingStore } from './spi/pricing-store.js';
 import type { QuotaStore } from './spi/quota-store.js';
@@ -42,6 +43,8 @@ export interface AgentDeps {
    * `false` disables it.
    */
   toolTransientRetry?: ToolTransientRetrySetting;
+  /** Compacts the persisted thread history into what rides the model call each turn. Omit → full history every turn. */
+  historyWindow?: HistoryWindow;
 }
 
 /** The UTC calendar day (`YYYY-MM-DD`) a run is accounted against — deterministic for quota/day. */
