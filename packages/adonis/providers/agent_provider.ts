@@ -187,6 +187,7 @@ export default class AgentProvider {
       ...(config.toolTransientRetry !== undefined
         ? { toolTransientRetry: config.toolTransientRetry }
         : {}),
+      ...(config.historyWindow !== undefined ? { historyWindow: config.historyWindow } : {}),
     });
     // `durable: true` runs each turn as a replay-safe `@adonis-agora/durable` workflow; it degrades
     // gracefully to the in-process runner when the durable peer isn't installed/configured.

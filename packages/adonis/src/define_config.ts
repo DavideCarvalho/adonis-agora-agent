@@ -5,6 +5,7 @@ import type { ActorDirectory } from './spi/actor-directory.js';
 import type { ActorResolver } from './spi/actor-resolver.js';
 import type { AttachmentStagingStore } from './spi/attachment-staging.js';
 import type { AgentGovernanceQueries } from './spi/governance-queries.js';
+import type { HistoryWindow } from './spi/history-window.js';
 import type { ModelProvider } from './spi/model-provider.js';
 import type { AgentPricingStore } from './spi/pricing-store.js';
 import type { QuotaStore } from './spi/quota-store.js';
@@ -227,6 +228,16 @@ export interface AgentConfig {
    * never retried — they stay a one-shot business outcome.
    */
   toolTransientRetry?: ToolTransientRetrySetting;
+  /**
+   * Compacts the persisted thread history into what actually rides the model call each turn,
+   * applied once per run inside a durable-replay-safe step. Without it, the ENTIRE thread history is
+   * sent every turn — fine for short-lived threads, but input tokens (cost + latency, and eventually
+   * the model's context limit) grow without bound as a thread accumulates messages. This package
+   * ships {@link import('./history-window.js').SlidingWindowHistory}, a plain most-recent-N
+   * truncator with no summary; pass any {@link HistoryWindow} impl (e.g. one that summarizes
+   * dropped messages via a model call) instead.
+   */
+  historyWindow?: HistoryWindow;
   /** Emit `agora:agent:*` diagnostics events when `@adonis-agora/diagnostics` is installed. Default true. */
   emitDiagnostics?: boolean;
   /**
