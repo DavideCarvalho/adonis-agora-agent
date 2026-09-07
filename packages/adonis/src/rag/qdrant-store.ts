@@ -45,13 +45,32 @@ export interface QdrantPoint {
   payload: Record<string, unknown>;
 }
 
-/** A Qdrant filter (the subset this store uses). */
-export interface QdrantCondition {
+/**
+ * A Qdrant filter condition (the subset this store uses). A field condition matches on `match`
+ * (exact value, set membership, exclusion); an {@link QdrantIsEmptyCondition} matches the
+ * ABSENCE — field missing, null or empty list — which is what lets a filter express the
+ * fallback buckets an admin aggregation needs (a chunk with no `metadata.tipo`, a document
+ * keyed by NO field of a priority chain).
+ */
+export interface QdrantFieldCondition {
   key: string;
   match: { value: unknown } | { any: unknown[] } | { except: unknown[] };
 }
+export interface QdrantIsEmptyCondition {
+  is_empty: { key: string };
+}
+export type QdrantCondition = QdrantFieldCondition | QdrantIsEmptyCondition;
+
+/**
+ * A Qdrant filter. `must` is ANDed, `must_not` negates (so `must_not: [{ is_empty: … }]` reads
+ * "field PRESENT"), and `should` requires at least one match when present — together the boolean
+ * shape a server-side GROUP BY over a priority chain (COALESCE) needs without fetching the
+ * points to evaluate it client-side.
+ */
 export interface QdrantFilter {
   must?: QdrantCondition[];
+  must_not?: QdrantCondition[];
+  should?: QdrantCondition[];
 }
 
 /**
@@ -76,7 +95,10 @@ export interface QdrantClientLike {
       score_threshold?: number;
     },
   ): Promise<{ points: { score: number; payload?: Record<string, unknown> }[] }>;
-  delete(collection: string, args: { filter: QdrantFilter; wait?: boolean }): Promise<unknown>;
+  delete(
+    collection: string,
+    args: { filter?: QdrantFilter; points?: string[]; wait?: boolean },
+  ): Promise<unknown>;
   scroll(
     collection: string,
     args: {
@@ -115,6 +137,36 @@ export interface QdrantClientLike {
     collection: string,
     args: { filter?: QdrantFilter; exact?: boolean },
   ): Promise<{ count: number }>;
+  /**
+   * Server-side GROUP BY over one indexed payload key (`POST /collections/{c}/facet`): one
+   * `{ value, count }` per distinct value, narrowed by the same {@link QdrantFilter} the other
+   * calls use — WITHOUT transferring the points. This is the aggregate an inspection panel needs
+   * ("how many chunks per document, per field value"); a scroll-based emulation is O(collection)
+   * round trips per request and stops being a request at corpus scale.
+   *
+   * OPTIONAL, same structural-shim reason as {@link QdrantClientLike.count}; the real
+   * `@qdrant/js-client-rest` (>= 1.18 against a server >= 1.10) provides it. Requires a payload
+   * index on the field — {@link QdrantStore.facetValues} provisions one.
+   */
+  facet?(
+    collection: string,
+    args: { key: string; limit?: number; filter?: QdrantFilter; exact?: boolean },
+  ): Promise<{ hits: FacetHit[] }>;
+  /**
+   * Index one payload field for filtering/faceting (`is_tenant` is NOT set — no performance
+   * promise beyond plain indexing). OPTIONAL for the same reason as
+   * {@link QdrantClientLike.facet}; the real client provides it.
+   */
+  createPayloadIndex?(
+    collection: string,
+    args: { field_name: string; field_schema: { type: 'keyword' }; wait?: boolean },
+  ): Promise<unknown>;
+}
+
+/** One row of a {@link QdrantClientLike.facet} response: a distinct value and its exact count. */
+export interface FacetHit {
+  value: string | number | boolean;
+  count: number;
 }
 
 /**
@@ -445,6 +497,112 @@ export class QdrantStore implements VectorStore {
       offset = page.next_page_offset;
     }
     return [...seen.values()];
+  }
+
+  /**
+   * OPTIONAL capability. Server-side GROUP BY + exact count over one payload field — the
+   * aggregate an inspection panel reads per document ("chunks per value of `metadata.numeroProcesso`",
+   * values of the top-level `source`), optionally narrowed by a RAW {@link QdrantFilter} (the
+   * metadata-`Record` filters of {@link VectorStore.search} cannot express the absence a priority
+   * chain needs; raw filters can, via `is_empty`/`must_not`/`should`).
+   *
+   * Qdrant requires a payload index on the facetted field. When the server complains, this method
+   * PROVISIONS a `keyword` index (idempotent, `wait: true`) and retries the facet exactly once —
+   * the first call on a fresh collection pays one index build, every later call is a plain facet.
+   * If the client lacks `facet` (too old) the error says so; if it lacks `createPayloadIndex` the
+   * original server error propagates instead of a silent degrade.
+   */
+  async facetValues(
+    field: string,
+    options?: { filter?: QdrantFilter; limit?: number },
+  ): Promise<FacetHit[]> {
+    const facet = this.client.facet?.bind(this.client);
+    if (facet === undefined) {
+      throw new Error(
+        'QdrantStore.facetValues requires a client with `facet` (the real @qdrant/js-client-rest ' +
+          '>= 1.18 against a server >= 1.10 has it).',
+      );
+    }
+    const args = {
+      key: field,
+      limit: options?.limit ?? 200,
+      exact: true,
+      ...(options?.filter !== undefined ? { filter: options.filter } : {}),
+    };
+    const request = () => facet(this.collection, args);
+    try {
+      const { hits } = await request();
+      return hits;
+    } catch (error) {
+      const createIndex = this.client.createPayloadIndex?.bind(this.client);
+      if (createIndex === undefined) throw error;
+      await createIndex(this.collection, {
+        field_name: field,
+        field_schema: { type: 'keyword' },
+        wait: true,
+      });
+      const { hits } = await request();
+      return hits;
+    }
+  }
+
+  /**
+   * OPTIONAL capability. Count chunks matching a RAW {@link QdrantFilter} without transferring
+   * any — the aggregate behind a panel row like "chunks with NO key field at all". Requires a
+   * client with `count` (the real one has it; {@link QdrantStore.removeWhere} already depends on
+   * it).
+   */
+  async countChunks(options?: { filter?: QdrantFilter }): Promise<number> {
+    const count = this.client.count?.bind(this.client);
+    if (count === undefined) {
+      throw new Error(
+        'QdrantStore.countChunks requires a client with `count` (the real @qdrant/js-client-rest has it).',
+      );
+    }
+    const { count: total } = await count(this.collection, {
+      ...(options?.filter !== undefined ? { filter: options.filter } : {}),
+      exact: true,
+    });
+    return total;
+  }
+
+  /**
+   * OPTIONAL capability. Enumerate chunk PAYLOADS matching a RAW {@link QdrantFilter} — the
+   * read side of the same server-side narrowing {@link QdrantStore.facetValues} counts. Vectors
+   * never cross the wire; `payloadKeys` narrows the transfer further. Paginates the scroll
+   * cursor to exhaustion (guarded by `maxPages`, default the package-wide scroll ceiling).
+   *
+   * Unlike {@link VectorStore.listDocuments} this is per CHUNK (not collapsed per document) and
+   * speaks the raw filter language — it exists for inspection/deletion panels, where the caller
+   * knows the exact payload shape it stored.
+   */
+  async scrollChunks(options?: {
+    filter?: QdrantFilter;
+    payloadKeys?: string[];
+    pageSize?: number;
+    maxPages?: number;
+  }): Promise<Record<string, unknown>[]> {
+    const payloads: Record<string, unknown>[] = [];
+    let offset: unknown;
+    const maxPages = options?.maxPages ?? MAX_SCROLL_PAGES;
+    for (let pageCount = 0; ; pageCount++) {
+      if (pageCount >= maxPages) {
+        throw new Error(
+          'scrollChunks: scroll exceeded maxPages (the page offset never terminated)',
+        );
+      }
+      const page = await this.client.scroll(this.collection, {
+        with_payload: options?.payloadKeys ?? true,
+        with_vector: false,
+        limit: options?.pageSize ?? 256,
+        ...(options?.filter !== undefined ? { filter: options.filter } : {}),
+        ...(offset !== undefined ? { offset } : {}),
+      });
+      for (const point of page.points) payloads.push(point.payload ?? {});
+      if (page.next_page_offset === undefined || page.next_page_offset === null) break;
+      offset = page.next_page_offset;
+    }
+    return payloads;
   }
 }
 

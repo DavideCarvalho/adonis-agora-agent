@@ -49,6 +49,21 @@ class RecordingQdrantClient implements QdrantClientLike {
     this.calls.push({ method: 'scroll', args: [collection, args] });
     return this.scrollByOffset ? this.scrollByOffset(args) : this.scrollResult;
   }
+  /** Resposta canned de `facet`; `facetFailures` faz as N próximas chamadas falharem antes dela. */
+  facetResult: { hits: import('../src/rag/qdrant-store.js').FacetHit[] } = { hits: [] };
+  facetFailures = 0;
+  async facet(collection: string, args: unknown) {
+    this.calls.push({ method: 'facet', args: [collection, args] });
+    if (this.facetFailures > 0) {
+      this.facetFailures--;
+      throw new Error('Not found: field does not have a payload index');
+    }
+    return this.facetResult;
+  }
+  async createPayloadIndex(collection: string, args: unknown) {
+    this.calls.push({ method: 'createPayloadIndex', args: [collection, args] });
+    return {};
+  }
   last(method: string) {
     const call = [...this.calls].reverse().find((c) => c.method === method);
     if (!call) throw new Error(`no ${method} recorded`);
@@ -331,5 +346,135 @@ describe('QdrantRetriever', () => {
     const [, args] = client.last('query') as [string, any];
     expect(args.limit).toBe(3);
     expect(args.score_threshold).toBe(0.5);
+  });
+});
+
+describe('QdrantStore.facetValues', () => {
+  it('repassa campo, limit, exact e o filtro RAW para o client e devolve os hits', async () => {
+    const client = new RecordingQdrantClient();
+    client.facetResult = {
+      hits: [
+        { value: 'proc-1', count: 3 },
+        { value: 'proc-2', count: 1 },
+      ],
+    };
+    const store = new QdrantStore(client, { collection: 'rag', dimension: 3 });
+    const hits = await store.facetValues('metadata.numeroProcesso', {
+      limit: 5000,
+      filter: {
+        must: [{ key: 'metadata.tipo', match: { value: 'bula' } }],
+        must_not: [{ is_empty: { key: 'metadata.numeroProcesso' } }],
+      },
+    });
+    expect(hits).toEqual([
+      { value: 'proc-1', count: 3 },
+      { value: 'proc-2', count: 1 },
+    ]);
+    const [, args] = client.last('facet') as [string, any];
+    expect(args.key).toBe('metadata.numeroProcesso');
+    expect(args.limit).toBe(5000);
+    expect(args.exact).toBe(true);
+    expect(args.filter.must_not).toEqual([{ is_empty: { key: 'metadata.numeroProcesso' } }]);
+  });
+
+  it('default de limit é 200 sem filter no request', async () => {
+    const client = new RecordingQdrantClient();
+    const store = new QdrantStore(client, { collection: 'rag', dimension: 3 });
+    await store.facetValues('source');
+    const [, args] = client.last('facet') as [string, any];
+    expect(args.limit).toBe(200);
+    expect(args.filter).toBeUndefined();
+  });
+
+  it('no primeiro erro provisiona o índice keyword do campo e repete o facet uma vez', async () => {
+    const client = new RecordingQdrantClient();
+    client.facetFailures = 1;
+    client.facetResult = { hits: [{ value: 'a', count: 2 }] };
+    const store = new QdrantStore(client, { collection: 'rag', dimension: 3 });
+    const hits = await store.facetValues('metadata.tipo');
+    expect(hits).toEqual([{ value: 'a', count: 2 }]);
+    const [collection, indexArgs] = client.last('createPayloadIndex') as [string, any];
+    expect(collection).toBe('rag');
+    expect(indexArgs).toEqual({
+      field_name: 'metadata.tipo',
+      field_schema: { type: 'keyword' },
+      wait: true,
+    });
+    expect(client.calls.filter((c) => c.method === 'facet')).toHaveLength(2);
+  });
+
+  it('erro persistente propaga (sem retry infinito)', async () => {
+    const client = new RecordingQdrantClient();
+    client.facetFailures = 3;
+    const store = new QdrantStore(client, { collection: 'rag', dimension: 3 });
+    await expect(store.facetValues('metadata.tipo')).rejects.toThrow(/payload index/);
+    expect(client.calls.filter((c) => c.method === 'facet')).toHaveLength(2);
+  });
+
+  it('client sem `facet` → erro nomeado', async () => {
+    const client = new RecordingQdrantClient();
+    (client as { facet?: unknown }).facet = undefined;
+    const store = new QdrantStore(client, { collection: 'rag', dimension: 3 });
+    await expect(store.facetValues('source')).rejects.toThrow(/requires a client with `facet`/);
+  });
+});
+
+describe('QdrantStore.countChunks', () => {
+  it('conta com o filtro RAW repassado e exact', async () => {
+    class CountingClient extends RecordingQdrantClient {
+      async count(_collection: string, args: unknown) {
+        this.calls.push({ method: 'count', args: [_collection, args] });
+        return { count: 7 };
+      }
+    }
+    const client = new CountingClient();
+    const store = new QdrantStore(client, { collection: 'rag', dimension: 3 });
+    const n = await store.countChunks({ filter: { must: [{ is_empty: { key: 'source' } }] } });
+    expect(n).toBe(7);
+    const [, args] = client.last('count') as [string, any];
+    expect(args.exact).toBe(true);
+    expect(args.filter.must).toEqual([{ is_empty: { key: 'source' } }]);
+  });
+});
+
+describe('QdrantStore.scrollChunks', () => {
+  it('devolve payloads das páginas, sem vetor, com filtro e keys de payload repassados', async () => {
+    const client = new RecordingQdrantClient();
+    const cursor = 'p2';
+    client.scrollByOffset = ({ offset }) => {
+      if (offset === undefined) {
+        return {
+          points: [{ payload: { id: 'a#0', text: 'A' } }],
+          next_page_offset: cursor,
+        };
+      }
+      return { points: [{ payload: { id: 'a#1', text: 'B' } }] };
+    };
+    const store = new QdrantStore(client, { collection: 'rag', dimension: 3 });
+    const payloads = await store.scrollChunks({
+      filter: { should: [{ is_empty: { key: 'metadata.tipo' } }] },
+      payloadKeys: ['id', 'text'],
+      pageSize: 1,
+    });
+    expect(payloads).toEqual([
+      { id: 'a#0', text: 'A' },
+      { id: 'a#1', text: 'B' },
+    ]);
+    const scrollCalls = client.calls.filter((c) => c.method === 'scroll');
+    expect(scrollCalls).toHaveLength(2);
+    const [, firstArgs] = scrollCalls[0]!.args as [string, any];
+    expect(firstArgs.with_vector).toBe(false);
+    expect(firstArgs.with_payload).toEqual(['id', 'text']);
+    expect(firstArgs.filter.should).toEqual([{ is_empty: { key: 'metadata.tipo' } }]);
+  });
+
+  it('guarda maxPages contra cursor infinito', async () => {
+    const client = new RecordingQdrantClient();
+    client.scrollByOffset = () => ({
+      points: [{ payload: { id: 'x' } }],
+      next_page_offset: 'sempre',
+    });
+    const store = new QdrantStore(client, { collection: 'rag', dimension: 3 });
+    await expect(store.scrollChunks({ maxPages: 3 })).rejects.toThrow(/maxPages/);
   });
 });

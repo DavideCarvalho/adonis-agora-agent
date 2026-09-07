@@ -120,8 +120,12 @@ export * from './personas.js';
 export * from './pricing/models-dev.js';
 export * from './rag/index.js';
 export type {
+  FacetHit,
   QdrantClientLike,
+  QdrantCondition,
+  QdrantFieldCondition,
   QdrantFilter,
+  QdrantIsEmptyCondition,
   QdrantMetric,
   QdrantPoint,
   QdrantStoreOptions,
