@@ -12,6 +12,8 @@
  * surviving history.
  */
 
+import type { CursorPage, CursorParams } from '../pagination.js';
+
 /** Inclusive UTC day range, each `YYYY-MM-DD`. */
 export interface GovernanceRange {
   fromDay: string;
@@ -71,8 +73,13 @@ export interface ThreadActivityRow {
 /** A run's lifecycle status as the read-model surfaces it. */
 export type RunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
-/** Filters + cursor for {@link AgentGovernanceQueries.listRuns}. All optional; absent = no constraint. */
-export interface ListRunsFilter {
+/**
+ * Filters + cursor for {@link AgentGovernanceQueries.listRuns}. All optional; absent = no constraint.
+ *
+ * The pagination half is {@link CursorParams} — the ecosystem-wide `{ after, first }` shape mirroring
+ * `@adonis-agora/filter`'s `CursorParams`. Forward-only: no `before`/`last`.
+ */
+export interface ListRunsFilter extends CursorParams {
   /** Exact `actor_ref`. */
   actor?: string;
   /** Exact `agent_name`. */
@@ -82,10 +89,13 @@ export interface ListRunsFilter {
   from?: string;
   /** Inclusive UTC-day upper bound on `started_at`, `YYYY-MM-DD`. */
   to?: string;
-  /** Opaque cursor from a prior page's {@link ListRunsResult.nextCursor}; omit for the first page. */
-  cursor?: string;
-  /** Page size; defaults to 50, clamped to 200 by the adapter. */
-  limit?: number;
+  /**
+   * Opaque cursor from a prior page's {@link ListRunsResult.nextCursor}; omit for the first page.
+   * (Inherited from {@link CursorParams}, restated for the doc site.)
+   */
+  after?: string;
+  /** Page size; defaults to 50, clamped to 200 by the adapter. (Inherited from {@link CursorParams}.) */
+  first?: number;
 }
 
 /** A run row for the governance list + detail. Newest-first in {@link ListRunsResult}. */
@@ -112,12 +122,14 @@ export interface RunSummaryRow {
   durable: boolean;
 }
 
-/** One page of {@link AgentGovernanceQueries.listRuns}, newest-first, with an opaque forward cursor. */
-export interface ListRunsResult {
-  runs: RunSummaryRow[];
-  /** Pass back as {@link ListRunsFilter.cursor} for the next page; `null` when the last page was returned. */
-  nextCursor: string | null;
-}
+/**
+ * One page of {@link AgentGovernanceQueries.listRuns}, newest-first, with an opaque forward cursor.
+ *
+ * This is exactly {@link CursorPage} of {@link RunSummaryRow}: the rows are under `items` (not
+ * `runs`), `nextCursor` goes back as {@link ListRunsFilter.after}, and — the read-model being
+ * forward-only — `prevCursor` is always `null` and `hasPrev` always `false`.
+ */
+export type ListRunsResult = CursorPage<RunSummaryRow>;
 
 /** A message belonging to a run, for {@link RunDetail}. */
 export interface RunMessageRow {
@@ -294,7 +306,11 @@ export interface AgentGovernanceQueries {
 
   // ── Run lifecycle governance. An adapter backed by a store without run recording returns an empty
   // page / null / zeros from these.
-  /** Filterable, cursor-paginated run list, newest-first. */
+  /**
+   * Filterable, cursor-paginated run list, newest-first. Pagination is the ecosystem's forward-only
+   * cursor interface: `{ after, first }` in, {@link CursorPage} out (`items` / `nextCursor`, with
+   * `prevCursor: null` and `hasPrev: false`).
+   */
   listRuns(filter?: ListRunsFilter): Promise<ListRunsResult>;
   /** The full trace of one run (run + messages + tool calls + approvals + usage), or `null` if unknown. */
   runDetail(runId: string): Promise<RunDetail | null>;

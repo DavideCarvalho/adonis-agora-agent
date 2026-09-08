@@ -63,8 +63,11 @@ function fakeQueries(overrides: Partial<AgentGovernanceQueries> = {}): AgentGove
     recentToolCalls: async (_limit: number): Promise<ToolCallActivityRow[]> => [],
     recentThreads: async (_limit: number): Promise<ThreadActivityRow[]> => [],
     listRuns: async (_filter?: ListRunsFilter): Promise<ListRunsResult> => ({
-      runs: [],
+      items: [],
       nextCursor: null,
+      prevCursor: null,
+      hasNext: false,
+      hasPrev: false,
     }),
     runDetail: async (_runId: string): Promise<RunDetail | null> => null,
     pendingApprovals: async (_filter?: PendingApprovalsFilter): Promise<PendingApprovalRow[]> => [],
@@ -312,7 +315,15 @@ describe('recent activity + approvals inbox providers', () => {
 
   it('recentRuns maps listRuns rows, null agentName → placeholder, error capped', async () => {
     setTelescopeGovernanceQueries(
-      fakeQueries({ listRuns: async () => ({ runs: [run], nextCursor: null }) }),
+      fakeQueries({
+        listRuns: async () => ({
+          items: [run],
+          nextCursor: null,
+          prevCursor: null,
+          hasNext: false,
+          hasPrev: false,
+        }),
+      }),
     );
     const res = (await agentRecentRunsTableProvider().resolve(undefined, ctx)) as {
       rows: Array<{ runId: string; agentName: string; costUsd: string; error: string }>;
@@ -325,18 +336,24 @@ describe('recent activity + approvals inbox providers', () => {
     });
   });
 
-  it('recentRuns forwards the panel-requested limit', async () => {
-    let seenLimit: number | undefined;
+  it('recentRuns forwards the panel-requested limit as the cursor page size (`first`)', async () => {
+    let seenFirst: number | undefined;
     setTelescopeGovernanceQueries(
       fakeQueries({
         listRuns: async (filter) => {
-          seenLimit = filter?.limit;
-          return { runs: [], nextCursor: null };
+          seenFirst = filter?.first;
+          return {
+            items: [],
+            nextCursor: null,
+            prevCursor: null,
+            hasNext: false,
+            hasPrev: false,
+          };
         },
       }),
     );
     await agentRecentRunsTableProvider().resolve({ limit: 5 }, ctx);
-    expect(seenLimit).toBe(5);
+    expect(seenFirst).toBe(5);
   });
 
   it('recentToolCalls/recentThreads pass rows through unchanged', async () => {

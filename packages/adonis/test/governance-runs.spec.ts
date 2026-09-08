@@ -140,10 +140,14 @@ function runContract(name: string, make: () => Promise<AgentGovernanceQueries>):
     it('listRuns returns all runs newest-first, no cursor', async () => {
       const gov = await make();
       const page = await gov.listRuns();
-      expect(page.runs.map((r) => r.runId)).toEqual(['run-4', 'run-3', 'run-2', 'run-1']);
+      expect(page.items.map((r) => r.runId)).toEqual(['run-4', 'run-3', 'run-2', 'run-1']);
       expect(page.nextCursor).toBeNull();
+      expect(page.hasNext).toBe(false);
+      // Forward-only read-model: the backward half of the `CursorPage` is constant.
+      expect(page.prevCursor).toBeNull();
+      expect(page.hasPrev).toBe(false);
       // run-1's rollup survived the round-trip
-      const run1 = page.runs.find((r) => r.runId === 'run-1');
+      const run1 = page.items.find((r) => r.runId === 'run-1');
       expect(run1?.status).toBe('completed');
       expect(run1?.stepCount).toBe(1);
       expect(run1?.inputTokens).toBe(100);
@@ -155,17 +159,17 @@ function runContract(name: string, make: () => Promise<AgentGovernanceQueries>):
 
     it('listRuns filters by actor / status / agent', async () => {
       const gov = await make();
-      expect((await gov.listRuns({ actor: 'alice' })).runs.map((r) => r.runId)).toEqual([
+      expect((await gov.listRuns({ actor: 'alice' })).items.map((r) => r.runId)).toEqual([
         'run-2',
         'run-1',
       ]);
-      expect((await gov.listRuns({ status: 'failed' })).runs.map((r) => r.runId)).toEqual([
+      expect((await gov.listRuns({ status: 'failed' })).items.map((r) => r.runId)).toEqual([
         'run-2',
       ]);
-      expect((await gov.listRuns({ status: 'running' })).runs.map((r) => r.runId)).toEqual([
+      expect((await gov.listRuns({ status: 'running' })).items.map((r) => r.runId)).toEqual([
         'run-3',
       ]);
-      expect((await gov.listRuns({ agent: 'default' })).runs.map((r) => r.runId)).toEqual([
+      expect((await gov.listRuns({ agent: 'default' })).items.map((r) => r.runId)).toEqual([
         'run-2',
         'run-1',
       ]);
@@ -173,14 +177,20 @@ function runContract(name: string, make: () => Promise<AgentGovernanceQueries>):
 
     it('listRuns paginates with an opaque cursor', async () => {
       const gov = await make();
-      const first = await gov.listRuns({ limit: 2 });
-      expect(first.runs.map((r) => r.runId)).toEqual(['run-4', 'run-3']);
+      const first = await gov.listRuns({ first: 2 });
+      expect(first.items.map((r) => r.runId)).toEqual(['run-4', 'run-3']);
       expect(first.nextCursor).not.toBeNull();
+      expect(first.hasNext).toBe(true);
+      // Even mid-list, the forward-only page never claims a backward one.
+      expect(first.prevCursor).toBeNull();
+      expect(first.hasPrev).toBe(false);
 
       // Non-null asserted: the line above already asserts `first.nextCursor` is not null.
-      const second = await gov.listRuns({ limit: 2, cursor: first.nextCursor! });
-      expect(second.runs.map((r) => r.runId)).toEqual(['run-2', 'run-1']);
+      const second = await gov.listRuns({ first: 2, after: first.nextCursor! });
+      expect(second.items.map((r) => r.runId)).toEqual(['run-2', 'run-1']);
       expect(second.nextCursor).toBeNull();
+      expect(second.hasNext).toBe(false);
+      expect(second.hasPrev).toBe(false);
     });
 
     it('runDetail assembles the run, its messages, tool calls, approvals and usage', async () => {

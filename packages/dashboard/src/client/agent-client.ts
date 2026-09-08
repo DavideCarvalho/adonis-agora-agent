@@ -130,15 +130,19 @@ export class AgentClient {
 
   // ── Run lifecycle governance (the run-tracking read-model). ─────────────────
 
-  /** `GET /agent/governance/runs` — filterable, cursor-paginated run list, newest-first. */
+  /**
+   * `GET /agent/governance/runs` — filterable, cursor-paginated run list, newest-first. Pagination is
+   * the ecosystem's forward-only cursor interface: `{ after, first }` on the way in (sent as
+   * `?after=&first=`), a `CursorPage` of runs on the way out.
+   */
   listRuns(filter: ListRunsFilter = {}): Promise<ListRunsResult> {
-    const query: Record<string, string> = { limit: String(filter.limit ?? this.limit) };
+    const query: Record<string, string> = { first: String(filter.first ?? this.limit) };
     if (filter.actor) query.actor = filter.actor;
     if (filter.agent) query.agent = filter.agent;
     if (filter.status) query.status = filter.status;
     if (filter.from) query.from = filter.from;
     if (filter.to) query.to = filter.to;
-    if (filter.cursor) query.cursor = filter.cursor;
+    if (filter.after) query.after = filter.after;
     return this.get<ListRunsResult>('/governance/runs', query);
   }
 

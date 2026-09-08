@@ -625,11 +625,18 @@ export default class AgentProvider {
         const to = ctx.request.input('to', today);
         return { fromDay: String(from), toDay: String(to) };
       };
-      const limitOf = (ctx: HttpContext) => {
-        const raw = Number.parseInt(String(ctx.request.input('limit', '50')), 10);
+      const positiveIntInput = (ctx: HttpContext, key: string) => {
+        const raw = Number.parseInt(String(ctx.request.input(key, '50')), 10);
         const value = Number.isFinite(raw) && raw > 0 ? raw : 50;
         return Math.min(value, 200);
       };
+      /** `?limit=` — the cap on the top-N feeds (`recentToolCalls`, `recentThreads`, the approvals
+       *  inbox). Those are capped lists, not cursor-paginated surfaces, so they keep `limit`. */
+      const limitOf = (ctx: HttpContext) => positiveIntInput(ctx, 'limit');
+      /** `?first=` — the page size of the cursor-paginated surfaces, which speak `{ after, first }`
+       *  (the ecosystem interface mirroring `@adonis-agora/filter`'s `CursorParams`). Same default
+       *  (50) and ceiling (200) as `?limit=`. */
+      const firstOf = (ctx: HttpContext) => positiveIntInput(ctx, 'first');
 
       // GET /agent/governance/spend/model — per-model token + cost rollup over the range.
       router.get(g('spend/model'), async (ctx: HttpContext) => {
@@ -704,27 +711,30 @@ export default class AgentProvider {
       };
 
       // GET /agent/governance/runs — filterable, cursor-paginated run list, newest-first.
-      // Query: actor?, agent?, status?, from?, to?, cursor?, limit?
+      // Query: actor?, agent?, status?, from?, to?, after?, first?
+      // `after`/`first` are the ecosystem's forward-only cursor pagination interface (mirroring
+      // `@adonis-agora/filter`'s `CursorParams`); the body is a `CursorPage` — `items`, `nextCursor`,
+      // and the constant `prevCursor: null` / `hasPrev: false`.
       router.get(g('runs'), async (ctx: HttpContext) => {
         const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
         if (actor === null) return;
         const filterActor = ctx.request.input('actor');
         const agent = ctx.request.input('agent');
         const status = ctx.request.input('status');
-        const cursor = ctx.request.input('cursor');
+        const after = ctx.request.input('after');
         const { from, to } = optionalRange(ctx);
         const page = await gov.listRuns({
-          limit: limitOf(ctx),
+          first: firstOf(ctx),
           ...(filterActor !== undefined ? { actor: String(filterActor) } : {}),
           ...(agent !== undefined ? { agent: String(agent) } : {}),
           ...(status !== undefined ? { status: String(status) as never } : {}),
-          ...(cursor !== undefined ? { cursor: String(cursor) } : {}),
+          ...(after !== undefined ? { after: String(after) } : {}),
           ...(from !== undefined ? { from } : {}),
           ...(to !== undefined ? { to } : {}),
         });
         return ctx.response.json({
           ...page,
-          runs: await withActorLabels(page.runs, actorDirectory),
+          items: await withActorLabels(page.items, actorDirectory),
         });
       });
 

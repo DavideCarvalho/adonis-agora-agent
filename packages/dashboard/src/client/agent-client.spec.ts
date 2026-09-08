@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AgentApiError, AgentClient } from './agent-client.js';
-import type { ModelSpendRow } from './types.js';
+import type { ListRunsResult, ModelSpendRow } from './types.js';
+
+/** An empty `CursorPage` of runs — the wire shape `GET /governance/runs` answers with. */
+const emptyRunsPage: ListRunsResult = {
+  items: [],
+  nextCursor: null,
+  prevCursor: null,
+  hasNext: false,
+  hasPrev: false,
+};
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -47,14 +56,14 @@ describe('AgentClient', () => {
     ]);
   });
 
-  it('maps the run-lifecycle reads to their real routes with filters + cursor + limit', async () => {
+  it('maps the run-lifecycle reads to their real routes with filters + `after`/`first`', async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])));
     const client = new AgentClient({ baseUrl: '/agent', fetch: fetchMock, limit: 25 });
 
-    fetchMock.mockResolvedValueOnce(jsonResponse({ runs: [], nextCursor: null }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyRunsPage));
     await client.listRuns({ status: 'failed', agent: 'support', actor: 'user:alice' });
-    fetchMock.mockResolvedValueOnce(jsonResponse({ runs: [], nextCursor: null }));
-    await client.listRuns({ cursor: 'c2', limit: 10 });
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyRunsPage));
+    await client.listRuns({ after: 'c2', first: 10 });
     fetchMock.mockResolvedValueOnce(jsonResponse(null));
     await client.runDetail('run/1 with space');
     await client.pendingApprovals({ actor: 'user:bob' });
@@ -64,8 +73,8 @@ describe('AgentClient', () => {
 
     const urls = fetchMock.mock.calls.map((c) => c[0]);
     expect(urls).toEqual([
-      '/agent/governance/runs?limit=25&actor=user%3Aalice&agent=support&status=failed',
-      '/agent/governance/runs?limit=10&cursor=c2',
+      '/agent/governance/runs?first=25&actor=user%3Aalice&agent=support&status=failed',
+      '/agent/governance/runs?first=10&after=c2',
       '/agent/governance/runs/run%2F1%20with%20space',
       '/agent/governance/approvals/pending?limit=25&actor=user%3Abob',
       '/agent/governance/tools/stats?from=2026-03-01&to=2026-03-07',

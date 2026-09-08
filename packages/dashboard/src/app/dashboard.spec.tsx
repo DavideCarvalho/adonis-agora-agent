@@ -200,7 +200,13 @@ function fakeClient(overrides: Partial<AgentClient> = {}): AgentClient {
     recentThreads: vi.fn().mockResolvedValue(threadRows),
     recentToolCalls: vi.fn().mockResolvedValue(toolCallRows),
     quotaToday: vi.fn().mockResolvedValue({ usedTokens: 123 }),
-    listRuns: vi.fn().mockResolvedValue({ runs: runRows, nextCursor: null } as ListRunsResult),
+    listRuns: vi.fn().mockResolvedValue({
+      items: runRows,
+      nextCursor: null,
+      prevCursor: null,
+      hasNext: false,
+      hasPrev: false,
+    } as ListRunsResult),
     runDetail: vi.fn().mockResolvedValue(runDetail),
     threadDetail: vi.fn().mockResolvedValue(threadDetail),
     pendingApprovals: vi.fn().mockResolvedValue(pendingRows),
@@ -352,15 +358,25 @@ describe('RunsSection', () => {
 
   it('paginates by appending the next page from nextCursor', async () => {
     const page2Run: RunSummaryRow = { ...runRows[0]!, runId: 'run-def67890', agentName: 'billing' };
-    const listRuns = vi
-      .fn()
-      .mockImplementation((filter?: { cursor?: string }) =>
-        Promise.resolve(
-          filter?.cursor
-            ? ({ runs: [page2Run], nextCursor: null } as ListRunsResult)
-            : ({ runs: runRows, nextCursor: 'cursor-1' } as ListRunsResult),
-        ),
-      );
+    const listRuns = vi.fn().mockImplementation((filter?: { after?: string }) =>
+      Promise.resolve(
+        filter?.after
+          ? ({
+              items: [page2Run],
+              nextCursor: null,
+              prevCursor: null,
+              hasNext: false,
+              hasPrev: false,
+            } as ListRunsResult)
+          : ({
+              items: runRows,
+              nextCursor: 'cursor-1',
+              prevCursor: null,
+              hasNext: true,
+              hasPrev: false,
+            } as ListRunsResult),
+      ),
+    );
     const client = fakeClient({ listRuns } as Partial<AgentClient>);
     renderWith(client, <RunsSection />);
 

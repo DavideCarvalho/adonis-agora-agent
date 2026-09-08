@@ -159,7 +159,7 @@ export function useRuns(filter: ListRunsFilter): RunsState {
       .listRuns(filterRef.current)
       .then((page) => {
         if (genRef.current !== gen) return;
-        setRuns(page.runs);
+        setRuns(page.items);
         setNextCursor(page.nextCursor);
         cursorRef.current = page.nextCursor;
         setLoading(false);
@@ -178,10 +178,10 @@ export function useRuns(filter: ListRunsFilter): RunsState {
     cursorRef.current = null; // guard against double-fire while this page is in flight
     setLoading(true);
     client
-      .listRuns({ ...filterRef.current, cursor })
+      .listRuns({ ...filterRef.current, after: cursor })
       .then((page) => {
         if (genRef.current !== gen) return;
-        setRuns((prev) => [...prev, ...page.runs]);
+        setRuns((prev) => [...prev, ...page.items]);
         setNextCursor(page.nextCursor);
         cursorRef.current = page.nextCursor;
         setLoading(false);

@@ -350,7 +350,7 @@ describe('QdrantRetriever', () => {
 });
 
 describe('QdrantStore.facetValues', () => {
-  it('repassa campo, limit e o filtro RAW para o client e devolve os hits', async () => {
+  it('repassa campo, `first` e o filtro RAW para o client e devolve os hits', async () => {
     const client = new RecordingQdrantClient();
     client.facetResult = {
       hits: [
@@ -360,7 +360,7 @@ describe('QdrantStore.facetValues', () => {
     };
     const store = new QdrantStore(client, { collection: 'rag', dimension: 3 });
     const hits = await store.facetValues('metadata.numeroProcesso', {
-      limit: 5000,
+      first: 5000,
       filter: {
         must: [{ key: 'metadata.tipo', match: { value: 'bula' } }],
         must_not: [{ is_empty: { key: 'metadata.numeroProcesso' } }],
@@ -388,7 +388,7 @@ describe('QdrantStore.facetValues', () => {
     expect(args.exact).toBe(true);
   });
 
-  it('default de limit é 200 sem filter no request', async () => {
+  it('default de `first` é 200 sem filter no request', async () => {
     const client = new RecordingQdrantClient();
     const store = new QdrantStore(client, { collection: 'rag', dimension: 3 });
     await store.facetValues('source');
@@ -450,43 +450,98 @@ describe('QdrantStore.countChunks', () => {
 });
 
 describe('QdrantStore.scrollChunks', () => {
-  it('devolve payloads das páginas, sem vetor, com filtro e keys de payload repassados', async () => {
+  it('devolve UMA página de payloads, sem vetor, com filtro e keys de payload repassados', async () => {
     const client = new RecordingQdrantClient();
-    const cursor = 'p2';
     client.scrollByOffset = ({ offset }) => {
       if (offset === undefined) {
         return {
           points: [{ payload: { id: 'a#0', text: 'A' } }],
-          next_page_offset: cursor,
+          next_page_offset: 'p2',
         };
       }
       return { points: [{ payload: { id: 'a#1', text: 'B' } }] };
     };
     const store = new QdrantStore(client, { collection: 'rag', dimension: 3 });
-    const payloads = await store.scrollChunks({
+    const page = await store.scrollChunks({
       filter: { should: [{ is_empty: { key: 'metadata.tipo' } }] },
       payloadKeys: ['id', 'text'],
-      pageSize: 1,
+      first: 1,
     });
-    expect(payloads).toEqual([
-      { id: 'a#0', text: 'A' },
-      { id: 'a#1', text: 'B' },
-    ]);
+    expect(page.items).toEqual([{ id: 'a#0', text: 'A' }]);
+    expect(page.hasNext).toBe(true);
+    expect(page.nextCursor).not.toBeNull();
+    // Forward-only backend: Qdrant's scroll has no backward token.
+    expect(page.prevCursor).toBeNull();
+    expect(page.hasPrev).toBe(false);
+
+    // ONE round trip per call — draining is now the caller's loop.
     const scrollCalls = client.calls.filter((c) => c.method === 'scroll');
-    expect(scrollCalls).toHaveLength(2);
+    expect(scrollCalls).toHaveLength(1);
     const [, firstArgs] = scrollCalls[0]!.args as [string, any];
     expect(firstArgs.with_vector).toBe(false);
     expect(firstArgs.with_payload).toEqual(['id', 'text']);
+    expect(firstArgs.limit).toBe(1);
+    expect(firstArgs.offset).toBeUndefined();
     expect(firstArgs.filter.should).toEqual([{ is_empty: { key: 'metadata.tipo' } }]);
   });
 
-  it('guarda maxPages contra cursor infinito', async () => {
+  it('`after` retoma do next_page_offset do Qdrant, e o cursor é OPACO', async () => {
     const client = new RecordingQdrantClient();
-    client.scrollByOffset = () => ({
-      points: [{ payload: { id: 'x' } }],
-      next_page_offset: 'sempre',
-    });
+    client.scrollByOffset = ({ offset }) =>
+      offset === undefined
+        ? { points: [{ payload: { id: 'a#0' } }], next_page_offset: 'p2' }
+        : { points: [{ payload: { id: 'a#1' } }] };
     const store = new QdrantStore(client, { collection: 'rag', dimension: 3 });
-    await expect(store.scrollChunks({ maxPages: 3 })).rejects.toThrow(/maxPages/);
+
+    const first = await store.scrollChunks({ first: 1 });
+    // O cursor NÃO é o offset cru: o `next_page_offset` do Qdrant não vaza no tipo.
+    expect(first.nextCursor).not.toBe('p2');
+
+    const second = await store.scrollChunks({ first: 1, after: first.nextCursor! });
+    expect(second.items).toEqual([{ id: 'a#1' }]);
+    expect(second.hasNext).toBe(false);
+    expect(second.nextCursor).toBeNull();
+    const [, secondArgs] = client.calls.filter((c) => c.method === 'scroll')[1]!.args as [
+      string,
+      any,
+    ];
+    // O offset cru do Qdrant é o que volta pro server, decodificado do cursor opaco.
+    expect(secondArgs.offset).toBe('p2');
+  });
+
+  it('drenar tudo é um laço do chamador sobre hasNext', async () => {
+    const client = new RecordingQdrantClient();
+    const pages: Record<string, { points: { payload: Record<string, unknown> }[]; next?: string }> =
+      {
+        '': { points: [{ payload: { id: '0' } }], next: 'p1' },
+        p1: { points: [{ payload: { id: '1' } }], next: 'p2' },
+        p2: { points: [{ payload: { id: '2' } }] },
+      };
+    client.scrollByOffset = ({ offset }) => {
+      const page = pages[offset === undefined ? '' : String(offset)]!;
+      return {
+        points: page.points,
+        ...(page.next !== undefined ? { next_page_offset: page.next } : {}),
+      };
+    };
+    const store = new QdrantStore(client, { collection: 'rag', dimension: 3 });
+
+    const all: Record<string, unknown>[] = [];
+    let after: string | undefined;
+    do {
+      const page = await store.scrollChunks({ first: 1, ...(after ? { after } : {}) });
+      all.push(...page.items);
+      after = page.nextCursor ?? undefined;
+    } while (after !== undefined);
+    expect(all).toEqual([{ id: '0' }, { id: '1' }, { id: '2' }]);
+  });
+
+  it('cursor forjado é recusado (nunca rebobina silenciosamente pra primeira página)', async () => {
+    const client = new RecordingQdrantClient();
+    const store = new QdrantStore(client, { collection: 'rag', dimension: 3 });
+    await expect(store.scrollChunks({ after: 'nao-e-um-cursor' })).rejects.toThrow(
+      /not a cursor this store issued/,
+    );
+    expect(client.calls.filter((c) => c.method === 'scroll')).toHaveLength(0);
   });
 });

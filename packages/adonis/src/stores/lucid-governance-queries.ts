@@ -362,15 +362,18 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
 
   /**
    * Filterable, cursor-paginated run list, newest-first (`started_at` desc, then `id` desc for a
-   * stable tiebreak). The cursor is an opaque offset (over the SAME filter set); a page fetches
-   * `limit + 1` rows to learn whether a next page exists. A store without recorded runs yields an
+   * stable tiebreak). `after` is an opaque cursor (over the SAME filter set); a page fetches
+   * `first + 1` rows to learn whether a next page exists. A store without recorded runs yields an
    * empty page.
+   *
+   * Forward-only, so the returned {@link CursorPage} always carries `prevCursor: null` /
+   * `hasPrev: false` — see `src/pagination.ts`.
    */
   async listRuns(filter: ListRunsFilter = {}): Promise<ListRunsResult> {
     await this.ready();
-    const limit = clampLimit(filter.limit);
+    const limit = clampLimit(filter.first);
     const offset = ((): number => {
-      const parsed = filter.cursor !== undefined ? Number.parseInt(filter.cursor, 10) : 0;
+      const parsed = filter.after !== undefined ? Number.parseInt(filter.after, 10) : 0;
       return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
     })();
 
@@ -394,8 +397,11 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
     return {
-      runs: page.map(runRowToSummary),
+      items: page.map(runRowToSummary),
       nextCursor: hasMore ? String(offset + limit) : null,
+      prevCursor: null,
+      hasNext: hasMore,
+      hasPrev: false,
     };
   }
 

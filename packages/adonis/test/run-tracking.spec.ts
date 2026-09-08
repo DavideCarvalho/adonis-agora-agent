@@ -157,10 +157,10 @@ describe('run tracking — inline runner (Lucid)', () => {
     await waitFor(async () => (await gov.runDetail(runId))?.run.status === 'completed');
 
     const page = await gov.listRuns({ actor: 'u1' });
-    expect(page.runs.map((r) => r.runId)).toContain(runId);
+    expect(page.items.map((r) => r.runId)).toContain(runId);
     expect(page.nextCursor).toBeNull();
     // filtering by a different actor excludes it
-    expect((await gov.listRuns({ actor: 'someone-else' })).runs).toEqual([]);
+    expect((await gov.listRuns({ actor: 'someone-else' })).items).toEqual([]);
   });
 });
 

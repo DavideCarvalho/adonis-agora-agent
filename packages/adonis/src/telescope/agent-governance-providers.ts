@@ -405,9 +405,9 @@ export function agentRecentRunsTableProvider(): DataProvider {
       const queries = getTelescopeGovernanceQueries();
       if (!queries) return { rows: [] };
       const limit = resolveLimit(query, DEFAULT_RECENT_LIMIT);
-      const { runs } = await queries.listRuns({ limit });
+      const { items } = await queries.listRuns({ first: limit });
       return {
-        rows: runs.map(
+        rows: items.map(
           (row: RunSummaryRowLike): RecentRunTableRow => ({
             startedAt: row.startedAt,
             runId: row.runId,
