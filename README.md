@@ -14,6 +14,28 @@ Governed, durable-backed AI agent (chat + tool-calling + governance) for AdonisJ
 pnpm add @adonis-agora/agent
 ```
 
+### Peer dependencies
+
+Every peer is **optional** — install only the ones the features you use need. Nothing here is
+pulled in for you, so a core-only install stays small.
+
+| Peer | Range | Needed for |
+| --- | --- | --- |
+| `zod` | `^4.0.0` | Tool input/output schemas |
+| `ai` | `^7.0.0` | The Vercel AI SDK adapter (`/ai-sdk`) |
+| `@adonisjs/core` | `^7.3.0` | The AdonisJS provider / HTTP surface |
+| `@adonisjs/lucid` | `^22.4.0` | The Lucid-backed store |
+| `@adonisjs/redis` | `^9.2.0 \|\| ^10.0.0 \|\| ^11.0.0` | Redis-backed quota / rate limiting |
+| `@adonis-agora/durable` | `>=0.8.0 <1.0.0` | Running the agent loop as a durable workflow |
+| `@adonis-agora/authz`, `@adonis-agora/telescope`, `@adonis-agora/diagnostics` | `>=…<1.0.0` | Governance roles, telemetry, the diagnostics bus |
+| `@qdrant/js-client-rest`, `node-sql-parser`, `react` | see `package.json` | Vector search, the SQL data tool, the React bindings |
+
+**zod 4 is required** (since `@adonis-agora/agent@0.31.0`). The previous `^3.23.0 || ^4.0.0` range
+was a promise this package could not keep: `@adonis-agora/durable` types its public step API with
+zod 4, and a zod 3 schema does not satisfy zod 4's `ZodType` — an app on zod 3 was already broken
+against the published ecosystem, it just failed later and less clearly. The surface agent uses
+(`z.object` / `z.string()` / `z.infer`) is unchanged across the major, so upgrading is mechanical.
+
 ## Entry points
 
 | Import                        | What it exposes                                                        |
