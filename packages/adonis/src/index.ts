@@ -117,6 +117,9 @@ export * from './history-window.js';
 export { InProcessTokenStreamSink } from './in-process-sink.js';
 export type { OwnershipVerdict } from './ownership.js';
 export { evaluateOwnership } from './ownership.js';
+// The ecosystem-wide cursor pagination vocabulary — structurally identical to
+// `@adonis-agora/filter`'s `CursorParams`/`CursorPage`, deliberately not a dependency.
+export type { CursorPage, CursorParams } from './pagination.js';
 export * from './personas.js';
 export * from './pricing/models-dev.js';
 export * from './rag/index.js';
@@ -134,6 +137,8 @@ export type {
 export {
   buildQdrantFilter,
   chunkIdToPointId,
+  decodeScrollCursor,
+  encodeScrollCursor,
   QdrantRetriever,
   QdrantStore,
 } from './rag/qdrant-store.js';

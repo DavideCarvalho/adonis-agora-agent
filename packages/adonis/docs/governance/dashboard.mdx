@@ -147,8 +147,8 @@ import { AgentClient } from '@adonis-agora/agent-dashboard/client'
 const client = new AgentClient({ baseUrl: '/agent' })
 
 const spend = await client.spendByModel({ fromDay: '2026-03-01', toDay: '2026-03-07' })
-const runs = await client.runs({ status: 'failed', limit: 50 })
-const trace = await client.runDetail(runs.runs[0].runId)
+const runs = await client.listRuns({ status: 'failed', first: 50 })
+const trace = await client.runDetail(runs.items[0].runId)
 const thread = await client.threadDetail(trace.run.threadId)
 const prices = await client.pricing()
 ```

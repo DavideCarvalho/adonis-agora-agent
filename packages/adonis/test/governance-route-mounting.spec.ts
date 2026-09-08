@@ -56,7 +56,13 @@ class StubGovernanceQueries implements AgentGovernanceQueries {
     return [];
   }
   async listRuns(): Promise<ListRunsResult> {
-    return { runs: [], nextCursor: null } as unknown as ListRunsResult;
+    return {
+      items: [],
+      nextCursor: null,
+      prevCursor: null,
+      hasNext: false,
+      hasPrev: false,
+    } as unknown as ListRunsResult;
   }
   async runDetail(): Promise<RunDetail | null> {
     return null;

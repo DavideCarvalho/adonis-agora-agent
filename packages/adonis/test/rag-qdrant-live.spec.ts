@@ -299,13 +299,30 @@ describe.skipIf(URL === undefined)('QdrantStore facets ao vivo (agregação de p
     expect(chaveless).toBe(1);
   });
 
-  it('scrollChunks narrow por filtro RAW sem nunca transferir vetor', async () => {
-    const payloads = await store.scrollChunks({
-      filter: { must: [{ key: 'metadata.tipo', match: { value: 'bula' } }] },
-      payloadKeys: ['id', 'text'],
-      pageSize: 1,
-    });
+  it('scrollChunks pagina com cursor OPACO do Qdrant, narrow por filtro RAW, sem transferir vetor', async () => {
+    const filter = { must: [{ key: 'metadata.tipo', match: { value: 'bula' } }] };
+    const payloads: Record<string, unknown>[] = [];
+    let after: string | undefined;
+    let pages = 0;
+    do {
+      const page = await store.scrollChunks({
+        filter,
+        payloadKeys: ['id', 'text'],
+        first: 1,
+        ...(after !== undefined ? { after } : {}),
+      });
+      // Forward-only: o Qdrant não devolve token de volta, então a metade de trás é constante.
+      expect(page.prevCursor).toBeNull();
+      expect(page.hasPrev).toBe(false);
+      expect(page.hasNext).toBe(page.nextCursor !== null);
+      payloads.push(...page.items);
+      after = page.nextCursor ?? undefined;
+      pages += 1;
+    } while (after !== undefined && pages < 10);
+
     expect(payloads.map((p) => String(p.id)).sort()).toEqual(['bula-P#0', 'bula-P#1']);
     expect(payloads[0]).not.toHaveProperty('embedding');
+    // `first: 1` de verdade paginou contra o server vivo (não veio tudo de uma vez).
+    expect(pages).toBeGreaterThan(1);
   });
 });

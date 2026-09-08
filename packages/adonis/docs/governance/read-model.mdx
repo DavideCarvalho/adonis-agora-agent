@@ -67,7 +67,7 @@ All read-only (`GET`), all mounted only when a `governanceAuthorize` gate exists
 | `GET /agent/governance/usage/trend` | The daily token + cost trend over the range. |
 | `GET /agent/governance/tool-calls/recent` | Newest-first recent tool-call activity feed. |
 | `GET /agent/governance/threads/recent` | Newest-first recent thread activity feed. |
-| `GET /agent/governance/runs` | Filterable, cursor-paginated run list, newest-first. Query: `actor?`, `agent?`, `status?`, `from?`, `to?`, `cursor?`, `limit?`. |
+| `GET /agent/governance/runs` | Filterable, cursor-paginated run list, newest-first. Query: `actor?`, `agent?`, `status?`, `from?`, `to?`, `after?`, `first?`. |
 | `GET /agent/governance/runs/:id` | One run's full trace — run + messages + tool calls + approvals + usage — or `null`. |
 | `GET /agent/governance/approvals/pending` | Cross-thread HITL approvals inbox, oldest first. Query: `actor?`, `limit?`. |
 | `GET /agent/governance/tools/stats` | Per-tool call/failure/rejection/latency rollup. Query: `from?`, `to?`. |
@@ -116,10 +116,22 @@ interface ThreadActivityRow {
 
 ### Runs
 
-`listRuns` returns one page plus an opaque forward cursor:
+`listRuns` takes the ecosystem's forward-only cursor parameters and returns a `CursorPage` — the same
+shape `@adonis-agora/filter` uses, so every `@adonis-agora/*` listing paginates identically:
 
 ```ts
-interface ListRunsResult { runs: RunSummaryRow[]; nextCursor: string | null }
+interface CursorParams { after?: string; first?: number }   // forward-only: no before/last
+
+interface CursorPage<T> {
+  items: T[]
+  nextCursor: string | null   // pass back as `after`; null on the last page
+  prevCursor: string | null   // always null here — the read-model is forward-only
+  hasNext: boolean
+  hasPrev: boolean            // always false, likewise
+}
+
+interface ListRunsFilter extends CursorParams { actor?, agent?, status?, from?, to? }
+type ListRunsResult = CursorPage<RunSummaryRow>
 
 interface RunSummaryRow {
   runId: string; threadId: string
@@ -137,7 +149,10 @@ interface RunSummaryRow {
 }
 ```
 
-Pass `nextCursor` back as `?cursor=` for the next page; `null` means that was the last one.
+Pass `nextCursor` back as `?after=` for the next page; `null` means that was the last one. Page size is
+`?first=` (default 50, clamped to 200). `prevCursor`/`hasPrev` are constants, not a bug: neither backend
+behind a paginated `@adonis-agora/agent` surface can page backwards, so the fields are kept — to match
+`@adonis-agora/filter`'s `CursorPage` byte for byte — rather than dropped.
 
 `runDetail` is the full trace, or `null`:
 

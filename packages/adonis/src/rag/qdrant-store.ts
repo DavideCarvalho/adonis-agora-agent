@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { CursorPage } from '../pagination.js';
 import type { EmbeddingProvider } from '../spi/embedding-provider.js';
 import type { Passage } from '../spi/retriever.js';
 import { EmbeddingRetriever } from './embedding-retriever.js';
@@ -516,10 +517,17 @@ export class QdrantStore implements VectorStore {
    * the expensive recount and can cost tens of seconds per call on a corpus of hundreds of
    * thousands of points — which for a panel that fans out into a dozen facets is the difference
    * between a page load and a hang. It stays opt-in for reconciliation-shaped uses.
+   *
+   * `first` is the number of distinct values to return (default 200) — spelled as in
+   * {@link import('../pagination.js').CursorParams} so page sizes are named the same thing across the
+   * ecosystem. It is deliberately NOT a {@link import('../pagination.js').CursorPage}: Qdrant's facet
+   * endpoint returns the top-`first` values in one shot and hands back **no continuation token**, so a
+   * page envelope here would advertise a `nextCursor` that could only ever be `null`. Faceting is a
+   * capped aggregate; {@link QdrantStore.scrollChunks} is the paginated surface.
    */
   async facetValues(
     field: string,
-    options?: { filter?: QdrantFilter; limit?: number; exact?: boolean },
+    options?: { filter?: QdrantFilter; first?: number; exact?: boolean },
   ): Promise<FacetHit[]> {
     const facet = this.client.facet?.bind(this.client);
     if (facet === undefined) {
@@ -530,7 +538,7 @@ export class QdrantStore implements VectorStore {
     }
     const args = {
       key: field,
-      limit: options?.limit ?? 200,
+      limit: options?.first ?? 200,
       ...(options?.exact === undefined ? {} : { exact: options.exact }),
       ...(options?.filter !== undefined ? { filter: options.filter } : {}),
     };
@@ -575,41 +583,90 @@ export class QdrantStore implements VectorStore {
   /**
    * OPTIONAL capability. Enumerate chunk PAYLOADS matching a RAW {@link QdrantFilter} — the
    * read side of the same server-side narrowing {@link QdrantStore.facetValues} counts. Vectors
-   * never cross the wire; `payloadKeys` narrows the transfer further. Paginates the scroll
-   * cursor to exhaustion (guarded by `maxPages`, default the package-wide scroll ceiling).
+   * never cross the wire; `payloadKeys` narrows the transfer further.
    *
    * Unlike {@link VectorStore.listDocuments} this is per CHUNK (not collapsed per document) and
    * speaks the raw filter language — it exists for inspection/deletion panels, where the caller
    * knows the exact payload shape it stored.
+   *
+   * **Cursor-paginated**, in the ecosystem's forward-only interface (see
+   * {@link import('../pagination.js').CursorParams}): `{ after, first }` in, a
+   * {@link import('../pagination.js').CursorPage} out. ONE round trip per call — `first` (default
+   * 256) is the Qdrant scroll `limit`, and `nextCursor` wraps Qdrant's own opaque
+   * `next_page_offset`. Qdrant's scroll only ever resumes *forward* from that offset, so
+   * `prevCursor` is always `null` and `hasPrev` always `false`.
+   *
+   * The cursor is OPAQUE — {@link encodeScrollCursor} base64url's the raw offset precisely so
+   * callers cannot come to depend on it being a Qdrant point id. Hand it back verbatim.
+   *
+   * To drain the whole match, loop while `hasNext`:
+   *
+   * ```ts
+   * const all: Record<string, unknown>[] = [];
+   * let after: string | undefined;
+   * do {
+   *   const page = await store.scrollChunks({ filter, ...(after ? { after } : {}) });
+   *   all.push(...page.items);
+   *   after = page.nextCursor ?? undefined;
+   * } while (after !== undefined);
+   * ```
    */
   async scrollChunks(options?: {
     filter?: QdrantFilter;
     payloadKeys?: string[];
-    pageSize?: number;
-    maxPages?: number;
-  }): Promise<Record<string, unknown>[]> {
-    const payloads: Record<string, unknown>[] = [];
-    let offset: unknown;
-    const maxPages = options?.maxPages ?? MAX_SCROLL_PAGES;
-    for (let pageCount = 0; ; pageCount++) {
-      if (pageCount >= maxPages) {
-        throw new Error(
-          'scrollChunks: scroll exceeded maxPages (the page offset never terminated)',
-        );
-      }
-      const page = await this.client.scroll(this.collection, {
-        with_payload: options?.payloadKeys ?? true,
-        with_vector: false,
-        limit: options?.pageSize ?? 256,
-        ...(options?.filter !== undefined ? { filter: options.filter } : {}),
-        ...(offset !== undefined ? { offset } : {}),
-      });
-      for (const point of page.points) payloads.push(point.payload ?? {});
-      if (page.next_page_offset === undefined || page.next_page_offset === null) break;
-      offset = page.next_page_offset;
-    }
-    return payloads;
+    after?: string;
+    first?: number;
+  }): Promise<CursorPage<Record<string, unknown>>> {
+    const offset = options?.after === undefined ? undefined : decodeScrollCursor(options.after);
+    const page = await this.client.scroll(this.collection, {
+      with_payload: options?.payloadKeys ?? true,
+      with_vector: false,
+      limit: options?.first ?? 256,
+      ...(options?.filter !== undefined ? { filter: options.filter } : {}),
+      ...(offset !== undefined ? { offset } : {}),
+    });
+    const nextOffset = page.next_page_offset;
+    const hasNext = nextOffset !== undefined && nextOffset !== null;
+    return {
+      items: page.points.map((point) => point.payload ?? {}),
+      nextCursor: hasNext ? encodeScrollCursor(nextOffset) : null,
+      // Forward-only backend: Qdrant's scroll has no backward token. See `src/pagination.ts`.
+      prevCursor: null,
+      hasNext,
+      hasPrev: false,
+    };
   }
+}
+
+/**
+ * Wrap Qdrant's `next_page_offset` (a point id — string, number or UUID, the server's business) in an
+ * opaque, URL-safe cursor: base64url of its JSON. Mirrors how `@adonis-agora/filter` encodes its
+ * keyset cursors, and for the same reason — a cursor a caller can read is a cursor a caller will
+ * eventually construct.
+ */
+export function encodeScrollCursor(offset: unknown): string {
+  return Buffer.from(JSON.stringify({ o: offset }), 'utf8').toString('base64url');
+}
+
+/**
+ * Unwrap a cursor produced by {@link encodeScrollCursor}. Throws on a malformed one rather than
+ * silently restarting from the first page: a scroll that quietly rewinds re-emits chunks a
+ * deletion panel already processed, which is worse than a loud failure.
+ */
+export function decodeScrollCursor(cursor: string): unknown {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed === null || typeof parsed !== 'object' || !('o' in parsed)) {
+    throw new Error(
+      'scrollChunks: `after` is not a cursor this store issued. Pass back a `nextCursor` from a ' +
+        'previous page verbatim (cursors are opaque), or omit it for the first page.',
+    );
+  }
+  return (parsed as { o: unknown }).o;
 }
 
 /** A {@link import('../spi/retriever.js').Retriever} over a {@link QdrantStore}: embeds the query,

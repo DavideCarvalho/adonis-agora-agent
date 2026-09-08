@@ -259,9 +259,9 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
   // ── Run lifecycle read-model (behavioral twin of LucidGovernanceQueries) ────
 
   async listRuns(filter: ListRunsFilter = {}): Promise<ListRunsResult> {
-    const limit = clampLimit(filter.limit);
+    const limit = clampLimit(filter.first);
     const offset = ((): number => {
-      const parsed = filter.cursor !== undefined ? Number.parseInt(filter.cursor, 10) : 0;
+      const parsed = filter.after !== undefined ? Number.parseInt(filter.after, 10) : 0;
       return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
     })();
 
@@ -285,8 +285,12 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
     const page = matched.slice(offset, offset + limit);
     const hasMore = matched.length > offset + limit;
     return {
-      runs: page.map(runToSummary),
+      items: page.map(runToSummary),
       nextCursor: hasMore ? String(offset + limit) : null,
+      // Forward-only, exactly like the Lucid twin — see `src/pagination.ts`.
+      prevCursor: null,
+      hasNext: hasMore,
+      hasPrev: false,
     };
   }
 
