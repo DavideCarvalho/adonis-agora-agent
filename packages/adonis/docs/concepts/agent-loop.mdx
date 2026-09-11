@@ -21,7 +21,7 @@ A turn is an iteration, capped at `maxSteps` (default 8). Each pass asks the mod
 </Step>
 <Step>
 
-**Persist the user message, load history.** The user's text is appended to the thread, then the full message history is loaded and mapped into neutral model messages.
+**Persist the user message, load history.** The user's text is appended to the thread (stamped with the run that wrote it), then the message history is loaded and mapped into neutral model messages. With a `historyWindow` configured, only what fits its ceiling rides into the turn — see [Bounding the history](#bounding-the-history).
 
 </Step>
 <Step>
@@ -44,6 +44,8 @@ A turn is an iteration, capped at `maxSteps` (default 8). Each pass asks the mod
 
 Every tool invocation re-checks the actor's role and re-validates the input against the tool's schema before the handler runs.
 
+When every call in the turn is a `read`, their invocations run **concurrently** — the turn costs the slowest call instead of their sum. Only the invocations overlap; recording each call and persisting each result stay sequential in call order. See [Concurrent tool calls](#concurrent-tool-calls).
+
 </Step>
 <Step>
 
@@ -62,6 +64,8 @@ Every tool invocation re-checks the actor's role and re-validates the input agai
 | `awaitApproval(call, ctx)` | resolves a pending in-memory promise | awaits a durable signal (`ctx.waitForSignal`) that survives restarts |
 | `openSink()` | opens the in-process token sink | opens a shared sink keyed by run id |
 | `runAgent(name, task)` | runs a nested in-process loop | starts a durable child workflow (`ctx.child`) |
+| `parallel(tasks)` | `settleAll` — nothing records a position, so reads simply overlap | `settleAll` — every task is launched in one tick, so `ctx.localStep` pins the block in call order |
+| `patched(id)` | omitted, so every run takes the current shape | `ctx.patched` — a run recorded under an older loop shape keeps replaying against it |
 
 Both runners ship — the durable one is opt-in via `durable: true`. See [The durable runner](/docs/agent/durability/durable-runner).
 
@@ -72,6 +76,30 @@ Persisting a message, calling the model, invoking a tool, bumping the quota — 
 ## Determinism & replay-readiness
 
 The loop body is deliberately deterministic so the durable runner can recover a suspended turn by replaying it. The `day` (`YYYY-MM-DD`) is stamped *once* by the runner and passed in, rather than read inside the loop, so quota-by-day stays stable across a replay. Nothing in the body calls `Date.now()` or `Math.random()` directly on a control path — those live in `step`-wrapped side effects. This is why HITL is modeled as a hook the runner supplies: inline it's a promise, durably it's a signal, and the loop doesn't care which.
+
+The `ToolRegistry` is held to the same rule. A call's `kind` is looked up *inside* its `persist:toolcall:<callId>` checkpoint and returned from it, so a replay reads the kind out of the journal rather than out of whatever registry the resuming process happens to hold. Delegation's authorization and input-validation gates run in that same checkpoint, for the same reason: their verdict is what decides whether the call is persisted `auto_executed` or `failed`.
+
+<Callout type="warn" title="Why the registry can't be read from the body">
+The registry is per-process state, and the `kind` decides control flow — `action` suspends on an approval signal, everything else records a step. Resolved in the body, a process whose registry lacks the tool reads `undefined`, falls back to `read`, and asks for a `tool:` checkpoint where the history holds the approval signal. That is a non-determinism refusal on resume — and an approval-gated action about to run with nobody's approval.
+</Callout>
+
+### Concurrent tool calls
+
+A turn is eligible for overlapping only when the journaled `kind` of **every** call is `read`. An `action` suspends on a human approval — that wait is a decision, not I/O, and reserving an invocation position for a call that may yet be rejected spends a position the rejected branch never fills. An `agent` delegation is `ctx.child`, whose parallel form is the runtime's own `ctx.all`.
+
+What makes the overlap safe is *when* a checkpoint position is handed out: `ctx.localStep` takes it on the **call**, before its first `await`. So launching every invocation in one synchronous tick — which is exactly what `settleAll` does — fixes the `tool:` block in call order however the tools then settle. The `parallel` hook exists so a runner that assigns positions anywhere else can simply not supply it and stay sequential.
+
+`parallel` also has to wait for every task to settle rather than fail fast: a durable runner unwinds a turn by throwing, and a sibling abandoned part-way through its own step is a tool nobody ever runs. When one does throw, nothing is persisted for the siblings that finished — their `persist:toolexec` would land at the position the resume computes for an earlier call's.
+
+### Bounding the history
+
+Without a `historyWindow`, every message the store holds rides every turn: a long-lived thread grows until the provider rejects the request, and pays for the whole transcript until then. `SlidingWindowHistory` keeps the newest messages that fit a message count, a token budget, or both, and can fold what it left out into a leading `system` summary via `summarizeWithModel(model)` — recorded as a `summary` usage row, so bounding context cost never becomes spend nothing accounts for.
+
+The window's two halves run in deliberately different places. `select` is a **pure** function called *outside* any checkpoint — safe because its input already is one (`load:thread`'s cached result), so a replay reaches the same split. That is what lets a window exist without moving a single position. `summarize` calls a model, so it runs *inside* `history:summarize`: a resumed run reads back the summary the suspended attempt produced instead of prompting with a different one.
+
+<Callout type="warn" title="Two shapes, one journal">
+Both of these changed which checkpoints a turn writes, so both are gated on `hooks.patched` — `agent:parallel-tools` and `agent:history-select`. The gate consumes a position for a fresh run and gives it back to a run whose history predates it, so a turn that suspended under the older shape finishes on that shape. A deployment that configures no window never reaches the history gate at all, and a turn with fewer than two calls never reaches the tools one.
+</Callout>
 
 <Callout type="warn" title="The suspend detail">
 There is deliberately **no** `try/finally` closing the sink around the loop. A durable runner suspends by *throwing* through the stack at `awaitApproval`; a `finally` would then close the live stream on every suspend. The stream is closed only on normal completion — so a suspended-then-resumed run keeps one continuous token stream.

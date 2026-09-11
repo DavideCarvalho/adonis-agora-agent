@@ -1,9 +1,17 @@
 import type { ModelProvider, ModelTurnArgs, ModelTurnResult } from '../index.js';
 
+/** One tool the scripted turn asks for. Its call id is derived from the turn index and the name. */
+export interface FakeToolCall {
+  name: string;
+  input: unknown;
+}
+
 export interface FakeTurn {
   text: string;
   /** If set, the turn asks to call this tool instead of finishing. */
-  toolCall?: { name: string; input: unknown };
+  toolCall?: FakeToolCall;
+  /** Several tools in ONE turn — what a model routinely does. Takes precedence over `toolCall`. */
+  toolCalls?: FakeToolCall[];
   /** If set, the turn reports an actual USD cost — as a gateway provider would. */
   costUsd?: number;
 }
@@ -28,15 +36,12 @@ export class FakeModelProvider implements ModelProvider {
 
     await args.sink.write({ t: 'text', v: turn.text });
 
-    const toolCalls = turn.toolCall
-      ? [
-          {
-            id: `call-${turnIndex}-${turn.toolCall.name}`,
-            name: turn.toolCall.name,
-            input: turn.toolCall.input,
-          },
-        ]
-      : [];
+    const requested = turn.toolCalls ?? (turn.toolCall ? [turn.toolCall] : []);
+    const toolCalls = requested.map((call) => ({
+      id: `call-${turnIndex}-${call.name}`,
+      name: call.name,
+      input: call.input,
+    }));
 
     return {
       text: turn.text,

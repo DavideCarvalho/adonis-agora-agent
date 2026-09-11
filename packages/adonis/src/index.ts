@@ -24,8 +24,12 @@ export {
 export {
   type AgentLoopDeps,
   type AgentLoopHooks,
+  type AgentLoopResult,
   QuotaExceededError,
   runAgentLoop,
+  type SettledTask,
+  settleAll,
+  withBuiltInTools,
 } from './agent-loop.js';
 export { AgentRegistry } from './agent-registry.js';
 export type { ChatParams } from './agent-service.js';
@@ -111,10 +115,67 @@ export {
   tokenSinks,
 } from './define_config.js';
 export * from './diagnostics.js';
+export {
+  type AgentIntake,
+  ASK_TOOL_DESCRIPTION,
+  ASK_TOOL_NAME,
+  type AskToolInput,
+  askInputSchema,
+  askToolDefinition,
+  DEFAULT_INTAKE_PREAMBLE,
+  type ElicitationOption,
+  type ElicitationOutcome,
+  type ElicitationQuestion,
+  type ElicitationReply,
+  type ElicitationRequest,
+  type ElicitationResult,
+  type HumanReply,
+  MAX_ASK_QUESTIONS,
+  normalizeElicitationReply,
+  renderElicitationAnswers,
+  resolveElicitation,
+  settleElicitation,
+} from './elicitation.js';
 export type { AgentGovernanceAuthorize, GovernanceGateVerdict } from './governance-gate.js';
 export { evaluateGovernanceGate } from './governance-gate.js';
 export * from './history-window.js';
 export { InProcessTokenStreamSink } from './in-process-sink.js';
+export {
+  type BuildMemoryBlockInput,
+  buildMemoryBlock,
+  DEFAULT_MAX_FACT_CHARS,
+  DEFAULT_MAX_MEMORIES,
+  type ForgetMemoryInput,
+  type ListMemoriesInput,
+  type MemoryAuthor,
+  type MemoryConfig,
+  type MemoryDigest,
+  type MemoryDigestEntry,
+  type MemoryFact,
+  type MemoryForgetRequest,
+  type MemoryOrigin,
+  type MemoryProvider,
+  type MemoryRecord,
+  type MemoryVerdict,
+  type MemoryWriteOutcome,
+  type MemoryWriteRequest,
+  memoryForgetVerdict,
+  memoryWriteVerdict,
+  type OfferMemoriesInput,
+  type OverriddenMemory,
+  offerMemories,
+  REMEMBER_TOOL_DESCRIPTION,
+  REMEMBER_TOOL_NAME,
+  type RememberToolInput,
+  type ResolveMemoryDigestInput,
+  rememberInputSchema,
+  rememberToolDefinition,
+  resolveMemoryDigest,
+  type SearchMemoriesInput,
+  type StoreMemoryInput,
+  type WriteMemoryInput,
+  writeMemory,
+} from './memory.js';
 export type { OwnershipVerdict } from './ownership.js';
 export { evaluateOwnership } from './ownership.js';
 // The ecosystem-wide cursor pagination vocabulary — structurally identical to
@@ -122,6 +183,21 @@ export { evaluateOwnership } from './ownership.js';
 export type { CursorPage, CursorParams } from './pagination.js';
 export * from './personas.js';
 export * from './pricing/models-dev.js';
+export {
+  createFrameBuffer,
+  createIncrementalGate,
+  type FrameBuffer,
+  type GateRejection,
+  gateTail,
+  type IncrementalGate,
+  type OutputGateMode,
+  type OutputGateResult,
+  releaseGatedFrames,
+  resolveGateLookback,
+  resolveOutputGateMode,
+  runInputProcessors,
+  runOutputProcessors,
+} from './processors.js';
 export * from './rag/index.js';
 export type {
   FacetHit,
@@ -148,7 +224,42 @@ export {
   RedisTokenStreamSink,
   type RedisTokenStreamSinkOptions,
 } from './redis-token-stream-sink.js';
+export { isReplayIntegrityError } from './replay-integrity.js';
 export { InlineAgentRunner } from './runners/inline-agent-runner.js';
+export {
+  actorScope,
+  buildSkillsBlock,
+  compositeSkillProvider,
+  DEFAULT_MAX_SKILLS,
+  defaultScopeResolver,
+  GLOBAL_SCOPE,
+  type ListSkillsInput,
+  type LoadSkillInput,
+  loadSkill,
+  offerSkills,
+  resolveSkillCatalog,
+  type ScopeContext,
+  type ScopeResolver,
+  SKILL_TOOL_DESCRIPTION,
+  SKILL_TOOL_NAME,
+  type Skill,
+  type SkillAuthor,
+  type SkillCatalogEntry,
+  type SkillContext,
+  type SkillLoadOutcome,
+  type SkillOffer,
+  type SkillProvider,
+  type SkillSummary,
+  type SkillsConfig,
+  type SkillToolInput,
+  type SkillWriteRequest,
+  type SkillWriteVerdict,
+  skillInputSchema,
+  skillToolDefinition,
+  skillWriteVerdict,
+  staticSkillProvider,
+  tenantScope,
+} from './skills.js';
 export * from './spi/actor-directory.js';
 export * from './spi/actor-resolver.js';
 export * from './spi/agent-runner.js';
@@ -159,6 +270,7 @@ export * from './spi/governance-queries.js';
 export * from './spi/history-window.js';
 export * from './spi/model-provider.js';
 export * from './spi/pricing-store.js';
+export * from './spi/processors.js';
 export * from './spi/quota-store.js';
 export * from './spi/reranker.js';
 export * from './spi/retriever.js';
@@ -190,6 +302,14 @@ export {
   dropTableStatements,
   ensureAgentTables,
 } from './stores/lucid-schema.js';
+export {
+  DEFAULT_STRUCTURED_OUTPUT_INSTRUCTION,
+  extractJson,
+  repairInstruction,
+  type StructuredOutcome,
+  StructuredOutputError,
+  validateStructured,
+} from './structured-output.js';
 export type { RegisteredTool, ToolsBarrel } from './tool-discovery.js';
 export {
   discoverTools,

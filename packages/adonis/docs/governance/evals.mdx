@@ -1,0 +1,128 @@
+---
+title: Evals and scorers
+description: Score the answers your agent already gave — including the HITL rejections your operators produced for free.
+---
+
+The governance read-model can tell you what a turn cost and whether it finished. It cannot tell you
+whether it was any *good*. `@adonis-agora/agent/evals` adds that: a `Scorer` SPI (a stored run in, a
+`0..1` score plus the sentence that justifies it out), a resumable batch runner over persisted runs,
+a `ScoreStore` for the verdicts, and pure aggregation helpers that mirror the governance read-model's
+arithmetic so a dashboard and a CI gate can never disagree about whether quality moved.
+
+## Offline-first, on purpose
+
+Scoring reads what the agent already persisted — the run row, its transcript, its tool calls and
+their outcomes — through the `AgentGovernanceQueries` SPI, so it works against the Lucid and
+in-memory stores unchanged and adds **no read tables of its own**.
+
+Nothing runs inside a turn. An inline judge would double the latency and the bill of every message a
+user sends.
+
+```ts
+import {
+  ApprovalOutcomeScorer,
+  GovernanceRunSampleSource,
+  InMemoryScoreStore,
+  RunCompletionScorer,
+  runEvaluation,
+} from '@adonis-agora/agent/evals'
+
+const summary = await runEvaluation({
+  source: new GovernanceRunSampleSource(queries),
+  scorers: [new RunCompletionScorer(), new ApprovalOutcomeScorer()],
+  store: new InMemoryScoreStore(),
+  query: { limit: 500, fromDay: '2026-09-01' },
+})
+```
+
+`runEvaluation` skips a `(run, scorer)` pair the store has already seen, so an interrupted backfill
+restarted with the same query re-bills nothing. Pass `rescore: true` to override.
+
+## Four built-in scorers
+
+| Scorer | Kind | What it asks |
+| --- | --- | --- |
+| `RunCompletionScorer` | `rule` | Did the turn deliver, and was the agent whole while it answered? |
+| `ApprovalOutcomeScorer` | `rule` | What fraction of this run's *decided* actions did a human approve? |
+| `ApprovalRiskScorer` | `statistical` | How likely is a human to reject what this run proposed? |
+| `AnswerRelevancyScorer` | `model` | Does the answer address the question, per an LLM judge? |
+
+### The one that matters: every HITL rejection is a free negative label
+
+The library already stops an `action` tool and asks a person whether it should run. That answer is
+recorded on the tool call, and it is the only ground truth in the system nobody had to be paid to
+collect. `ApprovalOutcomeScorer` reads it back as the fraction of a run's decided actions a human
+approved. An approved action that then crashed counts as **approved** — the human still said yes;
+`RunCompletionScorer` is what charges for the crash.
+
+`ApprovalRiskScorer` turns the same corpus into a prediction: a Beta(1,1)-smoothed per-tool approval
+rate, so an unseen tool sits at exactly `0.5` and a 1-of-1 rejection never reads as certainty. A run
+scores as its *riskiest* proposed action, not the average, so an approvals inbox can be drained
+worst-first.
+
+```ts
+import { loadApprovalPrior, priorFromRuns } from '@adonis-agora/agent/evals'
+
+// From the store's own activity feed, bounded by `limit`:
+const prior = await loadApprovalPrior({ queries, query: { limit: 5_000 } })
+
+// Or, free of extra reads, from the runs the batch already loaded:
+const local = priorFromRuns(await source.listRuns({ limit: 500 }))
+```
+
+### `null` is not zero
+
+A scorer returns `null` — not `1`, and not `0` — for a run it has nothing to say about. Most runs are
+read-only and carry no human verdict; counting those as perfect would bury the runs that do carry one
+under an average of ~1, and counting them as failures would blame the agent for a question it was
+never asked. A scorer that *throws* is collected as a per-run `ScorerFailure` and the batch carries
+on: a judge that replied with prose is a broken evaluation, and recording it as a 0 would put the
+blame in the wrong place.
+
+## Reading the results
+
+`summarizeByScorer`, `summarizeByAgent`, `bucketScoreTrend` and `worstScoredRuns` are pure functions
+over `RunScore[]`, worst-first where an ordering exists. A score is bucketed under the day the
+**scored run** started, not the day the batch ran, so a trend moves when quality moves rather than
+when someone re-ran a backfill over last month.
+
+## Live scoring
+
+`attachLiveScoring` subscribes to `agora:agent:run.finished` and scores off the diagnostics channel
+*after* the run has settled and its stream has closed, in a detached promise, with every failure
+routed to `onError`. There is no code path from a scorer back into a turn.
+
+```ts
+const live = attachLiveScoring({
+  source: new GovernanceRunSampleSource(queries),
+  scorers: [new RunCompletionScorer()],
+  store,
+  sampleRate: 0.2,
+  onError: (error) => logger.warn({ error }, 'live scoring failed'),
+})
+```
+
+It costs real work per run, so the batch stays the default and `sampleRate` sheds load for anything
+that bills. It also needs `@adonis-agora/diagnostics` installed — that package is what fills the emit
+slot the agent loop publishes through, so without it the channel is silent and live scoring is inert.
+The offline batch has no such dependency.
+
+## Bring your own scorer
+
+```ts
+import { clampScore, type Scorer } from '@adonis-agora/agent/evals'
+
+const citesSources: Scorer = {
+  name: 'cites-sources',
+  kind: 'rule',
+  score: async (run) => {
+    const retrieved = run.toolCalls.filter((call) => call.toolName === 'retrieve')
+    if (retrieved.length === 0) return null
+    const cited = /\[\d+\]/.test(run.output)
+    return { score: clampScore(cited ? 1 : 0), reason: cited ? 'cited a passage' : 'cited nothing' }
+  },
+}
+```
+
+For an LLM-as-judge of your own, `discardingSink()` and `parseJudgeVerdict()` are exported — the
+judge call has no run, so there is no live stream for its tokens to join.

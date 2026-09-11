@@ -159,6 +159,37 @@ describe('runAgentLoop', () => {
     expect(rows[0]?.output).toEqual({ tempC: 21, city: 'Recife' });
   });
 
+  it('lands a turn’s tool outputs on the assistant message that made the calls', async () => {
+    const script: FakeScript = (_args, turnIndex) =>
+      turnIndex === 0
+        ? { text: 'checking', toolCall: { name: 'getWeather', input: { city: 'Recife' } } }
+        : { text: 'it is 21C in Recife' };
+
+    const { detail } = await run(script);
+    // What a reopened thread renders from: the calls and their outputs paired off ONE message. A
+    // call whose output only ever reached the tool-call table renders as a tool still running.
+    const calling = detail?.messages.find((message) => message.toolCalls !== undefined);
+    expect(calling?.toolCalls?.map((call) => call.name)).toEqual(['getWeather']);
+    expect(calling?.toolResults).toEqual([
+      {
+        id: calling?.toolCalls?.[0]?.id,
+        name: 'getWeather',
+        output: { tempC: 21, city: 'Recife' },
+      },
+    ]);
+  });
+
+  it('lands a rejected action’s outcome on the message too', async () => {
+    const script: FakeScript = (_args, turnIndex) =>
+      turnIndex === 0
+        ? { text: 'about to purge', toolCall: { name: 'purgeCache', input: { key: 'cfg' } } }
+        : { text: 'ok, skipped' };
+
+    const { detail } = await run(script, () => ({ approved: false, reason: 'nope' }));
+    const calling = detail?.messages.find((message) => message.toolCalls !== undefined);
+    expect(calling?.toolResults?.[0]).toMatchObject({ name: 'purgeCache', error: 'rejected' });
+  });
+
   it('halts an action tool for approval, then executes on approve', async () => {
     const script: FakeScript = (_args, turnIndex) =>
       turnIndex === 0
@@ -342,7 +373,9 @@ describe('runAgentLoop', () => {
     );
 
     const frames = await drainFrames(sink, runId);
-    const kinds = frames.map((f) => (f.t === 'component' ? `component:${f.name}` : `text:${f.v}`));
+    const kinds = frames.map((f) =>
+      f.t === 'text' ? `text:${f.v}` : `component:${f.t === 'component' ? f.name : f.t}`,
+    );
     expect(kinds).toContain('component:Card');
     expect(kinds.indexOf('text:olha ')).toBeLessThan(kinds.indexOf('component:Card'));
     const comp = frames.find((f) => f.t === 'component');

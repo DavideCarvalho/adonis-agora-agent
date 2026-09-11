@@ -6,7 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { RolesPolicy } from '../spi/roles-policy.js';
 import type { AiToolCtx } from '../spi/tool.js';
-import { ToolRegistry } from '../tool-registry.js';
+import { ToolNotFoundError, ToolRegistry } from '../tool-registry.js';
 import type { Actor } from '../types.js';
 
 /**
@@ -40,6 +40,29 @@ export interface CreateMcpServerOptions extends McpToolContextOptions {
   policy: RolesPolicy;
   /** Optional allow-list restricting which tools are exposed. */
   allowedTools?: string[];
+  /**
+   * What to do with `action` tools. Defaults to `'refuse'`: they are neither listed nor callable.
+   *
+   * An `action` is HITL-gated in the loop — a human approves it before it runs. An MCP caller has
+   * no human, so honouring that gate is impossible and the tool stays off the surface. `'execute'`
+   * is a deployment saying it accepts an unapproved actor running every `action` its roles reach.
+   */
+  actions?: 'refuse' | 'execute';
+}
+
+/**
+ * Kinds the LOOP serves, which a registry entry cannot honour on its own. A handoff tool is
+ * registered with a stub handler because `AgentLoop` performs the delegation, so calling it here
+ * would answer `{}` and delegate to nobody. Never exposed, whatever `actions` says.
+ */
+const LOOP_SERVED_KINDS = new Set(['agent', 'ask', 'skill', 'memory']);
+
+/** Whether this tool may be reached over MCP at all — the same answer for listing and for calling. */
+function isExposable(kind: string, actions: 'refuse' | 'execute'): boolean {
+  if (LOOP_SERVED_KINDS.has(kind)) {
+    return false;
+  }
+  return kind !== 'action' || actions === 'execute';
 }
 
 /**
@@ -102,6 +125,7 @@ function toJsonSchema(schema: StandardSchemaV1): Record<string, unknown> {
  */
 export function createMcpServer(options: CreateMcpServerOptions): Server {
   const { registry, policy, allowedTools, actorFromAuth, idsFromRequest } = options;
+  const actions = options.actions ?? 'refuse';
   const server = new Server(
     { name: options.name, version: options.version },
     { capabilities: { tools: {} } },
@@ -121,7 +145,9 @@ export function createMcpServer(options: CreateMcpServerOptions): Server {
 
   server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
     const actor = actorFromAuth(extra.authInfo);
-    const defs = await registry.definitionsFor(actor, policy, allowedTools);
+    const defs = (await registry.definitionsFor(actor, policy, allowedTools)).filter((definition) =>
+      isExposable(definition.kind, actions),
+    );
     return {
       tools: defs.map((definition) => ({
         name: definition.name,
@@ -135,6 +161,17 @@ export function createMcpServer(options: CreateMcpServerOptions): Server {
     const ctx = buildCtx(extra.authInfo, extra.sessionId);
     const { name, arguments: args } = request.params;
     try {
+      // Re-decided on the CALL, not inherited from the listing. `registry.invoke` re-checks roles
+      // and re-validates input, but knows nothing about this server's allow-list or its `actions`
+      // stance — so a caller who guesses a name would otherwise reach a tool deliberately left off
+      // the surface.
+      const spec = registry.spec(name);
+      if (spec === undefined || !isExposable(spec.kind, actions)) {
+        throw new ToolNotFoundError(name);
+      }
+      if (allowedTools !== undefined && !allowedTools.includes(name)) {
+        throw new ToolNotFoundError(name);
+      }
       const output = await registry.invoke(name, args ?? {}, ctx, policy);
       return {
         content: [

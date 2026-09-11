@@ -12,6 +12,7 @@ export {
   echoScript,
   FakeModelProvider,
   type FakeScript,
+  type FakeToolCall,
   type FakeTurn,
 } from './fake-model-provider.js';
 export { InMemoryActorDirectory } from './in-memory-actor-directory.js';

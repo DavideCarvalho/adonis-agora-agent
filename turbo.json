@@ -13,7 +13,7 @@
       "outputs": ["dist/**"]
     },
     "test": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["^build", "build"],
       "outputs": ["coverage/**"]
     },
     "test:watch": {

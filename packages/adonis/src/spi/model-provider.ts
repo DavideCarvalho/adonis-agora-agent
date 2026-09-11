@@ -1,3 +1,4 @@
+import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { MessageUsage, ModelMessage, ToolCallRequest, ToolDefinition } from '../types.js';
 import type { SinkWriter } from './token-stream-sink.js';
 
@@ -8,6 +9,16 @@ export interface ModelTurnArgs {
   /** The model writes streamed text deltas here as it generates them. */
   sink: SinkWriter;
   abortSignal?: AbortSignal;
+  /**
+   * Constrain this call's reply to a schema. Set only by the loop's structured-output formatting
+   * pass, which is non-streamed and carries `tools: []` — most providers cannot serve a response
+   * format and a tool set in the same request.
+   *
+   * An adapter that can constrain generation should, and report what it parsed as
+   * {@link ModelTurnResult.object}. One that cannot may ignore it entirely: the loop validates the
+   * reply either way, reading the JSON out of the text when no `object` comes back.
+   */
+  outputSchema?: StandardSchemaV1;
 }
 
 /** The outcome of ONE assistant turn. The loop — not the model — drives tool execution. */
@@ -28,6 +39,13 @@ export interface ModelTurnResult {
    * governance read-model uses it verbatim; otherwise it estimates from tokens × the pricing table.
    */
   costUsd?: number;
+  /**
+   * What the provider parsed out of a reply it constrained to {@link ModelTurnArgs.outputSchema}.
+   * The loop VALIDATES it regardless — "the provider says it matched" is not the same claim as "it
+   * matches", and a provider that ignored the schema has to fail where the failure is repairable.
+   * Omit when the adapter did not constrain generation.
+   */
+  object?: unknown;
 }
 
 /**

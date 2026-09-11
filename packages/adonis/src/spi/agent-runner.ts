@@ -1,4 +1,5 @@
-import type { AgentRunInput, Decision } from '../types.js';
+import type { HumanReply } from '../elicitation.js';
+import type { AgentRunInput } from '../types.js';
 
 /**
  * Runs an agent turn. Two impls exist:
@@ -12,7 +13,12 @@ import type { AgentRunInput, Decision } from '../types.js';
  */
 export interface AgentRunner {
   start(input: AgentRunInput): Promise<{ runId: string }>;
-  /** Deliver a HITL decision for a pending action tool call. */
-  signal(runId: string, toolCallId: string, decision: Decision): Promise<void>;
+  /**
+   * Deliver a human's reply to a parked tool call — an approve/reject {@link import('../types.js').Decision}
+   * for an `action`, or an {@link import('../elicitation.js').ElicitationReply} for a question set.
+   * One channel for both, because a question set parks as a `pending_approval` action and therefore
+   * reaches a run through the inbox a deployment already has.
+   */
+  signal(runId: string, toolCallId: string, reply: HumanReply): Promise<void>;
   cancel(runId: string): Promise<void>;
 }

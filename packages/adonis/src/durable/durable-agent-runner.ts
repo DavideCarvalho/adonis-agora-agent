@@ -1,8 +1,9 @@
 import type { WorkflowEngine } from '@adonis-agora/durable';
 import { utcDay } from '../agent-deps.js';
+import type { HumanReply } from '../elicitation.js';
 import type { AgentRunner } from '../spi/agent-runner.js';
 import type { AgentStore } from '../spi/agent-store.js';
-import type { AgentRunInput, Decision } from '../types.js';
+import type { AgentRunInput } from '../types.js';
 import { AgentRunWorkflow, type DurableAgentRunInput } from './agent-run-workflow.js';
 
 /**
@@ -50,8 +51,8 @@ export class DurableAgentRunner implements AgentRunner {
     return { runId };
   }
 
-  async signal(runId: string, toolCallId: string, decision: Decision): Promise<void> {
-    await this.engine.signal(`tool:${runId}:${toolCallId}`, decision);
+  async signal(runId: string, toolCallId: string, reply: HumanReply): Promise<void> {
+    await this.engine.signal(`tool:${runId}:${toolCallId}`, reply);
   }
 
   async cancel(runId: string): Promise<void> {

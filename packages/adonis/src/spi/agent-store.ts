@@ -116,6 +116,17 @@ export interface AgentStore {
   setActiveStream(threadId: string, runId: string | null): Promise<void>;
 
   appendMessage(input: AppendMessageInput): Promise<StoredMessage>;
+  /**
+   * Attach a turn's settled tool RESULTS to a message already appended, replacing whatever it held.
+   * A message's tool calls are known when it is written and their outputs are not, but a thread
+   * reader pairs the two off THAT MESSAGE — so an output that only ever reaches the tool-call table
+   * leaves every call on a reopened thread looking like a tool still running.
+   *
+   * Required rather than optional: a store that silently declines this renders a finished turn as a
+   * permanently in-flight one, with nothing logged and nothing to notice. A missing method should
+   * fail to compile instead.
+   */
+  setMessageToolResults(messageId: string, results: ToolResult[]): Promise<void>;
   truncateFrom(threadId: string, messageId: string): Promise<void>;
 
   recordToolCall(input: RecordToolCallInput): Promise<void>;

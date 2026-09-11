@@ -36,6 +36,8 @@ The runner supplies the loop's hooks; the durable versions map onto durable prim
 | `awaitApproval(call)` | resolves an in-memory promise | `ctx.waitForSignal('tool:<runId>:<callId>')` — the run **suspends** on approval and resumes on the signal, surviving restarts |
 | `runAgent(name, task)` | nested in-process loop | `ctx.child(AgentRunWorkflow, …)` — delegation is a tracked child run streaming into the parent's sink |
 | `openSink()` | the in-process sink | the run's own sink (top-level) or a child writer that forwards into the parent's stream |
+| `parallel(tasks)` | `settleAll` | `settleAll` — the same helper, because `ctx.localStep` takes its position on the **call**, before its first `await`: a batch launched in one tick occupies its positions in call order however the work settles |
+| `patched(id)` | omitted → every run takes the current shape | `ctx.patched(id)` — consumes a position for a fresh run, gives it back to one whose history predates the marker |
 
 Because every side effect goes through `step`, a recovered run returns completed steps' saved results instead of re-running them — no double writes, no re-streaming, stable ids. The `day` is stamped once by the runner so quota-by-day stays stable across a replay.
 
@@ -45,6 +47,20 @@ Under the inline runner an `action`-tool approval resolves a promise in process 
 
 <Callout type="warn" title="Suspend is a throw, not a return">
 The durable runner suspends by *throwing* a control-flow signal (`WorkflowSuspended` / `ContinueAsNew`) up through `awaitApproval` or `ctx.child`. The loop deliberately has no `try/finally` closing the sink, so a suspend doesn't cut the live token stream — an approved-then-resumed run keeps one continuous SSE stream. `DurableAgentRunner.start` returns the run id immediately even when the run suspends synchronously on its first step.
+</Callout>
+
+## What a replay is allowed to read
+
+A replay must reach the same checkpoint names in the same order as the run's history, so anything that steers the loop has to come from the journal, not from the process doing the replaying. The `ToolRegistry` is per-process state, so a call's `kind` is resolved *inside* `persist:toolcall:<callId>` and returned from that checkpoint: a resuming process reads the recorded kind instead of looking the tool up itself. A process that never declared the tool therefore still replays an `action` onto its approval signal, rather than reading it as a `read` and running it unapproved.
+
+That lookup cannot live in a checkpoint of its own — it has to be this one, at this position, or a run already in flight would diverge on resume. A checkpoint written before the kind was returned carries nothing back, and only those runs consult the local registry.
+
+The same rule governs the two places where the loop's *shape* changed. Batching a turn's tool calls hoists its `persist:toolcall` checkpoints ahead of the first execution, and bounding the history moved selection out of the `history:window` checkpoint — so each is gated on `ctx.patched` (`agent:parallel-tools`, `agent:history-select`) rather than on which version of the code happens to be replaying. A run recorded under the older shape reads `false`, gets its position back, and finishes on the shape its own journal holds. Once every such run has drained, the guard can go.
+
+<Callout type="warn" title="A refusal must not be answered with more checkpoints">
+When the engine refuses a position (`NonDeterminismError`, or `WorkflowNondeterminismError` from the remote replay context), the loop's tool `catch` and the workflow's outer `catch` re-throw it untouched instead of writing `persist:toolfail` / `persist:run:fail`. On a journal that has already diverged, each of those asks for a position the history cannot supply — so the recovery attempt raises its *own* refusal, and that second one is what the operator ends up reading: the wrong seq, and two checkpoint names neither of which is the disagreement. The workflow still settles the live stream, so a subscriber does not hang on a run the engine is about to fail.
+
+`isReplayIntegrityError(error)` is exported from `@adonis-agora/agent` if you wrap the runner and need the same rule. It matches by class *name*, since the in-process engine and the remote replay context spell theirs differently.
 </Callout>
 
 ## Run lifecycle & cancellation

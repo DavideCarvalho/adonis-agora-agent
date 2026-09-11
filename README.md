@@ -52,6 +52,15 @@ The `hooks` seam (`step` / `awaitApproval` / `openSink` / `runAgent`) lets the s
 either in-process or as a replay-safe durable workflow. `read` tools auto-execute, `action` tools
 gate on human approval, and `agent` tools delegate to another named agent.
 
+A call's kind is resolved *inside* its `persist:toolcall:<callId>` checkpoint and returned from it,
+so a replay reads the recorded kind out of the journal rather than asking its own `ToolRegistry` —
+the branch cannot change with the process that resumes the run. A turn whose calls are all `read`
+runs their invocations concurrently, so the turn costs the slowest call rather than their sum, while
+the checkpoints on either side stay sequential in call order.
+
+`historyWindow` bounds how much of a thread rides into a turn — a message count, a token budget, or
+both, optionally folding what it left out into a leading summary.
+
 ## License
 
 MIT

@@ -9,7 +9,7 @@ export interface Actor {
   tenantRef?: string;
 }
 
-export type ToolKind = 'read' | 'action' | 'agent';
+export type ToolKind = 'read' | 'action' | 'agent' | 'ask' | 'skill' | 'memory';
 
 /**
  * Declared shape of a tool.
@@ -17,6 +17,16 @@ export type ToolKind = 'read' | 'action' | 'agent';
  *  - `action` never auto-executes — requires HITL approval.
  *  - `agent`  delegates to another named agent (durable: a child workflow; inline: a nested loop),
  *             handled at the loop level — NOT via a handler. Carries `targetAgent`.
+ *  - `ask`    puts a structured question set to the user and parks. Carried by no {@link ToolSpec}:
+ *             `ask` has no handler and is never registered, it is offered to the model straight from
+ *             module config — so the branch that decides whether a call parks on a human can never
+ *             be settled by a process-local registry lookup.
+ *  - `skill`  reads an authored procedure out of the catalog the turn's `skills:catalog` checkpoint
+ *             holds. Registered by nothing, for the same reason `ask` is not, and it spends a read's
+ *             checkpoints exactly — see `skills.ts`.
+ *  - `memory` writes one durable fact about the actor, authorized against the scopes the turn's
+ *             `memory:digest` checkpoint holds. Registered by nothing, and spends a read's
+ *             checkpoints exactly — see `memory.ts`.
  */
 export interface ToolSpec {
   name: string;
@@ -109,7 +119,13 @@ export interface MessageUsage {
  * ledger inteiro, sem filtrar propósito, então registrar aqui é o que faz o gasto de RAG passar a
  * contar contra o teto diário.
  */
-export type UsagePurpose = 'chat' | 'title' | 'follow_ups' | 'summary' | 'embedding';
+export type UsagePurpose =
+  | 'chat'
+  | 'title'
+  | 'follow_ups'
+  | 'summary'
+  | 'embedding'
+  | 'structured_output';
 
 export interface QuotaState {
   usedTokens: number;
@@ -121,6 +137,8 @@ export interface QuotaState {
 export interface Decision {
   approved: boolean;
   reason?: string;
+  /** Opaque ref of WHO decided, when it wasn't the run's own actor. */
+  executedByRef?: string;
 }
 
 export type MessageRole = 'user' | 'assistant' | 'system';
@@ -291,6 +309,16 @@ export interface StoredMessage {
   attachments?: MessageAttachment[];
   followUps?: string[];
   usage?: MessageUsage;
+  /** The persona that was active when the message was written; absent when none was selected. */
+  persona?: string;
+  /**
+   * The run (turn) that wrote this message. Without it a reader can only guess which turn a message
+   * belongs to by comparing timestamps against the run's `startedAt`, and that guess breaks the
+   * moment a turn is regenerated: regeneration truncates the replaced answer and re-answers the
+   * SURVIVING user message without appending a new one, so walking forward by time hands the older
+   * run the replacement's text. Absent on a row written outside a run.
+   */
+  runId?: string;
   createdAt: string;
 }
 

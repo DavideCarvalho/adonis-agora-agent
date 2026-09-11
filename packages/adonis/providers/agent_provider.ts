@@ -24,8 +24,11 @@ import {
   InlineAgentRunner,
   InProcessTokenStreamSink,
   lucidStoreConnection,
+  type MemoryConfig,
   type MessageAttachment,
   type ModelProvider,
+  memoryForgetVerdict,
+  offerMemories,
   type PageContext,
   pricingStores,
   type QuotaStore,
@@ -188,6 +191,8 @@ export default class AgentProvider {
         ? { toolTransientRetry: config.toolTransientRetry }
         : {}),
       ...(config.historyWindow !== undefined ? { historyWindow: config.historyWindow } : {}),
+      ...(config.skills !== undefined ? { skills: config.skills } : {}),
+      ...(config.memory !== undefined ? { memory: config.memory } : {}),
     });
     // `durable: true` runs each turn as a replay-safe `@adonis-agora/durable` workflow; it degrades
     // gracefully to the in-process runner when the durable peer isn't installed/configured.
@@ -474,6 +479,44 @@ export default class AgentProvider {
       return ctx.response.json({ ok: true });
     });
 
+    // 5b. POST /agent/tool-call/answer — authenticated + owner-scoped (mirrors approve). Settles a
+    // parked question set with the user's answers; an omitted question takes its own pre-picked
+    // default, resolved server-side against the request the run already holds.
+    router.post(p('tool-call/answer'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      const body = (ctx.request.body() ?? {}) as {
+        runId: string;
+        toolCallId: string;
+        answers?: Record<string, string[]>;
+      };
+      const owner = await service.runOwner(body.runId);
+      if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
+      await service.answer({
+        runId: body.runId,
+        toolCallId: body.toolCallId,
+        answers: body.answers ?? {},
+        answeredByRef: actor.id,
+      });
+      return ctx.response.json({ ok: true });
+    });
+
+    // 5c. POST /agent/tool-call/skip — the user declining to answer. Same values as a confirmation,
+    // recorded as a different fact.
+    router.post(p('tool-call/skip'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      const body = (ctx.request.body() ?? {}) as { runId: string; toolCallId: string };
+      const owner = await service.runOwner(body.runId);
+      if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
+      await service.skip({
+        runId: body.runId,
+        toolCallId: body.toolCallId,
+        answeredByRef: actor.id,
+      });
+      return ctx.response.json({ ok: true });
+    });
+
     // 6. GET /agent/threads — the actor's threads.
     router.get(p('threads'), async (ctx: HttpContext) => {
       const actor = await this.#resolveActor(ctx, actorResolver);
@@ -521,7 +564,59 @@ export default class AgentProvider {
       return ctx.response.json(await service.forkThread(threadId, String(ctx.params.messageId)));
     });
 
-    // 11. GET /agent/quota/today.
+    // 11. GET /agent/memories + DELETE /agent/memories/:id — what the assistant believes about THIS
+    // caller, and how they take one of those beliefs back.
+    //
+    // WHY THIS EXISTS WHERE SKILLS HAVE NO SUCH SIBLING. A skill is authored by a person who already
+    // knows it exists; a memory is written by the agent, about someone who does not. So the
+    // read-back is not a convenience on top of the feature, it IS half of the feature: a belief
+    // nobody can inspect is one nobody can correct, and a belief nobody can delete is one the
+    // deployment keeps whether or not it is true. That is also why `MemoryProvider.forget` is
+    // required rather than optional.
+    const memory = config.memory;
+    // DELIBERATELY IGNORES `maxMemories`. That ceiling is a budget on what one TURN carries;
+    // applying it here would mean a person could not see — and so could not delete — a belief the
+    // assistant is one write away from acting on again. Showing someone more than the model sees is
+    // harmless; showing them less is the failure this endpoint exists to prevent. For the same
+    // reason it never passes a query: a relevance selection is what a turn wants, not what a person
+    // owed the whole picture wants.
+    const everyMemoryOf = (actor: Actor) =>
+      offerMemories({
+        config: { ...(memory as MemoryConfig), maxMemories: Number.POSITIVE_INFINITY },
+        ctx: { actor, threadId: '' },
+      });
+
+    router.get(p('memories'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      if (memory === undefined) return ctx.response.json([]);
+      return ctx.response.json((await everyMemoryOf(actor)).entries);
+    });
+
+    // Authorized against the actor's OWN resolved list, the same way a `skill` load is authorized
+    // against the turn's catalog: an id this actor cannot see is answered as missing rather than
+    // refused, so the endpoint cannot be used to find out which memories exist about other people.
+    router.delete(p('memories/:id'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      if (memory === undefined) {
+        return ctx.response.notFound({ error: 'No memory is configured in this deployment.' });
+      }
+      const id = String(ctx.params.id);
+      const entry = (await everyMemoryOf(actor)).entries.find((candidate) => candidate.id === id);
+      if (entry === undefined) {
+        return ctx.response.notFound({ error: `No memory with id "${id}".` });
+      }
+      const verdict = memoryForgetVerdict({ record: entry, actor });
+      if (!verdict.allowed) {
+        return ctx.response.forbidden({ error: verdict.reason });
+      }
+      return ctx.response.json({
+        forgotten: await memory.provider.forget({ id: entry.id, ctx: { actor, threadId: '' } }),
+      });
+    });
+
+    // 12. GET /agent/quota/today.
     router.get(p('quota/today'), async (ctx: HttpContext) => {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;

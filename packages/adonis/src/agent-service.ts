@@ -93,6 +93,38 @@ export class AgentService {
     });
   }
 
+  /**
+   * Deliver a human's answers to a parked question set. An id the reply omits takes that question's
+   * own pre-picked default, resolved by the loop against the request it already holds — so "just
+   * pressed enter" and "picked exactly the defaults" persist identically, and a client that never
+   * rendered the defaults cannot submit a blank.
+   */
+  answer(args: {
+    runId: string;
+    toolCallId: string;
+    answers: Record<string, string[]>;
+    answeredByRef?: string;
+  }): Promise<void> {
+    return this.runner.signal(args.runId, args.toolCallId, {
+      answers: args.answers,
+      ...(args.answeredByRef !== undefined ? { answeredByRef: args.answeredByRef } : {}),
+    });
+  }
+
+  /**
+   * The user declined to answer and told the agent to proceed on its own assumptions. It lands on
+   * the same values a confirmation would and persists as `rejected` rather than `executed`, because
+   * proceeding on an assumption someone declined to confirm is a different fact from proceeding on
+   * one they chose.
+   */
+  skip(args: { runId: string; toolCallId: string; answeredByRef?: string }): Promise<void> {
+    return this.runner.signal(args.runId, args.toolCallId, {
+      answers: {},
+      skipped: true,
+      ...(args.answeredByRef !== undefined ? { answeredByRef: args.answeredByRef } : {}),
+    });
+  }
+
   cancel(runId: string): Promise<void> {
     return this.runner.cancel(runId);
   }

@@ -349,7 +349,17 @@ export class LucidAgentStore implements AgentStore {
       ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
       ...(input.followUps !== undefined ? { followUps: input.followUps } : {}),
       ...(input.usage !== undefined ? { usage: input.usage } : {}),
+      ...(input.persona !== undefined ? { persona: input.persona } : {}),
+      ...(input.runId !== undefined ? { runId: input.runId } : {}),
     };
+  }
+
+  async setMessageToolResults(messageId: string, results: ToolResult[]): Promise<void> {
+    await this.init();
+    await this.db
+      .from(AGENT_TABLES.messages)
+      .where('id', messageId)
+      .update({ tool_results: safeJson(results) });
   }
 
   async truncateFrom(threadId: string, messageId: string): Promise<void> {
@@ -518,5 +528,7 @@ function rowToMessage(row: Record<string, unknown>): StoredMessage {
     ...(attachments !== undefined ? { attachments } : {}),
     ...(followUps !== undefined ? { followUps } : {}),
     ...(usage !== undefined ? { usage } : {}),
+    ...(typeof row.persona === 'string' ? { persona: row.persona } : {}),
+    ...(typeof row.run_id === 'string' ? { runId: row.run_id } : {}),
   };
 }
