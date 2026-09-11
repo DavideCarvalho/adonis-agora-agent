@@ -192,7 +192,7 @@
     }
   },
   "devDependencies": {
-    "@adonis-agora/authz": "0.13.2",
+    "@adonis-agora/authz": "0.13.3",
     "@adonis-agora/diagnostics": "0.2.8",
     "@adonis-agora/durable": "0.35.0",
     "@adonis-agora/telescope": "0.18.0",
