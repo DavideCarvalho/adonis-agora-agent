@@ -7,6 +7,7 @@
     "quota-and-cost",
     "read-model",
     "dashboard",
+    "evals",
     "telescope"
   ]
 }

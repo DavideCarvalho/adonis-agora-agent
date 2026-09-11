@@ -24,10 +24,12 @@ export {
 export {
   type AgentLoopDeps,
   type AgentLoopHooks,
+  type AgentLoopResult,
   QuotaExceededError,
   runAgentLoop,
   type SettledTask,
   settleAll,
+  withAskTool,
 } from './agent-loop.js';
 export { AgentRegistry } from './agent-registry.js';
 export type { ChatParams } from './agent-service.js';
@@ -113,6 +115,27 @@ export {
   tokenSinks,
 } from './define_config.js';
 export * from './diagnostics.js';
+export {
+  type AgentIntake,
+  ASK_TOOL_DESCRIPTION,
+  ASK_TOOL_NAME,
+  type AskToolInput,
+  askInputSchema,
+  askToolDefinition,
+  DEFAULT_INTAKE_PREAMBLE,
+  type ElicitationOption,
+  type ElicitationOutcome,
+  type ElicitationQuestion,
+  type ElicitationReply,
+  type ElicitationRequest,
+  type ElicitationResult,
+  type HumanReply,
+  MAX_ASK_QUESTIONS,
+  normalizeElicitationReply,
+  renderElicitationAnswers,
+  resolveElicitation,
+  settleElicitation,
+} from './elicitation.js';
 export type { AgentGovernanceAuthorize, GovernanceGateVerdict } from './governance-gate.js';
 export { evaluateGovernanceGate } from './governance-gate.js';
 export * from './history-window.js';
@@ -124,6 +147,21 @@ export { evaluateOwnership } from './ownership.js';
 export type { CursorPage, CursorParams } from './pagination.js';
 export * from './personas.js';
 export * from './pricing/models-dev.js';
+export {
+  createFrameBuffer,
+  createIncrementalGate,
+  type FrameBuffer,
+  type GateRejection,
+  gateTail,
+  type IncrementalGate,
+  type OutputGateMode,
+  type OutputGateResult,
+  releaseGatedFrames,
+  resolveGateLookback,
+  resolveOutputGateMode,
+  runInputProcessors,
+  runOutputProcessors,
+} from './processors.js';
 export * from './rag/index.js';
 export type {
   FacetHit,
@@ -162,6 +200,7 @@ export * from './spi/governance-queries.js';
 export * from './spi/history-window.js';
 export * from './spi/model-provider.js';
 export * from './spi/pricing-store.js';
+export * from './spi/processors.js';
 export * from './spi/quota-store.js';
 export * from './spi/reranker.js';
 export * from './spi/retriever.js';
@@ -193,6 +232,14 @@ export {
   dropTableStatements,
   ensureAgentTables,
 } from './stores/lucid-schema.js';
+export {
+  DEFAULT_STRUCTURED_OUTPUT_INSTRUCTION,
+  extractJson,
+  repairInstruction,
+  type StructuredOutcome,
+  StructuredOutputError,
+  validateStructured,
+} from './structured-output.js';
 export type { RegisteredTool, ToolsBarrel } from './tool-discovery.js';
 export {
   discoverTools,

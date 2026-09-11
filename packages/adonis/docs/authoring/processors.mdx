@@ -1,0 +1,127 @@
+---
+title: Input and output processors
+description: A seam on each side of the model call — rewrite the prompt going out, gate the answer coming back.
+---
+
+A `PromptBuilder` could append to the system prompt, and nothing at all could look at the answer. For
+an application that runs generated SQL over sensitive data that is a gap in the controls, not a
+missing convenience: the one place where the model's output can still be stopped is between the
+provider and the reader, and there was no such place.
+
+```ts
+const deps: AgentLoopDeps = {
+  // …
+  inputProcessors: [maskAccountNumbers],
+  outputProcessors: [redactEmails, moderate],
+}
+```
+
+Processors are wired on `AgentLoopDeps` and apply to **every** agent and persona: a control one
+persona can opt out of is not a control.
+
+## Input: rewriting the prompt
+
+An `InputProcessor` rewrites `{ system, messages }` before **every** model call of a turn — every
+call, not once per run, because the transcript grows between steps and a redactor that only saw the
+opening prompt would wave through whatever a tool result carried back.
+
+```ts
+const maskAccountNumbers: InputProcessor = {
+  name: 'mask-accounts',
+  process: (prompt) => ({
+    system: prompt.system,
+    messages: prompt.messages.map((message) => ({
+      ...message,
+      content: message.content.replace(ACCOUNT, '[account]'),
+    })),
+  }),
+}
+```
+
+What a processor produces is a **derived** prompt. The loop's canonical transcript is untouched, so a
+redaction is what leaves the process and never becomes the thread's own memory of what was said — and
+two steps of one turn never compound each other's rewrites.
+
+## Not a second `HistoryWindow`
+
+Selection — *which* of the thread's messages ride into the turn — stays with `historyWindow`, which
+is pure and runs outside any checkpoint. Processors transform what selection produced, and run
+**inside** one, so they may call a model. Splitting the same decision across both means neither can
+be reasoned about alone.
+
+## Output: gating the answer
+
+An `OutputProcessor` sees each step's answer and returns `pass`, `replace` (a redaction is a
+replacement), or `reject` — which ends the run with an `OutputRejectedError` rather than an answer.
+
+```ts
+const moderate: OutputProcessor = {
+  name: 'moderate',
+  process: async (answer) =>
+    (await classify(answer.text)).safe
+      ? { action: 'pass' }
+      : { action: 'reject', reason: 'failed moderation' },
+}
+```
+
+A refused turn **still records its `chat` usage row** before it fails: those tokens were genuinely
+spent, and a gate that hid its own cost could burn a budget invisibly.
+
+## What gating costs the reader, and how to pay less
+
+Registering any output processor takes the turn's model call off the run's live sink — a gate that
+must read the whole answer cannot run after the answer has already reached the reader. The turn
+writes to a buffer instead, and the loop releases it, as one `text` frame, once the chain has passed.
+
+That is the right answer for a moderation pass. It is much too expensive for a regex redactor that
+does not need the whole answer, so a processor can say so:
+
+```ts
+const redactEmails: OutputProcessor = {
+  name: 'redact-emails',
+  incremental: { lookbackChars: 320 },
+  process: (answer) => ({ action: 'replace', text: answer.text.replace(EMAIL, '[email]') }),
+}
+```
+
+**Undeclared means whole-answer**, and a chain is incremental only when EVERY member declares it. An
+author who wrote `process` against the complete text is never downgraded because a neighbour opted
+in.
+
+Declaring `incremental` is a promise about every prefix of the answer. The chain sees the growing
+**prefix** rather than each new frame, so it always gets well-formed text:
+
+- outside the last `lookbackChars` characters of its own output, a `replace` never changes as the
+  prefix grows;
+- a `reject` is decidable from a prefix. One that only emerges from the whole answer still fails the
+  run, but the reader has already seen text — that is the cost of opting in.
+
+`lookbackChars` is per-processor (default 64) and the gate uses the widest in the chain. The
+whole-answer pass stays **authoritative** for both the stream and the store; the incremental release
+only emits its prefix early, and the gate then asserts the settled answer `startsWith` what was
+already released, raising `ProcessorFailedError` if not. A window too short for a pattern fails
+loudly instead of streaming the text it was supposed to redact.
+
+<Callout type="info" title="Tool calls on the incremental path">
+A provider reports its tool calls when `runTurn` **returns**, so on the incremental path
+`ModelAnswer.toolCalls` is empty until the authoritative whole-answer pass, which always sees them.
+</Callout>
+
+## Determinism
+
+Both chains run inside checkpoints of their own — `process:input:<step>` and `process:output:<step>`
+— and neither exists unless it is configured, so a deployment that registers nothing records
+byte-identical checkpoints.
+
+The buffer, the released prefix and a prefix refusal all ride the `llm:<step>` **checkpoint** rather
+than a local variable. A run that suspends between the model call and the gate resumes in a process
+that never saw the model's stream: the release is computed from the journaled `releasedText`, so the
+resumed turn emits only the tail it still owes instead of flushing the same answer twice — even if
+the chain was re-declared in between.
+
+## Failures
+
+A processor that throws surfaces as `ProcessorFailedError` naming the phase and the processor, so it
+can never be read as the model call failing. On the incremental path a throw during a *prefix* pass
+is swallowed — text simply stops flowing and the whole-answer pass, which runs the same chain, is
+what surfaces the failure.

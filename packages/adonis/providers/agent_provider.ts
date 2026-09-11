@@ -474,6 +474,44 @@ export default class AgentProvider {
       return ctx.response.json({ ok: true });
     });
 
+    // 5b. POST /agent/tool-call/answer — authenticated + owner-scoped (mirrors approve). Settles a
+    // parked question set with the user's answers; an omitted question takes its own pre-picked
+    // default, resolved server-side against the request the run already holds.
+    router.post(p('tool-call/answer'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      const body = (ctx.request.body() ?? {}) as {
+        runId: string;
+        toolCallId: string;
+        answers?: Record<string, string[]>;
+      };
+      const owner = await service.runOwner(body.runId);
+      if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
+      await service.answer({
+        runId: body.runId,
+        toolCallId: body.toolCallId,
+        answers: body.answers ?? {},
+        answeredByRef: actor.id,
+      });
+      return ctx.response.json({ ok: true });
+    });
+
+    // 5c. POST /agent/tool-call/skip — the user declining to answer. Same values as a confirmation,
+    // recorded as a different fact.
+    router.post(p('tool-call/skip'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      const body = (ctx.request.body() ?? {}) as { runId: string; toolCallId: string };
+      const owner = await service.runOwner(body.runId);
+      if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
+      await service.skip({
+        runId: body.runId,
+        toolCallId: body.toolCallId,
+        answeredByRef: actor.id,
+      });
+      return ctx.response.json({ ok: true });
+    });
+
     // 6. GET /agent/threads — the actor's threads.
     router.get(p('threads'), async (ctx: HttpContext) => {
       const actor = await this.#resolveActor(ctx, actorResolver);

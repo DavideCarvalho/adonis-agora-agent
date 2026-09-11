@@ -342,7 +342,9 @@ describe('runAgentLoop', () => {
     );
 
     const frames = await drainFrames(sink, runId);
-    const kinds = frames.map((f) => (f.t === 'component' ? `component:${f.name}` : `text:${f.v}`));
+    const kinds = frames.map((f) =>
+      f.t === 'text' ? `text:${f.v}` : `component:${f.t === 'component' ? f.name : f.t}`,
+    );
     expect(kinds).toContain('component:Card');
     expect(kinds.indexOf('text:olha ')).toBeLessThan(kinds.indexOf('component:Card'));
     const comp = frames.find((f) => f.t === 'component');

@@ -1,3 +1,5 @@
+import type { ElicitationRequest } from '../elicitation.js';
+
 /**
  * The "data plane": live token transport, decoupled from the durable control plane.
  *
@@ -8,7 +10,13 @@
  */
 export type StreamFrame =
   | { t: 'text'; v: string }
-  | { t: 'component'; name: string; data: unknown };
+  | { t: 'component'; name: string; data: unknown }
+  /**
+   * A question set the run is now parked on. Carries the whole request, so a client renders the form
+   * — and knows the total ("Question 1 of 3") — without a second fetch. Identical whether a
+   * configured intake or the model's `ask` authored it.
+   */
+  | { t: 'elicitation'; id: string; request: ElicitationRequest };
 
 export interface SinkWriter {
   write(frame: StreamFrame): void | Promise<void>;

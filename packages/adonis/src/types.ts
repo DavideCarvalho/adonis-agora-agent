@@ -9,7 +9,7 @@ export interface Actor {
   tenantRef?: string;
 }
 
-export type ToolKind = 'read' | 'action' | 'agent';
+export type ToolKind = 'read' | 'action' | 'agent' | 'ask';
 
 /**
  * Declared shape of a tool.
@@ -17,6 +17,10 @@ export type ToolKind = 'read' | 'action' | 'agent';
  *  - `action` never auto-executes — requires HITL approval.
  *  - `agent`  delegates to another named agent (durable: a child workflow; inline: a nested loop),
  *             handled at the loop level — NOT via a handler. Carries `targetAgent`.
+ *  - `ask`    puts a structured question set to the user and parks. Carried by no {@link ToolSpec}:
+ *             `ask` has no handler and is never registered, it is offered to the model straight from
+ *             module config — so the branch that decides whether a call parks on a human can never
+ *             be settled by a process-local registry lookup.
  */
 export interface ToolSpec {
   name: string;
@@ -109,7 +113,13 @@ export interface MessageUsage {
  * ledger inteiro, sem filtrar propósito, então registrar aqui é o que faz o gasto de RAG passar a
  * contar contra o teto diário.
  */
-export type UsagePurpose = 'chat' | 'title' | 'follow_ups' | 'summary' | 'embedding';
+export type UsagePurpose =
+  | 'chat'
+  | 'title'
+  | 'follow_ups'
+  | 'summary'
+  | 'embedding'
+  | 'structured_output';
 
 export interface QuotaState {
   usedTokens: number;
@@ -121,6 +131,8 @@ export interface QuotaState {
 export interface Decision {
   approved: boolean;
   reason?: string;
+  /** Opaque ref of WHO decided, when it wasn't the run's own actor. */
+  executedByRef?: string;
 }
 
 export type MessageRole = 'user' | 'assistant' | 'system';

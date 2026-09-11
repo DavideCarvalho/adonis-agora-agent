@@ -10,6 +10,7 @@ import {
   jsonSchema,
   type LanguageModel,
   type LanguageModelUsage,
+  Output,
   type ProviderMetadata,
   type ModelMessage as SdkModelMessage,
   streamText,
@@ -61,12 +62,17 @@ export type AiSdkModelOptions = CallSettings & {
 export function aiSdkModel(model: LanguageModel, opts?: AiSdkModelOptions): ModelProvider {
   return {
     async runTurn(args: ModelTurnArgs): Promise<ModelTurnResult> {
+      // `output` makes the provider constrain generation to the schema. It is only offered for a
+      // schema the SDK can convert; for anything else the call goes out unconstrained and the loop
+      // reads the JSON out of the reply text, which is what `toSdkOutput` returning undefined means.
+      const output = args.outputSchema !== undefined ? toSdkOutput(args.outputSchema) : undefined;
       const result = streamText({
         ...opts,
         model,
         instructions: args.system,
         messages: mapMessages(args.messages),
         tools: mapTools(args.tools),
+        ...(output !== undefined ? { output } : {}),
         ...(args.abortSignal ? { abortSignal: args.abortSignal } : {}),
       });
 
@@ -85,6 +91,9 @@ export function aiSdkModel(model: LanguageModel, opts?: AiSdkModelOptions): Mode
         result.usage,
         result.finalStep,
       ]);
+      // What the provider itself parsed. Handed back for the loop to VALIDATE — never as the
+      // finished answer: "the provider says it matched" is a different claim from "it matches".
+      const object = output === undefined ? undefined : await result.output;
 
       const modelId = finalStep.response.modelId;
       const costUsd = extractCostUsd(finalStep.providerMetadata);
@@ -95,6 +104,7 @@ export function aiSdkModel(model: LanguageModel, opts?: AiSdkModelOptions): Mode
         usage: mapUsage(usage),
         ...(typeof modelId === 'string' && modelId.length > 0 ? { modelId } : {}),
         ...(costUsd !== undefined ? { costUsd } : {}),
+        ...(object !== undefined ? { object } : {}),
       };
     },
   };
@@ -262,6 +272,18 @@ function toSdkInputSchema(schema: StandardSchemaV1): FlexibleSchema<unknown> {
     return schema;
   }
   return jsonSchema({ type: 'object', properties: {}, additionalProperties: true });
+}
+
+/**
+ * The SDK's structured-output spec for a schema it can convert, or `undefined` for a bare Standard
+ * Schema it cannot introspect — the same narrowing {@link toSdkInputSchema} does, and the same
+ * degradation: the provider stops constraining generation, and the loop validates the reply anyway.
+ */
+function toSdkOutput(schema: StandardSchemaV1): ReturnType<typeof Output.object> | undefined {
+  if (isZodSchema(schema) || hasStandardJsonSchema(schema)) {
+    return Output.object({ schema });
+  }
+  return undefined;
 }
 
 /**

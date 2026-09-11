@@ -1,0 +1,99 @@
+---
+title: Asking the user
+description: A structured question set the agent puts to the user before it works — and parks on.
+---
+
+The only way a run could pause for a human was `awaitApproval` — a yes/no about a tool call already
+proposed, mid-work. The other direction was missing entirely: collecting the **scope**, before the
+work, while changing course is still cheap.
+
+Two surfaces do it, and they were built to be indistinguishable downstream.
+
+## A configured intake
+
+`AgentLoopDeps.intake` declares the questions; the turn passes through them before its first model
+call.
+
+```ts
+const deps: AgentLoopDeps = {
+  // …
+  intake: {
+    preamble: 'Two questions before I start.',
+    questions: [
+      {
+        id: 'scope',
+        prompt: 'How wide should I go?',
+        options: [
+          { value: 'module', label: 'This module only' },
+          { value: 'repo', label: 'The whole repository' },
+        ],
+        defaults: ['module'],
+      },
+    ],
+    when: 'thread-start',
+  },
+}
+```
+
+Because the questions are **authored**, the intake costs **no model call** and writes no usage row —
+and `questions.length` is known before the form appears, which is the only honest way a client can
+render "Question 1 of 3" rather than discovering a fourth halfway through.
+
+`when: 'thread-start'` (the default) asks once per thread; `'every-turn'` asks before each one.
+
+## A model-callable `ask`
+
+`ask: true` offers the model a built-in `ask` tool, for the case an intake cannot anticipate. Its
+input schema **requires** a pre-picked `defaults` on every question: *"I have pre-picked what I would
+choose, so confirming is enough"* is the claim this whole surface rests on, and a schema is the only
+place to make that mandatory rather than aspirational.
+
+A malformed question set comes back as an ordinary **tool failure** carrying the validation issues,
+so the model fixes its own mistake instead of failing the run or parking a person.
+
+## One shape, one resume path
+
+Both surfaces:
+
+- write a single pending tool-call row named `ask` (`toolType: 'action'`, `status:
+  'pending_approval'`), so a question set surfaces in the approvals inbox a deployment already has;
+- emit the same `elicitation` stream frame, carrying the whole request;
+- park on the same `tool:<runId>:<callId>` signal a HITL approval already waits on.
+
+`POST /agent/tool-call/answer` and `/skip` mirror `approve`/`reject`, with the same ownership check.
+`AgentLoopHooks.awaitAnswers` is optional: a host that only implemented `awaitApproval` still
+completes an elicitation, reading approve as "confirmed the pre-picked answers" and reject as
+"skipped".
+
+## Defaults, and what a skip means
+
+**An omitted question takes its own default**, resolved server-side against the request the run
+already holds rather than in the client — so "just pressed enter" and "picked exactly the defaults"
+persist identically, and a client that never rendered the defaults cannot submit a blank. A
+*present-but-empty* array is an explicit "none of these" and does not fall back. The settled row
+records `defaulted: string[]`, so an auditor can still see which questions a human touched.
+
+**A skip is not a confirmation.** It lands on the same values and persists as `rejected` rather than
+`executed`, because proceeding on an assumption the user declined to confirm is a different fact from
+proceeding on one they chose. Nobody answering parks the run indefinitely, exactly as an approval
+does — there is no intake timeout, because a timeout that applied the defaults would manufacture
+consent from silence.
+
+## Determinism
+
+`ToolKind` gains a fourth member, `'ask'`. No `ToolSpec` carries it: `ask` is never registered, has no
+handler, and is offered to the model straight from module config — so the branch that decides whether
+a call parks on a human can never be settled by a process-local registry lookup. As with the other
+kinds, the value is resolved **inside** the already-journaled `persist:toolcall:<callId>` checkpoint
+and read back from there on every replay.
+
+An intake spends one position for its verdict (`intake:ask`) plus one more on the turns it asks
+(`intake:answers`); an `ask` reuses the approval path's own names and adds one
+(`stream:elicitation:<id>`). The intake's verdict is **returned from** `intake:ask` rather than
+recomputed, because by the time a resume replays the turn the first attempt has already appended the
+intake's own assistant message to the thread — recomputing "has this thread been asked?" would answer
+no on the way in and yes on the way back, and land the model call where the history holds the wait.
+
+No `patched` marker is spent for either surface: an intake is reachable only through new config and an
+`ask` only through a journaled kind no existing run recorded. Declare neither and a turn's checkpoint
+sequence is byte-identical.

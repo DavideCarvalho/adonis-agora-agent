@@ -78,6 +78,11 @@
       "import": "./dist/src/stores/lucid.js",
       "default": "./dist/src/stores/lucid.js"
     },
+    "./evals": {
+      "types": "./dist/src/evals/index.d.ts",
+      "import": "./dist/src/evals/index.js",
+      "default": "./dist/src/evals/index.js"
+    },
     "./data": {
       "types": "./dist/src/data/index.d.ts",
       "import": "./dist/src/data/index.js",

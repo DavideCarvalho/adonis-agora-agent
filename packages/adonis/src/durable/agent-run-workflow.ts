@@ -6,6 +6,7 @@ import {
 } from '@adonis-agora/durable';
 import { utcDay } from '../agent-deps.js';
 import { type AgentLoopHooks, runAgentLoop, settleAll } from '../agent-loop.js';
+import type { HumanReply } from '../elicitation.js';
 import { isReplayIntegrityError } from '../replay-integrity.js';
 import type { SinkWriter } from '../spi/token-stream-sink.js';
 import type { AgentRunInput, Decision } from '../types.js';
@@ -94,6 +95,10 @@ export class AgentRunWorkflow extends BaseWorkflow {
       // HITL: suspend until the run-namespaced signal arrives. This throw escapes the loop cleanly —
       // it happens BEFORE the loop's tool try/catch, so a suspend is never seen as a tool failure.
       awaitApproval: (call) => ctx.waitForSignal<Decision>(`tool:${ctx.runId}:${call.id}`),
+      // A question set parks on the SAME signal an approval does, under the tool call's own id — so
+      // `POST /agent/tool-call/answer` and `/approve` are one delivery path, and a deployment that
+      // only ever wired approval still settles an elicitation.
+      awaitAnswers: (request) => ctx.waitForSignal<HumanReply>(`tool:${ctx.runId}:${request.id}`),
       // Every side effect + control-flow read is a durable local step (memoized on replay).
       step: (name, fn) => ctx.localStep(name, fn),
       // Lets the tool transient-retry loop tell a real suspend/continue-as-new apart from a
