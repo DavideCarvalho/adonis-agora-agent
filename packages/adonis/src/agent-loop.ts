@@ -128,6 +128,19 @@ export interface AgentLoopDeps<TOutput = unknown> {
   /** Agent-level tool allow-list (intersected with the persona's). Undefined → all tools. */
   toolAllowList?: string[];
   /**
+   * How many agent→agent delegations deep a chain may go. Defaults to {@link MAX_DELEGATION_DEPTH}.
+   *
+   * The backstop for a chain that is merely LONG; a chain going in circles is caught by
+   * {@link maxAgentAppearances} instead, and named as such.
+   */
+  maxDelegationDepth?: number;
+  /**
+   * How many times one agent may appear on a single delegation chain. Defaults to
+   * {@link DEFAULT_MAX_AGENT_APPEARANCES}. It counts APPEARANCES, so 2 admits exactly one
+   * deliberate return to an earlier agent.
+   */
+  maxAgentAppearances?: number;
+  /**
    * Enables always-on ("inject") RAG: before the turn, retrieve passages for the user message and fold
    * them into the system prompt. Its presence IS inject mode (a retriever wired as a `read` tool for
    * agentic retrieval sets nothing here). Retrieval runs inside `hooks.step` so durable replay reuses
@@ -459,6 +472,71 @@ interface PersistedToolCall {
 }
 
 /**
+ * How many agent→agent delegations deep a chain may go when the host names no ceiling.
+ *
+ * A backstop for a chain that is merely LONG. The cycle it would otherwise stand in for is detected
+ * directly — see {@link DEFAULT_MAX_AGENT_APPEARANCES}.
+ *
+ * WHEN IT ACTUALLY BINDS. At one appearance per agent a chain cannot be longer than the number of
+ * registered agents, so a deployment with fewer agents than this number never reaches it: the cycle
+ * guard always fires first. It starts mattering with a larger fleet than the ceiling, or once a host
+ * raises {@link AgentLoopDeps.maxAgentAppearances}, which is what lets a chain revisit an agent and
+ * therefore grow past the fleet's size.
+ */
+export const MAX_DELEGATION_DEPTH = 5;
+
+/**
+ * How many times one agent may appear on a single delegation chain, when the host names no other
+ * number. Once: a chain that reaches an agent it has already passed through is going in circles.
+ *
+ * Override with {@link AgentLoopDeps.maxAgentAppearances} — a supervisor that genuinely hands work
+ * back to an earlier agent needs a larger number, and it is the count of APPEARANCES, so 2 admits
+ * exactly one return.
+ */
+export const DEFAULT_MAX_AGENT_APPEARANCES = 1;
+
+/**
+ * Why this delegation must not happen, or `null` to let it through.
+ *
+ * Two different refusals, and the order matters: a CYCLE is named before a depth, because they
+ * describe different faults and the depth is the vaguer of the two. `alpha → beta → alpha` points at
+ * the wiring; "depth limit of 5 reached" leaves a reader to work out whether the chain was looping or
+ * merely long, which is exactly the question a count cannot answer.
+ *
+ * Decided from the run's own input and the agent's configured ceilings, inside the checkpoint that
+ * settles the call's kind — so the verdict is what a replay reads back rather than something each
+ * process re-derives.
+ */
+function delegationRefusal(args: {
+  deps: Pick<AgentLoopDeps, 'maxAgentAppearances' | 'maxDelegationDepth'>;
+  input: Pick<AgentRunInput, 'agentName' | 'delegationDepth' | 'delegationPath'>;
+  targetAgent: string;
+}): string | null {
+  const { deps, input, targetAgent } = args;
+  // `delegationPath` is the chain that REACHED this run, so this run's own agent is the last link of
+  // the chain a delegation from here would extend. Naming it is what makes the refusal describe the
+  // wiring: a mutual handoff reads `alpha → beta → alpha` rather than an `alpha → alpha` that no
+  // edge in the deployment declares. It also makes an agent delegating to ITSELF a cycle on the spot
+  // rather than one hop later.
+  const ancestry = [
+    ...(input.delegationPath ?? []),
+    ...(input.agentName !== undefined ? [input.agentName] : []),
+  ];
+  const appearances = ancestry.filter((name) => name === targetAgent).length;
+  const maxAppearances = deps.maxAgentAppearances ?? DEFAULT_MAX_AGENT_APPEARANCES;
+  if (appearances >= maxAppearances) {
+    const chain = [...ancestry, targetAgent].join(' → ');
+    const times = appearances + 1;
+    return `delegation cycle: ${chain} — ${targetAgent} ${times} times on one chain`;
+  }
+  const maxDepth = deps.maxDelegationDepth ?? MAX_DELEGATION_DEPTH;
+  if ((input.delegationDepth ?? 0) >= maxDepth) {
+    return `delegation depth limit of ${maxDepth} reached`;
+  }
+  return null;
+}
+
+/**
  * The gates a delegation must clear. Delegation bypasses `ToolRegistry.invoke` (it is a ctx-level
  * suspend point), so the three checks `invoke` applies have to be re-applied here in the same order
  * — authorization first, then shape:
@@ -469,6 +547,9 @@ interface PersistedToolCall {
  *    nothing at all when the edge is a bare string — under `DefaultRolesPolicy` that is ADMIN-only,
  *    and under an authz posture a tool with no `ability` is always denied;
  *  - input validation, so a malformed input is rejected rather than silently coerced.
+ *
+ * Then the two nesting guards, once the target is known: {@link delegationRefusal} refuses a chain
+ * that is going in circles, or one that is merely too deep.
  *
  * Returns the verdict rather than throwing it: this runs inside the call's checkpoint, whose output
  * is what a replay reads back, and it has to run BEFORE any event publication so a refusal never
@@ -497,7 +578,12 @@ async function resolveDelegation(
     if (validation.issues !== undefined) {
       throw new ToolInputInvalidError(call.name, validation.issues);
     }
-    return { targetAgent: spec.targetAgent ?? call.name, task: extractTask(validation.value) };
+    const targetAgent = spec.targetAgent ?? call.name;
+    const refusal = delegationRefusal({ deps, input, targetAgent });
+    if (refusal !== null) {
+      return { error: refusal };
+    }
+    return { targetAgent, task: extractTask(validation.value) };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }

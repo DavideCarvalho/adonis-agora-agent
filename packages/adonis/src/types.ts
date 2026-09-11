@@ -225,6 +225,21 @@ export interface AgentRunInput {
    * a row with nothing pointing at it outside the durable engine's own journal.
    */
   parentRunId?: string;
+  /**
+   * How many agent→agent delegations deep this run already is (0 for a top-level turn). The runner
+   * increments it for each child run; the loop refuses to delegate past its depth ceiling.
+   */
+  delegationDepth?: number;
+  /**
+   * The named agents already on this delegation chain, root first — what {@link delegationDepth}
+   * counts, spelled out. The runner appends its own agent's name for each child it starts.
+   *
+   * A count can only say a chain is LONG. This says whether it is going in circles, and how often:
+   * an agent that appears here is one the chain has already passed through, so a delegation back to
+   * it is a cycle by inspection rather than by proxy. A run whose runner supplies none falls back to
+   * the depth ceiling alone.
+   */
+  delegationPath?: readonly string[];
 }
 
 /**
@@ -285,6 +300,16 @@ export interface AgentDefinition {
   defaultPersona?: string;
   modelId?: string;
   maxSteps?: number;
+  /**
+   * How many agent→agent delegations deep a chain starting at this agent may go.
+   * Undefined → {@link import('./agent-loop.js').MAX_DELEGATION_DEPTH}.
+   */
+  maxDelegationDepth?: number;
+  /**
+   * How many times one agent may appear on a single delegation chain.
+   * Undefined → {@link import('./agent-loop.js').DEFAULT_MAX_AGENT_APPEARANCES}.
+   */
+  maxAgentAppearances?: number;
   /**
    * Per-agent {@link ActorResolver} override. When set, this agent resolves the request's actor with
    * its own resolver instead of the module-global `config.actorResolver` — e.g. an agent that reads

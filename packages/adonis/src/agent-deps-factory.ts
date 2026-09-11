@@ -237,6 +237,12 @@ export class AgentDepsFactory {
       ...(this.config.skills !== undefined ? { skills: this.config.skills } : {}),
       ...(this.config.memory !== undefined ? { memory: this.config.memory } : {}),
       ...(toolAllowList !== undefined ? { toolAllowList } : {}),
+      ...(definition?.maxDelegationDepth !== undefined
+        ? { maxDelegationDepth: definition.maxDelegationDepth }
+        : {}),
+      ...(definition?.maxAgentAppearances !== undefined
+        ? { maxAgentAppearances: definition.maxAgentAppearances }
+        : {}),
     };
   }
 }

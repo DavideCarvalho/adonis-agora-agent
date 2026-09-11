@@ -25,6 +25,8 @@ export {
   type AgentLoopDeps,
   type AgentLoopHooks,
   type AgentLoopResult,
+  DEFAULT_MAX_AGENT_APPEARANCES,
+  MAX_DELEGATION_DEPTH,
   QuotaExceededError,
   runAgentLoop,
   type SettledTask,

@@ -30,6 +30,14 @@ export interface AgentDeps {
   defaultPersona: string;
   /** Agent-level tool allow-list (intersected with the persona's). Undefined → all tools. */
   toolAllowList?: string[];
+  /** How deep a delegation chain starting here may go. Undefined → `MAX_DELEGATION_DEPTH`. */
+  maxDelegationDepth?: number;
+  /**
+   * How many times one agent may appear on a single delegation chain. Undefined →
+   * `DEFAULT_MAX_AGENT_APPEARANCES`, which is once: a chain reaching an agent it has already passed
+   * through is going in circles.
+   */
+  maxAgentAppearances?: number;
   /** Inject-mode retriever: when set, the loop retrieves + folds context into the prompt each run. */
   retriever?: Retriever;
   /** How many passages inject-mode retrieval requests. Undefined → 5. */

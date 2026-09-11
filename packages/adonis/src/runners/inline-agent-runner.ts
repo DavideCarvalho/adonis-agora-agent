@@ -26,7 +26,19 @@ export class InlineAgentRunner implements AgentRunner {
     const runId = crypto.randomUUID();
     const day = input.day ?? utcDay();
     const deps = this.factory.forAgent(input.agentName);
-    const hooks = this.topLevelHooks(runId, deps, input.actor, day);
+    const hooks = this.topLevelHooks({
+      runId,
+      deps,
+      actor: input.actor,
+      day,
+      // The chain this run sits on with its OWN agent appended — what lets a child recognise a
+      // delegation back to an agent the chain has already passed through.
+      chainBelow: [
+        ...(input.delegationPath ?? []),
+        ...(input.agentName !== undefined ? [input.agentName] : []),
+      ],
+      depth: input.delegationDepth ?? 0,
+    });
 
     // The root turn span — the trace's root, correlated to every child step span by traceId = runId.
     // Emitted by the runner (not the shared loop) because the inline runner executes the loop exactly
@@ -71,7 +83,17 @@ export class InlineAgentRunner implements AgentRunner {
     await writer.end();
   }
 
-  private topLevelHooks(runId: string, deps: AgentDeps, actor: Actor, day: string): AgentLoopHooks {
+  private topLevelHooks(args: {
+    runId: string;
+    deps: AgentDeps;
+    actor: Actor;
+    day: string;
+    /** This run's delegation chain with its own agent appended — see `AgentRunInput.delegationPath`. */
+    chainBelow: readonly string[];
+    /** How many delegations deep this run already is. */
+    depth: number;
+  }): AgentLoopHooks {
+    const { runId, deps, actor, day, chainBelow, depth } = args;
     return {
       runId,
       durable: false,
@@ -86,7 +108,15 @@ export class InlineAgentRunner implements AgentRunner {
       // Nothing here records a position, so a turn's read tools can simply overlap.
       parallel: settleAll,
       runAgent: (agentName, task) =>
-        this.runNested({ agentName, task, actor, day, parentRunId: runId }),
+        this.runNested({
+          agentName,
+          task,
+          actor,
+          day,
+          depth: depth + 1,
+          path: chainBelow,
+          parentRunId: runId,
+        }),
     };
   }
 
@@ -103,10 +133,14 @@ export class InlineAgentRunner implements AgentRunner {
     task: string;
     actor: Actor;
     day: string;
+    /** How many delegations deep this child is. */
+    depth: number;
+    /** The chain that reached this child, root first — without its own name. */
+    path: readonly string[];
     /** The run that asked for this one, recorded on its row so the delegation is not an orphan turn. */
     parentRunId: string;
   }): Promise<{ text: string }> {
-    const { agentName, task, actor, day, parentRunId } = args;
+    const { agentName, task, actor, day, depth, path, parentRunId } = args;
     const subThread = await this.store.createThread({ actor, persona: 'default', transient: true });
     const runId = crypto.randomUUID();
     const deps = this.factory.forAgent(agentName);
@@ -124,7 +158,15 @@ export class InlineAgentRunner implements AgentRunner {
       step: (_name, fn) => fn(),
       parallel: settleAll,
       runAgent: (childName, childTask) =>
-        this.runNested({ agentName: childName, task: childTask, actor, day, parentRunId: runId }),
+        this.runNested({
+          agentName: childName,
+          task: childTask,
+          actor,
+          day,
+          depth: depth + 1,
+          path: [...path, agentName],
+          parentRunId: runId,
+        }),
     };
     // A nested sub-agent run is its own trace (its own runId), rooted by the same turn span.
     return spannedAgent(
@@ -134,7 +176,16 @@ export class InlineAgentRunner implements AgentRunner {
       () =>
         runAgentLoop(
           { ...deps, day },
-          { threadId: subThread.id, actor, userText: task, agentName, day, parentRunId },
+          {
+            threadId: subThread.id,
+            actor,
+            userText: task,
+            agentName,
+            day,
+            parentRunId,
+            delegationDepth: depth,
+            delegationPath: path,
+          },
           hooks,
         ),
       (result) => ({ textLength: result.text.length }),

@@ -13,17 +13,13 @@ import type { AgentRunInput, Decision } from '../types.js';
 import { getDurableAgentContext } from './agent-run-context.js';
 
 /**
- * The workflow input. A superset of {@link AgentRunInput} carrying the two fields only the durable
- * runner threads:
- *  - `sinkRunId` — the TOP-LEVEL run whose live stream this run writes into. A sub-agent (child
- *    workflow) forwards its tokens into its ancestor's sink so the human watching the parent sees
- *    the delegate's output; a top-level run leaves it unset (it owns its own sink, keyed by runId).
- *  - `delegationDepth` — how many delegations deep this run is (0 for top-level), carried so a future
- *    guard can cap runaway sub-agent chains.
+ * The workflow input. A superset of {@link AgentRunInput} carrying the one field only the durable
+ * runner threads: `sinkRunId`, the TOP-LEVEL run whose live stream this run writes into. A sub-agent
+ * (child workflow) forwards its tokens into its ancestor's sink so the human watching the parent
+ * sees the delegate's output; a top-level run leaves it unset (it owns its own sink, keyed by runId).
  */
 export interface DurableAgentRunInput extends AgentRunInput {
   sinkRunId?: string;
-  delegationDepth?: number;
 }
 
 /**
@@ -84,6 +80,13 @@ export class AgentRunWorkflow extends BaseWorkflow {
     const deps = factory.forAgent(input.agentName);
     const isChild = input.sinkRunId !== undefined;
     const sinkRunId = input.sinkRunId ?? ctx.runId;
+    // The chain this run sits on, with its own agent appended — what lets a child recognise a
+    // delegation back to an agent the chain has already passed through. Derived from the workflow's
+    // input, so it is the same on every replay and on every pod.
+    const chainBelow = [
+      ...(input.delegationPath ?? []),
+      ...(input.agentName !== undefined ? [input.agentName] : []),
+    ];
 
     const hooks: AgentLoopHooks = {
       runId: ctx.runId,
@@ -129,6 +132,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
           userText: task,
           day,
           delegationDepth: (input.delegationDepth ?? 0) + 1,
+          delegationPath: chainBelow,
           parentRunId: ctx.runId,
           sinkRunId,
         });

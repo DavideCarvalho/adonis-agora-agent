@@ -98,6 +98,21 @@ afterEach(() => {
   setDurableAgentContext(undefined);
 });
 
+/** Every tool-result error the store holds, across the main thread and each delegate's subthread. */
+async function refusalsAcrossThreads(store: InMemoryAgentStore): Promise<string[]> {
+  const threadIds = [...new Set(store.governanceMessages().map((message) => message.threadId))];
+  const errors: string[] = [];
+  for (const threadId of threadIds) {
+    const detail = await store.getThread(threadId);
+    for (const message of detail?.messages ?? []) {
+      for (const result of message.toolResults ?? []) {
+        if (result.error !== undefined) errors.push(result.error);
+      }
+    }
+  }
+  return errors;
+}
+
 describe('DurableAgentRunner + AgentService (durable workflow)', () => {
   it('streams tokens and persists the user + assistant messages', async () => {
     const g = buildGraph(() => ({ text: 'Hello from the durable agent' }));
@@ -272,5 +287,35 @@ describe('DurableAgentRunner + AgentService (durable workflow)', () => {
     const delegateCall = g.store.toolCallRows().find((r) => r.toolName === 'ask_helper');
     expect(delegateCall?.status).toBe('executed');
     expect(delegateCall?.output).toEqual({ text: 'helper answer' });
+  });
+
+  it('cuts a mutual handoff where the chain repeats, not at the depth ceiling', async () => {
+    // Two agents that hand off to each other, each with no other tool to reach for — so nothing but
+    // the loop ends the chain. The guard is in the loop, but it can only SEE a cycle if this runner
+    // hands the chain down through `ctx.child`; without that threading every hop reads an empty
+    // ancestry, finds no repeat, and the run walks to the depth ceiling instead.
+    const script: FakeScript = (args, turnIndex) => {
+      const target = args.system.includes('You are alpha.') ? 'ask_beta' : 'ask_alpha';
+      return turnIndex === 0
+        ? { text: 'passing it on', toolCall: { name: target, input: { task: 'keep going' } } }
+        : { text: 'all done' };
+    };
+    const g = buildGraph(script, [
+      { name: 'alpha', systemPrompt: 'You are alpha.', delegatesTo: ['beta'] },
+      { name: 'beta', systemPrompt: 'You are beta.', delegatesTo: ['alpha'] },
+    ]);
+
+    const { runId } = await g.service.chat({ actor, message: 'go', agentName: 'alpha' });
+    await collectStream(g, runId);
+    await waitFor(async () => (await g.engine.getRun(runId))?.status === 'completed');
+
+    const delegations = g.store.toolCallRows().filter((row) => row.toolName.startsWith('ask_'));
+    // alpha → beta, then beta's hop back is refused. One each way, and the third is the repeat.
+    expect(delegations).toHaveLength(2);
+    expect(delegations.at(-1)?.status).toBe('failed');
+    // And the refusal names the chain, including the hop that closed it.
+    expect(await refusalsAcrossThreads(g.store)).toEqual([
+      'delegation cycle: alpha → beta → alpha — alpha 2 times on one chain',
+    ]);
   });
 });
