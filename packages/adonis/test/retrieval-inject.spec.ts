@@ -115,6 +115,28 @@ describe('inject-mode retrieval (inline)', () => {
     expect(call?.status).toBe('executed');
   });
 
+  it('reaches a reader as an ordinary tool call: on the message, with its passages paired', async () => {
+    const retriever = await inMemoryRetriever({
+      documents: [{ id: 'kb', text: 'The launch code is ORANGE-42.', source: 'ops' }],
+    });
+    const g = buildInline(() => ({ text: 'answer' }), { retriever, retrievalTopK: 3 });
+
+    const { runId, threadId } = await g.service.chat({ actor, message: 'what is the launch code' });
+    await collectStream(g.service, runId);
+
+    // A client that renders tool calls renders this one with no change — the call is on the
+    // message and its passages are paired with it there, so citations need no message field and no
+    // second read.
+    const answer = (await g.store.getThread(threadId))?.messages.at(-1);
+    expect(answer?.toolCalls).toEqual([
+      { id: `retrieve-${runId}`, name: 'retrieve', input: { query: 'what is the launch code' } },
+    ]);
+    const retrieved = answer?.toolResults?.[0]?.output as { passages: Passage[] } | undefined;
+    expect(retrieved?.passages.map((passage) => passage.text)).toEqual([
+      'The launch code is ORANGE-42.',
+    ]);
+  });
+
   it('leaves the system prompt unchanged when no retriever is configured', async () => {
     let systemSeen = '';
     const script: FakeScript = (args) => {

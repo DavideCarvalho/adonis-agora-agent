@@ -156,6 +156,27 @@ describe('structured output', () => {
     expect(detail?.messages.at(-1)?.role).toBe('assistant');
   });
 
+  it('reaches a reader as an ordinary tool call: on the message, with its result paired', async () => {
+    const model = new ScriptedModel([
+      { text: 'It is 21C in Recife.' },
+      { text: '{"city":"Recife","tempC":21}' },
+    ]);
+    const { detail } = await run({ model });
+    const answer = detail?.messages.at(-1);
+    // A client that renders tool calls renders this one with no change — the call is on the
+    // message and its result is paired with it there, so nothing has to read the tool-call table.
+    expect(answer?.toolCalls).toEqual([
+      { id: 'structured-run-1', name: 'structured_output', input: {} },
+    ]);
+    expect(answer?.toolResults).toEqual([
+      {
+        id: 'structured-run-1',
+        name: 'structured_output',
+        output: { city: 'Recife', tempC: 21 },
+      },
+    ]);
+  });
+
   it('bills the pass as its own usage row', async () => {
     const model = new ScriptedModel([
       { text: 'It is 21C in Recife.' },

@@ -731,6 +731,18 @@ interface ClaimedToolCall {
   ctx: AiToolCtx;
 }
 
+/**
+ * A tool call the LOOP makes on the model's behalf — inject-mode retrieval, the structured answer.
+ * It rides the assistant message and the tool-call table exactly as a model-issued read does, so a
+ * reader renders it through the machinery it already has.
+ */
+interface SyntheticToolCall {
+  /** The checkpoint that records the row, minus its `:<messageId>` suffix. */
+  step: string;
+  call: ToolCallRequest;
+  result: ToolResult;
+}
+
 /** One invocation's result, already reduced to what the persist checkpoint writes. */
 type ToolOutcome = { status: 'executed'; output: unknown } | { status: 'failed'; error: string };
 
@@ -1627,6 +1639,41 @@ export async function runAgentLoop<TOutput = unknown>(
       role: 'assistant',
       textLength: turn.text.length,
     });
+    // Inject-mode retrieval and the structured answer both reach a reader as ordinary tool calls.
+    // Their ids come off the RUN rather than the message they hang from, because the message does
+    // not exist yet and both have to be on the append below: a reader pairs a call with its result
+    // off the message, so a call added afterwards renders as a tool still running. Every value here
+    // is already settled by a checkpoint this turn ran (`retrieve`, `structured:<step>:<n>`), so a
+    // replay rebuilds the same pair rather than minting one.
+    const synthetic: SyntheticToolCall[] = [];
+    if (i === 0 && injectedPassages !== undefined) {
+      const call: ToolCallRequest = {
+        id: `retrieve-${hooks.runId}`,
+        name: 'retrieve',
+        input: { query: input.userText },
+      };
+      const output = { passages: injectedPassages };
+      synthetic.push({
+        step: 'persist:retrieval',
+        call,
+        result: { id: call.id, name: call.name, output },
+      });
+    }
+    if (structured !== undefined) {
+      const call: ToolCallRequest = {
+        id: `structured-${hooks.runId}`,
+        name: 'structured_output',
+        input: {},
+      };
+      synthetic.push({
+        step: 'persist:structured',
+        call,
+        result: { id: call.id, name: call.name, output: structured },
+      });
+    }
+    const messageCalls = [...turn.toolCalls, ...synthetic.map((entry) => entry.call)];
+    const syntheticResults = synthetic.map((entry) => entry.result);
+
     const assistant = await hooks.step(`persist:assistant:${i}`, () =>
       deps.store.appendMessage({
         threadId: input.threadId,
@@ -1635,53 +1682,34 @@ export async function runAgentLoop<TOutput = unknown>(
         runId: hooks.runId,
         usage: { ...turn.usage, costUsd },
         ...(persona !== undefined ? { persona: persona.id } : {}),
-        ...(turn.toolCalls.length > 0 ? { toolCalls: turn.toolCalls } : {}),
+        ...(messageCalls.length > 0 ? { toolCalls: messageCalls } : {}),
+        ...(syntheticResults.length > 0 ? { toolResults: syntheticResults } : {}),
       }),
     );
     modelMessages.push({
       role: 'assistant',
       content: turn.text,
-      ...(turn.toolCalls.length > 0 ? { toolCalls: turn.toolCalls } : {}),
+      ...(messageCalls.length > 0 ? { toolCalls: messageCalls } : {}),
+      ...(syntheticResults.length > 0 ? { toolResults: syntheticResults } : {}),
     });
 
-    // Record inject-mode retrieval as a synthetic auto-executed `retrieve` tool call on the assistant
-    // message it informed — so its passages persist and render as citations exactly like an agentic
-    // search would, without a new message field. One durable step keeps replay from re-writing it.
-    if (i === 0 && injectedPassages !== undefined) {
-      const passages = injectedPassages;
-      const toolCallId = `retrieve-${assistant.id}`;
-      await hooks.step(`persist:retrieval:${assistant.id}`, async () => {
+    for (const entry of synthetic) {
+      const { call, result } = entry;
+      await hooks.step(`${entry.step}:${assistant.id}`, async () => {
         await deps.store.recordToolCall({
-          toolCallId,
+          toolCallId: call.id,
           messageId: assistant.id,
-          toolName: 'retrieve',
+          toolName: call.name,
           toolType: 'read',
-          input: { query: input.userText },
+          input: call.input,
           status: 'auto_executed',
           runId: hooks.runId,
         });
-        await deps.store.updateToolCall({ toolCallId, status: 'executed', output: { passages } });
-      });
-    }
-
-    // The structured answer rides the same device as inject-mode retrieval above: a synthetic
-    // auto-executed tool call on the assistant message it belongs to, so it persists and renders
-    // without a store gaining a column. Its value is already settled by the `structured:<step>:<n>`
-    // checkpoints, so a replay rewrites the same row rather than minting a new one.
-    if (structured !== undefined) {
-      const value = structured;
-      const toolCallId = `structured-${assistant.id}`;
-      await hooks.step(`persist:structured:${assistant.id}`, async () => {
-        await deps.store.recordToolCall({
-          toolCallId,
-          messageId: assistant.id,
-          toolName: 'structured_output',
-          toolType: 'read',
-          input: {},
-          status: 'auto_executed',
-          runId: hooks.runId,
+        await deps.store.updateToolCall({
+          toolCallId: call.id,
+          status: 'executed',
+          output: result.output,
         });
-        await deps.store.updateToolCall({ toolCallId, status: 'executed', output: value });
       });
     }
 
@@ -1746,7 +1774,7 @@ export async function runAgentLoop<TOutput = unknown>(
     // Every value written here comes from a checkpoint above, so a replay writes the same list.
     if (await (hooks.patched?.(MESSAGE_TOOL_RESULTS_PATCH) ?? Promise.resolve(true))) {
       await hooks.step(`persist:toolresults:${i}`, () =>
-        deps.store.setMessageToolResults(assistant.id, results),
+        deps.store.setMessageToolResults(assistant.id, [...results, ...syntheticResults]),
       );
     }
     modelMessages.push({ role: 'user', content: '', toolResults: results });
