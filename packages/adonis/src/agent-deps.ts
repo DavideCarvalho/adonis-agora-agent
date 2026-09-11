@@ -1,3 +1,4 @@
+import type { SkillsConfig } from './skills.js';
 import type { AgentStore } from './spi/agent-store.js';
 import type { HistoryWindow } from './spi/history-window.js';
 import type { ModelProvider } from './spi/model-provider.js';
@@ -45,6 +46,11 @@ export interface AgentDeps {
   toolTransientRetry?: ToolTransientRetrySetting;
   /** Bounds how much of the persisted thread rides the model call each turn. Omit → full history every turn. */
   historyWindow?: HistoryWindow;
+  /**
+   * Authored procedures the model can pull in mid-turn, scoped by the host's own tokens. Omit → no
+   * catalog block and no `skill` tool.
+   */
+  skills?: SkillsConfig;
 }
 
 /** The UTC calendar day (`YYYY-MM-DD`) a run is accounted against — deterministic for quota/day. */

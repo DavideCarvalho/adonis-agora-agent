@@ -33,6 +33,17 @@ import {
   runOutputProcessors,
 } from './processors.js';
 import { isReplayIntegrityError } from './replay-integrity.js';
+import {
+  buildSkillsBlock,
+  loadSkill,
+  offerSkills,
+  SKILL_TOOL_NAME,
+  type SkillContext,
+  type SkillOffer,
+  type SkillsConfig,
+  skillInputSchema,
+  skillToolDefinition,
+} from './skills.js';
 import type { AgentStore } from './spi/agent-store.js';
 import type { HistoryWindow, HistoryWindowContext } from './spi/history-window.js';
 import type { ModelProvider, ModelTurnResult } from './spi/model-provider.js';
@@ -223,6 +234,19 @@ export interface AgentLoopDeps<TOutput = unknown> {
    * therefore uniform across a deployment. Undefined/false → the model never sees it.
    */
   ask?: boolean;
+  /**
+   * Authored procedures the model can pull in mid-turn, scoped to the actor's own scope tokens — see
+   * `skills.ts`. Undefined → no catalog block, no `skill` tool, and a turn's checkpoint sequence is
+   * byte-identical to one that never had the option.
+   *
+   * WHAT IT COSTS THE PROMPT. Four things write the system block — the agent's own prompt, the
+   * persona's, injected retrieval, and this — and the catalog is the cheapest of them by
+   * construction: one line per skill, carrying a name, a scope and a description. A skill's BODY
+   * never enters the system block at all; it arrives as a tool result, on the transcript, where
+   * {@link AgentLoopDeps.historyWindow} already governs it. So a deployment with fifty skills pays
+   * for fifty lines and for whichever bodies a turn actually asked to read.
+   */
+  skills?: SkillsConfig;
 }
 
 /**
@@ -531,14 +555,20 @@ async function applyHistoryWindow(
 }
 
 /**
- * The turn's tool list plus the built-in `ask`, when the module offers it. Appended from CONFIG
- * rather than the registry, because `ask` is never registered — see {@link AgentLoopDeps.ask}.
+ * The turn's tool list plus the built-ins the module offers — `ask`, `skill`. Appended from CONFIG
+ * rather than the registry, because neither is ever registered: see {@link AgentLoopDeps.ask} and
+ * {@link AgentLoopDeps.skills}.
  */
-export function withAskTool(args: {
+export function withBuiltInTools(args: {
   tools: ToolDefinition[];
   ask: boolean | undefined;
+  skills: boolean;
 }): ToolDefinition[] {
-  return args.ask === true ? [...args.tools, askToolDefinition()] : args.tools;
+  return [
+    ...args.tools,
+    ...(args.ask === true ? [askToolDefinition()] : []),
+    ...(args.skills ? [skillToolDefinition()] : []),
+  ];
 }
 
 /**
@@ -720,6 +750,11 @@ interface ToolTurnContext {
   messageId: string;
   /** The run's live stream, so a tool can push a component into it. */
   writer: SinkWriter;
+  /**
+   * What `skills:catalog` recorded this turn, absent where skills are not configured. A `skill` call
+   * is served against THIS, never against a fresh provider read — see {@link loadSkill}.
+   */
+  skills?: SkillOffer;
 }
 
 /** A tool call whose kind has been settled by its `persist:toolcall` checkpoint. */
@@ -843,6 +878,18 @@ async function claimToolCall(
  * never re-run (side effects happen exactly once). The span sits inside the step body for the same
  * reason, and covers all in-place attempts; the tool's output never rides it.
  */
+/**
+ * The span's narrower tool vocabulary. An `ask` is settled against a human and a `skill` is read out
+ * of the journal, so neither reaches a registry invocation; each maps to the kind whose control flow
+ * it shares, for a reader of a trace who only ever sees the three.
+ */
+function spanToolType(kind: ToolKind): 'read' | 'action' | 'agent' {
+  if (kind === 'ask') {
+    return 'action';
+  }
+  return kind === 'skill' ? 'read' : kind;
+}
+
 async function invokeClaimedTool(
   turn: ToolTurnContext,
   claimed: ClaimedToolCall,
@@ -858,9 +905,7 @@ async function invokeClaimedTool(
           runId: hooks.runId,
           toolCallId: call.id,
           toolName: call.name,
-          // An `ask` is settled against a human and never reaches an invocation, so the span's
-          // narrower vocabulary holds for everything that does get here.
-          toolType: toolType === 'ask' ? 'action' : toolType,
+          toolType: spanToolType(toolType),
         },
         () =>
           invokeWithTransientRetry(
@@ -966,6 +1011,9 @@ function declaredKind(deps: AgentLoopDeps, name: string): ToolKind {
   if (deps.ask === true && name === ASK_TOOL_NAME) {
     return 'ask';
   }
+  if (deps.skills !== undefined && name === SKILL_TOOL_NAME) {
+    return 'skill';
+  }
   return deps.registry.spec(name)?.kind ?? 'read';
 }
 
@@ -1034,6 +1082,101 @@ async function elicitToolCall(
   return { id: call.id, name: call.name, output: result };
 }
 
+/** The turn's identity as the skills seam sees it — the same inputs the prompt is resolved from. */
+function skillContext(input: AgentRunInput): SkillContext {
+  return {
+    actor: input.actor,
+    threadId: input.threadId,
+    ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+    ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
+  };
+}
+
+/** What a served `skill` call hands back to the model — the procedure, and where it came from. */
+interface LoadedSkillOutput {
+  name: string;
+  scope: string;
+  body: string;
+  /** Scopes of same-named skills this one overrode. Present only when it overrode something. */
+  shadows?: string[];
+}
+
+/**
+ * Serve one `skill` call: read the body and hand it to the model as an ordinary tool result.
+ *
+ * WHY THE BODY IS RETURNED FROM THE CHECKPOINT. Which instructions entered a turn's prompt is a
+ * decision about the turn, and a decision about a turn has to be readable from its journal — the
+ * same property `persist:toolcall` gives the read/action branch. A replay that re-read the provider
+ * would compose a DIFFERENT prompt from a skill edited in between, at a transcript position the
+ * history already holds: the model would then be answering something nobody can reconstruct from the
+ * record. Inside `tool:<callId>` the first attempt's text is the only text there ever was.
+ *
+ * The positions are a read tool's, exactly (`persist:toolcall` before, `tool:<id>` here,
+ * `persist:toolexec:<id>` / `persist:toolfail:<id>` after), so nothing about the shape of a turn
+ * depends on whether a call was a skill — only on the kind the journal recorded.
+ */
+async function loadSkillIntoTurn(
+  turn: ToolTurnContext,
+  claimed: ClaimedToolCall,
+): Promise<ToolOutcome> {
+  const { deps, input, hooks } = turn;
+  const { call } = claimed;
+  const config = deps.skills;
+  const offer = turn.skills;
+  const outcome = await hooks.step(
+    `tool:${call.id}`,
+    async (): Promise<{ ok: true; output: LoadedSkillOutput } | { ok: false; error: string }> => {
+      if (config === undefined || offer === undefined) {
+        // Reachable where a call's journaled kind is `skill` but this process has no skills
+        // configured. A tool failure, because it is the one vocabulary the model can act on, and
+        // because failing the run would strand a turn over a lookup.
+        return { ok: false, error: 'Skills are not available in this deployment.' };
+      }
+      const parsed = await skillInputSchema['~standard'].validate(call.input);
+      if (parsed.issues !== undefined) {
+        return {
+          ok: false,
+          error: `invalid skill input: ${parsed.issues
+            .map((each) => `${(each.path ?? []).join('.') || '(root)'}: ${each.message}`)
+            .join('; ')}`,
+        };
+      }
+      const loaded = await loadSkill({
+        config,
+        offer,
+        name: parsed.value.name,
+        ctx: skillContext(input),
+      });
+      if (!loaded.ok) {
+        return { ok: false, error: loaded.error };
+      }
+      return {
+        ok: true,
+        output: {
+          name: loaded.skill.name,
+          scope: loaded.skill.scope,
+          body: loaded.skill.body,
+          ...(loaded.shadows !== undefined ? { shadows: loaded.shadows } : {}),
+        },
+      };
+    },
+  );
+  return outcome.ok
+    ? { status: 'executed', output: outcome.output }
+    : { status: 'failed', error: outcome.error };
+}
+
+/**
+ * Run one claimed call's INVOCATION, whatever kind it is. A `skill` reads the catalog the journal
+ * holds instead of the registry; everything that reaches here spends the same `tool:<id>` position
+ * either way, which is what lets the two be batched together.
+ */
+function invokeClaimed(turn: ToolTurnContext, claimed: ClaimedToolCall): Promise<ToolOutcome> {
+  return claimed.toolType === 'skill'
+    ? loadSkillIntoTurn(turn, claimed)
+    : invokeClaimedTool(turn, claimed);
+}
+
 /** Everything a claimed call still needs, on its own: delegation or approval, then execute. */
 async function runClaimedToolCall(
   turn: ToolTurnContext,
@@ -1047,6 +1190,7 @@ async function runClaimedToolCall(
   if (toolType === 'ask') {
     return elicitToolCall(turn, claimed);
   }
+
   if (toolType === 'action') {
     const decision = await hooks.awaitApproval(call, ctx);
     if (!decision.approved) {
@@ -1071,7 +1215,7 @@ async function runClaimedToolCall(
       };
     }
   }
-  return recordToolOutcome(turn, claimed, await invokeClaimedTool(turn, claimed));
+  return recordToolOutcome(turn, claimed, await invokeClaimed(turn, claimed));
 }
 
 /**
@@ -1089,7 +1233,7 @@ async function invokeClaimedToolsTogether(
   parallel: NonNullable<AgentLoopHooks['parallel']>,
   claimed: ClaimedToolCall[],
 ): Promise<ToolResult[]> {
-  const settled = await parallel(claimed.map((entry) => () => invokeClaimedTool(turn, entry)));
+  const settled = await parallel(claimed.map((entry) => () => invokeClaimed(turn, entry)));
   for (const outcome of settled) {
     if (!outcome.ok) {
       throw outcome.error;
@@ -1428,6 +1572,26 @@ export async function runAgentLoop<TOutput = unknown>(
     });
   }
 
+  // The skills catalog, LAST of the things that write the system block (base prompt, persona,
+  // retrieved context, this) — so a reader of the assembled prompt meets the agent's own
+  // instructions before the menu of ones it could go and fetch.
+  //
+  // One checkpoint, holding the WHOLE offer: the scopes the resolver returned and the entries that
+  // survived precedence. That payload is what the block is rendered from and what a later `skill`
+  // call is served against, so the two things a turn's prompt depends on — which scopes applied, and
+  // which skills they yielded — are facts the journal holds rather than answers a replaying
+  // process's provider would give afresh.
+  let skillOffer: SkillOffer | undefined;
+  if (deps.skills !== undefined) {
+    const config = deps.skills;
+    skillOffer = await hooks.step('skills:catalog', () => offerSkills(config, skillContext(input)));
+    // No entries, no block: an actor whose scopes yield nothing pays nothing, rather than reading a
+    // heading over an empty list and wondering what it was for.
+    if (skillOffer.entries.length > 0) {
+      system = `${system}\n\n${buildSkillsBlock(skillOffer.entries)}`;
+    }
+  }
+
   // Fetched ONCE per run (not per step) and reused for every step's cost estimate below. Returned as
   // a plain array (not the Map built from it) so a durable runner can JSON-cache the step's result.
   let prices: CurrentModelPrice[] = [];
@@ -1459,13 +1623,14 @@ export async function runAgentLoop<TOutput = unknown>(
   // and prematurely close the live stream. We only end on normal completion — the throw propagates
   // to the engine, and the resumed replay reaches the writer.end() below.
   for (let i = 0; i < maxSteps; i += 1) {
-    const tools = withAskTool({
+    const tools = withBuiltInTools({
       tools: await deps.registry.definitionsFor(
         input.actor,
         deps.rolesPolicy,
         intersectAllow(persona?.allowedTools, deps.toolAllowList),
       ),
       ask: deps.ask,
+      skills: skillOffer !== undefined,
     });
 
     // Every step, not once per run: the transcript grows between steps, so a processor that only saw
@@ -1724,6 +1889,7 @@ export async function runAgentLoop<TOutput = unknown>(
       hooks,
       messageId: assistant.id,
       writer,
+      ...(skillOffer !== undefined ? { skills: skillOffer } : {}),
     };
     // A model routinely asks for several tools at once, and running them back to back makes the
     // turn cost their sum. Overlapping them is safe here because a checkpoint position is handed
@@ -1753,7 +1919,11 @@ export async function runAgentLoop<TOutput = unknown>(
       for (const call of turn.toolCalls) {
         claimed.push(await claimToolCall(turnCalls, call));
       }
-      if (claimed.every((entry) => entry.toolType === 'read')) {
+      // A `skill` load qualifies alongside a `read`: it takes its position on the call exactly as a
+      // read does, and spends a read's `tool:`/`persist:` names. What disqualifies the other kinds
+      // is not that they have effects — it is that an `action` suspends on human time and an `agent`
+      // delegation is the runtime's own child-workflow fan.
+      if (claimed.every((entry) => entry.toolType === 'read' || entry.toolType === 'skill')) {
         results.push(...(await invokeClaimedToolsTogether(turnCalls, parallel, claimed)));
       } else {
         for (const entry of claimed) {

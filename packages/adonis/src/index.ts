@@ -29,7 +29,7 @@ export {
   runAgentLoop,
   type SettledTask,
   settleAll,
-  withAskTool,
+  withBuiltInTools,
 } from './agent-loop.js';
 export { AgentRegistry } from './agent-registry.js';
 export type { ChatParams } from './agent-service.js';
@@ -190,6 +190,40 @@ export {
 } from './redis-token-stream-sink.js';
 export { isReplayIntegrityError } from './replay-integrity.js';
 export { InlineAgentRunner } from './runners/inline-agent-runner.js';
+export {
+  actorScope,
+  buildSkillsBlock,
+  compositeSkillProvider,
+  DEFAULT_MAX_SKILLS,
+  defaultScopeResolver,
+  GLOBAL_SCOPE,
+  type ListSkillsInput,
+  type LoadSkillInput,
+  loadSkill,
+  offerSkills,
+  resolveSkillCatalog,
+  type ScopeContext,
+  type ScopeResolver,
+  SKILL_TOOL_DESCRIPTION,
+  SKILL_TOOL_NAME,
+  type Skill,
+  type SkillAuthor,
+  type SkillCatalogEntry,
+  type SkillContext,
+  type SkillLoadOutcome,
+  type SkillOffer,
+  type SkillProvider,
+  type SkillSummary,
+  type SkillsConfig,
+  type SkillToolInput,
+  type SkillWriteRequest,
+  type SkillWriteVerdict,
+  skillInputSchema,
+  skillToolDefinition,
+  skillWriteVerdict,
+  staticSkillProvider,
+  tenantScope,
+} from './skills.js';
 export * from './spi/actor-directory.js';
 export * from './spi/actor-resolver.js';
 export * from './spi/agent-runner.js';

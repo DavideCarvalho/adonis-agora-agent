@@ -1,6 +1,7 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { AgentDeps } from './agent-deps.js';
 import type { AgentRegistry } from './agent-registry.js';
+import type { SkillsConfig } from './skills.js';
 import type { AgentStore } from './spi/agent-store.js';
 import type { HistoryWindow } from './spi/history-window.js';
 import type { ModelProvider } from './spi/model-provider.js';
@@ -157,6 +158,12 @@ export interface AgentDepsFactoryConfig {
    * history rides every turn.
    */
   historyWindow?: HistoryWindow;
+  /**
+   * Shared skills seam: the provider a turn lists its catalog from, the resolver that orders an
+   * actor's scope tokens, and the catalog ceiling. One deployment, one answer to "which scopes does
+   * this actor have". Omit → no catalog block and no `skill` tool for any agent.
+   */
+  skills?: SkillsConfig;
   /** Name of the implicit default agent. Defaults to `'default'`. */
   defaultAgentName?: string;
 }
@@ -220,6 +227,7 @@ export class AgentDepsFactory {
       ...(this.config.historyWindow !== undefined
         ? { historyWindow: this.config.historyWindow }
         : {}),
+      ...(this.config.skills !== undefined ? { skills: this.config.skills } : {}),
       ...(toolAllowList !== undefined ? { toolAllowList } : {}),
     };
   }

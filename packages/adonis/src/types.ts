@@ -9,7 +9,7 @@ export interface Actor {
   tenantRef?: string;
 }
 
-export type ToolKind = 'read' | 'action' | 'agent' | 'ask';
+export type ToolKind = 'read' | 'action' | 'agent' | 'ask' | 'skill';
 
 /**
  * Declared shape of a tool.
@@ -21,6 +21,9 @@ export type ToolKind = 'read' | 'action' | 'agent' | 'ask';
  *             `ask` has no handler and is never registered, it is offered to the model straight from
  *             module config — so the branch that decides whether a call parks on a human can never
  *             be settled by a process-local registry lookup.
+ *  - `skill`  reads an authored procedure out of the catalog the turn's `skills:catalog` checkpoint
+ *             holds. Registered by nothing, for the same reason `ask` is not, and it spends a read's
+ *             checkpoints exactly — see `skills.ts`.
  */
 export interface ToolSpec {
   name: string;
