@@ -194,7 +194,7 @@
   "devDependencies": {
     "@adonis-agora/authz": "0.13.2",
     "@adonis-agora/diagnostics": "0.2.8",
-    "@adonis-agora/durable": "0.35.0",
+    "@adonis-agora/durable": "0.39.1",
     "@adonis-agora/telescope": "0.18.0",
     "@adonisjs/assembler": "8.5.1",
     "@adonisjs/core": "7.5.0",
