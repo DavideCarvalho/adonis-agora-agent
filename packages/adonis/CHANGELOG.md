@@ -1,5 +1,502 @@
 # @adonis-agora/agent
 
+## 0.32.0
+
+### Minor Changes
+
+- [#117](https://github.com/DavideCarvalho/adonis-agora-agent/pull/117) [`3ba0ea8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3ba0ea8c2cfc289af8ce38d70a452177c3b93eb8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `@adonis-agora/agent/evals` — nota de qualidade sobre os runs que já estão gravados.
+  
+  A biblioteca já sabia dizer quanto um turno custou e se ele terminou; não sabia dizer se ele prestou.
+  Entra um SPI `Scorer` (um run gravado entra, um `0..1` mais a frase que o justifica sai), um runner em
+  lote retomável, um `ScoreStore` para os vereditos, e os agregadores puros (`summarizeByScorer` /
+  `summarizeByAgent` / `bucketScoreTrend` / `worstScoredRuns`) que espelham a aritmética do read-model de
+  governança — assim um painel e um gate de CI nunca discordam sobre se a qualidade mexeu.
+  
+  **Offline por construção.** A leitura é do que o agente já persistiu — a linha do run, a transcrição, as
+  tool calls e os desfechos — através do `AgentGovernanceQueries` e de mais nada, então funciona igual nos
+  stores Lucid e em memória e **não acrescenta nenhuma tabela de leitura**. Nada roda dentro de um turno:
+  um juiz inline dobraria a latência e a conta de toda mensagem que um usuário manda. `runEvaluation` pula
+  um par `(run, scorer)` que o store já cobriu, então um backfill interrompido e reiniciado com a mesma
+  query não cobra nada de novo.
+  
+  **Quatro scorers embutidos, um por coisa que esta biblioteca de fato sabe:**
+  
+  - `RunCompletionScorer` (`rule`) — o turno entregou? Um run que assenta `completed` sem ter respondido
+    nada tira 0, que é exatamente o que a taxa de sucesso da governança chama de sucesso; uma resposta
+    escrita com uma tool falhando tira 0,5; um run `cancelled` tira 0 com o motivo dizendo isso.
+  - `ApprovalOutcomeScorer` (`rule`) — **toda rejeição de HITL é um rótulo negativo de qualidade que um
+    humano produziu de graça.** A biblioteca já para uma tool `action` e pergunta a uma pessoa se aquilo
+    deve rodar; essa resposta fica gravada na tool call e é a única verdade de referência do sistema que
+    ninguém precisou pagar para coletar. A nota é a fração das actions DECIDIDAS do run que um humano
+    aprovou. Uma action aprovada que depois explodiu conta como aprovada — a pessoa disse sim.
+  - `ApprovalRiskScorer` (`statistical`) — o mesmo corpus virado previsão: taxa de aprovação por tool
+    suavizada por um Beta(1,1), então uma tool inédita fica exatamente em 0,5 e um 1-de-1 rejeitado nunca
+    lê como certeza. O run vale pela action MAIS arriscada que propôs, não pela média, para que uma caixa
+    de aprovações seja drenada da pior para a melhor.
+  - `AnswerRelevancyScorer` (`model`) — LLM como juiz sobre qualquer `ModelProvider`, com `discardingSink()`
+    e `parseJudgeVerdict()` exportados para escrever o seu.
+  
+  Um scorer devolve `null` — e não `1` — para um run sobre o qual não tem o que dizer. A maioria dos runs é
+  só leitura e não carrega veredito humano nenhum; contar esses como perfeitos enterraria os que carregam
+  sob uma média de ~1. Um scorer que LANÇA é coletado como falha daquele run e o lote segue: um juiz que
+  respondeu em prosa é uma avaliação quebrada, e gravar isso como 0 poria a culpa no agente.
+  
+  **Duas coisas ficaram diferentes do porte de referência, e as duas por causa deste read-model.** O
+  `runDetail` daqui já devolve as mensagens carimbadas com o `run_id` do próprio run, então
+  `GovernanceRunSampleSource` lê pergunta e resposta direto dele — sem juntar a transcrição da thread, sem
+  heurística de janela de tempo, e sem depender do `AgentStore`. E como não existe um feed de tool calls
+  paginado por tipo, o prior de aprovação vem de `priorFromRuns` (dobra as actions dos runs que o lote já
+  carregou, custo zero de leitura) ou de `loadApprovalPrior` sobre o feed de atividade recente, limitado
+  por `limit`.
+  
+  **Scoring ao vivo é opt-in e não consegue derrubar um turno.** `attachLiveScoring` assina
+  `agora:agent:run.finished` e pontua DEPOIS que o run assentou e o stream dele fechou, numa promise
+  destacada, com assinante protegido e toda falha roteada para `onError`. Não existe caminho de código de
+  um scorer de volta para dentro de um turno. Ainda custa trabalho de verdade por run, então o lote segue
+  sendo o default e `sampleRate` alivia a carga de qualquer coisa que cobre.
+
+- [#117](https://github.com/DavideCarvalho/adonis-agora-agent/pull/117) [`3ba0ea8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3ba0ea8c2cfc289af8ce38d70a452177c3b93eb8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `HistoryWindow` ganha orçamento de tokens e um caminho de sumarização embutido.
+  
+  `SlidingWindowHistory` só sabia contar mensagens, e resumir era explicitamente problema do consumidor.
+  Agora ela aceita `maxMessages`, `maxTokens` ou os dois (vence quem corta mais), com `estimate` para
+  trocar a heurística de ~4 caracteres por token por um tokenizer de verdade, e `summarize` para dobrar
+  o que a janela deixou de fora numa mensagem `system` inicial. `summarizeWithModel(model)` é o
+  sumarizador embutido: uma chamada extra, não-streamada (escreve num sink que descarta, então os
+  tokens do resumo nunca chegam ao stream do usuário), registrada como uma linha de uso `summary` — a
+  cota soma o ledger inteiro sem filtrar propósito, então limitar o custo de contexto não vira gasto
+  que ninguém contabiliza. `estimateMessageTokens` e `DEFAULT_HISTORY_SUMMARY_INSTRUCTION` são
+  exportados para compor a sua própria.
+  
+  O seam mudou de forma, e a razão é determinismo. `apply(messages, ctx) => ModelMessage[]`, rodado
+  inteiro dentro de um checkpoint `history:window`, virou duas metades que rodam em lugares
+  deliberadamente diferentes:
+  
+  - `select(messages, ctx) => { keep, drop }` é PURA e roda FORA de qualquer checkpoint. Seguro porque
+    a entrada dela já É um checkpoint (o resultado cacheado de `load:thread`), então um replay chega ao
+    mesmo corte sem gastar posição nenhuma — é isso que permite existir uma janela sem mexer em uma
+    única posição do loop.
+  - `summarize(dropped, ctx)` chama um modelo, então roda DENTRO de `history:summarize`: um run
+    retomado lê de volta o resumo que a tentativa suspensa produziu, em vez de gerar outro (e de pagar
+    duas vezes por ele).
+  
+  Para quem não configura janela nenhuma, o loop grava exatamente os mesmos checkpoints de sempre: o
+  bloco inteiro é pulado. Para quem configura, um run já em voo continua replayando contra o
+  `history:window` que o histórico dele guarda — a decisão de qual forma seguir sai do journal
+  (`ctx.patched('agent:history-select')`), nunca da versão do código do processo que está replayando.
+
+- [#117](https://github.com/DavideCarvalho/adonis-agora-agent/pull/117) [`3ba0ea8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3ba0ea8c2cfc289af8ce38d70a452177c3b93eb8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - O servidor MCP deixava de fora os dois portões que o loop aplica.
+  
+  `tools/call` chamava `registry.invoke` direto, e `invoke` não conhece nem a `allowedTools` deste
+  servidor nem o `kind` da tool. Três consequências, a primeira séria:
+  
+  - **Uma tool `action` executava sem aprovação humana.** No loop ela é HITL-gated: alguém aprova
+    antes de rodar. Via MCP não há humano nenhum, e o handler rodava assim mesmo. Como o default de
+    `roles` é ADMIN-only, a política de papéis era o único gate entre um chamador remoto e qualquer
+    efeito colateral registrado.
+  - **Tools servidas pelo loop** (`agent`, `ask`, `skill`, `memory`) apareciam na listagem. Uma tool de
+    handoff é registrada com handler-stub porque quem delega é o `AgentLoop` — chamá-la responderia
+    `{}` e não delegaria a ninguém.
+  - **A `allowedTools` só valia na listagem.** Quem adivinhasse um nome alcançava uma tool que a
+    implantação tirou da superfície de propósito.
+  
+  Agora `isExposable` decide igual na listagem e na chamada: `action` fora por default, com
+  `actions: 'execute'` como opt-in nomeado — uma implantação dizendo que aceita um ator não aprovado
+  rodando toda `action` que os papéis dele alcançam. Kinds servidos pelo loop nunca são expostos, nem
+  sob o opt-in. E a allow-list é re-checada na chamada.
+  
+  `createMcpServer` não tinha teste nenhum, que é como isso passou. Tem agora, contra um `Client` MCP
+  real, e cada portão foi revertido para ver o buraco reabrir.
+
+- [#117](https://github.com/DavideCarvalho/adonis-agora-agent/pull/117) [`3ba0ea8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3ba0ea8c2cfc289af8ce38d70a452177c3b93eb8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Memória de trabalho: o que o assistente concluiu sobre uma pessoa e sobre a organização dela,
+  atravessando turnos e threads.
+  
+  Retrieval responde "o que os documentos dizem"; memória responde "o que eu decidi sobre você". Uma
+  passagem é conteúdo que alguém escreveu e pode corrigir na fonte, e vai citada. Uma memória não tem
+  fonte para consertar: é inferência do próprio agente. Por isso todo registro carrega um
+  `MemoryOrigin`, por isso o bloco diz ao modelo que aquilo pode estar errado, e por isso `forget` é
+  OBRIGATÓRIO no provider enquanto `write` é opcional — um deployment pode razoavelmente popular
+  memória pelo próprio pipeline e não dar tool de escrita ao agente; nenhum pode razoavelmente guardar
+  conclusões sobre uma pessoa que a pessoa não consiga apagar.
+  
+  **Os mesmos tokens de escopo e o MESMO `ScopeResolver` das skills**, para um deployment ter UMA
+  resposta a "quais escopos este ator tem". Onde memória difere de skill de verdade, a diferença fica:
+  a entrada carrega o VALOR derrotado e não só o escopo dele (um agente que soubesse apenas que existe
+  um valor mais amplo não consegue dizer ao usuário qual é a diferença — só escolher, em silêncio, que
+  é exatamente o que isto previne), e existe superfície HTTP de leitura e delete: `GET <path>/memories`
+  e `DELETE <path>/memories/:id`. O autor de uma skill sabe que ela existe; o sujeito de uma memória
+  não sabe. A leitura ignora `maxMemories` de propósito — aquele teto é orçamento de UM turno, e
+  aplicá-lo ali significaria que alguém não consegue ver, e portanto apagar, uma crença que o
+  assistente está a uma escrita de usar de novo.
+  
+  **Seleção por relevância (`MemoryProvider.search`).** O orçamento do prompt é limitado; o store não
+  é. Escolher o bloco por ESCOPO mata os escopos mais amplos primeiro: a vigésima anotação de uma
+  pessoa acaba com toda chance que os fatos da organização dela tinham — em silêncio, atrás de um
+  `omitted` diferente de zero. O escopo continua sendo filtro duro que corta ANTES do ranking, e deixa
+  de ser o ranking. O host é dono do índice (omita `search` e todo turno é a leitura escopada de
+  sempre, sem mudança nenhuma); a lib é dona de resolução, precedência, orçamento e journal. A busca
+  roda DENTRO de `memory:digest`, então todo replay lê de volta a seleção que a primeira tentativa fez.
+  
+  **`pinned` é categórico, não prioridade numérica.** Um número infla, não carrega significado
+  revisável e compete com relevância, que já é uma ordenação contínua. Categoria vira orçamento: o
+  pinned sai de `maxMemories` primeiro, e o que transborda é reportado como `pinnedOmitted` — porque
+  essa omissão é erro de configuração, não o orçamento fazendo o trabalho dele. Um agente não consegue
+  pinar as próprias escritas: `StoreMemoryInput` não tem esse campo, a mesma imposição por forma que
+  mantém `scope` fora da tool `remember`.
+  
+  **O bloco é enquadrado por `origin.author`, em duas seções.** Uma memória de escopo amplo
+  normalmente foi PUBLICADA por um administrador, não concluída pelo agente. Um enquadramento único
+  sobre o bloco inteiro mandava o modelo tratar uma decisão organizacional como palpite próprio e
+  "preferir o que o usuário diz agora" a respeito dela — o que entrega a qualquer usuário um override
+  da política da empresa por simples afirmação. O que uma pessoa afirmou é instrução; o que o agente
+  concluiu é hipótese.
+  
+  A tool `remember` não é registrada, gasta os checkpoints de um `read` e é autorizada contra os
+  escopos que `memory:digest` gravou — nunca contra uma resolução nova. A escrita acontece DENTRO do
+  `tool:<callId>`, o que a torna idempotente sob replay e põe no journal o que o modelo foi informado
+  sobre ela. Um turno sem `memory` configurado tem sequência de checkpoints idêntica à de um que nunca
+  teve a opção.
+
+- [#117](https://github.com/DavideCarvalho/adonis-agora-agent/pull/117) [`3ba0ea8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3ba0ea8c2cfc289af8ce38d70a452177c3b93eb8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `StoredMessage` passa a carregar o `runId` (e a `persona`) que a mensagem foi gravada com.
+  
+  `AppendMessageInput.runId` já existia e os dois stores já gravavam a coluna `run_id`, mas nada
+  devolvia o valor: `getThread` não trazia o campo e o store em memória guardava a correlação num mapa
+  lateral `messageId → runId`. Ou seja, quem lê uma thread só conseguia adivinhar a que turno cada
+  mensagem pertence comparando timestamps contra o `startedAt` do run — e essa comparação quebra no
+  momento em que um turno é regerado: a regeneração trunca a resposta substituída e responde de novo à
+  mensagem de usuário SOBREVIVENTE, sem acrescentar uma nova, então andar para a frente no tempo
+  entrega ao run antigo o texto da substituição.
+  
+  Junto veio uma auditoria do contrato inteiro: **tudo que `appendMessage` aceita tem que voltar em
+  `getThread`**. Um campo que o adapter aceita e nunca devolve é invisível até alguém reabrir a thread e
+  não achar mais o anexo — nada falha, nada é logado. `attachments` já fazia o round-trip nos dois
+  stores daqui; `persona` não fazia em nenhum dos dois, e agora faz. O teste novo é tipado
+  `Required<Omit<AppendMessageInput, …>>`, então um campo opcional novo no input não compila até ser
+  listado ali.
+  
+  Nenhuma mudança de schema: as colunas `run_id` e `persona` de `agent_message` já existiam.
+
+- [#117](https://github.com/DavideCarvalho/adonis-agora-agent/pull/117) [`3ba0ea8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3ba0ea8c2cfc289af8ce38d70a452177c3b93eb8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Deixar o agente fazer uma pergunta estruturada ao usuário — e esperar.
+  
+  A única forma de um run parar por causa de uma pessoa era `awaitApproval`: um sim/não sobre uma tool
+  call já proposta, no meio do trabalho. A direção contrária não existia — coletar o ESCOPO, antes do
+  trabalho, enquanto mudar de rumo ainda é barato. Agora duas superfícies fazem isso, e foram construídas
+  para serem indistinguíveis lá na frente.
+  
+  **Um intake configurado.** `AgentLoopDeps.intake` declara as perguntas; o turno passa por elas antes da
+  primeira chamada de modelo. Como as perguntas são AUTORADAS, o intake não custa chamada de modelo
+  nenhuma e não grava linha de uso — e `questions.length` é conhecido antes do formulário aparecer, que é
+  a única forma honesta de um cliente renderizar "Pergunta 1 de 3" em vez de descobrir uma quarta no meio
+  do caminho. `when: 'thread-start'` (default) pergunta uma vez por thread; `'every-turn'`, antes de cada
+  turno.
+  
+  **Um `ask` chamável pelo modelo.** `ask: true` oferece ao modelo uma tool embutida `ask` para o caso que
+  um intake não consegue antecipar. O input schema dela EXIGE um `defaults` já escolhido em toda pergunta:
+  "eu já escolhi o que eu escolheria, então confirmar basta" é a afirmação em que essa superfície inteira
+  se apoia, e um schema é o único lugar onde isso vira obrigatório em vez de aspiração. Um conjunto de
+  perguntas malformado volta como falha de tool comum carregando as issues de validação, então o modelo
+  conserta o próprio erro em vez de derrubar o run ou estacionar uma pessoa.
+  
+  **Uma forma só, um caminho de retomada só.** As duas gravam UMA linha de tool call pendente chamada
+  `ask` (`toolType: 'action'`, `status: 'pending_approval'`, então ela aparece na caixa de aprovações que
+  já existe), as duas emitem o mesmo frame novo de stream `elicitation`, e as duas estacionam no mesmo
+  sinal `tool:<runId>:<callId>` em que uma aprovação HITL já espera. `POST /agent/tool-call/answer` e
+  `/skip` espelham `approve`/`reject`, com a mesma checagem de dono. `AgentLoopHooks` ganha um
+  `awaitAnswers` opcional; um host que só implementou `awaitApproval` ainda conclui uma elicitation, lendo
+  approve como "confirmou as respostas pré-escolhidas" e reject como "pulou".
+  
+  **Uma pergunta omitida assume o próprio default**, resolvido no servidor contra o request que o run já
+  tem em mãos e não no cliente — então "só apertou enter" e "escolheu exatamente os defaults" persistem
+  igual, e um cliente que nunca renderizou os defaults não consegue submeter em branco. Um array PRESENTE e
+  vazio é um "nenhuma dessas" explícito e não cai no default. A linha assentada grava `defaulted: string[]`,
+  então um auditor ainda enxerga quais perguntas um humano tocou. **Pular não é confirmar:** cai nos mesmos
+  valores e persiste como `rejected` em vez de `executed`, porque seguir com uma suposição que a pessoa se
+  recusou a confirmar é um fato diferente de seguir com uma que ela escolheu. Ninguém responder estaciona o
+  run indefinidamente, exatamente como uma aprovação — não existe timeout de intake, porque um timeout que
+  aplicasse os defaults fabricaria consentimento a partir do silêncio.
+  
+  `ToolKind` ganha um quarto membro, `'ask'`. Nenhum `ToolSpec` o carrega: `ask` nunca é registrada, não tem
+  handler, e é oferecida ao modelo direto da config do módulo — então o branch que decide se uma call
+  estaciona numa pessoa nunca pode ser resolvido por um lookup de registry local do processo. Como nos
+  outros kinds, o valor é resolvido DENTRO do checkpoint `persist:toolcall:<callId>` que já existia e é
+  lido de volta dali em todo replay.
+  
+  **Checkpoints.** Um intake gasta uma posição para o veredito (`intake:ask`) mais uma nos turnos em que
+  pergunta (`intake:answers`); um `ask` reusa os nomes do caminho de aprovação e acrescenta um
+  (`stream:elicitation:<id>`). O veredito do intake é DEVOLVIDO por `intake:ask` em vez de recalculado,
+  porque quando uma retomada replaya o turno a primeira tentativa já anexou a mensagem do próprio intake na
+  thread — recalcular "esta thread já foi perguntada?" responderia não na ida e sim na volta, e poria a
+  chamada de modelo onde o histórico guarda a espera. Nenhum marcador `patched` é gasto por nenhuma das
+  duas: um intake só é alcançável por config nova e um `ask` só por um kind gravado que nenhum run
+  existente registrou. Não declarar nenhuma das duas e a sequência de checkpoints do turno fica idêntica.
+  
+  **Uma diferença estrutural em relação ao porte de referência:** este store não tem
+  `setMessageToolResults`, então as respostas assentadas ficam na linha da tool call — que é onde este repo
+  já guarda todo resultado de tool — em vez de também serem anexadas na mensagem. A transcrição que o modelo
+  lê carrega o round-trip completo de qualquer jeito. `StreamFrame` ganhou uma variante tipada
+  (`{ t: 'elicitation', id, request }`) e `frameToSse` a serializa como `event: elicitation`; o envelope de
+  um frame de texto continua byte-idêntico.
+
+- [#117](https://github.com/DavideCarvalho/adonis-agora-agent/pull/117) [`3ba0ea8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3ba0ea8c2cfc289af8ce38d70a452177c3b93eb8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Processadores de entrada e de saída — um seam de cada lado da chamada de modelo, com custo proporcional.
+  
+  O `PromptBuilder` conseguia acrescentar ao system prompt e nada conseguia olhar a resposta. Para uma
+  aplicação que roda SQL gerado sobre dados sensíveis isso é um buraco no controle, não uma conveniência
+  faltando: o único lugar onde a saída do modelo ainda pode ser barrada é entre o provider e o leitor, e
+  esse lugar não existia.
+  
+  `AgentLoopDeps.inputProcessors` / `outputProcessors` criam os dois. Um `InputProcessor` reescreve
+  `{ system, messages }` antes de TODA chamada de modelo do turno — toda chamada, não uma por run, porque
+  a transcrição cresce entre os passos e um redator que só viu o prompt de abertura deixaria passar o que
+  um resultado de tool trouxe de volta. Um `OutputProcessor` vê a resposta de cada passo e devolve `pass`,
+  `replace` (uma redação é uma substituição) ou `reject`, que encerra o run com `OutputRejectedError` em vez
+  de uma resposta. Os dois são globais do módulo e valem para todo agente e persona: um controle do qual
+  uma persona pode sair não é um controle.
+  
+  **Não são um segundo `HistoryWindow`.** Seleção — quais mensagens da thread entram no turno — continua
+  sendo do `historyWindow`, que é puro e roda FORA de qualquer checkpoint. Processadores transformam o que a
+  seleção produziu e rodam DENTRO de um, então podem chamar um modelo. A transcrição canônica do loop não é
+  tocada: uma redação é o que sai do processo, nunca a memória da thread sobre o que foi dito — e dois
+  passos de um mesmo turno nunca compõem a reescrita um do outro.
+  
+  **Registrar um processador de saída tira a chamada de modelo do sink ao vivo, e o preço disso é
+  proporcional ao que a cadeia declara.** Um gate que precisa ler a resposta inteira não pode rodar depois
+  que ela já chegou ao leitor, então o turno escreve num buffer e o loop solta o conteúdo — como UM frame
+  `text` — quando a cadeia passa. Isso é a resposta certa para uma passada de moderação e caro demais para um
+  redator de regex que não precisa da resposta toda:
+  
+  ```ts
+  const redactEmails: OutputProcessor = {
+    name: 'redact-emails',
+    incremental: { lookbackChars: 320 },
+    process: (answer) => ({ action: 'replace', text: answer.text.replace(EMAIL, '[email]') }),
+  }
+  ```
+  
+  **Não declarar continua significando resposta inteira**, e uma cadeia só é incremental quando TODO membro
+  declara. Quem escreveu `process` contra o texto completo nunca é rebaixado porque um vizinho aderiu.
+  Declarar `incremental` é uma promessa sobre todo prefixo: a cadeia vê o PREFIXO que cresce (nunca cada
+  frame novo), então sempre recebe texto bem formado; fora dos últimos `lookbackChars` caracteres da própria
+  saída, um `replace` não muda mais conforme o prefixo cresce; e uma recusa promete ser decidível a partir de
+  um prefixo. `lookbackChars` é por processador (default 64) e o gate usa o maior da cadeia.
+  
+  A passada de resposta inteira continua AUTORITATIVA para o stream e para o store — a liberação incremental
+  só adianta o prefixo. O gate depois confere que a resposta assentada `startsWith` o que já foi liberado e
+  levanta `ProcessorFailedError` se não for, de modo que a concordância entre o que foi transmitido e o que
+  foi gravado é estrutural, e uma janela curta demais para um padrão falha alto em vez de transmitir
+  justamente o texto que ela existia para redigir.
+  
+  **Determinismo.** `process:input:<step>` e `process:output:<step>` só existem quando configurados, então
+  quem não registra nada grava exatamente os mesmos checkpoints de sempre. O buffer, o prefixo já liberado e
+  uma recusa vinda de prefixo viajam no CHECKPOINT `llm:<step>`, não numa variável local: um run que suspende
+  entre a chamada de modelo e o gate retoma num processo que nunca viu aquele stream, e a liberação é
+  calculada a partir do `releasedText` gravado — então a retomada emite só a cauda que ainda deve, em vez de
+  despejar a mesma resposta uma segunda vez, mesmo que a cadeia tenha sido redeclarada no meio. Uma recusa só
+  é levantada DEPOIS de `persist:usage:<step>` e `quota:bump:<step>`: aqueles tokens foram gastos de verdade, e
+  um gate que escondesse o próprio custo deixaria uma cadeia mal calibrada queimar um orçamento invisivelmente.
+  
+  **Uma diferença estrutural em relação ao porte de referência:** o sink daqui carrega `StreamFrame` tipado,
+  não bytes, então não há frame que o gate não consiga classificar — e o buffer viaja num checkpoint como
+  está. Em compensação, as tool calls de um passo só são reportadas quando `runTurn` RETORNA, então no caminho
+  incremental `ModelAnswer.toolCalls` fica vazio até a passada autoritativa, que sempre as vê.
+
+- [#117](https://github.com/DavideCarvalho/adonis-agora-agent/pull/117) [`3ba0ea8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3ba0ea8c2cfc289af8ce38d70a452177c3b93eb8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Restringir a resposta de um turno a um schema.
+  
+  Toda resposta que esta biblioteca produzia era texto livre, então a única forma de tirar um valor
+  tipado de um turno era declarar uma TOOL cujo trabalho inteiro era receber esse valor.
+  
+  `AgentLoopDeps.outputSchema` aceita qualquer [Standard Schema](https://standardschema.dev) (Zod,
+  Valibot, ArkType). O valor validado volta como `object` no resultado do run, tipado quando o loop é
+  chamado direto (`runAgentLoop<T>`), e é gravado na mensagem do assistente como uma tool call sintética
+  `structured_output` — o mesmo dispositivo que o retrieval em modo inject já usa, então ele persiste e
+  renderiza sem nenhum store ganhar coluna. É declarado no AGENTE e não por requisição porque um schema é
+  um objeto vivo e `AgentRunInput` atravessa uma fronteira JSON a caminho de um workflow durable.
+  
+  **Como compõe com tool calling: como uma passada de formatação separada, sempre.** O turno roda a
+  iteração modelo→tools exatamente como rodaria sem schema; quando um passo volta sem tool calls, uma
+  chamada extra não-streamada (`structured:<step>:<attempt>`, `tools: []`, `outputSchema` setado)
+  reescreve aquela resposta no formato do schema. A maioria dos providers não serve response format e
+  tool set no mesmo request. Pular a passada para um agente que por acaso não tem tools seria mais barato
+  e deliberadamente NÃO é feito: essa decisão leria o registry de tools de qualquer processo que estivesse
+  replayando, que é exatamente como um run retomado acaba pedindo uma posição de checkpoint que o
+  histórico dele não tem. Então a passada é incondicional, e custa uma chamada de modelo por turno,
+  faturada na própria linha de uso `structured_output`.
+  
+  **A passada é uma tradução, então ela recebe o que uma tradução precisa:** a pergunta e a resposta que
+  sobreviveu ao gate de saída — nunca a transcrição inteira do turno, que seria o prompt do turno de novo
+  e sem desconto nenhum (a passada troca o bloco `system` pela instrução do schema, e o bloco `system` é o
+  prefixo do cache). A pergunta sai do prompt PROCESSADO, não de `AgentRunInput.userText`: esta é uma
+  segunda saída do modelo e tem que ficar atrás da mesma cadeia de `inputProcessors` que o turno
+  transmitido ficou. `outputFromTranscript` devolve o comportamento antigo para o agente cuja resposta
+  genuinamente não pode ser reescrita a partir das próprias palavras.
+  
+  **Uma resposta que falha o schema é um desfecho DEFINIDO.** Até `outputRepairAttempts` chamadas a mais
+  (default 1) repetem o pedido com as issues de validação da tentativa anterior anexadas; depois disso o
+  run falha com `StructuredOutputError` carregando as issues, o texto que as violou e a contagem de
+  tentativas. Limitado porque um modelo que não consegue satisfazer um schema normalmente também não
+  consegue na quarta tentativa, e toda tentativa é cobrada. `outputRepairAttempts: 0` falha na primeira
+  resposta inválida.
+  
+  `ModelTurnArgs` ganha `outputSchema` e `ModelTurnResult` ganha `object`. O adaptador do AI SDK mapeia o
+  schema em `output: Output.object(...)` do `streamText` para o provider restringir a geração, e devolve o
+  valor que ele mesmo parseou — mas o loop valida de qualquer jeito. "O provider disse que bate" não é a
+  mesma afirmação que "bate", e um provider que ignorou o schema tem que falhar onde a falha é reparável,
+  não lá na frente. Um adaptador que não consegue restringir a geração continua funcionando: o loop lê o
+  JSON do texto da resposta, cercas e prosa de abertura incluídas.
+  
+  `UsagePurpose` ganha `'structured_output'`; os dois stores já gravam `purpose` como texto, então não há
+  mudança de schema. Quem não declara `outputSchema` não vê checkpoint novo, chamada extra nem mudança
+  nenhuma na sequência de checkpoints do loop.
+  
+  **Uma diferença estrutural em relação ao porte de referência:** o loop daqui devolve os resultados de
+  tool ao modelo como uma mensagem `user` VAZIA carregando `toolResults`, então "a última mensagem do
+  usuário" não serve para achar a pergunta — a passada receberia uma pergunta em branco em todo turno que
+  chamou uma tool. `restatementPrompt` procura a última mensagem de usuário que de fato diz alguma coisa.
+
+- [#117](https://github.com/DavideCarvalho/adonis-agora-agent/pull/117) [`3ba0ea8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3ba0ea8c2cfc289af8ce38d70a452177c3b93eb8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - O resultado de uma tool passa a chegar em quem reabre a thread.
+  
+  O loop escrevia a saída de cada tool só na tabela de tool calls. Quem lê uma thread pareia uma call
+  com o resultado dela pela MENSAGEM em que a call foi feita — então toda tool de todo turno já
+  encerrado aparecia como uma tool ainda rodando, para sempre, nos dois stores. Nada falhava, nada era
+  logado: a transcrição simplesmente mentia sobre o estado de um turno que terminou.
+  
+  `AgentStore.setMessageToolResults(messageId, results)` anexa os resultados já liquidados à mensagem
+  que fez as calls, substituindo o que ela tinha. É **obrigatório** na SPI, não opcional: um store que
+  silenciosamente não implementasse isso renderizaria um turno terminado como um turno eternamente em
+  voo, e um método faltando tem que quebrar a compilação em vez de quebrar a tela. `LucidAgentStore` e
+  `InMemoryAgentStore` implementam os dois.
+  
+  Uma escrita, um comportamento, os dois adapters — não duas implementações que por acaso concordam.
+  
+  O loop escreve num checkpoint próprio (`persist:toolresults:<step>`), depois da última tool do turno.
+  Isso é uma posição nova no journal, então ela é guardada por `ctx.patched('agent:message-tool-results')`:
+  um run que suspendeu no meio de um turno sob a forma anterior não tem espaço entre o último
+  `persist:toolexec` e o `llm:` seguinte, lê o marcador como ausente e continua replayando a forma que o
+  histórico dele guarda. Todo valor escrito ali já vem de um checkpoint acima, então um replay grava a
+  mesma lista.
+  
+  O intake configurado ganha o mesmo tratamento dentro de `intake:answers`: o checkpoint `intake:ask`
+  agora devolve o id da mensagem que perguntou, e a resposta liquidada (ou o skip) pousa nela. Um
+  checkpoint que gravou apenas SE o intake rodou não traz id, e só nesse caso a linha de tool call
+  continua sendo o único registro.
+
+- [#117](https://github.com/DavideCarvalho/adonis-agora-agent/pull/117) [`3ba0ea8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3ba0ea8c2cfc289af8ce38d70a452177c3b93eb8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Retrieval em modo inject e a resposta estruturada passam a ser entregues como tool calls comuns.
+  
+  As duas já eram gravadas como tool calls sintéticas, mas só como LINHA na tabela de tool calls: a
+  call não estava na mensagem e o resultado não estava em lugar nenhum dela. Como um leitor de thread
+  pareia call e resultado pela mensagem, nenhuma das duas aparecia para nenhum cliente — nem ao vivo,
+  nem ao reabrir a conversa. Citações de um retrieval injetado e o valor validado de um `outputSchema`
+  existiam no banco e não existiam na tela.
+  
+  Agora as duas sobem na mensagem do assistente a que pertencem, com a call em `toolCalls` e o
+  resultado em `toolResults`, exatamente como uma tool `read` que o modelo tivesse pedido. Um cliente
+  que já renderiza tool call renderiza essas duas sem mudança nenhuma.
+  
+  O id de cada uma sai do RUN (`retrieve-<runId>`, `structured-<runId>`) e não da mensagem: a mensagem
+  ainda não existe quando o par é montado, e as duas precisam estar no append — uma call anexada
+  depois renderiza como tool ainda rodando, que é o problema que isto resolve. Os checkpoints
+  (`persist:retrieval:<messageId>`, `persist:structured:<messageId>`) mantêm nome e posição, e todo
+  valor gravado ali já vem de um checkpoint anterior do mesmo turno, então um replay remonta o mesmo
+  par em vez de cunhar um novo.
+
+- [#117](https://github.com/DavideCarvalho/adonis-agora-agent/pull/117) [`3ba0ea8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3ba0ea8c2cfc289af8ce38d70a452177c3b93eb8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Skills: procedimentos autorais que o modelo busca quando a tarefa pede, escopados por tokens que o
+  host define.
+  
+  Uma skill NÃO é um agente. Um agente é QUEM responde — prompt, tools, janela de histórico, schema de
+  saída. Uma skill é COMO uma tarefa específica é feita, e qualquer agente pode puxar uma. Por isso uma
+  skill não carrega modelo, nem lista de tools, nem schema: no instante em que carregasse, as duas
+  seriam a mesma coisa com nomes diferentes e o consumidor teria que escolher entre elas por razões que
+  ninguém saberia enunciar.
+  
+  **O escopo é um token OPACO, nunca um enum.** `actor:u1`, `tenant:base-7`, `global`, ou o
+  `sector:logistics` do próprio host. Um `ScopeResolver` fornecido pelo host diz quais se aplicam, do
+  mais específico para o mais amplo, e essa ORDEM é a precedência. Um enum aqui faria de cada eixo novo
+  (setor, esquadrão, base, turno) uma migração numa biblioteca que não tem por que saber que eles
+  existem; um token é uma string que o host cunha sozinho. Esta biblioteca é dona do contrato (o que um
+  escopo significa, como a precedência funciona, o que é journalado); o host é dono das linhas.
+  
+  **O que custa ao prompt: uma linha por skill.** O bloco `<skills>` carrega nome, escopo e descrição —
+  nunca o corpo. O CORPO chega como resultado de tool, na transcrição, onde o `HistoryWindow` já
+  governa. Então skills não viram um quarto competidor pelo bloco `system`, e um deployment com
+  cinquenta skills paga cinquenta linhas mais os corpos que o turno de fato pediu para ler.
+  
+  **Os dois valores saem do journal.** Os escopos resolvidos e o catálogo que sobreviveu à precedência
+  são UM checkpoint (`skills:catalog`); o corpo carregado sai de dentro do `tool:<callId>`. Um replay
+  que relesse o provider comporia um prompt DIFERENTE a partir de uma skill editada no meio, numa
+  posição de transcrição que o histórico já guarda. O catálogo journalado também é a fronteira de
+  autorização: um nome que o turno não foi oferecido é recusado ali, então um modelo que inventa um
+  nome não alcança um corpo por um provider que serviria de bom grado.
+  
+  A tool `skill` não é registrada — não tem handler, exatamente como `ask` — e gasta os checkpoints de
+  um `read`, exatamente: `persist:toolcall`, `tool:<id>`, `persist:toolexec`/`persist:toolfail`. Um
+  turno sem `skills` configurado tem sequência de checkpoints idêntica à de um que nunca teve a opção.
+  
+  `withAskTool` virou `withBuiltInTools({ tools, ask, skills })`, que é onde as duas built-ins entram na
+  lista do turno.
+
+- [#117](https://github.com/DavideCarvalho/adonis-agora-agent/pull/117) [`3ba0ea8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3ba0ea8c2cfc289af8ce38d70a452177c3b93eb8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - As tool calls `read` de um mesmo turno passam a rodar em paralelo.
+  
+  Um modelo rotineiramente pede várias tools de uma vez, e o loop executava uma depois da outra — duas
+  leituras independentes de três segundos custavam seis. Agora elas se sobrepõem, e o turno custa a
+  chamada mais lenta em vez da soma.
+  
+  O que fez disso um problema de determinismo, e não um `Promise.all`, é que o corpo do loop é
+  replayado pelo engine durable, que distribui posições de checkpoint por um contador monotônico
+  conforme o corpo roda. Intercalar blocos inteiros por chamada ordenaria essas posições por quem
+  terminasse primeiro, o que difere entre um run e seu replay.
+  
+  Então só as INVOCAÇÕES se sobrepõem. Os `persist:toolcall` antes delas e os
+  `persist:toolexec`/`persist:toolfail` depois continuam estritamente sequenciais, em ordem de
+  chamada, e as invocações são todas lançadas no mesmo tick — `ctx.localStep` pega sua posição na
+  CHAMADA, antes do primeiro `await`, então o bloco fica fixado em ordem de chamada independentemente
+  de como as tools terminem. Um turno só é elegível quando o kind journalado de TODA chamada é `read`:
+  uma `action` suspende numa aprovação humana (paralelismo não compra nada, e reservar uma posição de
+  invocação para uma chamada que pode ser REJEITADA gasta uma posição que o branch rejeitado nunca
+  preenche), e uma delegação `agent` é `ctx.child`, cuja forma paralela é o `ctx.all` do próprio
+  runtime.
+  
+  Dois `AgentLoopHooks` opcionais novos:
+  
+  - `parallel(tasks)` — roda as tasks concorrentemente e resolve quando TODAS assentaram, resultados em
+    ordem de entrada. Ausente, o loop segue sequencial, que é a resposta honesta para um runner que
+    atribui posições em qualquer outro momento que não a chamada. `settleAll` é a implementação que os
+    dois runners embarcados passam. Esperar todas é carga estrutural: um runner durable desenrola um
+    turno lançando, e uma irmã abandonada no meio do próprio step é uma tool que ninguém roda.
+  - `patched(id)` — o portão de versão do runner (`ctx.patched`). O batching move os `persist:toolcall`
+    para antes da primeira execução, então um run que suspendeu no meio de um turno sob a forma antiga
+    continua replayando contra ela.
+  
+  Um turno com menos de duas chamadas, ou de um runner que não optou por isso, grava exatamente a
+  sequência de checkpoints que sempre gravou.
+  
+  Uma falha de controle de fluxo do runner (`hooks.isControlFlowError`) também deixou de virar
+  `persist:toolfail`: como uma recusa de integridade de replay, ela sobe intacta, antes de qualquer
+  persistência.
+
+### Patch Changes
+
+- [#117](https://github.com/DavideCarvalho/adonis-agora-agent/pull/117) [`3ba0ea8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3ba0ea8c2cfc289af8ce38d70a452177c3b93eb8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - O `kind` de uma tool call passa a ser resolvido dentro do checkpoint `persist:toolcall`, não no corpo do loop.
+  
+  O kind decide o fluxo da call — uma `action` suspende o run num sinal de aprovação
+  (`tool:<runId>:<callId>`), uma `agent` delega, o resto grava um step — e era lido de
+  `deps.registry` no corpo do workflow, ou seja, o branch dependia do registry do processo que por
+  acaso rodasse aquele corpo. Um processo cujo registry não tem a tool (um módulo que nunca a
+  declarou, uma superfície que não monta tools, uma instância ainda subindo) lia `undefined`, caía
+  no default `'read'` e pedia um checkpoint `tool:` onde o histórico guardava o sinal de aprovação —
+  recusa de não-determinismo no resume, e uma action gated rodando sem a aprovação de ninguém.
+  
+  A resolução — e os gates de delegação que dependem dela — agora acontece dentro do step
+  `persist:toolcall:<callId>` e é retornada dele, então o replay lê o kind gravado em vez de
+  perguntar ao próprio registry. Mesmo nome de step na mesma posição do journal, então runs em voo
+  continuam replayando; um checkpoint anterior ao valor retornado não traz nada, e só nesse caso o
+  registry local volta a ser consultado.
+  
+  Recusas de integridade de replay agora sobem intactas pelo loop e pelo workflow `agora.agent.run`.
+  Os dois `catch` reagiam a uma delas escrevendo MAIS checkpoints — um `persist:toolfail`, um
+  `persist:run:fail` — e num journal que já divergiu cada um deles pede uma posição que o histórico
+  não tem, então a tentativa de recuperação levantava a própria recusa e era ESSA que aparecia: uma
+  mensagem apontando o seq errado e nomeando checkpoints do caminho de recuperação, não os dois que
+  de fato discordaram. O workflow ainda fecha o stream, para o subscriber não ficar pendurado num run
+  que o engine está prestes a falhar. `isReplayIntegrityError` é exportado do pacote.
+
 ## 0.31.0
 
 ### Minor Changes
