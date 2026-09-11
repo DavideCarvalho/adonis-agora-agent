@@ -2,27 +2,47 @@
   "$schema": "https://turbo.build/schema.json",
   "tasks": {
     "build": {
-      "dependsOn": ["^build"],
-      "outputs": ["dist/**"]
+      "dependsOn": [
+        "^build"
+      ],
+      "outputs": [
+        "dist/**"
+      ]
     },
     "@adonis-agora/agent-dashboard#build:spa": {
-      "outputs": ["dist/spa/**"]
+      "outputs": [
+        "dist/spa/**"
+      ]
     },
     "@adonis-agora/agent#build": {
-      "dependsOn": ["^build", "@adonis-agora/agent-dashboard#build:spa"],
-      "outputs": ["dist/**"]
+      "dependsOn": [
+        "^build",
+        "@adonis-agora/agent-dashboard#build:spa"
+      ],
+      "outputs": [
+        "dist/**"
+      ]
     },
     "test": {
-      "dependsOn": ["^build"],
-      "outputs": ["coverage/**"]
+      "dependsOn": [
+        "^build",
+        "build"
+      ],
+      "outputs": [
+        "coverage/**"
+      ]
     },
     "test:watch": {
       "cache": false,
       "persistent": true
     },
     "typecheck": {
-      "dependsOn": ["^build"],
-      "outputs": ["*.tsbuildinfo"]
+      "dependsOn": [
+        "^build"
+      ],
+      "outputs": [
+        "*.tsbuildinfo"
+      ]
     }
   }
 }
