@@ -70,7 +70,7 @@ importers:
         specifier: 1.19.0
         version: 1.19.0(typescript@7.0.2)
       '@tanstack/intent':
-        specifier: ^0.4.0
+        specifier: 0.4.0
         version: 0.4.0
       '@types/node':
         specifier: 26.4.1
@@ -112,7 +112,7 @@ importers:
         specifier: 7.5.0
         version: 7.5.0(@adonisjs/assembler@8.5.1(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1)
       '@tanstack/intent':
-        specifier: ^0.4.0
+        specifier: 0.4.0
         version: 0.4.0
       '@testing-library/react':
         specifier: 16.3.3
