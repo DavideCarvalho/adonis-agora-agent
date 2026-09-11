@@ -295,6 +295,18 @@ describe('the configured intake', () => {
     expect(model[0]).toContain('The whole repo');
   });
 
+  it('lands the settled answers on the message that asked, so a reopened thread shows them', async () => {
+    const { detail } = await run({
+      intake: INTAKE,
+      awaitAnswers: true,
+      reply: { answers: { scope: ['everything'] } },
+    });
+    const asked = detail?.messages.find((message) => message.toolCalls !== undefined);
+    expect(asked?.toolResults).toMatchObject([
+      { id: 'intake-run-1', name: ASK_TOOL_NAME, output: { answers: { scope: ['everything'] } } },
+    ]);
+  });
+
   it('records a skip as rejected, not executed — declining is not choosing', async () => {
     const { store } = await run({
       intake: INTAKE,

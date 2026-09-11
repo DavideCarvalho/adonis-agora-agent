@@ -354,6 +354,14 @@ export class LucidAgentStore implements AgentStore {
     };
   }
 
+  async setMessageToolResults(messageId: string, results: ToolResult[]): Promise<void> {
+    await this.init();
+    await this.db
+      .from(AGENT_TABLES.messages)
+      .where('id', messageId)
+      .update({ tool_results: safeJson(results) });
+  }
+
   async truncateFrom(threadId: string, messageId: string): Promise<void> {
     await this.init();
     await this.db.transaction(async (trx) => {

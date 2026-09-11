@@ -616,9 +616,9 @@ async function runIntake(args: {
     name: ASK_TOOL_NAME,
     input: { preamble, questions: intake.questions },
   };
-  const asked = await hooks.step('intake:ask', async (): Promise<boolean> => {
+  const asked = (await hooks.step('intake:ask', async (): Promise<string | null> => {
     if (!intakeApplies({ intake, threadHasAssistant })) {
-      return false;
+      return null;
     }
     const message = await deps.store.appendMessage({
       threadId: input.threadId,
@@ -641,19 +641,22 @@ async function runIntake(args: {
       runId: hooks.runId,
     });
     await writer.write({ t: 'elicitation', id: request.id, request });
-    return true;
-  });
-  if (asked !== true) {
+    return message.id;
+  })) as string | boolean | null;
+  if (asked === null || asked === false) {
     return null;
   }
+  // A checkpoint that recorded only WHETHER the intake ran carries no message id, so such a run
+  // settles the tool-call row alone.
+  const messageId = typeof asked === 'string' ? asked : null;
   const reply = await awaitElicitation({
     hooks,
     request,
     ctx: elicitationContext(deps, input, hooks),
   });
   const result = settleElicitation({ request, reply });
-  await hooks.step('intake:answers', () =>
-    deps.store.updateToolCall({
+  await hooks.step('intake:answers', async () => {
+    await deps.store.updateToolCall({
       toolCallId: request.id,
       // A skip is not an answer. Both leave the agent holding the same values, but only one of them
       // is evidence the user chose them, and a reader auditing what the agent was told has to be
@@ -662,8 +665,13 @@ async function runIntake(args: {
       output: result,
       ...(result.skipped ? { error: 'skipped by the user' } : {}),
       ...(reply.answeredByRef !== undefined ? { executedByRef: reply.answeredByRef } : {}),
-    }),
-  );
+    });
+    if (messageId !== null) {
+      await deps.store.setMessageToolResults(messageId, [
+        { id: request.id, name: ASK_TOOL_NAME, output: result },
+      ]);
+    }
+  });
   return {
     role: 'assistant',
     content: preamble,
@@ -695,6 +703,13 @@ function elicitationContext(
  * interleaves them one call at a time has to keep replaying against THAT.
  */
 const PARALLEL_TOOLS_PATCH = 'agent:parallel-tools';
+
+/**
+ * Identifies the message-borne tool results to {@link AgentLoopHooks.patched}: attaching them adds a
+ * checkpoint after a turn's last tool, a position a run recorded under the shape without it cannot
+ * supply.
+ */
+const MESSAGE_TOOL_RESULTS_PATCH = 'agent:message-tool-results';
 
 /** What every per-call helper below needs from the turn that requested the call. */
 interface ToolTurnContext {
@@ -1721,6 +1736,18 @@ export async function runAgentLoop<TOutput = unknown>(
       for (const call of turn.toolCalls) {
         results.push(await runClaimedToolCall(turnCalls, await claimToolCall(turnCalls, call)));
       }
+    }
+    // The outputs land on the assistant message that made the calls. A reader reopening the thread
+    // pairs a call with its result off THAT message, so results that only reached the tool-call
+    // table leave every tool in the turn rendering as one still running.
+    //
+    // A position of its own, hence the marker: a run that suspended mid-turn under the shape
+    // without it has no room for a checkpoint between the last tool's persist and the next `llm:`.
+    // Every value written here comes from a checkpoint above, so a replay writes the same list.
+    if (await (hooks.patched?.(MESSAGE_TOOL_RESULTS_PATCH) ?? Promise.resolve(true))) {
+      await hooks.step(`persist:toolresults:${i}`, () =>
+        deps.store.setMessageToolResults(assistant.id, results),
+      );
     }
     modelMessages.push({ role: 'user', content: '', toolResults: results });
   }

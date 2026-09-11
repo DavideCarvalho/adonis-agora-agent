@@ -11,6 +11,7 @@ import type {
   ThreadDetail,
   ThreadSummary,
   ToolCallStatus,
+  ToolResult,
   UpdateToolCallInput,
 } from '../index.js';
 
@@ -257,6 +258,16 @@ export class InMemoryAgentStore implements AgentStore {
     row.messages.push(message);
     row.updatedAt = message.createdAt;
     return message;
+  }
+
+  async setMessageToolResults(messageId: string, results: ToolResult[]): Promise<void> {
+    for (const row of this.threads.values()) {
+      const message = row.messages.find((candidate) => candidate.id === messageId);
+      if (message !== undefined) {
+        message.toolResults = results;
+        return;
+      }
+    }
   }
 
   async truncateFrom(threadId: string, messageId: string): Promise<void> {

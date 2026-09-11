@@ -71,3 +71,46 @@ describe('a message round-trips every field it was appended with', () => {
     expect(appended).toMatchObject(OPTIONAL_FIELDS);
   });
 });
+
+/**
+ * A turn knows its calls when it writes the message and its outputs only after the tools have run,
+ * so the outputs are attached afterwards. One behaviour, held to on every adapter: a store that
+ * quietly dropped the write would leave every tool in a reopened thread rendering as one still
+ * running, with nothing logged.
+ */
+async function settleResults(store: AgentStore): Promise<StoredMessage | undefined> {
+  const thread = await store.createThread({ actor: ACTOR, persona: 'default' });
+  const message = await store.appendMessage({
+    threadId: thread.id,
+    role: 'assistant',
+    content: 'checking',
+    toolCalls: [{ id: 'call-1', name: 'search', input: { q: 'ship' } }],
+    toolResults: [{ id: 'call-1', name: 'search', output: null }],
+  });
+  await store.setMessageToolResults(message.id, [
+    { id: 'call-1', name: 'search', output: { hits: 2 } },
+  ]);
+  return (await store.getThread(thread.id))?.messages[0];
+}
+
+describe('a turn’s settled tool results reach the message that made the calls', () => {
+  let db: Database;
+
+  beforeEach(async () => {
+    db = await makeStoreDb();
+  });
+
+  afterEach(async () => {
+    await db?.manager.closeAll();
+  });
+
+  it('InMemoryAgentStore', async () => {
+    const readBack = await settleResults(new InMemoryAgentStore());
+    expect(readBack?.toolResults).toEqual([{ id: 'call-1', name: 'search', output: { hits: 2 } }]);
+  });
+
+  it('LucidAgentStore', async () => {
+    const readBack = await settleResults(new LucidAgentStore(asStoreDb(db)));
+    expect(readBack?.toolResults).toEqual([{ id: 'call-1', name: 'search', output: { hits: 2 } }]);
+  });
+});

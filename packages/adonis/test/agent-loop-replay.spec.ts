@@ -57,6 +57,7 @@ async function pass(journal: Journal, registry: ToolRegistry): Promise<void> {
     awaitApproval: (call) =>
       journal.at(`signal:tool:${RUN_ID}:${call.id}`, async () => ({ approved: true })),
     step: (name, fn) => journal.at(name, () => fn()),
+    patched: (id) => journal.patched(id),
   };
   journal.rewind();
   await runAgentLoop(
@@ -80,6 +81,8 @@ describe('agent loop — replay across processes with different registries', () 
       `signal:tool:${RUN_ID}:${CALL_ID}`,
       `tool:${CALL_ID}`,
       `persist:toolexec:${CALL_ID}`,
+      'patch:agent:message-tool-results',
+      'persist:toolresults:0',
       'llm:1',
       'persist:usage:1',
       'persist:assistant:1',
@@ -93,6 +96,22 @@ describe('agent loop — replay across processes with different registries', () 
     // the history holds `signal:tool:` — the refusal this guards against.
     await expect(pass(journal, new ToolRegistry())).resolves.toBeUndefined();
     expect(journal.names()).toEqual(recorded);
+  });
+
+  it('keeps replaying a run whose history has no room for the tool-results checkpoint', async () => {
+    const journal = new Journal();
+    await pass(journal, registryWithPurgeCache());
+
+    // The history a run that suspended under the shape without message-borne results carries: the
+    // turn's last tool leads straight into the next model call, with no position in between.
+    const marker = journal.names().indexOf('patch:agent:message-tool-results');
+    expect(journal.names()[marker + 1]).toBe('persist:toolresults:0');
+    journal.dropAt(marker + 1);
+    journal.dropAt(marker);
+    const older = journal.names();
+
+    await expect(pass(journal, registryWithPurgeCache())).resolves.toBeUndefined();
+    expect(journal.names()).toEqual(older);
   });
 
   it('resolves the kind locally when the checkpoint predates the recorded kind', async () => {

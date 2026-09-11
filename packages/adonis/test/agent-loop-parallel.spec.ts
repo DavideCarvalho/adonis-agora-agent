@@ -67,7 +67,7 @@ interface PassOptions {
   journal: Journal;
   tools: Record<string, FakeTool>;
   calls: { id: string; name: string }[];
-  /** Off = the loop must run the turn's calls one at a time, exactly as it always has. */
+  /** Off = the loop must run the turn's calls one at a time. */
   concurrent?: boolean;
 }
 
@@ -103,9 +103,10 @@ async function pass(options: PassOptions): Promise<PassResult> {
     awaitApproval: (call) =>
       journal.at(`signal:tool:${RUN_ID}:${call.id}`, async () => ({ approved: true })),
     step: (name, fn) => journal.at(name, () => fn()),
-    ...(options.concurrent === true
-      ? { parallel: settleAll, patched: (id) => journal.patched(id) }
-      : {}),
+    // The version gate is the durable runner's, not the concurrency hook's: a run records its
+    // markers whether or not the process that ran it could overlap anything.
+    patched: (id) => journal.patched(id),
+    ...(options.concurrent === true ? { parallel: settleAll } : {}),
   };
   journal.rewind();
   const result = await runAgentLoop(

@@ -44,6 +44,12 @@ export class Journal {
     entry.name = name;
   }
 
+  /** Drop one recorded entry, leaving the history a shape that never reached it would have left. */
+  dropAt(position: number): void {
+    if (this.entries[position] === undefined) throw new Error(`no entry at ${position}`);
+    this.entries.splice(position, 1);
+  }
+
   /** Drop one recorded output, as a checkpoint written before the step returned a value would. */
   forgetOutputAt(position: number): void {
     const entry = this.entries[position];
