@@ -52,6 +52,7 @@ function runToSummary(run: GovernanceRunRow): RunSummaryRow {
     actorRef: run.actorRef,
     tenantRef: run.tenantRef ?? null,
     agentName: run.agentName ?? null,
+    parentRunId: run.parentRunId ?? null,
     status: run.status,
     startedAt: run.startedAt,
     finishedAt: run.finishedAt ?? null,

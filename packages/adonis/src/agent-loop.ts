@@ -1638,6 +1638,7 @@ export async function runAgentLoop<TOutput = unknown>(
       actor: input.actor,
       durable: hooks.durable ?? false,
       ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+      ...(input.parentRunId !== undefined ? { parentRunId: input.parentRunId } : {}),
     }),
   );
 

@@ -107,6 +107,11 @@ export interface RunSummaryRow {
   actorLabel?: string;
   tenantRef: string | null;
   agentName: string | null;
+  /**
+   * The run that delegated this one, or `null` for a turn a person started. Without it a delegation's
+   * spend reads as an orphan turn on every surface built over these rows.
+   */
+  parentRunId: string | null;
   status: string;
   /** ISO timestamp. */
   startedAt: string;

@@ -85,7 +85,8 @@ export class InlineAgentRunner implements AgentRunner {
       step: (_name, fn) => fn(),
       // Nothing here records a position, so a turn's read tools can simply overlap.
       parallel: settleAll,
-      runAgent: (agentName, task) => this.runNested(agentName, task, actor, day),
+      runAgent: (agentName, task) =>
+        this.runNested({ agentName, task, actor, day, parentRunId: runId }),
     };
   }
 
@@ -97,12 +98,15 @@ export class InlineAgentRunner implements AgentRunner {
   }
 
   /** Delegate to another agent as a nested in-process run (a transient sub-thread). */
-  private async runNested(
-    agentName: string,
-    task: string,
-    actor: Actor,
-    day: string,
-  ): Promise<{ text: string }> {
+  private async runNested(args: {
+    agentName: string;
+    task: string;
+    actor: Actor;
+    day: string;
+    /** The run that asked for this one, recorded on its row so the delegation is not an orphan turn. */
+    parentRunId: string;
+  }): Promise<{ text: string }> {
+    const { agentName, task, actor, day, parentRunId } = args;
     const subThread = await this.store.createThread({ actor, persona: 'default', transient: true });
     const runId = crypto.randomUUID();
     const deps = this.factory.forAgent(agentName);
@@ -119,7 +123,8 @@ export class InlineAgentRunner implements AgentRunner {
       }),
       step: (_name, fn) => fn(),
       parallel: settleAll,
-      runAgent: (childName, childTask) => this.runNested(childName, childTask, actor, day),
+      runAgent: (childName, childTask) =>
+        this.runNested({ agentName: childName, task: childTask, actor, day, parentRunId: runId }),
     };
     // A nested sub-agent run is its own trace (its own runId), rooted by the same turn span.
     return spannedAgent(
@@ -129,7 +134,7 @@ export class InlineAgentRunner implements AgentRunner {
       () =>
         runAgentLoop(
           { ...deps, day },
-          { threadId: subThread.id, actor, userText: task, agentName, day },
+          { threadId: subThread.id, actor, userText: task, agentName, day, parentRunId },
           hooks,
         ),
       (result) => ({ textLength: result.text.length }),

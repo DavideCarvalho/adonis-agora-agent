@@ -219,6 +219,12 @@ export interface AgentRunInput {
   day?: string;
   /** Which named agent runs this turn. Omitted → the default/single agent. */
   agentName?: string;
+  /**
+   * The run that started this one (a delegation's parent). Recorded with the run so a governance
+   * surface can roll a delegation's cost up to the turn that asked for it; without it a child run is
+   * a row with nothing pointing at it outside the durable engine's own journal.
+   */
+  parentRunId?: string;
 }
 
 /**

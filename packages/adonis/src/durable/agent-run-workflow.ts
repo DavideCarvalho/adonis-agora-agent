@@ -129,6 +129,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
           userText: task,
           day,
           delegationDepth: (input.delegationDepth ?? 0) + 1,
+          parentRunId: ctx.runId,
           sinkRunId,
         });
       },

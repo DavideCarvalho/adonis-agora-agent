@@ -57,6 +57,8 @@ interface RunRow {
   actorRef: string;
   tenantRef?: string;
   agentName?: string;
+  /** The run that delegated this one; unset for a turn a person started. */
+  parentRunId?: string;
   status: AgentRunStatus;
   startedAt: string;
   finishedAt?: string;
@@ -109,6 +111,8 @@ export interface GovernanceRunRow {
   actorRef: string;
   tenantRef?: string;
   agentName?: string;
+  /** The run that delegated this one; unset for a turn a person started. */
+  parentRunId?: string;
   status: AgentRunStatus;
   startedAt: string;
   finishedAt?: string;
@@ -351,6 +355,7 @@ export class InMemoryAgentStore implements AgentStore {
       durable: input.durable ?? false,
       ...(input.actor.tenantRef !== undefined ? { tenantRef: input.actor.tenantRef } : {}),
       ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+      ...(input.parentRunId !== undefined ? { parentRunId: input.parentRunId } : {}),
     });
   }
 

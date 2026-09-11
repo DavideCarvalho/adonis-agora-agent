@@ -112,6 +112,7 @@ export function createTableStatements(): string[] {
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "thread_id" VARCHAR(255) NOT NULL REFERENCES "${t.threads}" ("id") ON DELETE CASCADE,
       "agent_name" VARCHAR(255) NULL,
+      "parent_run_id" VARCHAR(255) NULL,
       "actor_ref" VARCHAR(255) NOT NULL,
       "tenant_ref" VARCHAR(255) NULL,
       "status" VARCHAR(255) NOT NULL,
@@ -141,6 +142,15 @@ const RUN_ID_COLUMNS: readonly string[] = [
   AGENT_TABLES.messages,
   AGENT_TABLES.toolCalls,
   AGENT_TABLES.tokenUsage,
+];
+
+/**
+ * Columns added to a table that already exists in a deployed database, so `CREATE TABLE IF NOT
+ * EXISTS` can never reach them. Repaired the same way the `run_id` columns are, and for the same
+ * reason: the store writes them on every turn.
+ */
+const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }[] = [
+  { table: AGENT_TABLES.runs, column: 'parent_run_id', type: 'VARCHAR(255) NULL' },
 ];
 
 /**
@@ -194,6 +204,11 @@ export async function createAgentTables(db: LucidRawRunner): Promise<string[]> {
     if (await hasColumn(db, table, 'run_id')) continue;
     await db.rawQuery(`ALTER TABLE "${table}" ADD COLUMN "run_id" VARCHAR(255) NULL`);
     repairs.push(`${table}.run_id`);
+  }
+  for (const { table, column, type } of ADDITIVE_COLUMNS) {
+    if (await hasColumn(db, table, column)) continue;
+    await db.rawQuery(`ALTER TABLE "${table}" ADD COLUMN "${column}" ${type}`);
+    repairs.push(`${table}.${column}`);
   }
 
   for (const stmt of statements) {

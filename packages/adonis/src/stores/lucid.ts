@@ -496,6 +496,7 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
       id: input.runId,
       thread_id: input.threadId,
       agent_name: input.agentName ?? null,
+      parent_run_id: input.parentRunId ?? null,
       actor_ref: input.actor.id,
       tenant_ref: input.actor.tenantRef ?? null,
       status: 'running',
