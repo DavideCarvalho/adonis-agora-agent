@@ -37,17 +37,17 @@ export class GovernanceRunSampleSource implements RunSampleSource {
     while (runs.length < query.limit) {
       const page = await this.queries.listRuns({
         ...filter,
-        limit: query.limit - runs.length,
-        ...(cursor !== null ? { cursor } : {}),
+        first: query.limit - runs.length,
+        ...(cursor !== null ? { after: cursor } : {}),
       });
-      for (const row of page.runs) {
+      for (const row of page.items) {
         const detail = await this.queries.runDetail(row.runId);
         if (detail !== null) {
           runs.push(toScorableRun(detail));
         }
       }
       cursor = page.nextCursor;
-      if (cursor === null || page.runs.length === 0) {
+      if (cursor === null || page.items.length === 0) {
         break;
       }
     }
