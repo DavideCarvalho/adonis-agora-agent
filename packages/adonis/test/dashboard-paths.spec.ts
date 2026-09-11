@@ -96,6 +96,7 @@ describe('injectApiBase', () => {
 });
 
 describe('injectBaseHref', () => {
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: describing the shape, not interpolating
   it('inserts <base href="${mount}/"> as the first thing in <head>, before relative asset tags', () => {
     const html = '<html><head><script src="./assets/x.js"></script></head><body></body></html>';
     const out = injectBaseHref(html, '/agent/dashboard');

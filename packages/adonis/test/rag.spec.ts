@@ -33,6 +33,7 @@ describe('chunkText', () => {
 });
 
 describe('chunkDocuments', () => {
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: describing the shape, not interpolating
   it('scopes chunk ids as `${docId}#${n}` and carries source/metadata', () => {
     const records = chunkDocuments(
       [{ id: 'doc1', text: 'hello world', source: 'README', metadata: { lang: 'en' } }],

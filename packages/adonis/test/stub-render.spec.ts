@@ -67,6 +67,7 @@ describe('every published stub renders through the real configure engine', () =>
       '`createAgentTables`',
     );
     expect(rendered.get('database/migrations/create_agent_rag_chunks.stub')?.contents).toContain(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: describing the shape, not interpolating
       '`${documentId}#<n>`',
     );
   });
