@@ -58,7 +58,7 @@
   "devDependencies": {
     "@adonis-agora/agent": "workspace:*",
     "@adonisjs/core": "7.5.0",
-    "@tanstack/intent": "^0.4.0",
+    "@tanstack/intent": "0.4.0",
     "@testing-library/react": "16.3.3",
     "@types/node": "26.4.1",
     "@types/react": "19.2.18",
