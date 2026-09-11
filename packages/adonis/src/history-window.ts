@@ -54,7 +54,11 @@ export interface SlidingWindowHistoryOptions {
  * `StoredMessage`), so a cut cannot orphan a tool result from its call.
  */
 export class SlidingWindowHistory implements HistoryWindow {
-  private readonly maxMessages: number;
+  /**
+   * Always a row count, so the bound always reaches the store: the token budget below can only cut
+   * MORE than this, and it cuts from the same end.
+   */
+  readonly maxMessages: number;
   private readonly maxTokens: number | undefined;
   private readonly estimate: (message: ModelMessage) => number;
   readonly summarize?: NonNullable<HistoryWindow['summarize']>;

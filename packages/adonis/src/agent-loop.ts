@@ -55,7 +55,7 @@ import {
   skillInputSchema,
   skillToolDefinition,
 } from './skills.js';
-import type { AgentStore } from './spi/agent-store.js';
+import type { AgentStore, ThreadTurnReader } from './spi/agent-store.js';
 import type { HistoryWindow, HistoryWindowContext } from './spi/history-window.js';
 import type { ModelProvider, ModelTurnResult } from './spi/model-provider.js';
 import {
@@ -92,6 +92,7 @@ import type {
   ModelMessage,
   PromptBuilder,
   PromptContext,
+  StoredMessage,
   ToolCallRequest,
   ToolDefinition,
   ToolKind,
@@ -535,6 +536,120 @@ function buildSummaryBlock(summary: string): string {
  * never spends the marker's position and records byte-identical checkpoints.
  */
 const HISTORY_SELECT_PATCH = 'agent:history-select';
+
+/** The three things a turn reads off its thread, however the store was able to answer them. */
+interface ThreadForTurn {
+  /** Oldest-first, and at most what the ceiling was going to keep. */
+  messages: ModelMessage[];
+  title: string | null;
+  hasAssistantMessage: boolean;
+}
+
+/**
+ * `load:thread`'s payload as a replay can hand it back: its messages may be the store's own rows,
+ * and a payload that names no `hasAssistantMessage` holds the thread's whole transcript, where
+ * scanning the rows answers the same question the flag does. `null` is a thread the store did not
+ * have.
+ */
+interface RecordedThreadLoad {
+  messages: (ModelMessage | StoredMessage)[];
+  title?: string | null;
+  hasAssistantMessage?: boolean;
+}
+
+/** The three answers, normalized out of whatever shape `load:thread` recorded them in. */
+function threadForTurn(recorded: RecordedThreadLoad | null): ThreadForTurn {
+  const messages = (recorded?.messages ?? []).map(toModelMessage);
+  return {
+    messages,
+    title: recorded?.title ?? null,
+    hasAssistantMessage:
+      recorded?.hasAssistantMessage ?? messages.some((message) => message.role === 'assistant'),
+  };
+}
+
+/**
+ * A message as the model sees it — the store's own bookkeeping (`id`, `createdAt`, `usage`,
+ * `followUps`, `runId`, `persona`) left behind, so what `load:thread` records is the prompt's rows
+ * rather than the table's.
+ */
+function toModelMessage(message: ModelMessage | StoredMessage): ModelMessage {
+  return {
+    role: message.role,
+    content: message.content,
+    ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls } : {}),
+    ...(message.toolResults !== undefined ? { toolResults: message.toolResults } : {}),
+    ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+  };
+}
+
+/**
+ * How many of the thread's newest rows to ask for — the window's own row ceiling, or nothing at all,
+ * which asks for the transcript.
+ *
+ * A window that SUMMARIZES gets no limit. `summarize` is handed what `select` dropped, and a read
+ * bounded to what `select` keeps drops nothing: the turn would fold an empty summary into a prompt
+ * that is missing the messages it stands in for, with no error anywhere.
+ *
+ * A ceiling expressed only in TOKENS gets no limit either, and none can be derived from it: one
+ * message can be four tokens or forty thousand, so no row count follows from a token budget. Naming
+ * one too low reads fewer rows than `select` would have kept, which changes the prompt itself;
+ * leaving it out only costs the read.
+ */
+function turnMessageLimit(window: HistoryWindow | undefined): number | undefined {
+  if (window === undefined || window.summarize !== undefined) {
+    return undefined;
+  }
+  return window.maxMessages;
+}
+
+/**
+ * Read the thread: the store's bounded WINDOW where it offers one, else its whole transcript cut to
+ * the same bound in process.
+ *
+ * The probe is structural — the window is an optimization a store either offers or does not, and one
+ * that offers none still answers correctly. Which branch ran is invisible to the journal on purpose:
+ * both produce the same three answers over the same rows, so the payload `load:thread` records is
+ * identical either way and a deployment's choice of store can never decide a run's checkpoints. That
+ * is also why the probe lives INSIDE `load:thread` — it adds no position, and a replaying process
+ * reads the recorded payload back without calling the store at all.
+ *
+ * `hasAssistantMessage` is answered over the whole thread, never over the window. It decides a
+ * `thread-start` intake, and a window that happens to hold only the user's last questions belongs to
+ * a conversation that has still been answered — scanned off the window, such a thread re-introduces
+ * itself every turn.
+ */
+async function readThreadForTurn(
+  deps: AgentLoopDeps,
+  threadId: string,
+  messageLimit: number | undefined,
+): Promise<ThreadForTurn> {
+  const windowing = deps.store as Partial<ThreadTurnReader>;
+  if (typeof windowing.loadThreadForTurn === 'function') {
+    const page = await windowing.loadThreadForTurn({
+      threadId,
+      ...(messageLimit !== undefined ? { messageLimit } : {}),
+    });
+    return page === null
+      ? { messages: [], title: null, hasAssistantMessage: false }
+      : {
+          messages: page.messages.map(toModelMessage),
+          title: page.title,
+          hasAssistantMessage: page.hasAssistantMessage,
+        };
+  }
+  const thread = await deps.store.getThread(threadId);
+  const stored = thread?.messages ?? [];
+  const window =
+    messageLimit === undefined
+      ? stored
+      : stored.slice(Math.max(0, stored.length - Math.max(0, messageLimit)));
+  return {
+    messages: window.map(toModelMessage),
+    title: thread?.title ?? null,
+    hasAssistantMessage: stored.some((message) => message.role === 'assistant'),
+  };
+}
 
 /**
  * Apply the configured ceiling to the thread's messages. `select` runs OUTSIDE any checkpoint — it
@@ -1548,34 +1663,25 @@ export async function runAgentLoop<TOutput = unknown>(
     }),
   );
 
-  const thread = await hooks.step('load:thread', () => deps.store.getThread(input.threadId));
-  // Whether this thread had already been answered when the turn began — the one fact a
-  // `thread-start` intake is decided from, taken off `load:thread`'s CACHED result so a replay
-  // reads the same answer the first attempt did. See {@link runIntake}.
-  const threadHasAssistant = (thread?.messages ?? []).some(
-    (message) => message.role === 'assistant',
+  const thread = threadForTurn(
+    await hooks.step<RecordedThreadLoad | null>('load:thread', () =>
+      readThreadForTurn(deps, input.threadId, turnMessageLimit(deps.historyWindow)),
+    ),
   );
-  const fullHistory: ModelMessage[] = (thread?.messages ?? []).map((message) => ({
-    role: message.role,
-    content: message.content,
-    ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls } : {}),
-    ...(message.toolResults !== undefined ? { toolResults: message.toolResults } : {}),
-    ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-  }));
-  // With no window configured this whole block is skipped, so an existing deployment sends
-  // byte-identical history and records byte-identical checkpoints.
-  let modelMessages: ModelMessage[] = fullHistory;
+  // With no window configured this whole block is skipped, so an existing deployment sends the
+  // messages `load:thread` returned and records byte-identical checkpoints.
+  let modelMessages: ModelMessage[] = thread.messages;
   if (deps.historyWindow !== undefined) {
     const window = deps.historyWindow;
     modelMessages = (await (hooks.patched?.(HISTORY_SELECT_PATCH) ?? Promise.resolve(true)))
-      ? await applyHistoryWindow(window, deps, input, hooks, fullHistory, hooks.step)
+      ? await applyHistoryWindow(window, deps, input, hooks, thread.messages, hooks.step)
       : // A run whose history holds the single `history:window` checkpoint replays against it: a
         // completed one returns its recorded messages without re-running anything, and one that has
         // yet to reach it runs the whole fold INSIDE that one checkpoint — nested checkpoints would
         // take positions the recorded shape never had, and go missing the moment the outer one
         // replays from cache.
         await hooks.step('history:window', () =>
-          applyHistoryWindow(window, deps, input, hooks, fullHistory, (_name, fn) => fn()),
+          applyHistoryWindow(window, deps, input, hooks, thread.messages, (_name, fn) => fn()),
         );
   }
 
@@ -1744,7 +1850,9 @@ export async function runAgentLoop<TOutput = unknown>(
       input,
       hooks,
       writer,
-      threadHasAssistant,
+      // Whether this thread had already been answered when the turn began — taken off
+      // `load:thread`'s CACHED result so a replay decides the intake the way the first attempt did.
+      threadHasAssistant: thread.hasAssistantMessage,
     });
     if (asked !== null) {
       modelMessages.push(asked);
@@ -2090,7 +2198,7 @@ export async function runAgentLoop<TOutput = unknown>(
     modelMessages.push({ role: 'user', content: '', toolResults: results });
   }
 
-  if (thread !== null && (thread.title === '' || thread.title === 'New chat')) {
+  if (thread.title === '' || thread.title === 'New chat') {
     await hooks.step('persist:title', () =>
       deps.store.setTitle(input.threadId, deriveTitle(input.userText)),
     );

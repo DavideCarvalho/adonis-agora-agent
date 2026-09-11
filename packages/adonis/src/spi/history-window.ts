@@ -42,6 +42,20 @@ export interface HistorySummary {
  */
 export interface HistoryWindow {
   /**
+   * The most messages {@link select} can ever keep, where the ceiling can be stated as a row count.
+   *
+   * A hint the loop hands to the store, which then reads that many of the thread's newest rows
+   * rather than its whole transcript (see {@link import('./agent-store.js').ThreadTurnReader}).
+   * Declaring it is a PROMISE about `select`: that it keeps at most this many messages, and that
+   * they are the NEWEST ones — so a window of this size is indistinguishable, to `select`, from the
+   * full transcript. A window that can keep more than this, or something older than the newest
+   * `maxMessages`, must omit it rather than select over rows the store was never asked for.
+   *
+   * Omit where the ceiling is not a row count at all. Omitting costs only the bound on the READ; the
+   * prompt is identical either way.
+   */
+  readonly maxMessages?: number;
+  /**
    * Decide what the model sees.
    *
    * MUST be a pure function of `messages`. The loop calls it OUTSIDE any checkpoint, which is safe

@@ -91,6 +91,7 @@ A persisted tool call is addressable by exactly the id the model emitted — the
 - **`forkThread` and `truncateFrom` run in a transaction.** `forkThread` copies kept messages under fresh ids onto a new thread; `truncateFrom` deletes doomed messages' tool calls explicitly (not only via FK cascade) so it works on SQLite even without `PRAGMA foreign_keys=ON`.
 - **`appendMessage` bumps the thread's `updated_at`**, so thread lists reflect the latest activity.
 - **`quotaToday` sums input + output tokens over the inclusive UTC day.** Cache tokens are subsets and are never re-added, so the sum is the whole-day spend.
+- **`loadThreadForTurn` reads the window a turn sends, not the transcript.** The newest `messageLimit` messages ordered by the database, projected to the columns a model turn reads (`usage`, `follow_ups` and `run_id` stay in the table). `hasAssistantMessage` is a separate one-row existence check over the *whole* thread. The loop probes for this method structurally, so this is an optimization rather than a contract — see [The read a turn makes](/docs/agent/concepts/agent-loop#the-read-a-turn-makes).
 
 ## Auto-created tables, and turning that off
 

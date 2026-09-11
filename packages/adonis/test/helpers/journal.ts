@@ -37,6 +37,15 @@ export class Journal {
     return from === -1 || to === -1 ? [] : names.slice(from + 1, to);
   }
 
+  /** The output recorded at the first checkpoint with this name, as the journal holds it. */
+  recorded(name: string): string {
+    const entry = this.entries.find((candidate) => candidate.name === name);
+    if (entry?.output === undefined) {
+      throw new Error(`no output recorded for "${name}"`);
+    }
+    return entry.output;
+  }
+
   /** Corrupt one recorded name, to force a divergence at a position of the test's choosing. */
   renameAt(position: number, name: string): void {
     const entry = this.entries[position];

@@ -174,3 +174,78 @@ describe('LucidAgentStore', () => {
     expect(tc).toBeNull();
   });
 });
+
+describe('LucidAgentStore.loadThreadForTurn', () => {
+  /** One message at a chosen `created_at`, so the window's ordering is asserted rather than raced. */
+  async function append(
+    threadId: string,
+    role: 'user' | 'assistant',
+    content: string,
+    at: number,
+  ): Promise<string> {
+    const message = await store.appendMessage({
+      threadId,
+      role,
+      content,
+      runId: `run-${content}`,
+      followUps: ['and then?'],
+      usage: { inputTokens: 1, outputTokens: 2 },
+      toolResults: [{ id: `tc-${content}`, name: 'lookup', output: { rows: 'x' } }],
+    });
+    await db.from('agent_message').where('id', message.id).update({ created_at: at });
+    return message.id;
+  }
+
+  it('returns the newest messages oldest-first, projected to the turn columns', async () => {
+    const thread = await store.createThread({ actor, persona: 'default', title: 'Deep' });
+    await append(thread.id, 'user', 'one', 1_000);
+    await append(thread.id, 'assistant', 'two', 2_000);
+    await append(thread.id, 'user', 'three', 3_000);
+    await append(thread.id, 'assistant', 'four', 4_000);
+
+    const page = await store.loadThreadForTurn({ threadId: thread.id, messageLimit: 2 });
+
+    expect(page?.title).toBe('Deep');
+    expect(page?.messages.map((m) => m.content)).toEqual(['three', 'four']);
+    // The prompt reads tool results; `usage`, `followUps` and `runId` are the reader's bookkeeping.
+    expect(page?.messages[1]?.toolResults).toHaveLength(1);
+    expect(page?.messages[1]?.usage).toBeUndefined();
+    expect(page?.messages[1]?.followUps).toBeUndefined();
+    expect(page?.messages[1]?.runId).toBeUndefined();
+  });
+
+  it('answers "has this been answered" over the whole thread, not the window', async () => {
+    const thread = await store.createThread({ actor, persona: 'default' });
+    await append(thread.id, 'user', 'one', 1_000);
+    await append(thread.id, 'assistant', 'two', 2_000);
+    await append(thread.id, 'user', 'three', 3_000);
+    await append(thread.id, 'user', 'four', 4_000);
+
+    const page = await store.loadThreadForTurn({ threadId: thread.id, messageLimit: 2 });
+
+    expect(page?.messages.some((m) => m.role === 'assistant')).toBe(false);
+    expect(page?.hasAssistantMessage).toBe(true);
+  });
+
+  it('reads every message where no bound is named, and none where the bound is zero', async () => {
+    const thread = await store.createThread({ actor, persona: 'default' });
+    await append(thread.id, 'user', 'one', 1_000);
+    await append(thread.id, 'assistant', 'two', 2_000);
+
+    const all = await store.loadThreadForTurn({ threadId: thread.id });
+    expect(all?.messages.map((m) => m.content)).toEqual(['one', 'two']);
+
+    const none = await store.loadThreadForTurn({ threadId: thread.id, messageLimit: 0 });
+    expect(none?.messages).toEqual([]);
+    // The thread is still there, and still answered — only its window is empty.
+    expect(none?.hasAssistantMessage).toBe(true);
+  });
+
+  it('answers null for a thread that is unknown or soft-deleted, like getThread', async () => {
+    const thread = await store.createThread({ actor, persona: 'default' });
+    await store.softDeleteThread(thread.id);
+
+    expect(await store.loadThreadForTurn({ threadId: thread.id })).toBeNull();
+    expect(await store.loadThreadForTurn({ threadId: 'nope' })).toBeNull();
+  });
+});

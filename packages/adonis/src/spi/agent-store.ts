@@ -99,6 +99,43 @@ export interface RecordRunEndInput {
   error?: string;
 }
 
+/** Which thread, and how many of its newest messages, {@link ThreadTurnReader.loadThreadForTurn} reads. */
+export interface ThreadTurnQuery {
+  threadId: string;
+  /** Omitted reads every message; `0` reads none. */
+  messageLimit?: number;
+}
+
+/** What a turn reads off a thread — a bounded window, not the transcript. */
+export interface ThreadTurnPage {
+  title: string;
+  /** Whether the THREAD has ever been answered, not whether {@link messages} holds an answer. */
+  hasAssistantMessage: boolean;
+  /** Oldest first, carrying only the fields a model turn reads. */
+  messages: StoredMessage[];
+}
+
+/**
+ * A store that can hand a turn the WINDOW it is about to send, instead of the thread's transcript.
+ *
+ * {@link AgentStore.getThread} materializes every message row, every attachment and every tool
+ * output a thread ever recorded, and `load:thread` then journals what it loaded — so a long thread
+ * pays for its whole history on every turn and again on every replay, to send a prompt bounded to
+ * its last few messages. This read is bounded by the database (`order by created_at desc limit ?`),
+ * projected to the columns a model turn actually reads.
+ *
+ * `hasAssistantMessage` is answered over the WHOLE thread, never the page: it answers "has this
+ * conversation been answered before?" — what a `thread-start` intake asks — and a thread whose
+ * window happens to hold only the user's last questions has still been answered. `null` for a thread
+ * that is unknown or soft-deleted, matching `getThread`.
+ *
+ * Probed STRUCTURALLY rather than declared on {@link AgentStore}: it is an optimization a store
+ * either offers or does not, and one that offers none still answers correctly through the full read.
+ */
+export interface ThreadTurnReader {
+  loadThreadForTurn(query: ThreadTurnQuery): Promise<ThreadTurnPage | null>;
+}
+
 /** ORM-agnostic persistence. Refs are string ids; adapters may add real relations. */
 export interface AgentStore {
   createThread(input: CreateThreadInput): Promise<ThreadSummary>;
