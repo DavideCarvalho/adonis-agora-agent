@@ -140,6 +140,42 @@ export type { AgentGovernanceAuthorize, GovernanceGateVerdict } from './governan
 export { evaluateGovernanceGate } from './governance-gate.js';
 export * from './history-window.js';
 export { InProcessTokenStreamSink } from './in-process-sink.js';
+export {
+  type BuildMemoryBlockInput,
+  buildMemoryBlock,
+  DEFAULT_MAX_FACT_CHARS,
+  DEFAULT_MAX_MEMORIES,
+  type ForgetMemoryInput,
+  type ListMemoriesInput,
+  type MemoryAuthor,
+  type MemoryConfig,
+  type MemoryDigest,
+  type MemoryDigestEntry,
+  type MemoryFact,
+  type MemoryForgetRequest,
+  type MemoryOrigin,
+  type MemoryProvider,
+  type MemoryRecord,
+  type MemoryVerdict,
+  type MemoryWriteOutcome,
+  type MemoryWriteRequest,
+  memoryForgetVerdict,
+  memoryWriteVerdict,
+  type OfferMemoriesInput,
+  type OverriddenMemory,
+  offerMemories,
+  REMEMBER_TOOL_DESCRIPTION,
+  REMEMBER_TOOL_NAME,
+  type RememberToolInput,
+  type ResolveMemoryDigestInput,
+  rememberInputSchema,
+  rememberToolDefinition,
+  resolveMemoryDigest,
+  type SearchMemoriesInput,
+  type StoreMemoryInput,
+  type WriteMemoryInput,
+  writeMemory,
+} from './memory.js';
 export type { OwnershipVerdict } from './ownership.js';
 export { evaluateOwnership } from './ownership.js';
 // The ecosystem-wide cursor pagination vocabulary — structurally identical to

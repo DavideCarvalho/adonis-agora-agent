@@ -1,3 +1,4 @@
+import type { MemoryConfig } from './memory.js';
 import type { SkillsConfig } from './skills.js';
 import type { AgentStore } from './spi/agent-store.js';
 import type { HistoryWindow } from './spi/history-window.js';
@@ -51,6 +52,11 @@ export interface AgentDeps {
    * catalog block and no `skill` tool.
    */
   skills?: SkillsConfig;
+  /**
+   * What the assistant has concluded about the actor, carried into every turn against the same scope
+   * tokens skills use. Omit → no memory block and no `remember` tool.
+   */
+  memory?: MemoryConfig;
 }
 
 /** The UTC calendar day (`YYYY-MM-DD`) a run is accounted against — deterministic for quota/day. */

@@ -1,6 +1,8 @@
 import type { BrandedFunctionalTool } from './ai-tool-ref.js';
 import type { AgentDashboardConfig } from './dashboard/define_config.js';
 import type { AgentGovernanceAuthorize } from './governance-gate.js';
+import type { MemoryConfig } from './memory.js';
+import type { SkillsConfig } from './skills.js';
 import type { ActorDirectory } from './spi/actor-directory.js';
 import type { ActorResolver } from './spi/actor-resolver.js';
 import type { AttachmentStagingStore } from './spi/attachment-staging.js';
@@ -239,6 +241,21 @@ export interface AgentConfig {
    * for a window it cannot express.
    */
   historyWindow?: HistoryWindow;
+  /**
+   * Authored procedures the model can pull in mid-turn, scoped by tokens a host resolver orders —
+   * see `skills.ts`. The catalog costs one line per skill in the system prompt; a body arrives as a
+   * tool result, on the transcript, under {@link AgentConfig.historyWindow}. Omit → no catalog block
+   * and no `skill` tool.
+   */
+  skills?: SkillsConfig;
+  /**
+   * What the assistant has concluded about an actor and their organisation, carried across turns and
+   * across threads — see `memory.ts`. Scoped by the SAME tokens and normally the same
+   * {@link SkillsConfig.scopes} resolver, so one deployment has one answer to which scopes an actor
+   * has. Omit → no memory block and no `remember` tool; `GET`/`DELETE <path>/memories` are still
+   * mounted and answer as though nothing is on file.
+   */
+  memory?: MemoryConfig;
   /** Emit `agora:agent:*` diagnostics events when `@adonis-agora/diagnostics` is installed. Default true. */
   emitDiagnostics?: boolean;
   /**

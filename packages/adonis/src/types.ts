@@ -9,7 +9,7 @@ export interface Actor {
   tenantRef?: string;
 }
 
-export type ToolKind = 'read' | 'action' | 'agent' | 'ask' | 'skill';
+export type ToolKind = 'read' | 'action' | 'agent' | 'ask' | 'skill' | 'memory';
 
 /**
  * Declared shape of a tool.
@@ -24,6 +24,9 @@ export type ToolKind = 'read' | 'action' | 'agent' | 'ask' | 'skill';
  *  - `skill`  reads an authored procedure out of the catalog the turn's `skills:catalog` checkpoint
  *             holds. Registered by nothing, for the same reason `ask` is not, and it spends a read's
  *             checkpoints exactly — see `skills.ts`.
+ *  - `memory` writes one durable fact about the actor, authorized against the scopes the turn's
+ *             `memory:digest` checkpoint holds. Registered by nothing, and spends a read's
+ *             checkpoints exactly — see `memory.ts`.
  */
 export interface ToolSpec {
   name: string;
