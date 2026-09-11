@@ -43,7 +43,7 @@ export interface AgentDeps {
    * `false` disables it.
    */
   toolTransientRetry?: ToolTransientRetrySetting;
-  /** Compacts the persisted thread history into what rides the model call each turn. Omit → full history every turn. */
+  /** Bounds how much of the persisted thread rides the model call each turn. Omit → full history every turn. */
   historyWindow?: HistoryWindow;
 }
 

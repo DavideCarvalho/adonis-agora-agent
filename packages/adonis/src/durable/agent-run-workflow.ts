@@ -5,7 +5,8 @@ import {
   WorkflowSuspended,
 } from '@adonis-agora/durable';
 import { utcDay } from '../agent-deps.js';
-import { type AgentLoopHooks, runAgentLoop } from '../agent-loop.js';
+import { type AgentLoopHooks, runAgentLoop, settleAll } from '../agent-loop.js';
+import { isReplayIntegrityError } from '../replay-integrity.js';
 import type { SinkWriter } from '../spi/token-stream-sink.js';
 import type { AgentRunInput, Decision } from '../types.js';
 import { getDurableAgentContext } from './agent-run-context.js';
@@ -98,6 +99,13 @@ export class AgentRunWorkflow extends BaseWorkflow {
       // Lets the tool transient-retry loop tell a real suspend/continue-as-new apart from a
       // retryable tool error, so a control-flow signal is never swallowed by a retry.
       isControlFlowError: isControlFlowSignal,
+      // `ctx.localStep` takes its position on the CALL, before its first await, so a batch of tool
+      // invocations launched in one tick occupies the positions in call order however they settle.
+      // That is the whole precondition the loop asks for before overlapping anything.
+      parallel: settleAll,
+      // The version gate for in-place loop-shape changes, so a run that suspended under an older
+      // shape replays against the shape its own history holds.
+      patched: (id) => ctx.patched(id),
       // Delegation: a fresh transient subthread (checkpointed so its id is replay-stable), then a
       // tracked child run that streams into this run's own top-level sink.
       runAgent: async (agentName, task) => {
@@ -128,11 +136,24 @@ export class AgentRunWorkflow extends BaseWorkflow {
       if (isControlFlowSignal(error)) {
         throw error;
       }
+      const message = error instanceof Error ? error.message : String(error);
+      // A replay-integrity failure gets the stream half of this path but NOT the checkpoint half.
+      // The journal has already diverged, so `persist:run:fail` below would ask for a position the
+      // history cannot supply and raise its own refusal — burying the one that names the checkpoints
+      // that actually disagreed. The stream still has to be settled, or the subscriber hangs on a
+      // run the engine is about to fail.
+      if (isReplayIntegrityError(error)) {
+        if (!isChild) {
+          const writer = await deps.sink.open(ctx.runId);
+          await writer.write({ t: 'text', v: `\n[error] ${message}` });
+          await writer.end();
+        }
+        throw error;
+      }
       // A real failure (e.g. quota exceeded, which throws before the sink is opened) would otherwise
       // leave an HTTP subscriber hanging on a stream that never ends. Surface it on the stream and
       // close it, then rethrow so the engine still records the run as failed. Only a top-level run
       // owns the stream — a child defers the surfaced error to its ancestor, which also unwinds.
-      const message = error instanceof Error ? error.message : String(error);
       // Settle the run's persisted outcome (the loop only records completions — it can't catch its
       // own crash). A checkpointed step so a replay re-settles the ONE row idempotently; first-
       // terminal, so it can't clobber a completion. Each run (parent AND child) owns its own row.

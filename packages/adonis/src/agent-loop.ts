@@ -8,8 +8,9 @@ import {
   publishAgentToolRetry,
   spannedAgent,
 } from './diagnostics.js';
+import { isReplayIntegrityError } from './replay-integrity.js';
 import type { AgentStore } from './spi/agent-store.js';
-import type { HistoryWindow } from './spi/history-window.js';
+import type { HistoryWindow, HistoryWindowContext } from './spi/history-window.js';
 import type { ModelProvider } from './spi/model-provider.js';
 import {
   type AgentPricingStore,
@@ -33,7 +34,9 @@ import type {
   PromptBuilder,
   PromptContext,
   ToolCallRequest,
+  ToolKind,
   ToolResult,
+  ToolSpec,
 } from './types.js';
 
 export interface AgentLoopDeps {
@@ -92,10 +95,10 @@ export interface AgentLoopDeps {
    */
   toolTransientRetry?: ToolTransientRetrySetting;
   /**
-   * Compacts the persisted thread history into what actually rides the model call each turn.
-   * Applied once per run, inside `hooks.step` (so durable replay reuses the SAME windowed result —
-   * required for a summarizing impl that spends its own tokens). Undefined → the full thread history
-   * is sent every turn, unchanged from before this option existed.
+   * Bounds how much of the persisted thread rides into the model call each turn. Undefined → the
+   * WHOLE thread, every message the store holds, which is unbounded: a long-lived thread eventually
+   * exceeds the provider's context limit, and pays for the full transcript on every turn until it
+   * does. Applied once per run. See {@link SlidingWindowHistory} for the built-in.
    */
   historyWindow?: HistoryWindow;
 }
@@ -121,6 +124,28 @@ function intersectAllow(a?: string[], b?: string[]): string[] | undefined {
   }
   const second = new Set(b);
   return a.filter((name) => second.has(name));
+}
+
+/** One task's outcome under {@link AgentLoopHooks.parallel}, reported instead of thrown. */
+export type SettledTask<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+/**
+ * The {@link AgentLoopHooks.parallel} implementation for a runner whose checkpoint positions are
+ * handed out on the CALL — `@adonis-agora/durable`'s `ctx.localStep` is: it takes `pos.next()`
+ * before its first `await`. Every task is invoked here, synchronously and in list order, before any
+ * of them is awaited, which is what fixes the block of positions they occupy whatever order they
+ * then settle in. Nothing rejects: the caller decides what an individual failure means.
+ */
+export function settleAll<T>(tasks: readonly (() => Promise<T>)[]): Promise<SettledTask<T>[]> {
+  const started = tasks.map((task) => task());
+  return Promise.all(
+    started.map((work) =>
+      work.then<SettledTask<T>, SettledTask<T>>(
+        (value) => ({ ok: true, value }),
+        (error: unknown) => ({ ok: false, error }),
+      ),
+    ),
+  );
 }
 
 export interface AgentLoopHooks {
@@ -151,6 +176,28 @@ export interface AgentLoopHooks {
    * runner; the inline runner has no such notion and leaves it unset.
    */
   isControlFlowError?(error: unknown): boolean;
+  /**
+   * Run `tasks` concurrently, resolving once EVERY one has settled — one outcome per task, in INPUT
+   * order, never rejecting. Supplying it is a statement about the runner's checkpointing: each task
+   * MUST be invoked synchronously, in list order, before any is awaited, so a runner that hands out
+   * positions on the call assigns them in that order regardless of which task finishes first.
+   * {@link settleAll} is exactly that, and is what both bundled runners pass.
+   *
+   * Waiting for ALL of them is the other half of the contract. A durable runner unwinds a turn by
+   * THROWING, and a sibling abandoned part-way through its own step is a tool nobody ever runs.
+   *
+   * Absent → the loop runs a turn's tool calls one at a time, which is the honest answer for a
+   * runner whose positions are assigned anywhere other than the call.
+   */
+  parallel?<T>(tasks: readonly (() => Promise<T>)[]): Promise<SettledTask<T>[]>;
+  /**
+   * Does this run take the loop shape guarded by `id`? A runner replaying against recorded
+   * checkpoints answers `false` for a run that started before the shape changed, so that run keeps
+   * replaying the shape its history holds (`@adonis-agora/durable`'s `ctx.patched`, which consumes a
+   * position for a new run and gives it back to an old one). Absent → `true`: a runner that records
+   * no positions has no older shape to preserve.
+   */
+  patched?(id: string): Promise<boolean>;
 }
 
 export class QuotaExceededError extends Error {
@@ -194,6 +241,67 @@ function extractTask(input: unknown): string {
   return JSON.stringify(input);
 }
 
+/** Either the delegation target and its task, or why the gates refused the call. */
+type DelegationOutcome =
+  | { targetAgent: string; task: string; error?: undefined }
+  | { targetAgent?: undefined; task?: undefined; error: string };
+
+/**
+ * What the `persist:toolcall:<callId>` checkpoint returns: the kind this call was resolved to, plus
+ * the delegation verdict decided in the same checkpoint. Travels as a checkpoint output, so it must
+ * stay JSON-round-trippable.
+ */
+interface PersistedToolCall {
+  kind: ToolKind;
+  /** `agent` kind only. */
+  delegation?: DelegationOutcome;
+}
+
+/**
+ * The gates a delegation must clear. Delegation bypasses `ToolRegistry.invoke` (it is a ctx-level
+ * suspend point), so the three checks `invoke` applies have to be re-applied here in the same order
+ * — authorization first, then shape:
+ *  - the offered-tools (persona/agent allow-list) filter: a tool the model was not offered must not
+ *    run, even if the model names it anyway;
+ *  - the role/ability re-check. A synthesized delegate spec (`registerDelegateTools` in
+ *    agent-deps-factory.ts) carries whatever `roles`/`ability` its `delegatesTo` edge declared, and
+ *    nothing at all when the edge is a bare string — under `DefaultRolesPolicy` that is ADMIN-only,
+ *    and under an authz posture a tool with no `ability` is always denied;
+ *  - input validation, so a malformed input is rejected rather than silently coerced.
+ *
+ * Returns the verdict rather than throwing it: this runs inside the call's checkpoint, whose output
+ * is what a replay reads back, and it has to run BEFORE any event publication so a refusal never
+ * emits `agent.delegated`.
+ */
+async function resolveDelegation(
+  deps: AgentLoopDeps,
+  input: AgentRunInput,
+  call: ToolCallRequest,
+  spec: ToolSpec | undefined,
+): Promise<DelegationOutcome> {
+  try {
+    if (spec === undefined) {
+      // Unreachable while the kind is read off this same spec, but an `agent`-kind call with no
+      // resolvable spec must fail closed rather than fall through.
+      throw new ToolForbiddenError(call.name);
+    }
+    const offeredAllow = intersectAllow(input.persona?.allowedTools, deps.toolAllowList);
+    if (offeredAllow !== undefined && !offeredAllow.includes(call.name)) {
+      throw new ToolForbiddenError(call.name);
+    }
+    if (!(await deps.rolesPolicy.can(input.actor, spec))) {
+      throw new ToolForbiddenError(call.name);
+    }
+    const validation = await spec.inputSchema['~standard'].validate(call.input);
+    if (validation.issues !== undefined) {
+      throw new ToolInputInvalidError(call.name, validation.issues);
+    }
+    return { targetAgent: spec.targetAgent ?? call.name, task: extractTask(validation.value) };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function deriveTitle(userText: string): string {
   const trimmed = userText.trim().replace(/\s+/g, ' ');
   return trimmed.length > 60 ? `${trimmed.slice(0, 57)}...` : trimmed || 'New chat';
@@ -213,6 +321,351 @@ function resolveCostUsd(
     return reportedCostUsd;
   }
   return price === undefined ? null : estimateCost(usage, price);
+}
+
+/** Renders a folded-history summary as the leading `system` message of a windowed turn. */
+function buildSummaryBlock(summary: string): string {
+  return `<conversation_summary>\n${summary}\n</conversation_summary>\nEarlier messages in this thread are no longer included verbatim. Treat the summary above as an accurate record of them.`;
+}
+
+/**
+ * Identifies the split shape to {@link AgentLoopHooks.patched}: a run whose journal holds one
+ * `history:window` checkpoint has to keep replaying against that, not against a pure selection that
+ * spends no position at all. Reached only when a window is configured, so a deployment with none
+ * never spends the marker's position and records byte-identical checkpoints.
+ */
+const HISTORY_SELECT_PATCH = 'agent:history-select';
+
+/**
+ * Apply the configured ceiling to the thread's messages. `select` runs OUTSIDE any checkpoint — it
+ * is contractually pure and its input is already `load:thread`'s cached result, so a replay reaches
+ * the same split without a checkpoint of its own.
+ *
+ * Summarizing is the opposite: it calls a model. Journaled under `history:summarize`, so a resumed
+ * run reads back the summary the suspended attempt produced (and does not pay for it twice) instead
+ * of prompting with a different one. Both that checkpoint and the usage row below are reachable
+ * only through a window that actually summarizes.
+ */
+async function applyHistoryWindow(
+  window: HistoryWindow,
+  deps: AgentLoopDeps,
+  input: AgentRunInput,
+  hooks: AgentLoopHooks,
+  messages: ModelMessage[],
+  step: AgentLoopHooks['step'],
+): Promise<ModelMessage[]> {
+  const ctx: HistoryWindowContext = { actor: input.actor, threadId: input.threadId };
+  const { keep, drop } = window.select(messages, ctx);
+  const summarize = window.summarize?.bind(window);
+  if (drop.length === 0 || summarize === undefined) {
+    return keep;
+  }
+  const summary = await step('history:summarize', () => summarize(drop, ctx));
+  if (summary.usage !== undefined) {
+    const usage = summary.usage;
+    await step('persist:usage:history', () =>
+      deps.store.recordUsage({
+        threadId: input.threadId,
+        actorRef: input.actor.id,
+        runId: hooks.runId,
+        modelId: summary.modelId ?? deps.modelId ?? 'unknown',
+        purpose: 'summary',
+        usage,
+      }),
+    );
+  }
+  return [{ role: 'system', content: buildSummaryBlock(summary.text) }, ...keep];
+}
+
+/**
+ * Identifies the batched tool-call shape to {@link AgentLoopHooks.patched}: batching hoists a turn's
+ * `persist:toolcall` checkpoints ahead of its first tool execution, so a run whose journal
+ * interleaves them one call at a time has to keep replaying against THAT.
+ */
+const PARALLEL_TOOLS_PATCH = 'agent:parallel-tools';
+
+/** What every per-call helper below needs from the turn that requested the call. */
+interface ToolTurnContext {
+  deps: AgentLoopDeps;
+  input: AgentRunInput;
+  hooks: AgentLoopHooks;
+  /** The assistant message the calls hang off. */
+  messageId: string;
+  /** The run's live stream, so a tool can push a component into it. */
+  writer: SinkWriter;
+}
+
+/** A tool call whose kind has been settled by its `persist:toolcall` checkpoint. */
+interface ClaimedToolCall {
+  call: ToolCallRequest;
+  toolType: ToolKind;
+  /** `agent` kind only: the verdict the same checkpoint decided. */
+  delegation?: DelegationOutcome;
+  ctx: AiToolCtx;
+}
+
+/** One invocation's result, already reduced to what the persist checkpoint writes. */
+type ToolOutcome = { status: 'executed'; output: unknown } | { status: 'failed'; error: string };
+
+/**
+ * Record the call and settle its KIND, which decides this call's control flow: an `action` suspends
+ * the run on an approval signal (`tool:<runId>:<callId>`), an `agent` delegates to a child run,
+ * anything else records a plain step. Resolving it from `deps.registry` in the loop body would tie
+ * that branch to the registry of WHICHEVER PROCESS runs the body — and a process whose registry
+ * lacks the tool reads `undefined`, falls back to 'read', and then asks for a `tool:` checkpoint
+ * where the history holds the approval signal. That is a non-determinism refusal on resume, and it
+ * is an approval-gated action about to run with nobody's approval.
+ *
+ * So the lookup — and the delegation gates that hang off it — happen INSIDE the `persist:toolcall`
+ * step, and the verdict is RETURNED from it. The first process to reach this call writes the kind
+ * into the journal; every later replay reads it back instead of asking its own registry.
+ */
+async function claimToolCall(
+  turn: ToolTurnContext,
+  call: ToolCallRequest,
+): Promise<ClaimedToolCall> {
+  const { deps, input, hooks, messageId, writer } = turn;
+  const persona = input.persona;
+  const persisted = (await hooks.step(
+    `persist:toolcall:${call.id}`,
+    async (): Promise<PersistedToolCall> => {
+      const spec = deps.registry.spec(call.name);
+      const kind: ToolKind = spec?.kind ?? 'read';
+      if (kind === 'agent') {
+        const delegation = await resolveDelegation(deps, input, call, spec);
+        await deps.store.recordToolCall({
+          toolCallId: call.id,
+          messageId,
+          toolName: call.name,
+          // The store knows read/action only; a delegation is neither approved nor rejected by a
+          // human, so it persists as a read. A refused one is recorded `failed` directly — never
+          // `auto_executed` even transiently.
+          toolType: 'read',
+          input: call.input,
+          status: delegation.error !== undefined ? 'failed' : 'auto_executed',
+          runId: hooks.runId,
+        });
+        return { kind, delegation };
+      }
+      await deps.store.recordToolCall({
+        toolCallId: call.id,
+        messageId,
+        toolName: call.name,
+        toolType: kind === 'action' ? 'action' : 'read',
+        input: call.input,
+        status: kind === 'action' ? 'pending_approval' : 'auto_executed',
+        runId: hooks.runId,
+      });
+      return { kind };
+    },
+  )) as PersistedToolCall | undefined;
+  // A checkpoint written before the kind was journaled carries no output. Such a run is already
+  // committed to whatever its first process resolved, so the local registry is the only thing left
+  // to consult — reached by those runs alone.
+  const toolType: ToolKind = persisted?.kind ?? deps.registry.spec(call.name)?.kind ?? 'read';
+  return {
+    call,
+    toolType,
+    ...(persisted?.delegation !== undefined ? { delegation: persisted.delegation } : {}),
+    ctx: {
+      actor: input.actor,
+      threadId: input.threadId,
+      runId: hooks.runId,
+      requestId: hooks.runId,
+      emitComponent: (name: string, data: unknown) => writer.write({ t: 'component', name, data }),
+      ...(persona !== undefined ? { persona } : {}),
+      ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
+      ...(deps.host !== undefined ? { host: deps.host } : {}),
+    },
+  };
+}
+
+/**
+ * Execute one claimed call. Asks for its checkpoint SYNCHRONOUSLY — nothing is awaited before
+ * `hooks.step` — which is what lets a batch of these be launched together and still occupy
+ * positions in call order (see {@link AgentLoopHooks.parallel}).
+ *
+ * A tool's own failure is an OUTCOME, not a throw: the model is handed it as a result and adapts.
+ * Only the runner's control flow (a suspend / continue-as-new) and a replay-integrity refusal
+ * escape — answering either of those with a `persist:toolfail` checkpoint would ask for a position
+ * a diverged history has no room for, so the operator reads that second refusal instead of the
+ * disagreement that caused it.
+ *
+ * The retry loop runs INSIDE the `tool:<call.id>` step so it stays replay-safe: a durable step
+ * memoizes only its successful result, so on replay the whole step returns cached and the retries
+ * never re-run (side effects happen exactly once). The span sits inside the step body for the same
+ * reason, and covers all in-place attempts; the tool's output never rides it.
+ */
+async function invokeClaimedTool(
+  turn: ToolTurnContext,
+  claimed: ClaimedToolCall,
+): Promise<ToolOutcome> {
+  const { deps, hooks } = turn;
+  const { call, ctx, toolType } = claimed;
+  try {
+    const output = await hooks.step(`tool:${call.id}`, () =>
+      spannedAgent(
+        'tool.execution',
+        hooks.runId,
+        { runId: hooks.runId, toolCallId: call.id, toolName: call.name, toolType },
+        () =>
+          invokeWithTransientRetry(
+            () => deps.registry.invoke(call.name, call.input, ctx, deps.rolesPolicy),
+            deps.toolTransientRetry ?? {},
+            {
+              ...(hooks.isControlFlowError !== undefined
+                ? { isControlFlowError: hooks.isControlFlowError }
+                : {}),
+              onRetry: (attempt, retryError) => {
+                publishAgentToolRetry({
+                  runId: hooks.runId,
+                  toolName: call.name,
+                  toolCallId: call.id,
+                  attempt,
+                  message: retryError instanceof Error ? retryError.message : String(retryError),
+                });
+              },
+            },
+          ),
+        () => ({}),
+      ),
+    );
+    return { status: 'executed', output };
+  } catch (error) {
+    if (isReplayIntegrityError(error) || hooks.isControlFlowError?.(error) === true) {
+      throw error;
+    }
+    return { status: 'failed', error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Persist one settled invocation and shape the result the model is fed. */
+async function recordToolOutcome(
+  turn: ToolTurnContext,
+  claimed: ClaimedToolCall,
+  outcome: ToolOutcome,
+): Promise<ToolResult> {
+  const { deps, input, hooks } = turn;
+  const { call } = claimed;
+  // An `agent` call branches to delegation before reaching here, so anything that isn't an `action`
+  // is a read — the same posture the kind fallback itself takes.
+  const toolType = claimed.toolType === 'action' ? 'action' : 'read';
+  if (outcome.status === 'failed') {
+    await hooks.step(`persist:toolfail:${call.id}`, () =>
+      deps.store.updateToolCall({ toolCallId: call.id, status: 'failed', error: outcome.error }),
+    );
+    publishAgentToolCall({ runId: hooks.runId, toolName: call.name, toolType, status: 'failed' });
+    return { id: call.id, name: call.name, output: null, error: outcome.error };
+  }
+  await hooks.step(`persist:toolexec:${call.id}`, () =>
+    deps.store.updateToolCall({
+      toolCallId: call.id,
+      status: 'executed',
+      output: outcome.output,
+      ...(toolType === 'action' ? { executedByRef: input.actor.id } : {}),
+    }),
+  );
+  publishAgentToolCall({ runId: hooks.runId, toolName: call.name, toolType, status: 'executed' });
+  return { id: call.id, name: call.name, output: outcome.output };
+}
+
+/**
+ * Delegate to another agent (an `agent`-kind call). Dispatched at the LOOP level (not in a step)
+ * because the durable runner maps it to `ctx.child`, a ctx-level suspend point.
+ */
+async function delegateToolCall(
+  turn: ToolTurnContext,
+  claimed: ClaimedToolCall,
+): Promise<ToolResult> {
+  const { deps, input, hooks } = turn;
+  const { call } = claimed;
+  const delegation =
+    claimed.delegation ??
+    (await resolveDelegation(deps, input, call, deps.registry.spec(call.name)));
+  if (delegation.error !== undefined) {
+    return { id: call.id, name: call.name, output: null, error: delegation.error };
+  }
+  const { targetAgent, task } = delegation;
+  publishAgentDelegated({
+    runId: hooks.runId,
+    toAgent: targetAgent,
+    ...(input.agentName !== undefined ? { fromAgent: input.agentName } : {}),
+  });
+  const sub = hooks.runAgent
+    ? await hooks.runAgent(targetAgent, task)
+    : { text: `(no multi-agent support wired; cannot reach "${targetAgent}")` };
+  await hooks.step(`persist:toolexec:${call.id}`, () =>
+    deps.store.updateToolCall({ toolCallId: call.id, status: 'executed', output: sub }),
+  );
+  return { id: call.id, name: call.name, output: sub };
+}
+
+/** Everything a claimed call still needs, on its own: delegation or approval, then execute. */
+async function runClaimedToolCall(
+  turn: ToolTurnContext,
+  claimed: ClaimedToolCall,
+): Promise<ToolResult> {
+  const { deps, hooks } = turn;
+  const { call, toolType, ctx } = claimed;
+  if (toolType === 'agent') {
+    return delegateToolCall(turn, claimed);
+  }
+  if (toolType === 'action') {
+    const decision = await hooks.awaitApproval(call, ctx);
+    if (!decision.approved) {
+      await hooks.step(`persist:toolreject:${call.id}`, () =>
+        deps.store.updateToolCall({
+          toolCallId: call.id,
+          status: 'rejected',
+          ...(decision.reason !== undefined ? { error: decision.reason } : {}),
+        }),
+      );
+      publishAgentToolCall({
+        runId: hooks.runId,
+        toolName: call.name,
+        toolType,
+        status: 'rejected',
+      });
+      return {
+        id: call.id,
+        name: call.name,
+        output: { rejected: true, reason: decision.reason ?? 'rejected by user' },
+        error: 'rejected',
+      };
+    }
+  }
+  return recordToolOutcome(turn, claimed, await invokeClaimedTool(turn, claimed));
+}
+
+/**
+ * Overlap the INVOCATIONS of a batch of claimed calls, and only those. The persist checkpoints on
+ * either side stay strictly sequential, in call order — they are asked for after their neighbours'
+ * positions are already spent, so nothing about them depends on which tool finished first.
+ *
+ * A rejection here is the runner unwinding the turn, never a tool's own failure
+ * ({@link invokeClaimedTool} reports those). Rethrow the first one in call order and persist
+ * NOTHING: the resume replays this whole block, and a `persist:toolexec` written now would sit at
+ * the position the replay computes for an earlier call's.
+ */
+async function invokeClaimedToolsTogether(
+  turn: ToolTurnContext,
+  parallel: NonNullable<AgentLoopHooks['parallel']>,
+  claimed: ClaimedToolCall[],
+): Promise<ToolResult[]> {
+  const settled = await parallel(claimed.map((entry) => () => invokeClaimedTool(turn, entry)));
+  for (const outcome of settled) {
+    if (!outcome.ok) {
+      throw outcome.error;
+    }
+  }
+  const results: ToolResult[] = [];
+  for (const [index, entry] of claimed.entries()) {
+    const outcome = settled[index];
+    if (outcome?.ok === true) {
+      results.push(await recordToolOutcome(turn, entry, outcome.value));
+    }
+  }
+  return results;
 }
 
 /**
@@ -272,18 +725,22 @@ export async function runAgentLoop(
     ...(message.toolResults !== undefined ? { toolResults: message.toolResults } : {}),
     ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
   }));
-  // Compaction runs INSIDE the step body (replay-safe): a summarizing impl spends its own tokens,
-  // which a durable replay must never pay twice. With no window configured this is the identity
-  // function, so an existing deployment sends byte-identical history.
-  const modelMessages: ModelMessage[] =
-    deps.historyWindow !== undefined
-      ? await hooks.step('history:window', async () =>
-          (deps.historyWindow as HistoryWindow).apply(fullHistory, {
-            actor: input.actor,
-            threadId: input.threadId,
-          }),
-        )
-      : fullHistory;
+  // With no window configured this whole block is skipped, so an existing deployment sends
+  // byte-identical history and records byte-identical checkpoints.
+  let modelMessages: ModelMessage[] = fullHistory;
+  if (deps.historyWindow !== undefined) {
+    const window = deps.historyWindow;
+    modelMessages = (await (hooks.patched?.(HISTORY_SELECT_PATCH) ?? Promise.resolve(true)))
+      ? await applyHistoryWindow(window, deps, input, hooks, fullHistory, hooks.step)
+      : // A run whose history holds the single `history:window` checkpoint replays against it: a
+        // completed one returns its recorded messages without re-running anything, and one that has
+        // yet to reach it runs the whole fold INSIDE that one checkpoint — nested checkpoints would
+        // take positions the recorded shape never had, and go missing the moment the outer one
+        // replays from cache.
+        await hooks.step('history:window', () =>
+          applyHistoryWindow(window, deps, input, hooks, fullHistory, (_name, fn) => fn()),
+        );
+  }
 
   const writer = await hooks.openSink();
   let lastText = '';
@@ -500,220 +957,53 @@ export async function runAgentLoop(
     }
 
     const results: ToolResult[] = [];
-    for (const call of turn.toolCalls) {
-      const spec = deps.registry.spec(call.name);
-      const toolType = spec?.kind ?? 'read';
-      const ctx: AiToolCtx = {
-        actor: input.actor,
-        threadId: input.threadId,
-        runId: hooks.runId,
-        requestId: hooks.runId,
-        emitComponent: (name: string, data: unknown) =>
-          writer.write({ t: 'component', name, data }),
-        ...(persona !== undefined ? { persona } : {}),
-        ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
-        ...(deps.host !== undefined ? { host: deps.host } : {}),
-      };
-
-      // Delegation: an `agent`-kind tool runs another agent. Handled at the LOOP level (not in a
-      // step) because the durable runner maps it to `ctx.child`, a ctx-level suspend point.
-      //
-      // This bypasses `ToolRegistry.invoke`, so it must apply the same two gates `invoke` applies
-      // itself — the role/ability re-check AND the offered-tools (persona/agent allow-list) filter
-      // — BEFORE any persistence or event publication. A synthesized delegate spec
-      // (`registerDelegateTools` in agent-deps-factory.ts) carries whatever `roles`/`ability` its
-      // `delegatesTo` edge declared, and nothing when the edge is a bare string — under
-      // `DefaultRolesPolicy` that is ADMIN-only, under an authz posture a tool with no `ability` is
-      // always denied — so an unauthorized delegate call must fail closed here exactly like
-      // `ToolRegistry.invoke` fails closed for every other tool kind.
-      if (toolType === 'agent') {
-        const targetAgent = spec?.targetAgent ?? call.name;
-        let task: string;
-
-        try {
-          if (spec === undefined) {
-            // Never actually reachable today (an unresolved name defaults `toolType` to 'read'
-            // above), but an `agent`-kind call with no resolvable spec must fail closed rather than
-            // fall through — and this narrows `spec` to `ToolSpec` for the `rolesPolicy.can` call
-            // below.
-            throw new ToolForbiddenError(call.name);
-          }
-          const offeredAllow = intersectAllow(persona?.allowedTools, deps.toolAllowList);
-          if (offeredAllow !== undefined && !offeredAllow.includes(call.name)) {
-            // A tool the model was not offered must not run, even if the model names it anyway.
-            throw new ToolForbiddenError(call.name);
-          }
-          if (!(await deps.rolesPolicy.can(input.actor, spec))) {
-            throw new ToolForbiddenError(call.name);
-          }
-          // The third gate `ToolRegistry.invoke` applies, in the same order: authorization first,
-          // then shape. Delegation bypasses `invoke` (it is a ctx-level suspend point), so the gate
-          // has to be re-applied here or a malformed input is silently coerced instead of rejected.
-          const validation = await spec.inputSchema['~standard'].validate(call.input);
-          if (validation.issues !== undefined) {
-            throw new ToolInputInvalidError(call.name, validation.issues);
-          }
-          task = extractTask(validation.value);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          // A denied delegation is recorded `failed` directly — never `auto_executed` even
-          // transiently — and never emits `agent.delegated`.
-          await hooks.step(`persist:toolcall:${call.id}`, () =>
-            deps.store.recordToolCall({
-              toolCallId: call.id,
-              messageId: assistant.id,
-              toolName: call.name,
-              toolType: 'read',
-              input: call.input,
-              status: 'failed',
-              runId: hooks.runId,
-            }),
-          );
-          results.push({ id: call.id, name: call.name, output: null, error: message });
-          continue;
-        }
-
-        await hooks.step(`persist:toolcall:${call.id}`, () =>
-          deps.store.recordToolCall({
-            toolCallId: call.id,
-            messageId: assistant.id,
-            toolName: call.name,
-            toolType: 'read',
-            input: call.input,
-            status: 'auto_executed',
-            runId: hooks.runId,
-          }),
-        );
-        publishAgentDelegated({
-          runId: hooks.runId,
-          toAgent: targetAgent,
-          ...(input.agentName !== undefined ? { fromAgent: input.agentName } : {}),
-        });
-        const sub = hooks.runAgent
-          ? await hooks.runAgent(targetAgent, task)
-          : { text: `(no multi-agent support wired; cannot reach "${targetAgent}")` };
-        await hooks.step(`persist:toolexec:${call.id}`, () =>
-          deps.store.updateToolCall({ toolCallId: call.id, status: 'executed', output: sub }),
-        );
-        results.push({ id: call.id, name: call.name, output: sub });
-        continue;
+    const turnCalls: ToolTurnContext = {
+      deps,
+      input,
+      hooks,
+      messageId: assistant.id,
+      writer,
+    };
+    // A model routinely asks for several tools at once, and running them back to back makes the
+    // turn cost their sum. Overlapping them is safe here because a checkpoint position is handed
+    // out on the CALL, not when the work settles: launching every invocation in one tick — what
+    // `hooks.parallel` promises — pins the `tool:` block in call order however the tools then
+    // finish. The claim and persist checkpoints stay sequential around it.
+    //
+    // Only a turn whose every call is a plain `read` qualifies:
+    //   - an `action` suspends on an approval signal, which is human time rather than I/O, so
+    //     overlapping what follows it buys nothing — and reserving an invocation position for a
+    //     call that may yet be REJECTED spends a position the rejected branch never fills.
+    //   - an `agent` delegation is `ctx.child`, whose parallel form is the runtime's own `ctx.all`:
+    //     one workflow ref over a reserved block, carrying the `parallelGroup` bookkeeping that
+    //     makes a fan render as a fan. That is not N independent task closures, so it cannot ride
+    //     this hook.
+    // The kinds come from the `persist:toolcall` checkpoints, never from a local registry lookup,
+    // so every process replaying this turn reaches the same verdict.
+    const parallel = hooks.parallel;
+    if (
+      parallel !== undefined &&
+      turn.toolCalls.length > 1 &&
+      (await (hooks.patched?.(PARALLEL_TOOLS_PATCH) ?? Promise.resolve(true)))
+    ) {
+      // Claiming the whole turn first is what makes the kinds knowable before the first execution —
+      // and it is also what moves the checkpoints, hence the `patched` gate above.
+      const claimed: ClaimedToolCall[] = [];
+      for (const call of turn.toolCalls) {
+        claimed.push(await claimToolCall(turnCalls, call));
       }
-
-      if (toolType === 'action') {
-        await hooks.step(`persist:toolcall:${call.id}`, () =>
-          deps.store.recordToolCall({
-            toolCallId: call.id,
-            messageId: assistant.id,
-            toolName: call.name,
-            toolType: 'action',
-            input: call.input,
-            status: 'pending_approval',
-            runId: hooks.runId,
-          }),
-        );
-        const decision = await hooks.awaitApproval(call, ctx);
-        if (!decision.approved) {
-          await hooks.step(`persist:toolreject:${call.id}`, () =>
-            deps.store.updateToolCall({
-              toolCallId: call.id,
-              status: 'rejected',
-              ...(decision.reason !== undefined ? { error: decision.reason } : {}),
-            }),
-          );
-          results.push({
-            id: call.id,
-            name: call.name,
-            output: { rejected: true, reason: decision.reason ?? 'rejected by user' },
-            error: 'rejected',
-          });
-          publishAgentToolCall({
-            runId: hooks.runId,
-            toolName: call.name,
-            toolType,
-            status: 'rejected',
-          });
-          continue;
-        }
+      if (claimed.every((entry) => entry.toolType === 'read')) {
+        results.push(...(await invokeClaimedToolsTogether(turnCalls, parallel, claimed)));
       } else {
-        await hooks.step(`persist:toolcall:${call.id}`, () =>
-          deps.store.recordToolCall({
-            toolCallId: call.id,
-            messageId: assistant.id,
-            toolName: call.name,
-            toolType: 'read',
-            input: call.input,
-            status: 'auto_executed',
-            runId: hooks.runId,
-          }),
-        );
+        for (const entry of claimed) {
+          results.push(await runClaimedToolCall(turnCalls, entry));
+        }
       }
-
-      try {
-        // The retry loop runs INSIDE the `tool:<call.id>` step so it stays replay-safe: a durable
-        // step memoizes only its successful result, so on replay the whole step returns cached and
-        // the retries never re-run (side effects happen exactly once). A classified-transient error
-        // (DB deadlock / lock-wait timeout / serialization failure) is retried in place; any other
-        // failure surfaces immediately as before. `false` disables retry entirely.
-        // Span the tool execution INSIDE the step body (replay-safe). The transient-retry loop runs
-        // within the span, so the span covers all in-place attempts; the tool's output never rides it.
-        const output = await hooks.step(`tool:${call.id}`, () =>
-          spannedAgent(
-            'tool.execution',
-            hooks.runId,
-            { runId: hooks.runId, toolCallId: call.id, toolName: call.name, toolType },
-            () =>
-              invokeWithTransientRetry(
-                () => deps.registry.invoke(call.name, call.input, ctx, deps.rolesPolicy),
-                deps.toolTransientRetry ?? {},
-                {
-                  ...(hooks.isControlFlowError !== undefined
-                    ? { isControlFlowError: hooks.isControlFlowError }
-                    : {}),
-                  onRetry: (attempt, retryError) => {
-                    publishAgentToolRetry({
-                      runId: hooks.runId,
-                      toolName: call.name,
-                      toolCallId: call.id,
-                      attempt,
-                      message:
-                        retryError instanceof Error ? retryError.message : String(retryError),
-                    });
-                  },
-                },
-              ),
-            () => ({}),
-          ),
-        );
-        await hooks.step(`persist:toolexec:${call.id}`, () =>
-          deps.store.updateToolCall({
-            toolCallId: call.id,
-            status: 'executed',
-            output,
-            ...(toolType === 'action' ? { executedByRef: input.actor.id } : {}),
-          }),
-        );
-        results.push({ id: call.id, name: call.name, output });
-        publishAgentToolCall({
-          runId: hooks.runId,
-          toolName: call.name,
-          toolType,
-          status: 'executed',
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await hooks.step(`persist:toolfail:${call.id}`, () =>
-          deps.store.updateToolCall({ toolCallId: call.id, status: 'failed', error: message }),
-        );
-        results.push({ id: call.id, name: call.name, output: null, error: message });
-        publishAgentToolCall({
-          runId: hooks.runId,
-          toolName: call.name,
-          toolType,
-          status: 'failed',
-        });
+    } else {
+      for (const call of turn.toolCalls) {
+        results.push(await runClaimedToolCall(turnCalls, await claimToolCall(turnCalls, call)));
       }
     }
-
     modelMessages.push({ role: 'user', content: '', toolResults: results });
   }
 

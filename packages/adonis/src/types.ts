@@ -291,6 +291,16 @@ export interface StoredMessage {
   attachments?: MessageAttachment[];
   followUps?: string[];
   usage?: MessageUsage;
+  /** The persona that was active when the message was written; absent when none was selected. */
+  persona?: string;
+  /**
+   * The run (turn) that wrote this message. Without it a reader can only guess which turn a message
+   * belongs to by comparing timestamps against the run's `startedAt`, and that guess breaks the
+   * moment a turn is regenerated: regeneration truncates the replaced answer and re-answers the
+   * SURVIVING user message without appending a new one, so walking forward by time hands the older
+   * run the replacement's text. Absent on a row written outside a run.
+   */
+  runId?: string;
   createdAt: string;
 }
 

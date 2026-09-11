@@ -1,6 +1,6 @@
 import { type AgentDeps, utcDay } from '../agent-deps.js';
 import type { AgentDepsFactory } from '../agent-deps-factory.js';
-import { type AgentLoopHooks, runAgentLoop } from '../agent-loop.js';
+import { type AgentLoopHooks, runAgentLoop, settleAll } from '../agent-loop.js';
 import { spannedAgent } from '../diagnostics.js';
 import type { AgentRunner } from '../spi/agent-runner.js';
 import type { AgentStore } from '../spi/agent-store.js';
@@ -81,6 +81,8 @@ export class InlineAgentRunner implements AgentRunner {
           this.pending.set(`${runId}:${call.id}`, resolve);
         }),
       step: (_name, fn) => fn(),
+      // Nothing here records a position, so a turn's read tools can simply overlap.
+      parallel: settleAll,
       runAgent: (agentName, task) => this.runNested(agentName, task, actor, day),
     };
   }
@@ -105,6 +107,7 @@ export class InlineAgentRunner implements AgentRunner {
         reason: 'nested sub-agent cannot request human approval',
       }),
       step: (_name, fn) => fn(),
+      parallel: settleAll,
       runAgent: (childName, childTask) => this.runNested(childName, childTask, actor, day),
     };
     // A nested sub-agent run is its own trace (its own runId), rooted by the same turn span.

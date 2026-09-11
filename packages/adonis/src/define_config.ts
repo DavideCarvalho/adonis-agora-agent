@@ -229,13 +229,14 @@ export interface AgentConfig {
    */
   toolTransientRetry?: ToolTransientRetrySetting;
   /**
-   * Compacts the persisted thread history into what actually rides the model call each turn,
-   * applied once per run inside a durable-replay-safe step. Without it, the ENTIRE thread history is
-   * sent every turn — fine for short-lived threads, but input tokens (cost + latency, and eventually
-   * the model's context limit) grow without bound as a thread accumulates messages. This package
-   * ships {@link import('./history-window.js').SlidingWindowHistory}, a plain most-recent-N
-   * truncator with no summary; pass any {@link HistoryWindow} impl (e.g. one that summarizes
-   * dropped messages via a model call) instead.
+   * Bounds how much of the persisted thread rides the model call each turn, applied once per run.
+   * Without it the ENTIRE thread history is sent every turn — fine for short-lived threads, but
+   * input tokens (cost + latency, and eventually the model's context limit) grow without bound as a
+   * thread accumulates messages. This package ships
+   * {@link import('./history-window.js').SlidingWindowHistory}: a message count, a token budget, or
+   * both, optionally folding what it left out into a leading summary
+   * ({@link import('./history-window.js').summarizeWithModel}). Pass any {@link HistoryWindow} impl
+   * for a window it cannot express.
    */
   historyWindow?: HistoryWindow;
   /** Emit `agora:agent:*` diagnostics events when `@adonis-agora/diagnostics` is installed. Default true. */

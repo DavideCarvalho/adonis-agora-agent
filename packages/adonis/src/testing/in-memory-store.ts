@@ -144,8 +144,6 @@ export class InMemoryAgentStore implements AgentStore {
   private readonly toolCalls = new Map<string, ToolCallRow>();
   private readonly usage: UsageRow[] = [];
   private readonly runs = new Map<string, RunRow>();
-  /** messageId → runId, so run-detail can gather a run's messages without mutating `StoredMessage`. */
-  private readonly messageRunIds = new Map<string, string>();
 
   private now(): string {
     return new Date().toISOString();
@@ -253,12 +251,11 @@ export class InMemoryAgentStore implements AgentStore {
       ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
       ...(input.followUps !== undefined ? { followUps: input.followUps } : {}),
       ...(input.usage !== undefined ? { usage: input.usage } : {}),
+      ...(input.persona !== undefined ? { persona: input.persona } : {}),
+      ...(input.runId !== undefined ? { runId: input.runId } : {}),
     };
     row.messages.push(message);
     row.updatedAt = message.createdAt;
-    if (input.runId !== undefined) {
-      this.messageRunIds.set(message.id, input.runId);
-    }
     return message;
   }
 
@@ -424,14 +421,13 @@ export class InMemoryAgentStore implements AgentStore {
     const rows: GovernanceMessageRow[] = [];
     for (const thread of this.threads.values()) {
       for (const message of thread.messages) {
-        const runId = this.messageRunIds.get(message.id);
         rows.push({
           id: message.id,
           threadId: thread.id,
           role: message.role,
           content: message.content,
           createdAt: message.createdAt,
-          ...(runId !== undefined ? { runId } : {}),
+          ...(message.runId !== undefined ? { runId: message.runId } : {}),
         });
       }
     }

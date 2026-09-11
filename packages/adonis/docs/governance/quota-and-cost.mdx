@@ -71,7 +71,9 @@ Every model turn is recorded to the `agent_token_usage` table via `store.recordU
 - `input_tokens` / `output_tokens` — the turn's token counts.
 - `cache_write_tokens` / `cache_read_tokens` — prompt-cache breakdown when the provider reports it. **These are subsets of `input_tokens`, never added on top** — so token totals and quota don't change when a breakdown is present.
 - `model_id` — the model actually used. A provider-reported model id wins over the configured fallback, so cost can't misattribute to the wrong model.
-- `purpose` — `chat` for turns (the SPI also allows `title` / `follow_ups` / `summary`).
+- `purpose` — `chat` for a turn's model steps, `embedding` for inject-mode retrieval, `summary` for a
+  [history window](/docs/agent/concepts/agent-loop#bounding-the-history)'s fold (the SPI also allows
+  `title` / `follow_ups`).
 - `cost_usd` — the provider's **actual** cost when a gateway reports it (see below), else null.
 
 Reasoning tokens, when reported, are a subset of `output_tokens` — observability only, billed at the output rate.

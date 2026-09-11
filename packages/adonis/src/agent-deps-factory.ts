@@ -153,8 +153,8 @@ export interface AgentDepsFactoryConfig {
    */
   toolTransientRetry?: ToolTransientRetrySetting;
   /**
-   * Shared history-compaction hook applied to every agent's thread before each turn. Omit → the
-   * full thread history rides every turn (unchanged from before this option existed).
+   * Shared ceiling on how much of a thread rides into every agent's turn. Omit → the full thread
+   * history rides every turn.
    */
   historyWindow?: HistoryWindow;
   /** Name of the implicit default agent. Defaults to `'default'`. */

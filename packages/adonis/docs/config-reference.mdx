@@ -103,6 +103,12 @@ Anything else is `415`, `text/markdown` included. Passing this **replaces** the 
 
 `ToolTransientRetryOptions | false`. Retries a tool's own invocation in place on a classified-transient error (DB deadlock, lock-wait timeout, serialization failure). **Default ON** (`{ attempts: 2, backoffMs: 150 }`); pass `{ classify }` to change the rule, or `false` to disable. Non-transient failures are never retried. See [Transient tool retries](/docs/agent/authoring/transient-retry).
 
+### `historyWindow`
+
+`HistoryWindow`. The ceiling on how much of a thread rides into a turn. **Omit → the whole thread, every turn**, which is unbounded: a long-lived thread eventually exceeds the model's context limit, and pays for the full transcript until it does.
+
+`new SlidingWindowHistory({ maxMessages, maxTokens })` keeps the newest messages that fit a count, a token budget, or both — whichever cuts more wins, and the newest message always rides. Adding `summarize: summarizeWithModel(model)` folds what the window left out into a leading `system` summary, at the cost of one extra non-streamed model call per run, recorded as a `summary` usage row. Pass any `HistoryWindow` of your own for a window the built-in can't express; `estimateMessageTokens` and `DEFAULT_HISTORY_SUMMARY_INSTRUCTION` are exported for composing one. See [Bounding the history](/docs/agent/concepts/agent-loop#bounding-the-history).
+
 ### `authorizer` / `rolesPolicy`
 
 `RolesPolicy`. The tool authorization gate; `authorizer` and `rolesPolicy` are **aliases** — pass either. **Defaults to `DefaultToolAuthorizer`** (fail-closed, ADMIN-only, role-set intersection). Swap it to plug an ability-aware policy. See [Authorization](/docs/agent/governance/authorization).

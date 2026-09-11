@@ -25,6 +25,22 @@ import {
 const actor: Actor = { id: 'u1', roles: ['ADMIN'] };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+/** Did `work` settle inside `ms`? Bounded so a test that fails does so with an assertion. */
+async function settledWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
+  const deadline = new Promise<false>((resolve) => {
+    setTimeout(() => resolve(false), ms).unref?.();
+  });
+  return Promise.race([work.then(() => true), deadline]);
+}
+
 async function waitFor(predicate: () => boolean | Promise<boolean>, tries = 200): Promise<void> {
   for (let i = 0; i < tries; i += 1) {
     if (await predicate()) return;
@@ -176,6 +192,48 @@ describe('DurableAgentRunner + AgentService (durable workflow)', () => {
       g.store.toolCallRows().some((r) => r.toolName === 'danger' && r.status === 'rejected'),
     );
     expect(ran).toBe(false);
+  });
+
+  it("overlaps a turn's read tools on the real engine", async () => {
+    // Each tool blocks until the OTHER has started. Under sequential execution the first one waits
+    // out its deadline and reports `overlapped: false` — a readable failure rather than a hang.
+    const alphaStarted = deferred();
+    const betaStarted = deferred();
+    const script: FakeScript = (_args, turnIndex) =>
+      turnIndex === 0
+        ? {
+            text: 'looking',
+            toolCalls: [
+              { name: 'alpha', input: {} },
+              { name: 'beta', input: {} },
+            ],
+          }
+        : { text: 'done' };
+    const g = buildGraph(script);
+    const waitForSibling = async (
+      mine: { resolve: () => void },
+      theirs: { promise: Promise<void> },
+    ) => {
+      mine.resolve();
+      return { overlapped: await settledWithin(theirs.promise, 500) };
+    };
+    g.registry.register(
+      { name: 'alpha', kind: 'read', description: 'a', inputSchema: z.object({}) },
+      { execute: () => waitForSibling(alphaStarted, betaStarted) },
+    );
+    g.registry.register(
+      { name: 'beta', kind: 'read', description: 'b', inputSchema: z.object({}) },
+      { execute: () => waitForSibling(betaStarted, alphaStarted) },
+    );
+
+    const { runId } = await g.service.chat({ actor, message: 'look it up' });
+    await collectStream(g, runId);
+
+    const outputs = g.store
+      .toolCallRows()
+      .filter((row) => row.toolName === 'alpha' || row.toolName === 'beta')
+      .map((row) => row.output);
+    expect(outputs).toEqual([{ overlapped: true }, { overlapped: true }]);
   });
 
   it('delegates to a sub-agent as a child workflow (ctx.child)', async () => {

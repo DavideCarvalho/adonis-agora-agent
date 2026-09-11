@@ -26,6 +26,8 @@ export {
   type AgentLoopHooks,
   QuotaExceededError,
   runAgentLoop,
+  type SettledTask,
+  settleAll,
 } from './agent-loop.js';
 export { AgentRegistry } from './agent-registry.js';
 export type { ChatParams } from './agent-service.js';
@@ -148,6 +150,7 @@ export {
   RedisTokenStreamSink,
   type RedisTokenStreamSinkOptions,
 } from './redis-token-stream-sink.js';
+export { isReplayIntegrityError } from './replay-integrity.js';
 export { InlineAgentRunner } from './runners/inline-agent-runner.js';
 export * from './spi/actor-directory.js';
 export * from './spi/actor-resolver.js';
