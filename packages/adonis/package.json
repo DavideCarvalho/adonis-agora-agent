@@ -204,7 +204,7 @@
     "@tanstack/intent": "^0.4.0",
     "@types/node": "26.4.1",
     "@types/react": "19.2.18",
-    "ai": "7.0.93",
+    "ai": "7.0.97",
     "better-sqlite3": "13.0.3",
     "luxon": "3.7.2",
     "node-sql-parser": "5.4.0",
