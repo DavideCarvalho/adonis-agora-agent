@@ -11,7 +11,6 @@ import {
   AgentDepsFactory,
   AgentRegistry,
   AgentService,
-  DELEGATED_RUN_DECLINE_REASON,
   DefaultToolAuthorizer,
   registerDelegateTools,
   ToolRegistry,
@@ -85,6 +84,22 @@ function buildGraph(
   const runner = new DurableAgentRunner(engine);
   const service = new AgentService(runner, store, factory);
   return { service, store, sink, registry, agents, engine };
+}
+
+/**
+ * The first `approval` frame to arrive in `runId`'s stream, and the run+call it says to answer. For
+ * a delegated child that is NOT `runId` — which is the whole point of the id being on the frame.
+ */
+async function waitForFrame(
+  g: Graph,
+  runId: string,
+): Promise<{ runId: string; toolCallId: string }> {
+  for await (const frame of g.service.subscribe(runId)) {
+    if (frame.t === 'approval') {
+      return { runId: frame.runId, toolCallId: frame.id };
+    }
+  }
+  throw new Error('no approval frame arrived on the stream');
 }
 
 async function collectStream(g: Graph, runId: string): Promise<string> {
@@ -344,12 +359,10 @@ describe('DurableAgentRunner + AgentService (durable workflow)', () => {
     expect(delegateCall?.output).toEqual({ text: 'helper answer' });
   });
 
-  it('settles a delegated child\u2019s own HITL wait instead of suspending it where nobody can answer', async () => {
-    // The helper reaches for an action tool. A person is watching the ORCHESTRATOR's stream; the
-    // child's frames arrive there under the orchestrator's turn, and the id they carry is the
-    // child's tool call, not a run the watcher knows how to address. Suspending here parked the
-    // whole delegation on a signal nothing would ever send. It is declined instead — the same
-    // answer the inline runner's nested loop has always given.
+  it('lets a human answer a delegated child\u2019s HITL wait through the run id on its frame', async () => {
+    // The child suspends on `tool:<childRunId>:<callId>`, which is a real, answerable wait — but the
+    // human is watching the ORCHESTRATOR's stream, and the frame the child forwards there used to
+    // carry no run id. So the id rides ON the frame: the watcher reads it and approves the child.
     let ran = false;
     const script: FakeScript = (args, turnIndex) => {
       const hasDelegate = args.tools.some((t) => t.name === 'ask_helper');
@@ -359,25 +372,25 @@ describe('DurableAgentRunner + AgentService (durable workflow)', () => {
           : { text: 'all done' };
       }
       return turnIndex === 0
-        ? { text: 'let me act', toolCall: { name: 'danger', input: { k: 'v' } } }
+        ? { text: 'let me act', toolCall: { name: 'voidInvoice', input: { id: 'i-1' } } }
         : { text: 'helper answer' };
     };
     const g = buildGraph(script, [
       { name: 'orchestrator', delegatesTo: ['helper'] },
-      { name: 'helper', systemPrompt: 'You are a helper.', tools: ['danger'] },
+      { name: 'helper', systemPrompt: 'You are a helper.', tools: ['voidInvoice'] },
     ]);
     g.registry.register(
       {
-        name: 'danger',
+        name: 'voidInvoice',
         kind: 'action',
-        description: 'dangerous',
-        inputSchema: z.object({ k: z.string() }),
+        description: 'Void an invoice.',
+        inputSchema: z.object({ id: z.string() }),
         roles: ['ADMIN'],
       },
       {
         execute: async () => {
           ran = true;
-          return { acted: true };
+          return { voided: true };
         },
       },
     );
@@ -387,22 +400,32 @@ describe('DurableAgentRunner + AgentService (durable workflow)', () => {
       message: 'coordinate',
       agentName: 'orchestrator',
     });
-    // Bounded, so a child that parks on a signal nobody sends fails with an assertion rather than
-    // hanging the suite on a stream that never ends.
+
+    // The CHILD's run id, read off the frame that arrived in the parent's stream — not from `runId`,
+    // which is the orchestrator's and would signal the wrong run.
+    const parked = await waitForFrame(g, runId);
+    expect(parked.runId).not.toBe(runId);
+    expect(parked.toolCallId).toBe('call-0-voidInvoice');
+
+    await waitFor(() =>
+      g.store
+        .toolCallRows()
+        .some((r) => r.toolName === 'voidInvoice' && r.status === 'pending_approval'),
+    );
+    await g.service.approve(parked.runId, parked.toolCallId);
+
+    // The child resumes, runs the tool, answers the delegation, and the parent finishes.
+    await waitFor(() =>
+      g.store.toolCallRows().some((r) => r.toolName === 'voidInvoice' && r.status === 'executed'),
+    );
+    expect(ran).toBe(true);
     await waitFor(() =>
       g.store.toolCallRows().some((r) => r.toolName === 'ask_helper' && r.status === 'executed'),
     );
     await waitFor(async () => (await g.engine.getRun(runId))?.status === 'completed');
-
-    // The delegation came back with the helper's answer rather than hanging on a human.
-    const delegateCall = g.store.toolCallRows().find((r) => r.toolName === 'ask_helper');
-    expect(delegateCall?.status).toBe('executed');
-    expect(delegateCall?.output).toEqual({ text: 'helper answer' });
-    // And the action the sub-agent reached for is recorded as declined, and never ran.
-    const declined = g.store.governanceToolCalls().find((r) => r.toolName === 'danger');
-    expect(declined?.status).toBe('rejected');
-    expect(declined?.error).toBe(DELEGATED_RUN_DECLINE_REASON);
-    expect(ran).toBe(false);
+    expect(g.store.toolCallRows().find((r) => r.toolName === 'ask_helper')?.output).toEqual({
+      text: 'helper answer',
+    });
   });
 
   it('cuts a mutual handoff where the chain repeats, not at the depth ceiling', async () => {

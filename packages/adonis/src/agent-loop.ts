@@ -834,28 +834,6 @@ async function awaitElicitation(args: {
   );
 }
 
-/** What a delegated run answers its own turn when that turn asks for a human. */
-export const DELEGATED_RUN_DECLINE_REASON = 'a delegated sub-agent has no human to ask';
-
-/**
- * The human-in-the-loop hooks a DELEGATED run gets — the same ones on either runner.
- *
- * A sub-agent's turn runs behind another agent's tool call. Nobody is watching it: its run id is not
- * the stream a person subscribed to, and the frames it writes arrive under a turn the reader thinks
- * belongs to the agent they asked. So a wait there is a wait on nobody, and it is settled here
- * instead of parked — an `action` tool is declined, and a question set reads that decline as a skip
- * and proceeds on the pre-picked defaults its own request carries.
- *
- * Which is why {@link AgentLoopHooks.awaitAnswers} is deliberately ABSENT from what this returns:
- * `awaitElicitation` falls back to the decline above, so the two kinds of wait cannot settle
- * differently. Keep the tools that need a human on the agent a human is talking to.
- */
-export function delegatedRunHooks(): Pick<AgentLoopHooks, 'awaitApproval'> {
-  return {
-    awaitApproval: () => Promise.resolve({ approved: false, reason: DELEGATED_RUN_DECLINE_REASON }),
-  };
-}
-
 /** How many wrong-shaped replies one approval wait absorbs before {@link awaitDecision} gives up. */
 const MAX_DISCARDED_APPROVAL_REPLIES = 100;
 
@@ -964,7 +942,7 @@ async function runIntake(args: {
       status: 'pending_approval',
       runId: hooks.runId,
     });
-    await writer.write({ t: 'elicitation', id: request.id, request });
+    await writer.write({ t: 'elicitation', runId: hooks.runId, id: request.id, request });
     return message.id;
   })) as string | boolean | null;
   if (asked === null || asked === false) {
@@ -1137,6 +1115,21 @@ async function claimToolCall(
         status: parks ? 'pending_approval' : 'auto_executed',
         runId: hooks.runId,
       });
+      // Written from INSIDE this checkpoint, so the frame is streamed once and a replay — which
+      // returns the memoized result without re-running the body — never re-posts a form for a
+      // decision already made. That is also why it spends no position of its own.
+      //
+      // An `ask` is left out: `elicitToolCall` posts its `elicitation` frame, which carries the
+      // whole question set. Two frames for one parked call would be two forms.
+      if (kind === 'action') {
+        await writer.write({
+          t: 'approval',
+          runId: hooks.runId,
+          id: call.id,
+          toolName: call.name,
+          input: call.input,
+        });
+      }
       return { kind };
     },
   )) as PersistedToolCall | undefined;
@@ -1360,7 +1353,9 @@ async function elicitToolCall(
     ...(parsed.value.preamble !== undefined ? { preamble: parsed.value.preamble } : {}),
   };
   await hooks.step(`stream:elicitation:${call.id}`, () =>
-    Promise.resolve(turn.writer.write({ t: 'elicitation', id: call.id, request })),
+    Promise.resolve(
+      turn.writer.write({ t: 'elicitation', runId: hooks.runId, id: call.id, request }),
+    ),
   );
   const reply = await awaitElicitation({ hooks, request, ctx });
   const result = settleElicitation({ request, reply });

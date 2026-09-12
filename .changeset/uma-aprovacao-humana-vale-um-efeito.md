@@ -46,23 +46,39 @@ nunca registrado:
 
 De qualquer um dos lados a linha segue `pending_approval`, e a aprovação de verdade ainda a assenta.
 
-## Um run delegado não estaciona onde ninguém pode responder
+## Um run delegado pode ser respondido
 
-Um sub-agente roda atrás da chamada de tool de outro agente. Ninguém está olhando: o runId dele não é
-o stream a que alguém assinou, e os frames que ele escreve chegam no stream do PAI, sob um turno que o
-leitor acha que é do agente que ele pediu. O runner inline já decidia isso — declinava e seguia nos
-defaults — mas o durável suspendia num `tool:<childRunId>:<id>`, e o frame de elicitation encaminhado
-pro stream do pai não carrega run id nenhum pra responder contra. A suspensão não tinha volta, e os
-docs em três lugares afirmavam o comportamento do inline como se valesse para os dois.
+Um sub-agente estaciona numa espera real — `tool:<childRunId>:<callId>` — e a linha pendente que ele
+escreve carrega esse runId, então a caixa de aprovações sempre soube respondê-la. O que faltava não
+era o caminho de volta: era o **id**. Quem olha assiste ao stream de TOPO, porque é o único stream a
+que alguém assina; o filho encaminha os frames pra lá (é para isso que `sinkRunId` existe), e um
+formulário sem run id é um formulário que quem olha vê e não consegue responder.
 
-Um `delegatedRunHooks()` só, instalado pelo loop aninhado do inline e por um `AgentRunWorkflow` filho
-igualmente: `action` é declinado (`a delegated sub-agent has no human to ask`), e o hook deliberadamente
-NÃO fornece `awaitAnswers`, então um conjunto de perguntas lê aquele declínio como skip e segue nos
-próprios defaults. Um comportamento, nos dois runners, para as duas formas de espera.
+Então o id passa a viajar NO frame. Os dois frames de trabalho estacionado o carregam:
 
-Um filho que suspendeu numa espera sob o shape antigo continua replayando contra o histórico que tem:
-a mudança é guardada por `ctx.patched('agent:delegated-runs-settle-hitl')`, pedido só num filho, então
-a sequência de checkpoints de um run de topo é byte-idêntica.
+| Evento SSE | Payload | Responde com |
+| --- | --- | --- |
+| `event: approval` | `{runId, id, toolName, input}` | `POST /agent/tool-call/approve` \| `/reject` |
+| `event: elicitation` | `{runId, id, request}` | `POST /agent/tool-call/answer` \| `/skip` |
+
+`event: approval` é novo: uma `action` estacionada não tinha frame nenhum, só a linha
+`pending_approval`. É escrito de DENTRO do checkpoint `persist:toolcall:<callId>`, então não gasta
+posição própria e um replay — que devolve aquele checkpoint memoizado — nunca re-posta um formulário
+para uma decisão já tomada. E `runId` é o run ESTACIONADO, não o stream em que o frame chegou: ler o
+run do frame `meta` sinalizaria o ancestral e deixaria o filho suspenso. `decodeFrame` no cliente
+aprendeu os dois eventos — antes ele descartava `elicitation` inteiro — e descarta um frame sem
+`runId` em vez de entregar um que não dá para acionar.
+
+O runner inline passa a espelhar isso: o loop aninhado escreve no sink do ancestral via
+`childSinkWriter` e estaciona em `${childRunId}:${toolCallId}`, em vez de auto-declinar. Um
+comportamento, nos dois runners — e um sub-agente cujas aprovações ninguém vai responder **fica
+pendurado**, exatamente como um agente de topo. Se um job delega, mantenha tools de aprovação fora do
+sub-agente (`tools:` na definição dele).
+
+Os docs afirmavam o auto-declínio em três lugares (`docs/programmatic-api.mdx`,
+`docs/concepts/agent-loop.mdx`, `docs/authoring/personas-and-agents.mdx`) — era essa afirmação que
+estava errada, não o comportamento do durável. Nenhum marcador `patched` é gasto: a forma do journal
+do filho não muda.
 
 ## Um refresh de MCP remove, não só acrescenta
 

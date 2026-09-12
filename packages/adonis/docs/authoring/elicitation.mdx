@@ -57,7 +57,7 @@ Both surfaces:
 
 - write a single pending tool-call row named `ask` (`toolType: 'action'`, `status:
   'pending_approval'`), so a question set surfaces in the approvals inbox a deployment already has;
-- emit the same `elicitation` stream frame, carrying the whole request;
+- emit the same `elicitation` stream frame, carrying the whole request **and the `runId` to answer it against**;
 - park on the same `tool:<runId>:<callId>` signal a HITL approval already waits on.
 
 `POST /agent/tool-call/answer` and `/skip` mirror `approve`/`reject`, with the same ownership check.
@@ -88,10 +88,10 @@ proceeding on one they chose. Nobody answering parks the run indefinitely, exact
 does — there is no intake timeout, because a timeout that applied the defaults would manufacture
 consent from silence.
 
-**A delegated run is the one place nobody is asked.** A sub-agent's turn runs behind another agent's
-tool call and its stream is not the one a person subscribed to, so its question sets settle as a
-skip on their own defaults rather than parking — the same on both runners. See
-[Delegated runs have no human](/docs/agent/durability/durable-runner#delegated-runs-have-no-human).
+**A delegated sub-agent's question set parks too.** Its turn runs behind another agent's tool call,
+so the stream a person subscribed to belongs to the *ancestor* — which is where the frame is
+forwarded, carrying the child's own `runId` to answer against. See
+[Answering a sub-agent](/docs/agent/durability/durable-runner#answering-a-sub-agent).
 
 ## Determinism
 

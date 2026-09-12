@@ -63,6 +63,7 @@ When every call in the turn is a `read`, their invocations run **concurrently** 
 | `step(name, fn)` | calls `fn()` directly | wraps `fn` in a durable checkpoint (`ctx.localStep`) so replay returns the cached result |
 | `awaitApproval(call, ctx)` | resolves a pending in-memory promise | awaits a durable signal (`ctx.waitForSignal`) that survives restarts |
 | `awaitAnswers(request, ctx)` | resolves a pending in-memory promise, on the same key | awaits the same durable signal an approval does |
+| `openSink()` (delegated run) | the ancestor's sink, wrapped so the child cannot `end()` it | the same, keyed by `sinkRunId` |
 | `openSink()` | opens the in-process token sink | opens a shared sink keyed by run id |
 | `runAgent(name, task)` | runs a nested in-process loop | starts a durable child workflow (`ctx.child`) |
 | `parallel(tasks)` | `settleAll` — nothing records a position, so reads simply overlap | `settleAll` — every task is launched in one tick, so `ctx.localStep` pins the block in call order |
@@ -123,7 +124,7 @@ There is deliberately **no** `try/finally` closing the sink around the loop. A d
 
 `InlineAgentRunner` is the default (`durable: false`). `start(input)` mints a run id and kicks off `runAgentLoop` in the background, returning immediately so the HTTP handler can begin piping SSE. HITL decisions are delivered by `signal(runId, toolCallId, decision)`, which resolves a pending promise keyed `${runId}:${toolCallId}` — so one run's approval can never satisfy another's. A failed run surfaces the error on the live stream and closes it, so a subscriber is never left hanging.
 
-Delegation runs a **nested** in-process loop on a transient sub-thread. A nested sub-agent has no human to prompt, so its human-in-the-loop waits are settled by the runner rather than left hanging — see [Delegated runs have no human](/docs/agent/durability/durable-runner#delegated-runs-have-no-human), which is the same on the durable runner.
+Delegation runs a **nested** in-process loop on a transient sub-thread, and that nested run parks on a human exactly as a top-level one does — under its own run id, with its frames forwarded into the top-level ancestor's stream so a human can see and therefore answer them. See [Answering a sub-agent](/docs/agent/durability/durable-runner#answering-a-sub-agent), which is the same on the durable runner.
 
 <Callout type="info">
 The inline runner is single-replica: pending approvals and the token sink live in process memory. Horizontal scaling and crash-survival are the job of the [durable runner](/docs/agent/durability/durable-runner) (and the [Redis sink](/docs/agent/redis-streaming) for the stream).

@@ -5,10 +5,10 @@ import {
   WorkflowSuspended,
 } from '@adonis-agora/durable';
 import { utcDay } from '../agent-deps.js';
-import { type AgentLoopHooks, delegatedRunHooks, runAgentLoop, settleAll } from '../agent-loop.js';
+import { type AgentLoopHooks, runAgentLoop, settleAll } from '../agent-loop.js';
 import type { HumanReply } from '../elicitation.js';
 import { isReplayIntegrityError } from '../replay-integrity.js';
-import type { SinkWriter } from '../spi/token-stream-sink.js';
+import { childSinkWriter } from '../spi/token-stream-sink.js';
 import type { AgentRunInput, Decision } from '../types.js';
 import { getDurableAgentContext } from './agent-run-context.js';
 
@@ -38,28 +38,6 @@ function isControlFlowSignal(error: unknown): boolean {
 }
 
 /**
- * Identifies the loop shape to `ctx.patched`: a delegated child settles its own HITL waits and
- * therefore spends no signal position on them, where one recorded under the older shape holds a
- * `signal:tool:<runId>:<callId>` checkpoint it still has to replay against. Asked for only on a
- * child, so a top-level run's sequence is byte-identical either way.
- */
-const DELEGATED_RUNS_SETTLE_HITL_PATCH = 'agent:delegated-runs-settle-hitl';
-
-/**
- * Wrap a {@link SinkWriter} so a CHILD run forwards tokens into the top-level stream but never closes
- * it: the top-level run owns the stream's lifecycle across however many delegations it spans, so a
- * child's `end()` must be a no-op (ending the shared stream mid-parent-run would cut the human off).
- */
-function childSinkWriter(inner: SinkWriter): SinkWriter {
-  return {
-    write: (chunk) => inner.write(chunk),
-    end: () => {
-      /* the top-level run owns end() */
-    },
-  };
-}
-
-/**
  * The agent turn AS a durable workflow — the replay-safe counterpart of `InlineAgentRunner`. The
  * shared `runAgentLoop` body drives model→tools→model exactly as inline; the durable hooks make it
  * suspend-and-resume:
@@ -73,9 +51,9 @@ function childSinkWriter(inner: SinkWriter): SinkWriter {
  *  - `awaitApproval(call)` / `awaitAnswers(request)` → `ctx.waitForSignal('tool:<runId>:<callId>')` —
  *    an action tool or a question set suspends the run with zero compute until an approve/reject or
  *    answers signal arrives (namespaced by run, so one run's reply can never satisfy another's).
- *    A DELEGATED run is the exception: nobody is watching a sub-agent's turn, so it settles its own
- *    waits through `delegatedRunHooks` instead of suspending on a signal nothing would send —
- *    the same behaviour the inline runner's nested loop has.
+ *    A DELEGATED run suspends the same way, on its own runId — which is what `sinkRunId` exists for:
+ *    its frames land in the stream the human is already watching and carry that runId, so a
+ *    sub-agent's own HITL wait can be seen, and therefore answered.
  *  - `runAgent(name, task)` → `ctx.child(AgentRunWorkflow, …)` — sub-agent delegation is a tracked,
  *    replay-safe CHILD run (a node in the durable dashboard) that streams into the top-level sink.
  *  - `openSink()` → the run's own sink writer (top-level) or a {@link childSinkWriter} (a child).
@@ -98,30 +76,19 @@ export class AgentRunWorkflow extends BaseWorkflow {
       ...(input.delegationPath ?? []),
       ...(input.agentName !== undefined ? [input.agentName] : []),
     ];
-    // Whether this run's HITL waits reach a person. A DELEGATED run's do not — see
-    // `delegatedRunHooks` — so it settles them itself, exactly as the inline runner's nested loop
-    // does. The marker is only asked for on a child, so a top-level run's checkpoint sequence is
-    // untouched; a child that suspended on a wait under the older shape answers `false` and keeps
-    // replaying against the history it holds.
-    const parkOnHuman = !isChild || !(await ctx.patched(DELEGATED_RUNS_SETTLE_HITL_PATCH));
-    const humanHooks: Pick<AgentLoopHooks, 'awaitApproval' | 'awaitAnswers'> = parkOnHuman
-      ? {
-          // HITL: suspend until the run-namespaced signal arrives. This throw escapes the loop
-          // cleanly — it happens BEFORE the loop's tool try/catch, so a suspend is never seen as a
-          // tool failure.
-          awaitApproval: (call) => ctx.waitForSignal<Decision>(`tool:${ctx.runId}:${call.id}`),
-          // A question set parks on the SAME signal an approval does, under the tool call's own id
-          // — so `POST /agent/tool-call/answer` and `/approve` are one delivery path, and a
-          // deployment that only ever wired approval still settles an elicitation.
-          awaitAnswers: (request) =>
-            ctx.waitForSignal<HumanReply>(`tool:${ctx.runId}:${request.id}`),
-        }
-      : delegatedRunHooks();
-
     const hooks: AgentLoopHooks = {
       runId: ctx.runId,
       durable: true,
-      ...humanHooks,
+      // HITL: suspend until the run-namespaced signal arrives. This throw escapes the loop cleanly —
+      // it happens BEFORE the loop's tool try/catch, so a suspend is never seen as a tool failure.
+      // A DELEGATED run suspends on its OWN runId, and that wait is answerable: the pending row it
+      // writes carries that runId, and so does the `elicitation` frame it forwards into the stream
+      // the human is already watching.
+      awaitApproval: (call) => ctx.waitForSignal<Decision>(`tool:${ctx.runId}:${call.id}`),
+      // A question set parks on the SAME signal an approval does, under the tool call's own id — so
+      // `POST /agent/tool-call/answer` and `/approve` are one delivery path, and a deployment that
+      // only ever wired approval still settles an elicitation.
+      awaitAnswers: (request) => ctx.waitForSignal<HumanReply>(`tool:${ctx.runId}:${request.id}`),
       // A child forwards into the top-level sink (so the human watching the parent sees it) but must
       // not end it; a top-level run opens and owns its own sink keyed by its runId.
       openSink: async () =>

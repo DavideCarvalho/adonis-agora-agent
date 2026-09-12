@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { decodeFrame, parseSseEvent } from '../src/client/index.js';
 import {
   type AgentLoopDeps,
   type AgentLoopHooks,
@@ -8,7 +9,6 @@ import {
   DEFAULT_INTAKE_PREAMBLE,
   type Decision,
   DefaultRolesPolicy,
-  delegatedRunHooks,
   type ElicitationQuestion,
   type ElicitationReply,
   type ElicitationRequest,
@@ -536,13 +536,16 @@ describe('a reply of the wrong shape for an approval wait', () => {
   });
 });
 
-describe('a question set inside a delegated run', () => {
-  /** The hook set both runners install on a delegated run, driving a real turn. */
-  async function delegatedTurn(deps: Partial<AgentLoopDeps> = {}) {
+describe('a question set a delegated run parks on', () => {
+  it('carries the run to answer it against, which is the CHILD, not the stream it arrived on', async () => {
+    // A delegated run forwards its frames into its top-level ancestor's stream, because that is the
+    // only stream anyone subscribed to. So the run id on the frame and the run id of the stream are
+    // different, and answering against the stream's would signal the wrong run.
     const store = new InMemoryAgentStore();
     const sink = new InMemoryTokenStreamSink();
     const { id: threadId } = await store.createThread({ actor: ACTOR, persona: 'default' });
-    const result = await runAgentLoop(
+    const asked: ElicitationRequest[] = [];
+    await runAgentLoop(
       {
         model: new FakeModelProvider(echoScript('done')),
         store,
@@ -551,46 +554,59 @@ describe('a question set inside a delegated run', () => {
         modelId: 'fake-1',
         day: '2026-06-30',
         systemPrompt: 'base',
-        ...deps,
+        intake: { questions: [SCOPE] },
       } as AgentLoopDeps,
       { threadId, actor: ACTOR, userText: 'do the thing' },
       {
         runId: 'child-1',
-        openSink: () => sink.open('child-1'),
-        ...delegatedRunHooks(),
+        // The ancestor's stream, exactly as both runners wire a delegated run.
+        openSink: () => sink.open('parent-1'),
+        awaitApproval: async () => ({ approved: true }) as Decision,
+        awaitAnswers: async (request: ElicitationRequest) => {
+          asked.push(request);
+          return { answers: {} };
+        },
         step: (_name, fn) => fn(),
       },
     );
-    return { result, store };
-  }
 
-  it('settles on the pre-picked defaults instead of parking a run nobody is watching', async () => {
-    // A sub-agent runs behind another agent's tool call; a wait there is a wait on nobody. So the
-    // question set is skipped rather than parked, and the turn finishes on its own defaults —
-    // `awaitAnswers` is absent from the delegated hook set precisely so this cannot diverge from
-    // what an `action` tool gets.
-    const { result, store } = await delegatedTurn({ intake: { questions: [SCOPE] } });
-
-    expect(result.text).toBe('done');
-    const row = store.governanceToolCalls().find((call) => call.toolName === ASK_TOOL_NAME);
-    // A skip, not an answer: the values are the request's own, and nobody chose them.
-    expect(row?.status).toBe('rejected');
-    expect(row?.output).toMatchObject({ answers: { scope: ['narrow'] }, skipped: true });
-  });
-
-  it('offers no path for a human to be asked at all', () => {
-    // Structural, and load-bearing: wiring `awaitAnswers` here would suspend a delegated run on a
-    // signal whose run id never reaches whoever is watching the parent's stream.
-    expect(Object.keys(delegatedRunHooks())).toEqual(['awaitApproval']);
+    const frames: StreamFrame[] = [];
+    for await (const frame of sink.subscribe('parent-1')) frames.push(frame);
+    const posted = frames.find((frame) => frame.t === 'elicitation');
+    expect(posted).toMatchObject({ t: 'elicitation', runId: 'child-1', id: 'intake-child-1' });
+    expect(asked).toHaveLength(1);
   });
 });
 
 describe('the elicitation stream frame', () => {
-  it('serializes as its own SSE event, carrying the whole request', () => {
-    const sse = frameToSse({ t: 'elicitation', id: 'req-1', request: request() });
+  it('serializes as its own SSE event, carrying the whole request and the run to answer', () => {
+    const sse = frameToSse({
+      t: 'elicitation',
+      runId: 'child-1',
+      id: 'req-1',
+      request: request(),
+    });
     expect(sse.startsWith('event: elicitation\n')).toBe(true);
+    expect(sse).toContain('"runId":"child-1"');
     expect(sse).toContain('"id":"req-1"');
     expect(sse).toContain('How wide should I go?');
+  });
+
+  it('round-trips through the client decoder with the run and call to address', () => {
+    const sse = frameToSse({
+      t: 'elicitation',
+      runId: 'child-1',
+      id: 'req-1',
+      request: request(),
+    });
+    const event = parseSseEvent(sse.trimEnd());
+    expect(event).not.toBeNull();
+    // Without this the id is on the wire and unreadable by the library's own client.
+    expect(event && decodeFrame(event)).toMatchObject({
+      type: 'elicitation',
+      runId: 'child-1',
+      toolCallId: 'req-1',
+    });
   });
 
   it('leaves a text frame’s envelope byte-identical', () => {

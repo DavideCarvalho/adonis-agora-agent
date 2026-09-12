@@ -1,6 +1,6 @@
 import { type AgentDeps, utcDay } from '../agent-deps.js';
 import type { AgentDepsFactory } from '../agent-deps-factory.js';
-import { type AgentLoopHooks, delegatedRunHooks, runAgentLoop, settleAll } from '../agent-loop.js';
+import { type AgentLoopHooks, runAgentLoop, settleAll } from '../agent-loop.js';
 import { spannedAgent } from '../diagnostics.js';
 import {
   type ElicitationRequest,
@@ -10,6 +10,7 @@ import {
 } from '../elicitation.js';
 import type { AgentRunner } from '../spi/agent-runner.js';
 import type { AgentStore } from '../spi/agent-store.js';
+import { childSinkWriter } from '../spi/token-stream-sink.js';
 import type { Actor, AgentRunInput, Decision } from '../types.js';
 
 /**
@@ -25,9 +26,15 @@ interface ParkedWait {
 /**
  * Runs the agent turn in-process — the default runner (`durable: false`). A HITL wait resolves a
  * pending promise keyed run-namespaced by `${runId}:${toolCallId}`, so one run's reply can never
- * satisfy another's pending action. Sub-agent delegation runs a nested loop under
- * {@link delegatedRunHooks}, because a nested sub-agent has no human to prompt. Single-replica only
- * — durable is the scaled path (deferred).
+ * satisfy another's pending action.
+ *
+ * Sub-agent delegation runs a nested loop on a transient sub-thread, and that nested run parks on a
+ * human exactly as a top-level one does — under its OWN runId, which is what makes it answerable:
+ * the pending row it writes carries that runId, and its frames are forwarded into the top-level
+ * ancestor's stream (the only stream anyone subscribed to) carrying it too. The mirror of the
+ * durable runner's `sinkRunId`.
+ *
+ * Single-replica only — durable is the scaled path (deferred).
  */
 export class InlineAgentRunner implements AgentRunner {
   private readonly pending = new Map<string, ParkedWait>();
@@ -128,12 +135,7 @@ export class InlineAgentRunner implements AgentRunner {
       runId,
       durable: false,
       openSink: () => deps.sink.open(runId),
-      awaitApproval: (call) =>
-        // Run-namespaced key: `${runId}:${toolCallId}` — one run can't approve another's tool call.
-        this.park(`${runId}:${call.id}`, 'approval') as Promise<Decision>,
-      // An answer and an approval reach a parked run by the same channel, because a question set is
-      // itself a `pending_approval` row: `POST /agent/tool-call/answer` and `/approve` both land here.
-      awaitAnswers: (request: ElicitationRequest) => this.park(`${runId}:${request.id}`, 'answers'),
+      ...this.humanHooks(runId),
       step: (_name, fn) => fn(),
       // Nothing here records a position, so a turn's read tools can simply overlap.
       parallel: settleAll,
@@ -146,7 +148,25 @@ export class InlineAgentRunner implements AgentRunner {
           depth: depth + 1,
           path: chainBelow,
           parentRunId: runId,
+          // This run owns the stream a human subscribed to, so every delegation below it writes here.
+          sinkRunId: runId,
         }),
+    };
+  }
+
+  /**
+   * The two waits a run parks on, keyed by the run that is parked. Identical for a top-level run and
+   * for a delegated one: `signal(runId, …)` finds either, because the pending map belongs to the
+   * runner rather than to a run.
+   */
+  private humanHooks(runId: string): Pick<AgentLoopHooks, 'awaitApproval' | 'awaitAnswers'> {
+    return {
+      awaitApproval: (call) =>
+        // Run-namespaced key: `${runId}:${toolCallId}` — one run can't approve another's tool call.
+        this.park(`${runId}:${call.id}`, 'approval') as Promise<Decision>,
+      // An answer and an approval reach a parked run by the same channel, because a question set is
+      // itself a `pending_approval` row: `POST /agent/tool-call/answer` and `/approve` both land here.
+      awaitAnswers: (request: ElicitationRequest) => this.park(`${runId}:${request.id}`, 'answers'),
     };
   }
 
@@ -169,16 +189,22 @@ export class InlineAgentRunner implements AgentRunner {
     path: readonly string[];
     /** The run that asked for this one, recorded on its row so the delegation is not an orphan turn. */
     parentRunId: string;
+    /** The TOP-LEVEL run whose live stream this one writes into — the only stream a human watches. */
+    sinkRunId: string;
   }): Promise<{ text: string }> {
-    const { agentName, task, actor, day, depth, path, parentRunId } = args;
+    const { agentName, task, actor, day, depth, path, parentRunId, sinkRunId } = args;
     const subThread = await this.store.createThread({ actor, persona: 'default', transient: true });
     const runId = crypto.randomUUID();
     const deps = this.factory.forAgent(agentName);
     const hooks: AgentLoopHooks = {
       runId,
       durable: false,
-      openSink: () => deps.sink.open(runId),
-      ...delegatedRunHooks(),
+      // Forward into the ancestor's stream but never end it: the top-level run owns that lifecycle
+      // across however many delegations it spans.
+      openSink: async () => childSinkWriter(await deps.sink.open(sinkRunId)),
+      // A delegated run parks on a human like any other, keyed by ITS OWN runId — which is the id
+      // its pending row and its forwarded frames both carry, so the wait can be answered.
+      ...this.humanHooks(runId),
       step: (_name, fn) => fn(),
       parallel: settleAll,
       runAgent: (childName, childTask) =>
@@ -190,6 +216,7 @@ export class InlineAgentRunner implements AgentRunner {
           depth: depth + 1,
           path: [...path, agentName],
           parentRunId: runId,
+          sinkRunId,
         }),
     };
     // A nested sub-agent run is its own trace (its own runId), rooted by the same turn span.
