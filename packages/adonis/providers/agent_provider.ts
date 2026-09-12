@@ -21,6 +21,7 @@ import {
   evaluateOwnership,
   frameToSse,
   governanceQueries as governanceQueriesFactories,
+  HumanReplyMismatchError,
   InlineAgentRunner,
   InProcessTokenStreamSink,
   lucidStoreConnection,
@@ -521,12 +522,16 @@ export default class AgentProvider {
       };
       const owner = await service.runOwner(body.runId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
-      await service.answer({
-        runId: body.runId,
-        toolCallId: body.toolCallId,
-        answers: body.answers ?? {},
-        answeredByRef: actor.id,
-      });
+      try {
+        await service.answer({
+          runId: body.runId,
+          toolCallId: body.toolCallId,
+          answers: body.answers ?? {},
+          answeredByRef: actor.id,
+        });
+      } catch (error) {
+        return this.#conflictOnMismatch(ctx, error);
+      }
       return ctx.response.json({ ok: true });
     });
 
@@ -538,11 +543,15 @@ export default class AgentProvider {
       const body = (ctx.request.body() ?? {}) as { runId: string; toolCallId: string };
       const owner = await service.runOwner(body.runId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
-      await service.skip({
-        runId: body.runId,
-        toolCallId: body.toolCallId,
-        answeredByRef: actor.id,
-      });
+      try {
+        await service.skip({
+          runId: body.runId,
+          toolCallId: body.toolCallId,
+          answeredByRef: actor.id,
+        });
+      } catch (error) {
+        return this.#conflictOnMismatch(ctx, error);
+      }
       return ctx.response.json({ ok: true });
     });
 
@@ -1044,6 +1053,18 @@ export default class AgentProvider {
       return false;
     }
     return true;
+  }
+
+  /**
+   * Answers addressed at a tool call that is waiting for an approve/reject are a `409`, not a `500`:
+   * nothing is broken, the caller sent the wrong kind of reply for that call. The run is left parked
+   * on the approval it was always waiting for, rather than recording a decision nobody made.
+   */
+  #conflictOnMismatch(ctx: HttpContext, error: unknown): void {
+    if (!(error instanceof HumanReplyMismatchError)) {
+      throw error;
+    }
+    ctx.response.conflict({ error: error.message });
   }
 
   /**

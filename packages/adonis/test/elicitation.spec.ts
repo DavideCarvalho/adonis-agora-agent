@@ -8,11 +8,13 @@ import {
   DEFAULT_INTAKE_PREAMBLE,
   type Decision,
   DefaultRolesPolicy,
+  delegatedRunHooks,
   type ElicitationQuestion,
   type ElicitationReply,
   type ElicitationRequest,
   frameToSse,
   type HumanReply,
+  isHumanDecision,
   normalizeElicitationReply,
   resolveElicitation,
   runAgentLoop,
@@ -139,6 +141,16 @@ describe('a yes/no channel answering a question set', () => {
   it('returns a real reply untouched', () => {
     const reply: ElicitationReply = { answers: { scope: ['everything'] } };
     expect(normalizeElicitationReply(reply)).toBe(reply);
+  });
+
+  it('tells a yes/no apart from a set of answers, so only one of them can settle an approval', () => {
+    expect(isHumanDecision({ approved: true })).toBe(true);
+    expect(isHumanDecision({ approved: false, reason: 'no' })).toBe(true);
+    // No `approved` at all: the field an approval wait reads is simply absent, and `!undefined` is
+    // true — which is why this has to be asked rather than assumed.
+    expect(isHumanDecision({ answers: {} })).toBe(false);
+    expect(isHumanDecision({ answers: {}, skipped: true })).toBe(false);
+    expect(isHumanDecision({ answers: { scope: ['narrow'] }, answeredByRef: 'ops-7' })).toBe(false);
   });
 
   it('settles an Approve on the defaults rather than throwing on a missing `answers`', () => {
@@ -479,6 +491,97 @@ describe('the model-callable ask tool', () => {
     expect(store.toolCallRows().find((call) => call.toolName === ASK_TOOL_NAME)?.status).toBe(
       'rejected',
     );
+  });
+});
+
+describe('a reply of the wrong shape for an approval wait', () => {
+  it('gives up rather than spinning when a host hook resolves without ever waiting', async () => {
+    // Both shipped runners actually wait here, so this ceiling is out of reach for a person. What it
+    // rules out is a hook that resolves synchronously with the wrong shape forever, which would peg
+    // the only thread the process has.
+    const store = new InMemoryAgentStore();
+    const sink = new InMemoryTokenStreamSink();
+    const { id: threadId } = await store.createThread({ actor: ACTOR, persona: 'default' });
+    const registry = buildRegistry();
+    registry.register(
+      { name: 'voidInvoice', kind: 'action', description: 'v', inputSchema: z.object({}) },
+      { execute: async () => ({ voided: true }) },
+    );
+    const script: FakeScript = (_args, turnIndex) =>
+      turnIndex === 0
+        ? { text: 'acting', toolCall: { name: 'voidInvoice', input: {} } }
+        : { text: 'done' };
+
+    await expect(
+      runAgentLoop(
+        {
+          model: new FakeModelProvider(script),
+          store,
+          registry,
+          rolesPolicy: new DefaultRolesPolicy(),
+          modelId: 'fake-1',
+          day: '2026-06-30',
+          systemPrompt: 'base',
+        } as AgentLoopDeps,
+        { threadId, actor: ACTOR, userText: 'void it' },
+        {
+          runId: 'run-1',
+          openSink: () => sink.open('run-1'),
+          // Never a `Decision`, and never a wait.
+          awaitApproval: async () => ({ answers: {} }) as unknown as Decision,
+          step: (_name, fn) => fn(),
+        },
+      ),
+    ).rejects.toThrow(/replies that carried no approve\/reject/);
+  });
+});
+
+describe('a question set inside a delegated run', () => {
+  /** The hook set both runners install on a delegated run, driving a real turn. */
+  async function delegatedTurn(deps: Partial<AgentLoopDeps> = {}) {
+    const store = new InMemoryAgentStore();
+    const sink = new InMemoryTokenStreamSink();
+    const { id: threadId } = await store.createThread({ actor: ACTOR, persona: 'default' });
+    const result = await runAgentLoop(
+      {
+        model: new FakeModelProvider(echoScript('done')),
+        store,
+        registry: buildRegistry(),
+        rolesPolicy: new DefaultRolesPolicy(),
+        modelId: 'fake-1',
+        day: '2026-06-30',
+        systemPrompt: 'base',
+        ...deps,
+      } as AgentLoopDeps,
+      { threadId, actor: ACTOR, userText: 'do the thing' },
+      {
+        runId: 'child-1',
+        openSink: () => sink.open('child-1'),
+        ...delegatedRunHooks(),
+        step: (_name, fn) => fn(),
+      },
+    );
+    return { result, store };
+  }
+
+  it('settles on the pre-picked defaults instead of parking a run nobody is watching', async () => {
+    // A sub-agent runs behind another agent's tool call; a wait there is a wait on nobody. So the
+    // question set is skipped rather than parked, and the turn finishes on its own defaults —
+    // `awaitAnswers` is absent from the delegated hook set precisely so this cannot diverge from
+    // what an `action` tool gets.
+    const { result, store } = await delegatedTurn({ intake: { questions: [SCOPE] } });
+
+    expect(result.text).toBe('done');
+    const row = store.governanceToolCalls().find((call) => call.toolName === ASK_TOOL_NAME);
+    // A skip, not an answer: the values are the request's own, and nobody chose them.
+    expect(row?.status).toBe('rejected');
+    expect(row?.output).toMatchObject({ answers: { scope: ['narrow'] }, skipped: true });
+  });
+
+  it('offers no path for a human to be asked at all', () => {
+    // Structural, and load-bearing: wiring `awaitAnswers` here would suspend a delegated run on a
+    // signal whose run id never reaches whoever is watching the parent's stream.
+    expect(Object.keys(delegatedRunHooks())).toEqual(['awaitApproval']);
   });
 });
 

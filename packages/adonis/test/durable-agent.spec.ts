@@ -11,6 +11,7 @@ import {
   AgentDepsFactory,
   AgentRegistry,
   AgentService,
+  DELEGATED_RUN_DECLINE_REASON,
   DefaultToolAuthorizer,
   registerDelegateTools,
   ToolRegistry,
@@ -209,6 +210,60 @@ describe('DurableAgentRunner + AgentService (durable workflow)', () => {
     expect(ran).toBe(false);
   });
 
+  it('discards an answers-shaped signal delivered to a parked approval, rather than recording a rejection', async () => {
+    // A durable signal carries no clue about which wait it lands on, so the refusal has to happen in
+    // the loop. An `ElicitationReply` has no `approved`, and `!undefined` is true — this is the wait
+    // that used to read it as a human rejection.
+    let ran = false;
+    const script: FakeScript = (_args, turnIndex) =>
+      turnIndex === 0
+        ? { text: 'let me act', toolCall: { name: 'danger', input: { k: 'v' } } }
+        : { text: 'done' };
+    const g = buildGraph(script);
+    g.registry.register(
+      {
+        name: 'danger',
+        kind: 'action',
+        description: 'dangerous',
+        inputSchema: z.object({ k: z.string() }),
+        roles: ['ADMIN'],
+      },
+      {
+        execute: async () => {
+          ran = true;
+          return { acted: true };
+        },
+      },
+    );
+
+    const { runId } = await g.service.chat({ actor, message: 'do it' });
+    const toolCallId = 'call-0-danger';
+    await waitFor(() =>
+      g.store
+        .toolCallRows()
+        .some((r) => r.toolName === 'danger' && r.status === 'pending_approval'),
+    );
+    await waitFor(async () => (await g.engine.getRun(runId))?.status === 'suspended');
+
+    await g.service.answer({ runId, toolCallId, answers: { scope: ['narrow'] } });
+    await g.service.skip({ runId, toolCallId });
+    // Long enough that a run which was going to settle on either of those would have done so.
+    await sleep(50);
+
+    expect(g.store.toolCallRows().find((r) => r.toolName === 'danger')?.status).toBe(
+      'pending_approval',
+    );
+    expect(ran).toBe(false);
+    expect((await g.engine.getRun(runId))?.status).toBe('suspended');
+
+    // The approval it was always waiting on still settles it, from the position the journal holds.
+    await g.service.approve(runId, toolCallId);
+    await waitFor(() =>
+      g.store.toolCallRows().some((r) => r.toolName === 'danger' && r.status === 'executed'),
+    );
+    expect(ran).toBe(true);
+  });
+
   it("overlaps a turn's read tools on the real engine", async () => {
     // Each tool blocks until the OTHER has started. Under sequential execution the first one waits
     // out its deadline and reports `overlapped: false` — a readable failure rather than a hang.
@@ -287,6 +342,67 @@ describe('DurableAgentRunner + AgentService (durable workflow)', () => {
     const delegateCall = g.store.toolCallRows().find((r) => r.toolName === 'ask_helper');
     expect(delegateCall?.status).toBe('executed');
     expect(delegateCall?.output).toEqual({ text: 'helper answer' });
+  });
+
+  it('settles a delegated child\u2019s own HITL wait instead of suspending it where nobody can answer', async () => {
+    // The helper reaches for an action tool. A person is watching the ORCHESTRATOR's stream; the
+    // child's frames arrive there under the orchestrator's turn, and the id they carry is the
+    // child's tool call, not a run the watcher knows how to address. Suspending here parked the
+    // whole delegation on a signal nothing would ever send. It is declined instead — the same
+    // answer the inline runner's nested loop has always given.
+    let ran = false;
+    const script: FakeScript = (args, turnIndex) => {
+      const hasDelegate = args.tools.some((t) => t.name === 'ask_helper');
+      if (hasDelegate) {
+        return turnIndex === 0
+          ? { text: 'delegating', toolCall: { name: 'ask_helper', input: { task: 'help me' } } }
+          : { text: 'all done' };
+      }
+      return turnIndex === 0
+        ? { text: 'let me act', toolCall: { name: 'danger', input: { k: 'v' } } }
+        : { text: 'helper answer' };
+    };
+    const g = buildGraph(script, [
+      { name: 'orchestrator', delegatesTo: ['helper'] },
+      { name: 'helper', systemPrompt: 'You are a helper.', tools: ['danger'] },
+    ]);
+    g.registry.register(
+      {
+        name: 'danger',
+        kind: 'action',
+        description: 'dangerous',
+        inputSchema: z.object({ k: z.string() }),
+        roles: ['ADMIN'],
+      },
+      {
+        execute: async () => {
+          ran = true;
+          return { acted: true };
+        },
+      },
+    );
+
+    const { runId } = await g.service.chat({
+      actor,
+      message: 'coordinate',
+      agentName: 'orchestrator',
+    });
+    // Bounded, so a child that parks on a signal nobody sends fails with an assertion rather than
+    // hanging the suite on a stream that never ends.
+    await waitFor(() =>
+      g.store.toolCallRows().some((r) => r.toolName === 'ask_helper' && r.status === 'executed'),
+    );
+    await waitFor(async () => (await g.engine.getRun(runId))?.status === 'completed');
+
+    // The delegation came back with the helper's answer rather than hanging on a human.
+    const delegateCall = g.store.toolCallRows().find((r) => r.toolName === 'ask_helper');
+    expect(delegateCall?.status).toBe('executed');
+    expect(delegateCall?.output).toEqual({ text: 'helper answer' });
+    // And the action the sub-agent reached for is recorded as declined, and never ran.
+    const declined = g.store.governanceToolCalls().find((r) => r.toolName === 'danger');
+    expect(declined?.status).toBe('rejected');
+    expect(declined?.error).toBe(DELEGATED_RUN_DECLINE_REASON);
+    expect(ran).toBe(false);
   });
 
   it('cuts a mutual handoff where the chain repeats, not at the depth ceiling', async () => {

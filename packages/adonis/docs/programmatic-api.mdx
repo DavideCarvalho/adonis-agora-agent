@@ -105,7 +105,7 @@ What **does** still apply is everything inside the loop: the tool authorizer gat
 <Callout type="warn" title="HITL from a job will hang">
 An `action` tool suspends the run waiting for a decision. From a job with nobody watching, that is a run that never finishes. Either keep human-approval tools off the agent a job invokes (`tools:` on its definition), or have the job deliver the decision itself.
 
-A *delegated* sub-agent is handled for you: a nested run has no human to ask, so its `action` tools are auto-declined rather than left hanging.
+A *delegated* sub-agent is handled for you, on **both** runners: a nested run has no human to ask, so its `action` tools — and its question sets — are settled by the runner rather than left hanging.
 </Callout>
 
 ## Model settings

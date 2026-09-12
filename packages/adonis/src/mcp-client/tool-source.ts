@@ -5,12 +5,12 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { CallToolResultSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolHandler } from '../spi/tool.js';
 import { invokeWithTransientRetry, type ToolTransientRetrySetting } from '../tool-retry.js';
-import type { ToolSpec } from '../types.js';
+import type { ToolKind, ToolSpec } from '../types.js';
 import type { McpLogger, McpServerConfig } from './options.js';
 import { mcpInputSchema } from './tool-input.js';
 import { resolveMcpToolKind } from './tool-kind.js';
 import { localToolName } from './tool-name.js';
-import { isTransientMcpError } from './transient.js';
+import { isPreExecutionMcpError, isTransientMcpError } from './transient.js';
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -148,18 +148,24 @@ export class McpToolSource {
       ...(this.config.roles !== undefined ? { roles: this.config.roles } : {}),
       ...(this.config.ability !== undefined ? { ability: this.config.ability } : {}),
     };
-    const handler: ToolHandler = { execute: (input) => this.callTool(tool.name, input) };
+    const handler: ToolHandler = {
+      execute: (input) => this.callTool(tool.name, input, spec.kind),
+    };
     return { spec, handler, remoteName: tool.name, serverName: this.config.name };
   }
 
-  private callTool(remoteName: string, input: unknown): Promise<unknown> {
-    return invokeWithTransientRetry(() => this.callOnce(remoteName, input), this.retrySetting(), {
-      onRetry: (attempt, error) => {
-        this.logger?.warn(
-          `MCP server "${this.config.name}": tool "${remoteName}" failed transiently on attempt ${attempt}, reconnecting (${error instanceof Error ? error.message : String(error)})`,
-        );
+  private callTool(remoteName: string, input: unknown, kind: ToolKind): Promise<unknown> {
+    return invokeWithTransientRetry(
+      () => this.callOnce(remoteName, input),
+      this.retrySetting(kind),
+      {
+        onRetry: (attempt, error) => {
+          this.logger?.warn(
+            `MCP server "${this.config.name}": tool "${remoteName}" failed transiently on attempt ${attempt}, reconnecting (${error instanceof Error ? error.message : String(error)})`,
+          );
+        },
       },
-    });
+    );
   }
 
   private async callOnce(remoteName: string, input: unknown): Promise<unknown> {
@@ -261,16 +267,28 @@ export class McpToolSource {
   }
 
   /**
-   * The configured policy with `isTransientMcpError` filled in as the classifier. The default
-   * classifier recognizes local database lock contention, which is not how a remote server fails —
-   * leaving it in place would mean the policy is on and never matches anything.
+   * The configured policy with a classifier filled in. The library's default classifier recognizes
+   * local database lock contention, which is not how a remote server fails — leaving it in place
+   * would mean the policy is on and never matches anything.
+   *
+   * WHICH CLASSIFIER, AND WHY IT DEPENDS ON THE KIND. An `action` is a tool whose effects happen on
+   * somebody else's machine and are invisible from here, which is why one waits for a human at all.
+   * Most of what {@link isTransientMcpError} accepts cannot tell "the request never arrived" from
+   * "it ran and the answer was lost" — a timeout, a reset, a 503 — so retrying on it would spend one
+   * approval on two remote effects. An `action` therefore retries only
+   * {@link isPreExecutionMcpError}: failures that prove nothing ran. A `read` keeps the broader
+   * policy, where a second identical call costs a round trip.
+   *
+   * A host that supplied its own `classify` has taken that judgement over, and it is honoured for
+   * every kind.
    */
-  private retrySetting(): ToolTransientRetrySetting {
+  private retrySetting(kind: ToolKind): ToolTransientRetrySetting {
     const setting = this.config.transientRetry;
     if (setting === false) {
       return false;
     }
-    return { ...setting, classify: setting?.classify ?? isTransientMcpError };
+    const fallback = kind === 'action' ? isPreExecutionMcpError : isTransientMcpError;
+    return { ...setting, classify: setting?.classify ?? fallback };
   }
 
   private requestTimeoutMs(): number {

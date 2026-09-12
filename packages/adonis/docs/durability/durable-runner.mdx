@@ -34,6 +34,7 @@ The runner supplies the loop's hooks; the durable versions map onto durable prim
 | --- | --- | --- |
 | `step(name, fn)` | calls `fn()` directly | `ctx.localStep(name, fn)` — every LLM turn, tool execution, and persist/quota write is a memoized checkpoint; replay returns the saved result |
 | `awaitApproval(call)` | resolves an in-memory promise | `ctx.waitForSignal('tool:<runId>:<callId>')` — the run **suspends** on approval and resumes on the signal, surviving restarts |
+| `awaitAnswers(request)` | resolves an in-memory promise, on the same key | the same signal an approval waits on, under the question set's own id |
 | `runAgent(name, task)` | nested in-process loop | `ctx.child(AgentRunWorkflow, …)` — delegation is a tracked child run streaming into the parent's sink |
 | `openSink()` | the in-process sink | the run's own sink (top-level) or a child writer that forwards into the parent's stream |
 | `parallel(tasks)` | `settleAll` | `settleAll` — the same helper, because `ctx.localStep` takes its position on the **call**, before its first `await`: a batch launched in one tick occupies its positions in call order however the work settles |
@@ -48,6 +49,17 @@ Under the inline runner an `action`-tool approval resolves a promise in process 
 <Callout type="warn" title="Suspend is a throw, not a return">
 The durable runner suspends by *throwing* a control-flow signal (`WorkflowSuspended` / `ContinueAsNew`) up through `awaitApproval` or `ctx.child`. The loop deliberately has no `try/finally` closing the sink, so a suspend doesn't cut the live token stream — an approved-then-resumed run keeps one continuous SSE stream. `DurableAgentRunner.start` returns the run id immediately even when the run suspends synchronously on its first step.
 </Callout>
+
+## Delegated runs have no human
+
+A sub-agent runs behind another agent's tool call. Nobody is watching it: its run id is not the stream a person subscribed to, and the frames it writes arrive in the *parent's* stream, under a turn the reader thinks belongs to the agent they asked. So a delegated run never suspends on a human — on **either** runner:
+
+- an `action` tool is **declined**, with `a delegated sub-agent has no human to ask` as its recorded reason;
+- a question set (an `intake` or the model's `ask`) reads that decline as a **skip**, and the sub-agent proceeds on the pre-picked `defaults` its own request carries.
+
+The hook set is one function, `delegatedRunHooks()`, installed by the inline runner's nested loop and by a child `AgentRunWorkflow` alike — and it deliberately supplies **no** `awaitAnswers`, so the two kinds of wait cannot settle differently. Keep the tools that need a human on the agent a human is talking to (`tools:` on the sub-agent's definition).
+
+A child that suspended on a HITL signal under an older build keeps replaying against the history it holds: the change is gated on `ctx.patched('agent:delegated-runs-settle-hitl')`, asked for only on a child, so a top-level run's checkpoint sequence is byte-identical either way.
 
 ## What a replay is allowed to read
 

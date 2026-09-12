@@ -174,6 +174,62 @@ describe('InlineAgentRunner + AgentService over the Lucid store', () => {
     expect(ran).toBe(false);
   });
 
+  it('never records an answers-shaped reply to a parked approval as a human rejection', async () => {
+    // The bug this pins: an `ElicitationReply` carries no `approved`, and `!undefined` is true — so
+    // a form submitted against the wrong tool call id used to persist as `rejected`, a decision the
+    // operator never made and which nothing afterwards distinguishes from one they did.
+    let ran = false;
+    const script: FakeScript = (_args, turnIndex) =>
+      turnIndex === 0
+        ? { text: 'let me act', toolCall: { name: 'danger', input: { k: 'v' } } }
+        : { text: 'done' };
+    const g = buildGraph(script);
+    g.registry.register(
+      {
+        name: 'danger',
+        kind: 'action',
+        description: 'dangerous',
+        inputSchema: z.object({ k: z.string() }),
+        roles: ['ADMIN'],
+      },
+      {
+        execute: async () => {
+          ran = true;
+          return { acted: true };
+        },
+      },
+    );
+
+    const { runId } = await g.service.chat({ actor, message: 'do it' });
+    const toolCallId = 'call-0-danger';
+    await waitFor(async () => {
+      const row = await g.db.from('agent_tool_call').where('id', toolCallId).first();
+      return row?.status === 'pending_approval';
+    });
+
+    // A misdirected answer. Refused at the door, because this runner knows which wait is parked.
+    await expect(g.service.answer({ runId, toolCallId, answers: {} })).rejects.toThrow(
+      /waiting for an approve\/reject/,
+    );
+    // And a skip, which would have landed as a rejection carrying "skipped by the user".
+    await expect(g.service.skip({ runId, toolCallId })).rejects.toThrow(
+      /waiting for an approve\/reject/,
+    );
+
+    // The approval is still there to make: nothing was decided, nothing ran.
+    const parked = await g.db.from('agent_tool_call').where('id', toolCallId).first();
+    expect(parked?.status).toBe('pending_approval');
+    expect(ran).toBe(false);
+
+    // ...and the real decision still settles it.
+    await g.service.approve(runId, toolCallId);
+    await waitFor(async () => {
+      const row = await g.db.from('agent_tool_call').where('id', toolCallId).first();
+      return row?.status === 'executed';
+    });
+    expect(ran).toBe(true);
+  });
+
   it('quotaToday via the service returns the day token total', async () => {
     const g = buildGraph(() => ({ text: 'answer' }), new InMemoryQuotaStore());
     const { runId } = await g.service.chat({ actor, message: 'hi' });

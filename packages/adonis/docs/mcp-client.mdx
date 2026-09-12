@@ -42,7 +42,7 @@ A tool imported from an MCP server was written by someone outside this codebase 
 | `namespace` | The tool-name prefix: the server name (default), a string, or `false` for none. |
 | `roles` / `ability` | What the `RolesPolicy` checks every tool from this server against. Omit → the app's `defaultRoles`. |
 | `connectTimeoutMs` / `requestTimeoutMs` | Caps on the handshake (10s) and on `tools/list` plus every call (30s). Both are the SDK's own per-request timeouts, so a timed-out request is *cancelled on the wire* rather than abandoned. |
-| `transientRetry` | In-place retry for a call that failed transiently, classified by `isTransientMcpError`. Defaults to `{ attempts: 2, backoffMs: 150 }`; `false` surfaces the first failure. |
+| `transientRetry` | In-place retry for a call that failed transiently. Defaults to `{ attempts: 2, backoffMs: 150 }`; `false` surfaces the first failure. Which failures qualify depends on the tool's `kind` — see [An approved action is never issued twice](#an-approved-action-is-never-issued-twice). |
 | `validator` | Compiles each tool's JSON Schema. Defaults to the MCP SDK's AJV adapter. |
 | `rejectUnsafePatterns` | Screen a schema `pattern` that can backtrack exponentially. Default `true`. |
 | `required` | Fail app boot when this server cannot be reached. Default `false`. |
@@ -61,6 +61,14 @@ Booting the whole application on the availability of a third-party process is th
 
 A server that was down at boot is not lost — the importer's `refresh(name)` re-imports from it, and re-importing a server it already registered from does not collide with itself.
 
+## A refresh removes as well as adds
+
+`refresh()` is the server's **current** answer to `tools/list`, not an addition to what it once said. A tool the server has dropped or renamed is unregistered: it stops being offered to the model, and calling it raises `ToolNotFoundError` here instead of failing on somebody else's machine several seconds later. Only names this importer registered for *that* server are eligible — never the application's own, never another server's — and a freed name is claimable by the next server in configuration order within the same refresh.
+
+A server that could not be **reached** prunes nothing. Its tools are unknown, not gone, and a network blip is not a reason to withdraw a working tool from the model.
+
+`refresh(name)` for a name no open server matches warns and returns `0`, rather than leaving a `0` that reads identically to a server which answered with no tools.
+
 ## Two things a remote schema can do to this process
 
 Both end with the tool **dropped rather than imported with a permissive stand-in**, because the alternative would let the model send that remote tool arbitrary arguments under the appearance of a validated call:
@@ -73,6 +81,19 @@ Both end with the tool **dropped rather than imported with a permissive stand-in
 A remote server may restart, be redeployed, or drop an idle connection, and the first symptom is a failed tool call. So a call that fails transiently drops the client, and the retry reconnects on its next attempt. The retry is `invokeWithTransientRetry` — the same in-place retry the loop wraps every tool with — so under the [durable runner](/docs/agent/durability/durable-runner) a reconnect never becomes a second checkpoint.
 
 A tool that answered `isError` failed on its own merits and is **never** retried: its message is text the remote server wrote, and matching that against transient markers would let a tool's prose decide whether this side retries.
+
+## An approved action is never issued twice
+
+A request timeout, a dropped connection, a reset mid-flight, a 500/502/503 — every one of those is also what a remote tool that **ran** looks like when its reply is lost. Re-issuing on one would spend a single human approval on two remote side effects, and nothing on this side would ever know: an imported tool's effects happen on somebody else's machine, which is why they are HITL-gated in the first place.
+
+So which classifier applies depends on the tool's `kind`:
+
+| `kind` | Retries on | |
+| --- | --- | --- |
+| `read` | `isTransientMcpError` | dropped connections, request timeouts, retryable HTTP statuses, socket errors — a second identical call costs a round trip |
+| `action` | `isPreExecutionMcpError` | only failures that **prove** nothing ran: connection refused, host never resolved or reached, or no transport to send on |
+
+Supplying your own `classify` takes that judgement over for every kind, `action` included. Both classifiers are exported from `@adonis-agora/agent/mcp-client`.
 
 ## Reaching the importer directly
 

@@ -63,7 +63,16 @@ export class McpToolImporter {
 
   /**
    * Re-import from one server, or from all of them — the way back for a server that was down at
-   * boot, or that has gained tools since.
+   * boot, or whose exports have changed since.
+   *
+   * A re-import is the server's CURRENT answer to `tools/list`, so it removes as well as adds: a
+   * tool the server has dropped or renamed is unregistered, because going on offering the model a
+   * tool whose next call fails remotely is worse than not offering it at all. Only names this
+   * importer registered for THAT server are eligible — never the application's own, never another
+   * server's.
+   *
+   * A server that could not be reached prunes nothing. Its tools are unknown, not gone, and a
+   * network blip is not a reason to withdraw a working tool from the model.
    *
    * Returns how many tools the servers it re-imported from just claimed, which is not the
    * registry's total: a name skipped for a collision is not counted, and a scoped refresh says
@@ -74,12 +83,29 @@ export class McpToolImporter {
       (config) =>
         this.sources.has(config.name) && (serverName === undefined || config.name === serverName),
     );
+    if (serverName !== undefined && configs.length === 0) {
+      // A scoped refresh that matched nothing re-imported nothing, and `0` reads identically to a
+      // server that answered with no tools — so the name is reported rather than left to look like
+      // an answer.
+      const open = [...this.sources.keys()];
+      this.logger?.warn(
+        `MCP refresh("${serverName}") matched no open MCP server — nothing was re-imported. Open servers: ${open.length > 0 ? open.join(', ') : '(none)'}.`,
+      );
+      return 0;
+    }
     // Connecting and listing is the slow part and the servers are independent, so it runs in
     // parallel — but registration below replays in CONFIGURATION order, because which server owns a
     // name two of them both export has to be the same answer on every boot.
     const listed = await Promise.all(
       configs.map(async (config) => ({ config, tools: await this.importFrom(config) })),
     );
+    // Pruning runs BEFORE any registration, so a name one server has just dropped is free for the
+    // next server in configuration order to claim within this same refresh.
+    for (const { config, tools } of listed) {
+      if (tools !== undefined) {
+        this.prune(config.name, new Set(tools.map((tool) => tool.spec.name)));
+      }
+    }
     let total = 0;
     for (const { config, tools } of listed) {
       if (tools !== undefined) {
@@ -89,7 +115,7 @@ export class McpToolImporter {
     return total;
   }
 
-  /** Every tool currently imported, and where each came from. */
+  /** Every tool currently imported, and where each came from — what the servers export NOW. */
   importedTools(): McpRegisteredTool[] {
     return [...this.owners.values()];
   }
@@ -117,6 +143,24 @@ export class McpToolImporter {
       }
       this.logger?.warn(`${message} — its tools are unavailable in this process.`);
       return undefined;
+    }
+  }
+
+  /**
+   * Drop what `serverName` used to export and no longer does. Keyed on ownership rather than on the
+   * name's prefix: `namespace: false` imports under bare names, where a prefix says nothing about
+   * who registered one.
+   */
+  private prune(serverName: string, exported: Set<string>): void {
+    for (const [name, owner] of [...this.owners]) {
+      if (owner.serverName !== serverName || exported.has(name)) {
+        continue;
+      }
+      this.owners.delete(name);
+      this.registry.unregister(name);
+      this.logger?.warn(
+        `MCP server "${serverName}": tool "${name}" is no longer exported — unregistered.`,
+      );
     }
   }
 

@@ -18,6 +18,7 @@ import {
   type ElicitationReply,
   type ElicitationRequest,
   type HumanReply,
+  isHumanDecision,
   normalizeElicitationReply,
   settleElicitation,
 } from './elicitation.js';
@@ -833,6 +834,64 @@ async function awaitElicitation(args: {
   );
 }
 
+/** What a delegated run answers its own turn when that turn asks for a human. */
+export const DELEGATED_RUN_DECLINE_REASON = 'a delegated sub-agent has no human to ask';
+
+/**
+ * The human-in-the-loop hooks a DELEGATED run gets — the same ones on either runner.
+ *
+ * A sub-agent's turn runs behind another agent's tool call. Nobody is watching it: its run id is not
+ * the stream a person subscribed to, and the frames it writes arrive under a turn the reader thinks
+ * belongs to the agent they asked. So a wait there is a wait on nobody, and it is settled here
+ * instead of parked — an `action` tool is declined, and a question set reads that decline as a skip
+ * and proceeds on the pre-picked defaults its own request carries.
+ *
+ * Which is why {@link AgentLoopHooks.awaitAnswers} is deliberately ABSENT from what this returns:
+ * `awaitElicitation` falls back to the decline above, so the two kinds of wait cannot settle
+ * differently. Keep the tools that need a human on the agent a human is talking to.
+ */
+export function delegatedRunHooks(): Pick<AgentLoopHooks, 'awaitApproval'> {
+  return {
+    awaitApproval: () => Promise.resolve({ approved: false, reason: DELEGATED_RUN_DECLINE_REASON }),
+  };
+}
+
+/** How many wrong-shaped replies one approval wait absorbs before {@link awaitDecision} gives up. */
+const MAX_DISCARDED_APPROVAL_REPLIES = 100;
+
+/**
+ * Park on an `action`'s approval until a human's yes/no actually arrives.
+ *
+ * The wait carries both reply shapes, because a question set parks as a `pending_approval` action
+ * too — so a client can address `POST /agent/tool-call/answer` at a call that is in fact waiting on
+ * an approve/reject. A set of answers is not a verdict on proposed work; reading its absent
+ * `approved` as `false` would persist a rejection nobody made, against a tool whose operator only
+ * ever submitted a form. The reply is discarded and the approval stays pending, which is what it is.
+ *
+ * Waiting again spends another position, and a replay lines up with it: the reply that was discarded
+ * is itself journaled at the position it arrived on, so every process replaying the turn discards
+ * the same replies in the same order and reaches the same wait.
+ */
+async function awaitDecision(args: {
+  hooks: AgentLoopHooks;
+  call: ToolCallRequest;
+  ctx: AiToolCtx;
+}): Promise<Decision> {
+  const { hooks, call, ctx } = args;
+  for (let discarded = 0; discarded < MAX_DISCARDED_APPROVAL_REPLIES; discarded += 1) {
+    const reply: HumanReply = await hooks.awaitApproval(call, ctx);
+    if (isHumanDecision(reply)) {
+      return reply;
+    }
+  }
+  // Both shipped runners wait here, so the ceiling is out of reach: a person would have to misdirect
+  // the whole budget at one tool call. What it rules out is a HOST whose `awaitApproval` resolves
+  // WITHOUT waiting — which would otherwise spin this loop on the only thread the process has.
+  throw new Error(
+    `Tool call "${call.id}" was sent ${MAX_DISCARDED_APPROVAL_REPLIES} replies that carried no approve/reject`,
+  );
+}
+
 /**
  * Does the configured intake run this turn? Both inputs are facts the journal already holds — the
  * config, and `load:thread`'s record of whether the thread had an assistant message when the turn
@@ -1491,7 +1550,7 @@ async function runClaimedToolCall(
   }
 
   if (toolType === 'action') {
-    const decision = await hooks.awaitApproval(call, ctx);
+    const decision = await awaitDecision({ hooks, call, ctx });
     if (!decision.approved) {
       await hooks.step(`persist:toolreject:${call.id}`, () =>
         deps.store.updateToolCall({

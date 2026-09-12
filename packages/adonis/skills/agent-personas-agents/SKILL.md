@@ -194,10 +194,12 @@ agents: [
 ]
 ```
 
-Mechanism: under the inline runner a sub-agent runs as a nested in-process loop with no
-human attached, so its `action` tools are AUTO-DECLINED rather than left hanging; under
-the durable runner the same delegation maps to a tracked child workflow instead.
-Source: `packages/adonis/docs/authoring/personas-and-agents.mdx` (final paragraph).
+Mechanism: a sub-agent runs with no human attached on EITHER runner — a nested in-process
+loop inline, a tracked child workflow under durable — and both install the same
+`delegatedRunHooks()`, which declines `action` tools (reason: `a delegated sub-agent has no
+human to ask`) and supplies no `awaitAnswers`, so a question set settles on its own defaults
+rather than parking. Source: `packages/adonis/docs/durability/durable-runner.mdx`
+("Delegated runs have no human"), `packages/adonis/src/agent-loop.ts` (`delegatedRunHooks`).
 
 ### LOW — using wall-clock time or randomness inside a PromptBuilder
 

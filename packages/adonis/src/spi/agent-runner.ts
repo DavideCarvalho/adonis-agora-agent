@@ -18,6 +18,13 @@ export interface AgentRunner {
    * for an `action`, or an {@link import('../elicitation.js').ElicitationReply} for a question set.
    * One channel for both, because a question set parks as a `pending_approval` action and therefore
    * reaches a run through the inbox a deployment already has.
+   *
+   * A `Decision` reaching a question set is the documented reduction ("confirmed the pre-picked
+   * answers"). The reverse is not: answers carry no `approved`, so an implementation that can tell
+   * which wait it is settling MUST refuse them with
+   * {@link import('../elicitation.js').HumanReplyMismatchError} rather than deliver them. An
+   * implementation that cannot tell delivers, and the loop discards the reply and stays parked —
+   * either way, no rejection is recorded against a human who only submitted a form.
    */
   signal(runId: string, toolCallId: string, reply: HumanReply): Promise<void>;
   cancel(runId: string): Promise<void>;

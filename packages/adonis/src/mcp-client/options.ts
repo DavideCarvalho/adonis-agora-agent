@@ -66,11 +66,19 @@ export interface McpServerConfig {
   /** Cap on `tools/list` and on every tool call. Default 30s. */
   requestTimeoutMs?: number;
   /**
-   * Retry policy for a call that failed transiently (see {@link import('./transient.js').isTransientMcpError}),
-   * applied around the tool's own invocation with `invokeWithTransientRetry` — the same in-place
-   * retry the agent loop uses for a rolled-back database step, so a retry never becomes a second
-   * durable checkpoint. Defaults to `{ attempts: 2, backoffMs: 150 }`; `false` surfaces the first
-   * failure.
+   * Retry policy for a call that failed transiently, applied around the tool's own invocation with
+   * `invokeWithTransientRetry` — the same in-place retry the agent loop uses for a rolled-back
+   * database step, so a retry never becomes a second durable checkpoint. Defaults to
+   * `{ attempts: 2, backoffMs: 150 }`; `false` surfaces the first failure.
+   *
+   * WHICH FAILURES COUNT DEPENDS ON THE {@link McpServerConfig.kind}. A `read` tool uses
+   * {@link import('./transient.js').isTransientMcpError} — dropped connections, request timeouts,
+   * retryable HTTP statuses, socket errors. An `action` tool uses the narrower
+   * {@link import('./transient.js').isPreExecutionMcpError}, which accepts only failures that PROVE
+   * the tool did not run: a timeout or a 503 may equally be a remote effect whose answer was lost,
+   * and re-issuing that would spend one human approval on two remote side effects.
+   *
+   * Supplying `classify` takes that judgement over for every kind, including `action`.
    *
    * Retrying here, rather than by widening the app-wide `toolTransientRetry` classifier, keeps the
    * two from compounding: a host that would rather retry at the loop layer should pass

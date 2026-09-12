@@ -9,7 +9,12 @@ import {
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { Actor, AiToolCtx, RolesPolicy } from '../src/index.js';
-import { DefaultRolesPolicy, ToolForbiddenError, ToolRegistry } from '../src/index.js';
+import {
+  DefaultRolesPolicy,
+  ToolForbiddenError,
+  ToolNotFoundError,
+  ToolRegistry,
+} from '../src/index.js';
 import type { McpServerConfig } from '../src/mcp-client/index.js';
 import { McpToolImporter } from '../src/mcp-client/index.js';
 
@@ -88,6 +93,59 @@ function unsafePatternServer(): () => Promise<Transport> {
           },
         ],
       }),
+    );
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    return clientTransport;
+  };
+}
+
+/** The one tool the "records" server below exports — a write, and deliberately not idempotent. */
+const archiveTool: Tool = {
+  name: 'archive_record',
+  description: 'Archive a record.',
+  inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+};
+
+/**
+ * Runs `archive_record` and then never answers, so the caller's own request timeout fires — the
+ * shape of a remote effect that HAPPENED and whose reply was lost. `calls` counts how many times
+ * the effect ran, across reconnects.
+ */
+function answersTooLate(calls: { count: number }): () => Promise<Transport> {
+  return async () => {
+    const server = new Server(
+      { name: 'records', version: '1.0.0' },
+      { capabilities: { tools: {} } },
+    );
+    server.setRequestHandler(ListToolsRequestSchema, () =>
+      Promise.resolve({ tools: [archiveTool] }),
+    );
+    server.setRequestHandler(CallToolRequestSchema, () => {
+      calls.count += 1;
+      return new Promise<never>(() => {});
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    return clientTransport;
+  };
+}
+
+/**
+ * A server whose export list is whatever `tools` holds when `tools/list` is called, so a test can
+ * drop or rename one between refreshes. Its tool bodies just name the tool that answered.
+ */
+function mutableServer(tools: { current: Tool[] }): () => Promise<Transport> {
+  return async () => {
+    const server = new Server(
+      { name: 'mutable', version: '1.0.0' },
+      { capabilities: { tools: {} } },
+    );
+    server.setRequestHandler(ListToolsRequestSchema, () =>
+      Promise.resolve({ tools: tools.current }),
+    );
+    server.setRequestHandler(CallToolRequestSchema, (request) =>
+      Promise.resolve({ content: [{ type: 'text', text: `${request.params.name} answered` }] }),
     );
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
@@ -335,6 +393,206 @@ describe('McpToolImporter', () => {
     ).rejects.toThrow(/Connection closed/);
     // The turn's own error handling takes it from here; the tool is still registered.
     expect(h.registry.has('weather_get_weather')).toBe(true);
+    await h.importer.close();
+  });
+});
+
+describe('retrying a remote MCP tool', () => {
+  /** One `records` server, one call through the registry, and how many times the effect ran. */
+  async function archiveOnce(config: Partial<McpServerConfig>): Promise<number> {
+    const calls = { count: 0 };
+    const h = harness([
+      {
+        name: 'records',
+        transport: { type: 'custom', create: answersTooLate(calls) },
+        // Short enough that the lost answer surfaces as a timeout well inside the test.
+        requestTimeoutMs: 60,
+        ...config,
+      } as McpServerConfig,
+    ]);
+    await h.importer.start();
+    await expect(
+      h.registry.invoke('records_archive_record', { id: 'r-1' }, ctx(ADMIN), h.policy),
+    ).rejects.toThrow();
+    await h.importer.close();
+    return calls.count;
+  }
+
+  it('never re-issues an approved action whose answer was merely lost', async () => {
+    // The human approved ONE archive. A timeout cannot distinguish "the request never arrived" from
+    // "it ran and the reply was lost", so a second attempt would archive the record twice on one
+    // approval — and nothing on this side would ever know.
+    expect(await archiveOnce({})).toBe(1);
+  });
+
+  it('still retries a read, where a second identical call costs only a round trip', async () => {
+    expect(await archiveOnce({ kind: 'read' })).toBe(2);
+  });
+
+  it('honours a classifier the host supplied, for an action as much as a read', async () => {
+    // Supplying `classify` is taking the judgement over; the library does not narrow it afterwards.
+    expect(
+      await archiveOnce({ transientRetry: { attempts: 2, backoffMs: 1, classify: () => true } }),
+    ).toBe(2);
+  });
+
+  it('surfaces the first failure when the host turns retry off', async () => {
+    expect(await archiveOnce({ kind: 'read', transientRetry: false })).toBe(1);
+  });
+});
+
+describe('refreshing after a server changed what it exports', () => {
+  const listInvoices: Tool = {
+    name: 'list_invoices',
+    description: 'List invoices.',
+    inputSchema: { type: 'object', properties: {} },
+  };
+  const voidInvoice: Tool = {
+    name: 'void_invoice',
+    description: 'Void an invoice.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+  };
+
+  it('stops offering — and stops accepting — a tool the server has dropped', async () => {
+    const tools = { current: [listInvoices, voidInvoice] };
+    const h = harness([
+      {
+        name: 'billing',
+        transport: { type: 'custom', create: mutableServer(tools) },
+        kind: 'read',
+      },
+    ]);
+    await h.importer.start();
+    expect(await h.names(ADMIN)).toContain('billing_void_invoice');
+
+    tools.current = [listInvoices];
+    expect(await h.importer.refresh('billing')).toBe(1);
+
+    // The model is no longer offered it, the registry no longer holds it, and calling it is a
+    // ToolNotFoundError here rather than a failure on somebody else's machine.
+    expect(await h.names(ADMIN)).toEqual(['billing_list_invoices']);
+    expect(h.registry.has('billing_void_invoice')).toBe(false);
+    await expect(
+      h.registry.invoke('billing_void_invoice', { id: 'i-1' }, ctx(ADMIN), h.policy),
+    ).rejects.toBeInstanceOf(ToolNotFoundError);
+    expect(h.importer.importedTools().map((tool) => tool.name)).toEqual(['billing_list_invoices']);
+    expect(h.warnings.join('\n')).toContain('no longer exported');
+    await h.importer.close();
+  });
+
+  it('follows a rename, dropping the old name and adding the new one', async () => {
+    const tools = { current: [voidInvoice] };
+    const h = harness([
+      {
+        name: 'billing',
+        transport: { type: 'custom', create: mutableServer(tools) },
+        kind: 'read',
+      },
+    ]);
+    await h.importer.start();
+
+    tools.current = [{ ...voidInvoice, name: 'cancel_invoice' }];
+    await h.importer.refresh('billing');
+
+    expect(h.registry.has('billing_void_invoice')).toBe(false);
+    expect(
+      await h.registry.invoke('billing_cancel_invoice', { id: 'i-1' }, ctx(ADMIN), h.policy),
+    ).toBe('cancel_invoice answered');
+    await h.importer.close();
+  });
+
+  it('prunes nothing for a server it could not reach — unknown is not gone', async () => {
+    const tools = { current: [listInvoices] };
+    let reachable = true;
+    const create = () => (reachable ? mutableServer(tools)() : unreachable());
+    const h = harness([{ name: 'billing', transport: { type: 'custom', create }, kind: 'read' }]);
+    await h.importer.start();
+    await h.importer.close();
+
+    reachable = false;
+    expect(await h.importer.refresh('billing')).toBe(0);
+
+    // A network blip is not a reason to withdraw a working tool from the model.
+    expect(h.registry.has('billing_list_invoices')).toBe(true);
+    expect(h.importer.importedTools().map((tool) => tool.name)).toEqual(['billing_list_invoices']);
+  });
+
+  it("leaves the application's own tool of the same name alone", async () => {
+    const registry = new ToolRegistry();
+    registry.register(
+      {
+        name: 'list_invoices',
+        kind: 'read',
+        description: 'The app-owned listing.',
+        inputSchema: z.object({}),
+      },
+      { execute: () => Promise.resolve('local answer') },
+    );
+    const tools = { current: [listInvoices] };
+    const h = harness(
+      [
+        {
+          name: 'billing',
+          transport: { type: 'custom', create: mutableServer(tools) },
+          namespace: false,
+          kind: 'read',
+        },
+      ],
+      registry,
+    );
+    await h.importer.start();
+
+    // The import was refused as a collision, so the importer never owned the name — and a refresh
+    // that finds the server exporting nothing must not reach for it.
+    tools.current = [];
+    await h.importer.refresh('billing');
+
+    expect(h.registry.spec('list_invoices')?.description).toBe('The app-owned listing.');
+    await h.importer.close();
+  });
+
+  it('frees a contested name for the next server in configuration order', async () => {
+    const primary = { current: [{ ...weatherTool, description: 'weather from primary' }] };
+    const h = harness([
+      {
+        name: 'primary',
+        transport: { type: 'custom', create: mutableServer(primary) },
+        namespace: false,
+      },
+      {
+        name: 'impostor',
+        transport: { type: 'custom', create: weatherServer('impostor') },
+        namespace: false,
+      },
+    ]);
+    await h.importer.start();
+    expect(h.registry.spec('get_weather')?.description).toBe('weather from primary');
+
+    primary.current = [];
+    await h.importer.refresh();
+
+    expect(h.registry.spec('get_weather')?.description).toBe('weather from impostor');
+    expect(h.importer.importedTools()).toEqual([
+      {
+        name: 'get_weather',
+        serverName: 'impostor',
+        remoteName: 'get_weather',
+        description: 'weather from impostor',
+      },
+    ]);
+    await h.importer.close();
+  });
+
+  it('says so when a scoped refresh names no open server, instead of reporting 0', async () => {
+    const h = harness([
+      { name: 'billing', transport: { type: 'custom', create: weatherServer('w') } },
+    ]);
+    await h.importer.start();
+
+    expect(await h.importer.refresh('biling')).toBe(0);
+
+    expect(h.warnings.join('\n')).toContain('refresh("biling")');
+    expect(h.warnings.join('\n')).toContain('billing');
     await h.importer.close();
   });
 });

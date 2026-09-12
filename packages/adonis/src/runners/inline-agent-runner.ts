@@ -1,21 +1,36 @@
 import { type AgentDeps, utcDay } from '../agent-deps.js';
 import type { AgentDepsFactory } from '../agent-deps-factory.js';
-import { type AgentLoopHooks, runAgentLoop, settleAll } from '../agent-loop.js';
+import { type AgentLoopHooks, delegatedRunHooks, runAgentLoop, settleAll } from '../agent-loop.js';
 import { spannedAgent } from '../diagnostics.js';
-import type { ElicitationRequest, HumanReply } from '../elicitation.js';
+import {
+  type ElicitationRequest,
+  type HumanReply,
+  HumanReplyMismatchError,
+  isHumanDecision,
+} from '../elicitation.js';
 import type { AgentRunner } from '../spi/agent-runner.js';
 import type { AgentStore } from '../spi/agent-store.js';
 import type { Actor, AgentRunInput, Decision } from '../types.js';
 
 /**
- * Runs the agent turn in-process — the default runner (`durable: false`). HITL approval resolves a
- * pending promise keyed run-namespaced by `${runId}:${toolCallId}`, so one run's decision can never
- * satisfy another's pending action. Sub-agent delegation runs a nested loop; a nested sub-agent has
- * no human to prompt, so its action tools are auto-declined rather than hang. Single-replica only —
- * durable is the scaled path (deferred).
+ * A run held at one wait, and WHICH wait — an `action`'s approve/reject, or a question set's
+ * answers. Both arrive through `signal`, so the kind is what lets a reply of the wrong shape be
+ * refused instead of settling a wait it says nothing about.
+ */
+interface ParkedWait {
+  on: 'approval' | 'answers';
+  resolve: (reply: HumanReply) => void;
+}
+
+/**
+ * Runs the agent turn in-process — the default runner (`durable: false`). A HITL wait resolves a
+ * pending promise keyed run-namespaced by `${runId}:${toolCallId}`, so one run's reply can never
+ * satisfy another's pending action. Sub-agent delegation runs a nested loop under
+ * {@link delegatedRunHooks}, because a nested sub-agent has no human to prompt. Single-replica only
+ * — durable is the scaled path (deferred).
  */
 export class InlineAgentRunner implements AgentRunner {
-  private readonly pending = new Map<string, (reply: HumanReply) => void>();
+  private readonly pending = new Map<string, ParkedWait>();
 
   constructor(
     private readonly factory: AgentDepsFactory,
@@ -65,13 +80,28 @@ export class InlineAgentRunner implements AgentRunner {
     return { runId };
   }
 
+  /**
+   * Deliver a human's reply to whichever wait this run is parked on.
+   *
+   * An approval wait takes a {@link Decision} only. Answers addressed there are refused rather than
+   * delivered: `approved` is absent on them, and the tool-call row would record a rejection the
+   * person never made. The refusal leaves the wait intact, so the approval is still there to make.
+   *
+   * The other direction IS delivered — a question set parks as a `pending_approval` action, so an
+   * operator pressing Approve on it is expected, and the loop reads that as "confirmed the
+   * pre-picked answers".
+   */
   async signal(runId: string, toolCallId: string, reply: HumanReply): Promise<void> {
     const key = `${runId}:${toolCallId}`;
-    const resolve = this.pending.get(key);
-    if (resolve !== undefined) {
-      this.pending.delete(key);
-      resolve(reply);
+    const parked = this.pending.get(key);
+    if (parked === undefined) {
+      return;
     }
+    if (parked.on === 'approval' && !isHumanDecision(reply)) {
+      throw new HumanReplyMismatchError(runId, toolCallId);
+    }
+    this.pending.delete(key);
+    parked.resolve(reply);
   }
 
   async cancel(runId: string): Promise<void> {
@@ -100,10 +130,10 @@ export class InlineAgentRunner implements AgentRunner {
       openSink: () => deps.sink.open(runId),
       awaitApproval: (call) =>
         // Run-namespaced key: `${runId}:${toolCallId}` — one run can't approve another's tool call.
-        this.park(`${runId}:${call.id}`) as Promise<Decision>,
+        this.park(`${runId}:${call.id}`, 'approval') as Promise<Decision>,
       // An answer and an approval reach a parked run by the same channel, because a question set is
       // itself a `pending_approval` row: `POST /agent/tool-call/answer` and `/approve` both land here.
-      awaitAnswers: (request: ElicitationRequest) => this.park(`${runId}:${request.id}`),
+      awaitAnswers: (request: ElicitationRequest) => this.park(`${runId}:${request.id}`, 'answers'),
       step: (_name, fn) => fn(),
       // Nothing here records a position, so a turn's read tools can simply overlap.
       parallel: settleAll,
@@ -121,9 +151,9 @@ export class InlineAgentRunner implements AgentRunner {
   }
 
   /** Hold a run at `key` until a human's reply arrives through {@link InlineAgentRunner.signal}. */
-  private park(key: string): Promise<HumanReply> {
+  private park(key: string, on: ParkedWait['on']): Promise<HumanReply> {
     return new Promise<HumanReply>((resolve) => {
-      this.pending.set(key, resolve);
+      this.pending.set(key, { on, resolve });
     });
   }
 
@@ -148,13 +178,7 @@ export class InlineAgentRunner implements AgentRunner {
       runId,
       durable: false,
       openSink: () => deps.sink.open(runId),
-      // A nested sub-agent has no human to ask — decline action tools rather than hang. Its
-      // question sets settle the same way: a declined reply is read as a skip, so the sub-agent
-      // proceeds on the pre-picked defaults instead of parking a run nobody can see.
-      awaitApproval: async () => ({
-        approved: false,
-        reason: 'nested sub-agent cannot request human approval',
-      }),
+      ...delegatedRunHooks(),
       step: (_name, fn) => fn(),
       parallel: settleAll,
       runAgent: (childName, childTask) =>

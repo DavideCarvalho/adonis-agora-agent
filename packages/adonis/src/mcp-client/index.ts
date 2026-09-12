@@ -16,5 +16,5 @@ export {
 } from './tool-kind.js';
 export { localToolName, MAX_TOOL_NAME_LENGTH } from './tool-name.js';
 export { type McpImportedTool, McpToolCallError, McpToolSource } from './tool-source.js';
-export { isTransientMcpError } from './transient.js';
+export { isPreExecutionMcpError, isTransientMcpError } from './transient.js';
 export { findUnsafePattern, isUnsafeRegex } from './unsafe-regex.js';

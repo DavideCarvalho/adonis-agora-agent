@@ -76,3 +76,60 @@ export function isTransientMcpError(error: unknown): boolean {
   }
   return false;
 }
+
+/**
+ * Syscall codes that mean the request was never delivered: the connection was refused, or the host
+ * was never resolved or reached. A reset, a broken pipe or a timeout does NOT belong here — each of
+ * those can equally well be a reply that was lost after the tool ran.
+ */
+const PRE_EXECUTION_SYSCALL_CODES = new Set([
+  'ECONNREFUSED',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+]);
+
+/** The SDK refusing to send because there is no transport — nothing left this process. */
+const PRE_EXECUTION_MESSAGES = /^not connected$/i;
+
+function hasPreExecutionShape(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+  if ('name' in error && (error as { name: unknown }).name === 'McpToolCallError') {
+    return false;
+  }
+  const code = 'code' in error ? (error as { code: unknown }).code : undefined;
+  if (typeof code === 'string') {
+    return PRE_EXECUTION_SYSCALL_CODES.has(code);
+  }
+  if (code !== undefined) {
+    // A JSON-RPC code or an HTTP status means the wire carried the request far enough to be
+    // answered, so neither can establish that the tool did not run.
+    return false;
+  }
+  const message = 'message' in error ? (error as { message: unknown }).message : undefined;
+  return typeof message === 'string' && PRE_EXECUTION_MESSAGES.test(message);
+}
+
+/**
+ * True only for a failure that PROVES the remote tool did not run: the connection was refused, the
+ * host was never reached, or the SDK had no transport to send on. Checked on the error and one level
+ * of `cause`, so `fetch`'s bare `TypeError` wrapper is read through to the socket error underneath.
+ *
+ * Everything {@link isTransientMcpError} also accepts — a request timeout, a dropped connection, a
+ * 500/502/503, a reset mid-flight — is deliberately excluded: in each of those the request may have
+ * arrived and executed, and only the answer was lost. Retrying them would run the tool twice.
+ */
+export function isPreExecutionMcpError(error: unknown): boolean {
+  if (hasPreExecutionShape(error)) {
+    return true;
+  }
+  if (typeof error === 'object' && error !== null && 'cause' in error) {
+    const cause = (error as { cause: unknown }).cause;
+    if (cause !== undefined && cause !== error && hasPreExecutionShape(cause)) {
+      return true;
+    }
+  }
+  return false;
+}

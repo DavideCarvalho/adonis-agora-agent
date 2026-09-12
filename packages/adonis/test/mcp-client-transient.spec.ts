@@ -1,7 +1,7 @@
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { describe, expect, it } from 'vitest';
 import { McpToolCallError } from '../src/mcp-client/tool-source.js';
-import { isTransientMcpError } from '../src/mcp-client/transient.js';
+import { isPreExecutionMcpError, isTransientMcpError } from '../src/mcp-client/transient.js';
 
 describe('isTransientMcpError', () => {
   it('classifies a dropped connection and a request timeout as transient', () => {
@@ -57,5 +57,52 @@ describe('isTransientMcpError', () => {
     expect(isTransientMcpError(new Error('the city you asked for does not exist'))).toBe(false);
     expect(isTransientMcpError('not even an error')).toBe(false);
     expect(isTransientMcpError(undefined)).toBe(false);
+  });
+});
+
+describe('isPreExecutionMcpError', () => {
+  it('accepts only failures that prove the request never reached the tool', () => {
+    for (const code of ['ECONNREFUSED', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']) {
+      expect(isPreExecutionMcpError(Object.assign(new Error('no route'), { code }))).toBe(true);
+    }
+    expect(isPreExecutionMcpError(new Error('Not connected'))).toBe(true);
+    expect(
+      isPreExecutionMcpError(
+        Object.assign(new TypeError('fetch failed'), {
+          cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('refuses every failure that could equally be a lost answer to work already done', () => {
+    // Each of these is transient — and each is also what a remote tool that RAN looks like when its
+    // reply is lost, which is why an approved action may not be re-issued on one.
+    expect(isPreExecutionMcpError(new McpError(ErrorCode.RequestTimeout, 'timed out'))).toBe(false);
+    expect(isPreExecutionMcpError(new McpError(ErrorCode.ConnectionClosed, 'closed'))).toBe(false);
+    for (const status of [408, 425, 429, 500, 502, 503, 504]) {
+      expect(isPreExecutionMcpError(Object.assign(new Error('http'), { code: status }))).toBe(
+        false,
+      );
+    }
+    for (const code of ['ECONNRESET', 'EPIPE', 'ECONNABORTED', 'ETIMEDOUT']) {
+      expect(isPreExecutionMcpError(Object.assign(new Error('mid-flight'), { code }))).toBe(false);
+    }
+    // The whole set above is retryable under the broader policy, so the two really do differ.
+    expect(isTransientMcpError(new McpError(ErrorCode.RequestTimeout, 'timed out'))).toBe(true);
+  });
+
+  it("never reads a tool's own reported error as pre-execution, whatever its text", () => {
+    expect(isPreExecutionMcpError(new McpToolCallError('files', 'move', 'Not connected'))).toBe(
+      false,
+    );
+  });
+
+  it('leaves a plain failure alone', () => {
+    expect(isPreExecutionMcpError(new Error('the record you asked for does not exist'))).toBe(
+      false,
+    );
+    expect(isPreExecutionMcpError('not even an error')).toBe(false);
+    expect(isPreExecutionMcpError(undefined)).toBe(false);
   });
 });

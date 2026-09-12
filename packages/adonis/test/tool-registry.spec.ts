@@ -7,6 +7,7 @@ import {
   DefaultRolesPolicy,
   ToolForbiddenError,
   ToolInputInvalidError,
+  ToolNotFoundError,
   ToolRegistry,
 } from '../src/index.js';
 
@@ -130,5 +131,25 @@ describe('ToolRegistry', () => {
     await expect(
       reg.invoke('echoCity', { city: 42 }, ctxFor({ id: 'u1', roles: ['ADMIN'] }), policy),
     ).rejects.toBeInstanceOf(ToolInputInvalidError);
+  });
+
+  it('unregisters a tool so it is neither offered nor invocable', async () => {
+    const reg = new ToolRegistry();
+    const policy = new DefaultRolesPolicy();
+    const actor: Actor = { id: 'u1', roles: ['ADMIN'] };
+    reg.register(
+      { name: 'voidInvoice', kind: 'action', description: 'v', inputSchema: z.object({}) },
+      { execute: async () => ({ voided: true }) },
+    );
+
+    expect(reg.unregister('voidInvoice')).toBe(true);
+
+    expect(reg.has('voidInvoice')).toBe(false);
+    expect((await reg.definitionsFor(actor, policy)).map((tool) => tool.name)).toEqual([]);
+    await expect(reg.invoke('voidInvoice', {}, ctxFor(actor), policy)).rejects.toBeInstanceOf(
+      ToolNotFoundError,
+    );
+    // Says whether there was one, so a caller pruning a list can tell a no-op from a removal.
+    expect(reg.unregister('voidInvoice')).toBe(false);
   });
 });

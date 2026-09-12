@@ -65,6 +65,15 @@ Both surfaces:
 completes an elicitation, reading approve as "confirmed the pre-picked answers" and reject as
 "skipped".
 
+**The reduction runs one way only.** One channel carrying two shapes means a client can address
+`answer` at a tool call that is in fact waiting on an approve/reject. A yes/no can be read as
+answers; a set of answers cannot be read as a verdict on proposed work, and its absent `approved`
+is not a `no` — so it is **refused**, never recorded. The inline runner knows which wait is parked
+and replies `409` (`HumanReplyMismatchError`); under the durable runner a signal carries no such
+clue, so the loop discards the reply and the run stays parked on the approval it was always waiting
+for. Either way the tool-call row keeps `pending_approval`, and no rejection is attributed to
+someone who only submitted a form.
+
 ## Defaults, and what a skip means
 
 **An omitted question takes its own default**, resolved server-side against the request the run
@@ -78,6 +87,11 @@ records `defaulted: string[]`, so an auditor can still see which questions a hum
 proceeding on one they chose. Nobody answering parks the run indefinitely, exactly as an approval
 does — there is no intake timeout, because a timeout that applied the defaults would manufacture
 consent from silence.
+
+**A delegated run is the one place nobody is asked.** A sub-agent's turn runs behind another agent's
+tool call and its stream is not the one a person subscribed to, so its question sets settle as a
+skip on their own defaults rather than parking — the same on both runners. See
+[Delegated runs have no human](/docs/agent/durability/durable-runner#delegated-runs-have-no-human).
 
 ## Determinism
 
