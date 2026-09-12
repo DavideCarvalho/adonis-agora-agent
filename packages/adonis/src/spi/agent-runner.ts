@@ -4,9 +4,10 @@ import type { AgentRunInput } from '../types.js';
 /**
  * Runs an agent turn. Two impls exist:
  *  - InlineAgentRunner (default): the loop runs in-process — no extra dependencies. This is what
- *    `AGENT_RUNNER` binds to unless `durable: true` is set.
- *  - DurableAgentRunner (opt-in via `durable: true`): the turn is a `@dudousxd/nestjs-durable`
- *    `@Workflow`, so each model/tool call is a checkpointed step and HITL is `ctx.waitForSignal`.
+ *    the provider builds unless `durable: true` is set.
+ *  - DurableAgentRunner (opt-in via `durable: true`): the turn is an `@adonis-agora/durable`
+ *    {@link import('../durable/agent-run-workflow.js').AgentRunWorkflow}, so each model/tool call is
+ *    a checkpointed step and HITL is `ctx.waitForSignal`.
  *
  * `start` ENQUEUES and returns immediately with the runId — the live tokens flow on the
  * TokenStreamSink, not through this call.
