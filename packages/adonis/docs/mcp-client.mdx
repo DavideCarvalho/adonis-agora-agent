@@ -1,0 +1,91 @@
+---
+title: MCP client
+description: Import an external MCP server's tools into this deployment's own ToolRegistry — HITL-gated by default, namespaced, schema-validated, and screened for a pattern that can stall the process.
+icon: Download
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+This is the **other direction** to [MCP server](/docs/agent/mcp), which exposes *this* deployment's tools to an external client. Here, an external [MCP](https://modelcontextprotocol.io) server's tools become tools of this agent: they land in the same `ToolRegistry` that `@aiTool` discovery writes to, so an imported tool goes through every gate a hand-written one does — the `RolesPolicy`, the persona/agent allow-list, and input validation.
+
+```ts title="config/agent.ts"
+import { defineConfig } from '@adonis-agora/agent'
+
+export default defineConfig({
+  // ...
+  mcpServers: [
+    { name: 'github', transport: { type: 'stdio', command: 'mcp-github' } },
+    {
+      name: 'search',
+      transport: { type: 'http', url: 'https://mcp.example.com', headers: { authorization: `Bearer ${env.get('MCP_TOKEN')}` } },
+    },
+  ],
+})
+```
+
+<Callout type="warn" title="An imported tool is an action by default">
+A tool imported from an MCP server was written by someone outside this codebase and its effects are not visible from here, so it defaults to `kind: 'action'` — **HITL-gated**, so the turn pauses for a human before it runs. Widening that is a decision you make out loud:
+
+- `kind: 'read'` — every tool from this server auto-executes. Only for a server you own and audit.
+- `kind: 'trust-annotations'` — believe the server's `readOnlyHint`. That hint is asserted by the very party whose effects it describes, so this is a statement of trust in that server, not a check. A tool claiming both `readOnlyHint` and `destructiveHint` is describing itself incoherently and stays gated.
+- `kind: (tool) => 'read' | 'action'` — decide per tool.
+</Callout>
+
+## What each server's config controls
+
+| Key | Effect |
+| --- | --- |
+| `name` | Identifies the server in warnings and in `refresh(name)`, and prefixes its tool names by default. Two servers may not share one. |
+| `transport` | `stdio` (a process this app spawns), `http` (streamable-HTTP), or `custom` (a factory returning a fresh `Transport` — OAuth, legacy SSE, an in-process pair in a test). |
+| `kind` | How an imported tool gets its `ToolKind`. Default `'action'`. |
+| `include` / `exclude` | Which remote tool names to import. `exclude` is applied after `include`. |
+| `namespace` | The tool-name prefix: the server name (default), a string, or `false` for none. |
+| `roles` / `ability` | What the `RolesPolicy` checks every tool from this server against. Omit → the app's `defaultRoles`. |
+| `connectTimeoutMs` / `requestTimeoutMs` | Caps on the handshake (10s) and on `tools/list` plus every call (30s). Both are the SDK's own per-request timeouts, so a timed-out request is *cancelled on the wire* rather than abandoned. |
+| `transientRetry` | In-place retry for a call that failed transiently, classified by `isTransientMcpError`. Defaults to `{ attempts: 2, backoffMs: 150 }`; `false` surfaces the first failure. |
+| `validator` | Compiles each tool's JSON Schema. Defaults to the MCP SDK's AJV adapter. |
+| `rejectUnsafePatterns` | Screen a schema `pattern` that can backtrack exponentially. Default `true`. |
+| `required` | Fail app boot when this server cannot be reached. Default `false`. |
+
+## A name belongs to whoever claimed it first
+
+The registry is keyed by name and nothing else, so an un-namespaced import would let a remote server's `search` silently replace the app's own — a substitution invisible from everywhere else, because the model goes on calling `search` and `search` now reaches somebody else's server. So imported names are prefixed with the server's name by default, and a second claimant on a name is **refused with a warning naming both claimants**, never allowed to replace a live handler.
+
+That applies between servers too, and the answer is stable: listing runs in parallel because the servers are independent, but registration replays in **configuration order**, so a contested name goes to the server configured first however fast the other one answered.
+
+Names are also reshaped to the tightest tool-name rule among the major model providers (`^[a-zA-Z0-9_-]{1,64}$`) — an MCP server is under no such constraint, and `repo/create.issue` is a legal MCP tool name. The result is stable across restarts, including when it had to be truncated, because a stored tool call in a thread refers to a tool by this name.
+
+## A server that is down costs its own tools
+
+Booting the whole application on the availability of a third-party process is the wrong trade, so an unreachable server is reported and skipped: the model is simply never offered its tools. `required: true` says the app is not useful without that server and should fail loudly instead.
+
+A server that was down at boot is not lost — the importer's `refresh(name)` re-imports from it, and re-importing a server it already registered from does not collide with itself.
+
+## Two things a remote schema can do to this process
+
+Both end with the tool **dropped rather than imported with a permissive stand-in**, because the alternative would let the model send that remote tool arbitrary arguments under the appearance of a validated call:
+
+- **A schema that will not compile.** Validation is the server's real schema, not an approximation: `ToolSpec.inputSchema` wraps it as a [Standard Schema](https://standardschema.dev) and hands the document back verbatim, which is what makes the model see the real parameter shapes.
+- **A `pattern` that can backtrack exponentially.** Every validator in the MCP SDK compiles `pattern` to a native `RegExp`, and JS regex matching backtracks: `(a+)+$` against 27 `a`s and a non-matching tail takes ~1s, 30 ~8s, 40 longer than anyone will wait — synchronously, on the only thread the process has. The pattern is written by the remote server and the string is written by the model, whose steering the same server's tool description is free to supply, so the whole thing fits inside one tool definition. The screen is structural rather than a decision procedure; a host that wants a guarantee gives `validator` an engine that does not backtrack (AJV's `code.regExp` option takes an RE2 binding).
+
+## The connection is not durable state
+
+A remote server may restart, be redeployed, or drop an idle connection, and the first symptom is a failed tool call. So a call that fails transiently drops the client, and the retry reconnects on its next attempt. The retry is `invokeWithTransientRetry` — the same in-place retry the loop wraps every tool with — so under the [durable runner](/docs/agent/durability/durable-runner) a reconnect never becomes a second checkpoint.
+
+A tool that answered `isError` failed on its own merits and is **never** retried: its message is text the remote server wrote, and matching that against transient markers would let a tool's prose decide whether this side retries.
+
+## Reaching the importer directly
+
+`@adonis-agora/agent/mcp-client` exports the pieces, for a host that wires its own boot or wants to review what a server supplied:
+
+```ts
+import { McpToolImporter } from '@adonis-agora/agent/mcp-client'
+
+const importer = new McpToolImporter(servers, registry, logger)
+await importer.start()
+importer.importedTools() // [{ name, serverName, remoteName, description }]
+await importer.refresh('github')
+await importer.close()
+```
+
+`description` is worth reviewing: it is text a third party wrote that rides into the tool list of every turn.
