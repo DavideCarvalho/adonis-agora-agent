@@ -8,6 +8,23 @@
     "url": "git+https://github.com/DavideCarvalho/adonis-agora-agent.git",
     "directory": "packages/adonis"
   },
+  "homepage": "https://davidecarvalho.github.io/agora/docs/agent",
+  "bugs": {
+    "url": "https://github.com/DavideCarvalho/adonis-agora-agent/issues"
+  },
+  "keywords": [
+    "adonisjs",
+    "adonis",
+    "ai",
+    "agent",
+    "llm",
+    "tool-calling",
+    "governance",
+    "ai-sdk",
+    "durable",
+    "tanstack-intent",
+    "agora"
+  ],
   "author": "Davi Carvalho <davi@goflip.ai>",
   "type": "module",
   "main": "./dist/src/index.js",
@@ -220,18 +237,5 @@
   },
   "engines": {
     "node": ">=20.6.0"
-  },
-  "keywords": [
-    "adonisjs",
-    "adonis",
-    "ai",
-    "agent",
-    "llm",
-    "tool-calling",
-    "governance",
-    "ai-sdk",
-    "durable",
-    "tanstack-intent",
-    "agora"
-  ]
+  }
 }
