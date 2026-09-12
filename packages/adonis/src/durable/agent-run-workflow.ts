@@ -8,22 +8,18 @@ import { utcDay } from '../agent-deps.js';
 import { type AgentLoopHooks, runAgentLoop, settleAll } from '../agent-loop.js';
 import type { HumanReply } from '../elicitation.js';
 import { isReplayIntegrityError } from '../replay-integrity.js';
-import type { SinkWriter } from '../spi/token-stream-sink.js';
+import { childSinkWriter } from '../spi/token-stream-sink.js';
 import type { AgentRunInput, Decision } from '../types.js';
 import { getDurableAgentContext } from './agent-run-context.js';
 
 /**
- * The workflow input. A superset of {@link AgentRunInput} carrying the two fields only the durable
- * runner threads:
- *  - `sinkRunId` — the TOP-LEVEL run whose live stream this run writes into. A sub-agent (child
- *    workflow) forwards its tokens into its ancestor's sink so the human watching the parent sees
- *    the delegate's output; a top-level run leaves it unset (it owns its own sink, keyed by runId).
- *  - `delegationDepth` — how many delegations deep this run is (0 for top-level), carried so a future
- *    guard can cap runaway sub-agent chains.
+ * The workflow input. A superset of {@link AgentRunInput} carrying the one field only the durable
+ * runner threads: `sinkRunId`, the TOP-LEVEL run whose live stream this run writes into. A sub-agent
+ * (child workflow) forwards its tokens into its ancestor's sink so the human watching the parent
+ * sees the delegate's output; a top-level run leaves it unset (it owns its own sink, keyed by runId).
  */
 export interface DurableAgentRunInput extends AgentRunInput {
   sinkRunId?: string;
-  delegationDepth?: number;
 }
 
 /**
@@ -42,20 +38,6 @@ function isControlFlowSignal(error: unknown): boolean {
 }
 
 /**
- * Wrap a {@link SinkWriter} so a CHILD run forwards tokens into the top-level stream but never closes
- * it: the top-level run owns the stream's lifecycle across however many delegations it spans, so a
- * child's `end()` must be a no-op (ending the shared stream mid-parent-run would cut the human off).
- */
-function childSinkWriter(inner: SinkWriter): SinkWriter {
-  return {
-    write: (chunk) => inner.write(chunk),
-    end: () => {
-      /* the top-level run owns end() */
-    },
-  };
-}
-
-/**
  * The agent turn AS a durable workflow — the replay-safe counterpart of `InlineAgentRunner`. The
  * shared `runAgentLoop` body drives model→tools→model exactly as inline; the durable hooks make it
  * suspend-and-resume:
@@ -66,9 +48,12 @@ function childSinkWriter(inner: SinkWriter): SinkWriter {
  *    skips the bodies — never re-emits them. Unlike the inline runner, the durable workflow does NOT
  *    emit a body-level root `turn` span (the body replays, which would duplicate it); the trace is
  *    rooted implicitly by `traceId = runId`, which every child span already carries.
- *  - `awaitApproval(call)` → `ctx.waitForSignal('tool:<runId>:<callId>')` — an action tool suspends the
- *    run with zero compute until an approve/reject signal arrives (namespaced by run, so one run's
- *    decision can never satisfy another's).
+ *  - `awaitApproval(call)` / `awaitAnswers(request)` → `ctx.waitForSignal('tool:<runId>:<callId>')` —
+ *    an action tool or a question set suspends the run with zero compute until an approve/reject or
+ *    answers signal arrives (namespaced by run, so one run's reply can never satisfy another's).
+ *    A DELEGATED run suspends the same way, on its own runId — which is what `sinkRunId` exists for:
+ *    its frames land in the stream the human is already watching and carry that runId, so a
+ *    sub-agent's own HITL wait can be seen, and therefore answered.
  *  - `runAgent(name, task)` → `ctx.child(AgentRunWorkflow, …)` — sub-agent delegation is a tracked,
  *    replay-safe CHILD run (a node in the durable dashboard) that streams into the top-level sink.
  *  - `openSink()` → the run's own sink writer (top-level) or a {@link childSinkWriter} (a child).
@@ -84,21 +69,30 @@ export class AgentRunWorkflow extends BaseWorkflow {
     const deps = factory.forAgent(input.agentName);
     const isChild = input.sinkRunId !== undefined;
     const sinkRunId = input.sinkRunId ?? ctx.runId;
-
+    // The chain this run sits on, with its own agent appended — what lets a child recognise a
+    // delegation back to an agent the chain has already passed through. Derived from the workflow's
+    // input, so it is the same on every replay and on every pod.
+    const chainBelow = [
+      ...(input.delegationPath ?? []),
+      ...(input.agentName !== undefined ? [input.agentName] : []),
+    ];
     const hooks: AgentLoopHooks = {
       runId: ctx.runId,
       durable: true,
-      // A child forwards into the top-level sink (so the human watching the parent sees it) but must
-      // not end it; a top-level run opens and owns its own sink keyed by its runId.
-      openSink: async () =>
-        isChild ? childSinkWriter(await deps.sink.open(sinkRunId)) : deps.sink.open(ctx.runId),
       // HITL: suspend until the run-namespaced signal arrives. This throw escapes the loop cleanly —
       // it happens BEFORE the loop's tool try/catch, so a suspend is never seen as a tool failure.
+      // A DELEGATED run suspends on its OWN runId, and that wait is answerable: the pending row it
+      // writes carries that runId, and so does the `elicitation` frame it forwards into the stream
+      // the human is already watching.
       awaitApproval: (call) => ctx.waitForSignal<Decision>(`tool:${ctx.runId}:${call.id}`),
       // A question set parks on the SAME signal an approval does, under the tool call's own id — so
       // `POST /agent/tool-call/answer` and `/approve` are one delivery path, and a deployment that
       // only ever wired approval still settles an elicitation.
       awaitAnswers: (request) => ctx.waitForSignal<HumanReply>(`tool:${ctx.runId}:${request.id}`),
+      // A child forwards into the top-level sink (so the human watching the parent sees it) but must
+      // not end it; a top-level run opens and owns its own sink keyed by its runId.
+      openSink: async () =>
+        isChild ? childSinkWriter(await deps.sink.open(sinkRunId)) : deps.sink.open(ctx.runId),
       // Every side effect + control-flow read is a durable local step (memoized on replay).
       step: (name, fn) => ctx.localStep(name, fn),
       // Lets the tool transient-retry loop tell a real suspend/continue-as-new apart from a
@@ -129,6 +123,8 @@ export class AgentRunWorkflow extends BaseWorkflow {
           userText: task,
           day,
           delegationDepth: (input.delegationDepth ?? 0) + 1,
+          delegationPath: chainBelow,
+          parentRunId: ctx.runId,
           sinkRunId,
         });
       },

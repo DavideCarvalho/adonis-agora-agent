@@ -12,6 +12,7 @@ import {
   InlineAgentRunner,
   InProcessTokenStreamSink,
   LucidAgentStore,
+  registerDelegateTools,
   ToolRegistry,
   UnconfiguredActorResolver,
 } from '../src/index.js';
@@ -37,12 +38,18 @@ interface Graph {
   db: Database;
 }
 
-function buildGraph(script: FakeScript, quota?: QuotaStore): Graph {
+function buildGraph(
+  script: FakeScript,
+  quota?: QuotaStore,
+  agentDefs: Parameters<AgentRegistry['register']>[0][] = [],
+): Graph {
   const db = dbHandle;
   const store = new LucidAgentStore(asStoreDb(db));
   const sink = new InProcessTokenStreamSink();
   const registry = new ToolRegistry();
   const agents = new AgentRegistry();
+  for (const def of agentDefs) agents.register(def);
+  registerDelegateTools(registry, agents);
   const factory = new AgentDepsFactory({
     model: new FakeModelProvider(script),
     store,
@@ -55,6 +62,22 @@ function buildGraph(script: FakeScript, quota?: QuotaStore): Graph {
   const runner = new InlineAgentRunner(factory, store);
   const service = new AgentService(runner, store, factory);
   return { service, store, sink, registry, db };
+}
+
+/**
+ * The first `approval` frame to arrive in `runId`'s stream, and the run+call it says to answer. For
+ * a delegated child that is NOT `runId` — which is the whole point of the id being on the frame.
+ */
+async function waitForFrame(
+  g: Graph,
+  runId: string,
+): Promise<{ runId: string; toolCallId: string }> {
+  for await (const frame of g.service.subscribe(runId)) {
+    if (frame.t === 'approval') {
+      return { runId: frame.runId, toolCallId: frame.id };
+    }
+  }
+  throw new Error('no approval frame arrived on the stream');
 }
 
 async function collectStream(g: Graph, runId: string): Promise<string> {
@@ -172,6 +195,121 @@ describe('InlineAgentRunner + AgentService over the Lucid store', () => {
     const row = await g.db.from('agent_tool_call').where('id', toolCallId).first();
     expect(row?.error).toBe('nope');
     expect(ran).toBe(false);
+  });
+
+  it('never records an answers-shaped reply to a parked approval as a human rejection', async () => {
+    // The bug this pins: an `ElicitationReply` carries no `approved`, and `!undefined` is true — so
+    // a form submitted against the wrong tool call id used to persist as `rejected`, a decision the
+    // operator never made and which nothing afterwards distinguishes from one they did.
+    let ran = false;
+    const script: FakeScript = (_args, turnIndex) =>
+      turnIndex === 0
+        ? { text: 'let me act', toolCall: { name: 'danger', input: { k: 'v' } } }
+        : { text: 'done' };
+    const g = buildGraph(script);
+    g.registry.register(
+      {
+        name: 'danger',
+        kind: 'action',
+        description: 'dangerous',
+        inputSchema: z.object({ k: z.string() }),
+        roles: ['ADMIN'],
+      },
+      {
+        execute: async () => {
+          ran = true;
+          return { acted: true };
+        },
+      },
+    );
+
+    const { runId } = await g.service.chat({ actor, message: 'do it' });
+    const toolCallId = 'call-0-danger';
+    await waitFor(async () => {
+      const row = await g.db.from('agent_tool_call').where('id', toolCallId).first();
+      return row?.status === 'pending_approval';
+    });
+
+    // A misdirected answer. Refused at the door, because this runner knows which wait is parked.
+    await expect(g.service.answer({ runId, toolCallId, answers: {} })).rejects.toThrow(
+      /waiting for an approve\/reject/,
+    );
+    // And a skip, which would have landed as a rejection carrying "skipped by the user".
+    await expect(g.service.skip({ runId, toolCallId })).rejects.toThrow(
+      /waiting for an approve\/reject/,
+    );
+
+    // The approval is still there to make: nothing was decided, nothing ran.
+    const parked = await g.db.from('agent_tool_call').where('id', toolCallId).first();
+    expect(parked?.status).toBe('pending_approval');
+    expect(ran).toBe(false);
+
+    // ...and the real decision still settles it.
+    await g.service.approve(runId, toolCallId);
+    await waitFor(async () => {
+      const row = await g.db.from('agent_tool_call').where('id', toolCallId).first();
+      return row?.status === 'executed';
+    });
+    expect(ran).toBe(true);
+  });
+
+  it('lets a human answer a delegated child’s HITL wait through the run id on its frame', async () => {
+    // The mirror of the durable runner's `sinkRunId`: the nested run writes into the ancestor's
+    // stream (the only one anyone subscribed to) and parks under its OWN runId, which rides on the
+    // frame. Before that, the nested run declined and the human never got to decide at all.
+    let ran = false;
+    const script: FakeScript = (args, turnIndex) => {
+      const hasDelegate = args.tools.some((t) => t.name === 'ask_helper');
+      if (hasDelegate) {
+        return turnIndex === 0
+          ? { text: 'delegating', toolCall: { name: 'ask_helper', input: { task: 'help me' } } }
+          : { text: 'all done' };
+      }
+      return turnIndex === 0
+        ? { text: 'let me act', toolCall: { name: 'voidInvoice', input: { id: 'i-1' } } }
+        : { text: 'helper answer' };
+    };
+    const g = buildGraph(script, undefined, [
+      { name: 'orchestrator', delegatesTo: ['helper'] },
+      { name: 'helper', systemPrompt: 'You are a helper.', tools: ['voidInvoice'] },
+    ]);
+    g.registry.register(
+      {
+        name: 'voidInvoice',
+        kind: 'action',
+        description: 'Void an invoice.',
+        inputSchema: z.object({ id: z.string() }),
+        roles: ['ADMIN'],
+      },
+      {
+        execute: async () => {
+          ran = true;
+          return { voided: true };
+        },
+      },
+    );
+
+    const { runId } = await g.service.chat({
+      actor,
+      message: 'coordinate',
+      agentName: 'orchestrator',
+    });
+
+    const parked = await waitForFrame(g, runId);
+    expect(parked.runId).not.toBe(runId);
+    expect(parked.toolCallId).toBe('call-0-voidInvoice');
+
+    await g.service.approve(parked.runId, parked.toolCallId);
+
+    await waitFor(async () => {
+      const row = await g.db.from('agent_tool_call').where('id', 'call-0-voidInvoice').first();
+      return row?.status === 'executed';
+    });
+    expect(ran).toBe(true);
+    await waitFor(async () => {
+      const row = await g.db.from('agent_tool_call').where('id', 'call-0-ask_helper').first();
+      return row?.status === 'executed';
+    });
   });
 
   it('quotaToday via the service returns the day token total', async () => {

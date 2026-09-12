@@ -21,6 +21,7 @@ import {
   evaluateOwnership,
   frameToSse,
   governanceQueries as governanceQueriesFactories,
+  HumanReplyMismatchError,
   InlineAgentRunner,
   InProcessTokenStreamSink,
   lucidStoreConnection,
@@ -45,6 +46,7 @@ import {
   withActorLabel,
   withActorLabels,
 } from '../src/index.js';
+import { McpToolImporter } from '../src/mcp-client/index.js';
 import { setTelescopeGovernanceQueries } from '../src/telescope/governance-registry.js';
 
 interface ChatBody {
@@ -99,6 +101,7 @@ export default class AgentProvider {
   #store: AgentStore | null = null;
   #sink: TokenStreamSink | null = null;
   #actorDirectory: ActorDirectory | null = null;
+  #mcpTools: McpToolImporter | null = null;
 
   constructor(protected app: ApplicationService) {}
 
@@ -142,6 +145,11 @@ export default class AgentProvider {
       } else {
         await discoverTools(registry, this.app.makePath('app/agent_tools'), defaultRoles, this.app);
       }
+      // AFTER the app's own tools: the registry is keyed by name and nothing else, so importing
+      // first would let a remote server's `search` silently take the name the app's own `search`
+      // holds — a substitution invisible from everywhere else. Ordered here, the collision is
+      // detected and the remote tool is skipped with a warning naming both claimants.
+      await this.#importMcpTools(config, registry);
     });
     // Config-level functional tools (defineTool), then synthesized delegate tools.
     for (const tool of config.tools ?? []) {
@@ -220,9 +228,31 @@ export default class AgentProvider {
   async shutdown() {
     // The Lucid store shares the app's `db` (it owns no connection to close); the in-process sink
     // holds only per-run buffers that GC with the provider. Drop refs so a hot reload starts clean.
+    // An MCP client DOES own a connection — a spawned stdio child or an HTTP session — so it closes.
+    await this.#mcpTools?.close();
+    this.#mcpTools = null;
     this.#store = null;
     this.#sink = null;
     this.#actorDirectory = null;
+  }
+
+  /**
+   * Import each configured MCP server's tools into the shared registry.
+   *
+   * A failure here is the importer's own to report: a server that cannot be reached costs its own
+   * tools and leaves the app booting, unless it declared `required: true` — in which case the throw
+   * propagates and boot fails, which is what that flag asks for.
+   */
+  async #importMcpTools(config: AgentConfig, registry: ToolRegistry): Promise<void> {
+    const servers = config.mcpServers ?? [];
+    if (servers.length === 0) {
+      return;
+    }
+    const importer = new McpToolImporter(servers, registry, {
+      warn: (message) => console.warn(`[@adonis-agora/agent] ${message}`),
+    });
+    this.#mcpTools = importer;
+    await importer.start();
   }
 
   // ── resolution helpers ────────────────────────────────────────────────────
@@ -492,12 +522,16 @@ export default class AgentProvider {
       };
       const owner = await service.runOwner(body.runId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
-      await service.answer({
-        runId: body.runId,
-        toolCallId: body.toolCallId,
-        answers: body.answers ?? {},
-        answeredByRef: actor.id,
-      });
+      try {
+        await service.answer({
+          runId: body.runId,
+          toolCallId: body.toolCallId,
+          answers: body.answers ?? {},
+          answeredByRef: actor.id,
+        });
+      } catch (error) {
+        return this.#conflictOnMismatch(ctx, error);
+      }
       return ctx.response.json({ ok: true });
     });
 
@@ -509,11 +543,15 @@ export default class AgentProvider {
       const body = (ctx.request.body() ?? {}) as { runId: string; toolCallId: string };
       const owner = await service.runOwner(body.runId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
-      await service.skip({
-        runId: body.runId,
-        toolCallId: body.toolCallId,
-        answeredByRef: actor.id,
-      });
+      try {
+        await service.skip({
+          runId: body.runId,
+          toolCallId: body.toolCallId,
+          answeredByRef: actor.id,
+        });
+      } catch (error) {
+        return this.#conflictOnMismatch(ctx, error);
+      }
       return ctx.response.json({ ok: true });
     });
 
@@ -1015,6 +1053,18 @@ export default class AgentProvider {
       return false;
     }
     return true;
+  }
+
+  /**
+   * Answers addressed at a tool call that is waiting for an approve/reject are a `409`, not a `500`:
+   * nothing is broken, the caller sent the wrong kind of reply for that call. The run is left parked
+   * on the approval it was always waiting for, rather than recording a decision nobody made.
+   */
+  #conflictOnMismatch(ctx: HttpContext, error: unknown): void {
+    if (!(error instanceof HumanReplyMismatchError)) {
+      throw error;
+    }
+    ctx.response.conflict({ error: error.message });
   }
 
   /**

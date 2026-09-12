@@ -52,6 +52,18 @@ export class ToolRegistry {
     this.entries.set(spec.name, { spec, handler });
   }
 
+  /**
+   * Drop a tool, so it is neither offered to the model nor invocable. Returns whether there was one.
+   *
+   * For a tool whose EXISTENCE is not decided here: an MCP server may stop exporting a tool between
+   * one `tools/list` and the next, and leaving the old spec registered would go on offering the
+   * model a tool whose next call fails on somebody else's machine. Whoever registered a name is
+   * responsible for deciding when it is gone — nothing in the registry itself expires.
+   */
+  unregister(name: string): boolean {
+    return this.entries.delete(name);
+  }
+
   has(name: string): boolean {
     return this.entries.has(name);
   }

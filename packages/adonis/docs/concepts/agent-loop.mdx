@@ -62,6 +62,8 @@ When every call in the turn is a `read`, their invocations run **concurrently** 
 | --- | --- | --- |
 | `step(name, fn)` | calls `fn()` directly | wraps `fn` in a durable checkpoint (`ctx.localStep`) so replay returns the cached result |
 | `awaitApproval(call, ctx)` | resolves a pending in-memory promise | awaits a durable signal (`ctx.waitForSignal`) that survives restarts |
+| `awaitAnswers(request, ctx)` | resolves a pending in-memory promise, on the same key | awaits the same durable signal an approval does |
+| `openSink()` (delegated run) | the ancestor's sink, wrapped so the child cannot `end()` it | the same, keyed by `sinkRunId` |
 | `openSink()` | opens the in-process token sink | opens a shared sink keyed by run id |
 | `runAgent(name, task)` | runs a nested in-process loop | starts a durable child workflow (`ctx.child`) |
 | `parallel(tasks)` | `settleAll` — nothing records a position, so reads simply overlap | `settleAll` — every task is launched in one tick, so `ctx.localStep` pins the block in call order |
@@ -101,6 +103,19 @@ The window's two halves run in deliberately different places. `select` is a **pu
 Both of these changed which checkpoints a turn writes, so both are gated on `hooks.patched` — `agent:parallel-tools` and `agent:history-select`. The gate consumes a position for a fresh run and gives it back to a run whose history predates it, so a turn that suspended under the older shape finishes on that shape. A deployment that configures no window never reaches the history gate at all, and a turn with fewer than two calls never reaches the tools one.
 </Callout>
 
+### The read a turn makes
+
+A turn needs the thread's last few messages, its title, and whether it was ever answered. `getThread` hands it the transcript instead — every message row, every attachment and every tool output the thread ever recorded — and `load:thread` then journals what it loaded, so a long thread pays for its whole history on every turn and again on every replay. On a 50-turn thread whose turns each ran a 50 KB tool, that is ~2.6 MB to send four messages, 99% of it tool output no model call would see.
+
+A store may therefore implement `ThreadTurnReader.loadThreadForTurn({ threadId, messageLimit })`, and `LucidAgentStore` does: the newest `messageLimit` rows ordered by the database, projected to the columns a model turn reads. The loop probes for the method **structurally**, so a store that offers none still answers through `getThread`, bounded in process — and the payload `load:thread` records is identical either way, which is what keeps a deployment's choice of store out of a run's checkpoints.
+
+The bound handed to the store is the window's own `maxMessages`, and two ceilings deliberately name none:
+
+- **A window that summarizes.** `summarize` is handed what `select` *dropped*, and a read bounded to what `select` keeps drops nothing — the turn would fold an empty summary into a prompt missing the messages it stands in for.
+- **A ceiling that is not a row count.** No row count follows from a token budget: one message can be four tokens or forty thousand. Omitting `maxMessages` costs only the bound on the read; the prompt is identical.
+
+`hasAssistantMessage` is answered over the **whole** thread, never the window — it decides a `thread-start` intake, and a window holding only the user's last questions belongs to a conversation that has still been answered.
+
 <Callout type="warn" title="The suspend detail">
 There is deliberately **no** `try/finally` closing the sink around the loop. A durable runner suspends by *throwing* through the stack at `awaitApproval`; a `finally` would then close the live stream on every suspend. The stream is closed only on normal completion — so a suspended-then-resumed run keeps one continuous token stream.
 </Callout>
@@ -109,7 +124,7 @@ There is deliberately **no** `try/finally` closing the sink around the loop. A d
 
 `InlineAgentRunner` is the default (`durable: false`). `start(input)` mints a run id and kicks off `runAgentLoop` in the background, returning immediately so the HTTP handler can begin piping SSE. HITL decisions are delivered by `signal(runId, toolCallId, decision)`, which resolves a pending promise keyed `${runId}:${toolCallId}` — so one run's approval can never satisfy another's. A failed run surfaces the error on the live stream and closes it, so a subscriber is never left hanging.
 
-Delegation runs a **nested** in-process loop on a transient sub-thread. A nested sub-agent has no human to prompt, so its `action` tools are auto-declined rather than left hanging.
+Delegation runs a **nested** in-process loop on a transient sub-thread, and that nested run parks on a human exactly as a top-level one does — under its own run id, with its frames forwarded into the top-level ancestor's stream so a human can see and therefore answer them. See [Answering a sub-agent](/docs/agent/durability/durable-runner#answering-a-sub-agent), which is the same on the durable runner.
 
 <Callout type="info">
 The inline runner is single-replica: pending approvals and the token sink live in process memory. Horizontal scaling and crash-survival are the job of the [durable runner](/docs/agent/durability/durable-runner) (and the [Redis sink](/docs/agent/redis-streaming) for the stream).

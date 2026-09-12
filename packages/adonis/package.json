@@ -28,6 +28,11 @@
       "import": "./dist/src/mcp/index.js",
       "default": "./dist/src/mcp/index.js"
     },
+    "./mcp-client": {
+      "types": "./dist/src/mcp-client/index.d.ts",
+      "import": "./dist/src/mcp-client/index.js",
+      "default": "./dist/src/mcp-client/index.js"
+    },
     "./mcp_provider": {
       "types": "./dist/providers/mcp_provider.d.ts",
       "import": "./dist/providers/mcp_provider.js",

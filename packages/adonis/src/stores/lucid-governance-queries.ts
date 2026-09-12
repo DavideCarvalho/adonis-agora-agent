@@ -111,6 +111,10 @@ function runRowToSummary(row: Record<string, unknown>): RunSummaryRow {
       row.tenant_ref === null || row.tenant_ref === undefined ? null : String(row.tenant_ref),
     agentName:
       row.agent_name === null || row.agent_name === undefined ? null : String(row.agent_name),
+    parentRunId:
+      row.parent_run_id === null || row.parent_run_id === undefined
+        ? null
+        : String(row.parent_run_id),
     status: String(row.status),
     startedAt: new Date(startedAt).toISOString(),
     finishedAt: finishedAt === null ? null : new Date(finishedAt).toISOString(),

@@ -92,7 +92,7 @@ export default defineConfig({
 })
 ```
 
-A request targets an agent by name via the `agent` field on `POST /agent/chat` (omit it for the default). Model, store, sink, and governance are shared across all agents; each definition overrides only its own prompt, tools, personas, `defaultPersona`, `modelId`, `maxSteps`, and `actorResolver`.
+A request targets an agent by name via the `agent` field on `POST /agent/chat` (omit it for the default). Model, store, sink, and governance are shared across all agents; each definition overrides only its own prompt, tools, personas, `defaultPersona`, `modelId`, `maxSteps`, `maxDelegationDepth`, `maxAgentAppearances`, and `actorResolver`.
 
 ### Per-agent identity
 
@@ -183,4 +183,28 @@ delegation looks like "the orchestrator ignored the specialist" rather than a vi
 [tool-call feed](/docs/agent/governance/read-model) if delegation seems to be silently not happening.
 </Callout>
 
-Under the **inline runner**, delegation runs as a nested in-process loop on a transient sub-thread. Because a nested sub-agent has no human to prompt, its `action` tools are auto-declined rather than left hanging — so keep human-approval actions on the top-level agent. Under the **durable runner**, the same delegation maps to a tracked durable child workflow (`ctx.child`). See the [agent loop](/docs/agent/concepts/agent-loop) and [The durable runner](/docs/agent/durability/durable-runner).
+### A chain that goes in circles
+
+`delegatesTo` is a graph, and the model cannot see it. In a mutual handoff — alpha hands to beta, beta hands back to alpha — every agent makes one reasonable call and the recursion belongs to the wiring, so the loop has to stop it.
+
+Both runners hand each child the chain of agent names that reached it, and the loop compares a delegation's target against that chain plus its own agent. A repeat **is** the cycle, and the refusal names it:
+
+```
+delegation cycle: alpha → beta → alpha — alpha 2 times on one chain
+```
+
+`maxAgentAppearances` is how many times one agent may appear on a single chain, **default 1**. It counts appearances, so `2` admits exactly one deliberate return to an earlier agent — what a supervisor that genuinely hands work back needs.
+
+`maxDelegationDepth` (**default 5**) stays as the backstop for a chain that is long without repeating, and is reported only when nothing is circular:
+
+```
+delegation depth limit of 5 reached
+```
+
+Both are declared per agent, beside `maxSteps`. Which one a deployment ever meets is not obvious: at one appearance per agent a chain cannot be longer than the number of registered agents, so an app with fewer agents than the ceiling never reaches the depth guard — the cycle guard always fires first. Depth starts mattering with a bigger fleet than the ceiling, or once `maxAgentAppearances` is raised, which is what lets a chain revisit an agent and grow past the fleet's size.
+
+<Callout type="info" title="Why not just count">
+A count can only say a chain is LONG. It cannot say it is going in circles, and conflating the two gets both cases wrong: a mutual handoff burns the whole ceiling in agent turns before reporting a depth the reader then has to interpret, and a legitimate chain of six DISTINCT agents is refused for resembling a cycle it is not. The chain of names costs exactly what the counter cost to thread.
+</Callout>
+
+Under the **inline runner**, delegation runs as a nested in-process loop on a transient sub-thread; under the **durable runner**, it maps to a tracked durable child workflow (`ctx.child`). Either way a sub-agent's `action` tools and question sets **park on a human**, under the sub-agent's own run id, and the frame forwarded into the stream a human is watching carries that id so the wait can be answered. A sub-agent whose approvals nobody will answer therefore hangs — the same trade a top-level agent makes. See [Answering a sub-agent](/docs/agent/durability/durable-runner#answering-a-sub-agent), the [agent loop](/docs/agent/concepts/agent-loop) and [The durable runner](/docs/agent/durability/durable-runner).

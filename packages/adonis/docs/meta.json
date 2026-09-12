@@ -15,6 +15,7 @@
     "streaming-and-http",
     "browser-client",
     "mcp",
+    "mcp-client",
     "redis-streaming",
     "diagnostics",
     "testing",

@@ -19,6 +19,40 @@ import type { Decision, ToolDefinition } from './types.js';
  */
 export type HumanReply = Decision | ElicitationReply;
 
+/**
+ * Thrown when a reply is the wrong shape for the wait it was delivered to: answers to a question
+ * set, addressed to a tool call that is waiting on an approve/reject.
+ *
+ * Refused rather than reduced, because there is no honest reduction in that direction. A yes/no can
+ * be read as "confirmed the pre-picked answers" (see {@link normalizeElicitationReply}); a set of
+ * answers says nothing at all about whether the proposed work should go ahead, and reading its
+ * absent `approved` as `false` would record a rejection the person never made.
+ */
+export class HumanReplyMismatchError extends Error {
+  constructor(
+    public readonly runId: string,
+    public readonly toolCallId: string,
+  ) {
+    super(
+      `Tool call "${toolCallId}" on run "${runId}" is waiting for an approve/reject, not for answers`,
+    );
+    this.name = 'HumanReplyMismatchError';
+  }
+}
+
+/**
+ * Is this a human's yes/no {@link Decision}, rather than answers to a question set? Structural
+ * rather than by class: both shapes are plain JSON off an HTTP body by the time they arrive, and
+ * `approved` is the only field a `Decision` carries.
+ */
+export function isHumanDecision(reply: HumanReply): reply is Decision {
+  return (
+    typeof reply === 'object' &&
+    reply !== null &&
+    typeof (reply as Partial<Decision>).approved === 'boolean'
+  );
+}
+
 /** One choice a question offers. */
 export interface ElicitationOption {
   /** Stable identifier submitted back. Never shown to the user. */

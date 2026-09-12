@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { decodeFrame, parseSseEvent } from '../src/client/index.js';
 import {
   type AgentLoopDeps,
   type AgentLoopHooks,
@@ -13,6 +14,7 @@ import {
   type ElicitationRequest,
   frameToSse,
   type HumanReply,
+  isHumanDecision,
   normalizeElicitationReply,
   resolveElicitation,
   runAgentLoop,
@@ -139,6 +141,16 @@ describe('a yes/no channel answering a question set', () => {
   it('returns a real reply untouched', () => {
     const reply: ElicitationReply = { answers: { scope: ['everything'] } };
     expect(normalizeElicitationReply(reply)).toBe(reply);
+  });
+
+  it('tells a yes/no apart from a set of answers, so only one of them can settle an approval', () => {
+    expect(isHumanDecision({ approved: true })).toBe(true);
+    expect(isHumanDecision({ approved: false, reason: 'no' })).toBe(true);
+    // No `approved` at all: the field an approval wait reads is simply absent, and `!undefined` is
+    // true — which is why this has to be asked rather than assumed.
+    expect(isHumanDecision({ answers: {} })).toBe(false);
+    expect(isHumanDecision({ answers: {}, skipped: true })).toBe(false);
+    expect(isHumanDecision({ answers: { scope: ['narrow'] }, answeredByRef: 'ops-7' })).toBe(false);
   });
 
   it('settles an Approve on the defaults rather than throwing on a missing `answers`', () => {
@@ -482,12 +494,119 @@ describe('the model-callable ask tool', () => {
   });
 });
 
+describe('a reply of the wrong shape for an approval wait', () => {
+  it('gives up rather than spinning when a host hook resolves without ever waiting', async () => {
+    // Both shipped runners actually wait here, so this ceiling is out of reach for a person. What it
+    // rules out is a hook that resolves synchronously with the wrong shape forever, which would peg
+    // the only thread the process has.
+    const store = new InMemoryAgentStore();
+    const sink = new InMemoryTokenStreamSink();
+    const { id: threadId } = await store.createThread({ actor: ACTOR, persona: 'default' });
+    const registry = buildRegistry();
+    registry.register(
+      { name: 'voidInvoice', kind: 'action', description: 'v', inputSchema: z.object({}) },
+      { execute: async () => ({ voided: true }) },
+    );
+    const script: FakeScript = (_args, turnIndex) =>
+      turnIndex === 0
+        ? { text: 'acting', toolCall: { name: 'voidInvoice', input: {} } }
+        : { text: 'done' };
+
+    await expect(
+      runAgentLoop(
+        {
+          model: new FakeModelProvider(script),
+          store,
+          registry,
+          rolesPolicy: new DefaultRolesPolicy(),
+          modelId: 'fake-1',
+          day: '2026-06-30',
+          systemPrompt: 'base',
+        } as AgentLoopDeps,
+        { threadId, actor: ACTOR, userText: 'void it' },
+        {
+          runId: 'run-1',
+          openSink: () => sink.open('run-1'),
+          // Never a `Decision`, and never a wait.
+          awaitApproval: async () => ({ answers: {} }) as unknown as Decision,
+          step: (_name, fn) => fn(),
+        },
+      ),
+    ).rejects.toThrow(/replies that carried no approve\/reject/);
+  });
+});
+
+describe('a question set a delegated run parks on', () => {
+  it('carries the run to answer it against, which is the CHILD, not the stream it arrived on', async () => {
+    // A delegated run forwards its frames into its top-level ancestor's stream, because that is the
+    // only stream anyone subscribed to. So the run id on the frame and the run id of the stream are
+    // different, and answering against the stream's would signal the wrong run.
+    const store = new InMemoryAgentStore();
+    const sink = new InMemoryTokenStreamSink();
+    const { id: threadId } = await store.createThread({ actor: ACTOR, persona: 'default' });
+    const asked: ElicitationRequest[] = [];
+    await runAgentLoop(
+      {
+        model: new FakeModelProvider(echoScript('done')),
+        store,
+        registry: buildRegistry(),
+        rolesPolicy: new DefaultRolesPolicy(),
+        modelId: 'fake-1',
+        day: '2026-06-30',
+        systemPrompt: 'base',
+        intake: { questions: [SCOPE] },
+      } as AgentLoopDeps,
+      { threadId, actor: ACTOR, userText: 'do the thing' },
+      {
+        runId: 'child-1',
+        // The ancestor's stream, exactly as both runners wire a delegated run.
+        openSink: () => sink.open('parent-1'),
+        awaitApproval: async () => ({ approved: true }) as Decision,
+        awaitAnswers: async (request: ElicitationRequest) => {
+          asked.push(request);
+          return { answers: {} };
+        },
+        step: (_name, fn) => fn(),
+      },
+    );
+
+    const frames: StreamFrame[] = [];
+    for await (const frame of sink.subscribe('parent-1')) frames.push(frame);
+    const posted = frames.find((frame) => frame.t === 'elicitation');
+    expect(posted).toMatchObject({ t: 'elicitation', runId: 'child-1', id: 'intake-child-1' });
+    expect(asked).toHaveLength(1);
+  });
+});
+
 describe('the elicitation stream frame', () => {
-  it('serializes as its own SSE event, carrying the whole request', () => {
-    const sse = frameToSse({ t: 'elicitation', id: 'req-1', request: request() });
+  it('serializes as its own SSE event, carrying the whole request and the run to answer', () => {
+    const sse = frameToSse({
+      t: 'elicitation',
+      runId: 'child-1',
+      id: 'req-1',
+      request: request(),
+    });
     expect(sse.startsWith('event: elicitation\n')).toBe(true);
+    expect(sse).toContain('"runId":"child-1"');
     expect(sse).toContain('"id":"req-1"');
     expect(sse).toContain('How wide should I go?');
+  });
+
+  it('round-trips through the client decoder with the run and call to address', () => {
+    const sse = frameToSse({
+      t: 'elicitation',
+      runId: 'child-1',
+      id: 'req-1',
+      request: request(),
+    });
+    const event = parseSseEvent(sse.trimEnd());
+    expect(event).not.toBeNull();
+    // Without this the id is on the wire and unreadable by the library's own client.
+    expect(event && decodeFrame(event)).toMatchObject({
+      type: 'elicitation',
+      runId: 'child-1',
+      toolCallId: 'req-1',
+    });
   });
 
   it('leaves a text frame’s envelope byte-identical', () => {

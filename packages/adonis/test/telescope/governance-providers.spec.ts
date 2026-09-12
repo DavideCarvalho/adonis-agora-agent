@@ -301,6 +301,7 @@ describe('recent activity + approvals inbox providers', () => {
     actorRef: 'u-1',
     tenantRef: null,
     agentName: null,
+    parentRunId: null,
     status: 'failed',
     startedAt: '2026-01-01T00:00:00.000Z',
     finishedAt: '2026-01-01T00:00:05.000Z',

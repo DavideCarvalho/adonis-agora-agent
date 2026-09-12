@@ -8,8 +8,12 @@
  * - `event: meta\ndata: {runId,threadId}`   — sent once, first, before any token
  * - `data: {"delta":"..."}`                  — a text chunk (default event, no `event:` line)
  * - `event: component\ndata: {name,data}`    — a rendered component
+ * - `event: approval\ndata: {runId,id,toolName,input}` — an action tool awaiting approve/reject
+ * - `event: elicitation\ndata: {runId,id,request}` — a question set the run is parked on
  * - `event: done\ndata: {}`                  — the run's stream finished
  */
+
+import type { ElicitationRequest } from '../elicitation.js';
 
 /** A rendered part of an assistant message: streamed text, or a named component with its props. */
 export type ChatPart =
@@ -21,6 +25,21 @@ export type ChatFrame =
   | { type: 'text'; delta: string }
   | { type: 'component'; name: string; data: unknown }
   | { type: 'meta'; runId?: string; threadId?: string }
+  /**
+   * A question set the run is parked on, with everything needed to answer it: `runId` and
+   * `toolCallId` are the body `POST /agent/tool-call/answer` takes, and `request` is the form.
+   *
+   * `runId` is NOT necessarily the run this stream was opened for. A delegated sub-agent forwards
+   * its frames into its top-level ancestor's stream — that is the only stream a human is watching —
+   * so the run to answer is the child's, and reading it off `meta` would address the wrong one.
+   */
+  | { type: 'elicitation'; runId: string; toolCallId: string; request: ElicitationRequest }
+  /**
+   * An action tool awaiting an approve/reject, with what it means to run. `runId`/`toolCallId` are
+   * the body `POST /agent/tool-call/approve` (or `/reject`) takes — and `runId` is the parked run,
+   * which for a delegated sub-agent is not the run this stream was opened for.
+   */
+  | { type: 'approval'; runId: string; toolCallId: string; toolName: string; input: unknown }
   | { type: 'done' };
 
 /** One raw SSE event: the `event:` name (default `message`) and the joined `data:` payload. */
@@ -69,6 +88,55 @@ export function decodeFrame(event: SseEvent): ChatFrame | null {
       return null;
     }
   }
+  if (event.event === 'approval') {
+    try {
+      const parsed = JSON.parse(event.data) as {
+        runId?: unknown;
+        id?: unknown;
+        toolName?: unknown;
+        input?: unknown;
+      };
+      // A decision with no run and no call to address is not a decision anyone can deliver.
+      if (
+        typeof parsed?.runId !== 'string' ||
+        typeof parsed.id !== 'string' ||
+        typeof parsed.toolName !== 'string'
+      ) {
+        return null;
+      }
+      return {
+        type: 'approval',
+        runId: parsed.runId,
+        toolCallId: parsed.id,
+        toolName: parsed.toolName,
+        input: parsed.input,
+      };
+    } catch {
+      return null;
+    }
+  }
+  if (event.event === 'elicitation') {
+    try {
+      const parsed = JSON.parse(event.data) as {
+        runId?: unknown;
+        id?: unknown;
+        request?: unknown;
+      };
+      // A form with no run to answer against is not renderable as one, so it is dropped rather
+      // than handed on half-usable.
+      if (typeof parsed?.runId !== 'string' || typeof parsed.id !== 'string') {
+        return null;
+      }
+      return {
+        type: 'elicitation',
+        runId: parsed.runId,
+        toolCallId: parsed.id,
+        request: parsed.request as ElicitationRequest,
+      };
+    } catch {
+      return null;
+    }
+  }
   if (event.event === 'component') {
     try {
       const parsed = JSON.parse(event.data) as { name?: unknown; data?: unknown };
@@ -95,8 +163,9 @@ export function decodeFrame(event: SseEvent): ChatFrame | null {
 
 /**
  * Folds a renderable {@link ChatFrame} (text or component) into the message's parts, concatenating
- * consecutive text deltas into the trailing text part and appending components in order. `meta`/`done`
- * frames are control frames and are ignored here. Returns a new array (never mutates the input).
+ * consecutive text deltas into the trailing text part and appending components in order.
+ * `meta`/`elicitation`/`approval`/`done` are control frames and are ignored here — a form to put to
+ * the user is not a part of the assistant's message. Returns a new array (never mutates the input).
  */
 export function foldPart(parts: ChatPart[], frame: ChatFrame): ChatPart[] {
   if (frame.type === 'component') {

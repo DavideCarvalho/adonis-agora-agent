@@ -179,25 +179,29 @@ completes normally while the delegation quietly never happened.
 Source: `packages/adonis/src/agent-loop.ts` (agent-kind branch), `packages/adonis/docs/
 authoring/personas-and-agents.mdx` ("A denied delegation is recorded, not retried").
 
-### MEDIUM — expecting a delegated sub-agent's action tools to wait for a human
+### MEDIUM — answering a delegated sub-agent's approval against the wrong run
 
 ```ts
-// Wrong assumption — nested researcher asks for approval; the run should pause.
-defaultAgent: { delegatesTo: [{ agent: 'researcher' }] }
-agents: [{ name: 'researcher', tools: ['issueRefund' /* action */] }]
+// Wrong — the nested researcher parked, but this signals the ORCHESTRATOR's run, so the
+// child stays suspended and the delegation never returns.
+const { runId } = await service.chat({ actor, message: 'go', agentName: 'orchestrator' })
+await service.approve(runId, toolCallId)
 ```
 
 ```ts
-// Correct — keep human-approval actions on the TOP-LEVEL agent only.
-agents: [
-  { name: 'researcher', tools: ['searchDocs', 'getInvoice'] }, // read tools only
-]
+// Correct — read the parked run off the frame. It is the CHILD's run, not the stream's.
+for await (const frame of service.subscribe(runId)) {
+  if (frame.t === 'approval') await service.approve(frame.runId, frame.id)
+}
 ```
 
-Mechanism: under the inline runner a sub-agent runs as a nested in-process loop with no
-human attached, so its `action` tools are AUTO-DECLINED rather than left hanging; under
-the durable runner the same delegation maps to a tracked child workflow instead.
-Source: `packages/adonis/docs/authoring/personas-and-agents.mdx` (final paragraph).
+Mechanism: a sub-agent's `action` parks on `tool:<childRunId>:<callId>` on both runners. Its
+frames are forwarded into the top-level ancestor's stream (durable `sinkRunId`; the inline
+nested loop mirrors it), so the stream you subscribed to is NOT the run that is parked — and
+the `approval` / `elicitation` frame carries `runId` for exactly that reason. A sub-agent
+whose approvals nobody answers hangs. Source:
+`packages/adonis/docs/durability/durable-runner.mdx` ("Answering a sub-agent"),
+`packages/adonis/src/spi/token-stream-sink.ts` (`StreamFrame`).
 
 ### LOW — using wall-clock time or randomness inside a PromptBuilder
 

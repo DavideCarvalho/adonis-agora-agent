@@ -18,6 +18,7 @@ import {
   type ElicitationReply,
   type ElicitationRequest,
   type HumanReply,
+  isHumanDecision,
   normalizeElicitationReply,
   settleElicitation,
 } from './elicitation.js';
@@ -55,7 +56,7 @@ import {
   skillInputSchema,
   skillToolDefinition,
 } from './skills.js';
-import type { AgentStore } from './spi/agent-store.js';
+import type { AgentStore, ThreadTurnReader } from './spi/agent-store.js';
 import type { HistoryWindow, HistoryWindowContext } from './spi/history-window.js';
 import type { ModelProvider, ModelTurnResult } from './spi/model-provider.js';
 import {
@@ -92,6 +93,7 @@ import type {
   ModelMessage,
   PromptBuilder,
   PromptContext,
+  StoredMessage,
   ToolCallRequest,
   ToolDefinition,
   ToolKind,
@@ -126,6 +128,19 @@ export interface AgentLoopDeps<TOutput = unknown> {
   host?: unknown;
   /** Agent-level tool allow-list (intersected with the persona's). Undefined → all tools. */
   toolAllowList?: string[];
+  /**
+   * How many agent→agent delegations deep a chain may go. Defaults to {@link MAX_DELEGATION_DEPTH}.
+   *
+   * The backstop for a chain that is merely LONG; a chain going in circles is caught by
+   * {@link maxAgentAppearances} instead, and named as such.
+   */
+  maxDelegationDepth?: number;
+  /**
+   * How many times one agent may appear on a single delegation chain. Defaults to
+   * {@link DEFAULT_MAX_AGENT_APPEARANCES}. It counts APPEARANCES, so 2 admits exactly one
+   * deliberate return to an earlier agent.
+   */
+  maxAgentAppearances?: number;
   /**
    * Enables always-on ("inject") RAG: before the turn, retrieve passages for the user message and fold
    * them into the system prompt. Its presence IS inject mode (a retriever wired as a `read` tool for
@@ -458,6 +473,71 @@ interface PersistedToolCall {
 }
 
 /**
+ * How many agent→agent delegations deep a chain may go when the host names no ceiling.
+ *
+ * A backstop for a chain that is merely LONG. The cycle it would otherwise stand in for is detected
+ * directly — see {@link DEFAULT_MAX_AGENT_APPEARANCES}.
+ *
+ * WHEN IT ACTUALLY BINDS. At one appearance per agent a chain cannot be longer than the number of
+ * registered agents, so a deployment with fewer agents than this number never reaches it: the cycle
+ * guard always fires first. It starts mattering with a larger fleet than the ceiling, or once a host
+ * raises {@link AgentLoopDeps.maxAgentAppearances}, which is what lets a chain revisit an agent and
+ * therefore grow past the fleet's size.
+ */
+export const MAX_DELEGATION_DEPTH = 5;
+
+/**
+ * How many times one agent may appear on a single delegation chain, when the host names no other
+ * number. Once: a chain that reaches an agent it has already passed through is going in circles.
+ *
+ * Override with {@link AgentLoopDeps.maxAgentAppearances} — a supervisor that genuinely hands work
+ * back to an earlier agent needs a larger number, and it is the count of APPEARANCES, so 2 admits
+ * exactly one return.
+ */
+export const DEFAULT_MAX_AGENT_APPEARANCES = 1;
+
+/**
+ * Why this delegation must not happen, or `null` to let it through.
+ *
+ * Two different refusals, and the order matters: a CYCLE is named before a depth, because they
+ * describe different faults and the depth is the vaguer of the two. `alpha → beta → alpha` points at
+ * the wiring; "depth limit of 5 reached" leaves a reader to work out whether the chain was looping or
+ * merely long, which is exactly the question a count cannot answer.
+ *
+ * Decided from the run's own input and the agent's configured ceilings, inside the checkpoint that
+ * settles the call's kind — so the verdict is what a replay reads back rather than something each
+ * process re-derives.
+ */
+function delegationRefusal(args: {
+  deps: Pick<AgentLoopDeps, 'maxAgentAppearances' | 'maxDelegationDepth'>;
+  input: Pick<AgentRunInput, 'agentName' | 'delegationDepth' | 'delegationPath'>;
+  targetAgent: string;
+}): string | null {
+  const { deps, input, targetAgent } = args;
+  // `delegationPath` is the chain that REACHED this run, so this run's own agent is the last link of
+  // the chain a delegation from here would extend. Naming it is what makes the refusal describe the
+  // wiring: a mutual handoff reads `alpha → beta → alpha` rather than an `alpha → alpha` that no
+  // edge in the deployment declares. It also makes an agent delegating to ITSELF a cycle on the spot
+  // rather than one hop later.
+  const ancestry = [
+    ...(input.delegationPath ?? []),
+    ...(input.agentName !== undefined ? [input.agentName] : []),
+  ];
+  const appearances = ancestry.filter((name) => name === targetAgent).length;
+  const maxAppearances = deps.maxAgentAppearances ?? DEFAULT_MAX_AGENT_APPEARANCES;
+  if (appearances >= maxAppearances) {
+    const chain = [...ancestry, targetAgent].join(' → ');
+    const times = appearances + 1;
+    return `delegation cycle: ${chain} — ${targetAgent} ${times} times on one chain`;
+  }
+  const maxDepth = deps.maxDelegationDepth ?? MAX_DELEGATION_DEPTH;
+  if ((input.delegationDepth ?? 0) >= maxDepth) {
+    return `delegation depth limit of ${maxDepth} reached`;
+  }
+  return null;
+}
+
+/**
  * The gates a delegation must clear. Delegation bypasses `ToolRegistry.invoke` (it is a ctx-level
  * suspend point), so the three checks `invoke` applies have to be re-applied here in the same order
  * — authorization first, then shape:
@@ -468,6 +548,9 @@ interface PersistedToolCall {
  *    nothing at all when the edge is a bare string — under `DefaultRolesPolicy` that is ADMIN-only,
  *    and under an authz posture a tool with no `ability` is always denied;
  *  - input validation, so a malformed input is rejected rather than silently coerced.
+ *
+ * Then the two nesting guards, once the target is known: {@link delegationRefusal} refuses a chain
+ * that is going in circles, or one that is merely too deep.
  *
  * Returns the verdict rather than throwing it: this runs inside the call's checkpoint, whose output
  * is what a replay reads back, and it has to run BEFORE any event publication so a refusal never
@@ -496,7 +579,12 @@ async function resolveDelegation(
     if (validation.issues !== undefined) {
       throw new ToolInputInvalidError(call.name, validation.issues);
     }
-    return { targetAgent: spec.targetAgent ?? call.name, task: extractTask(validation.value) };
+    const targetAgent = spec.targetAgent ?? call.name;
+    const refusal = delegationRefusal({ deps, input, targetAgent });
+    if (refusal !== null) {
+      return { error: refusal };
+    }
+    return { targetAgent, task: extractTask(validation.value) };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
@@ -535,6 +623,120 @@ function buildSummaryBlock(summary: string): string {
  * never spends the marker's position and records byte-identical checkpoints.
  */
 const HISTORY_SELECT_PATCH = 'agent:history-select';
+
+/** The three things a turn reads off its thread, however the store was able to answer them. */
+interface ThreadForTurn {
+  /** Oldest-first, and at most what the ceiling was going to keep. */
+  messages: ModelMessage[];
+  title: string | null;
+  hasAssistantMessage: boolean;
+}
+
+/**
+ * `load:thread`'s payload as a replay can hand it back: its messages may be the store's own rows,
+ * and a payload that names no `hasAssistantMessage` holds the thread's whole transcript, where
+ * scanning the rows answers the same question the flag does. `null` is a thread the store did not
+ * have.
+ */
+interface RecordedThreadLoad {
+  messages: (ModelMessage | StoredMessage)[];
+  title?: string | null;
+  hasAssistantMessage?: boolean;
+}
+
+/** The three answers, normalized out of whatever shape `load:thread` recorded them in. */
+function threadForTurn(recorded: RecordedThreadLoad | null): ThreadForTurn {
+  const messages = (recorded?.messages ?? []).map(toModelMessage);
+  return {
+    messages,
+    title: recorded?.title ?? null,
+    hasAssistantMessage:
+      recorded?.hasAssistantMessage ?? messages.some((message) => message.role === 'assistant'),
+  };
+}
+
+/**
+ * A message as the model sees it — the store's own bookkeeping (`id`, `createdAt`, `usage`,
+ * `followUps`, `runId`, `persona`) left behind, so what `load:thread` records is the prompt's rows
+ * rather than the table's.
+ */
+function toModelMessage(message: ModelMessage | StoredMessage): ModelMessage {
+  return {
+    role: message.role,
+    content: message.content,
+    ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls } : {}),
+    ...(message.toolResults !== undefined ? { toolResults: message.toolResults } : {}),
+    ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+  };
+}
+
+/**
+ * How many of the thread's newest rows to ask for — the window's own row ceiling, or nothing at all,
+ * which asks for the transcript.
+ *
+ * A window that SUMMARIZES gets no limit. `summarize` is handed what `select` dropped, and a read
+ * bounded to what `select` keeps drops nothing: the turn would fold an empty summary into a prompt
+ * that is missing the messages it stands in for, with no error anywhere.
+ *
+ * A ceiling expressed only in TOKENS gets no limit either, and none can be derived from it: one
+ * message can be four tokens or forty thousand, so no row count follows from a token budget. Naming
+ * one too low reads fewer rows than `select` would have kept, which changes the prompt itself;
+ * leaving it out only costs the read.
+ */
+function turnMessageLimit(window: HistoryWindow | undefined): number | undefined {
+  if (window === undefined || window.summarize !== undefined) {
+    return undefined;
+  }
+  return window.maxMessages;
+}
+
+/**
+ * Read the thread: the store's bounded WINDOW where it offers one, else its whole transcript cut to
+ * the same bound in process.
+ *
+ * The probe is structural — the window is an optimization a store either offers or does not, and one
+ * that offers none still answers correctly. Which branch ran is invisible to the journal on purpose:
+ * both produce the same three answers over the same rows, so the payload `load:thread` records is
+ * identical either way and a deployment's choice of store can never decide a run's checkpoints. That
+ * is also why the probe lives INSIDE `load:thread` — it adds no position, and a replaying process
+ * reads the recorded payload back without calling the store at all.
+ *
+ * `hasAssistantMessage` is answered over the whole thread, never over the window. It decides a
+ * `thread-start` intake, and a window that happens to hold only the user's last questions belongs to
+ * a conversation that has still been answered — scanned off the window, such a thread re-introduces
+ * itself every turn.
+ */
+async function readThreadForTurn(
+  deps: AgentLoopDeps,
+  threadId: string,
+  messageLimit: number | undefined,
+): Promise<ThreadForTurn> {
+  const windowing = deps.store as Partial<ThreadTurnReader>;
+  if (typeof windowing.loadThreadForTurn === 'function') {
+    const page = await windowing.loadThreadForTurn({
+      threadId,
+      ...(messageLimit !== undefined ? { messageLimit } : {}),
+    });
+    return page === null
+      ? { messages: [], title: null, hasAssistantMessage: false }
+      : {
+          messages: page.messages.map(toModelMessage),
+          title: page.title,
+          hasAssistantMessage: page.hasAssistantMessage,
+        };
+  }
+  const thread = await deps.store.getThread(threadId);
+  const stored = thread?.messages ?? [];
+  const window =
+    messageLimit === undefined
+      ? stored
+      : stored.slice(Math.max(0, stored.length - Math.max(0, messageLimit)));
+  return {
+    messages: window.map(toModelMessage),
+    title: thread?.title ?? null,
+    hasAssistantMessage: stored.some((message) => message.role === 'assistant'),
+  };
+}
 
 /**
  * Apply the configured ceiling to the thread's messages. `select` runs OUTSIDE any checkpoint — it
@@ -632,6 +834,42 @@ async function awaitElicitation(args: {
   );
 }
 
+/** How many wrong-shaped replies one approval wait absorbs before {@link awaitDecision} gives up. */
+const MAX_DISCARDED_APPROVAL_REPLIES = 100;
+
+/**
+ * Park on an `action`'s approval until a human's yes/no actually arrives.
+ *
+ * The wait carries both reply shapes, because a question set parks as a `pending_approval` action
+ * too — so a client can address `POST /agent/tool-call/answer` at a call that is in fact waiting on
+ * an approve/reject. A set of answers is not a verdict on proposed work; reading its absent
+ * `approved` as `false` would persist a rejection nobody made, against a tool whose operator only
+ * ever submitted a form. The reply is discarded and the approval stays pending, which is what it is.
+ *
+ * Waiting again spends another position, and a replay lines up with it: the reply that was discarded
+ * is itself journaled at the position it arrived on, so every process replaying the turn discards
+ * the same replies in the same order and reaches the same wait.
+ */
+async function awaitDecision(args: {
+  hooks: AgentLoopHooks;
+  call: ToolCallRequest;
+  ctx: AiToolCtx;
+}): Promise<Decision> {
+  const { hooks, call, ctx } = args;
+  for (let discarded = 0; discarded < MAX_DISCARDED_APPROVAL_REPLIES; discarded += 1) {
+    const reply: HumanReply = await hooks.awaitApproval(call, ctx);
+    if (isHumanDecision(reply)) {
+      return reply;
+    }
+  }
+  // Both shipped runners wait here, so the ceiling is out of reach: a person would have to misdirect
+  // the whole budget at one tool call. What it rules out is a HOST whose `awaitApproval` resolves
+  // WITHOUT waiting — which would otherwise spin this loop on the only thread the process has.
+  throw new Error(
+    `Tool call "${call.id}" was sent ${MAX_DISCARDED_APPROVAL_REPLIES} replies that carried no approve/reject`,
+  );
+}
+
 /**
  * Does the configured intake run this turn? Both inputs are facts the journal already holds — the
  * config, and `load:thread`'s record of whether the thread had an assistant message when the turn
@@ -704,7 +942,7 @@ async function runIntake(args: {
       status: 'pending_approval',
       runId: hooks.runId,
     });
-    await writer.write({ t: 'elicitation', id: request.id, request });
+    await writer.write({ t: 'elicitation', runId: hooks.runId, id: request.id, request });
     return message.id;
   })) as string | boolean | null;
   if (asked === null || asked === false) {
@@ -877,6 +1115,21 @@ async function claimToolCall(
         status: parks ? 'pending_approval' : 'auto_executed',
         runId: hooks.runId,
       });
+      // Written from INSIDE this checkpoint, so the frame is streamed once and a replay — which
+      // returns the memoized result without re-running the body — never re-posts a form for a
+      // decision already made. That is also why it spends no position of its own.
+      //
+      // An `ask` is left out: `elicitToolCall` posts its `elicitation` frame, which carries the
+      // whole question set. Two frames for one parked call would be two forms.
+      if (kind === 'action') {
+        await writer.write({
+          t: 'approval',
+          runId: hooks.runId,
+          id: call.id,
+          toolName: call.name,
+          input: call.input,
+        });
+      }
       return { kind };
     },
   )) as PersistedToolCall | undefined;
@@ -1100,7 +1353,9 @@ async function elicitToolCall(
     ...(parsed.value.preamble !== undefined ? { preamble: parsed.value.preamble } : {}),
   };
   await hooks.step(`stream:elicitation:${call.id}`, () =>
-    Promise.resolve(turn.writer.write({ t: 'elicitation', id: call.id, request })),
+    Promise.resolve(
+      turn.writer.write({ t: 'elicitation', runId: hooks.runId, id: call.id, request }),
+    ),
   );
   const reply = await awaitElicitation({ hooks, request, ctx });
   const result = settleElicitation({ request, reply });
@@ -1290,7 +1545,7 @@ async function runClaimedToolCall(
   }
 
   if (toolType === 'action') {
-    const decision = await hooks.awaitApproval(call, ctx);
+    const decision = await awaitDecision({ hooks, call, ctx });
     if (!decision.approved) {
       await hooks.step(`persist:toolreject:${call.id}`, () =>
         deps.store.updateToolCall({
@@ -1523,6 +1778,7 @@ export async function runAgentLoop<TOutput = unknown>(
       actor: input.actor,
       durable: hooks.durable ?? false,
       ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+      ...(input.parentRunId !== undefined ? { parentRunId: input.parentRunId } : {}),
     }),
   );
 
@@ -1548,34 +1804,25 @@ export async function runAgentLoop<TOutput = unknown>(
     }),
   );
 
-  const thread = await hooks.step('load:thread', () => deps.store.getThread(input.threadId));
-  // Whether this thread had already been answered when the turn began — the one fact a
-  // `thread-start` intake is decided from, taken off `load:thread`'s CACHED result so a replay
-  // reads the same answer the first attempt did. See {@link runIntake}.
-  const threadHasAssistant = (thread?.messages ?? []).some(
-    (message) => message.role === 'assistant',
+  const thread = threadForTurn(
+    await hooks.step<RecordedThreadLoad | null>('load:thread', () =>
+      readThreadForTurn(deps, input.threadId, turnMessageLimit(deps.historyWindow)),
+    ),
   );
-  const fullHistory: ModelMessage[] = (thread?.messages ?? []).map((message) => ({
-    role: message.role,
-    content: message.content,
-    ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls } : {}),
-    ...(message.toolResults !== undefined ? { toolResults: message.toolResults } : {}),
-    ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-  }));
-  // With no window configured this whole block is skipped, so an existing deployment sends
-  // byte-identical history and records byte-identical checkpoints.
-  let modelMessages: ModelMessage[] = fullHistory;
+  // With no window configured this whole block is skipped, so an existing deployment sends the
+  // messages `load:thread` returned and records byte-identical checkpoints.
+  let modelMessages: ModelMessage[] = thread.messages;
   if (deps.historyWindow !== undefined) {
     const window = deps.historyWindow;
     modelMessages = (await (hooks.patched?.(HISTORY_SELECT_PATCH) ?? Promise.resolve(true)))
-      ? await applyHistoryWindow(window, deps, input, hooks, fullHistory, hooks.step)
+      ? await applyHistoryWindow(window, deps, input, hooks, thread.messages, hooks.step)
       : // A run whose history holds the single `history:window` checkpoint replays against it: a
         // completed one returns its recorded messages without re-running anything, and one that has
         // yet to reach it runs the whole fold INSIDE that one checkpoint — nested checkpoints would
         // take positions the recorded shape never had, and go missing the moment the outer one
         // replays from cache.
         await hooks.step('history:window', () =>
-          applyHistoryWindow(window, deps, input, hooks, fullHistory, (_name, fn) => fn()),
+          applyHistoryWindow(window, deps, input, hooks, thread.messages, (_name, fn) => fn()),
         );
   }
 
@@ -1744,7 +1991,9 @@ export async function runAgentLoop<TOutput = unknown>(
       input,
       hooks,
       writer,
-      threadHasAssistant,
+      // Whether this thread had already been answered when the turn began — taken off
+      // `load:thread`'s CACHED result so a replay decides the intake the way the first attempt did.
+      threadHasAssistant: thread.hasAssistantMessage,
     });
     if (asked !== null) {
       modelMessages.push(asked);
@@ -2090,7 +2339,7 @@ export async function runAgentLoop<TOutput = unknown>(
     modelMessages.push({ role: 'user', content: '', toolResults: results });
   }
 
-  if (thread !== null && (thread.title === '' || thread.title === 'New chat')) {
+  if (thread.title === '' || thread.title === 'New chat') {
     await hooks.step('persist:title', () =>
       deps.store.setTitle(input.threadId, deriveTitle(input.userText)),
     );

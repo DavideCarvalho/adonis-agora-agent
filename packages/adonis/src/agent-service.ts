@@ -98,6 +98,10 @@ export class AgentService {
    * own pre-picked default, resolved by the loop against the request it already holds — so "just
    * pressed enter" and "picked exactly the defaults" persist identically, and a client that never
    * rendered the defaults cannot submit a blank.
+   *
+   * Addressed at a tool call that is in fact waiting for an approve/reject, this is refused: see
+   * {@link import('./elicitation.js').HumanReplyMismatchError}. Answers say nothing about whether
+   * proposed work should go ahead, and the alternative is a rejection nobody made.
    */
   answer(args: {
     runId: string;

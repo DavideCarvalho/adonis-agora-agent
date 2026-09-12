@@ -1,6 +1,7 @@
 import type { BrandedFunctionalTool } from './ai-tool-ref.js';
 import type { AgentDashboardConfig } from './dashboard/define_config.js';
 import type { AgentGovernanceAuthorize } from './governance-gate.js';
+import type { McpServerConfig } from './mcp-client/options.js';
 import type { MemoryConfig } from './memory.js';
 import type { SkillsConfig } from './skills.js';
 import type { ActorDirectory } from './spi/actor-directory.js';
@@ -256,6 +257,21 @@ export interface AgentConfig {
    * mounted and answer as though nothing is on file.
    */
   memory?: MemoryConfig;
+  /**
+   * External MCP servers whose tools this deployment imports into its own `ToolRegistry` — see
+   * `src/mcp-client/`. Each is connected inside `app.booted()`, after the app's own tools are
+   * discovered, so a remote tool claiming a name the app already owns is refused rather than
+   * substituted.
+   *
+   * An imported tool defaults to `kind: 'action'`, so a remote tool of unknown effect waits for a
+   * human before it runs; widening that per server is the host saying out loud that it trusts the
+   * server. An unreachable server costs its own tools and not the app, unless it says
+   * `required: true`.
+   *
+   * This is the OTHER direction to `config/mcp.ts`, which exposes THIS deployment's tools to an
+   * external MCP client.
+   */
+  mcpServers?: McpServerConfig[];
   /** Emit `agora:agent:*` diagnostics events when `@adonis-agora/diagnostics` is installed. Default true. */
   emitDiagnostics?: boolean;
   /**

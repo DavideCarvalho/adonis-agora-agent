@@ -34,6 +34,8 @@ The runner supplies the loop's hooks; the durable versions map onto durable prim
 | --- | --- | --- |
 | `step(name, fn)` | calls `fn()` directly | `ctx.localStep(name, fn)` — every LLM turn, tool execution, and persist/quota write is a memoized checkpoint; replay returns the saved result |
 | `awaitApproval(call)` | resolves an in-memory promise | `ctx.waitForSignal('tool:<runId>:<callId>')` — the run **suspends** on approval and resumes on the signal, surviving restarts |
+| `awaitAnswers(request)` | resolves an in-memory promise, on the same key | the same signal an approval waits on, under the question set's own id |
+| `openSink()` (delegated run) | the ancestor's sink via `childSinkWriter`, so the child cannot `end()` it | the same, keyed by `sinkRunId` |
 | `runAgent(name, task)` | nested in-process loop | `ctx.child(AgentRunWorkflow, …)` — delegation is a tracked child run streaming into the parent's sink |
 | `openSink()` | the in-process sink | the run's own sink (top-level) or a child writer that forwards into the parent's stream |
 | `parallel(tasks)` | `settleAll` | `settleAll` — the same helper, because `ctx.localStep` takes its position on the **call**, before its first `await`: a batch launched in one tick occupies its positions in call order however the work settles |
@@ -48,6 +50,25 @@ Under the inline runner an `action`-tool approval resolves a promise in process 
 <Callout type="warn" title="Suspend is a throw, not a return">
 The durable runner suspends by *throwing* a control-flow signal (`WorkflowSuspended` / `ContinueAsNew`) up through `awaitApproval` or `ctx.child`. The loop deliberately has no `try/finally` closing the sink, so a suspend doesn't cut the live token stream — an approved-then-resumed run keeps one continuous SSE stream. `DurableAgentRunner.start` returns the run id immediately even when the run suspends synchronously on its first step.
 </Callout>
+
+## Answering a sub-agent
+
+A sub-agent's HITL wait is a real wait, on **its own** run: `tool:<childRunId>:<callId>`. What used to be missing was not the path back — it was the id. A human is watching the *top-level* stream, because that is the only stream anyone subscribes to; the child forwards its frames there (that is what `sinkRunId` is for), and a form with no run id attached is a form the watcher can see and cannot answer.
+
+So the id rides on the frame. Both parked-work frames carry it:
+
+| SSE event | Payload | Answer with |
+| --- | --- | --- |
+| `event: approval` | `{runId, id, toolName, input}` | `POST /agent/tool-call/approve` \| `/reject` |
+| `event: elicitation` | `{runId, id, request}` | `POST /agent/tool-call/answer` \| `/skip` |
+
+**`runId` is the run that is parked, not the stream it arrived on.** For a top-level run the two are the same; for a delegated one they are not, and reading the run off the `meta` frame instead would signal the ancestor and leave the child suspended. `decodeFrame` in `@adonis-agora/agent/client` surfaces both as `{ type: 'approval' | 'elicitation', runId, toolCallId, … }`, and drops a frame whose `runId` is missing rather than handing on one you cannot act on.
+
+The `approval` frame is written from **inside** the `persist:toolcall:<callId>` checkpoint, so it spends no position of its own and a replay — which returns that checkpoint memoized — never re-posts a form for a decision already made. An `ask` gets the `elicitation` frame only; two frames for one parked call would be two forms.
+
+The ownership check is unchanged: a child run's `agent_run` row records the same actor as its ancestor, so `runOwner(childRunId)` passes for the person who started the turn.
+
+Both runners behave this way — the inline runner's nested loop parks on `${childRunId}:${toolCallId}` and forwards into the ancestor's sink, mirroring `sinkRunId`. Which means a sub-agent whose approvals nobody will answer **hangs**, exactly as a top-level agent does: if a job or an unattended run delegates, keep human-approval tools off the sub-agent (`tools:` on its definition).
 
 ## What a replay is allowed to read
 

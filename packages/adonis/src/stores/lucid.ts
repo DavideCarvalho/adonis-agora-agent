@@ -6,6 +6,9 @@ import type {
   RecordRunStartInput,
   RecordToolCallInput,
   RecordUsageInput,
+  ThreadTurnPage,
+  ThreadTurnQuery,
+  ThreadTurnReader,
   UpdateToolCallInput,
 } from '../spi/agent-store.js';
 import type {
@@ -125,6 +128,21 @@ function parseJson<T>(text: unknown): T | undefined {
 }
 
 /**
+ * The message columns a model turn reads. `usage`, `follow_ups` and `run_id` stay in the table: they
+ * are the thread reader's bookkeeping, not part of the prompt.
+ */
+const TURN_MESSAGE_COLUMNS = [
+  'id',
+  'role',
+  'content',
+  'persona',
+  'tool_calls',
+  'tool_results',
+  'attachments',
+  'created_at',
+] as const;
+
+/**
  * A production-grade, persistent {@link AgentStore} backed by AdonisJS **Lucid** (Knex) over the five
  * agent tables (threads, messages, tool calls, token usage, model pricing). JSON payloads are stored
  * as TEXT and timestamps as epoch-ms integers, so it is portable across SQLite / Postgres / MySQL and
@@ -137,7 +155,7 @@ function parseJson<T>(text: unknown): T | undefined {
  * Usually you don't construct this directly: `config/agent.ts` selects it via `stores.lucid({ ... })`
  * and the provider builds it, lazily importing `@adonisjs/lucid` only when the `lucid` store is chosen.
  */
-export class LucidAgentStore implements AgentStore {
+export class LucidAgentStore implements AgentStore, ThreadTurnReader {
   private readonly autoCreateTables: boolean;
   private ready: Promise<void> | null = null;
 
@@ -205,6 +223,47 @@ export class LucidAgentStore implements AgentStore {
       messages,
       ...(typeof activeStreamId === 'string' ? { activeStreamId } : {}),
     };
+  }
+
+  async loadThreadForTurn(query: ThreadTurnQuery): Promise<ThreadTurnPage | null> {
+    await this.init();
+    const row = await this.db
+      .from(AGENT_TABLES.threads)
+      .where('id', query.threadId)
+      .whereNull('deleted_at')
+      .first();
+    if (row === null || row === undefined) return null;
+    const answered = await this.db
+      .from(AGENT_TABLES.messages)
+      .where('thread_id', query.threadId)
+      .where('role', 'assistant')
+      .limit(1)
+      .select('id');
+    return {
+      title: String(row.title),
+      hasAssistantMessage: answered.length > 0,
+      messages: await this.loadTurnWindow(query.threadId, query.messageLimit),
+    };
+  }
+
+  /**
+   * The newest `limit` messages, oldest-first, projected to the columns a model turn reads. The
+   * bound is the database's: a `limit` on rows ordered newest-first, so a long thread's older rows
+   * are never materialized at all.
+   */
+  private async loadTurnWindow(
+    threadId: string,
+    limit: number | undefined,
+  ): Promise<StoredMessage[]> {
+    if (limit !== undefined && limit <= 0) return [];
+    const query = this.db
+      .from(AGENT_TABLES.messages)
+      .where('thread_id', threadId)
+      .orderBy('created_at', 'desc')
+      .orderBy('id', 'desc');
+    if (limit !== undefined) query.limit(limit);
+    const rows = await query.select(...TURN_MESSAGE_COLUMNS);
+    return rows.reverse().map(rowToMessage);
   }
 
   async getThreadActorRef(threadId: string): Promise<string | null> {
@@ -437,6 +496,7 @@ export class LucidAgentStore implements AgentStore {
       id: input.runId,
       thread_id: input.threadId,
       agent_name: input.agentName ?? null,
+      parent_run_id: input.parentRunId ?? null,
       actor_ref: input.actor.id,
       tenant_ref: input.actor.tenantRef ?? null,
       status: 'running',
