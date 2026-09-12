@@ -1,5 +1,260 @@
 # @adonis-agora/agent
 
+## 0.33.0
+
+### Minor Changes
+
+- [#129](https://github.com/DavideCarvalho/adonis-agora-agent/pull/129) [`0de5ab8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/0de5ab8f98095c8281147efdbf92c996e8a5a603) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `@adonis-agora/agent/mcp-client` — tools de um servidor MCP que você não controla.
+  
+  A direção contrária ao servidor MCP que este pacote já tinha: em vez de expor as tools DESTE
+  deployment para um cliente externo, importa as tools de um servidor MCP externo para o
+  `ToolRegistry` deste deployment. Elas entram no MESMO registry que a descoberta de `@aiTool`
+  alimenta, então passam por todos os gates que uma tool escrita à mão passa — a `RolesPolicy`, o
+  allow-list de persona/agente, e a validação de input.
+  
+  ```ts
+  // config/agent.ts
+  mcpServers: [{ name: 'github', transport: { type: 'stdio', command: 'mcp-github' } }]
+  ```
+  
+  **Uma tool importada é `action` por padrão**, ou seja, com HITL: ela foi escrita fora deste código e
+  os efeitos dela não são visíveis daqui. Alargar isso é uma decisão que o host toma em voz alta —
+  `kind: 'read'` (só para um servidor que você audita), `kind: 'trust-annotations'` (acreditar no
+  `readOnlyHint`, que é afirmado justamente por quem tem os efeitos que ele descreve, então é uma
+  declaração de confiança e não uma verificação — e uma tool que declara `readOnlyHint` E
+  `destructiveHint` está se descrevendo de forma incoerente e continua travada), ou um predicado por
+  tool.
+  
+  **Um nome pertence a quem o reivindicou primeiro.** O registry é indexado por nome e nada mais, então
+  uma importação sem namespace deixaria o `search` de um servidor remoto substituir o `search` do
+  próprio app — uma troca invisível de todo lugar, porque o modelo continua chamando `search` e o
+  `search` agora chega no servidor de outra pessoa. Os nomes importados são prefixados com o nome do
+  servidor por padrão, e um segundo reivindicante é RECUSADO com um aviso nomeando os dois. Vale entre
+  servidores também, e a resposta é estável: a listagem roda em paralelo porque os servidores são
+  independentes, mas o registro reexecuta na ORDEM DE CONFIGURAÇÃO, então um nome disputado vai para o
+  servidor configurado primeiro por mais rápido que o outro responda.
+  
+  **Duas coisas que um schema remoto pode fazer com este processo**, as duas terminando com a tool
+  DESCARTADA em vez de importada com um schema permissivo — a alternativa deixaria o modelo mandar
+  argumentos arbitrários para a tool remota com a aparência de uma chamada validada. Um schema que não
+  compila. E um `pattern` que backtracka exponencialmente: todo validador do SDK do MCP compila
+  `pattern` para um `RegExp` nativo, e `(a+)+$` contra 27 `a`s e um final que não casa leva ~1s, 30
+  ~8s, 40 mais do que qualquer um vai esperar — de forma síncrona, na única thread que o processo tem.
+  O pattern é escrito pelo servidor remoto e a string é escrita pelo modelo, cuja indução a descrição
+  da mesma tool pode fornecer, então a coisa toda cabe dentro de uma definição de tool.
+  
+  **A conexão não é estado durável.** Um servidor remoto pode reiniciar, ser redeployado ou cortar uma
+  conexão ociosa, e o primeiro sintoma é uma tool call que falha. Então uma chamada que falha de forma
+  transiente descarta o client, e o retry reconecta na próxima tentativa. O retry é o
+  `invokeWithTransientRetry` que o loop já usa, no lugar e não como novo checkpoint. Uma tool que
+  respondeu `isError` falhou por mérito próprio e NUNCA é retentada: a mensagem dela é texto que o
+  servidor remoto escreveu, e casar isso contra marcadores de transiência deixaria a prosa de uma tool
+  decidir se este lado retenta.
+  
+  Um servidor fora do ar custa as tools dele e nada mais — o modelo simplesmente nunca é oferecido a
+  elas — a menos que ele declare `required: true`. E `refresh(name)` é o caminho de volta para um
+  servidor que estava fora no boot.
+  
+  Duas coisas do porte de referência ficaram de fora porque o SPI de tools daqui não tem as costuras:
+  `ToolSpec.enabled` (um servidor dizer se as tools dele existem neste deployment) e
+  `ToolHandler.canUse` (um gate por ator). As duas são capacidades do SPI de tools, não do cliente MCP.
+
+- [#129](https://github.com/DavideCarvalho/adonis-agora-agent/pull/129) [`0de5ab8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/0de5ab8f98095c8281147efdbf92c996e8a5a603) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Um ciclo de delegação é detectado como ciclo — e nada antes disso parava um handoff mútuo.
+  
+  `delegatesTo` é um grafo, e o modelo não o vê. Num handoff mútuo (alpha entrega pra beta, beta entrega
+  de volta pra alpha) cada agente faz uma chamada razoável e a recursão é da fiação. O
+  `delegationDepth` que o runner durável já carregava tinha um comentário dizendo "carregado para um
+  guard futuro" — ou seja, **não existia guard algum**: o runner inline nem contava, e a única coisa que
+  terminava uma cadeia cíclica era o `maxSteps` de cada turno somado ao acaso.
+  
+  Entra `AgentRunInput.delegationPath`, a cadeia de nomes de agente que chegou até este run, com os DOIS
+  runners acrescentando o próprio agente para cada filho que começam. O loop compara o alvo da
+  delegação contra essa cadeia mais o próprio agente: uma repetição É o ciclo, nomeada na recusa com
+  quantas vezes aquele agente já esteve nela.
+  
+  ```
+  delegation cycle: alpha → beta → alpha — alpha 2 times on one chain
+  ```
+  
+  `maxAgentAppearances` (padrão 1) conta APARIÇÕES, então 2 admite exatamente um retorno deliberado — o
+  que um supervisor que de fato devolve trabalho precisa. `maxDelegationDepth` (padrão 5) entra como
+  backstop para uma cadeia que é longa sem repetir, e é reportado só quando nada é circular. Os dois são
+  declarados por agente, ao lado do `maxSteps`.
+  
+  **Por que não bastava contar.** Uma contagem só sabe dizer que a cadeia é LONGA. Ela não sabe dizer
+  que está andando em círculo, e confundir as duas coisas errava os dois casos: um handoff mútuo
+  queimava o teto inteiro em turnos de agente antes de reportar uma profundidade que o leitor ainda
+  tinha que interpretar, e uma cadeia legítima de seis agentes DISTINTOS era recusada por parecer um
+  ciclo que não era. A cadeia de nomes custa exatamente o que o contador custava para carregar.
+  
+  A recusa é resolvida dentro do mesmo checkpoint que assenta o kind da call (`persist:toolcall:<id>`),
+  então o veredito é o que um replay relê — e não algo que cada processo re-deriva a partir de config
+  local.
+  
+  Uma diferença deliberada em relação ao porte de referência: a ancestralidade inclui o agente do
+  PRÓPRIO run. Sem isso, um handoff mútuo de verdade é recusado com `alpha → alpha`, uma aresta que
+  nenhum deployment declara, porque o salto que fechou o círculo fica de fora da mensagem. Com isso,
+  uma auto-delegação também passa a ser ciclo na hora, em vez de um salto depois.
+
+- [#129](https://github.com/DavideCarvalho/adonis-agora-agent/pull/129) [`0de5ab8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/0de5ab8f98095c8281147efdbf92c996e8a5a603) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Um run filho grava qual run o delegou.
+  
+  A aresta pai→filho de uma delegação existia no journal do runtime durável e em nenhum outro lugar.
+  Toda superfície de confiabilidade e de custo — e todas elas leem LINHAS de run — via o gasto de uma
+  delegação como um turno órfão: ninguém conseguia somar o que um turno custou de verdade, porque a
+  parte que ele pediu a outro agente aparecia como um run que ninguém começou. E o journal durável não
+  é joinable com a tabela de runs, então não havia como recompor a árvore depois.
+  
+  Entra `RecordRunStartInput.parentRunId` e `AgentRunInput.parentRunId`, preenchido pelos DOIS runners
+  (o inline em `runNested`, o durável no `ctx.child`), persistido como `agent_run.parent_run_id` pelo
+  `LucidAgentStore` e pelo store em memória, e devolvido como `RunSummaryRow.parentRunId` —
+  `null` para um turno que uma pessoa começou.
+  
+  `createAgentTables` repara a coluna aditivamente num banco que já tem `agent_run`: um
+  `CREATE TABLE IF NOT EXISTS` não alcança coluna nova em tabela que já existe, e o `ALTER` entra pelo
+  mesmo caminho que já conserta as colunas `run_id`, com o reparo reportado por nome.
+  
+  O teste que pega a classe de bug que isto é: a fixture é tipada `Required<RecordRunStartInput>`, então
+  um campo novo no input FALHA A COMPILAR até que a linha de cada adapter saiba nomeá-lo. E o
+  threading — a metade que pode estar morta sem falhar nada, porque um store com a coluna e um runner
+  que nunca a preenche é indistinguível de um deployment em que ninguém delega — é coberto por uma
+  delegação de verdade pelo `InlineAgentRunner`, perguntando ao read-model qual turno pagou pelo filho.
+
+- [#129](https://github.com/DavideCarvalho/adonis-agora-agent/pull/129) [`0de5ab8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/0de5ab8f98095c8281147efdbf92c996e8a5a603) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Um turno lê a JANELA que ele vai mandar, não a transcrição da thread.
+  
+  Um turno precisa das últimas mensagens, do título, e de saber se a thread já foi respondida alguma
+  vez. O `getThread` entregava a transcrição inteira — toda linha de mensagem, todo anexo e toda saída
+  de tool que a thread já gravou — e o `load:thread` então journalava o que carregou. Numa thread de 50
+  turnos em que cada turno rodou uma tool de 50 KB isso é ~2,6 MB lidos e gravados para mandar quatro
+  mensagens, 99% deles saída de tool que nenhuma chamada ao modelo ia ver. E o preço é pago de novo em
+  todo replay, porque o payload do checkpoint é relido e reparseado por todo processo que retoma o run.
+  
+  Entra `ThreadTurnReader.loadThreadForTurn({ threadId, messageLimit })` no SPI, implementado pelo
+  `LucidAgentStore`: as `messageLimit` linhas mais novas, com o limite sendo o do BANCO
+  (`order by created_at desc limit ?`), projetadas nas colunas que um turno de modelo lê — `usage`,
+  `follow_ups` e `run_id` ficam na tabela.
+  
+  **O probe é estrutural**, então um store que não oferece a janela continua respondendo pelo
+  `getThread`, com o mesmo limite aplicado em processo. E ele mora DENTRO do `load:thread`, não em
+  volta: não acrescenta posição nenhuma, e o payload gravado é idêntico nos dois caminhos — a escolha
+  de store de um deployment não pode decidir os checkpoints de um run. Nenhum marcador de patch,
+  nenhuma posição mexida.
+  
+  **Dois tetos de propósito não nomeiam limite.** Um que RESUME, porque o `summarize` recebe o que o
+  `select` DESCARTOU: uma leitura limitada ao que o `select` guarda não descarta nada, e o turno
+  dobraria um resumo vazio dentro de um prompt que está sem as mensagens que ele substitui — calado.
+  E um teto que não é contagem de linhas, porque de um orçamento de tokens não sai contagem alguma: uma
+  mensagem pode custar quatro tokens ou quarenta mil. `HistoryWindow.maxMessages` é o campo que declara
+  o limite, e declarar é uma PROMESSA sobre o `select` — que ele guarda no máximo essa quantidade, e que
+  são as mais NOVAS.
+  
+  **`hasAssistantMessage` é respondido sobre a thread INTEIRA, nunca sobre a página.** Ele decide um
+  intake `thread-start`, e uma janela que por acaso só tem as últimas perguntas do usuário pertence a
+  uma conversa que já foi respondida — lido da página, um thread longo se reapresentaria a cada turno.
+
+- [#129](https://github.com/DavideCarvalho/adonis-agora-agent/pull/129) [`0de5ab8`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/0de5ab8f98095c8281147efdbf92c996e8a5a603) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Uma aprovação humana vale UM efeito, e uma rejeição registrada foi alguém que a fez.
+  
+  Quatro defeitos no mesmo eixo: o que a biblioteca grava como decisão de uma pessoa, e quantas vezes
+  um efeito remoto acontece por causa dela. Os dois primeiros **fabricam ou duplicam** uma decisão
+  humana, que é a classe de falha que nada na frente denuncia.
+  
+  ## Um retry não re-emite uma ação aprovada
+  
+  `McpToolSource.callTool` envolvia TODA chamada em `invokeWithTransientRetry`. Um timeout, uma conexão
+  derrubada, um reset no meio do voo, um 500/502/503 — cada um deles é também exatamente como um tool
+  remoto que **rodou** aparece quando a resposta se perde. Re-emitir em cima disso gasta uma única
+  aprovação humana em dois efeitos remotos, e nada deste lado fica sabendo: os efeitos de um tool
+  importado acontecem na máquina de outra pessoa, que é justamente o motivo de ele ser `action` por
+  padrão.
+  
+  Agora o classificador depende do `kind`:
+  
+  | `kind` | Tenta de novo em |
+  | --- | --- |
+  | `read` | `isTransientMcpError` — conexão derrubada, timeout, status HTTP retentável, erro de socket |
+  | `action` | `isPreExecutionMcpError` — só falhas que **provam** que nada rodou: conexão recusada, host nunca resolvido ou alcançado, ou nenhum transporte para enviar |
+  
+  Passar o próprio `classify` assume esse juízo para todo `kind`, `action` incluído. `isPreExecutionMcpError`
+  é exportado de `@adonis-agora/agent/mcp-client`.
+  
+  ## Respostas não se tornam uma rejeição
+  
+  Um conjunto de perguntas estaciona como uma call `action` em `pending_approval` — é o que o põe na
+  caixa de aprovações que o deployment já tem. O custo é que um canal carrega duas formas, então um
+  cliente consegue endereçar `POST /agent/tool-call/answer` a uma call que na verdade espera um
+  approve/reject. `ElicitationReply` não carrega `approved`, e `!undefined` é `true`: a linha virava
+  `rejected`, uma decisão que o operador nunca tomou e que nada depois distingue de uma que ele tomou.
+  
+  A redução vale em UM sentido só. Um sim/não pode ser lido como "confirmou as respostas pré-marcadas";
+  um conjunto de respostas não diz nada sobre se o trabalho proposto deve seguir. Então é **recusado**,
+  nunca registrado:
+  
+  - o runner inline sabe em qual espera o run está parado e responde `409` (`HumanReplyMismatchError`);
+  - sob o runner durável um sinal não carrega essa pista, então o loop descarta a resposta e o run
+    continua parado na aprovação que sempre esperou. Esperar de novo gasta outra posição, e um replay
+    se alinha porque a resposta descartada está ela mesma no journal na posição em que chegou.
+  
+  De qualquer um dos lados a linha segue `pending_approval`, e a aprovação de verdade ainda a assenta.
+  
+  ## Um run delegado pode ser respondido
+  
+  Um sub-agente estaciona numa espera real — `tool:<childRunId>:<callId>` — e a linha pendente que ele
+  escreve carrega esse runId, então a caixa de aprovações sempre soube respondê-la. O que faltava não
+  era o caminho de volta: era o **id**. Quem olha assiste ao stream de TOPO, porque é o único stream a
+  que alguém assina; o filho encaminha os frames pra lá (é para isso que `sinkRunId` existe), e um
+  formulário sem run id é um formulário que quem olha vê e não consegue responder.
+  
+  Então o id passa a viajar NO frame. Os dois frames de trabalho estacionado o carregam:
+  
+  | Evento SSE | Payload | Responde com |
+  | --- | --- | --- |
+  | `event: approval` | `{runId, id, toolName, input}` | `POST /agent/tool-call/approve` \| `/reject` |
+  | `event: elicitation` | `{runId, id, request}` | `POST /agent/tool-call/answer` \| `/skip` |
+  
+  `event: approval` é novo: uma `action` estacionada não tinha frame nenhum, só a linha
+  `pending_approval`. É escrito de DENTRO do checkpoint `persist:toolcall:<callId>`, então não gasta
+  posição própria e um replay — que devolve aquele checkpoint memoizado — nunca re-posta um formulário
+  para uma decisão já tomada. E `runId` é o run ESTACIONADO, não o stream em que o frame chegou: ler o
+  run do frame `meta` sinalizaria o ancestral e deixaria o filho suspenso. `decodeFrame` no cliente
+  aprendeu os dois eventos — antes ele descartava `elicitation` inteiro — e descarta um frame sem
+  `runId` em vez de entregar um que não dá para acionar.
+  
+  O runner inline passa a espelhar isso: o loop aninhado escreve no sink do ancestral via
+  `childSinkWriter` e estaciona em `${childRunId}:${toolCallId}`, em vez de auto-declinar. Um
+  comportamento, nos dois runners — e um sub-agente cujas aprovações ninguém vai responder **fica
+  pendurado**, exatamente como um agente de topo. Se um job delega, mantenha tools de aprovação fora do
+  sub-agente (`tools:` na definição dele).
+  
+  Os docs afirmavam o auto-declínio em três lugares (`docs/programmatic-api.mdx`,
+  `docs/concepts/agent-loop.mdx`, `docs/authoring/personas-and-agents.mdx`) — era essa afirmação que
+  estava errada, não o comportamento do durável. Nenhum marcador `patched` é gasto: a forma do journal
+  do filho não muda.
+  
+  ## Um refresh de MCP remove, não só acrescenta
+  
+  `McpToolImporter.refresh` só somava. Um servidor que remove ou renomeia um tool deixava o spec e o
+  handler antigos registrados, e o modelo seguia recebendo a oferta de um tool cuja próxima chamada
+  falha remotamente — segundos depois, na máquina de outra pessoa.
+  
+  `refresh()` passa a ser a resposta ATUAL do servidor a `tools/list`: o que desapareceu é desregistrado
+  via o novo `ToolRegistry.unregister(name)`, então chamar aquilo é um `ToolNotFoundError` aqui. Só
+  nomes que este importer registrou para AQUELE servidor entram — nunca os do app, nunca de outro
+  servidor — e um nome liberado é reivindicável pelo próximo servidor em ordem de configuração no mesmo
+  refresh. Um servidor que não pôde ser **alcançado** não poda nada: seus tools são desconhecidos, não
+  desaparecidos, e uma oscilação de rede não é motivo para retirar do modelo um tool que funciona.
+  
+  `refresh(name)` para um nome que nenhum servidor aberto casa avisa e retorna `0`, em vez de deixar um
+  `0` que se lê igual a um servidor que respondeu sem tools.
+
+### Patch Changes
+
+- [`0af6194`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/0af6194cd4f0d53652938fa0d408f59b212eff5e) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - O docblock de `AgentRunner` descreve a fiação deste pacote, não a da referência Nest.
+  
+  Três nomes que não existem aqui: `AGENT_RUNNER`, que não é chave de binding nenhuma — o
+  `agent_provider` constrói o runner direto e registra só o `AgentService`; `@dudousxd/nestjs-durable`,
+  sendo que o peer durável deste pacote é `@adonis-agora/durable`; e o decorator `@Workflow`, que esta
+  porta não tem — o turno durável é `class AgentRunWorkflow extends BaseWorkflow`, registrada por
+  `registerWorkflowClass`.
+
 ## 0.32.0
 
 ### Minor Changes
