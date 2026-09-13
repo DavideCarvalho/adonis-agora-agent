@@ -1563,12 +1563,36 @@ async function runClaimedToolCall(
       return {
         id: call.id,
         name: call.name,
-        output: { rejected: true, reason: decision.reason ?? 'rejected by user' },
-        error: 'rejected',
+        output: { rejected: true, reason: decision.reason ?? DEFAULT_REFUSAL_REASON },
+        denied: true,
+        // What the MODEL is told. The bare word `rejected` names no actor and reads exactly like a
+        // tool that blew up, so the answer that follows speculates about causes ("the key may not
+        // exist", "there may be permission restrictions") and offers to run it again. A person's
+        // decision is not a fault to diagnose, so this says who decided, that nothing ran, and what
+        // not to do next.
+        error: refusalNarrative(decision.reason),
       };
     }
   }
   return recordToolOutcome(turn, claimed, await invokeClaimed(turn, claimed));
+}
+
+/** Stored as the reason when someone declines without giving one — a placeholder, not a quote. */
+export const DEFAULT_REFUSAL_REASON = 'rejected by user';
+
+/**
+ * How a refusal is put to the model. Written as instructions rather than as a status because the
+ * model's next move is the whole problem: told only that something was "rejected", it treats the
+ * refusal as a fault, lists possible causes it cannot check, and offers to retry the same action —
+ * which asks the person to say no twice.
+ */
+function refusalNarrative(reason: string | undefined): string {
+  const base =
+    'The person was asked to approve this action and declined it. Nothing ran and nothing changed. ' +
+    'This is their decision, not an error, a missing record or a permissions problem — do not ' +
+    'explain it as one, do not guess at causes, and do not run this action again or reach for ' +
+    'another way to do the same thing. Acknowledge the decision and ask what they would like instead.';
+  return reason === undefined ? base : `${base} They said: ${reason}`;
 }
 
 /**
