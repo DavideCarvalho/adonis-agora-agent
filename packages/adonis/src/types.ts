@@ -64,6 +64,14 @@ export interface ToolCallRequest {
   id: string;
   name: string;
   input: unknown;
+  /**
+   * The tool's declared kind (`ToolSpec.kind`), stamped where the tool was OFFERED — inside the llm
+   * checkpoint, by the process that built the definition list the model chose from. It travels with
+   * the call from there, so the approval branch does not depend on which process replays the turn.
+   * Undefined only for a call that predates the stamp, or one no registry could resolve
+   * (defensively treated as `read` wherever a definite value is required).
+   */
+  kind?: ToolKind;
 }
 
 /** Result of running a tool. */
