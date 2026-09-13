@@ -1080,7 +1080,10 @@ async function claimToolCall(
   const persisted = (await hooks.step(
     `persist:toolcall:${call.id}`,
     async (): Promise<PersistedToolCall> => {
-      const kind: ToolKind = declaredKind(deps, call.name);
+      // The kind the llm checkpoint stamped WINS: it came from the process that offered the tool,
+      // whereas this one is only the process claiming the call — and the two disagree exactly when
+      // that matters. The fallback is for a journal written before kinds travelled.
+      const kind: ToolKind = call.kind ?? declaredKind(deps, call.name);
       if (kind === 'agent') {
         const delegation = await resolveDelegation(
           deps,
@@ -1292,12 +1295,39 @@ async function delegateToolCall(
 }
 
 /**
- * A call's declared kind, as settled inside `persist:toolcall` and journaled from there.
+ * Stamp each of a model turn's calls with the kind declared WHERE THE TOOL WAS OFFERED.
+ *
+ * A call exists only because some process put that tool's definition in front of the model, so that
+ * process is the one that certainly knows the tool. Another process might not: a deployment that
+ * splits its pods by role has one that serves HTTP and replays run bodies without registering the
+ * tool classes, and its registry answers `undefined`. Stamping here, INSIDE the llm checkpoint, is
+ * what puts the kind in the journal — so the branch a call takes is a fact about the turn rather
+ * than about whichever process happened to replay it (see {@link claimToolCall}).
+ *
+ * Only unstamped calls are touched: a kind already on a call was settled upstream, and a process
+ * further down never second-guesses it.
+ */
+function stampToolKinds<T extends { toolCalls: ToolCallRequest[] }>(
+  result: T,
+  deps: AgentLoopDeps,
+): T {
+  return {
+    ...result,
+    toolCalls: result.toolCalls.map((call) =>
+      call.kind === undefined ? { ...call, kind: declaredKind(deps, call.name) } : call,
+    ),
+  };
+}
+
+/**
+ * A call's declared kind, resolved from this process's own configuration and registry.
+ *
+ * Read by {@link stampToolKinds} where the tools were offered, which is the answer that then rides
+ * the journal; a claim falls back to it only for a call that arrives unstamped.
  *
  * The reserved `ask` name resolves from module CONFIG, never from the registry: `ask` has no handler
  * to register, and grounding its branch in config is what keeps a process with a partial registry
- * from disagreeing about it — the same property the registry lookup below has only because its
- * answer is written into the journal. Every other name is the registry's `ToolSpec`, as before.
+ * from disagreeing about it. Every other name is the registry's `ToolSpec`, as before.
  */
 function declaredKind(deps: AgentLoopDeps, name: string): ToolKind {
   if (deps.ask === true && name === ASK_TOOL_NAME) {
@@ -2053,46 +2083,52 @@ export async function runAgentLoop<TOutput = unknown>(
 
     // Span the model call INSIDE the step body (replay-safe). The turn's raw text/output never rides
     // the span — only token counts + name/length metadata (the point events' redaction posture).
-    let turn: BufferedModelTurnResult = await hooks.step(`llm:${i}`, () =>
-      spannedAgent(
-        'llm.turn',
-        hooks.runId,
-        { runId: hooks.runId, step: i },
-        async (): Promise<BufferedModelTurnResult> => {
-          const incremental =
-            gateMode === 'incremental'
-              ? createIncrementalGate({
-                  processors: outputProcessors,
-                  ctx: processorContext(i),
-                  lookbackChars: gateLookback,
-                  writer,
-                })
-              : undefined;
-          const buffer = gateMode === 'whole' ? createFrameBuffer() : undefined;
-          const result = await deps.model.runTurn({
-            system: prompt.system,
-            messages: prompt.messages,
-            tools,
-            sink: incremental?.writer ?? buffer?.writer ?? writer,
-          });
-          if (incremental !== undefined) {
-            await incremental.settled();
-            const refusal = incremental.rejection();
-            return {
-              ...result,
-              releasedText: incremental.released(),
-              ...(refusal !== undefined ? { gateRejection: refusal } : {}),
-            };
-          }
-          return buffer === undefined ? result : { ...result, bufferedFrames: buffer.frames() };
-        },
-        (result) => ({
-          ...(result.modelId !== undefined ? { modelId: result.modelId } : {}),
-          inputTokens: result.usage.inputTokens,
-          outputTokens: result.usage.outputTokens,
-          textLength: result.text.length,
-          toolCalls: result.toolCalls.length,
-        }),
+    // Stamped from THIS process's registry, which is the one that built `tools` for the call above —
+    // and stamped INSIDE the checkpoint, so the kinds are journaled with the calls they describe
+    // rather than re-derived by whatever process replays this turn.
+    let turn: BufferedModelTurnResult = await hooks.step(`llm:${i}`, async () =>
+      stampToolKinds(
+        await spannedAgent(
+          'llm.turn',
+          hooks.runId,
+          { runId: hooks.runId, step: i },
+          async (): Promise<BufferedModelTurnResult> => {
+            const incremental =
+              gateMode === 'incremental'
+                ? createIncrementalGate({
+                    processors: outputProcessors,
+                    ctx: processorContext(i),
+                    lookbackChars: gateLookback,
+                    writer,
+                  })
+                : undefined;
+            const buffer = gateMode === 'whole' ? createFrameBuffer() : undefined;
+            const result = await deps.model.runTurn({
+              system: prompt.system,
+              messages: prompt.messages,
+              tools,
+              sink: incremental?.writer ?? buffer?.writer ?? writer,
+            });
+            if (incremental !== undefined) {
+              await incremental.settled();
+              const refusal = incremental.rejection();
+              return {
+                ...result,
+                releasedText: incremental.released(),
+                ...(refusal !== undefined ? { gateRejection: refusal } : {}),
+              };
+            }
+            return buffer === undefined ? result : { ...result, bufferedFrames: buffer.frames() };
+          },
+          (result) => ({
+            ...(result.modelId !== undefined ? { modelId: result.modelId } : {}),
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+            textLength: result.text.length,
+            toolCalls: result.toolCalls.length,
+          }),
+        ),
+        deps,
       ),
     );
 

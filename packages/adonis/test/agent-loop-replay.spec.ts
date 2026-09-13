@@ -98,6 +98,41 @@ describe('agent loop — replay across processes with different registries', () 
     expect(journal.names()).toEqual(recorded);
   });
 
+  /**
+   * The other half of the same incident, and the one the journal alone does not answer.
+   *
+   * Recording the kind at `persist:toolcall` makes every REPLAY agree; it does not make the FIRST
+   * writer right. A run can reach that checkpoint for the first time in a process that never
+   * declared the tool — the engine hands a resumed run to whichever instance takes the lease — and
+   * a local lookup there reads `undefined`, falls back to 'read', and dispatches an action nobody
+   * approved.
+   *
+   * So the kind is settled in the llm checkpoint, where the tools were OFFERED, and rides the
+   * journal from there.
+   */
+  it('settles the kind from the llm checkpoint when the claim is first reached by an empty registry', async () => {
+    const journal = new Journal();
+
+    // Pass 1: a process that has the tool. It records the model turn and then goes away — the
+    // history is trimmed back to just before the call's persist, which is the shape a run has when
+    // another instance picks it up mid-turn.
+    await pass(journal, registryWithPurgeCache());
+    const claimAt = journal.names().indexOf(`persist:toolcall:${CALL_ID}`);
+    expect(claimAt).toBeGreaterThan(0);
+    for (let position = journal.names().length - 1; position >= claimAt; position -= 1) {
+      journal.dropAt(position);
+    }
+    // The turn is still in the history, and it carries the kind the offering process resolved.
+    expect(journal.recorded('llm:0')).toContain('"kind":"action"');
+
+    // Pass 2: the empty registry claims the call for the first time.
+    await pass(journal, new ToolRegistry());
+
+    // It still parks on a person. Resolving locally would have read 'read' and gone straight to
+    // `tool:` — the action executed with nobody's approval.
+    expect(journal.names()).toContain(`signal:tool:${RUN_ID}:${CALL_ID}`);
+  });
+
   it('keeps replaying a run whose history has no room for the tool-results checkpoint', async () => {
     const journal = new Journal();
     await pass(journal, registryWithPurgeCache());
