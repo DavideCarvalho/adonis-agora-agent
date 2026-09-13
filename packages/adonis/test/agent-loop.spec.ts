@@ -187,7 +187,43 @@ describe('runAgentLoop', () => {
 
     const { detail } = await run(script, () => ({ approved: false, reason: 'nope' }));
     const calling = detail?.messages.find((message) => message.toolCalls !== undefined);
-    expect(calling?.toolResults?.[0]).toMatchObject({ name: 'purgeCache', error: 'rejected' });
+    expect(calling?.toolResults?.[0]).toMatchObject({ name: 'purgeCache', denied: true });
+  });
+
+  /**
+   * What the model is handed when a person says no. It used to be the single word `rejected`, which
+   * names no actor and is indistinguishable from a tool that threw — so the reply that followed
+   * would diagnose the refusal ("the key may not exist", "there may be permission restrictions")
+   * and offer to retry the action the person had just declined.
+   */
+  it('tells the model a person declined, not that something went wrong', async () => {
+    const script: FakeScript = (_args, turnIndex) =>
+      turnIndex === 0
+        ? { text: 'about to purge', toolCall: { name: 'purgeCache', input: { key: 'cfg' } } }
+        : { text: 'understood' };
+
+    const { detail } = await run(script, () => ({ approved: false }));
+    const narrative =
+      detail?.messages.flatMap((message) => message.toolResults ?? [])[0]?.error ?? '';
+
+    expect(narrative).toContain('declined');
+    expect(narrative).toContain('Nothing ran');
+    // The three moves the bare word invited, named so a rewrite cannot quietly drop them.
+    expect(narrative).toMatch(/do not .*run this action again/);
+    expect(narrative).toContain('not an error');
+  });
+
+  it('carries a given reason into what the model is told', async () => {
+    const script: FakeScript = (_args, turnIndex) =>
+      turnIndex === 0
+        ? { text: 'about to purge', toolCall: { name: 'purgeCache', input: { key: 'cfg' } } }
+        : { text: 'understood' };
+
+    const { detail } = await run(script, () => ({ approved: false, reason: 'wrong environment' }));
+    const narrative =
+      detail?.messages.flatMap((message) => message.toolResults ?? [])[0]?.error ?? '';
+
+    expect(narrative).toContain('wrong environment');
   });
 
   it('halts an action tool for approval, then executes on approve', async () => {
