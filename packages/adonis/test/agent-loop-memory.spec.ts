@@ -120,6 +120,65 @@ function providerOf(
   return base;
 }
 
+/**
+ * A provider written the way a host writes one: a class holding its storage on `this`.
+ *
+ * Every other provider in this file is an object literal of arrow functions, which needs no
+ * receiver — so for as long as that was the only shape under test, the memory paths could detach
+ * the method (`const write = provider.write`) and nothing here would notice. A host would: an
+ * Adonis provider is a service with its model or repository injected, and the first `this.` inside
+ * a detached method throws a TypeError the loop reports as a failed tool call.
+ */
+class ClassMemoryProvider implements MemoryProvider {
+  private readonly rows: MemoryRecord[] = [];
+
+  list({ scopes }: { scopes: readonly string[] }): MemoryRecord[] {
+    return this.rows.filter((row) => scopes.includes(row.scope));
+  }
+
+  // Recall runs on EVERY turn, so a detached `search` breaks a host before it ever writes anything.
+  search({ scopes, query }: { scopes: readonly string[]; query: string }): MemoryRecord[] {
+    return this.rows.filter((row) => scopes.includes(row.scope) && row.text.includes(query));
+  }
+
+  forget(): boolean {
+    return true;
+  }
+
+  // `this.rows` is the whole point: it throws unless the caller kept the receiver.
+  write(input: StoreMemoryInput): MemoryRecord {
+    const saved: MemoryRecord = {
+      id: `${input.scope}/${input.key}`,
+      key: input.key,
+      text: input.text,
+      scope: input.scope,
+      origin: input.origin,
+      updatedAt: '2026-09-13T00:00:00.000Z',
+    };
+    this.rows.push(saved);
+    return saved;
+  }
+
+  stored(): MemoryRecord[] {
+    return this.rows;
+  }
+}
+
+describe('a provider that is a class keeps its receiver', () => {
+  it('writes the memory instead of failing the call', async () => {
+    const provider = new ClassMemoryProvider();
+
+    await pass({
+      model: new RememberingModel({ key: 'units', fact: 'they report in nautical miles' }),
+      memory: { provider },
+    });
+
+    expect(provider.stored()).toEqual([
+      expect.objectContaining({ key: 'units', text: 'they report in nautical miles' }),
+    ]);
+  });
+});
+
 describe('a turn’s memory block', () => {
   it('carries one line per memory, framed by who asserted it', async () => {
     const model = new RememberingModel();
