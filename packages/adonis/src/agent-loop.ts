@@ -1295,14 +1295,6 @@ async function delegateToolCall(
 }
 
 /**
- * A call's declared kind, as settled inside `persist:toolcall` and journaled from there.
- *
- * The reserved `ask` name resolves from module CONFIG, never from the registry: `ask` has no handler
- * to register, and grounding its branch in config is what keeps a process with a partial registry
- * from disagreeing about it — the same property the registry lookup below has only because its
- * answer is written into the journal. Every other name is the registry's `ToolSpec`, as before.
- */
-/**
  * Stamp each of a model turn's calls with the kind declared WHERE THE TOOL WAS OFFERED.
  *
  * A call exists only because some process put that tool's definition in front of the model, so that
@@ -1327,6 +1319,16 @@ function stampToolKinds<T extends { toolCalls: ToolCallRequest[] }>(
   };
 }
 
+/**
+ * A call's declared kind, resolved from this process's own configuration and registry.
+ *
+ * Read by {@link stampToolKinds} where the tools were offered, which is the answer that then rides
+ * the journal; a claim falls back to it only for a call that arrives unstamped.
+ *
+ * The reserved `ask` name resolves from module CONFIG, never from the registry: `ask` has no handler
+ * to register, and grounding its branch in config is what keeps a process with a partial registry
+ * from disagreeing about it. Every other name is the registry's `ToolSpec`, as before.
+ */
 function declaredKind(deps: AgentLoopDeps, name: string): ToolKind {
   if (deps.ask === true && name === ASK_TOOL_NAME) {
     return 'ask';
