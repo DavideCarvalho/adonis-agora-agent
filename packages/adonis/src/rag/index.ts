@@ -19,6 +19,7 @@ export {
   PgVectorRetriever,
   PgVectorStore,
   type PgVectorStoreOptions,
+  stripNulBytes,
   toVectorLiteral,
 } from './pg-vector-store.js';
 export {

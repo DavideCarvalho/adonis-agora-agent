@@ -106,6 +106,34 @@ export function toVectorLiteral(embedding: number[]): string {
 }
 
 /**
+ * Strip every NUL byte (`0x00`) from a value before it can reach a Postgres `text`/`jsonb` binding.
+ * Postgres rejects `0x00` in those types outright (`invalid byte sequence for encoding "UTF8": 0x00`),
+ * while source systems like Qdrant accept it — so text extracted from PDFs that happens to carry a stray
+ * NUL byte works fine right up until it is written to pgvector. Strings have the byte removed (the rest
+ * of the text is kept intact); arrays and plain objects are walked recursively, including object KEYS
+ * (a NUL in a metadata key would otherwise reach `JSON.stringify` and then Postgres just the same); every
+ * other value (numbers, booleans, `null`, `undefined`, embeddings, …) passes through unchanged.
+ */
+export function stripNulBytes<T>(value: T): T {
+  if (typeof value === 'string') {
+    // split/join rather than a regex literal -- a bare NUL inside a RegExp trips biome's
+    // noControlCharactersInRegex lint, and split/join needs no escaping at all.
+    return value.split('\u0000').join('') as unknown as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => stripNulBytes(item)) as unknown as T;
+  }
+  if (value !== null && typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      result[stripNulBytes(key)] = stripNulBytes(val);
+    }
+    return result as unknown as T;
+  }
+  return value;
+}
+
+/**
  * Build the metadata `WHERE` fragment for a filter, using Lucid/Knex positional `?` bindings (never
  * string interpolation). Two predicate kinds:
  *
@@ -259,6 +287,13 @@ export class PgVectorStore implements VectorStore {
     ];
   }
 
+  /**
+   * Every `text`/`jsonb` binding (id, text, source, metadata — including nested metadata values, array
+   * items and object keys) is run through {@link stripNulBytes} first: Postgres rejects the NUL byte
+   * (`0x00`) in `text`/`jsonb` outright, while upstream sources (PDF extraction, Qdrant) happily carry
+   * it, so an unstripped chunk would otherwise fail this INSERT with `invalid byte sequence for encoding
+   * "UTF8": 0x00`. The embedding is untouched — it is never text/jsonb.
+   */
   async upsert(records: VectorRecord[]): Promise<void> {
     const c = this.col;
     for (const record of records) {
@@ -271,10 +306,10 @@ export class PgVectorStore implements VectorStore {
            ${c.metadata} = EXCLUDED.${c.metadata},
            ${c.embedding} = EXCLUDED.${c.embedding}`,
         [
-          record.id,
-          record.text,
-          record.source ?? null,
-          record.metadata !== undefined ? JSON.stringify(record.metadata) : null,
+          stripNulBytes(record.id),
+          stripNulBytes(record.text),
+          stripNulBytes(record.source ?? null),
+          record.metadata !== undefined ? JSON.stringify(stripNulBytes(record.metadata)) : null,
           toVectorLiteral(record.embedding),
         ],
       );
@@ -300,19 +335,24 @@ export class PgVectorStore implements VectorStore {
    * pgvector never re-parses a vector literal either.
    *
    * `RETURNING` the id column yields the chunk count without a second query.
+   *
+   * The patch is run through {@link stripNulBytes} first (values AND keys) for the same reason as
+   * {@link PgVectorStore.upsert}: Postgres rejects the NUL byte (`0x00`) in `jsonb`, so an unstripped
+   * value or key would otherwise fail this `UPDATE`.
    */
   async updateMetadata(documentId: string, patch: MetadataPatch): Promise<number> {
-    const keys = effectivePatchKeys(patch);
+    const cleanPatch = stripNulBytes(patch);
+    const keys = effectivePatchKeys(cleanPatch);
     if (keys.length === 0) {
       return 0;
     }
     const set: Record<string, unknown> = {};
     const removed: string[] = [];
     for (const key of keys) {
-      if (patch[key] === null) {
+      if (cleanPatch[key] === null) {
         removed.push(key);
       } else {
-        set[key] = patch[key];
+        set[key] = cleanPatch[key];
       }
     }
     const c = this.col;

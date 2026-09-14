@@ -9,6 +9,7 @@ import {
   ingestDocuments,
   PgVectorRetriever,
   PgVectorStore,
+  stripNulBytes,
   toVectorLiteral,
 } from '../src/index.js';
 import { FakeEmbeddingProvider } from '../src/testing/index.js';
@@ -322,6 +323,89 @@ describe('PgVectorStore.upsert / remove / listDocuments', () => {
     expect(flat(sql)).toContain('WHERE metadata @> ?::jsonb');
     expect(bindings).toEqual(['{"lang":"en"}']);
     expect(docs).toEqual([{ id: 'doc', metadata: { lang: 'en' } }]);
+  });
+});
+
+describe('PgVectorStore — NUL byte stripping (Postgres rejects 0x00 in text/jsonb)', () => {
+  it('strips a NUL byte from id/text/source before binding, keeping the rest of the text intact', async () => {
+    const db = new RecordingDb();
+    const store = new PgVectorStore(db);
+
+    await store.upsert([
+      {
+        id: 'doc\u0000#0',
+        text: 'before\u0000after',
+        embedding: EMBEDDING,
+        source: 'src\u0000name',
+      },
+    ]);
+
+    const { bindings } = db.last;
+    expect(bindings[0]).toBe('doc#0');
+    expect(bindings[1]).toBe('beforeafter');
+    expect(bindings[2]).toBe('srcname');
+    for (const binding of bindings) {
+      if (typeof binding === 'string') {
+        expect(binding).not.toContain('\u0000');
+      }
+    }
+  });
+
+  it('strips NUL bytes from metadata values, array items, and keys before JSON-stringifying', async () => {
+    const db = new RecordingDb();
+    const store = new PgVectorStore(db);
+
+    await store.upsert([
+      {
+        id: 'doc#0',
+        text: 't',
+        embedding: EMBEDDING,
+        metadata: {
+          'ba\u0000d-key': 'clean',
+          note: 'has\u0000nul',
+          tags: ['a\u0000b', 'c'],
+          nested: { inner: 'x\u0000y' },
+        },
+      },
+    ]);
+
+    const metadataBinding = db.last.bindings[3] as string;
+    expect(metadataBinding).not.toContain('\u0000');
+    expect(JSON.parse(metadataBinding)).toEqual({
+      'bad-key': 'clean',
+      note: 'hasnul',
+      tags: ['ab', 'c'],
+      nested: { inner: 'xy' },
+    });
+  });
+});
+
+describe('PgVectorStore.updateMetadata — NUL byte stripping', () => {
+  it('strips NUL bytes from patch values and keys before sending the merge/removal bindings', async () => {
+    const db = new RecordingDb();
+    const store = new PgVectorStore(db);
+
+    await store.updateMetadata('doc', {
+      'go\u0000od': 'val\u0000ue',
+      'rem\u0000oved': null,
+    });
+
+    const { bindings } = db.last;
+    const [setJson, removedKeys] = bindings as [string, string[], string];
+    expect(setJson).not.toContain('\u0000');
+    expect(JSON.parse(setJson)).toEqual({ good: 'value' });
+    expect(removedKeys).toEqual(['removed']);
+  });
+});
+
+describe('stripNulBytes helper', () => {
+  it('removes NUL bytes from strings, recurses into arrays/objects (keys included), and leaves other values unchanged', () => {
+    expect(stripNulBytes('a\u0000b')).toBe('ab');
+    expect(stripNulBytes(['a\u0000b', 1, null])).toEqual(['ab', 1, null]);
+    expect(stripNulBytes({ 'k\u0000ey': 'v\u0000al', n: 1 })).toEqual({ key: 'val', n: 1 });
+    expect(stripNulBytes(42)).toBe(42);
+    expect(stripNulBytes(null)).toBe(null);
+    expect(stripNulBytes(undefined)).toBe(undefined);
   });
 });
 
