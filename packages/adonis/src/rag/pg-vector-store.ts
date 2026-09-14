@@ -182,7 +182,12 @@ function buildMetadataWhere(
   }
   const clauses: string[] = [];
   const bindings: unknown[] = [];
-  const scalar: Record<string, unknown> = {};
+  // Accumulated as [key, value] pairs, not `scalar[cleanKey] = value` on a fresh `{}` -- a filter key
+  // literally named `__proto__` would otherwise hit the inherited `Object.prototype` accessor instead
+  // of creating an own property, and (for the ordinary case, a non-object value) that setter silently
+  // no-ops, dropping the key before it ever reaches `JSON.stringify`. `Object.fromEntries` below builds
+  // the object with `CreateDataProperty`, the same fix {@link stripNulBytes} makes for its own walk.
+  const scalarEntries: [string, unknown][] = [];
   for (const [key, value] of Object.entries(filter)) {
     const cleanKey = stripNulBytes(key);
     if (Array.isArray(value)) {
@@ -203,12 +208,12 @@ function buildMetadataWhere(
         value.map((token) => stripNulBytes(String(token))),
       );
     } else {
-      scalar[cleanKey] = value;
+      scalarEntries.push([cleanKey, value]);
     }
   }
-  if (Object.keys(scalar).length > 0) {
+  if (scalarEntries.length > 0) {
     clauses.push(`${metadataColumn} @> ?::jsonb`);
-    bindings.push(JSON.stringify(stripNulBytes(scalar)));
+    bindings.push(JSON.stringify(stripNulBytes(Object.fromEntries(scalarEntries))));
   }
   return { sql: `WHERE ${clauses.join(' AND ')}`, bindings };
 }
@@ -383,15 +388,19 @@ export class PgVectorStore implements VectorStore {
     if (keys.length === 0) {
       return 0;
     }
-    const set: Record<string, unknown> = {};
+    // Accumulated as [key, value] pairs, not `set[key] = cleanPatch[key]` on a fresh `{}` -- see the
+    // matching comment in `buildMetadataWhere`: a patch key literally named `__proto__` would otherwise
+    // be silently dropped by the inherited prototype setter instead of surviving as an own property.
+    const setEntries: [string, unknown][] = [];
     const removed: string[] = [];
     for (const key of keys) {
       if (cleanPatch[key] === null) {
         removed.push(key);
       } else {
-        set[key] = cleanPatch[key];
+        setEntries.push([key, cleanPatch[key]]);
       }
     }
+    const set = Object.fromEntries(setEntries);
     const c = this.col;
     const raw = await this.db.rawQuery(
       `UPDATE ${this.table}

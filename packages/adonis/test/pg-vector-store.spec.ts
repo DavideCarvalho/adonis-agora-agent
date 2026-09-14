@@ -428,6 +428,22 @@ describe('PgVectorStore.updateMetadata — NUL byte stripping', () => {
     const { bindings } = db.last;
     expect(bindings[2]).toBe('doc');
   });
+
+  it('keeps a __proto__-named patch key as an own property in the merge binding', async () => {
+    const db = new RecordingDb();
+    const store = new PgVectorStore(db);
+    // JSON.parse creates a real own property named "__proto__" (CreateDataProperty semantics),
+    // unlike the object-literal form, which would set the prototype instead of a property.
+    const patch = JSON.parse('{"__proto__":"mal","safe":"ok"}') as Record<string, unknown>;
+
+    await store.updateMetadata('doc', patch);
+
+    const { bindings } = db.last;
+    const [setJson] = bindings as [string, string[], string];
+    // `set[key] = cleanPatch[key]` on a fresh `{}` would silently drop __proto__ here (the
+    // inherited prototype setter no-ops for a string value); the fromEntries-built object must not.
+    expect(JSON.parse(setJson)).toEqual(JSON.parse('{"__proto__":"mal","safe":"ok"}'));
+  });
 });
 
 describe('PgVectorStore -- NUL byte stripping on read paths (buildMetadataWhere)', () => {
@@ -483,6 +499,21 @@ describe('PgVectorStore -- NUL byte stripping on read paths (buildMetadataWhere)
     const filterJson = db.last.bindings[0] as string;
     expect(filterJson).not.toContain('\u0000');
     expect(JSON.parse(filterJson)).toEqual({ collectionId: 'c1' });
+  });
+
+  it('keeps a __proto__-named scalar filter key as an own property in the containment binding', async () => {
+    const db = new RecordingDb();
+    const store = new PgVectorStore(db);
+    // JSON.parse creates a real own property named "__proto__" (CreateDataProperty semantics),
+    // unlike the object-literal form, which would set the prototype instead of a property.
+    const filter = JSON.parse('{"__proto__":"mal","safe":"ok"}') as Record<string, unknown>;
+
+    await store.search(EMBEDDING, { topK: 4, filter });
+
+    const filterJson = db.last.bindings[1] as string;
+    // `scalar[cleanKey] = value` on a fresh `{}` would silently drop __proto__ here (the inherited
+    // prototype setter no-ops for a string value); the fromEntries-built object must not.
+    expect(JSON.parse(filterJson)).toEqual(JSON.parse('{"__proto__":"mal","safe":"ok"}'));
   });
 });
 
