@@ -312,6 +312,15 @@ describe('PgVectorStore.upsert / remove / listDocuments', () => {
     expect(bindings).toEqual(['doc']);
   });
 
+  it('strips a NUL byte from documentId before binding (remove)', async () => {
+    const db = new RecordingDb();
+    const store = new PgVectorStore(db);
+
+    await store.remove('do\u0000c');
+
+    expect(db.last.bindings).toEqual(['doc']);
+  });
+
   it('lists distinct documents, optionally metadata-filtered', async () => {
     const db = new RecordingDb([{ doc_id: 'doc', metadata: { lang: 'en' } }]);
     const store = new PgVectorStore(db);
@@ -378,6 +387,19 @@ describe('PgVectorStore — NUL byte stripping (Postgres rejects 0x00 in text/js
       nested: { inner: 'xy' },
     });
   });
+
+  it('leaves a Date inside metadata untouched rather than flattening it to {}', async () => {
+    const db = new RecordingDb();
+    const store = new PgVectorStore(db);
+    const when = new Date('2024-01-01T00:00:00.000Z');
+
+    await store.upsert([{ id: 'doc#0', text: 't', embedding: EMBEDDING, metadata: { when } }]);
+
+    const metadataBinding = db.last.bindings[3] as string;
+    // A Date has no enumerable own properties, so a naive object walk would JSON.stringify it as
+    // {} -- it must instead pass through stripNulBytes unchanged and stringify the normal way.
+    expect(JSON.parse(metadataBinding)).toEqual({ when: when.toISOString() });
+  });
 });
 
 describe('PgVectorStore.updateMetadata — NUL byte stripping', () => {
@@ -396,6 +418,72 @@ describe('PgVectorStore.updateMetadata — NUL byte stripping', () => {
     expect(JSON.parse(setJson)).toEqual({ good: 'value' });
     expect(removedKeys).toEqual(['removed']);
   });
+
+  it('strips a NUL byte from documentId before binding, independent of the patch', async () => {
+    const db = new RecordingDb();
+    const store = new PgVectorStore(db);
+
+    await store.updateMetadata('do\u0000c', { a: 'b' });
+
+    const { bindings } = db.last;
+    expect(bindings[2]).toBe('doc');
+  });
+});
+
+describe('PgVectorStore -- NUL byte stripping on read paths (buildMetadataWhere)', () => {
+  it('strips a NUL byte from a scalar filter key/value before binding (search)', async () => {
+    const db = new RecordingDb();
+    const store = new PgVectorStore(db);
+
+    await store.search(EMBEDDING, {
+      topK: 4,
+      filter: { 'ten\u0000antRef': 'v\u0000al' },
+    });
+
+    const { bindings } = db.last;
+    const filterJson = bindings[1] as string;
+    expect(filterJson).not.toContain('\u0000');
+    expect(JSON.parse(filterJson)).toEqual({ tenantRef: 'val' });
+  });
+
+  it('strips NUL bytes from an array filter key and its tokens before binding (search)', async () => {
+    const db = new RecordingDb();
+    const store = new PgVectorStore(db);
+
+    await store.search(EMBEDDING, {
+      topK: 4,
+      filter: { 'au\u0000dience': ['pub\u0000lic', 'base:42'] },
+    });
+
+    const { bindings } = db.last;
+    // Order: score-vector, key x3 (for the CASE), the token array, order-vector, limit.
+    expect(bindings[1]).toBe('audience');
+    expect(bindings[2]).toBe('audience');
+    expect(bindings[3]).toBe('audience');
+    expect(bindings[4]).toEqual(['public', 'base:42']);
+  });
+
+  it('strips NUL bytes from a listDocuments metadata filter the same way', async () => {
+    const db = new RecordingDb([{ doc_id: 'doc', metadata: { lang: 'en' } }]);
+    const store = new PgVectorStore(db);
+
+    await store.listDocuments({ 'la\u0000ng': 'e\u0000n' });
+
+    const filterJson = db.last.bindings[0] as string;
+    expect(filterJson).not.toContain('\u0000');
+    expect(JSON.parse(filterJson)).toEqual({ lang: 'en' });
+  });
+
+  it('strips NUL bytes from a removeWhere metadata filter the same way', async () => {
+    const db = new RecordingDb();
+    const store = new PgVectorStore(db);
+
+    await store.removeWhere({ 'co\u0000llectionId': 'c\u00001' });
+
+    const filterJson = db.last.bindings[0] as string;
+    expect(filterJson).not.toContain('\u0000');
+    expect(JSON.parse(filterJson)).toEqual({ collectionId: 'c1' });
+  });
 });
 
 describe('stripNulBytes helper', () => {
@@ -406,6 +494,36 @@ describe('stripNulBytes helper', () => {
     expect(stripNulBytes(42)).toBe(42);
     expect(stripNulBytes(null)).toBe(null);
     expect(stripNulBytes(undefined)).toBe(undefined);
+  });
+
+  it('keeps a __proto__-named key as an own property rather than losing it to the prototype setter', () => {
+    // JSON.parse creates a real own property named "__proto__" (CreateDataProperty semantics) --
+    // unlike the object-literal form { '__proto__': ... }, which sets the prototype instead.
+    const input = JSON.parse('{"__proto__":"mal","safe":"ok"}') as Record<string, unknown>;
+
+    const result = stripNulBytes(input);
+
+    expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
+    expect(Object.getOwnPropertyDescriptor(result, '__proto__')?.value).toBe('mal');
+    expect(result.safe).toBe('ok');
+  });
+
+  it('passes a Date through unchanged rather than flattening it to a plain object', () => {
+    const date = new Date('2024-01-01T00:00:00.000Z');
+
+    expect(stripNulBytes(date)).toBe(date);
+  });
+
+  it('passes a class instance through unchanged rather than flattening it to a plain object', () => {
+    class Point {
+      constructor(
+        public x: number,
+        public y: number,
+      ) {}
+    }
+    const point = new Point(1, 2);
+
+    expect(stripNulBytes(point)).toBe(point);
   });
 });
 

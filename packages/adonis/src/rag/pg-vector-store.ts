@@ -110,9 +110,22 @@ export function toVectorLiteral(embedding: number[]): string {
  * Postgres rejects `0x00` in those types outright (`invalid byte sequence for encoding "UTF8": 0x00`),
  * while source systems like Qdrant accept it — so text extracted from PDFs that happens to carry a stray
  * NUL byte works fine right up until it is written to pgvector. Strings have the byte removed (the rest
- * of the text is kept intact); arrays and plain objects are walked recursively, including object KEYS
+ * of the text is kept intact); arrays and PLAIN objects are walked recursively, including object KEYS
  * (a NUL in a metadata key would otherwise reach `JSON.stringify` and then Postgres just the same); every
- * other value (numbers, booleans, `null`, `undefined`, embeddings, …) passes through unchanged.
+ * other value (numbers, booleans, `null`, `undefined`, embeddings, a `Date`, a class instance, a
+ * `Buffer`, …) passes through unchanged, by reference.
+ *
+ * Two things a naive `for...in` + assignment walk gets wrong, both handled here:
+ *
+ * - **Only plain objects are walked.** The check is `Object.getPrototypeOf(v) === Object.prototype ||
+ *   === null`, never `typeof v === 'object'` alone — a `Date`, a class instance, a `Buffer`, … would
+ *   otherwise be torn down into a plain `{}` of its enumerable own properties, silently losing its
+ *   prototype (and, for a `Date`, every method on it).
+ * - **The result is built with `Object.fromEntries`, never `result[key] = value` on a fresh `{}`.** A
+ *   metadata key literally named `__proto__`, assigned that way, does not create an own property — it
+ *   hits the inherited `Object.prototype` accessor instead, which (for the ordinary case, a string
+ *   value) silently no-ops, so the key is dropped rather than round-tripped. `Object.fromEntries` uses
+ *   `CreateDataProperty` under the hood, which always creates a real own property, `__proto__` included.
  */
 export function stripNulBytes<T>(value: T): T {
   if (typeof value === 'string') {
@@ -124,11 +137,17 @@ export function stripNulBytes<T>(value: T): T {
     return value.map((item) => stripNulBytes(item)) as unknown as T;
   }
   if (value !== null && typeof value === 'object') {
-    const result: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      result[stripNulBytes(key)] = stripNulBytes(val);
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) {
+      // Not a plain object -- a Date, a class instance, a Buffer, a Map, ... -- leave it exactly as is.
+      return value;
     }
-    return result as unknown as T;
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, val]) => [
+        stripNulBytes(key),
+        stripNulBytes(val),
+      ]),
+    ) as unknown as T;
   }
   return value;
 }
@@ -148,6 +167,11 @@ export function stripNulBytes<T>(value: T): T {
  * binding (`metadata->?`), so a caller-supplied key can never inject SQL; only the (already validated)
  * table/column identifiers are ever spliced in. Returns `{ sql: '', bindings: [] }` when there is no
  * filter, preserving the previous unfiltered query shape.
+ *
+ * Every binding built here — the key, the scalar containment JSON, each array token — is run through
+ * {@link stripNulBytes} first, the same as every write path: a filter key or value can carry a NUL byte
+ * just as easily as stored text can, Postgres rejects it here exactly as it would on a write, and
+ * stripping it here keeps a filter lookup consistent with the already-stripped data it is matched against.
  */
 function buildMetadataWhere(
   filter: Record<string, unknown> | undefined,
@@ -160,6 +184,7 @@ function buildMetadataWhere(
   const bindings: unknown[] = [];
   const scalar: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(filter)) {
+    const cleanKey = stripNulBytes(key);
     if (Array.isArray(value)) {
       if (value.length === 0) {
         clauses.push('false');
@@ -171,14 +196,19 @@ function buildMetadataWhere(
         `jsonb_exists_any(CASE WHEN jsonb_typeof(${metadataColumn}->?) = 'array' ` +
           `THEN ${metadataColumn}->? ELSE jsonb_build_array(${metadataColumn}->?) END, ?::text[])`,
       );
-      bindings.push(key, key, key, value.map(String));
+      bindings.push(
+        cleanKey,
+        cleanKey,
+        cleanKey,
+        value.map((token) => stripNulBytes(String(token))),
+      );
     } else {
-      scalar[key] = value;
+      scalar[cleanKey] = value;
     }
   }
   if (Object.keys(scalar).length > 0) {
     clauses.push(`${metadataColumn} @> ?::jsonb`);
-    bindings.push(JSON.stringify(scalar));
+    bindings.push(JSON.stringify(stripNulBytes(scalar)));
   }
   return { sql: `WHERE ${clauses.join(' AND ')}`, bindings };
 }
@@ -316,9 +346,15 @@ export class PgVectorStore implements VectorStore {
     }
   }
 
+  /**
+   * `documentId` is run through {@link stripNulBytes} before binding — the stored `id` column never
+   * carries a NUL byte (it went through the same stripping on `upsert`), so a raw NUL in the lookup
+   * value could only ever fail to match; stripping it here keeps the lookup consistent with the data
+   * instead of trusting a caller-supplied string to already be clean.
+   */
   async remove(documentId: string): Promise<void> {
     await this.db.rawQuery(`DELETE FROM ${this.table} WHERE ${documentIdExpr(this.col.id)} = ?`, [
-      documentId,
+      stripNulBytes(documentId),
     ]);
   }
 
@@ -338,7 +374,8 @@ export class PgVectorStore implements VectorStore {
    *
    * The patch is run through {@link stripNulBytes} first (values AND keys) for the same reason as
    * {@link PgVectorStore.upsert}: Postgres rejects the NUL byte (`0x00`) in `jsonb`, so an unstripped
-   * value or key would otherwise fail this `UPDATE`.
+   * value or key would otherwise fail this `UPDATE`. `documentId` is stripped too, for the same
+   * lookup-consistency reason as {@link PgVectorStore.remove}.
    */
   async updateMetadata(documentId: string, patch: MetadataPatch): Promise<number> {
     const cleanPatch = stripNulBytes(patch);
@@ -361,7 +398,7 @@ export class PgVectorStore implements VectorStore {
           SET ${c.metadata} = (COALESCE(${c.metadata}, '{}'::jsonb) || ?::jsonb) - ?::text[]
         WHERE ${documentIdExpr(c.id)} = ?
         RETURNING ${c.id} AS id`,
-      [JSON.stringify(set), removed, documentId],
+      [JSON.stringify(set), removed, stripNulBytes(documentId)],
     );
     return normalizeRows(raw).length;
   }
