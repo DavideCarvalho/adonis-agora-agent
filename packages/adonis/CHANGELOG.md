@@ -1,5 +1,48 @@
 # @adonis-agora/agent
 
+## 0.33.1
+
+### Patch Changes
+
+- [#138](https://github.com/DavideCarvalho/adonis-agora-agent/pull/138) [`615b56f`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/615b56f5a2a09de2fa165448dbdb85a8890760a2) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - A memory provider written as a class keeps its receiver, so `remember` can actually write
+  
+  `writeMemory` read the method off the config and called it detached:
+  
+  ```ts
+  const write = config.provider.write;
+  …
+  const record = await write({ … });
+  ```
+  
+  A provider is normally a class — an Adonis service with its model or repository injected — and a detached method has lost its receiver, so the first `this.` inside it throws a `TypeError`. The loop reports that as a failed tool call, the model narrates the failure, and nothing is ever written down. Reads were unaffected: `list` and `forget` are called through the object.
+  
+  `offerMemories` detached `search` the same way, which breaks the same host on the RECALL path — and that one runs on every turn, so it breaks before anything is ever written. Both are bound now.
+  
+  Every provider in this repo's own tests is an object literal of arrow functions, which needs no receiver — which is exactly why it went unseen. The regression test is a provider written the way a host writes one, with both `search` and `write` reading its storage off `this`.
+
+- [#139](https://github.com/DavideCarvalho/adonis-agora-agent/pull/139) [`6a6ff1f`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/6a6ff1f0369ced0eddca3940c2f1ad73081c75da) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - A declined action reads as a decision, not as a malfunction
+  
+  When a person declines an action tool, the loop handed the model a tool result whose error text was the single word `rejected`. That names no actor and is indistinguishable from a tool that threw, so the answer that followed diagnosed the refusal — "the key may not exist", "there may be permission restrictions" — and offered to retry the same action, asking the person to say no twice.
+  
+  - `ToolResult` gains `denied?: true`. It is set instead of a failure and read by everything that has to tell the two apart; `error` still carries what the model is told, because that is the channel a model reads an outcome on.
+  - That text now says who decided, that nothing ran, and what not to do next: not an error, no guessing at causes, no retry and no reaching for another way to do the same thing. A reason given when declining is included.
+  
+  Ported from the NestJS sibling, where the bad narration was seen in production.
+
+- [#144](https://github.com/DavideCarvalho/adonis-agora-agent/pull/144) [`f22bd40`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/f22bd4094b95705ed285fa9b84f9b17df9cf59e4) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `PgVectorStore` strips the NUL byte (0x00) before it reaches Postgres, on writes and on reads
+  
+  Postgres rejects the NUL byte in `text`/`jsonb` values outright (`invalid byte sequence for encoding "UTF8": 0x00`), but text extracted from PDFs sometimes carries one and upstream sources like Qdrant accept it fine — so a chunk that ingested cleanly elsewhere could fail `upsert` here with no way to write it. `upsert` (id, text, source, metadata — including nested metadata values, array items, and object keys) and `updateMetadata` (the patch, values and keys, plus the `documentId` lookup) now run every string through a new exported `stripNulBytes` helper first, so a stray NUL byte is dropped and the rest of the text is written unchanged. The same stripping now also applies on read: `remove`'s `documentId`, and the metadata filter (`search`, `listDocuments`, `listDocumentIds`, `removeWhere`) — keeping every lookup consistent with the already-stripped stored data.
+  
+  `stripNulBytes` also fixes two edge cases in how it walks a value: only plain objects are recursed into (checked via `Object.getPrototypeOf`), so a `Date`, class instance, `Buffer`, etc. inside metadata passes through unchanged instead of being flattened into `{}`; and the result is built with `Object.fromEntries` rather than assignment onto a fresh `{}`, so a metadata key literally named `__proto__` round-trips as a real own property instead of silently hitting the inherited prototype accessor and being dropped. The same `__proto__` drop was still reachable through two downstream accumulators that built their own object with plain assignment — `buildMetadataWhere`'s scalar filter object and `updateMetadata`'s merge-patch object — both now accumulate `[key, value]` pairs and build with `Object.fromEntries` too, so a `__proto__`-named filter or patch key survives all the way to the binding.
+
+- [#140](https://github.com/DavideCarvalho/adonis-agora-agent/pull/140) [`53016f7`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/53016f7505598e4685209ae526a402e770a3f54e) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - A tool call's kind travels with the call, so the approval gate does not depend on which process replays the turn
+  
+  `claimToolCall` settles a call's kind inside `persist:toolcall` and journals it from there, which makes every replay agree. It does not make the first writer right: a resumed run is handed to whichever instance takes the lease, and an instance that never declared the tool reads `undefined` from its own registry, journals `read` for an action tool, and executes it with nobody's approval.
+  
+  The kind is now stamped where the tool was OFFERED — inside the `llm:<i>` checkpoint, by the process that built the definition list the model chose from — and `claimToolCall` writes that value rather than asking its own registry. A call that arrives unstamped still falls back to the local lookup, so a journal written before kinds travelled replays unchanged.
+  
+  No checkpoint name, position or count changes.
+
 ## 0.33.0
 
 ### Minor Changes
