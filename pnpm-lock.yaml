@@ -195,7 +195,7 @@ importers:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: 1.30.0
-        version: 1.30.0(supports-color@10.2.2)(zod@4.6.1)
+        version: 1.30.0(supports-color@10.2.2)(zod@4.6.2)
       '@standard-schema/spec':
         specifier: 1.1.0
         version: 1.1.0
@@ -238,7 +238,7 @@ importers:
         version: 19.3.0
       ai:
         specifier: 7.0.97
-        version: 7.0.97(zod@4.6.1)
+        version: 7.0.97(zod@4.6.2)
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3
@@ -258,8 +258,8 @@ importers:
         specifier: 5.0.0
         version: 5.0.0(@types/node@26.5.1)(jsdom@30.0.1)(vite@8.3.0(@types/node@26.5.1)(esbuild@0.28.1)(yaml@2.9.0))
       zod:
-        specifier: 4.6.1
-        version: 4.6.1
+        specifier: 4.6.2
+        version: 4.6.2
 
   packages/dashboard:
     devDependencies:
@@ -3347,8 +3347,8 @@ packages:
   zod@4.5.4:
     resolution: {integrity: sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA==}
 
-  zod@4.6.1:
-    resolution: {integrity: sha512-341aRWQsve0rvronKNTqZpjmzdbUDlFuzHaI/XLg/Ej82qffDJRRfBTCuv7+9q/rMjB6LSLyEBnW4InJeMtt/Q==}
+  zod@4.6.2:
+    resolution: {integrity: sha512-lh5RCAGFa1Cm2hjtNwLQhSs/AsqdWnTQaBER9fEwN/88pSh7KOtJavtBx/0VlkN/uFd61SwYmljLMDAsHlvzBQ==}
 
 snapshots:
 
@@ -3616,21 +3616,21 @@ snapshots:
       '@poppinss/colors': 4.1.6
       string-width: 8.2.2
 
-  '@ai-sdk/gateway@4.0.78(zod@4.6.1)':
+  '@ai-sdk/gateway@4.0.78(zod@4.6.2)':
     dependencies:
       '@ai-sdk/provider': 4.0.13
-      '@ai-sdk/provider-utils': 5.0.39(zod@4.6.1)
+      '@ai-sdk/provider-utils': 5.0.39(zod@4.6.2)
       '@vercel/oidc': 3.2.0
-      zod: 4.6.1
+      zod: 4.6.2
 
-  '@ai-sdk/provider-utils@5.0.39(zod@4.6.1)':
+  '@ai-sdk/provider-utils@5.0.39(zod@4.6.2)':
     dependencies:
       '@ai-sdk/provider': 4.0.13
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.1
       undici: 7.29.1
-      zod: 4.6.1
+      zod: 4.6.2
 
   '@ai-sdk/provider@4.0.13':
     dependencies:
@@ -4026,7 +4026,7 @@ snapshots:
       tinyglobby: 0.2.17
       yaml: 2.9.0
 
-  '@modelcontextprotocol/sdk@1.30.0(supports-color@10.2.2)(zod@4.6.1)':
+  '@modelcontextprotocol/sdk@1.30.0(supports-color@10.2.2)(zod@4.6.2)':
     dependencies:
       '@hono/node-server': 2.1.1(hono@4.13.7)
       ajv: 8.20.0
@@ -4043,8 +4043,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.6.1
-      zod-to-json-schema: 3.25.2(zod@4.6.1)
+      zod: 4.6.2
+      zod-to-json-schema: 3.25.2(zod@4.6.2)
     transitivePeerDependencies:
       - supports-color
 
@@ -4539,12 +4539,12 @@ snapshots:
       mime-types: 3.0.2
       negotiator: 1.1.0
 
-  ai@7.0.97(zod@4.6.1):
+  ai@7.0.97(zod@4.6.2):
     dependencies:
-      '@ai-sdk/gateway': 4.0.78(zod@4.6.1)
+      '@ai-sdk/gateway': 4.0.78(zod@4.6.2)
       '@ai-sdk/provider': 4.0.13
-      '@ai-sdk/provider-utils': 5.0.39(zod@4.6.1)
-      zod: 4.6.1
+      '@ai-sdk/provider-utils': 5.0.39(zod@4.6.2)
+      zod: 4.6.2
 
   ajv-formats@3.0.1(ajv@8.20.0):
     optionalDependencies:
@@ -5982,10 +5982,10 @@ snapshots:
       cookie-es: 3.1.1
       youch-core: 0.3.3
 
-  zod-to-json-schema@3.25.2(zod@4.6.1):
+  zod-to-json-schema@3.25.2(zod@4.6.2):
     dependencies:
-      zod: 4.6.1
+      zod: 4.6.2
 
   zod@4.5.4: {}
 
-  zod@4.6.1: {}
+  zod@4.6.2: {}
