@@ -37,14 +37,14 @@ export interface AuthzToolAuthorizerConfig {
    */
   authz: AuthzServiceLike;
   /**
-   * Maps an {@link Actor} onto the user object authz resolves a `UserRef` from. Defaults to
-   * `{ id: actor.id }` — enough for authz's `defaultResolveUserRef` (which reads `.id`, defaulting
+   * Maps an {@link Actor} onto the user object authz resolves a `SubjectRef` from. Defaults to
+   * `{ id: actor.id }` — enough for authz's `defaultResolveSubjectRef` (which reads `.id`, defaulting
    * the type to `user`). Override to attach a polymorphic `type` or a host user entity.
    */
   userFromActor?: (actor: Actor) => unknown;
 }
 
-/** Default {@link Actor} → authz user mapping: the minimal `{ id }` authz needs to resolve a `UserRef`. */
+/** Default {@link Actor} → authz subject mapping: the minimal `{ id }` authz needs to resolve a `SubjectRef`. */
 export function defaultUserFromActor(actor: Actor): unknown {
   return { id: actor.id };
 }
