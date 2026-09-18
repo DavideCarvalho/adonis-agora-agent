@@ -160,6 +160,18 @@ describe('mcp_provider: the 401 sends the client to the login', () => {
   });
 });
 
+describe('mcp_provider: fail-closed open mode', () => {
+  it('still sends a bare Bearer challenge with neither auth nor actor', async () => {
+    booted = await bootApp({});
+    const response = await post(booted);
+    expect(response.status).toBe(401);
+    expect(response.headers.get('www-authenticate')).toBe('Bearer');
+    expect(await response.json()).toEqual({
+      error: 'unauthorized: no auth configured and no fallback actor',
+    });
+  });
+});
+
 describe('mcp_provider: publicUrl', () => {
   it('builds the resource and the challenge from publicUrl, not from the request', async () => {
     booted = await bootApp({ auth: oauthAuth, publicUrl: 'https://app.example.com' });

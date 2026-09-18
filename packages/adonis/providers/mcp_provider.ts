@@ -105,10 +105,11 @@ export default class McpProvider {
   /**
    * Refuse the request with `status` and the RFC 6750 / RFC 9728 challenge. `hadToken` picks the error
    * code (no token → none, per RFC 6750 §3.1); `resource_metadata` is added when the auth exposes OAuth.
+   * `auth` is `undefined` on the fail-closed open-mode path, which still gets a bare `Bearer` challenge.
    */
   #refuse(
     ctx: HttpContext,
-    auth: McpAuth,
+    auth: McpAuth | undefined,
     status: 401 | 403,
     message: string,
     hadToken: boolean,
@@ -119,7 +120,7 @@ export default class McpProvider {
         : hadToken
           ? { error: 'invalid_token' as const }
           : {}),
-      ...(auth.oauth !== undefined
+      ...(auth?.oauth !== undefined
         ? { resourceMetadataUrl: protectedResourceMetadataUrl(this.#origin(ctx), this.#path) }
         : {}),
     });
@@ -155,10 +156,13 @@ export default class McpProvider {
     if (openActor !== undefined) {
       return { token: '', clientId: '', scopes: [], extra: { actor: openActor } };
     }
-    ctx.response
-      .status(401)
-      .json({ error: 'unauthorized: no auth configured and no fallback actor' });
-    return null;
+    return this.#refuse(
+      ctx,
+      undefined,
+      401,
+      'unauthorized: no auth configured and no fallback actor',
+      false,
+    );
   }
 
   // ── route handlers ────────────────────────────────────────────────────────

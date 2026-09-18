@@ -225,7 +225,7 @@ HTTP/1.1 401 Unauthorized
 WWW-Authenticate: Bearer resource_metadata="https://app.example.com/.well-known/oauth-protected-resource/mcp"
 ```
 
-A request that carried a token which was refused adds `error="invalid_token"`; a `403` from `McpAuthError` adds `error="insufficient_scope"`. Without OAuth metadata (`apiKeyAuth()` alone) the challenge is a bare `Bearer`.
+A request that carried a token which was refused adds `error="invalid_token"`; a `403` from `McpAuthError` adds `error="insufficient_scope"`. Without OAuth metadata (`apiKeyAuth()` alone, or the fail-closed `401` of an unconfigured endpoint) the challenge is a bare `Bearer`.
 
 ### Behind a proxy: `publicUrl`
 
