@@ -59,13 +59,14 @@ Point an MCP client at `http://localhost:3333/mcp`. It will discover the OAuth f
 
 ## Configuration
 
-`McpConfig` has eight keys — two required, six optional.
+`McpConfig` has nine keys — two required, seven optional.
 
 | Key | Type | Default | Purpose |
 | --- | --- | --- | --- |
 | `name` | `string` | — | Server name reported in the MCP `initialize` handshake. |
 | `version` | `string` | — | Server version reported in the handshake. |
 | `path` | `string` | `'mcp'` | Route prefix. Leading/trailing slashes are stripped, so `'/mcp/'` and `'mcp'` are the same. |
+| `publicUrl` | `string` | — | The public origin clients reach the app at (e.g. `'https://app.example.com'`). Base of the RFC 9728 `resource` and of the `WWW-Authenticate` challenge. Omit → built from the request. |
 | `auth` | `McpAuth \| McpAuthFactory` | — | How clients authenticate. Omit for open mode (see below). |
 | `actor` | `{ id, roles?, tenantRef? }` | — | The fixed identity for open mode. |
 | `authorizer` | `RolesPolicy` | `DefaultToolAuthorizer(defaultRoles)` | The tool gate. Pass the authz Bouncer adapter here to run MCP under abilities. |
@@ -94,11 +95,62 @@ auth: authKitAuth({
 }),
 ```
 
-The token must resolve through the authkit provider and must not be expired; anything else is a `401` carrying the reason. The authkit service is resolved lazily from the container on first use (`'authkit.server'`), so the peer only has to be bootable by the time the first MCP request arrives — not at provider boot.
+The token must resolve through the authkit provider and must not be expired; anything else is a `401` carrying the reason. When the token belongs to a grant, the grant is loaded on every request too — a grant the user revoked stops its tokens immediately (`401 authorization revoked`). The authkit service is resolved lazily from the container on first use (`'authkit.server'`), so the peer only has to be bootable by the time the first MCP request arrives — not at provider boot.
 
 <Callout type="warn" title="Always supply `toActor`">
 The default `toActor` returns `{ id: accountId }` — an actor with **no roles**. Against the default ADMIN-only authorizer that actor sees an empty tool list and cannot call anything. `toActor` is where your authorization model meets MCP; treat it as required in any real deployment.
 </Callout>
+
+#### What `toActor` receives
+
+| Field | Type | What it is |
+| --- | --- | --- |
+| `accountId` | `string` | The account the token was issued to. |
+| `scopes` | `string[]` | The token's granted scopes. |
+| `clientId` | `string \| undefined` | The OAuth client the token was issued to. |
+| `grantId` | `string \| undefined` | The grant the token belongs to. |
+| `grant` | `AuthKitGrant \| undefined` | The grant itself — the authorization the user gave that client. |
+| `activeOrg` | `{ orgId, orgSlug?, orgRole? } \| undefined` | The organization authkit bound to the grant at consent — the tenant the user authorized. |
+| `extra` | `Record<string, unknown> \| undefined` | Extra claims stored on the access token. |
+
+`activeOrg` is how a multi-tenant app resolves the tenant: it is what the user picked on the consent screen, not something the request can choose. Re-check it against the account's **current** memberships, so a user who left the org loses access on the next request:
+
+```ts
+auth: authKitAuth({
+  toActor: async ({ accountId, activeOrg }) => {
+    if (!activeOrg) throw new McpAuthError('the authorization is not bound to an organization')
+    const membership = await membershipOf(accountId, activeOrg.orgId)
+    if (!membership) throw new McpAuthError('the account is no longer a member of that organization')
+    return { id: accountId, roles: [membership.role], tenantRef: activeOrg.orgId }
+  },
+}),
+```
+
+#### Refusing a token: `McpAuthError`
+
+Throw `McpAuthError` from `toActor` (or from any strategy's `verify`) to refuse a token you recognized. Its message goes back in the body, with the matching challenge:
+
+| Thrown | Status | `WWW-Authenticate` error |
+| --- | --- | --- |
+| `new McpAuthError(msg)` | `401` | `invalid_token` |
+| `new McpAuthError(msg, { status: 403 })` | `403` | `insufficient_scope` |
+
+The common case is a client that may log in to your app but must not reach MCP — the first-party web session, say, whose tokens carry scopes MCP clients never get:
+
+```ts
+import { authKitAuth, McpAuthError } from '@adonis-agora/agent/mcp'
+
+auth: authKitAuth({
+  toActor: ({ accountId, clientId }) => {
+    if (clientId === env.get('AUTHKIT_CLIENT_ID')) {
+      throw new McpAuthError('token was not issued for MCP')
+    }
+    return { id: accountId, roles: ['MEMBER'] }
+  },
+}),
+```
+
+Any other error thrown from `toActor` is still a `401` carrying its message; `McpAuthError` is what lets you pick the status and what stops [`anyOf`](#more-than-one-kind-of-token-anyof) from trying the next strategy.
 
 ### Static API keys
 
@@ -112,6 +164,25 @@ auth: apiKeyAuth({
 ```
 
 Keys are compared in constant time over their bytes. Because this strategy exposes no OAuth metadata, the `.well-known` route is not mounted — clients must be configured with the key directly.
+
+### More than one kind of token: `anyOf`
+
+To accept, on the same `/mcp`, OAuth tokens from clients that logged in through the browser **and** tokens for machine integrations (personal access tokens, gateway keys), combine strategies:
+
+```ts
+import { anyOf, apiKeyAuth, authKitAuth } from '@adonis-agora/agent/mcp'
+
+auth: anyOf(
+  // Your own strategy is just `{ verify }` (or a factory returning one).
+  { verify: verifyPersonalAccessToken },
+  authKitAuth({ toActor }),
+  apiKeyAuth({ apiKeys: [env.get('MCP_GATEWAY_KEY')] }),
+),
+```
+
+Strategies are tried in order and the first to verify the token wins. A strategy that throws a plain `Error` is saying "not my token", so the next one is tried; one that throws `McpAuthError` has claimed the token and refused it, so the chain stops there and the client gets that refusal. When none recognizes the token, the last error is the `401`.
+
+The OAuth metadata comes from the first strategy that exposes it — here `authKitAuth()` — so the `.well-known` route is mounted and every `401` still points MCP clients at the login.
 
 ### Open mode
 
@@ -129,20 +200,47 @@ actor: { id: 'mcp-dev', roles: ['ADMIN'] },
 | `POST /mcp` | The Streamable HTTP endpoint: `initialize`, `tools/list`, `tools/call`. |
 | `GET /mcp` | The SSE channel for server→client notifications on an established session. |
 | `DELETE /mcp` | Terminate the session and release its transport. |
-| `GET /.well-known/oauth-protected-resource/mcp` | RFC 9728 protected-resource metadata. **Mounted only when `auth` exposes OAuth metadata** — i.e. with `authKitAuth()`, not with `apiKeyAuth()` or open mode. |
+| `GET /.well-known/oauth-protected-resource/mcp` | RFC 9728 protected-resource metadata. **Mounted only when `auth` exposes OAuth metadata** — i.e. with `authKitAuth()` (alone or inside `anyOf`), not with `apiKeyAuth()` or open mode. |
 
-The well-known document is deliberately minimal and unauthenticated:
+The well-known document is deliberately minimal and unauthenticated (and served with `Access-Control-Allow-Origin: *`, since MCP clients that run in a browser fetch it cross-origin):
 
 ```json
 {
   "resource": "https://app.example.com/mcp",
   "authorization_servers": ["https://app.example.com/oidc"],
   "scopes_supported": ["openid", "profile", "email", "offline_access", "roles"],
+  "bearer_methods_supported": ["header"],
   "resource_name": "Acme Agent"
 }
 ```
 
-`resource` is built from the request's protocol and `Host` header, so it is correct behind a reverse proxy that forwards them. The metadata itself is resolved per request rather than at boot, because authkit's issuer may not be readable until the app is fully booted.
+The metadata itself is resolved per request rather than at boot, because authkit's issuer may not be readable until the app is fully booted.
+
+### The `401` challenge
+
+Every refused request carries a `WWW-Authenticate` header ([MCP Authorization](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization), RFC 6750 §3, RFC 9728 §5.1). With OAuth metadata it names the document above — that is what makes an MCP client discover the authorization server and open the login in the browser:
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer resource_metadata="https://app.example.com/.well-known/oauth-protected-resource/mcp"
+```
+
+A request that carried a token which was refused adds `error="invalid_token"`; a `403` from `McpAuthError` adds `error="insufficient_scope"`. Without OAuth metadata (`apiKeyAuth()` alone) the challenge is a bare `Bearer`.
+
+### Behind a proxy: `publicUrl`
+
+By default `resource` and `resource_metadata` are built from the request's protocol and `Host`. That is wrong whenever TLS terminates at a proxy the app does not trust — AdonisJS only trusts loopback proxies by default, so behind Traefik or a load balancer the request "sees" `http://` and the client is told to fetch `http://…`. Name the public origin instead:
+
+```ts title="config/mcp.ts"
+export default defineMcpConfig({
+  name: 'Acme Agent',
+  version: '1.0.0',
+  publicUrl: env.get('APP_URL'), // e.g. 'https://app.example.com'
+  auth: authKitAuth({ toActor }),
+})
+```
+
+`publicUrl` must be an origin only — a path, query, or fragment fails the boot, because the endpoint and its `.well-known` document are always mounted at fixed paths on this app.
 
 ### Sessions
 
