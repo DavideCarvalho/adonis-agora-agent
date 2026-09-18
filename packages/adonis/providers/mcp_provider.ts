@@ -9,8 +9,15 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { DefaultToolAuthorizer } from '../src/authorizer.js';
 import { actorFromAuthInfo } from '../src/mcp/actor.js';
 import type { McpAuth, McpAuthInfo } from '../src/mcp/auth.js';
-import { resolveMcpAuth } from '../src/mcp/auth.js';
+import { McpAuthError, resolveMcpAuth } from '../src/mcp/auth.js';
 import type { McpConfig } from '../src/mcp/define_config.js';
+import {
+  normalizeMcpPath,
+  protectedResourceMetadata,
+  protectedResourceMetadataUrl,
+  publicOrigin,
+  wwwAuthenticateChallenge,
+} from '../src/mcp/discovery.js';
 import { createMcpServer } from '../src/mcp/server.js';
 import type { RolesPolicy } from '../src/spi/roles-policy.js';
 import { ToolRegistry } from '../src/tool-registry.js';
@@ -23,6 +30,11 @@ import { ToolRegistry } from '../src/tool-registry.js';
  * - `GET /.well-known/oauth-protected-resource{path}` — RFC 9728 protected-resource metadata, mounted
  *   only when `auth.oauth` is set, so MCP clients can discover how to authenticate.
  *
+ * A refused request answers `401` (or `403` for an {@link McpAuthError} with that status) with a
+ * `WWW-Authenticate: Bearer …` challenge; with OAuth it carries `resource_metadata`, which is what makes
+ * an MCP client discover the authorization server and open the login. URLs are built from
+ * `config.publicUrl` when set, else from the request's protocol and `Host`.
+ *
  * Every request is authenticated: the bearer token is verified via `config.auth` (e.g. `authKitAuth()`),
  * the resolved actor attached to the transport's `AuthInfo`, and `tools/list` / `tools/call` run against
  * the SAME `ToolRegistry` singleton the agent loop uses — so a role-checked tool stays role-checked, and
@@ -31,6 +43,10 @@ import { ToolRegistry } from '../src/tool-registry.js';
 export default class McpProvider {
   /** Live session transports, keyed by MCP session id (per-provider in-memory state). */
   readonly #transports = new Map<string, StreamableHTTPServerTransport>();
+  /** The mounted route prefix, normalized (no leading/trailing slashes). */
+  #path = 'mcp';
+  /** `config.publicUrl` reduced to its origin; `undefined` → derive it from each request. */
+  #publicOrigin: string | undefined;
 
   constructor(protected app: ApplicationService) {}
 
@@ -41,12 +57,15 @@ export default class McpProvider {
     const authorizer = config.authorizer ?? new DefaultToolAuthorizer(defaultRoles);
     const auth =
       config.auth !== undefined ? await resolveMcpAuth(config.auth, { app: this.app }) : undefined;
+    this.#publicOrigin =
+      config.publicUrl !== undefined ? publicOrigin(config.publicUrl) : undefined;
 
     // The actor fallback for open/dev mode (no `auth`): a fixed identity, or fail-closed (reject).
     const openActor = config.actor;
 
     const router = await this.app.container.make('router');
-    const path = (config.path ?? 'mcp').replace(/^\/+|\/+$/g, '');
+    const path = normalizeMcpPath(config.path);
+    this.#path = path;
 
     const route = `/${path}`;
     router.post(route, (ctx: HttpContext) =>
@@ -61,13 +80,9 @@ export default class McpProvider {
       router.get(metadataPath, async (ctx: HttpContext) => {
         // `oauth` may be lazy (authkit needs a fully booted app to resolve) — resolve it on request.
         const meta = typeof oauth === 'function' ? await oauth() : oauth;
-        const origin = `${ctx.request.protocol()}://${ctx.request.headers().host ?? 'localhost'}`;
-        return ctx.response.json({
-          resource: `${origin}/${path}`,
-          authorization_servers: [meta.issuer],
-          scopes_supported: meta.scopesSupported,
-          resource_name: meta.resourceName,
-        });
+        // Public and user-free; MCP clients running in a browser fetch it cross-origin.
+        ctx.response.header('access-control-allow-origin', '*');
+        return ctx.response.json(protectedResourceMetadata(meta, this.#origin(ctx), path));
       });
     }
   }
@@ -79,9 +94,45 @@ export default class McpProvider {
 
   // ── auth helpers ──────────────────────────────────────────────────────────
 
+  /** The public origin: `config.publicUrl` when set, else the request's own protocol and `Host`. */
+  #origin(ctx: HttpContext): string {
+    return (
+      this.#publicOrigin ??
+      `${ctx.request.protocol()}://${ctx.request.headers().host ?? 'localhost'}`
+    );
+  }
+
+  /**
+   * Refuse the request with `status` and the RFC 6750 / RFC 9728 challenge. `hadToken` picks the error
+   * code (no token → none, per RFC 6750 §3.1); `resource_metadata` is added when the auth exposes OAuth.
+   * `auth` is `undefined` on the fail-closed open-mode path, which still gets a bare `Bearer` challenge.
+   */
+  #refuse(
+    ctx: HttpContext,
+    auth: McpAuth | undefined,
+    status: 401 | 403,
+    message: string,
+    hadToken: boolean,
+  ): null {
+    const challenge = wwwAuthenticateChallenge({
+      ...(status === 403
+        ? { error: 'insufficient_scope' as const }
+        : hadToken
+          ? { error: 'invalid_token' as const }
+          : {}),
+      ...(auth?.oauth !== undefined
+        ? { resourceMetadataUrl: protectedResourceMetadataUrl(this.#origin(ctx), this.#path) }
+        : {}),
+    });
+    ctx.response.header('WWW-Authenticate', challenge);
+    ctx.response.status(status).json({ error: message });
+    return null;
+  }
+
   /**
    * Verify the request's `Authorization: Bearer` token against the configured auth, or fall back to the
-   * open-mode `actor`. Returns the `AuthInfo` to attach to the transport, or `null` to reply 401.
+   * open-mode `actor`. Returns the `AuthInfo` to attach to the transport, or `null` once it has replied
+   * 401/403.
    */
   async #authenticate(
     ctx: HttpContext,
@@ -89,28 +140,29 @@ export default class McpProvider {
     openActor: McpConfig['actor'],
   ): Promise<McpAuthInfo | null> {
     const header = ctx.request.header('authorization');
-    const token = header?.startsWith('Bearer ') ? header.slice(7).trim() : undefined;
+    const token = /^Bearer\s/i.test(header ?? '') ? header?.slice(7).trim() : undefined;
     if (auth !== undefined) {
       if (!token) {
-        ctx.response.status(401).json({ error: 'missing bearer token' });
-        return null;
+        return this.#refuse(ctx, auth, 401, 'missing bearer token', false);
       }
       try {
         return await auth.verify(token);
       } catch (error) {
-        ctx.response
-          .status(401)
-          .json({ error: error instanceof Error ? error.message : 'unauthorized' });
-        return null;
+        const status = error instanceof McpAuthError ? error.status : 401;
+        const message = error instanceof Error ? error.message : 'unauthorized';
+        return this.#refuse(ctx, auth, status, message, true);
       }
     }
     if (openActor !== undefined) {
       return { token: '', clientId: '', scopes: [], extra: { actor: openActor } };
     }
-    ctx.response
-      .status(401)
-      .json({ error: 'unauthorized: no auth configured and no fallback actor' });
-    return null;
+    return this.#refuse(
+      ctx,
+      undefined,
+      401,
+      'unauthorized: no auth configured and no fallback actor',
+      false,
+    );
   }
 
   // ── route handlers ────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import type { RolesPolicy } from '../spi/roles-policy.js';
 import type { McpAuth, McpAuthFactory } from './auth.js';
-import { apiKeyAuth, authKitAuth } from './auth.js';
+import { anyOf, apiKeyAuth, authKitAuth, McpAuthError } from './auth.js';
 
 /**
  * Shape of `config/mcp.ts`. The MCP provider exposes the agent's {@link ToolRegistry} over the Model
@@ -29,8 +29,16 @@ export interface McpConfig {
    */
   path?: string;
   /**
+   * The public origin MCP clients reach this app at (e.g. `'https://app.example.com'`) — the base of
+   * the RFC 9728 `resource` and of the `resource_metadata` URL in the `WWW-Authenticate` challenge.
+   * Set it whenever TLS terminates at a proxy the app does not trust (the request then "sees"
+   * `http://`). Omit → both are built from the request's protocol and `Host` header. Must be an
+   * origin only: a path, query, or fragment is rejected at boot.
+   */
+  publicUrl?: string;
+  /**
    * How MCP clients authenticate. Pass a ready {@link McpAuth} or a lazy {@link McpAuthFactory} thunk
-   * (`authKitAuth()` / `apiKeyAuth()`). Omit → the server is open (no bearer check); the acting actor
+   * (`authKitAuth()` / `apiKeyAuth()`, or several of them combined with `anyOf()`). Omit → the server is open (no bearer check); the acting actor
    * falls back to `actor`. Fail-closed: with no `auth` AND no `actor`, requests are rejected.
    */
   auth?: McpAuth | McpAuthFactory;
@@ -62,7 +70,10 @@ export function defineMcpConfig(config: McpConfig): McpConfig {
 export type {
   ApiKeyActorResolver,
   ApiKeyMcpAuthOptions,
+  AuthKitActiveOrg,
+  AuthKitActorInfo,
   AuthKitActorResolver,
+  AuthKitGrant,
   AuthKitMcpAuthOptions,
   McpAuth,
   McpAuthContext,
@@ -70,4 +81,4 @@ export type {
   McpOAuthMetadata,
 } from './auth.js';
 export { resolveMcpAuth } from './auth.js';
-export { apiKeyAuth, authKitAuth };
+export { anyOf, apiKeyAuth, authKitAuth, McpAuthError };
