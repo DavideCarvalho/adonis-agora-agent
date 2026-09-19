@@ -232,7 +232,7 @@
     "node-sql-parser": "5.4.0",
     "react": "19.3.0",
     "typescript": "7.0.2",
-    "vitest": "5.0.0",
+    "vitest": "5.0.1",
     "zod": "4.6.5"
   },
   "engines": {
