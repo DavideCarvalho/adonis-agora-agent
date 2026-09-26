@@ -219,7 +219,7 @@
     "@adonis-agora/durable": "0.41.1",
     "@adonis-agora/telescope": "0.21.1",
     "@adonisjs/assembler": "8.5.2",
-    "@adonisjs/core": "7.5.0",
+    "@adonisjs/core": "7.5.2",
     "@adonisjs/lucid": "22.4.2",
     "@adonisjs/redis": "11.0.0",
     "@qdrant/js-client-rest": "1.19.0",
