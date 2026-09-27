@@ -1,4 +1,4 @@
-export const VERSION = '0.34.0';
+export const VERSION = '0.34.1';
 
 // Re-export the configure hook from the package root so `node ace configure` finds it.
 // AdonisJS imports the package MAIN and reads `configure` off the module namespace —
