@@ -11,6 +11,7 @@ import type { AgentGovernanceQueries } from './spi/governance-queries.js';
 import type { HistoryWindow } from './spi/history-window.js';
 import type { ModelProvider } from './spi/model-provider.js';
 import type { AgentPricingStore } from './spi/pricing-store.js';
+import type { InputProcessor, OutputProcessor } from './spi/processors.js';
 import type { QuotaStore } from './spi/quota-store.js';
 import type { Retriever } from './spi/retriever.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
@@ -257,6 +258,17 @@ export interface AgentConfig {
    * mounted and answer as though nothing is on file.
    */
   memory?: MemoryConfig;
+  /**
+   * Rewrite the prompt before EVERY model call of a turn, for every agent — masking identifiers,
+   * stamping a policy preamble. Each adds a `process:input:<step>` checkpoint. `createGuardrails`
+   * (`@adonis-agora/agent/guardrails`) provides one. Omit → the prompt is sent as composed.
+   */
+  inputProcessors?: InputProcessor[];
+  /**
+   * Rule on each step's answer before anything downstream sees it — pass, rewrite or refuse. See
+   * `AgentLoopDeps.outputProcessors` for what registering one costs the live stream.
+   */
+  outputProcessors?: OutputProcessor[];
   /**
    * External MCP servers whose tools this deployment imports into its own `ToolRegistry` — see
    * `src/mcp-client/`. Each is connected inside `app.booted()`, after the app's own tools are

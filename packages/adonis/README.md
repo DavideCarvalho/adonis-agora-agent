@@ -152,6 +152,40 @@ export const executeSql = dataTool({
 })
 ```
 
+### Guardrails — PII, secrets, prompt injection, tool poisoning
+
+`@adonis-agora/agent/guardrails` puts detectors and a rule engine on the loop's processor seams,
+which `config/agent.ts` now takes as `inputProcessors` / `outputProcessors`:
+
+```ts
+// config/agent.ts
+import { createGuardrails } from '@adonis-agora/agent/guardrails'
+
+const guardrails = createGuardrails({
+  pii: 'redact',                 // reversible: the model sees [EMAIL_1], the reader the address
+  secrets: 'block',
+  injection: { threshold: 0.6 }, // the prompt and every tool result; default action: block
+  toolPoisoning: true,           // guardrails.screenTool, for `mcpServers[].screen`
+  rules: (ctx) => rulesForTenant(ctx.actor?.tenantRef), // more rules, resolved per scan
+  onEvent: (event) => audit(event),                     // hits carry fingerprints, never values
+})
+
+export default defineConfig({
+  model: () => aiSdkModel(openai('gpt-4o-mini')),
+  inputProcessors: [guardrails.input],
+  outputProcessors: [guardrails.output],
+  mcpServers: [{ name: 'docs', transport: { type: 'http', url }, screen: (t) => guardrails.screenTool(t) }],
+})
+```
+
+A blocked prompt fails the run (`ProcessorFailedError` caused by a `GuardrailBlockedError`); a
+blocked tool result is withheld and the turn goes on; a blocked answer or tool call is an
+`OutputRejectedError`. `guardrails.wrapTool(name, handler)` restores placeholders into a tool's
+arguments and runs the `tool_args` rules on them. The output processor declares `incremental`, so the
+answer keeps streaming. The detectors (`detectPii` with Luhn/CPF/CNPJ/IBAN checks, `detectSecrets`,
+`scoreInjection`, `scoreToolText`) and `scan` work on their own. Same code as
+`@dudousxd/nestjs-agent-core/guardrails`, which also carries the raw OpenAI/Anthropic stream guard.
+
 ### Framework-agnostic core (no AdonisJS)
 
 `runAgentLoop(deps, input, hooks)` is the shared turn body both the in-process (`InlineAgentRunner`)
