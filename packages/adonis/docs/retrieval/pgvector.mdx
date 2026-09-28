@@ -51,9 +51,14 @@ export default defineConfig({
 | `db` | resolved lazily | A structural Lucid DB handle (bring-your-own). Omit to resolve `@adonisjs/lucid`'s default `db` service inside the thunk. |
 | `connection` | default connection | Lucid connection name (used only when `db` is omitted). |
 | `table` | `agent_rag_chunks` | Chunk table name. Validated against a strict identifier regex. |
-| `dimension` | `1536` | Embedding width — **must match the model** (e.g. 1536 for `text-embedding-3-small`). |
+| `dimension` | `1536` | Embedding width — **must match the model** (e.g. 1536 for `text-embedding-3-small`). A list (`[768, 1536]`) makes a mixed-dimension table; see below. |
 | `metric` | `cosine` | Similarity metric / distance operator (`cosine`, `l2`, `inner`). |
 | `columns` | mirror defaults | Override the physical column names (each validated). |
+| `nullableEmbeddings` | `false` | Allow chunks without a vector: `embedding: []` is stored as `NULL` and skipped by vector search (full-text still finds it). |
+| `iterativeScan` | off | `'strict_order'` / `'relaxed_order'`: pgvector ≥ 0.8 keeps scanning the HNSW index until `topK` rows pass the filter. `SET LOCAL` in a transaction; skipped on older pgvector. |
+| `efSearch` | pgvector's (40) | `hnsw.ef_search` for searches. |
+| `upsertBatchSize` | `100` | Rows per multi-row `INSERT … ON CONFLICT`. Duplicate ids in one call keep the last. |
+| `fullText` | off | Add a Postgres full-text leg and return a `HybridRetriever` (see below). |
 | `ensureSchema` | `false` | Provision the extension/table/index at boot (idempotent DDL). Handy for tests; production should run the migration. |
 | `documents` | — | Documents to chunk → embed → upsert at boot. |
 | `chunkSize` / `overlap` | `800` / `100` | Chunking parameters. |
@@ -61,6 +66,32 @@ export default defineConfig({
 <Callout type="info" title="Identifiers are validated, embeddings are bound">
 The store composes raw SQL for pgvector's operators (Lucid has no native `vector` type), but every table/column name is validated against a strict identifier regex before it is ever spliced in, and the query embedding is passed as a `?::vector` binding — never string-concatenated. Scores are normalized so a higher `score` always means more relevant, across all three metrics.
 </Callout>
+
+## Hybrid search with Postgres full-text
+
+`fullText` turns the store into a `PgLexicalVectorStore` and the retriever into a `HybridRetriever`
+that fuses vector search with full-text search (reciprocal rank fusion) over the same rows:
+
+```ts
+retriever: retrievers.pgvector({
+  embedder: () => aiSdkEmbedding(openai.embedding('text-embedding-3-small')),
+  fullText: { config: 'simple' }, // or { column: 'tsv' } for a tsvector column you maintain
+}),
+```
+
+Full-text ranks with `ts_rank_cd` over `websearch_to_tsquery` (every word must appear), retrying with
+any word when that finds nothing. Without `column`, the schema adds a GIN index over
+`to_tsvector(config, text)` — on a populated table, create it `CONCURRENTLY` in a migration
+(`store.schemaStatements()` prints it). Programmatically: `new PgLexicalVectorStore(db, {...})` with
+`new HybridRetriever([new EmbeddingRetriever(embedder, store), new LexicalRetriever(store)])`.
+`minScore` does not apply to a fused result — a rank is not a similarity.
+
+## Several embedding models in one table
+
+`dimension: [768, 1536]` makes the column an untyped `vector` with one partial HNSW index per width
+(`USING hnsw ((embedding::vector(768)) …) WHERE vector_dims(embedding) = 768`), and a search only
+compares vectors as wide as the query. Store the model in chunk metadata and filter on it when two
+models share a width.
 
 ## Scores and ranking
 

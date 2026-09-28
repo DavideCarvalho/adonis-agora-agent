@@ -1,6 +1,12 @@
 import type { ApplicationService } from '@adonisjs/core/types';
+import type { HybridRetrieverOptions } from '../rag/hybrid-retriever.js';
 import type { IngestDocument } from '../rag/ingest.js';
-import type { PgVectorColumns, PgVectorMetric } from '../rag/pg-vector-store.js';
+import type {
+  PgFullTextOptions,
+  PgVectorColumns,
+  PgVectorMetric,
+  PgVectorStoreOptions,
+} from '../rag/pg-vector-store.js';
 import type { QdrantClientLike, QdrantMetric } from '../rag/qdrant-store.js';
 import type { RedisStreamClient } from '../redis-stream-client.js';
 import type { ActorDirectory } from '../spi/actor-directory.js';
@@ -359,12 +365,31 @@ export interface PgVectorRetrieverConfig {
   connection?: string;
   /** Chunk table name. Default `agent_rag_chunks`. Validated against a strict identifier regex. */
   table?: string;
-  /** Embedding width — must match the model (e.g. 1536 for text-embedding-3-small). Default 1536. */
-  dimension?: number;
+  /**
+   * Embedding width — must match the model (e.g. 1536 for text-embedding-3-small). Default 1536. A list
+   * makes a mixed-dimension table (one partial HNSW index per width); see `PgVectorStoreOptions`.
+   */
+  dimension?: number | readonly number[];
   /** Similarity metric / distance operator (`cosine` default, `l2`, `inner`). */
   metric?: PgVectorMetric;
   /** Override the physical column names (each validated). */
   columns?: PgVectorColumns;
+  /** Allow chunks without an embedding (`embedding: []` → `NULL`). Default `false`. */
+  nullableEmbeddings?: boolean;
+  /** pgvector ≥ 0.8 iterative index scan for filtered searches. Default off. */
+  iterativeScan?: PgVectorStoreOptions['iterativeScan'];
+  /** `hnsw.ef_search` for searches. */
+  efSearch?: number;
+  /** Rows per multi-row upsert statement. Default 100. */
+  upsertBatchSize?: number;
+  /**
+   * Add a Postgres full-text leg: the store becomes a `PgLexicalVectorStore` and the retriever a
+   * `HybridRetriever` fusing vector + full-text search with reciprocal rank fusion (`{}` for the
+   * defaults: `simple` config over `to_tsvector(text)`). Needs the GIN index — `ensureSchema` or the
+   * migration creates it. Default off (vector search only). `minScore` then applies to neither leg: a
+   * fused rank is not a similarity.
+   */
+  fullText?: PgFullTextOptions & { hybrid?: HybridRetrieverOptions };
   /**
    * Provision the `vector` extension, table, and index at boot (idempotent DDL). Handy for tests/scripts;
    * production should run the bundled migration instead. Default `false`.
@@ -448,7 +473,9 @@ export const retrievers = {
    */
   pgvector(config: PgVectorRetrieverConfig): RetrieverFactory {
     return async (ctx) => {
-      const { PgVectorStore, PgVectorRetriever } = await import('../rag/pg-vector-store.js');
+      const { PgLexicalVectorStore, PgVectorStore, PgVectorRetriever } = await import(
+        '../rag/pg-vector-store.js'
+      );
       const { ingestDocuments } = await import('../rag/ingest.js');
       const embedder =
         typeof config.embedder === 'function' ? await config.embedder() : config.embedder;
@@ -460,12 +487,26 @@ export const retrievers = {
             ? dbService.connection(config.connection)
             : dbService) as unknown as LucidDatabaseLike;
         })());
-      const store = new PgVectorStore(db, {
+      const storeOptions: PgVectorStoreOptions = {
         ...(config.table !== undefined ? { table: config.table } : {}),
         ...(config.dimension !== undefined ? { dimension: config.dimension } : {}),
         ...(config.metric !== undefined ? { metric: config.metric } : {}),
         ...(config.columns !== undefined ? { columns: config.columns } : {}),
-      });
+        ...(config.nullableEmbeddings !== undefined
+          ? { nullableEmbeddings: config.nullableEmbeddings }
+          : {}),
+        ...(config.iterativeScan !== undefined ? { iterativeScan: config.iterativeScan } : {}),
+        ...(config.efSearch !== undefined ? { efSearch: config.efSearch } : {}),
+        ...(config.upsertBatchSize !== undefined
+          ? { upsertBatchSize: config.upsertBatchSize }
+          : {}),
+      };
+      const { hybrid: hybridOptions, ...fullText } = config.fullText ?? {};
+      const lexical =
+        config.fullText !== undefined
+          ? new PgLexicalVectorStore(db, { ...storeOptions, fullText })
+          : undefined;
+      const store = lexical ?? new PgVectorStore(db, storeOptions);
       if (config.ensureSchema === true) {
         await store.ensureSchema();
       }
@@ -476,6 +517,14 @@ export const retrievers = {
           ...(config.chunkSize !== undefined ? { chunkSize: config.chunkSize } : {}),
           ...(config.overlap !== undefined ? { overlap: config.overlap } : {}),
         });
+      }
+      if (lexical !== undefined) {
+        const { HybridRetriever } = await import('../rag/hybrid-retriever.js');
+        const { LexicalRetriever } = await import('../rag/lexical-retriever.js');
+        return new HybridRetriever(
+          [new PgVectorRetriever(embedder, lexical), new LexicalRetriever(lexical)],
+          hybridOptions,
+        );
       }
       return new PgVectorRetriever(embedder, store);
     };

@@ -6,7 +6,13 @@ import type {
   LucidInsertBuilderLike,
   LucidQueryBuilderLike,
 } from '../src/index.js';
-import { PgVectorStore } from '../src/index.js';
+import {
+  EmbeddingRetriever,
+  HybridRetriever,
+  LexicalRetriever,
+  PgLexicalVectorStore,
+  PgVectorStore,
+} from '../src/index.js';
 
 /**
  * Live-Postgres verification: the REAL {@link PgVectorStore} emitting its REAL SQL against a real
@@ -39,48 +45,64 @@ function literal(value: unknown): string {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
+/** Render `?` bindings as literals; a row-returning statement is wrapped to come back as one JSON document. */
+function render(sql: string, bindings: unknown[]): { sql: string; returnsRows: boolean } {
+  const placeholders = (sql.match(/\?/g) ?? []).length;
+  if (placeholders !== bindings.length) {
+    throw new Error(
+      `binding count mismatch: ${placeholders} placeholders, ${bindings.length} bindings`,
+    );
+  }
+  let index = 0;
+  const rendered = sql.replace(/\?/g, () => literal(bindings[index++]));
+  // Statements that return rows are wrapped so psql hands back one JSON document. A data-modifying
+  // CTE is legal in `WITH`, which is what makes `UPDATE … RETURNING` and `DELETE … RETURNING` work
+  // here alongside plain `SELECT`s.
+  const returnsRows = /\bRETURNING\b/i.test(rendered) || /^\s*SELECT\b/i.test(rendered);
+  return {
+    sql: returnsRows
+      ? `WITH __q AS (${rendered}) SELECT COALESCE(json_agg(__q), '[]'::json)::text FROM __q`
+      : rendered,
+    returnsRows,
+  };
+}
+
+/**
+ * Run `statement` in one psql session, preceded by `before` and followed by `after` (one `-c` each),
+ * and return only `statement`'s output: the others write to /dev/null (`\o`).
+ */
+function psql(statement: string, before: string[] = [], after: string[] = []): string {
+  const quiet = (statements: string[]) =>
+    statements.length === 0 ? [] : ['\\o /dev/null', ...statements, '\\o'];
+  const commands = [...quiet(before), statement, ...quiet(after)];
+  return execFileSync(
+    'docker',
+    [
+      'exec',
+      '-i',
+      CONTAINER ?? '',
+      'psql',
+      '-U',
+      PG_USER,
+      '-d',
+      PG_DB,
+      '-qtA',
+      '-v',
+      'ON_ERROR_STOP=1',
+      ...commands.flatMap((command) => ['-c', command]),
+    ],
+    { encoding: 'utf8' },
+  );
+}
+
 class PsqlDockerDb implements LucidDatabaseLike {
   readonly statements: string[] = [];
 
   async rawQuery(sql: string, bindings: unknown[] = []): Promise<unknown> {
-    const placeholders = (sql.match(/\?/g) ?? []).length;
-    if (placeholders !== bindings.length) {
-      throw new Error(
-        `binding count mismatch: ${placeholders} placeholders, ${bindings.length} bindings`,
-      );
-    }
-    let index = 0;
-    const rendered = sql.replace(/\?/g, () => literal(bindings[index++]));
-    this.statements.push(rendered);
-
-    // Statements that return rows are wrapped so psql hands back one JSON document. A data-modifying
-    // CTE is legal in `WITH`, which is what makes `UPDATE … RETURNING` and `DELETE … RETURNING` work
-    // here alongside plain `SELECT`s.
-    const returnsRows = /\bRETURNING\b/i.test(rendered) || /^\s*SELECT\b/i.test(rendered);
-    const wrapped = returnsRows
-      ? `WITH __q AS (${rendered}) SELECT COALESCE(json_agg(__q), '[]'::json)::text FROM __q`
-      : rendered;
-
-    const out = execFileSync(
-      'docker',
-      [
-        'exec',
-        '-i',
-        CONTAINER ?? '',
-        'psql',
-        '-U',
-        PG_USER,
-        '-d',
-        PG_DB,
-        '-tA',
-        '-v',
-        'ON_ERROR_STOP=1',
-        '-c',
-        wrapped,
-      ],
-      { encoding: 'utf8' },
-    );
-    if (!returnsRows) return [];
+    const statement = render(sql, bindings);
+    this.statements.push(statement.sql);
+    const out = psql(statement.sql);
+    if (!statement.returnsRows) return [];
     return JSON.parse(out.trim() || '[]') as Record<string, unknown>[];
   }
 
@@ -90,8 +112,24 @@ class PsqlDockerDb implements LucidDatabaseLike {
   table(_table: string): LucidInsertBuilderLike {
     throw new Error('unused');
   }
-  transaction<T>(_callback: (trx: LucidClientLike) => Promise<T>): Promise<T> {
-    throw new Error('unused');
+  /**
+   * A transaction without a persistent connection: every statement issued inside it runs as
+   * `BEGIN; <every earlier statement of this transaction>; <this one>; COMMIT` in one psql session.
+   * Replaying the prefix is sound for what the store sends here (`set_config` + a read).
+   */
+  transaction<T>(callback: (trx: LucidClientLike) => Promise<T>): Promise<T> {
+    const prefix: string[] = [];
+    const trx = {
+      rawQuery: async (sql: string, bindings: unknown[] = []): Promise<unknown> => {
+        const statement = render(sql, bindings);
+        this.statements.push(statement.sql);
+        const out = psql(statement.sql, ['BEGIN', ...prefix], ['COMMIT']);
+        prefix.push(statement.sql);
+        if (!statement.returnsRows) return [];
+        return JSON.parse(out.trim() || '[]') as Record<string, unknown>[];
+      },
+    };
+    return callback(trx as unknown as LucidClientLike);
   }
 }
 
@@ -279,5 +317,111 @@ describe.skipIf(CONTAINER === undefined)('PgVectorStore against a live Postgres 
     const before = db.statements.length;
     expect(await store.removeWhere({ audience: ['public'] })).toBe(2);
     expect(db.statements.length - before).toBe(1);
+  });
+});
+
+describe.skipIf(CONTAINER === undefined)('pgvector upgrades against a live Postgres', () => {
+  const MIXED = `agent_rag_mixed_${process.pid}`;
+  const LEXICAL = `agent_rag_lexical_${process.pid}`;
+  let db: PsqlDockerDb;
+
+  beforeAll(() => {
+    db = new PsqlDockerDb();
+  });
+
+  afterAll(async () => {
+    if (db !== undefined) {
+      await db.rawQuery(`DROP TABLE IF EXISTS ${MIXED}`);
+      await db.rawQuery(`DROP TABLE IF EXISTS ${LEXICAL}`);
+    }
+  });
+
+  it('mixed widths + NULL embeddings: batched upsert, per-width partial indexes, like-with-like search', async () => {
+    const store = new PgVectorStore(db, {
+      table: MIXED,
+      dimension: [2, 3],
+      nullableEmbeddings: true,
+      upsertBatchSize: 2,
+      iterativeScan: 'strict_order',
+      efSearch: 50,
+    });
+    await store.ensureSchema();
+    const NUL = String.fromCharCode(0);
+    await store.upsert([
+      { id: 'two-a', text: 'two a', embedding: [1, 0] },
+      { id: 'two-b', text: 'two b', embedding: [0, 1] },
+      { id: 'three-a', text: `three${NUL} a`, embedding: [1, 0, 0] },
+      { id: 'pending', text: 'no vector yet', embedding: [] },
+      { id: 'two-a', text: 'two a v2', embedding: [1, 0] },
+    ]);
+
+    const indexes = (await db.rawQuery(
+      `SELECT indexname FROM pg_indexes WHERE tablename = ? AND indexdef LIKE '%hnsw%' ORDER BY indexname`,
+      [MIXED],
+    )) as { indexname: string }[];
+    expect(indexes.map((row) => row.indexname)).toEqual([
+      `${MIXED}_embedding_2_idx`,
+      `${MIXED}_embedding_3_idx`,
+    ]);
+    const two = await store.search([1, 0], { topK: 10 });
+    expect(two.map((passage) => passage.id)).toEqual(['two-a', 'two-b']);
+    expect(two[0]!.text).toBe('two a v2');
+    const three = await store.search([1, 0, 0], { topK: 10 });
+    expect(three.map((passage) => [passage.id, passage.text])).toEqual([['three-a', 'three a']]);
+    expect(await store.search([1, 0, 0, 0], { topK: 10 })).toEqual([]);
+    // The iterative scan really ran inside the search's transaction (pgvector >= 0.8 in the image).
+    expect(db.statements.some((sql) => sql.includes("'hnsw.iterative_scan'"))).toBe(true);
+  });
+
+  it('full-text search: filtered, finds un-embedded chunks, any-word fallback, fuses in a hybrid', async () => {
+    const store = new PgLexicalVectorStore(db, {
+      table: LEXICAL,
+      dimension: 3,
+      nullableEmbeddings: true,
+    });
+    await store.ensureSchema();
+    await store.upsert([
+      {
+        id: 'warranty#0',
+        text: 'The solar panel warranty lasts twenty five years.',
+        embedding: [1, 0, 0],
+        metadata: { tenant: 't1' },
+      },
+      {
+        id: 'install#0',
+        text: 'Installation takes two days on a pitched roof.',
+        embedding: [],
+        metadata: { tenant: 't1' },
+      },
+      {
+        id: 'other#0',
+        text: 'Solar panel warranty for another tenant.',
+        embedding: [],
+        metadata: { tenant: 't2' },
+      },
+    ]);
+
+    const filtered = await store.searchText('solar warranty', {
+      topK: 5,
+      filter: { tenant: 't1' },
+    });
+    expect(filtered.map((passage) => passage.id)).toEqual(['warranty#0']);
+    expect((await store.searchText('pitched roof', { topK: 5 })).map((p) => p.id)).toEqual([
+      'install#0',
+    ]);
+    const fallback = await store.searchText('how many years does my inverter warranty last', {
+      topK: 5,
+      filter: { tenant: 't1' },
+    });
+    expect(fallback.map((passage) => passage.id)).toContain('warranty#0');
+    expect((await store.search([1, 0, 0], { topK: 5 })).map((p) => p.id)).toEqual(['warranty#0']);
+
+    const embedder = { embed: async (texts: string[]) => texts.map(() => [1, 0, 0]) };
+    const hybrid = new HybridRetriever([
+      new EmbeddingRetriever(embedder, store),
+      new LexicalRetriever(store),
+    ]);
+    const hits = await hybrid.retrieve('pitched roof installation', { topK: 3 });
+    expect(hits.map((passage) => passage.id)).toContain('install#0');
   });
 });

@@ -12,8 +12,11 @@ export {
   ingestDocuments,
 } from './ingest.js';
 export { KeywordRetriever, type KeywordRetrieverOptions } from './keyword-retriever.js';
+export { LexicalRetriever } from './lexical-retriever.js';
 export { cosineSimilarity, MemoryVectorStore } from './memory-vector-store.js';
 export {
+  type PgFullTextOptions,
+  PgLexicalVectorStore,
   type PgVectorColumns,
   type PgVectorMetric,
   PgVectorRetriever,
@@ -33,6 +36,8 @@ export {
   effectivePatchKeys,
   filterDeniesAll,
   type IndexedDocument,
+  isLexicalVectorStore,
+  type LexicalVectorStore,
   type MetadataPatch,
   UnsafeRemovalError,
   type VectorRecord,
