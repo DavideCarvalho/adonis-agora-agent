@@ -7,6 +7,7 @@ import type { AgentStore } from './spi/agent-store.js';
 import type { HistoryWindow } from './spi/history-window.js';
 import type { ModelProvider } from './spi/model-provider.js';
 import type { AgentPricingStore } from './spi/pricing-store.js';
+import type { InputProcessor, OutputProcessor } from './spi/processors.js';
 import type { QuotaStore } from './spi/quota-store.js';
 import type { Retriever } from './spi/retriever.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
@@ -171,6 +172,10 @@ export interface AgentDepsFactoryConfig {
    * normally sharing its resolver. Omit → no memory block and no `remember` tool for any agent.
    */
   memory?: MemoryConfig;
+  /** Shared input processors, run for every agent's turn — see `AgentLoopDeps.inputProcessors`. */
+  inputProcessors?: InputProcessor[];
+  /** Shared output processors, run for every agent's turn — see `AgentLoopDeps.outputProcessors`. */
+  outputProcessors?: OutputProcessor[];
   /** Name of the implicit default agent. Defaults to `'default'`. */
   defaultAgentName?: string;
 }
@@ -236,6 +241,12 @@ export class AgentDepsFactory {
         : {}),
       ...(this.config.skills !== undefined ? { skills: this.config.skills } : {}),
       ...(this.config.memory !== undefined ? { memory: this.config.memory } : {}),
+      ...(this.config.inputProcessors !== undefined
+        ? { inputProcessors: this.config.inputProcessors }
+        : {}),
+      ...(this.config.outputProcessors !== undefined
+        ? { outputProcessors: this.config.outputProcessors }
+        : {}),
       ...(toolAllowList !== undefined ? { toolAllowList } : {}),
       ...(definition?.maxDelegationDepth !== undefined
         ? { maxDelegationDepth: definition.maxDelegationDepth }

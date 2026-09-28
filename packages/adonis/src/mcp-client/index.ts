@@ -5,6 +5,9 @@ export type {
   McpLogger,
   McpServerConfig,
   McpStdioTransportConfig,
+  McpToolScreen,
+  McpToolScreenInput,
+  McpToolScreenVerdict,
   McpTransportConfig,
 } from './options.js';
 export { type McpInputSchemaOptions, mcpInputSchema } from './tool-input.js';

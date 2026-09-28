@@ -23,7 +23,8 @@
     "ai-sdk",
     "durable",
     "tanstack-intent",
-    "agora"
+    "agora",
+    "guardrails"
   ],
   "author": "Davi Carvalho <davi@goflip.ai>",
   "type": "module",
@@ -49,6 +50,11 @@
       "types": "./dist/src/mcp-client/index.d.ts",
       "import": "./dist/src/mcp-client/index.js",
       "default": "./dist/src/mcp-client/index.js"
+    },
+    "./guardrails": {
+      "types": "./dist/src/guardrails/index.d.ts",
+      "import": "./dist/src/guardrails/index.js",
+      "default": "./dist/src/guardrails/index.js"
     },
     "./mcp_provider": {
       "types": "./dist/providers/mcp_provider.d.ts",

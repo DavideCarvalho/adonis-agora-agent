@@ -4,6 +4,7 @@ import type { AgentStore } from './spi/agent-store.js';
 import type { HistoryWindow } from './spi/history-window.js';
 import type { ModelProvider } from './spi/model-provider.js';
 import type { AgentPricingStore } from './spi/pricing-store.js';
+import type { InputProcessor, OutputProcessor } from './spi/processors.js';
 import type { QuotaStore } from './spi/quota-store.js';
 import type { Retriever } from './spi/retriever.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
@@ -65,6 +66,10 @@ export interface AgentDeps {
    * tokens skills use. Omit → no memory block and no `remember` tool.
    */
   memory?: MemoryConfig;
+  /** Rewrite every prompt before each model call — see `AgentLoopDeps.inputProcessors`. */
+  inputProcessors?: InputProcessor[];
+  /** Rule on every step's answer — see `AgentLoopDeps.outputProcessors`. */
+  outputProcessors?: OutputProcessor[];
 }
 
 /** The UTC calendar day (`YYYY-MM-DD`) a run is accounted against — deterministic for quota/day. */

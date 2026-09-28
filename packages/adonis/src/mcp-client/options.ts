@@ -41,6 +41,31 @@ export interface McpLogger {
   warn(message: string): void;
 }
 
+/** A remote tool definition, as a screen sees it before the tool is imported. */
+export interface McpToolScreenInput {
+  /** The configured server's name. */
+  server: string;
+  /** The name on the server (before namespacing). */
+  name: string;
+  title?: string;
+  description?: string;
+  /** The tool's JSON Schema, as the server listed it — descriptions in it are read by the model too. */
+  inputSchema: unknown;
+}
+
+/** A screen's decision. `allowed: false` leaves the tool out of the catalog, with the reason logged. */
+export type McpToolScreenVerdict = { allowed: true } | { allowed: false; reason: string };
+
+/**
+ * Inspects a tool definition before it is imported — the seam for tool-poisoning checks
+ * (instructions hidden in a description or a parameter's description, which the model reads and
+ * people rarely do). `createGuardrails({ toolPoisoning: true }).screenTool` from
+ * `@adonis-agora/agent/guardrails` has this shape.
+ */
+export type McpToolScreen = (
+  tool: McpToolScreenInput,
+) => McpToolScreenVerdict | Promise<McpToolScreenVerdict>;
+
 /** One MCP server to import tools from, and the policy every tool it exports is imported under. */
 export interface McpServerConfig {
   /** Identifies the server in logs, and prefixes its tool names by default. */
@@ -94,6 +119,13 @@ export interface McpServerConfig {
    * does not backtrack, where the screen costs tools and buys nothing.
    */
   rejectUnsafePatterns?: boolean;
+  /**
+   * Screens each listed tool definition before it is imported; a refused tool is skipped (and
+   * logged), exactly like one whose schema will not compile. Runs on every import, so a server that
+   * changes a description after boot is screened again on refresh. A screen that THROWS skips the
+   * tool too: a check that could not run is not a pass.
+   */
+  screen?: McpToolScreen;
   /** What this client calls itself in the MCP handshake. Defaults to `adonis-agora-agent-mcp`. */
   clientInfo?: { name: string; version: string };
   /**
