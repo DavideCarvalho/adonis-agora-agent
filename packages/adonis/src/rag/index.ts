@@ -1,6 +1,7 @@
 export { type ChunkOptions, chunkText } from './chunk.js';
 export { EmbeddingRetriever } from './embedding-retriever.js';
 export { matchesFilter } from './filter.js';
+export { HttpReranker, type HttpRerankerOptions } from './http-reranker.js';
 export { HybridRetriever, type HybridRetrieverOptions } from './hybrid-retriever.js';
 export {
   type ChunkRecord,
@@ -14,6 +15,11 @@ export {
 export { KeywordRetriever, type KeywordRetrieverOptions } from './keyword-retriever.js';
 export { LexicalRetriever } from './lexical-retriever.js';
 export { cosineSimilarity, MemoryVectorStore } from './memory-vector-store.js';
+export {
+  HttpModelError,
+  type OpenAiEmbeddingsOptions,
+  openAiEmbeddings,
+} from './openai-embeddings.js';
 export {
   type PgFullTextOptions,
   PgLexicalVectorStore,
