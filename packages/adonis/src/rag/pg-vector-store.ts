@@ -4,6 +4,7 @@ import type { LucidRawRunner } from '../stores/lucid.js';
 import { EmbeddingRetriever } from './embedding-retriever.js';
 import type {
   IndexedDocument,
+  LexicalVectorStore,
   MetadataPatch,
   VectorRecord,
   VectorSearchOptions,
@@ -40,8 +41,40 @@ export interface PgVectorColumns {
 export interface PgVectorStoreOptions {
   /** Table name. Default `agent_rag_chunks`. Validated against the identifier regex. */
   table?: string;
-  /** Embedding width — must match your model (e.g. 1536 for text-embedding-3-small). Default 1536. */
-  dimension?: number;
+  /**
+   * Embedding width — must match your model (e.g. 1536 for text-embedding-3-small). Default 1536.
+   *
+   * Pass a **list** to let several models' vectors share one table (mixed dimensions — say, while
+   * migrating from a 768-wide local model to a 1536-wide hosted one): the column becomes an untyped
+   * `vector`, the schema gets one *partial* HNSW index per listed width
+   * (`((embedding::vector(n))) … WHERE vector_dims(embedding) = n`), and `search` only compares the
+   * query against vectors of its own width, through that width's index. A width that is not listed is
+   * still answered — exactly, by a sequential scan. Put the model in the chunk metadata and filter on
+   * it when two models share a width.
+   */
+  dimension?: number | readonly number[];
+  /**
+   * Allow chunks with no embedding (`embedding: []` on upsert is stored as `NULL`): index text first
+   * and embed later, or keep full-text-only chunks. `search` skips them; the lexical leg of
+   * {@link PgLexicalVectorStore} still finds them. Default `false` — the column stays `NOT NULL`. Only
+   * changes the DDL for a table that does not exist yet.
+   */
+  nullableEmbeddings?: boolean;
+  /**
+   * pgvector ≥ 0.8 iterative index scans for `search`: keep walking the HNSW graph until enough rows
+   * pass the metadata filter, instead of returning fewer than `topK` when a selective filter (one
+   * tenant of many) rejects most of what the index produced. Applied with `SET LOCAL` inside a
+   * transaction, so it needs a handle with `transaction` (Lucid's `db` has one); silently skipped on an
+   * older pgvector or a runner without transactions. Default off.
+   */
+  iterativeScan?: 'strict_order' | 'relaxed_order';
+  /** `hnsw.ef_search` for `search` (candidate list size; pgvector's default is 40). Needs `transaction`. */
+  efSearch?: number;
+  /**
+   * Rows per multi-row `INSERT … ON CONFLICT` statement in `upsert`. Default 100. Duplicate ids in one
+   * `upsert` call collapse to the last occurrence (as the old row-by-row loop left them).
+   */
+  upsertBatchSize?: number;
   /** Similarity metric / distance operator. Default `cosine`. */
   metric?: PgVectorMetric;
   /** Override the physical column names (each validated). */
@@ -59,26 +92,26 @@ interface MetricSpec {
    * `?::vector` placeholder. Cosine maps distance `d∈[0,2]` to similarity `1-d`; L2/inner negate the
    * distance so the returned `score` stays monotonically increasing in relevance across all metrics.
    */
-  score(embeddingColumn: string): string;
+  score(embeddingColumn: string, vectorType?: string): string;
 }
 
 const METRICS: Record<PgVectorMetric, MetricSpec> = {
   cosine: {
     operator: '<=>',
     opclass: 'vector_cosine_ops',
-    score: (col) => `1 - (${col} <=> ?::vector)`,
+    score: (col, type = 'vector') => `1 - (${col} <=> ?::${type})`,
   },
   l2: {
     operator: '<->',
     opclass: 'vector_l2_ops',
-    score: (col) => `-(${col} <-> ?::vector)`,
+    score: (col, type = 'vector') => `-(${col} <-> ?::${type})`,
   },
   inner: {
     // pgvector's `<#>` returns the NEGATIVE inner product, so `-(a <#> b)` recovers the inner product
     // and `ORDER BY a <#> b ASC` ranks the largest inner product first — consistent with the others.
     operator: '<#>',
     opclass: 'vector_ip_ops',
-    score: (col) => `-(${col} <#> ?::vector)`,
+    score: (col, type = 'vector') => `-(${col} <#> ?::${type})`,
   },
 };
 
@@ -271,18 +304,44 @@ function documentIdExpr(col: string): string {
  * `vector` extension, the chunk table, and the metric's index.
  */
 export class PgVectorStore implements VectorStore {
-  private readonly table: string;
-  private readonly dimension: number;
+  protected readonly table: string;
+  /** The single width (fixed-dimension table), or `undefined` for a mixed-dimension table. */
+  private readonly dimension: number | undefined;
+  /** The widths with a partial HNSW index, for a mixed-dimension table. */
+  private readonly indexedDimensions: readonly number[];
+  private readonly nullableEmbeddings: boolean;
+  private readonly iterativeScan: PgVectorStoreOptions['iterativeScan'];
+  private readonly efSearch: number | undefined;
+  private readonly upsertBatchSize: number;
+  private iterativeScanSupport: Promise<boolean> | undefined;
   private readonly metric: MetricSpec;
   private readonly metricName: PgVectorMetric;
-  private readonly col: Required<PgVectorColumns>;
+  protected readonly col: Required<PgVectorColumns>;
 
   constructor(
-    private readonly db: LucidRawRunner,
+    protected readonly db: LucidRawRunner,
     options: PgVectorStoreOptions = {},
   ) {
     this.table = assertIdentifier(options.table ?? 'agent_rag_chunks', 'table');
-    this.dimension = options.dimension ?? 1536;
+    const dimension = options.dimension ?? 1536;
+    if (typeof dimension === 'number') {
+      this.dimension = dimension;
+      this.indexedDimensions = [];
+    } else {
+      for (const width of dimension) {
+        if (!Number.isInteger(width) || width <= 0) {
+          throw new Error(
+            `Invalid pgvector dimension ${String(width)}: must be a positive integer`,
+          );
+        }
+      }
+      this.dimension = undefined;
+      this.indexedDimensions = [...new Set(dimension)];
+    }
+    this.nullableEmbeddings = options.nullableEmbeddings ?? false;
+    this.iterativeScan = options.iterativeScan;
+    this.efSearch = options.efSearch;
+    this.upsertBatchSize = Math.max(1, Math.floor(options.upsertBatchSize ?? 100));
     this.metricName = options.metric ?? 'cosine';
     this.metric = METRICS[this.metricName];
     const columns = options.columns ?? {};
@@ -308,18 +367,32 @@ export class PgVectorStore implements VectorStore {
   /** The `CREATE EXTENSION` / `CREATE TABLE` / `CREATE INDEX` statements {@link ensureSchema} issues. */
   schemaStatements(): string[] {
     const c = this.col;
-    return [
+    const mixed = this.dimension === undefined;
+    const statements = [
       'CREATE EXTENSION IF NOT EXISTS vector',
       `CREATE TABLE IF NOT EXISTS ${this.table} (
         ${c.id} TEXT PRIMARY KEY,
         ${c.text} TEXT NOT NULL,
         ${c.source} TEXT,
         ${c.metadata} JSONB,
-        ${c.embedding} vector(${this.dimension}) NOT NULL
+        ${c.embedding} ${mixed ? 'vector' : `vector(${this.dimension})`}${this.nullableEmbeddings ? '' : ' NOT NULL'}
       )`,
-      `CREATE INDEX IF NOT EXISTS ${this.table}_${c.embedding}_idx
-        ON ${this.table} USING hnsw (${c.embedding} ${this.metric.opclass})`,
     ];
+    if (mixed) {
+      for (const width of this.indexedDimensions) {
+        statements.push(
+          `CREATE INDEX IF NOT EXISTS ${this.table}_${c.embedding}_${width}_idx
+        ON ${this.table} USING hnsw ((${c.embedding}::vector(${width})) ${this.metric.opclass})
+        WHERE vector_dims(${c.embedding}) = ${width}`,
+        );
+      }
+    } else {
+      statements.push(
+        `CREATE INDEX IF NOT EXISTS ${this.table}_${c.embedding}_idx
+        ON ${this.table} USING hnsw (${c.embedding} ${this.metric.opclass})`,
+      );
+    }
+    return statements;
   }
 
   /**
@@ -328,25 +401,45 @@ export class PgVectorStore implements VectorStore {
    * (`0x00`) in `text`/`jsonb` outright, while upstream sources (PDF extraction, Qdrant) happily carry
    * it, so an unstripped chunk would otherwise fail this INSERT with `invalid byte sequence for encoding
    * "UTF8": 0x00`. The embedding is untouched — it is never text/jsonb.
+   *
+   * Written as multi-row `INSERT … ON CONFLICT` statements of {@link PgVectorStoreOptions.upsertBatchSize}
+   * rows each (one round trip per batch instead of per chunk). An empty `embedding` is written as `NULL`.
    */
   async upsert(records: VectorRecord[]): Promise<void> {
-    const c = this.col;
+    // The id is stripped before de-duplication, so two ids differing only by a NUL byte are the one
+    // row they would be stored as. One statement can't touch a row twice (`ON CONFLICT DO UPDATE
+    // command cannot affect row a second time`), so duplicates collapse to the LAST occurrence — the
+    // same last-write-wins the old row-by-row loop had.
+    const byId = new Map<string, VectorRecord>();
     for (const record of records) {
+      const id = stripNulBytes(record.id);
+      byId.delete(id);
+      byId.set(id, { ...record, id });
+    }
+    const unique = [...byId.values()];
+    const c = this.col;
+    for (let start = 0; start < unique.length; start += this.upsertBatchSize) {
+      const batch = unique.slice(start, start + this.upsertBatchSize);
+      const bindings: unknown[] = [];
+      for (const record of batch) {
+        bindings.push(
+          record.id,
+          stripNulBytes(record.text),
+          stripNulBytes(record.source ?? null),
+          record.metadata !== undefined ? JSON.stringify(stripNulBytes(record.metadata)) : null,
+          // An empty embedding is a chunk with no vector yet — NULL (see `nullableEmbeddings`).
+          record.embedding.length > 0 ? toVectorLiteral(record.embedding) : null,
+        );
+      }
       await this.db.rawQuery(
         `INSERT INTO ${this.table} (${c.id}, ${c.text}, ${c.source}, ${c.metadata}, ${c.embedding})
-         VALUES (?, ?, ?, ?::jsonb, ?::vector)
+         VALUES ${batch.map(() => '(?, ?, ?, ?::jsonb, ?::vector)').join(', ')}
          ON CONFLICT (${c.id}) DO UPDATE SET
            ${c.text} = EXCLUDED.${c.text},
            ${c.source} = EXCLUDED.${c.source},
            ${c.metadata} = EXCLUDED.${c.metadata},
            ${c.embedding} = EXCLUDED.${c.embedding}`,
-        [
-          stripNulBytes(record.id),
-          stripNulBytes(record.text),
-          stripNulBytes(record.source ?? null),
-          record.metadata !== undefined ? JSON.stringify(stripNulBytes(record.metadata)) : null,
-          toVectorLiteral(record.embedding),
-        ],
+        bindings,
       );
     }
   }
@@ -472,10 +565,32 @@ export class PgVectorStore implements VectorStore {
     return normalizeRows(raw).length;
   }
 
+  /**
+   * Nearest first by the configured metric. On a mixed-dimension table only vectors as wide as the
+   * query are compared (through that width's partial index when it has one); a chunk without an
+   * embedding is never returned.
+   */
   async search(embedding: number[], options: VectorSearchOptions): Promise<Passage[]> {
+    if (embedding.length === 0) {
+      return [];
+    }
     const c = this.col;
     const vector = toVectorLiteral(embedding);
-    const scoreExpr = this.metric.score(c.embedding);
+    // A fixed-width table keeps the exact expression its index was built on (`embedding`); a mixed one
+    // casts both sides to the query's width so the planner can match that width's partial index.
+    let vectorType = 'vector';
+    const shapeClauses: string[] = [];
+    if (this.dimension === undefined) {
+      const width = embedding.length;
+      if (this.indexedDimensions.includes(width)) {
+        vectorType = `vector(${width})`;
+      }
+      shapeClauses.push(`${c.embedding} IS NOT NULL`, `vector_dims(${c.embedding}) = ${width}`);
+    } else if (this.nullableEmbeddings) {
+      shapeClauses.push(`${c.embedding} IS NOT NULL`);
+    }
+    const column = vectorType === 'vector' ? c.embedding : `(${c.embedding}::${vectorType})`;
+    const scoreExpr = this.metric.score(column, vectorType);
     const meta = buildMetadataWhere(options.filter, c.metadata);
     // Combine the metadata predicate with an optional minScore relevance floor. Filtering the score
     // expression in SQL (not in JS after the fact) keeps the floor applied BEFORE `LIMIT`, so the K
@@ -488,6 +603,7 @@ export class PgVectorStore implements VectorStore {
       clauses.push(meta.sql.slice('WHERE '.length));
       whereBindings.push(...meta.bindings);
     }
+    clauses.push(...shapeClauses);
     if (options.minScore !== undefined) {
       // The score expression carries its own `?::vector`, so the embedding is bound again here.
       clauses.push(`${scoreExpr} >= ?`);
@@ -498,27 +614,193 @@ export class PgVectorStore implements VectorStore {
     // then the optional filter/minScore clause(s), then the ORDER BY embedding, then the LIMIT. The
     // embedding is bound once per `?::vector` because a positional `?` cannot be reused like a `$1`.
     const bindings: unknown[] = [vector, ...whereBindings, vector, options.topK];
-    const raw = await this.db.rawQuery(
-      `SELECT ${c.id} AS id, ${c.text} AS text, ${c.source} AS source, ${c.metadata} AS metadata,
+    const sql = `SELECT ${c.id} AS id, ${c.text} AS text, ${c.source} AS source, ${c.metadata} AS metadata,
               ${scoreExpr} AS score
        FROM ${this.table}
        ${whereSql}
-       ORDER BY ${c.embedding} ${this.metric.operator} ?::vector
-       LIMIT ?`,
-      bindings,
-    );
-    return normalizeRows(raw).map((row) => {
-      const metadata = parseMetadata(row.metadata);
-      const source = row.source;
-      return {
-        id: String(row.id),
-        text: String(row.text),
-        score: Number(row.score),
-        ...(source !== null && source !== undefined ? { source: String(source) } : {}),
-        ...(metadata !== undefined ? { metadata } : {}),
-      };
+       ORDER BY ${column} ${this.metric.operator} ?::${vectorType}
+       LIMIT ?`;
+    const raw = await this.withSearchSettings((runner) => runner.rawQuery(sql, bindings));
+    return normalizeRows(raw).map(toPassage);
+  }
+
+  /** Run a read with the configured HNSW settings `SET LOCAL` in one transaction, when possible. */
+  private async withSearchSettings(
+    read: (runner: LucidRawRunner) => Promise<unknown>,
+  ): Promise<unknown> {
+    const transaction = (this.db as Partial<LucidTransactionRunner>).transaction;
+    if (typeof transaction !== 'function') {
+      return read(this.db);
+    }
+    const iterative = this.iterativeScan !== undefined && (await this.supportsIterativeScan());
+    if (!iterative && this.efSearch === undefined) {
+      return read(this.db);
+    }
+    return transaction.call(this.db, async (trx) => {
+      // Lucid's transaction client is a full query client (it has `rawQuery`); the structural type
+      // this file sees only promises `from`/`table`, hence the check.
+      const runner = trx as Partial<LucidRawRunner>;
+      if (typeof runner.rawQuery !== 'function') {
+        return read(this.db);
+      }
+      const tx = runner as LucidRawRunner;
+      if (iterative) {
+        await tx.rawQuery(`SELECT set_config('hnsw.iterative_scan', ?, true)`, [
+          this.iterativeScan as string,
+        ]);
+      }
+      if (this.efSearch !== undefined) {
+        await tx.rawQuery(`SELECT set_config('hnsw.ef_search', ?, true)`, [String(this.efSearch)]);
+      }
+      return read(tx);
     });
   }
+
+  /** `hnsw.iterative_scan` exists from pgvector 0.8.0; setting it on an older one is an error. */
+  private supportsIterativeScan(): Promise<boolean> {
+    this.iterativeScanSupport ??= this.db
+      .rawQuery(`SELECT extversion FROM pg_extension WHERE extname = 'vector'`)
+      .then((raw) => {
+        const version = String(normalizeRows(raw)[0]?.extversion ?? '0.0');
+        const [major = 0, minor = 0] = version.split('.').map(Number);
+        return major > 0 || minor >= 8;
+      })
+      .catch(() => false);
+    return this.iterativeScanSupport;
+  }
+}
+
+/** Where the lexical leg of a {@link PgLexicalVectorStore} reads its `tsvector` from. */
+export interface PgFullTextOptions {
+  /**
+   * Text-search configuration (`simple`, `english`, `portuguese`, …). Default `simple` — no stemming
+   * or stop words, so it works for any language and matches exact terms. Must be the configuration
+   * the index was built with, or Postgres cannot use the index and scans the table.
+   */
+  config?: string;
+  /**
+   * A `tsvector` column you maintain yourself (typically `GENERATED ALWAYS AS (…) STORED` in a
+   * migration, e.g. weighting a title above the body) with its own GIN index. When omitted the store
+   * searches `to_tsvector(config, text)`, and {@link PgVectorStore.schemaStatements} adds a GIN
+   * expression index over exactly that.
+   */
+  column?: string;
+  /**
+   * When the query matches nothing as a whole (`websearch_to_tsquery`: every word must appear), retry
+   * with any word (`w1 | w2 | …`, at most 24 distinct words) so a long natural-language question still
+   * finds the chunks sharing its rare terms. Default `true`.
+   */
+  anyTermFallback?: boolean;
+}
+
+/**
+ * {@link PgVectorStore} plus Postgres full-text search: a {@link LexicalVectorStore}, so a
+ * {@link import('./lexical-retriever.js').LexicalRetriever} and a
+ * {@link import('./hybrid-retriever.js').HybridRetriever} can fuse the dense and lexical legs over the
+ * same rows and ids. `retrievers.pgvector({ fullText: {} })` wires exactly that.
+ *
+ * Ranking is `ts_rank_cd` (cover density); the query goes through `websearch_to_tsquery` (quoted
+ * phrases, `-exclusions`, `or`), falling back to any word (see {@link PgFullTextOptions.anyTermFallback}).
+ *
+ * A separate class rather than a method on {@link PgVectorStore} on purpose: full-text search needs a
+ * GIN index, which on a populated table belongs in a migration you run and watch (`CREATE INDEX` in
+ * `ensureSchema` takes a write lock at boot), and a store that silently grew `searchText` on upgrade
+ * would be picked up by every `isLexicalVectorStore` check and scan an unindexed table.
+ */
+export class PgLexicalVectorStore extends PgVectorStore implements LexicalVectorStore {
+  private readonly tsConfig: string;
+  private readonly tsColumn: string | undefined;
+  private readonly anyTermFallback: boolean;
+
+  constructor(
+    db: LucidRawRunner,
+    options: PgVectorStoreOptions & { fullText?: PgFullTextOptions } = {},
+  ) {
+    super(db, options);
+    this.tsConfig = assertIdentifier(options.fullText?.config ?? 'simple', 'text search config');
+    this.tsColumn =
+      options.fullText?.column !== undefined
+        ? assertIdentifier(options.fullText.column, 'column')
+        : undefined;
+    this.anyTermFallback = options.fullText?.anyTermFallback ?? true;
+  }
+
+  override schemaStatements(): string[] {
+    const statements = super.schemaStatements();
+    if (this.tsColumn === undefined) {
+      statements.push(
+        `CREATE INDEX IF NOT EXISTS ${this.table}_${this.col.text}_tsv_idx
+        ON ${this.table} USING gin (${this.tsvector()})`,
+      );
+    }
+    return statements;
+  }
+
+  /**
+   * Full-text search over the chunk text. `score` is a `ts_rank_cd` rank — not a similarity, and not on
+   * the vector leg's scale — so `minScore` is deliberately not applied here.
+   */
+  async searchText(query: string, options: VectorSearchOptions): Promise<Passage[]> {
+    if ((options.filter !== undefined && filterDeniesAll(options.filter)) || query.trim() === '') {
+      return [];
+    }
+    const all = await this.runTextSearch('websearch_to_tsquery', query, options);
+    if (all.length > 0 || !this.anyTermFallback) {
+      return all;
+    }
+    const terms = [...new Set(query.toLowerCase().match(/[\p{L}\p{N}]{2,}/gu) ?? [])].slice(0, 24);
+    if (terms.length < 2) {
+      return all;
+    }
+    // Terms are letters/digits only, so quoting each one is enough to make it a literal lexeme.
+    return this.runTextSearch('to_tsquery', terms.map((term) => `'${term}'`).join(' | '), options);
+  }
+
+  private async runTextSearch(
+    parser: 'websearch_to_tsquery' | 'to_tsquery',
+    query: string,
+    options: VectorSearchOptions,
+  ): Promise<Passage[]> {
+    const c = this.col;
+    const where = buildMetadataWhere(options.filter, c.metadata);
+    // The parsed query is a lateral relation, so the one `?` binding feeds both the match and the rank.
+    const clauses = [`${this.tsvector()} @@ __tsq.q`];
+    if (where.sql !== '') {
+      clauses.push(where.sql.slice('WHERE '.length));
+    }
+    const raw = await this.db.rawQuery(
+      `SELECT ${c.id} AS id, ${c.text} AS text, ${c.source} AS source, ${c.metadata} AS metadata,
+              ts_rank_cd(${this.tsvector()}, __tsq.q) AS score
+       FROM ${this.table}, ${parser}('${this.tsConfig}', ?) AS __tsq(q)
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY score DESC, ${c.id}
+       LIMIT ?`,
+      [query, ...where.bindings, options.topK],
+    );
+    return normalizeRows(raw).map(toPassage);
+  }
+
+  /** Must be character-for-character the index expression, or the planner won't use the index. */
+  private tsvector(): string {
+    return this.tsColumn ?? `to_tsvector('${this.tsConfig}'::regconfig, ${this.col.text})`;
+  }
+}
+
+/** A Lucid handle that can also open a transaction (Lucid's `db` / a connection). */
+interface LucidTransactionRunner extends LucidRawRunner {
+  transaction<T>(callback: (trx: unknown) => Promise<T>): Promise<T>;
+}
+
+function toPassage(row: Record<string, unknown>): Passage {
+  const metadata = parseMetadata(row.metadata);
+  const source = row.source;
+  return {
+    id: String(row.id),
+    text: String(row.text),
+    score: Number(row.score),
+    ...(source !== null && source !== undefined ? { source: String(source) } : {}),
+    ...(metadata !== undefined ? { metadata } : {}),
+  };
 }
 
 /**

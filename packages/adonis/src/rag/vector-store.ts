@@ -131,6 +131,25 @@ export interface VectorStore {
 }
 
 /**
+ * OPTIONAL capability: a store that can also search its own full-text index. Lets a
+ * {@link import('./lexical-retriever.js').LexicalRetriever} run the lexical half of a hybrid search
+ * over the SAME rows (and ids) the vector half searches — no second index to feed. Feature-detect with
+ * {@link isLexicalVectorStore}. {@link import('./pg-vector-store.js').PgLexicalVectorStore} implements it.
+ */
+export interface LexicalVectorStore extends VectorStore {
+  /**
+   * Rank chunks by full-text relevance to `query`, best first, honouring `filter` exactly as `search`
+   * does. `score` is the backend's text rank — not comparable to a vector similarity.
+   */
+  searchText(query: string, options: VectorSearchOptions): Promise<Passage[]>;
+}
+
+/** Whether `store` implements {@link LexicalVectorStore}. */
+export function isLexicalVectorStore(store: VectorStore): store is LexicalVectorStore {
+  return typeof (store as Partial<LexicalVectorStore>).searchText === 'function';
+}
+
+/**
  * A destructive call was refused because its scope could not be trusted. Thrown by
  * {@link VectorStore.removeWhere} — never for a filter that merely matched nothing (that is a legitimate
  * result of `0`), only for one that would have deleted *more* than the caller plausibly meant.
