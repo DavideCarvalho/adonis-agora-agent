@@ -1,6 +1,7 @@
 export {
   FakeEmbeddingProvider,
   FakeReranker,
+  hashedEmbeddings,
   inMemoryRetriever,
 } from './fake-embedding-provider.js';
 export {

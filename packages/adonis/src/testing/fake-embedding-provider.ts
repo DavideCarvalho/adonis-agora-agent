@@ -62,6 +62,43 @@ export class FakeEmbeddingProvider implements EmbeddingProvider {
   }
 }
 
+/**
+ * A deterministic hashed bag-of-words {@link EmbeddingProvider}: Unicode tokens (runs of any letter or
+ * digit, so "coração" and "東京" stay whole), FNV-1a buckets, L2-normalized. No model and no network —
+ * similar *wording* ranks close, meaning does not. For tests, and for a "no embedding model configured"
+ * dev mode that still exercises ingest → embed → retrieve end to end. Reports one token per word as
+ * usage (model `hashed-<dimensions>`), so the accounted path runs too.
+ *
+ * ```ts
+ * retriever: retrievers.pgvector({ embedder: hashedEmbeddings(256), dimension: 256 })
+ * ```
+ */
+export function hashedEmbeddings(dimensions = 64): EmbeddingProvider {
+  const tokensOf = (text: string) => text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const embed = async (texts: string[]): Promise<number[][]> =>
+    texts.map((text) => {
+      const vector = new Array<number>(dimensions).fill(0);
+      for (const token of tokensOf(text)) {
+        const index = hashToken(token, dimensions);
+        vector[index] = (vector[index] ?? 0) + 1;
+      }
+      const norm = Math.sqrt(vector.reduce((sum, value) => sum + value * value, 0)) || 1;
+      return vector.map((value) => value / norm);
+    });
+  return {
+    embed,
+    async embedWithUsage(texts: string[]): Promise<EmbeddingResult> {
+      return {
+        vectors: await embed(texts),
+        usage: {
+          inputTokens: texts.reduce((total, text) => total + tokensOf(text).length, 0),
+          modelId: `hashed-${dimensions}`,
+        },
+      };
+    },
+  };
+}
+
 /** FNV-1a-ish token hash folded into `[0, dimensions)`. Deterministic and dependency-free. */
 function hashToken(token: string, dimensions: number): number {
   let hash = 2166136261;
