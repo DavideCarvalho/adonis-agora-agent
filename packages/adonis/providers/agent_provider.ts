@@ -13,6 +13,7 @@ import {
   AgentRegistry,
   type AgentRunner,
   AgentService,
+  AgentSseEncoder,
   type AgentStore,
   type AttachmentStagingStore,
   DefaultToolAuthorizer,
@@ -39,6 +40,7 @@ import {
   registerFunctionalTool,
   registerToolsFromBarrel,
   resolveActorResolver,
+  type StreamProtocol,
   type TokenStreamSink,
   ToolRegistry,
   type ToolsBarrel,
@@ -431,6 +433,7 @@ export default class AgentProvider {
     const path = (config.path ?? 'agent').replace(/^\/+|\/+$/g, '');
     const p = (suffix: string) => `${path}/${suffix}`;
     const defaultAgentName = config.defaultAgent?.name ?? 'default';
+    const protocol: StreamProtocol = config.streamProtocol ?? 'legacy';
 
     // 1. POST /agent/chat — resolve actor, start the run, SSE-pipe the token stream. When the caller
     // continues an EXISTING thread (`body.threadId`), it must own it: otherwise an authenticated caller
@@ -458,7 +461,7 @@ export default class AgentProvider {
         ...(body.pageContext !== undefined ? { pageContext: body.pageContext } : {}),
         ...(body.attachments !== undefined ? { attachments: body.attachments } : {}),
       });
-      await this.#pipe(ctx, service, runId, threadId);
+      await this.#pipe(ctx, service, protocol, runId, threadId);
     });
 
     // 2. GET /agent/chat/:runId/stream — re-attach SSE. Authenticated: the actor resolver reads the
@@ -470,7 +473,7 @@ export default class AgentProvider {
       const runId = String(ctx.params.runId);
       const owner = await service.runOwner(runId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
-      await this.#pipe(ctx, service, runId);
+      await this.#pipe(ctx, service, protocol, runId);
     });
 
     // 3. POST /agent/chat/:runId/cancel — authenticated + owner-scoped (a caller cancels only its own
@@ -491,10 +494,12 @@ export default class AgentProvider {
     router.post(p('tool-call/approve'), async (ctx: HttpContext) => {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
-      const body = (ctx.request.body() ?? {}) as { runId: string; toolCallId: string };
-      const owner = await service.runOwner(body.runId);
+      const body = (ctx.request.body() ?? {}) as { runId?: string; toolCallId: string };
+      const runId = await this.#runOfToolCall(ctx, service, body);
+      if (runId === null) return;
+      const owner = await service.runOwner(runId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
-      await service.approve(body.runId, body.toolCallId);
+      await service.approve(runId, body.toolCallId);
       return ctx.response.json({ ok: true });
     });
 
@@ -503,13 +508,15 @@ export default class AgentProvider {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
       const body = (ctx.request.body() ?? {}) as {
-        runId: string;
+        runId?: string;
         toolCallId: string;
         reason?: string;
       };
-      const owner = await service.runOwner(body.runId);
+      const runId = await this.#runOfToolCall(ctx, service, body);
+      if (runId === null) return;
+      const owner = await service.runOwner(runId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
-      await service.reject(body.runId, body.toolCallId, body.reason);
+      await service.reject(runId, body.toolCallId, body.reason);
       return ctx.response.json({ ok: true });
     });
 
@@ -520,15 +527,17 @@ export default class AgentProvider {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
       const body = (ctx.request.body() ?? {}) as {
-        runId: string;
+        runId?: string;
         toolCallId: string;
         answers?: Record<string, string[]>;
       };
-      const owner = await service.runOwner(body.runId);
+      const runId = await this.#runOfToolCall(ctx, service, body);
+      if (runId === null) return;
+      const owner = await service.runOwner(runId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
       try {
         await service.answer({
-          runId: body.runId,
+          runId,
           toolCallId: body.toolCallId,
           answers: body.answers ?? {},
           answeredByRef: actor.id,
@@ -544,12 +553,14 @@ export default class AgentProvider {
     router.post(p('tool-call/skip'), async (ctx: HttpContext) => {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
-      const body = (ctx.request.body() ?? {}) as { runId: string; toolCallId: string };
-      const owner = await service.runOwner(body.runId);
+      const body = (ctx.request.body() ?? {}) as { runId?: string; toolCallId: string };
+      const runId = await this.#runOfToolCall(ctx, service, body);
+      if (runId === null) return;
+      const owner = await service.runOwner(runId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
       try {
         await service.skip({
-          runId: body.runId,
+          runId,
           toolCallId: body.toolCallId,
           answeredByRef: actor.id,
         });
@@ -1064,6 +1075,27 @@ export default class AgentProvider {
    * nothing is broken, the caller sent the wrong kind of reply for that call. The run is left parked
    * on the approval it was always waiting for, rather than recording a decision nobody made.
    */
+  /**
+   * The run a HITL decision addresses. `runId` is optional on the body: the shared React client
+   * (`@dudousxd/nestjs-agent-react`) names the call alone, since a tool call id is unique. Absent, it
+   * is read off the call's own row; an unknown call answers `404` and returns `null`. A supplied
+   * `runId` is trusted only as far as the owner check that follows it, exactly as before.
+   */
+  async #runOfToolCall(
+    ctx: HttpContext,
+    service: AgentService,
+    body: { runId?: string; toolCallId?: string },
+  ): Promise<string | null> {
+    if (typeof body.runId === 'string' && body.runId.length > 0) return body.runId;
+    const runId =
+      typeof body.toolCallId === 'string' ? await service.toolCallRun(body.toolCallId) : null;
+    if (runId === null) {
+      ctx.response.notFound({ error: 'Unknown tool call.' });
+      return null;
+    }
+    return runId;
+  }
+
   #conflictOnMismatch(ctx: HttpContext, error: unknown): void {
     if (!(error instanceof HumanReplyMismatchError)) {
       throw error;
@@ -1072,19 +1104,20 @@ export default class AgentProvider {
   }
 
   /**
-   * Pipe the run's live token stream to the client as SSE, reproducing the envelope byte-for-byte for
-   * text frames: `event: meta` (runId/threadId) → `data: {"delta":...}` per text frame → `event: done`.
-   * Sets the `X-Agent-Run-Id` / `X-Agent-Thread-Id` headers. Writes the raw Node response directly
-   * (Adonis has no SSE helper) and ends only on stream completion — the sink closes on run finish, not
-   * on suspend.
+   * Pipe the run's live token stream to the client as SSE: `event: meta` (runId/threadId), the run's
+   * frames, then `event: done`. Sets the `X-Agent-Run-Id` / `X-Agent-Thread-Id` headers. Writes the
+   * raw Node response directly (Adonis has no SSE helper) and ends only on stream completion — the
+   * sink closes on run finish, not on suspend.
    *
-   * The sink carries typed `StreamFrame`s (`{ t: 'text' }` | `{ t: 'component' }`); `frameToSse`
-   * serializes each frame to its wire envelope — text stays the byte-identical legacy
-   * `data: {"delta":...}` frame, components become `event: component\ndata: {name,data}`.
+   * The sink carries typed `StreamFrame`s; `protocol` picks the envelope they are written in. Under
+   * `'agent'` each frame becomes the `AgentStreamEvent`s it stands for (`AgentSseEncoder`) and a
+   * failure ends the stream with `event: error` instead of `done`; under `'legacy'` `frameToSse`
+   * writes the original `data: {"delta":...}` / `event: component` envelope byte-for-byte.
    */
   async #pipe(
     ctx: HttpContext,
     service: AgentService,
+    protocol: StreamProtocol,
     runId: string,
     threadId?: string,
   ): Promise<void> {
@@ -1099,8 +1132,19 @@ export default class AgentProvider {
     };
     raw.writeHead(200, headers);
     raw.write(`event: meta\ndata: ${JSON.stringify({ runId, threadId })}\n\n`);
+    if (protocol === 'agent') {
+      const encoder = new AgentSseEncoder();
+      for await (const frame of service.subscribe(runId)) {
+        const text = encoder.encode(frame);
+        if (text.length > 0) raw.write(text);
+      }
+      raw.write(encoder.close());
+      raw.end();
+      return;
+    }
     for await (const frame of service.subscribe(runId)) {
-      raw.write(frameToSse(frame));
+      const text = frameToSse(frame);
+      if (text.length > 0) raw.write(text);
     }
     raw.write('event: done\ndata: {}\n\n');
     raw.end();

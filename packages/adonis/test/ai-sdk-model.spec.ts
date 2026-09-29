@@ -87,9 +87,47 @@ describe('aiSdkModel', () => {
       sink,
     });
 
-    // Only text deltas reach the sink (reasoning-delta is ignored), and in stream order.
+    // Only text deltas reach the text channel, in stream order; reasoning rides its own frames.
     expect(sink.written).toBe('Hello');
     expect(result.text).toBe('Hello');
+  });
+
+  it('streams reasoning and tool-call announcements as agent-protocol frames', async () => {
+    streamTextMock.mockReturnValue(
+      fakeStreamResult({
+        stream: (async function* generate() {
+          yield { type: 'reasoning-delta', id: 'r', text: 'thinking' };
+          yield { type: 'tool-input-start', id: 'call-1', toolName: 'refund' };
+          yield { type: 'tool-input-delta', id: 'call-1', delta: '{"id":' };
+          yield { type: 'tool-call', toolCallId: 'call-1', toolName: 'refund', input: { id: 1 } };
+        })(),
+      }),
+    );
+    const frames: StreamFrame[] = [];
+    await aiSdkModel('openai/gpt-4o').runTurn({
+      system: '',
+      messages: [],
+      tools: [{ ...noJsonSchemaTool('refund'), kind: 'action' }],
+      sink: { write: (frame) => void frames.push(frame), end: () => {} },
+    });
+    expect(frames).toEqual([
+      { t: 'event', event: { kind: 'reasoning', text: 'thinking' } },
+      {
+        t: 'event',
+        event: { kind: 'tool-input-start', id: 'call-1', name: 'refund', toolKind: 'action' },
+      },
+      { t: 'event', event: { kind: 'tool-input-delta', id: 'call-1', delta: '{"id":' } },
+      {
+        t: 'event',
+        event: {
+          kind: 'tool-input-available',
+          id: 'call-1',
+          name: 'refund',
+          input: { id: 1 },
+          toolKind: 'action',
+        },
+      },
+    ]);
   });
 
   it('maps SDK tool calls to ToolCallRequest', async () => {

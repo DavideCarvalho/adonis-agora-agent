@@ -7,6 +7,7 @@ export {
   type AgentChatResult,
   type AgentChatResumeOptions,
   type AgentChatSendOptions,
+  AgentChatStreamError,
   createAgentChatClient,
 } from './chat-client.js';
 export {

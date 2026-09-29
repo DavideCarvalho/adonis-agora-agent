@@ -18,13 +18,17 @@ import type { ElicitationRequest } from '../elicitation.js';
 /** A rendered part of an assistant message: streamed text, or a named component with its props. */
 export type ChatPart =
   | { type: 'text'; text: string }
-  | { type: 'component'; name: string; data: unknown };
+  | { type: 'component'; name: string; data: unknown; id?: string };
 
 /** A decoded stream frame — the typed form of one SSE event. */
 export type ChatFrame =
   | { type: 'text'; delta: string }
-  | { type: 'component'; name: string; data: unknown }
+  | { type: 'component'; name: string; data: unknown; id?: string }
   | { type: 'meta'; runId?: string; threadId?: string }
+  /** A failed run (`event: error` under the agent protocol). Terminal, like `done`. */
+  | { type: 'error'; code: string; message: string }
+  /** An agent-protocol frame with no legacy counterpart — reasoning, tool calls, steps, title, … */
+  | { type: 'event'; event: Record<string, unknown> & { kind: string } }
   /**
    * A question set the run is parked on, with everything needed to answer it: `runId` and
    * `toolCallId` are the body `POST /agent/tool-call/answer` takes, and `request` is the form.
@@ -148,9 +152,24 @@ export function decodeFrame(event: SseEvent): ChatFrame | null {
       return null;
     }
   }
-  // Default event: a text delta.
+  if (event.event === 'error') {
+    try {
+      const parsed = JSON.parse(event.data) as { code?: unknown; message?: unknown };
+      return {
+        type: 'error',
+        code: typeof parsed?.code === 'string' ? parsed.code : 'run_failed',
+        message: typeof parsed?.message === 'string' ? parsed.message : 'The run failed.',
+      };
+    } catch {
+      return { type: 'error', code: 'run_failed', message: 'The run failed.' };
+    }
+  }
+  // Default event: a text delta (legacy envelope) or an agent-protocol event (`{ kind, … }`).
   try {
-    const parsed = JSON.parse(event.data) as { delta?: unknown } | null;
+    const parsed = JSON.parse(event.data) as { delta?: unknown; kind?: unknown } | null;
+    if (typeof parsed?.kind === 'string') {
+      return decodeAgentEvent(parsed as Record<string, unknown> & { kind: string });
+    }
     const delta = parsed?.delta;
     if (typeof delta !== 'string' || delta.length === 0) {
       return null;
@@ -162,6 +181,52 @@ export function decodeFrame(event: SseEvent): ChatFrame | null {
 }
 
 /**
+ * One frame of the agent stream protocol (`streamProtocol: 'agent'`) as the same {@link ChatFrame}s
+ * the legacy envelope decodes to, so a caller of this client reads either server the same way. A
+ * kind with no legacy counterpart (reasoning, tool calls, steps, title, …) arrives as
+ * `{ type: 'event' }`, which {@link foldPart} ignores and `onFrame` still sees.
+ */
+function decodeAgentEvent(event: Record<string, unknown> & { kind: string }): ChatFrame | null {
+  if (event.kind === 'text') {
+    return typeof event.text === 'string' && event.text.length > 0
+      ? { type: 'text', delta: event.text }
+      : null;
+  }
+  if (event.kind === 'ui' && typeof event.component === 'string') {
+    return {
+      type: 'component',
+      name: event.component,
+      data: event.props,
+      ...(typeof event.id === 'string' ? { id: event.id } : {}),
+    };
+  }
+  if (event.kind === 'elicitation' && typeof event.id === 'string') {
+    if (typeof event.runId !== 'string') return { type: 'event', event };
+    return {
+      type: 'elicitation',
+      runId: event.runId,
+      toolCallId: event.id,
+      request: event.request as ElicitationRequest,
+    };
+  }
+  if (
+    event.kind === 'approval-requested' &&
+    typeof event.id === 'string' &&
+    typeof event.runId === 'string' &&
+    typeof event.toolName === 'string'
+  ) {
+    return {
+      type: 'approval',
+      runId: event.runId,
+      toolCallId: event.id,
+      toolName: event.toolName,
+      input: event.input,
+    };
+  }
+  return { type: 'event', event };
+}
+
+/**
  * Folds a renderable {@link ChatFrame} (text or component) into the message's parts, concatenating
  * consecutive text deltas into the trailing text part and appending components in order.
  * `meta`/`elicitation`/`approval`/`done` are control frames and are ignored here — a form to put to
@@ -169,7 +234,18 @@ export function decodeFrame(event: SseEvent): ChatFrame | null {
  */
 export function foldPart(parts: ChatPart[], frame: ChatFrame): ChatPart[] {
   if (frame.type === 'component') {
-    return [...parts, { type: 'component', name: frame.name, data: frame.data }];
+    const part: ChatPart = {
+      type: 'component',
+      name: frame.name,
+      data: frame.data,
+      ...(frame.id !== undefined ? { id: frame.id } : {}),
+    };
+    // A repeat id (agent protocol `ui`) replaces the component in place, never adds a second one.
+    const at =
+      frame.id === undefined
+        ? -1
+        : parts.findIndex((each) => each.type === 'component' && each.id === frame.id);
+    return at === -1 ? [...parts, part] : parts.map((each, index) => (index === at ? part : each));
   }
   if (frame.type === 'text') {
     const last = parts[parts.length - 1];

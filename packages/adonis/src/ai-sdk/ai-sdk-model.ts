@@ -76,11 +76,50 @@ export function aiSdkModel(model: LanguageModel, opts?: AiSdkModelOptions): Mode
         ...(args.abortSignal ? { abortSignal: args.abortSignal } : {}),
       });
 
+      // Text stays a `text` frame (the one kind the output gate reads); everything else the model
+      // streams goes out in the agent protocol's vocabulary, so a client draws the thinking and the
+      // tool cards live. Tool RESULTS and step brackets are the loop's to write.
       let text = '';
       for await (const part of result.stream) {
-        if (part.type === 'text-delta') {
-          text += part.text;
-          await args.sink.write({ t: 'text', v: part.text });
+        switch (part.type) {
+          case 'text-delta':
+            text += part.text;
+            await args.sink.write({ t: 'text', v: part.text });
+            break;
+          case 'reasoning-delta':
+            await args.sink.write({ t: 'event', event: { kind: 'reasoning', text: part.text } });
+            break;
+          case 'tool-input-start':
+            await args.sink.write({
+              t: 'event',
+              event: {
+                kind: 'tool-input-start',
+                id: part.id,
+                name: part.toolName,
+                toolKind: streamToolKind(part.toolName, args.tools),
+              },
+            });
+            break;
+          case 'tool-input-delta':
+            await args.sink.write({
+              t: 'event',
+              event: { kind: 'tool-input-delta', id: part.id, delta: part.delta },
+            });
+            break;
+          case 'tool-call':
+            await args.sink.write({
+              t: 'event',
+              event: {
+                kind: 'tool-input-available',
+                id: part.toolCallId,
+                name: part.toolName,
+                input: part.input,
+                toolKind: streamToolKind(part.toolName, args.tools),
+              },
+            });
+            break;
+          default:
+            break;
         }
       }
 
@@ -115,6 +154,13 @@ export function aiSdkModel(model: LanguageModel, opts?: AiSdkModelOptions): Mode
  * `tool-call` content parts; tool results become a following `tool` message. A message can
  * therefore expand into two SDK messages, so we build the list imperatively.
  */
+/** The stream's two-valued tool kind: only an `action` waits for a person before it runs. */
+function streamToolKind(toolName: string, tools: ToolDefinition[]): 'read' | 'action' {
+  return tools.find((definition) => definition.name === toolName)?.kind === 'action'
+    ? 'action'
+    : 'read';
+}
+
 function mapMessages(messages: ModelMessage[]): SdkModelMessage[] {
   const out: SdkModelMessage[] = [];
   for (const message of messages) {

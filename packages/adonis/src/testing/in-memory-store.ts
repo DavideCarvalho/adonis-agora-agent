@@ -285,6 +285,10 @@ export class InMemoryAgentStore implements AgentStore {
     }
   }
 
+  async getToolCallRunId(toolCallId: string): Promise<string | null> {
+    return this.toolCalls.get(toolCallId)?.runId ?? null;
+  }
+
   async recordToolCall(input: RecordToolCallInput): Promise<void> {
     this.toolCalls.set(input.toolCallId, {
       toolCallId: input.toolCallId,

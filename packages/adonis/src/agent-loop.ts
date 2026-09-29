@@ -77,6 +77,7 @@ import type { Passage, RetrievalResult, RetrieveOptions, Retriever } from './spi
 import type { RolesPolicy } from './spi/roles-policy.js';
 import type { SinkWriter, StreamFrame } from './spi/token-stream-sink.js';
 import type { AiToolCtx } from './spi/tool.js';
+import type { AgentStreamEvent } from './stream-events.js';
 import {
   DEFAULT_STRUCTURED_OUTPUT_INSTRUCTION,
   repairInstruction,
@@ -1140,6 +1141,8 @@ async function claimToolCall(
   // committed to whatever its first process resolved, so the local registry is the only thing left
   // to consult — reached by those runs alone.
   const toolType: ToolKind = persisted?.kind ?? declaredKind(deps, call.name);
+  // Numbered per call, so a retried or replayed tool that pushes again REPLACES what it pushed.
+  let pushed = 0;
   return {
     call,
     toolType,
@@ -1149,7 +1152,11 @@ async function claimToolCall(
       threadId: input.threadId,
       runId: hooks.runId,
       requestId: hooks.runId,
-      emitComponent: (name: string, data: unknown) => writer.write({ t: 'component', name, data }),
+      emitComponent: (name: string, data: unknown) => {
+        const id = `${call.id}:ui:${pushed}`;
+        pushed += 1;
+        return writer.write({ t: 'component', name, data, id, toolCallId: call.id });
+      },
       ...(persona !== undefined ? { persona } : {}),
       ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
       ...(deps.host !== undefined ? { host: deps.host } : {}),
@@ -1791,6 +1798,90 @@ async function structureAnswer<TOutput>(args: {
 }
 
 /** What a turn answered with: the assistant text, plus the validated `outputSchema` value if any. */
+/**
+ * The frame a settled call is streamed on. A refusal is its own kind, ahead of the error branch:
+ * `denied` and `error` are both set on a declined call — the first for every consumer, the second
+ * because `error` is the channel a model reads an outcome on — and a client that saw the error frame
+ * would draw a person's "no" as a malfunction.
+ */
+export function outcomeFrame(result: ToolResult): AgentStreamEvent {
+  if (result.denied === true) {
+    const { output } = result;
+    const reason =
+      output !== null && typeof output === 'object' && 'reason' in output
+        ? (output as { reason: unknown }).reason
+        : undefined;
+    return {
+      kind: 'tool-output-denied',
+      id: result.id,
+      ...(typeof reason === 'string' && reason !== DEFAULT_REFUSAL_REASON ? { reason } : {}),
+    };
+  }
+  return result.error !== undefined
+    ? { kind: 'tool-output-error', id: result.id, error: result.error }
+    : { kind: 'tool-output', id: result.id, output: result.output };
+}
+
+/**
+ * Wrap the writer a model turn streams into, noting which tool calls it announced
+ * (`tool-input-start` / `tool-input-available`), so the loop can announce the rest itself. A
+ * provider that streams only text — a custom one, a test double — would otherwise leave every call
+ * unannounced, and the React transport drops a message whose call settles before it exists.
+ */
+function announcedToolCalls(inner: SinkWriter): {
+  writer: SinkWriter;
+  announceRest(calls: readonly ToolCallRequest[], tools: readonly ToolDefinition[]): Promise<void>;
+} {
+  const seen = new Set<string>();
+  return {
+    writer: {
+      write: (frame) => {
+        if (
+          frame.t === 'event' &&
+          (frame.event.kind === 'tool-input-start' || frame.event.kind === 'tool-input-available')
+        ) {
+          seen.add(frame.event.id);
+        }
+        return inner.write(frame);
+      },
+      end: () => inner.end(),
+    },
+    async announceRest(calls, tools) {
+      for (const call of calls) {
+        if (seen.has(call.id)) continue;
+        const kind = tools.find((definition) => definition.name === call.name)?.kind;
+        await inner.write({
+          t: 'event',
+          event: {
+            kind: 'tool-input-available',
+            id: call.id,
+            name: call.name,
+            input: call.input,
+            toolKind: kind === 'action' ? 'action' : 'read',
+          },
+        });
+      }
+    },
+  };
+}
+
+/**
+ * The `event: error` frame a runner closes a failed run's stream with, coded the way the NestJS
+ * library codes it so a shared client can tell a spent budget from a crash.
+ */
+export function streamErrorFrame(error: unknown): StreamFrame {
+  const message = error instanceof Error ? error.message : String(error);
+  const code =
+    error instanceof QuotaExceededError
+      ? 'quota_exceeded'
+      : error instanceof OutputRejectedError
+        ? 'output_rejected'
+        : error instanceof StructuredOutputError
+          ? 'structured_output_invalid'
+          : 'run_failed';
+  return { t: 'error', code, message };
+}
+
 export interface AgentLoopResult<TOutput = unknown> {
   text: string;
   /** Present only when {@link AgentLoopDeps.outputSchema} was set — the validated structured answer. */
@@ -2103,12 +2194,19 @@ export async function runAgentLoop<TOutput = unknown>(
                   })
                 : undefined;
             const buffer = gateMode === 'whole' ? createFrameBuffer() : undefined;
+            // Written from inside this checkpoint, like every frame the model streams, so a replay
+            // that returns the journaled turn never opens the step twice.
+            await writer.write({ t: 'event', event: { kind: 'step-start' } });
+            const announced = announcedToolCalls(incremental?.writer ?? buffer?.writer ?? writer);
             const result = await deps.model.runTurn({
               system: prompt.system,
               messages: prompt.messages,
               tools,
-              sink: incremental?.writer ?? buffer?.writer ?? writer,
+              sink: announced.writer,
             });
+            // A provider that streams no tool frames still gets its calls announced — an outcome
+            // for a call the client never saw announced drops the whole message there.
+            await announced.announceRest(result.toolCalls, tools);
             if (incremental !== undefined) {
               await incremental.settled();
               const refusal = incremental.rejection();
@@ -2282,8 +2380,12 @@ export async function runAgentLoop<TOutput = unknown>(
     const messageCalls = [...turn.toolCalls, ...synthetic.map((entry) => entry.call)];
     const syntheticResults = synthetic.map((entry) => entry.result);
 
-    const assistant = await hooks.step(`persist:assistant:${i}`, () =>
-      deps.store.appendMessage({
+    const finishFrame: StreamFrame = {
+      t: 'event',
+      event: { kind: 'step-finish', usage: turn.usage, costUsd },
+    };
+    const assistant = await hooks.step(`persist:assistant:${i}`, async () => {
+      const appended = await deps.store.appendMessage({
         threadId: input.threadId,
         role: 'assistant',
         content: turn.text,
@@ -2292,8 +2394,33 @@ export async function runAgentLoop<TOutput = unknown>(
         ...(persona !== undefined ? { persona: persona.id } : {}),
         ...(messageCalls.length > 0 ? { toolCalls: messageCalls } : {}),
         ...(syntheticResults.length > 0 ? { toolResults: syntheticResults } : {}),
-      }),
-    );
+      });
+      // The synthetic calls go out as the same pair of frames an executed read writes, so a live
+      // reader draws them with the tool-call machinery it already has. Streamed from inside this
+      // checkpoint — which spends no new position — so a replay never re-sends them.
+      for (const entry of synthetic) {
+        await writer.write({
+          t: 'event',
+          event: {
+            kind: 'tool-input-available',
+            id: entry.call.id,
+            name: entry.call.name,
+            input: entry.call.input,
+            toolKind: 'read',
+          },
+        });
+        await writer.write({
+          t: 'event',
+          event: { kind: 'tool-output', id: entry.call.id, output: entry.result.output },
+        });
+      }
+      // A turn that called no tools ends its step here; one that did ends it once the tools
+      // settle (`persist:toolresults`), so the outputs land inside the step that asked for them.
+      if (turn.toolCalls.length === 0) {
+        await writer.write(finishFrame);
+      }
+      return appended;
+    });
     modelMessages.push({
       role: 'assistant',
       content: turn.text,
@@ -2392,17 +2519,25 @@ export async function runAgentLoop<TOutput = unknown>(
     // without it has no room for a checkpoint between the last tool's persist and the next `llm:`.
     // Every value written here comes from a checkpoint above, so a replay writes the same list.
     if (await (hooks.patched?.(MESSAGE_TOOL_RESULTS_PATCH) ?? Promise.resolve(true))) {
-      await hooks.step(`persist:toolresults:${i}`, () =>
-        deps.store.setMessageToolResults(assistant.id, [...results, ...syntheticResults]),
-      );
+      await hooks.step(`persist:toolresults:${i}`, async () => {
+        await deps.store.setMessageToolResults(assistant.id, [...results, ...syntheticResults]);
+        // Every value here comes from a checkpoint above, so a replay would write the same frames —
+        // and, being inside this one, it never writes them at all.
+        for (const result of results) {
+          await writer.write({ t: 'event', event: outcomeFrame(result) });
+        }
+        await writer.write(finishFrame);
+      });
     }
     modelMessages.push({ role: 'user', content: '', toolResults: results });
   }
 
   if (thread.title === '' || thread.title === 'New chat') {
-    await hooks.step('persist:title', () =>
-      deps.store.setTitle(input.threadId, deriveTitle(input.userText)),
-    );
+    await hooks.step('persist:title', async () => {
+      const title = deriveTitle(input.userText);
+      await deps.store.setTitle(input.threadId, title);
+      await writer.write({ t: 'event', event: { kind: 'title', title } });
+    });
   }
 
   // Settle the run `completed` with its rollup. Normal completion only — the loop never records a

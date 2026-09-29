@@ -16,6 +16,7 @@ import type { QuotaStore } from './spi/quota-store.js';
 import type { Retriever } from './spi/retriever.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
 import type { TokenStreamSink } from './spi/token-stream-sink.js';
+import type { StreamProtocol } from './sse.js';
 import type {
   ActorDirectoryFactory,
   AttachmentStagingContext,
@@ -206,6 +207,18 @@ export interface AgentConfig {
   actorDirectory?: ActorDirectory | ActorDirectoryFactory;
   /** Route prefix the `/agent/*` routes mount under. Defaults to `'agent'`. */
   path?: string;
+  /**
+   * The envelope `POST <path>/chat` and `GET <path>/chat/:runId/stream` write.
+   *
+   * `'agent'` is the chat stream protocol shared with `@dudousxd/nestjs-agent` — every frame an
+   * `AgentStreamEvent` (text, reasoning, tool calls and their outcomes, approvals, steps, title,
+   * pushed UI), which `@dudousxd/nestjs-agent-react` renders unchanged. `'legacy'` is this package's
+   * original `{"delta":…}` envelope, for a client written against it.
+   *
+   * Defaults to `'legacy'` so an upgrade never changes the bytes an existing client parses; set
+   * `'agent'` to serve the shared React client. `@adonis-agora/agent/client` reads both.
+   */
+  streamProtocol?: StreamProtocol;
   /**
    * Run each turn as a replay-safe durable workflow (over `@adonis-agora/durable`) instead of
    * in-process: LLM turns / tool executions become memoized durable steps, HITL approval suspends the

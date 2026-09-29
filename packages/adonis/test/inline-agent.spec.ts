@@ -1,7 +1,7 @@
 import type { Database } from '@adonisjs/lucid/database';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import type { Actor, QuotaStore } from '../src/index.js';
+import type { Actor, QuotaStore, StreamFrame } from '../src/index.js';
 import {
   AgentDepsFactory,
   AgentRegistry,
@@ -324,9 +324,14 @@ describe('InlineAgentRunner + AgentService over the Lucid store', () => {
     // Limit 0 → check() reports over-budget on the first turn, before any model call.
     const g = buildGraph(() => ({ text: 'should not stream' }), new InMemoryQuotaStore(0));
     const { runId } = await g.service.chat({ actor, message: 'hi' });
-    const streamed = await collectStream(g, runId);
-    expect(streamed).toContain('[error]');
-    expect(streamed).toContain('quota');
+    const frames: StreamFrame[] = [];
+    for await (const frame of g.service.subscribe(runId)) frames.push(frame);
+    // A coded error frame, not prose: the agent protocol writes it as `event: error`
+    // `{ code: 'quota_exceeded' }`, the legacy envelope as the `[error]` delta it always was.
+    const failure = frames.find((frame) => frame.t === 'error');
+    expect(failure).toMatchObject({ t: 'error', code: 'quota_exceeded' });
+    expect(failure?.t === 'error' && failure.message).toMatch(/quota/i);
+    expect(frames.some((frame) => frame.t === 'text')).toBe(false);
   });
 });
 

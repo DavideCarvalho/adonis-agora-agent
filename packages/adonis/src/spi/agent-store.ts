@@ -176,6 +176,12 @@ export interface AgentStore {
 
   recordToolCall(input: RecordToolCallInput): Promise<void>;
   updateToolCall(input: UpdateToolCallInput): Promise<void>;
+  /**
+   * The run a tool call belongs to, or `null` when the call is unknown. Lets the approve / reject /
+   * answer / skip routes accept a body naming the call alone (`{ toolCallId }`), which is what the
+   * shared React client sends. Optional: without it those routes still take an explicit `runId`.
+   */
+  getToolCallRunId?(toolCallId: string): Promise<string | null>;
 
   recordUsage(input: RecordUsageInput): Promise<void>;
   quotaToday(actorRef: string, day: string): Promise<{ usedTokens: number }>;

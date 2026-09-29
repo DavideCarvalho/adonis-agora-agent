@@ -5,7 +5,7 @@ import {
   WorkflowSuspended,
 } from '@adonis-agora/durable';
 import { utcDay } from '../agent-deps.js';
-import { type AgentLoopHooks, runAgentLoop, settleAll } from '../agent-loop.js';
+import { type AgentLoopHooks, runAgentLoop, settleAll, streamErrorFrame } from '../agent-loop.js';
 import type { HumanReply } from '../elicitation.js';
 import { isReplayIntegrityError } from '../replay-integrity.js';
 import { childSinkWriter } from '../spi/token-stream-sink.js';
@@ -146,7 +146,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
       if (isReplayIntegrityError(error)) {
         if (!isChild) {
           const writer = await deps.sink.open(ctx.runId);
-          await writer.write({ t: 'text', v: `\n[error] ${message}` });
+          await writer.write(streamErrorFrame(error));
           await writer.end();
         }
         throw error;
@@ -163,7 +163,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
       );
       if (!isChild) {
         const writer = await deps.sink.open(ctx.runId);
-        await writer.write({ t: 'text', v: `\n[error] ${message}` });
+        await writer.write(streamErrorFrame(error));
         await writer.end();
       }
       throw error;
