@@ -23,6 +23,7 @@ export { LexicalRetriever } from './lexical-retriever.js';
 export { cosineSimilarity, MemoryVectorStore } from './memory-vector-store.js';
 export {
   HttpModelError,
+  isBatchTooLarge,
   type OpenAiEmbeddingsOptions,
   openAiEmbeddings,
 } from './openai-embeddings.js';
