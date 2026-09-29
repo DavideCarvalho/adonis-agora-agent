@@ -330,6 +330,14 @@ export {
   registerToolExport,
   registerToolsFromBarrel,
 } from './tool-discovery.js';
+export type {
+  ToolCatalogEntry,
+  ToolConfirmation,
+  ToolPresentation,
+  ToolPresentationTone,
+  ToolResultField,
+  ToolResultView,
+} from './tool-presentation.js';
 export {
   DefaultRolesPolicy,
   ToolForbiddenError,

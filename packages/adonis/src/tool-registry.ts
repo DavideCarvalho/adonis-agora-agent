@@ -82,14 +82,26 @@ export class ToolRegistry {
     policy: RolesPolicy,
     allowedTools?: string[],
   ): Promise<ToolDefinition[]> {
-    const roleScoped = await filterToolsByRole(this.allSpecs(), actor, policy);
-    const personaScoped = personaFilterTools(roleScoped, allowedTools);
-    return personaScoped.map((spec) => ({
+    return (await this.visibleSpecs(actor, policy, allowedTools)).map((spec) => ({
       name: spec.name,
       kind: spec.kind,
       description: spec.description,
       inputSchema: spec.inputSchema,
     }));
+  }
+
+  /**
+   * The specs {@link definitionsFor} offers the model, whole — the same filters in the same order.
+   * For a surface that lists what an actor can reach (`GET <path>/tools`), which must never disagree
+   * with what the model is actually shown.
+   */
+  async visibleSpecs(
+    actor: Actor,
+    policy: RolesPolicy,
+    allowedTools?: string[],
+  ): Promise<ToolSpec[]> {
+    const roleScoped = await filterToolsByRole(this.allSpecs(), actor, policy);
+    return personaFilterTools(roleScoped, allowedTools);
   }
 
   /** Run a tool. Re-checks the role (defense-in-depth) and re-parses the input via Zod. */
