@@ -316,6 +316,12 @@ export type {
   AgentUiComponent,
 } from './stream-events.js';
 export {
+  type ObservedTurnFrames,
+  observeTurnFrames,
+  type TurnFrameSummary,
+  withTurnFrames,
+} from './turn-frames.js';
+export {
   DEFAULT_STRUCTURED_OUTPUT_INSTRUCTION,
   extractJson,
   repairInstruction,
