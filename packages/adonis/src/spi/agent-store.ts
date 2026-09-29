@@ -215,6 +215,13 @@ export interface AgentStore {
    * expired. Absent → every call is treated as the requester's, with no expiry (the old behaviour).
    */
   toolCallApproval?(toolCallId: string): Promise<ToolCallApprovalState | null>;
+  /**
+   * OPTIONAL: the input a call was recorded with, or `null` when the call is unknown. Read by the
+   * answer route to check a reply against the questions it answers (a typed question's rules, a
+   * `required` one left empty) before it is signalled. Absent → answers are checked for shape only,
+   * and the loop drops what it cannot settle.
+   */
+  toolCallInput?(toolCallId: string): Promise<unknown>;
 
   recordUsage(input: RecordUsageInput): Promise<void>;
   quotaToday(actorRef: string, day: string): Promise<{ usedTokens: number }>;
