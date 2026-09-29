@@ -78,6 +78,56 @@ defineTool(
 - `id` defaults to `<toolCallId>:ui:<n>`; pushing an `id` again replaces that component rather than adding one. `props` must be a JSON object (it is snapshotted at the push). `version` names the props' schema version, so a client can keep rendering components an older server persisted.
 - Once the step's tools have settled, every component they pushed is **persisted on the assistant message** (`StoredMessage.ui`, after what the model turn itself streamed), so `GET /agent/threads/:id` returns what the live stream showed. The pushes ride the tool step's journaled result, so a durable replay neither re-streams nor re-persists them. A custom `AgentStore` opts in with `setMessageUi` (optional).
 
+### A component catalog — `@adonis-agora/agent/genui`
+
+Instead of writing a tool per component, declare the components once and let the model push them. The catalog is `@dudousxd/nestjs-agent-core/genui`'s — isomorphic and framework-free, so the SAME file serves this server and the browser (`@dudousxd/nestjs-agent-react`'s `GenuiProvider`). Install that optional peer, then:
+
+```ts title="app/genui/catalog.ts"
+import { defineCatalog, defineComponent } from '@adonis-agora/agent/genui'
+import { BUILTIN_COMPONENTS } from '@adonis-agora/agent/genui/builtins'
+import { z } from 'zod'
+
+export const catalog = defineCatalog([
+  ...BUILTIN_COMPONENTS, // DataTable, Chart, KpiCards, …
+  defineComponent({
+    name: 'OrderCard',
+    title: 'Order card',
+    description: 'One order at a glance.',
+    props: z.object({ id: z.number(), status: z.string() }),
+  }),
+])
+```
+
+```ts title="config/agent.ts"
+import { genui } from '@adonis-agora/agent/genui'
+import { catalog } from '#genui/catalog'
+
+export default defineConfig({
+  model,
+  streamProtocol: 'agent',
+  genui: genui({ catalog }),
+})
+```
+
+That registers a `ui__show_<component>` tool per model-facing component; each call validates its input against the catalog (a refused call reaches the model as a tool error it can fix) and pushes through `ctx.emitUi`. Options, all optional: `mode: 'tree'` (one `ui__render` tool taking a nested `{ type, props, children }` tree, pushed as one `genui:tree` component), `showTool: true` (a generic `ui__show` taking `{ component, props }`), `terminal: true` (a successful push ends the turn), `roles`, `presentation`, `namePrefix`. The catalog is bound in the container — `@inject() constructor(private genui: AgentGenui)` → `this.genui.catalog`.
+
+**Per request.** A tenant with its own components, or its own version of one, is a resolver:
+
+```ts
+import { GenuiCatalogResolver, type GenuiCatalogScope } from '@adonis-agora/agent/genui'
+
+export class TenantCatalogs extends GenuiCatalogResolver {
+  async resolve({ actor }: GenuiCatalogScope) {
+    return catalog.extend(await Tenant.componentsFor(actor.tenantRef))
+  }
+}
+
+// config/agent.ts
+genui: genui({ catalog, resolver: TenantCatalogs, showTool: true })
+```
+
+A resolver class is built through the container (so it can `@inject()`); an instance or a plain `(scope) => catalog` works too. Calls validate against the resolved catalog, and each turn's tool descriptions come from it — through `ToolHandler.describe`, a hook any tool can implement to vary what the model is told per actor, thread or agent.
+
 ### Terminal tools
 
 A tool whose effect IS the answer — it pushed the UI the user reads — can end the turn: `terminal: true` on `defineTool` / `@AiTool` / `static tool`. Once such a call succeeds no further model call narrates it; a failed one does not end the turn, so the model can recover.

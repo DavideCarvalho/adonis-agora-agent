@@ -7,6 +7,7 @@ import {
   type ActorResolver,
   type AgentConfig,
   AgentDepsFactory,
+  AgentGenui,
   type AgentGovernanceAuthorize,
   type AgentGovernanceQueries,
   type AgentPricingStore,
@@ -186,6 +187,17 @@ export default class AgentProvider {
       registerFunctionalTool(registry, tool, defaultRoles);
     }
     registerDelegateTools(registry, agents);
+    // Generative UI: the catalog's tools, registered like config-level functional tools, and the
+    // boot-time catalog bound for injection.
+    if (config.genui !== undefined) {
+      const setup = await config.genui({
+        make: (klass) => this.app.container.make(klass as never),
+      });
+      for (const tool of setup.tools) {
+        registerFunctionalTool(registry, tool, defaultRoles);
+      }
+      this.app.container.bindValue(AgentGenui, new AgentGenui(setup.catalog));
+    }
 
     // ── Runtime graph ──
     const model = await this.#resolveModel(config);
