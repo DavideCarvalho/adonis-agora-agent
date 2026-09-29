@@ -64,6 +64,23 @@ remainder — the route reads the store directly and never consults the configur
 answers the same way whether or not a budget is enforced. A UI that wants to show "820k of 1M used"
 needs the limit from its own config.
 
+## Budget windows
+
+`quotas.windows` sets ceilings per UTC day and per calendar month, in tokens and/or recorded spend:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  // …
+  quota: quotas.windows({ day: { tokens: 200_000 }, month: { usd: 20 } }),
+})
+```
+
+`GET /agent/quota` reports every window — `{ windows: [{ period, usedTokens, limitTokens?, usedUsd, limitUsd?, resetsAt }], blocked?: { period, reason } }` — and while one is exhausted `POST /agent/chat` answers `429` `{ code: 'quota_exceeded', period, message }` before the turn starts. That is the shape `@dudousxd/nestjs-agent-react`'s `useQuota` renders and `useAgentChat({ blocked })` reads.
+
+Without a budget, `GET /agent/quota` still reports the day and month windows off the ledger (no ceilings, never blocked); with a daily `QuotaStore` (`quotas.ledger` / `quotas.memory`) the day window carries its ceiling and the loop keeps enforcing it as above. A budget of your own — an AI-gateway spend cap, a plan's allowance — is a `QuotaProvider` (`report({ actor })`) passed as `quota`.
+
+Spend is what the usage rows recorded, i.e. the provider-reported cost (a gateway): a `usd` ceiling only binds where cost is reported. The month window needs a store with `usageBetween` (Lucid and in-memory have it).
+
 ## The usage ledger
 
 Every model turn is recorded to the `agent_token_usage` table via `store.recordUsage(...)`, independently of whether a quota is enforced. Each row carries:

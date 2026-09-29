@@ -318,6 +318,18 @@ export {
 export * from './spi/model-provider.js';
 export * from './spi/pricing-store.js';
 export * from './spi/processors.js';
+export {
+  exhaustedWindow,
+  isQuotaProvider,
+  type QuotaBlock,
+  QuotaBlockedError,
+  type QuotaPeriod,
+  type QuotaProvider,
+  type QuotaQuery,
+  type QuotaReport,
+  type QuotaWindow,
+  quotaPeriodRange,
+} from './spi/quota-provider.js';
 export * from './spi/quota-store.js';
 export * from './spi/reranker.js';
 export * from './spi/retriever.js';
@@ -335,6 +347,11 @@ export {
 export type { QdrantRetrieverConfig } from './stores/factory.js';
 export { lucidStoreConnection } from './stores/factory.js';
 export { LedgerQuotaStore } from './stores/ledger-quota.js';
+export {
+  LedgerQuotaProvider,
+  type QuotaLimits,
+  type QuotaWindowLimits,
+} from './stores/ledger-quota-provider.js';
 export type {
   LucidAgentStoreOptions,
   LucidClientLike,

@@ -484,6 +484,22 @@ export class InMemoryAgentStore implements AgentStore {
     if (input.error !== undefined) row.error = input.error;
   }
 
+  async usageBetween(
+    actorRef: string,
+    fromDay: string,
+    toDay: string,
+  ): Promise<{ usedTokens: number; costUsd: number }> {
+    let usedTokens = 0;
+    let costUsd = 0;
+    for (const row of this.usage) {
+      if (row.actorRef === actorRef && row.day >= fromDay && row.day <= toDay) {
+        usedTokens += row.inputTokens + row.outputTokens;
+        costUsd += row.costUsd ?? 0;
+      }
+    }
+    return { usedTokens, costUsd };
+  }
+
   async quotaToday(actorRef: string, day: string): Promise<{ usedTokens: number }> {
     const usedTokens = this.usage
       .filter((row) => row.actorRef === actorRef && row.day === day)

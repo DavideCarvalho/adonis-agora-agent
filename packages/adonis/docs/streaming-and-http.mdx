@@ -37,6 +37,7 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 | 8c | `POST /agent/messages/:id/feedback` | Rate a message: `{ value: 'up' \| 'down' \| null, comment? }` → `{ feedback: { value, comment?, updatedAt } \| null }` (`null` clears). Only the thread's owner — `403` otherwise; `404` unknown message; `400` a bad value; `501` on a store without `threadOfMessage` + `setMessageFeedback`. The rating comes back as `StoredMessage.feedback` and is not copied to a fork. |
 | 9 | `DELETE /agent/threads/:id` | Soft-delete a thread. |
 | 10 | `POST /agent/threads/:id/fork-from/:messageId` | Fork a thread up to a message (regenerate / branch). |
+| 11b | `GET /agent/quota` | Every budget window with its usage — see [Budget windows](/docs/agent/governance/quota-and-cost#budget-windows). A send while one is exhausted answers `429` `{ code: 'quota_exceeded', period, message }`. |
 | 11 | `GET /agent/quota/today` | The actor's token spend today: `{ usedTokens }`. |
 | 12 | `GET /agent/approvals/mine` <span data-opt>optional</span> | The **calling actor's own** pending HITL approvals, oldest first. Query: `limit?` (default `50`, clamped to `200`). Mounts with `governanceQueries` but is **not** behind `governanceAuthorize` — it is always scoped to `actor.id`, so a non-admin surface (e.g. a coordinator's chat) can poll its own suspended tool calls even when the cross-actor read-model is ADMIN-only. |
 

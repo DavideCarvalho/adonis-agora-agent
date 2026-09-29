@@ -15,9 +15,11 @@ import type { AttachmentStagingStore } from '../spi/attachment-staging.js';
 import type { EmbeddingProvider } from '../spi/embedding-provider.js';
 import type { AgentGovernanceQueries } from '../spi/governance-queries.js';
 import type { AgentPricingStore } from '../spi/pricing-store.js';
+import type { QuotaProvider } from '../spi/quota-provider.js';
 import type { QuotaStore } from '../spi/quota-store.js';
 import type { Retriever } from '../spi/retriever.js';
 import type { TokenStreamSink } from '../spi/token-stream-sink.js';
+import type { QuotaLimits } from './ledger-quota-provider.js';
 import type { LucidDatabaseLike } from './lucid.js';
 
 /**
@@ -161,7 +163,9 @@ export interface QuotaContext extends StoreContext {
  * budgeting (fail-open). A plain `() => new InMemoryQuotaStore()` still satisfies this — the context
  * arg is optional to consume.
  */
-export type QuotaFactory = (ctx: QuotaContext) => QuotaStore | Promise<QuotaStore>;
+export type QuotaFactory = (
+  ctx: QuotaContext,
+) => QuotaStore | QuotaProvider | Promise<QuotaStore | QuotaProvider>;
 
 /** Options for both bundled quota stores — the daily per-actor token budget. */
 export interface QuotaConfig {
@@ -197,6 +201,24 @@ export const quotas = {
     return async ({ store }) => {
       const { LedgerQuotaStore } = await import('./ledger-quota.js');
       return new LedgerQuotaStore(store, config.limitTokens);
+    };
+  },
+
+  /**
+   * Budget windows off the usage ledger — per day and per month, in tokens and/or recorded spend:
+   *
+   * ```ts
+   * quota: quotas.windows({ day: { tokens: 200_000 }, month: { usd: 20 } })
+   * ```
+   *
+   * `GET <path>/quota` reports every window, and a send while one is exhausted is refused with `429`
+   * `{ code: 'quota_exceeded', period }` before the turn starts. Spend is the provider-reported cost
+   * the usage rows recorded (a gateway), so a `usd` ceiling binds only where cost is reported.
+   */
+  windows(limits: QuotaLimits): QuotaFactory {
+    return async ({ store }) => {
+      const { LedgerQuotaProvider } = await import('./ledger-quota-provider.js');
+      return new LedgerQuotaProvider(store, undefined, limits);
     };
   },
 };

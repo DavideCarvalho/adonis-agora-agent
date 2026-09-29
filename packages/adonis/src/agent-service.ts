@@ -14,6 +14,7 @@ import {
   type ModelCatalogView,
   ModelNotAllowedError,
 } from './spi/model-catalog.js';
+import { QuotaBlockedError, type QuotaProvider, type QuotaReport } from './spi/quota-provider.js';
 import type { StreamFrame } from './spi/token-stream-sink.js';
 import type { ToolCatalogEntry } from './tool-presentation.js';
 import type {
@@ -59,6 +60,11 @@ export interface ChatParams {
 export interface AgentServiceOptions {
   /** Which models a caller may pick. Omitted → an empty catalog; naming a model is refused. */
   models?: ModelCatalog;
+  /**
+   * The budget report behind `GET <path>/quota` and, when `gated`, the send gate. Omitted → a day
+   * window from the ledger, never gated.
+   */
+  quota?: { provider: QuotaProvider; gated: boolean };
 }
 
 export class AgentService {
@@ -150,7 +156,35 @@ export class AgentService {
       : [{ name: defaultName, description: '', isDefault: true as const }, ...entries];
   }
 
+  /** The actor's budget across windows (`GET <path>/quota`). */
+  async quotaReport(actor: Actor): Promise<QuotaReport> {
+    if (this.options.quota !== undefined) {
+      return this.options.quota.provider.report({ actor });
+    }
+    const today = await this.quotaToday(actor.id);
+    return { windows: [{ period: 'day', usedTokens: today.usedTokens, usedUsd: 0 }] };
+  }
+
+  /**
+   * Refuse a turn the actor's budget no longer covers — only when a budget was configured
+   * (`quotas.windows(…)` or a `QuotaProvider`): the default report is informational, and a daily
+   * `QuotaStore` keeps being enforced by the loop as it always was.
+   */
+  private async assertWithinQuota(actor: Actor): Promise<void> {
+    if (this.options.quota?.gated !== true) {
+      return;
+    }
+    const { blocked } = await this.options.quota.provider.report({ actor });
+    if (blocked !== undefined) {
+      throw new QuotaBlockedError(
+        blocked.period,
+        blocked.reason ?? `The ${blocked.period === 'day' ? 'daily' : 'monthly'} quota is used up`,
+      );
+    }
+  }
+
   async chat(params: ChatParams): Promise<{ runId: string; threadId: string }> {
+    await this.assertWithinQuota(params.actor);
     const agentName = params.agentName ?? this.deps.defaultAgentName();
     // Before the thread exists, so a refused model leaves nothing behind.
     const model = await this.resolveModel(params.actor, agentName, params.model, params.threadId);

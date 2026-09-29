@@ -654,6 +654,27 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
       .update(patch);
   }
 
+  async usageBetween(
+    actorRef: string,
+    fromDay: string,
+    toDay: string,
+  ): Promise<{ usedTokens: number; costUsd: number }> {
+    await this.init();
+    const rows = await this.db
+      .from(AGENT_TABLES.tokenUsage)
+      .where('actor_ref', actorRef)
+      .where('created_at', '>=', Date.parse(`${fromDay}T00:00:00.000Z`))
+      .where('created_at', '<=', Date.parse(`${toDay}T23:59:59.999Z`))
+      .select('input_tokens', 'output_tokens', 'cost_usd');
+    let usedTokens = 0;
+    let costUsd = 0;
+    for (const row of rows) {
+      usedTokens += toInt(row.input_tokens) + toInt(row.output_tokens);
+      costUsd += row.cost_usd === null || row.cost_usd === undefined ? 0 : Number(row.cost_usd);
+    }
+    return { usedTokens, costUsd };
+  }
+
   async quotaToday(actorRef: string, day: string): Promise<{ usedTokens: number }> {
     await this.init();
     // Inclusive UTC day window over epoch-ms `created_at`. Cache tokens are subsets of input/output
