@@ -87,7 +87,12 @@ export function frameToEvents(frame: StreamFrame, position: number): AgentStream
       // `runId`/`toolName`/`input` ride along for a reader that decides without the call's frames.
       return [
         withExtra(
-          { kind: 'approval-requested', id: frame.id, approver: 'requester' },
+          {
+            kind: 'approval-requested',
+            id: frame.id,
+            approver: frame.approver ?? 'requester',
+            ...(frame.expiresAt !== undefined ? { expiresAt: frame.expiresAt } : {}),
+          },
           { runId: frame.runId, toolName: frame.toolName, input: frame.input },
         ),
       ];

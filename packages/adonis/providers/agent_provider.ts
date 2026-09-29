@@ -34,6 +34,7 @@ import {
   type PageContext,
   pricingStores,
   type QuotaStore,
+  REQUESTER_APPROVER,
   type Retriever,
   type RolesPolicy,
   registerDelegateTools,
@@ -44,6 +45,7 @@ import {
   type TokenStreamSink,
   ToolRegistry,
   type ToolsBarrel,
+  toApprovalPolicy,
   UnconfiguredActorResolver,
   withActorLabel,
   withActorLabels,
@@ -59,6 +61,23 @@ interface ChatBody {
   pageContext?: PageContext;
   /** Already-staged attachments (from `POST /agent/attachments`) to send with this message. */
   attachments?: MessageAttachment[];
+}
+
+/** A decision's `via` is provenance persisted on the call — bounded like any other stored label. */
+const MAX_VIA_LENGTH = 64;
+
+/** `remember` from a decision body: `false` when absent, `null` when malformed. */
+function decisionRemember(claimed: unknown): boolean | null {
+  if (claimed === undefined) return false;
+  return typeof claimed === 'boolean' ? claimed : null;
+}
+
+/** `via` from a decision body: `'web'` when absent (an HTTP decision), `null` when malformed. */
+function decisionVia(claimed: unknown): string | null {
+  if (claimed === undefined) return 'web';
+  return typeof claimed === 'string' && claimed.length > 0 && claimed.length <= MAX_VIA_LENGTH
+    ? claimed
+    : null;
 }
 
 /** Default per-file size cap when `attachmentMaxBytes` is omitted (20 MiB). */
@@ -193,6 +212,9 @@ export default class AgentProvider {
       agents,
       defaultAgentName: config.defaultAgent?.name ?? 'default',
       ...(quota !== undefined ? { quota } : {}),
+      ...(config.approvalPolicy !== undefined
+        ? { approvalPolicy: toApprovalPolicy(config.approvalPolicy) }
+        : {}),
       ...(pricingStore !== undefined ? { pricingStore } : {}),
       ...(retriever !== undefined ? { retriever } : {}),
       ...(config.retrievalTopK !== undefined ? { retrievalTopK: config.retrievalTopK } : {}),
@@ -494,12 +516,26 @@ export default class AgentProvider {
     router.post(p('tool-call/approve'), async (ctx: HttpContext) => {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
-      const body = (ctx.request.body() ?? {}) as { runId?: string; toolCallId: string };
+      const body = (ctx.request.body() ?? {}) as {
+        runId?: string;
+        toolCallId: string;
+        remember?: unknown;
+        via?: unknown;
+      };
+      const remember = decisionRemember(body.remember);
+      const via = decisionVia(body.via);
+      if (remember === null || via === null) {
+        return ctx.response.badRequest({
+          error: `remember must be a boolean and via a string of 1-${MAX_VIA_LENGTH} characters`,
+        });
+      }
       const runId = await this.#runOfToolCall(ctx, service, body);
       if (runId === null) return;
-      const owner = await service.runOwner(runId);
-      if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
-      await service.approve(runId, body.toolCallId);
+      if (
+        !(await this.#mayDecide(ctx, service, actor, runId, body.toolCallId, governanceAuthorize))
+      )
+        return;
+      await service.approve(runId, body.toolCallId, { executedByRef: actor.id, remember, via });
       return ctx.response.json({ ok: true });
     });
 
@@ -511,12 +547,21 @@ export default class AgentProvider {
         runId?: string;
         toolCallId: string;
         reason?: string;
+        via?: unknown;
       };
+      const via = decisionVia(body.via);
+      if (via === null) {
+        return ctx.response.badRequest({
+          error: `via must be a string of 1-${MAX_VIA_LENGTH} characters`,
+        });
+      }
       const runId = await this.#runOfToolCall(ctx, service, body);
       if (runId === null) return;
-      const owner = await service.runOwner(runId);
-      if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
-      await service.reject(runId, body.toolCallId, body.reason);
+      if (
+        !(await this.#mayDecide(ctx, service, actor, runId, body.toolCallId, governanceAuthorize))
+      )
+        return;
+      await service.reject(runId, body.toolCallId, body.reason, { executedByRef: actor.id, via });
       return ctx.response.json({ ok: true });
     });
 
@@ -1111,6 +1156,51 @@ export default class AgentProvider {
       return null;
     }
     return runId;
+  }
+
+  /**
+   * May `actor` settle this call, and is it still open? The call's recorded approver decides who:
+   * the requester (the default, and every call recorded before approvers existed) is the run's own
+   * actor — the ownership check this always was, governance-privileged callers included; any other
+   * approver goes through the policy's `canDecide` (by default: holds that role) → `403`. A request
+   * that already lapsed — recorded `expired`, or past its `expiresAt` with the run's own timer about
+   * to fire — answers `410`: signalling it anyway would race the timeout, and a late approval must
+   * not be what a later replay of the run reads back. Answers the response itself when it refuses.
+   */
+  async #mayDecide(
+    ctx: HttpContext,
+    service: AgentService,
+    actor: Actor,
+    runId: string,
+    toolCallId: string,
+    governanceAuthorize: AgentGovernanceAuthorize | undefined,
+  ): Promise<boolean> {
+    const approval = await service.toolCallApproval(toolCallId);
+    const approver = approval?.approver ?? REQUESTER_APPROVER;
+    const owner = await service.runOwner(runId);
+    if (approver === REQUESTER_APPROVER) {
+      if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return false;
+    } else {
+      if (owner === null) {
+        ctx.response.notFound({ error: 'Unknown run.' });
+        return false;
+      }
+      if (!(await service.mayDecide(actor, { toolCallId, approver, requesterRef: owner }))) {
+        ctx.response.forbidden({ error: `This approval is for ${approver}.` });
+        return false;
+      }
+    }
+    const lapsed =
+      approval !== null &&
+      (approval.status === 'expired' ||
+        (approval.status === 'pending_approval' &&
+          approval.expiresAt !== null &&
+          Date.parse(approval.expiresAt) <= Date.now()));
+    if (lapsed) {
+      ctx.response.gone({ error: `The approval request for tool call ${toolCallId} has expired.` });
+      return false;
+    }
+    return true;
   }
 
   #conflictOnMismatch(ctx: HttpContext, error: unknown): void {

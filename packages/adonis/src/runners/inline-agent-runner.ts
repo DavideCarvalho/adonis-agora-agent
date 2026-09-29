@@ -164,9 +164,9 @@ export class InlineAgentRunner implements AgentRunner {
    */
   private humanHooks(runId: string): Pick<AgentLoopHooks, 'awaitApproval' | 'awaitAnswers'> {
     return {
-      awaitApproval: (call) =>
+      awaitApproval: (call, _ctx, opts) =>
         // Run-namespaced key: `${runId}:${toolCallId}` — one run can't approve another's tool call.
-        this.park(`${runId}:${call.id}`, 'approval') as Promise<Decision>,
+        this.parkApproval(`${runId}:${call.id}`, opts?.timeoutMs),
       // An answer and an approval reach a parked run by the same channel, because a question set is
       // itself a `pending_approval` row: `POST /agent/tool-call/answer` and `/approve` both land here.
       awaitAnswers: (request: ElicitationRequest) => this.park(`${runId}:${request.id}`, 'answers'),
@@ -174,6 +174,29 @@ export class InlineAgentRunner implements AgentRunner {
   }
 
   /** Hold a run at `key` until a human's reply arrives through {@link InlineAgentRunner.signal}. */
+  /**
+   * {@link park} for an approval, bounded by the policy's time to live when it has one: the timer
+   * settles the wait as `expired` — the same Decision the durable runner builds from its signal
+   * timeout — and a decision that arrives first disarms it.
+   */
+  private parkApproval(key: string, timeoutMs?: number): Promise<Decision> {
+    const waiting = this.park(key, 'approval') as Promise<Decision>;
+    if (timeoutMs === undefined) {
+      return waiting;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const lapse = new Promise<Decision>((resolve) => {
+      timer = setTimeout(() => {
+        if (this.pending.delete(key)) {
+          resolve({ approved: false, expired: true });
+        }
+      }, timeoutMs);
+      // A parked request must not keep the process alive on its own.
+      timer.unref?.();
+    });
+    return Promise.race([waiting, lapse]).finally(() => clearTimeout(timer));
+  }
+
   private park(key: string, on: ParkedWait['on']): Promise<HumanReply> {
     return new Promise<HumanReply>((resolve) => {
       this.pending.set(key, { on, resolve });

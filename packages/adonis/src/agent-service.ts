@@ -2,6 +2,11 @@ import { utcDay } from './agent-deps.js';
 import type { AgentDepsFactory } from './agent-deps-factory.js';
 import type { AgentRunner } from './spi/agent-runner.js';
 import type { AgentStore } from './spi/agent-store.js';
+import {
+  type ApprovalDecisionRef,
+  mayDecideApproval,
+  type ToolCallApprovalState,
+} from './spi/approval-policy.js';
 import type { StreamFrame } from './spi/token-stream-sink.js';
 import type { ToolCatalogEntry } from './tool-presentation.js';
 import type {
@@ -88,15 +93,49 @@ export class AgentService {
     return this.store.getThreadActorRef(threadId);
   }
 
-  approve(runId: string, toolCallId: string): Promise<void> {
-    return this.runner.signal(runId, toolCallId, { approved: true });
+  /**
+   * Approve a parked action call. `executedByRef` is who decided (the routes stamp the caller);
+   * `remember` approves later calls of the same tool in the same thread; `via` names the surface the
+   * decision came through (`'web'`, `'slack'`, …) — all persisted with the call.
+   */
+  approve(
+    runId: string,
+    toolCallId: string,
+    opts: { executedByRef?: string; remember?: boolean; via?: string } = {},
+  ): Promise<void> {
+    return this.runner.signal(runId, toolCallId, {
+      approved: true,
+      ...(opts.executedByRef !== undefined ? { executedByRef: opts.executedByRef } : {}),
+      ...(opts.remember === true ? { remember: true } : {}),
+      ...(opts.via !== undefined ? { decidedVia: opts.via } : {}),
+    });
   }
 
-  reject(runId: string, toolCallId: string, reason?: string): Promise<void> {
+  reject(
+    runId: string,
+    toolCallId: string,
+    reason?: string,
+    opts: { executedByRef?: string; via?: string } = {},
+  ): Promise<void> {
     return this.runner.signal(runId, toolCallId, {
       approved: false,
       ...(reason !== undefined ? { reason } : {}),
+      ...(opts.executedByRef !== undefined ? { executedByRef: opts.executedByRef } : {}),
+      ...(opts.via !== undefined ? { decidedVia: opts.via } : {}),
     });
+  }
+
+  /** A call's approval state (see `AgentStore.toolCallApproval`); `null` when unknown or unrecorded. */
+  async toolCallApproval(toolCallId: string): Promise<ToolCallApprovalState | null> {
+    return (await this.store.toolCallApproval?.(toolCallId)) ?? null;
+  }
+
+  /**
+   * May `actor` settle a call whose recorded approver is `approver` (never the requester — that is
+   * the ownership check)? The configured policy's `canDecide`, else "holds that role".
+   */
+  mayDecide(actor: Actor, decision: ApprovalDecisionRef): Promise<boolean> {
+    return mayDecideApproval(this.deps.forAgent().approvalPolicy, actor, decision);
   }
 
   /**

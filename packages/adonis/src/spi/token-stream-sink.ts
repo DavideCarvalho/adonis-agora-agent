@@ -48,7 +48,17 @@ export type StreamFrame =
    * the ancestor's stream is the only way a human sees it — so the id has to ride along, or the
    * watcher can see the approval and not make it.
    */
-  | { t: 'approval'; runId: string; id: string; toolName: string; input: unknown };
+  | {
+      t: 'approval';
+      runId: string;
+      id: string;
+      toolName: string;
+      input: unknown;
+      /** Who may decide (`'requester'` or a role), from the turn's `ApprovalPolicy`. Absent → the requester. */
+      approver?: string;
+      /** ISO-8601 instant the request lapses. Absent → it never does. */
+      expiresAt?: string;
+    };
 
 export interface SinkWriter {
   write(frame: StreamFrame): void | Promise<void>;

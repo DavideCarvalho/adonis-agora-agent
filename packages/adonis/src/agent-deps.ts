@@ -1,6 +1,7 @@
 import type { MemoryConfig } from './memory.js';
 import type { SkillsConfig } from './skills.js';
 import type { AgentStore } from './spi/agent-store.js';
+import type { ApprovalPolicy } from './spi/approval-policy.js';
 import type { HistoryWindow } from './spi/history-window.js';
 import type { ModelProvider } from './spi/model-provider.js';
 import type { AgentPricingStore } from './spi/pricing-store.js';
@@ -19,6 +20,8 @@ export interface AgentDeps {
   store: AgentStore;
   registry: ToolRegistry;
   rolesPolicy: RolesPolicy;
+  /** Who approves an `action` call, and for how long. Undefined → the requester, no expiry. */
+  approvalPolicy?: ApprovalPolicy;
   quota?: QuotaStore;
   /** Prices each turn's tokens into `usage.costUsd`. Omit → cost is always `null`. */
   pricingStore?: AgentPricingStore;
