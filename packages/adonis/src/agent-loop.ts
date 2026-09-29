@@ -86,6 +86,7 @@ import {
 } from './structured-output.js';
 import { ToolForbiddenError, ToolInputInvalidError, type ToolRegistry } from './tool-registry.js';
 import { invokeWithTransientRetry, type ToolTransientRetrySetting } from './tool-retry.js';
+import { observeTurnFrames, withTurnFrames } from './turn-frames.js';
 import type {
   Actor,
   AgentRunInput,
@@ -2198,12 +2199,18 @@ export async function runAgentLoop<TOutput = unknown>(
             // that returns the journaled turn never opens the step twice.
             await writer.write({ t: 'event', event: { kind: 'step-start' } });
             const announced = announcedToolCalls(incremental?.writer ?? buffer?.writer ?? writer);
-            const result = await deps.model.runTurn({
-              system: prompt.system,
-              messages: prompt.messages,
-              tools,
-              sink: announced.writer,
-            });
+            // Reasoning and pushed UI are read off the frames INSIDE this checkpoint, so they are
+            // journaled with the turn and a replay persists the same thinking instead of none.
+            const frames = observeTurnFrames(announced.writer);
+            const result = withTurnFrames(
+              await deps.model.runTurn({
+                system: prompt.system,
+                messages: prompt.messages,
+                tools,
+                sink: frames.writer,
+              }),
+              frames.summary(),
+            );
             // A provider that streams no tool frames still gets its calls announced — an outcome
             // for a call the client never saw announced drops the whole message there.
             await announced.announceRest(result.toolCalls, tools);
@@ -2382,7 +2389,12 @@ export async function runAgentLoop<TOutput = unknown>(
 
     const finishFrame: StreamFrame = {
       t: 'event',
-      event: { kind: 'step-finish', usage: turn.usage, costUsd },
+      event: {
+        kind: 'step-finish',
+        usage: turn.usage,
+        costUsd,
+        ...(turn.reasoningMs !== undefined ? { reasoningMs: turn.reasoningMs } : {}),
+      },
     };
     const assistant = await hooks.step(`persist:assistant:${i}`, async () => {
       const appended = await deps.store.appendMessage({
@@ -2392,6 +2404,9 @@ export async function runAgentLoop<TOutput = unknown>(
         runId: hooks.runId,
         usage: { ...turn.usage, costUsd },
         ...(persona !== undefined ? { persona: persona.id } : {}),
+        ...(turn.reasoning !== undefined ? { reasoning: turn.reasoning } : {}),
+        ...(turn.reasoningMs !== undefined ? { reasoningMs: turn.reasoningMs } : {}),
+        ...(turn.ui !== undefined && turn.ui.length > 0 ? { ui: turn.ui } : {}),
         ...(messageCalls.length > 0 ? { toolCalls: messageCalls } : {}),
         ...(syntheticResults.length > 0 ? { toolResults: syntheticResults } : {}),
       });

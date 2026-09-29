@@ -11,6 +11,7 @@ import type {
   ThreadTurnReader,
   UpdateToolCallInput,
 } from '../spi/agent-store.js';
+import type { AgentUiComponent } from '../stream-events.js';
 import type {
   MessageAttachment,
   MessageRole,
@@ -345,6 +346,9 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
           follow_ups: m.follow_ups ?? null,
           usage: m.usage ?? null,
           persona: m.persona ?? null,
+          reasoning: m.reasoning ?? null,
+          reasoning_ms: m.reasoning_ms ?? null,
+          ui: m.ui ?? null,
           created_at: toInt(m.created_at),
         });
       }
@@ -391,6 +395,9 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
       usage: safeJson(input.usage),
       persona: input.persona ?? null,
       run_id: input.runId ?? null,
+      reasoning: input.reasoning ?? null,
+      reasoning_ms: input.reasoningMs ?? null,
+      ui: safeJson(input.ui),
       created_at: now,
     });
     // Keep the thread's `updated_at` in step so list ordering reflects the latest activity.
@@ -410,6 +417,9 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
       ...(input.usage !== undefined ? { usage: input.usage } : {}),
       ...(input.persona !== undefined ? { persona: input.persona } : {}),
       ...(input.runId !== undefined ? { runId: input.runId } : {}),
+      ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
+      ...(input.reasoningMs !== undefined ? { reasoningMs: input.reasoningMs } : {}),
+      ...(input.ui !== undefined ? { ui: input.ui } : {}),
     };
   }
 
@@ -585,6 +595,7 @@ function rowToMessage(row: Record<string, unknown>): StoredMessage {
   const attachments = parseJson<MessageAttachment[]>(row.attachments);
   const followUps = parseJson<string[]>(row.follow_ups);
   const usage = parseJson<MessageUsage>(row.usage);
+  const ui = parseJson<AgentUiComponent[]>(row.ui);
   return {
     id: String(row.id),
     role: String(row.role) as MessageRole,
@@ -597,5 +608,10 @@ function rowToMessage(row: Record<string, unknown>): StoredMessage {
     ...(usage !== undefined ? { usage } : {}),
     ...(typeof row.persona === 'string' ? { persona: row.persona } : {}),
     ...(typeof row.run_id === 'string' ? { runId: row.run_id } : {}),
+    ...(typeof row.reasoning === 'string' ? { reasoning: row.reasoning } : {}),
+    ...(row.reasoning_ms !== null && row.reasoning_ms !== undefined
+      ? { reasoningMs: toInt(row.reasoning_ms) }
+      : {}),
+    ...(ui !== undefined ? { ui } : {}),
   };
 }

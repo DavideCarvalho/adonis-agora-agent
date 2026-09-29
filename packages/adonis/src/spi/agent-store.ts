@@ -1,3 +1,4 @@
+import type { AgentUiComponent } from '../stream-events.js';
 import type {
   Actor,
   MessageAttachment,
@@ -31,6 +32,12 @@ export interface AppendMessageInput {
   usage?: MessageUsage;
   /** The run (turn) this message belongs to, for run-detail assembly + trace deep-links. */
   runId?: string;
+  /** The step's streamed thinking. See {@link StoredMessage.reasoning}. */
+  reasoning?: string;
+  /** Time spent thinking in this step, in ms. See {@link StoredMessage.reasoningMs}. */
+  reasoningMs?: number;
+  /** Components pushed during this step. See {@link StoredMessage.ui}. */
+  ui?: AgentUiComponent[];
 }
 
 export interface RecordToolCallInput {

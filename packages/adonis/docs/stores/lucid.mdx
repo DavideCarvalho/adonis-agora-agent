@@ -64,7 +64,7 @@ Five tables (names from the `AGENT_TABLES` constant):
 | Table | Purpose |
 | --- | --- |
 | `agent_thread` | one row per conversation: actor/tenant refs, title, persona, transient flag, `active_stream_id`, soft-delete (`deleted_at`), timestamps |
-| `agent_message` | one row per message: role, content, and JSON columns for `tool_calls` / `tool_results` / `follow_ups` / `usage` |
+| `agent_message` | one row per message: role, content, and JSON columns for `tool_calls` / `tool_results` / `follow_ups` / `usage` / `ui`, plus the step's streamed `reasoning` and `reasoning_ms` |
 | `agent_tool_call` | one row per tool call — **PK is the model-supplied `toolCallId`**, not a generated id — with tool name/type, input/output, status, timing, and `executed_by_ref` |
 | `agent_token_usage` | the usage ledger: input/output tokens, cache breakdown, `model_id`, `purpose`, and `cost_usd` |
 | `agent_model_pricing` | per-model pricing rows for cost estimation (see [Quota & cost](/docs/agent/governance/quota-and-cost)) |
@@ -133,7 +133,16 @@ for (const statement of createTableStatements()) {
 ```
 
 `ensureAgentTables(db)` is exactly what `autoCreateTables: true` calls, so a migration built on it can
-never drift from the auto-created shape. `AGENT_TABLES` is the name map, useful for a migration that
+never drift from the auto-created shape.
+
+<Callout type="warn" title="Upgrading with autoCreateTables: false">
+`createAgentTables` also ALTERs in the columns a newer release added to an existing table (the
+`agent_message` columns `reasoning`, `reasoning_ms` and `ui`, `agent_run.parent_run_id`, the
+`run_id` columns). With `autoCreateTables: true` that happens on first use. With it off, nothing
+runs it for you: after upgrading, add a migration whose `up()` calls `createAgentTables` again (a
+copy of the published `create_agent_tables` migration under a new timestamp does exactly that) —
+it only adds what is missing.
+</Callout> `AGENT_TABLES` is the name map, useful for a migration that
 needs to reference a table it did not write.
 
 ## The in-memory store for tests

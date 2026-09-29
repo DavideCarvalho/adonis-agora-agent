@@ -1,6 +1,6 @@
 /**
  * The chat stream protocol shared with `@dudousxd/nestjs-agent`: the vocabulary a run's SSE carries
- * when the provider serves `stream.protocol: 'agent'` (see `docs/streaming-and-http.mdx`).
+ * when the provider serves `streamProtocol: 'agent'` (see `docs/streaming-and-http.mdx`).
  *
  * It is a COPY of `AgentStreamEvent` in `@dudousxd/nestjs-agent-core/src/stream-events.ts`, kept
  * field-for-field identical rather than imported: neither repo depends on the other (the guardrails

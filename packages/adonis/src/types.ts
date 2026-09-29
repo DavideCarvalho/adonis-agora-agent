@@ -1,5 +1,6 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { ActorResolver } from './spi/actor-resolver.js';
+import type { AgentUiComponent } from './stream-events.js';
 
 /** Who is driving the turn. Roles + tenant come from the host app (nestjs-context/authz). */
 export interface Actor {
@@ -365,6 +366,19 @@ export interface StoredMessage {
    * run the replacement's text. Absent on a row written outside a run.
    */
   runId?: string;
+  /**
+   * The model's thinking for this step, as it streamed (`reasoning` frames), so a reloaded thread
+   * shows it where the live one did. Absent when the model produced none, or on a row written
+   * before this was recorded.
+   */
+  reasoning?: string;
+  /** How long the model spent thinking in this step, in ms — what a "Thought for 4s" label reads. */
+  reasoningMs?: number;
+  /**
+   * Components pushed into this step (`ui` frames), in first-seen order with the last props for each
+   * `id` — a reloaded thread replays them as `data-ui` parts.
+   */
+  ui?: AgentUiComponent[];
   createdAt: string;
 }
 

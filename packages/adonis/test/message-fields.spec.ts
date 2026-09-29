@@ -27,6 +27,17 @@ const OPTIONAL_FIELDS: Required<Omit<AppendMessageInput, 'threadId' | 'role' | '
   followUps: ['and then?'],
   usage: { inputTokens: 3, outputTokens: 5, costUsd: 0.01 },
   runId: 'run-1',
+  reasoning: 'The user wants the ship date.',
+  reasoningMs: 1840,
+  ui: [
+    {
+      id: 'call-1:ui:0',
+      component: 'ShipCard',
+      props: { eta: '2026-10-01' },
+      version: 2,
+      toolCallId: 'call-1',
+    },
+  ],
 };
 
 async function appendAndRead(

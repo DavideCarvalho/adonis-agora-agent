@@ -130,6 +130,18 @@ A tool can also emit a typed UI component into the stream, which appears as a na
 
 The response also sets `X-Agent-Run-Id` and `X-Agent-Thread-Id` headers (plus `Cache-Control: no-cache, no-transform` and `X-Accel-Buffering: no` so proxies don't buffer the stream). The stream ends only on run **completion** — the token sink stays open across a HITL suspend, so an approved-then-resumed run keeps one continuous stream.
 
+## Persisted history
+
+`GET /agent/threads/:id` returns the messages a reload rebuilds the transcript from. Besides `content`, `toolCalls`/`toolResults` and `attachments`, an assistant message carries what its step streamed, so a reloaded thread shows what the live one did:
+
+| Field | What it holds |
+| --- | --- |
+| `reasoning?: string` | the model's thinking for the step, as its `reasoning` frames streamed it |
+| `reasoningMs?: number` | how long it thought — the sum of each burst of consecutive `reasoning` frames; the same number `step-finish` carries live |
+| `ui?: { id, component, props, version?, toolCallId? }[]` | components the model turn pushed (`ui` frames), first-seen order, last props per `id` |
+
+They are read off the frames inside the model call's own checkpoint, so a durable replay persists the same values rather than re-measuring a turn that is not happening. A provider may also report them itself on `ModelTurnResult` (`reasoning`, `reasoningMs`, `ui`); its values win. `@dudousxd/nestjs-agent-react`'s `storedThreadToUiMessages` replays them as `reasoning` and `data-ui` parts.
+
 ## Human-in-the-loop
 
 When the model calls an `action` tool, the run records it `pending_approval` and pauses. The client learns the pending `toolCallId` from the thread detail (`GET /agent/threads/:id` → the tool call's status), then decides:
