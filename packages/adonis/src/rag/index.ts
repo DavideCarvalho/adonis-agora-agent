@@ -13,6 +13,12 @@ export {
   ingestDocuments,
 } from './ingest.js';
 export { KeywordRetriever, type KeywordRetrieverOptions } from './keyword-retriever.js';
+export {
+  anyTermTsquery,
+  DEFAULT_STOP_WORDS,
+  hasSearchSyntax,
+  keywordTerms,
+} from './lexical-query.js';
 export { LexicalRetriever } from './lexical-retriever.js';
 export { cosineSimilarity, MemoryVectorStore } from './memory-vector-store.js';
 export {
