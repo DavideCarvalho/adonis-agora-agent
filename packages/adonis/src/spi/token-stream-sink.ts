@@ -73,6 +73,13 @@ export interface TokenStreamSink {
   subscribe(runId: string): AsyncIterable<StreamFrame>;
   /** Drop any buffer/resources for the run. */
   close(runId: string): void | Promise<void>;
+  /**
+   * OPTIONAL: does this sink hold anything for the run — a buffer it opened, frames, an end marker?
+   * `GET <path>/chat/:runId/stream` answers `404` when it says no, which a client reads as "nothing to
+   * resume" (the run ended while it was away, or the buffer went with a restarted process) instead of
+   * waiting forever on a stream nobody will write. Absent → the route subscribes regardless.
+   */
+  has?(runId: string): boolean | Promise<boolean>;
 }
 
 /**

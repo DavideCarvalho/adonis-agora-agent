@@ -22,10 +22,13 @@ const actor: Actor = { id: 'u1', roles: ['ADMIN'] };
 
 /** Every `data:` JSON of an SSE text, in order — what a reader of the agent protocol sees. */
 function events(sse: string): AgentStreamEvent[] {
+  // An unnamed frame is an event; its `data:` line may follow the `id:` it is numbered with.
   return sse
     .split('\n\n')
-    .filter((frame) => frame.startsWith('data: '))
-    .map((frame) => JSON.parse(frame.slice('data: '.length)) as AgentStreamEvent);
+    .filter((frame) => !frame.startsWith('event:'))
+    .map((frame) => frame.split('\n').find((line) => line.startsWith('data: ')))
+    .filter((line): line is string => line !== undefined)
+    .map((line) => JSON.parse(line.slice('data: '.length)) as AgentStreamEvent);
 }
 
 describe('agent protocol encoding', () => {

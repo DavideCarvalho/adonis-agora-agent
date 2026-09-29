@@ -31,6 +31,8 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 | 6b | `GET /agent/tools?agent=` | The tools the caller can reach through an agent, as `{ name, kind, presentation? }[]` — the same list the model is offered. `404` for an unknown agent. See [Presentation](/docs/agent/authoring/tools#presentation--how-a-chat-surface-talks-about-a-tool). |
 | 7 | `GET /agent/threads/personas/catalog` | The persona `{ id, label }` catalog for a UI picker. |
 | 8 | `GET /agent/threads/:id` | Thread detail (messages + `activeStreamId`), or `null`. |
+| 8b | `PATCH /agent/threads/:id` | Rename: `{ title }` (1–200 characters). Answers `{ ok: true }`. |
+| 8c | `POST /agent/messages/:id/feedback` | Rate a message: `{ value: 'up' \| 'down' \| null, comment? }` → `{ feedback: { value, comment?, updatedAt } \| null }` (`null` clears). Only the thread's owner — `403` otherwise; `404` unknown message; `400` a bad value; `501` on a store without `threadOfMessage` + `setMessageFeedback`. The rating comes back as `StoredMessage.feedback` and is not copied to a fork. |
 | 9 | `DELETE /agent/threads/:id` | Soft-delete a thread. |
 | 10 | `POST /agent/threads/:id/fork-from/:messageId` | Fork a thread up to a message (regenerate / branch). |
 | 11 | `GET /agent/quota/today` | The actor's token spend today: `{ usedTokens }`. |
@@ -100,6 +102,8 @@ The vocabulary, field for field, is the NestJS library's [stream protocol](https
 | `ui` | a component a tool pushed with `ctx.emitComponent` — `id` is `<toolCallId>:ui:<n>`, so a repeat replaces it |
 | `title` | the thread was titled from its first message |
 | `cancelled` | the run was stopped — the last frame before `done`, so a truncated answer reads as one |
+
+Every event frame carries an SSE `id:` — its 1-based position in the run (`id: 7` above `data: {"kind":"text",…}`). The number belongs to the frame, not the connection: the same frame has the same id on the `POST` that started the run and on every later `GET …/stream`. `GET /agent/chat/:runId/stream?after=<n>` (or the standard `Last-Event-ID` header; `after` wins) sends only the frames numbered above `n`, still preceded by `meta` — which is how the shared React client resumes a dropped stream without re-rendering what it has. `meta`, `done` and `error` carry no id. When nothing is buffered under the run any more (it ended while the client was away, or its buffer went with a restarted process), the route answers `404`, read as "nothing to resume"; a sink reports that through the optional `TokenStreamSink.has` (the in-process, in-memory and Redis sinks implement it).
 
 A failed run ends with `event: error` + `data: {"code","message"}` instead of `done`; the codes are `quota_exceeded`, `output_rejected`, `structured_output_invalid` and `run_failed`.
 

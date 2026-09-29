@@ -19,6 +19,7 @@ import {
 import type { AgentUiComponent } from '../stream-events.js';
 import type {
   MessageAttachment,
+  MessageFeedback,
   MessageRole,
   MessageUsage,
   StoredMessage,
@@ -548,6 +549,20 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
     };
   }
 
+  async threadOfMessage(messageId: string): Promise<string | null> {
+    await this.init();
+    const row = await this.db.from(AGENT_TABLES.messages).where('id', messageId).first();
+    return row === null || row === undefined ? null : String(row.thread_id);
+  }
+
+  async setMessageFeedback(messageId: string, feedback: MessageFeedback | null): Promise<void> {
+    await this.init();
+    await this.db
+      .from(AGENT_TABLES.messages)
+      .where('id', messageId)
+      .update({ feedback: safeJson(feedback) });
+  }
+
   async toolCallInput(toolCallId: string): Promise<unknown> {
     await this.init();
     const row = await this.db.from(AGENT_TABLES.toolCalls).where('id', toolCallId).first();
@@ -688,6 +703,7 @@ function rowToMessage(row: Record<string, unknown>): StoredMessage {
   const followUps = parseJson<string[]>(row.follow_ups);
   const usage = parseJson<MessageUsage>(row.usage);
   const ui = parseJson<AgentUiComponent[]>(row.ui);
+  const feedback = parseJson<MessageFeedback>(row.feedback);
   return {
     id: String(row.id),
     role: String(row.role) as MessageRole,
@@ -705,5 +721,6 @@ function rowToMessage(row: Record<string, unknown>): StoredMessage {
       ? { reasoningMs: toInt(row.reasoning_ms) }
       : {}),
     ...(ui !== undefined ? { ui } : {}),
+    ...(feedback !== undefined && feedback !== null ? { feedback } : {}),
   };
 }

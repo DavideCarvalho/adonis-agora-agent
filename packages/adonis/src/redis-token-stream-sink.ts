@@ -117,6 +117,11 @@ export class RedisTokenStreamSink implements TokenStreamSink {
     }
   }
 
+  async has(runId: string): Promise<boolean> {
+    if ((await this.client.get(this.stateKey(runId))) !== null) return true;
+    return (await this.client.lrange(this.chunksKey(runId), 0, 0)).length > 0;
+  }
+
   async close(runId: string): Promise<void> {
     await this.client.del(this.chunksKey(runId), this.stateKey(runId));
   }

@@ -2,6 +2,7 @@ import type { AgentUiComponent } from '../stream-events.js';
 import type {
   Actor,
   MessageAttachment,
+  MessageFeedback,
   MessageUsage,
   StoredMessage,
   ThreadDetail,
@@ -193,6 +194,18 @@ export interface AgentStore {
    */
   setMessageToolResults(messageId: string, results: ToolResult[]): Promise<void>;
   truncateFrom(threadId: string, messageId: string): Promise<void>;
+  /**
+   * OPTIONAL: the thread a message belongs to, or `null` when there is no such message. The
+   * authorization seam for message-scoped routes (feedback): the route resolves the thread's owner
+   * from it. Implement it together with {@link setMessageFeedback}.
+   */
+  threadOfMessage?(messageId: string): Promise<string | null>;
+  /**
+   * OPTIONAL: set (or, with `null`, clear) the rating on a message — see
+   * {@link import('../types.js').StoredMessage.feedback}. Absent → `POST <path>/messages/:id/feedback`
+   * answers `501`.
+   */
+  setMessageFeedback?(messageId: string, feedback: MessageFeedback | null): Promise<void>;
 
   recordToolCall(input: RecordToolCallInput): Promise<void>;
   updateToolCall(input: UpdateToolCallInput): Promise<void>;

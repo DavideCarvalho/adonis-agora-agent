@@ -73,7 +73,10 @@ async function turn(
   for await (const frame of g.service.subscribe(started.runId)) {
     const sse = encoder.encode(frame);
     for (const chunk of sse.split('\n\n')) {
-      if (chunk.startsWith('data: ')) events.push(JSON.parse(chunk.slice(6)) as AgentStreamEvent);
+      const data = chunk.split('\n').find((line) => line.startsWith('data: '));
+      if (data !== undefined && !chunk.startsWith('event:')) {
+        events.push(JSON.parse(data.slice(6)) as AgentStreamEvent);
+      }
     }
     if (frame.t === 'approval' && decide !== undefined) {
       // The frame is written just before the run parks on the decision; a person is never faster.

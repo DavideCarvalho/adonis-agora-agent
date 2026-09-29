@@ -63,6 +63,10 @@ export class InProcessTokenStreamSink implements TokenStreamSink {
     }
   }
 
+  has(runId: string): boolean {
+    return this.runs.has(runId);
+  }
+
   close(runId: string): void {
     this.runs.delete(runId);
   }

@@ -45,6 +45,19 @@ function withExtra(event: AgentStreamEvent, extra: Record<string, unknown>): Age
   return { ...extra, ...event };
 }
 
+/**
+ * A reconnect cursor from `?after=` or the `Last-Event-ID` header: a non-negative integer, or
+ * `undefined` for anything else (absent, malformed).
+ */
+export function parseStreamCursor(raw: unknown): number | undefined {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof value !== 'string' || !/^\d+$/.test(value.trim())) {
+    return undefined;
+  }
+  const parsed = Number(value.trim());
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -103,11 +116,21 @@ export function frameToEvents(frame: StreamFrame, position: number): AgentStream
 
 /**
  * Writes a run's frames in the agent protocol, one `data:` frame per event. Stateful only in the
- * frame position it counts, so feed it every frame of the run in buffer order.
+ * positions it counts, so feed it every frame of the run in buffer order.
+ *
+ * Every event carries an SSE `id:` — its 1-based sequence number within the run. The number is a
+ * pure function of the run's buffered stream (every sink replays a run from its first frame, in
+ * write order, and {@link frameToEvents} is pure), so the same event gets the same number on the
+ * POST that started the run and on any later `GET …/stream`, whichever replica serves it. Events at
+ * or below `after` — what a reconnecting client already has — are counted but not written. `meta`,
+ * `done` and `error` carry no id.
  */
 export class AgentSseEncoder {
   private position = 0;
+  private seq = 0;
   private failed = false;
+
+  constructor(private readonly after = 0) {}
 
   /** The SSE text for the next frame of the run (possibly `''`). */
   encode(frame: StreamFrame): string {
@@ -117,9 +140,14 @@ export class AgentSseEncoder {
       this.failed = true;
       return `event: error\ndata: ${JSON.stringify({ code: frame.code, message: frame.message })}\n\n`;
     }
-    return frameToEvents(frame, position)
-      .map((event) => `data: ${JSON.stringify(event)}\n\n`)
-      .join('');
+    let out = '';
+    for (const event of frameToEvents(frame, position)) {
+      this.seq += 1;
+      if (this.seq > this.after) {
+        out += `id: ${this.seq}\ndata: ${JSON.stringify(event)}\n\n`;
+      }
+    }
+    return out;
   }
 
   /**
