@@ -51,6 +51,34 @@ place to make that mandatory rather than aspirational.
 A malformed question set comes back as an ordinary **tool failure** carrying the validation issues,
 so the model fixes its own mistake instead of failing the run or parking a person.
 
+## Typed inputs
+
+A question can ask for a value instead of a pick — a number, a date, an email, a sentence — with
+`input`. `options` then becomes optional (a `select` still picks from them) and `defaults` is only
+required when there is a sensible pre-pick:
+
+```ts
+questions: [
+  { id: 'seats', prompt: 'How many seats?', input: { type: 'number', min: 1, max: 8 }, defaults: ['2'] },
+  { id: 'when', prompt: 'Which day?', input: { type: 'date', min: '2026-10-01' } },
+  { id: 'email', prompt: 'Where do we send it?', input: { type: 'email', required: true } },
+  { id: 'notes', prompt: 'Anything else?', description: 'Optional', input: { type: 'textarea', max: 500 } },
+]
+```
+
+`type` is one of `text`, `textarea`, `number`, `boolean`, `date`, `email`, `url`, `select`; `min`/`max`
+bound a number, a text's length or a date; `pattern` is a regex the whole value must match;
+`required: true` refuses an empty answer. The model's `ask` tool offers the same fields.
+
+Answers stay `string[]` whatever the type, in one canonical form — numbers as decimals (`"42"`),
+booleans as `"true"`/`"false"`, dates as `YYYY-MM-DD`. `POST /agent/tool-call/answer` checks a reply
+against the questions it answers and refuses what it cannot settle with a `400` naming the question
+(`answers["seats"] must be at most 8`) — including a `required` question left without an answer or a
+default. The loop applies the same rules to whatever reaches it, dropping what they refuse. The rules
+are the NestJS library's (`validateElicitationValue` / `validateElicitationAnswer`, exported here), so
+`@dudousxd/nestjs-agent-react`'s `coerceAnswer` / `validateAnswer` agree with the server before a reply
+is sent. A custom `AgentStore` opts into the route check with `toolCallInput` (optional).
+
 ## One shape, one resume path
 
 Both surfaces:

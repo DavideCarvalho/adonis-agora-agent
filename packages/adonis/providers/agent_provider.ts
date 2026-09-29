@@ -580,6 +580,12 @@ export default class AgentProvider {
       if (runId === null) return;
       const owner = await service.runOwner(runId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
+      // A value a question's rules refuse, or a `required` question left empty, is refused HERE so
+      // the person who typed it hears why — rather than signalled and quietly dropped by the loop.
+      const problem = await service.answerProblem(body.toolCallId, body.answers ?? {});
+      if (problem !== null) {
+        return ctx.response.badRequest({ error: problem });
+      }
       try {
         await service.answer({
           runId,

@@ -143,6 +143,17 @@ export {
   resolveElicitation,
   settleElicitation,
 } from './elicitation.js';
+export {
+  ELICITATION_INPUT_TYPES,
+  type ElicitationInput,
+  type ElicitationInputType,
+  isTypedQuestion,
+  questionOptions,
+  readElicitationInput,
+  readElicitationQuestions,
+  validateElicitationAnswer,
+  validateElicitationValue,
+} from './elicitation-input.js';
 export type { AgentGovernanceAuthorize, GovernanceGateVerdict } from './governance-gate.js';
 export { evaluateGovernanceGate } from './governance-gate.js';
 export * from './history-window.js';

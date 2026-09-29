@@ -1,5 +1,6 @@
 import { utcDay } from './agent-deps.js';
 import type { AgentDepsFactory } from './agent-deps-factory.js';
+import { readElicitationQuestions, validateElicitationAnswer } from './elicitation-input.js';
 import type { AgentRunner } from './spi/agent-runner.js';
 import type { AgentStore } from './spi/agent-store.js';
 import {
@@ -148,6 +149,31 @@ export class AgentService {
    * {@link import('./elicitation.js').HumanReplyMismatchError}. Answers say nothing about whether
    * proposed work should go ahead, and the alternative is a rejection nobody made.
    */
+  /**
+   * Check a reply against the questions it answers before it is signalled: every submitted value a
+   * question's own rules accept (a typed input's type, bounds and pattern; a pick from the offered
+   * options), and every `required` question answered — by the reply, or by the defaults an omitted
+   * question falls back to. Returns the first problem as `answers["<id>"] <reason>`, or `null`.
+   * Needs the store's `toolCallInput`; without it the loop's own filtering is the only check.
+   */
+  async answerProblem(
+    toolCallId: string,
+    answers: Record<string, string[]>,
+  ): Promise<string | null> {
+    if (this.store.toolCallInput === undefined) {
+      return null;
+    }
+    const questions = readElicitationQuestions(await this.store.toolCallInput(toolCallId));
+    for (const question of questions) {
+      const submitted = Object.hasOwn(answers, question.id) ? answers[question.id] : undefined;
+      const problem = validateElicitationAnswer(question, submitted ?? question.defaults ?? []);
+      if (problem !== null) {
+        return `answers["${question.id}"] ${problem}`;
+      }
+    }
+    return null;
+  }
+
   answer(args: {
     runId: string;
     toolCallId: string;
