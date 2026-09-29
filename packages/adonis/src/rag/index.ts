@@ -42,6 +42,7 @@ export {
   RerankingRetriever,
   type RerankingRetrieverOptions,
 } from './reranking-retriever.js';
+export * from './tree/index.js';
 export {
   applyMetadataPatch,
   assertRemovalFilter,

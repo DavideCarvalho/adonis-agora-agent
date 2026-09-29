@@ -1,0 +1,76 @@
+---
+title: Tree navigation (long documents)
+description: PageIndex-style, reasoning-based retrieval for long structured documents — a table-of-contents tree per document, navigated by an LLM, behind your existing search.
+icon: ListTree
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Chunk search ranks passages. On a **long structured document** — a regulation, an RFP, a contract, a 10-K, a manual — it usually finds the right *document* and then loses the right *page* among hundreds of look-alike clause or financial-statement chunks. Tree navigation ("vectorless", reasoning-based: the method of [PageIndex](https://github.com/VectifyAI/PageIndex)) builds a table of contents per long document at ingestion — sections with page ranges and summaries — and at query time an LLM reads that outline and walks to the sections that answer, returning their text with the path it took.
+
+<Callout type="info" title="When it pays off">
+On a 149-question benchmark (same answering model) it beat hybrid dense + lexical search by **+24 points** on long GovCon regulations and **+30** on FinanceBench 10-Ks, and gave nothing on short wiki notes — at seconds of latency and LLM spend per query instead of a fraction of a second. So: **keep hybrid first, and navigate only inside the top long documents.**
+</Callout>
+
+## Build trees at upload
+
+```ts
+import db from '@adonisjs/lucid/services/db'
+import { indexDocumentTree, openAiChatTreeLlm, PgDocumentTreeStore } from '@adonis-agora/agent'
+
+const trees = new PgDocumentTreeStore(db) // tables from the published create_agent_rag_trees migration
+const llm = openAiChatTreeLlm({ model: 'gpt-4.1-mini', apiKey: env.get('OPENAI_API_KEY') })
+
+// Next to chunk + embed. Only long documents get a tree (default ≥ 20 pages or ≥ 60k chars);
+// a shorter one is skipped and any stale tree removed.
+await indexDocumentTree(
+  { pages, title: file.name }, // or { sections: [{ title, level, text, page }] }, plus an optional PDF outline
+  { store: trees, documentId: file.id, llm, metadata: { tenant }, source: file.name },
+)
+```
+
+The structure comes from the cheapest source that works, and the build never loops:
+
+1. the document's own `outline` (PDF bookmarks), when you pass one;
+2. section titles/levels (`sections` input) or headings found in the text — markdown headers and the keyword/numbered headings of regulations and filings (`PART 52`, `Subpart 19.8`, `Item 7.`, `52.236–5 Material and Workmanship.`), with running page headers and table-of-contents listings dropped;
+3. only when there is no usable structure, the LLM proposes the sections window by window — and only if the whole document fits `maxStructureCalls`;
+4. otherwise, or on any failure, page groups (`Pages 21–25: <first line>`).
+
+Summaries are written top-down (top levels matter most for navigation) within a **hard per-document budget** — `budget: { maxCalls, maxInputTokens, maxOutputTokens, timeoutMs, callTimeoutMs }`, default 60 calls / 400k input tokens / 5 minutes. Every call is checked before it is made and nothing is retried; what the budget leaves unsummarized uses its own opening text. `tree.stats` records calls, tokens and the `fallbackReason`. Builds are deterministic for a deterministic model and fingerprinted: an unchanged document costs one read and no LLM call, a changed one re-summarizes only the sections whose text changed, and `cachedTreeLlm(llm, cache)` makes repeated prompts free.
+
+## Two-stage retrieval
+
+```ts title="config/agent.ts"
+import { HybridRetriever, TreeNavigationRetriever, TwoStageRetriever } from '@adonis-agora/agent'
+
+const navigator = new TreeNavigationRetriever({ store: trees, llm })
+// The first stage picks documents; among its top 3, those with a tree are navigated (at most 2);
+// short documents — and any navigation that fails — keep their chunks.
+const retriever = new TwoStageRetriever(hybrid, navigator, { navigateDocuments: 2 })
+```
+
+`TreeNavigationRetriever` navigates a tree whose outline fits `singlePassMaxChars` (default 40k characters) in one call over the whole outline; a larger one is walked level by level — a beam of `beamWidth` nodes over at most `maxSteps` levels, the model choosing to `expand` or `read` each candidate — within its own per-navigation budget (default 6 calls / 60k input tokens / 60 s). Running out returns what was chosen so far. `navigate()` and `search()` return the **audit trail** with the passages: every step's candidates, choices and the model's stated reasoning, and each node's path. Every passage carries `documentId`, `nodeId`, `title`, `pageStart`/`pageEnd` and `path` in its metadata.
+
+## Let the agent open a document
+
+```ts title="app/agent_tools/navigate_document.ts"
+import { createNavigateDocumentTool } from '@adonis-agora/agent'
+
+export const navigateDocument = createNavigateDocumentTool(navigator, {
+  filter: (ctx) => ({ tenant: ctx.actor.tenantRef }),
+})
+```
+
+`navigate_document({ documentId, question })` is a `read` tool for after a search puts a long document among the hits. It accepts a chunk id (`doc#12`) too, and answers `found: false` with a note for a document that has no tree, so the model falls back to the passages it already has.
+
+## Access control and storage
+
+`DocumentTreeStore` filters (`get`, `getMany`, `list`) have exactly the vector stores' semantics — scalar equality, array match-any, empty-array deny — and the navigator, the two-stage retriever and the tool pass the caller's filter to every tree read. `PgDocumentTreeStore` takes the same Lucid runner as `PgVectorStore` (`db`, or `db.connection(name)`), keeps one row per tree plus one row per page/section, and provisions through the published `create_agent_rag_trees` migration or `ensureSchema()` / `schemaStatements()`. `MemoryDocumentTreeStore` is the in-process twin for tests.
+
+## The LLM
+
+`TreeLlm` is one prompt in, one text reply out: `openAiChatTreeLlm` (any OpenAI-compatible `/chat/completions`; pass `body: { enable_thinking: false }` or similar so a reasoning model doesn't spend the reply budget on thoughts), `treeLlmFromModelProvider` (your agent's `ModelProvider`), or a function of your own. Each request also carries its `task` as data — what the deterministic, model-free `keywordTreeLlm()` answers from in tests.
+
+<Callout type="info" title="Credits">
+PageIndex (© 2025 Vectify AI, MIT) is the method and the prompts' origin; this is an independent TypeScript implementation. See the package `NOTICE`.
+</Callout>

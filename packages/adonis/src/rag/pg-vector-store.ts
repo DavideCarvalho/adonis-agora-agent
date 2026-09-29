@@ -212,7 +212,7 @@ export function stripNulBytes<T>(value: T): T {
  * just as easily as stored text can, Postgres rejects it here exactly as it would on a write, and
  * stripping it here keeps a filter lookup consistent with the already-stripped data it is matched against.
  */
-function buildMetadataWhere(
+export function buildMetadataWhere(
   filter: Record<string, unknown> | undefined,
   metadataColumn: string,
 ): { sql: string; bindings: unknown[] } {
@@ -258,7 +258,7 @@ function buildMetadataWhere(
 }
 
 /** Normalize whatever a Lucid `rawQuery` returns (PG `{rows}`, SQLite array, MySQL `[rows,fields]`). */
-function normalizeRows(raw: unknown): Record<string, unknown>[] {
+export function normalizeRows(raw: unknown): Record<string, unknown>[] {
   if (Array.isArray(raw)) {
     if (raw.length > 0 && Array.isArray(raw[0])) {
       return raw[0] as Record<string, unknown>[];
