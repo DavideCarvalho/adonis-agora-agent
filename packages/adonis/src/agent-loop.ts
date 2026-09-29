@@ -2467,6 +2467,10 @@ export async function runAgentLoop<TOutput = unknown>(
         input.actor,
         deps.rolesPolicy,
         intersectAllow(persona?.allowedTools, deps.toolAllowList),
+        {
+          threadId: input.threadId,
+          ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+        },
       ),
       ask: deps.ask,
       skills: skillOffer !== undefined,

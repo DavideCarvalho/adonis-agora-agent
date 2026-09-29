@@ -154,6 +154,12 @@ export {
   validateElicitationAnswer,
   validateElicitationValue,
 } from './elicitation-input.js';
+export {
+  AgentGenui,
+  type GenuiFactory,
+  type GenuiFactoryContext,
+  type GenuiSetup,
+} from './genui/factory.js';
 export type { AgentGovernanceAuthorize, GovernanceGateVerdict } from './governance-gate.js';
 export { evaluateGovernanceGate } from './governance-gate.js';
 export * from './history-window.js';

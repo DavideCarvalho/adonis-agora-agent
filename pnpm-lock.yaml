@@ -224,6 +224,9 @@ importers:
       '@adonisjs/redis':
         specifier: 11.0.0
         version: 11.0.0(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2)
+      '@dudousxd/nestjs-agent-core':
+        specifier: 0.26.0
+        version: 0.26.0
       '@qdrant/js-client-rest':
         specifier: 1.19.0
         version: 1.19.0(typescript@7.0.2)
@@ -891,6 +894,24 @@ packages:
   '@csstools/css-tokenizer@4.0.0':
     resolution: {integrity: sha512-QxULHAm7cNu72w97JUNCBFODFaXpbDg+dP8b/oWFAZ2MTRppA3U00Y2L1HqaS4J6yBqxwa/Y3nMBaxVKbB/NsA==}
     engines: {node: '>=20.19.0'}
+
+  '@dudousxd/nestjs-agent-core@0.26.0':
+    resolution: {integrity: sha512-3Ov1R9XW7xJfoOMmfGPQ9BIbNF/Omm6rywW8dnx0w2RTLj0ROxzgz/zkjRzijlLRJ+DyCWw5aSJiHUn0Maos/A==}
+
+  '@dudousxd/nestjs-diagnostics@0.7.2':
+    resolution: {integrity: sha512-PHlL8Fdb6kfFRqU3RHJtIUc5rz8u738Fjx3YyaDQaVpn5UBdNC2hhcaFyK+XO7c6luzcSlQAe76aWwRcaeuDRA==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@nestjs/common': ^10 || ^11 || ^12
+      '@nestjs/core': ^10 || ^11 || ^12
+      reflect-metadata: ^0.2
+    peerDependenciesMeta:
+      '@nestjs/common':
+        optional: true
+      '@nestjs/core':
+        optional: true
+      reflect-metadata:
+        optional: true
 
   '@esbuild/aix-ppc64@0.28.1':
     resolution: {integrity: sha512-Svl7tq8k/08+p6CXPpRjQ1fKX+1odH/BQbb48fV6fj3CWHhsoIOoY87w1oHXm0qEpkIK3ZfVgp0hed3XBXzXMQ==}
@@ -4181,6 +4202,17 @@ snapshots:
       css-tree: 3.2.1
 
   '@csstools/css-tokenizer@4.0.0': {}
+
+  '@dudousxd/nestjs-agent-core@0.26.0':
+    dependencies:
+      '@dudousxd/nestjs-diagnostics': 0.7.2
+      '@standard-schema/spec': 1.1.0
+    transitivePeerDependencies:
+      - '@nestjs/common'
+      - '@nestjs/core'
+      - reflect-metadata
+
+  '@dudousxd/nestjs-diagnostics@0.7.2': {}
 
   '@esbuild/aix-ppc64@0.28.1':
     optional: true

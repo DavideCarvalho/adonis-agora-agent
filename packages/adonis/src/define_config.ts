@@ -1,5 +1,6 @@
 import type { BrandedFunctionalTool } from './ai-tool-ref.js';
 import type { AgentDashboardConfig } from './dashboard/define_config.js';
+import type { GenuiFactory } from './genui/factory.js';
 import type { AgentGovernanceAuthorize } from './governance-gate.js';
 import type { McpServerConfig } from './mcp-client/options.js';
 import type { MemoryConfig } from './memory.js';
@@ -247,6 +248,12 @@ export interface AgentConfig {
    * Omit → an empty catalog, and a request naming a model is refused with `400`.
    */
   models?: ModelCatalog | ModelCatalogView;
+  /**
+   * Generative UI: `genui({ catalog, … })` from `@adonis-agora/agent/genui` (needs the optional peer
+   * `@dudousxd/nestjs-agent-core`). Registers tools that let the model push catalog components into
+   * the conversation, and binds the catalog in the container as `AgentGenui`.
+   */
+  genui?: GenuiFactory;
   /**
    * Run each turn as a replay-safe durable workflow (over `@adonis-agora/durable`) instead of
    * in-process: LLM turns / tool executions become memoized durable steps, HITL approval suspends the

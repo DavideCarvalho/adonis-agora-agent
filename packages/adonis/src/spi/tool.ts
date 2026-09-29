@@ -1,3 +1,4 @@
+import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { Actor, PageContext, Persona } from '../types.js';
 
 /**
@@ -43,4 +44,32 @@ export interface AiToolCtx {
  */
 export interface ToolHandler<I = unknown, O = unknown> {
   execute(input: I, ctx: AiToolCtx): Promise<O> | O;
+  /**
+   * What the model is told about this tool for THIS turn — a description and/or input schema that
+   * depend on who is asking (a per-tenant component catalog, a per-plan list of options). Called
+   * when the turn's tool list is built, after every gate has passed; whatever it returns replaces
+   * the registered spec's `description` / `inputSchema` in the definition the model sees. Omit, or
+   * return `undefined`, to use the registered spec as is.
+   *
+   * It shapes what the model is SHOWN only: the registry still validates a call against the
+   * registered `inputSchema`, so a tool whose accepted input varies per turn registers a permissive
+   * schema and validates in `execute`.
+   */
+  describe?(
+    scope: ToolDescribeScope,
+  ): ToolDescription | undefined | Promise<ToolDescription | undefined>;
+}
+
+/** Who a turn's tool list is being built for — what {@link ToolHandler.describe} can vary on. */
+export interface ToolDescribeScope {
+  actor: Actor;
+  /** Absent where the list is built outside a conversation (the MCP server's `tools/list`). */
+  threadId?: string;
+  agentName?: string;
+}
+
+/** A per-turn override of a tool's model-facing definition ({@link ToolHandler.describe}). */
+export interface ToolDescription {
+  description?: string;
+  inputSchema?: StandardSchemaV1;
 }
