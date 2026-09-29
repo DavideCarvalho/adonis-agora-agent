@@ -14,6 +14,7 @@ import type {
   ToolCallApproval,
   ToolCallStatus,
   ToolResult,
+  UpdateThreadInput,
   UpdateToolCallInput,
 } from '../index.js';
 import { type ToolCallApprovalState, toolCallApprovalFromRow } from '../spi/approval-policy.js';
@@ -226,6 +227,7 @@ export class InMemoryAgentStore implements AgentStore {
       updatedAt: ts,
       // Feedback rates a message in ITS thread; a fork starts unrated.
       messages: kept.map(({ feedback: _feedback, ...message }) => ({ ...message })),
+      ...(source.model != null ? { model: source.model } : {}),
     };
     this.threads.set(id, row);
     return this.toSummary(row);
@@ -237,6 +239,20 @@ export class InMemoryAgentStore implements AgentStore {
       row.title = title;
       row.updatedAt = this.now();
     }
+  }
+
+  async updateThread(threadId: string, patch: UpdateThreadInput): Promise<void> {
+    const row = this.threads.get(threadId);
+    if (row === undefined) {
+      return;
+    }
+    if (patch.title !== undefined) {
+      row.title = patch.title;
+    }
+    if (patch.model !== undefined) {
+      row.model = patch.model;
+    }
+    row.updatedAt = this.now();
   }
 
   async setActiveStream(threadId: string, runId: string | null): Promise<void> {
@@ -583,6 +599,7 @@ export class InMemoryAgentStore implements AgentStore {
       updatedAt: row.updatedAt,
       ...(row.pinnedAt !== undefined ? { pinnedAt: row.pinnedAt } : {}),
       ...(last !== undefined ? { lastMessagePreview: last.content.slice(0, 120) } : {}),
+      model: row.model ?? null,
     };
   }
 }

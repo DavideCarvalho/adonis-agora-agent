@@ -130,6 +130,28 @@ describe('aiSdkModel', () => {
     ]);
   });
 
+  it('runs a turn on the picked model: resolved when asked, verbatim for a gateway id', async () => {
+    const run = (
+      model: Parameters<typeof aiSdkModel>[0],
+      opts?: Parameters<typeof aiSdkModel>[1],
+    ) =>
+      aiSdkModel(model, opts).runTurn({
+        system: '',
+        messages: [],
+        tools: [],
+        sink: createSink(),
+        model: 'openai/gpt-4o-mini',
+      });
+    await run('openai/gpt-4o');
+    expect(streamTextMock.mock.calls.at(-1)?.[0]).toMatchObject({ model: 'openai/gpt-4o-mini' });
+    streamTextMock.mockReturnValue(fakeStreamResult());
+    await run('openai/gpt-4o', { resolveModel: (id) => `resolved:${id}` });
+    expect(streamTextMock.mock.calls.at(-1)?.[0]).toMatchObject({
+      model: 'resolved:openai/gpt-4o-mini',
+    });
+    expect(streamTextMock.mock.calls.at(-1)?.[0]).not.toHaveProperty('resolveModel');
+  });
+
   it('maps SDK tool calls to ToolCallRequest', async () => {
     const result = await aiSdkModel('openai/gpt-4o').runTurn({
       system: '',

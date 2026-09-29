@@ -8,6 +8,12 @@ import {
   mayDecideApproval,
   type ToolCallApprovalState,
 } from './spi/approval-policy.js';
+import {
+  findCatalogModel,
+  type ModelCatalog,
+  type ModelCatalogView,
+  ModelNotAllowedError,
+} from './spi/model-catalog.js';
 import type { StreamFrame } from './spi/token-stream-sink.js';
 import type { ToolCatalogEntry } from './tool-presentation.js';
 import type {
@@ -37,6 +43,11 @@ export interface ChatParams {
    * lib never fetches bytes; the model adapter renders them as native content parts from `url`.
    */
   attachments?: MessageAttachment[];
+  /**
+   * Run this turn on a catalog model instead of the thread's pinned one (or the provider default).
+   * Refused ({@link ModelNotAllowedError}) unless the catalog lists it as available to this actor.
+   */
+  model?: string;
 }
 
 /**
@@ -44,15 +55,105 @@ export interface ChatParams {
  * its live token stream, deliver HITL decisions, and read/mutate threads. It owns no HTTP — the
  * provider's route handlers resolve the actor and pipe the SSE, then delegate here.
  */
+/** What the service needs beyond the runner, store and deps — all optional. */
+export interface AgentServiceOptions {
+  /** Which models a caller may pick. Omitted → an empty catalog; naming a model is refused. */
+  models?: ModelCatalog;
+}
+
 export class AgentService {
   constructor(
     private readonly runner: AgentRunner,
     private readonly store: AgentStore,
     private readonly deps: AgentDepsFactory,
+    private readonly options: AgentServiceOptions = {},
   ) {}
+
+  /**
+   * The models `actor` may pick for `agent` (`GET <path>/models`). An empty catalog when none is
+   * configured, so a picker simply has nothing to offer.
+   */
+  async listModels(actor: Actor, agent?: string): Promise<ModelCatalogView> {
+    if (this.options.models === undefined) {
+      return { providers: [], default: null };
+    }
+    return this.options.models.list({ actor, ...(agent !== undefined ? { agent } : {}) });
+  }
+
+  /**
+   * `model` if the catalog offers it to this actor and agent right now, else a
+   * {@link ModelNotAllowedError} naming why. The one gate every model choice passes — a send's own,
+   * and a thread's pinned one when it is pinned and again at every turn that runs on it.
+   */
+  async assertModelAllowed(actor: Actor, agent: string, model: string): Promise<string> {
+    if (this.options.models === undefined) {
+      throw new ModelNotAllowedError(
+        `model "${model}" cannot be selected: no model catalog is configured (models in config/agent.ts)`,
+      );
+    }
+    const entry = findCatalogModel(await this.options.models.list({ actor, agent }), model);
+    if (entry === undefined) {
+      throw new ModelNotAllowedError(`model "${model}" is not offered`);
+    }
+    if (!entry.available) {
+      throw new ModelNotAllowedError(
+        `model "${model}" is not available${entry.unavailableReason ? `: ${entry.unavailableReason}` : ''}`,
+      );
+    }
+    return entry.id;
+  }
+
+  /** The model a turn runs on: the send's own, else the thread's pinned one, else none. */
+  private async resolveModel(
+    actor: Actor,
+    agent: string,
+    requested: string | undefined,
+    threadId: string | undefined,
+  ): Promise<string | undefined> {
+    const pinned =
+      requested === undefined && threadId !== undefined
+        ? ((await this.store.getThread(threadId))?.model ?? null)
+        : null;
+    const model = requested ?? pinned;
+    return model === null || model === undefined
+      ? undefined
+      : this.assertModelAllowed(actor, agent, model);
+  }
+
+  /**
+   * Pin (or with `null`, unpin) a catalog model on a thread — checked against the catalog for the
+   * thread's default agent. `false` when the store cannot persist it (no `updateThread`).
+   */
+  async setThreadModel(actor: Actor, threadId: string, model: string | null): Promise<boolean> {
+    if (this.store.updateThread === undefined) {
+      return false;
+    }
+    const pinned =
+      model === null
+        ? null
+        : await this.assertModelAllowed(actor, this.deps.defaultAgentName(), model);
+    await this.store.updateThread(threadId, { model: pinned });
+    return true;
+  }
+
+  /** The registered agents, for a picker (`GET <path>/agents`). */
+  listAgents(): { name: string; description: string; isDefault?: true }[] {
+    const defaultName = this.deps.defaultAgentName();
+    const listed = this.deps.agentDefinitions();
+    const entries = listed.map((definition) => ({
+      name: definition.name,
+      description: definition.description ?? '',
+      ...(definition.name === defaultName ? { isDefault: true as const } : {}),
+    }));
+    return entries.some((entry) => entry.name === defaultName)
+      ? entries
+      : [{ name: defaultName, description: '', isDefault: true as const }, ...entries];
+  }
 
   async chat(params: ChatParams): Promise<{ runId: string; threadId: string }> {
     const agentName = params.agentName ?? this.deps.defaultAgentName();
+    // Before the thread exists, so a refused model leaves nothing behind.
+    const model = await this.resolveModel(params.actor, agentName, params.model, params.threadId);
     let threadId = params.threadId;
     if (threadId === undefined) {
       const created = await this.store.createThread({
@@ -72,6 +173,7 @@ export class AgentService {
       ...(persona !== undefined ? { persona } : {}),
       ...(params.pageContext !== undefined ? { pageContext: params.pageContext } : {}),
       ...(params.attachments !== undefined ? { attachments: params.attachments } : {}),
+      ...(model !== undefined ? { model } : {}),
     };
 
     const { runId } = await this.runner.start(input);

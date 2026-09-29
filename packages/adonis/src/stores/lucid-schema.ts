@@ -43,6 +43,7 @@ export function createTableStatements(): string[] {
       "summary" TEXT NULL,
       "summary_message_count" INTEGER NOT NULL DEFAULT 0,
       "active_stream_id" VARCHAR(255) NULL,
+      "model" VARCHAR(255) NULL,
       "created_at" BIGINT NOT NULL,
       "updated_at" BIGINT NOT NULL,
       "deleted_at" BIGINT NULL
@@ -163,6 +164,7 @@ const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }
   { table: AGENT_TABLES.messages, column: 'reasoning_ms', type: 'INTEGER NULL' },
   { table: AGENT_TABLES.messages, column: 'ui', type: 'TEXT NULL' },
   { table: AGENT_TABLES.messages, column: 'feedback', type: 'TEXT NULL' },
+  { table: AGENT_TABLES.threads, column: 'model', type: 'VARCHAR(255) NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'approver', type: 'VARCHAR(255) NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'expires_at', type: 'BIGINT NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'remember', type: 'INTEGER NULL' },

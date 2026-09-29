@@ -28,6 +28,7 @@ import {
   lucidStoreConnection,
   type MemoryConfig,
   type MessageAttachment,
+  ModelNotAllowedError,
   type ModelProvider,
   memoryForgetVerdict,
   offerMemories,
@@ -47,6 +48,7 @@ import {
   ToolRegistry,
   type ToolsBarrel,
   toApprovalPolicy,
+  toModelCatalog,
   UnconfiguredActorResolver,
   withActorLabel,
   withActorLabels,
@@ -62,6 +64,8 @@ interface ChatBody {
   pageContext?: PageContext;
   /** Already-staged attachments (from `POST /agent/attachments`) to send with this message. */
   attachments?: MessageAttachment[];
+  /** Run this turn on a catalog model (see `GET models`) instead of the thread's pinned one. */
+  model?: string;
 }
 
 /** A decision's `via` is provenance persisted on the call — bounded like any other stored label. */
@@ -238,7 +242,9 @@ export default class AgentProvider {
         ? ((await this.#resolveDurableRunner(factory, store)) ??
           new InlineAgentRunner(factory, store))
         : new InlineAgentRunner(factory, store);
-    const service = new AgentService(runner, store, factory);
+    const service = new AgentService(runner, store, factory, {
+      ...(config.models !== undefined ? { models: toModelCatalog(config.models) } : {}),
+    });
     this.app.container.bindValue(AgentService, service);
 
     await this.#registerRoutes(
@@ -475,16 +481,25 @@ export default class AgentProvider {
         const owner = await service.threadOwner(body.threadId);
         if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
       }
-      const { runId, threadId } = await service.chat({
-        actor,
-        message: body.message,
-        ...(body.threadId !== undefined ? { threadId: body.threadId } : {}),
-        ...(body.agent !== undefined ? { agentName: body.agent } : {}),
-        ...(body.persona !== undefined ? { personaId: body.persona } : {}),
-        ...(body.pageContext !== undefined ? { pageContext: body.pageContext } : {}),
-        ...(body.attachments !== undefined ? { attachments: body.attachments } : {}),
-      });
-      await this.#pipe(ctx, service, protocol, runId, threadId);
+      let started: { runId: string; threadId: string };
+      try {
+        started = await service.chat({
+          actor,
+          message: body.message,
+          ...(typeof body.model === 'string' && body.model.length > 0 ? { model: body.model } : {}),
+          ...(body.threadId !== undefined ? { threadId: body.threadId } : {}),
+          ...(body.agent !== undefined ? { agentName: body.agent } : {}),
+          ...(body.persona !== undefined ? { personaId: body.persona } : {}),
+          ...(body.pageContext !== undefined ? { pageContext: body.pageContext } : {}),
+          ...(body.attachments !== undefined ? { attachments: body.attachments } : {}),
+        });
+      } catch (error) {
+        if (error instanceof ModelNotAllowedError) {
+          return ctx.response.badRequest({ error: error.message });
+        }
+        throw error;
+      }
+      await this.#pipe(ctx, service, protocol, started.runId, started.threadId);
     });
 
     // 2. GET /agent/chat/:runId/stream — re-attach SSE. Authenticated: the actor resolver reads the
@@ -669,6 +684,21 @@ export default class AgentProvider {
       return ctx.response.json({ feedback: result.feedback });
     });
 
+    // 6c. GET /agent/models?agent= — the models the caller may pick, grouped by provider, with
+    // availability; an empty catalog when none is configured. GET /agent/agents — the registered
+    // agents for a picker, the default flagged.
+    router.get(p('models'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      const agent = ctx.request.qs().agent as string | undefined;
+      return ctx.response.json(await service.listModels(actor, agent));
+    });
+    router.get(p('agents'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      return ctx.response.json(service.listAgents());
+    });
+
     // 6b. GET /agent/tools?agent= — the tools this caller can reach through an agent, with how a chat
     // surface should talk about each (`presentation`). The same list the model is offered; nothing the
     // caller passes widens it — `agent` only narrows to that agent's allow-list, and an unknown name is
@@ -714,7 +744,26 @@ export default class AgentProvider {
       const threadId = String(ctx.params.id);
       const owner = await service.threadOwner(threadId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
-      const body = (ctx.request.body() ?? {}) as { title?: unknown };
+      const body = (ctx.request.body() ?? {}) as { title?: unknown; model?: unknown };
+      if (body.model !== undefined && body.model !== null && typeof body.model !== 'string') {
+        return ctx.response.badRequest({ error: 'model must be a string or null' });
+      }
+      if (body.model !== undefined) {
+        try {
+          const pinned = await service.setThreadModel(actor, threadId, body.model as string | null);
+          if (!pinned) {
+            return ctx.response.status(501).json({
+              error:
+                "Pinning a thread's model requires an AgentStore that implements updateThread().",
+            });
+          }
+        } catch (error) {
+          if (error instanceof ModelNotAllowedError) {
+            return ctx.response.badRequest({ error: error.message });
+          }
+          throw error;
+        }
+      }
       if (body.title !== undefined) {
         const title = typeof body.title === 'string' ? body.title.trim() : '';
         if (title.length === 0 || title.length > 200) {

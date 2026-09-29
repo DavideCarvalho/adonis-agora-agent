@@ -20,6 +20,12 @@ export interface ModelTurnArgs {
    * reply either way, reading the JSON out of the text when no `object` comes back.
    */
   outputSchema?: StandardSchemaV1;
+  /**
+   * The model the caller picked for this turn — a `ModelCatalogEntry` id the server already checked
+   * against the catalog (a per-send `model`, else the thread's pinned one). Absent → the provider's
+   * own default. A provider serving a single model may ignore it.
+   */
+  model?: string;
 }
 
 /** The outcome of ONE assistant turn. The loop — not the model — drives tool execution. */

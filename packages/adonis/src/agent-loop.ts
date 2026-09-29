@@ -59,6 +59,7 @@ import {
 import type { AgentStore, ThreadTurnReader } from './spi/agent-store.js';
 import { type ApprovalPolicy, DefaultApprovalPolicy } from './spi/approval-policy.js';
 import type { HistoryWindow, HistoryWindowContext } from './spi/history-window.js';
+import { withSelectedModel } from './spi/model-catalog.js';
 import type { ModelProvider, ModelTurnResult } from './spi/model-provider.js';
 import {
   type AgentPricingStore,
@@ -2142,10 +2143,21 @@ export interface AgentLoopResult<TOutput = unknown> {
  * hooks that make the same loop body either in-process or a replay-safe durable workflow.
  */
 export async function runAgentLoop<TOutput = unknown>(
-  deps: AgentLoopDeps<TOutput>,
+  boundDeps: AgentLoopDeps<TOutput>,
   input: AgentRunInput,
   hooks: AgentLoopHooks,
 ): Promise<AgentLoopResult<TOutput>> {
+  // A turn with a selected model runs EVERY call it makes on it — the answer and a structured-output
+  // pass — and labels its usage with it when the provider reports no model id. The pick rides the
+  // run's input, so a durable replay makes the same choice.
+  const deps: AgentLoopDeps<TOutput> =
+    input.model === undefined
+      ? boundDeps
+      : {
+          ...boundDeps,
+          model: withSelectedModel(boundDeps.model, input.model),
+          modelId: input.model,
+        };
   const maxSteps = deps.maxSteps ?? 8;
   const persona = input.persona;
   let system = await resolveSystemPrompt(deps, input);
