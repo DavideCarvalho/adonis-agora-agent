@@ -303,6 +303,18 @@ export * from './spi/attachment-staging.js';
 export * from './spi/embedding-provider.js';
 export * from './spi/governance-queries.js';
 export * from './spi/history-window.js';
+export {
+  findCatalogModel,
+  type ModelCatalog,
+  type ModelCatalogEntry,
+  type ModelCatalogProviderGroup,
+  type ModelCatalogQuery,
+  type ModelCatalogView,
+  ModelNotAllowedError,
+  staticModelCatalog,
+  toModelCatalog,
+  withSelectedModel,
+} from './spi/model-catalog.js';
 export * from './spi/model-provider.js';
 export * from './spi/pricing-store.js';
 export * from './spi/processors.js';

@@ -284,6 +284,12 @@ export interface AgentRunInput {
    * the depth ceiling alone.
    */
   delegationPath?: readonly string[];
+  /**
+   * The model this turn runs on — a catalog id the service already checked (a per-send pick, else
+   * the thread's pinned model). Handed to the provider as `ModelTurnArgs.model`, and the usage label
+   * when the provider reports none. Omitted → the provider's default.
+   */
+  model?: string;
 }
 
 /**
@@ -324,6 +330,8 @@ export interface DelegateEdge {
  */
 export interface AgentDefinition {
   name: string;
+  /** One line about what the agent does, for a picker (`GET <path>/agents`). */
+  description?: string;
   /** Base prompt for this agent. A flat string, or a {@link PromptBuilder} resolved per turn. */
   systemPrompt?: string | PromptBuilder;
   /** Allow-list of tool names this agent may use (subset of all registered tools). */
@@ -372,6 +380,11 @@ export interface ThreadSummary {
   createdAt: string;
   updatedAt: string;
   lastMessagePreview?: string;
+  /**
+   * The model pinned on this thread (`PATCH /threads/:id { model }`) — every turn without its own
+   * `model` runs on it. `null` → the provider's default. Undefined for a store that does not persist it.
+   */
+  model?: string | null;
 }
 
 export interface StoredMessage {

@@ -9,6 +9,7 @@ import type {
   ThreadTurnPage,
   ThreadTurnQuery,
   ThreadTurnReader,
+  UpdateThreadInput,
   UpdateToolCallInput,
 } from '../spi/agent-store.js';
 import {
@@ -338,6 +339,7 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
         summary: null,
         summary_message_count: 0,
         active_stream_id: null,
+        model: source.model ?? null,
         created_at: now,
         updated_at: now,
         deleted_at: null,
@@ -378,6 +380,14 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
       .from(AGENT_TABLES.threads)
       .where('id', threadId)
       .update({ title, updated_at: Date.now() });
+  }
+
+  async updateThread(threadId: string, patch: UpdateThreadInput): Promise<void> {
+    await this.init();
+    const update: Record<string, unknown> = { updated_at: Date.now() };
+    if (patch.title !== undefined) update.title = patch.title;
+    if (patch.model !== undefined) update.model = patch.model;
+    await this.db.from(AGENT_TABLES.threads).where('id', threadId).update(update);
   }
 
   async setActiveStream(threadId: string, runId: string | null): Promise<void> {
@@ -675,6 +685,7 @@ function threadRowToSummary(row: Record<string, unknown>, lastPreview?: string):
     updatedAt: msToIso(row.updated_at),
     ...(pinnedAt !== null && pinnedAt !== undefined ? { pinnedAt: msToIso(pinnedAt) } : {}),
     ...(lastPreview !== undefined ? { lastMessagePreview: lastPreview.slice(0, 120) } : {}),
+    model: typeof row.model === 'string' ? row.model : null,
   };
 }
 

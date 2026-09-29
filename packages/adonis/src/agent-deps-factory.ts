@@ -191,6 +191,11 @@ export interface AgentDepsFactoryConfig {
 export class AgentDepsFactory {
   constructor(private readonly config: AgentDepsFactoryConfig) {}
 
+  /** Every registered agent definition, in registration order. */
+  agentDefinitions(): AgentDefinition[] {
+    return this.config.agents.list();
+  }
+
   defaultAgentName(): string {
     return this.config.defaultAgentName ?? 'default';
   }

@@ -21,6 +21,13 @@ export interface CreateThreadInput {
   title?: string;
 }
 
+/** Patch applied by {@link AgentStore.updateThread}. An omitted key leaves that field untouched. */
+export interface UpdateThreadInput {
+  title?: string;
+  /** `null` unpins the thread's model (turns run on the provider default). */
+  model?: string | null;
+}
+
 export interface AppendMessageInput {
   threadId: string;
   role: StoredMessage['role'];
@@ -179,6 +186,11 @@ export interface AgentStore {
   softDeleteThread(threadId: string): Promise<void>;
   forkThread(threadId: string, fromMessageId: string): Promise<ThreadSummary>;
   setTitle(threadId: string, title: string): Promise<void>;
+  /**
+   * OPTIONAL: patch a thread's settings. Needed to pin a model on a thread (`PATCH <path>/threads/:id
+   * { model }` answers `501` without it); a title alone still goes through {@link setTitle}.
+   */
+  updateThread?(threadId: string, patch: UpdateThreadInput): Promise<void>;
   setActiveStream(threadId: string, runId: string | null): Promise<void>;
 
   appendMessage(input: AppendMessageInput): Promise<StoredMessage>;

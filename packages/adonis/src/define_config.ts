@@ -10,6 +10,7 @@ import type { ApprovalPolicy, ApprovalRules } from './spi/approval-policy.js';
 import type { AttachmentStagingStore } from './spi/attachment-staging.js';
 import type { AgentGovernanceQueries } from './spi/governance-queries.js';
 import type { HistoryWindow } from './spi/history-window.js';
+import type { ModelCatalog, ModelCatalogView } from './spi/model-catalog.js';
 import type { ModelProvider } from './spi/model-provider.js';
 import type { AgentPricingStore } from './spi/pricing-store.js';
 import type { InputProcessor, OutputProcessor } from './spi/processors.js';
@@ -231,6 +232,17 @@ export interface AgentConfig {
    * (`403`), and a lapsed request answers `410`.
    */
   approvalPolicy?: ApprovalPolicy | ApprovalRules;
+  /**
+   * Which models a caller may pick — `GET <path>/models`, a send's `model`, a thread's pinned model
+   * (`PATCH <path>/threads/:id { model }`). The picked id reaches the model provider as
+   * `ModelTurnArgs.model` (`aiSdkModel`'s `resolveModel` turns it into a `LanguageModel`).
+   *
+   * A fixed list is a literal — `{ default: 'gpt-4o-mini', providers: [{ id: 'openai', label:
+   * 'OpenAI', models: [{ id: 'gpt-4o-mini', label: 'GPT-4o mini', available: true }] }] }`; pass a
+   * `ModelCatalog` (`list({ actor, agent })`) to decide per caller (plan, budget, provider health).
+   * Omit → an empty catalog, and a request naming a model is refused with `400`.
+   */
+  models?: ModelCatalog | ModelCatalogView;
   /**
    * Run each turn as a replay-safe durable workflow (over `@adonis-agora/durable`) instead of
    * in-process: LLM turns / tool executions become memoized durable steps, HITL approval suspends the

@@ -22,16 +22,18 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 
 | # | Method & path | Purpose |
 | --- | --- | --- |
-| 1 | `POST /agent/chat` | Start a run. Resolves the actor, creates or continues a thread, and **streams the reply as SSE**. Body: `{ message, threadId?, agent?, persona?, attachments?, pageContext? }`. |
+| 1 | `POST /agent/chat` | Start a run. Resolves the actor, creates or continues a thread, and **streams the reply as SSE**. Body: `{ message, threadId?, agent?, persona?, attachments?, pageContext?, model? }` — `model` must be a catalog model available to the caller (`400` otherwise). |
 | 2 | `GET /agent/chat/:runId/stream` | **Re-attach** to a run's live token stream (reconnect / resume). |
 | 3 | `POST /agent/chat/:runId/cancel` | Abort a run. Returns `{ aborted: true }`. |
 | 4 | `POST /agent/tool-call/approve` | Approve a pending `action` tool call. Body: `{ toolCallId, runId? }`. |
 | 5 | `POST /agent/tool-call/reject` | Reject a pending `action` tool call. Body: `{ toolCallId, runId?, reason? }`. |
 | 6 | `GET /agent/threads` | List the actor's threads. |
+| 6c | `GET /agent/models?agent=` | The models the caller may pick: `{ providers: [{ id, label, models: [{ id, label, description?, badges?, available, unavailableReason?, contextWindow? }] }], default }` — see [Models](#models). An empty catalog when none is configured. |
+| 6d | `GET /agent/agents` | The registered agents for a picker: `{ name, description, isDefault? }[]`. |
 | 6b | `GET /agent/tools?agent=` | The tools the caller can reach through an agent, as `{ name, kind, presentation? }[]` — the same list the model is offered. `404` for an unknown agent. See [Presentation](/docs/agent/authoring/tools#presentation--how-a-chat-surface-talks-about-a-tool). |
 | 7 | `GET /agent/threads/personas/catalog` | The persona `{ id, label }` catalog for a UI picker. |
 | 8 | `GET /agent/threads/:id` | Thread detail (messages + `activeStreamId`), or `null`. |
-| 8b | `PATCH /agent/threads/:id` | Rename: `{ title }` (1–200 characters). Answers `{ ok: true }`. |
+| 8b | `PATCH /agent/threads/:id` | `{ title?, model? }` — rename (1–200 characters) and/or pin a catalog model on the thread (`null` unpins; `400` for a model the catalog does not offer, `501` on a store without `updateThread`). Answers `{ ok: true }`. |
 | 8c | `POST /agent/messages/:id/feedback` | Rate a message: `{ value: 'up' \| 'down' \| null, comment? }` → `{ feedback: { value, comment?, updatedAt } \| null }` (`null` clears). Only the thread's owner — `403` otherwise; `404` unknown message; `400` a bad value; `501` on a store without `threadOfMessage` + `setMessageFeedback`. The rating comes back as `StoredMessage.feedback` and is not copied to a fork. |
 | 9 | `DELETE /agent/threads/:id` | Soft-delete a thread. |
 | 10 | `POST /agent/threads/:id/fork-from/:messageId` | Fork a thread up to a message (regenerate / branch). |
@@ -146,6 +148,31 @@ The response also sets `X-Agent-Run-Id` and `X-Agent-Thread-Id` headers (plus `C
 | `ui?: { id, component, props, version?, toolCallId? }[]` | components the model turn pushed (`ui` frames), first-seen order, last props per `id` |
 
 They are read off the frames inside the model call's own checkpoint, so a durable replay persists the same values rather than re-measuring a turn that is not happening. A provider may also report them itself on `ModelTurnResult` (`reasoning`, `reasoningMs`, `ui`); its values win. `@dudousxd/nestjs-agent-react`'s `storedThreadToUiMessages` replays them as `reasoning` and `data-ui` parts.
+
+## Models
+
+A turn's model is the send's `model`, else the thread's pinned model, else the provider's default. `models` in `config/agent.ts` decides what a caller may pick — a fixed list is a literal:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  model: () => aiSdkModel('openai/gpt-4o-mini'), // a gateway id: the pick replaces it verbatim
+  models: {
+    default: 'openai/gpt-4o-mini',
+    providers: [
+      {
+        id: 'openai',
+        label: 'OpenAI',
+        models: [
+          { id: 'openai/gpt-4o-mini', label: 'GPT-4o mini', badges: ['fast'], available: true },
+          { id: 'openai/gpt-4o', label: 'GPT-4o', available: true },
+        ],
+      },
+    ],
+  },
+})
+```
+
+To decide per caller (plan, budget, provider health), pass a `ModelCatalog` — `list({ actor, agent })` returns the same view, with `available: false` and an `unavailableReason` for what the caller cannot use right now. The server refuses (`400`) any model the catalog does not list as available, on a send and when pinning — a client only ever sends ids the catalog listed, but the server does not trust that. The picked id reaches the provider as `ModelTurnArgs.model`; with a provider instance rather than a gateway id, give `aiSdkModel` a `resolveModel: (id) => openai(id)`. The pick rides the run's input, so a durable replay runs on the same model, and it labels the turn's usage when the provider reports no model id.
 
 ## Human-in-the-loop
 
