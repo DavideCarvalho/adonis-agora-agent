@@ -25,6 +25,7 @@ export {
   type AgentLoopDeps,
   type AgentLoopHooks,
   type AgentLoopResult,
+  APPROVAL_EXPIRED_REASON,
   DEFAULT_MAX_AGENT_APPEARANCES,
   MAX_DELEGATION_DEPTH,
   outcomeFrame,
@@ -270,6 +271,23 @@ export * from './spi/actor-directory.js';
 export * from './spi/actor-resolver.js';
 export * from './spi/agent-runner.js';
 export * from './spi/agent-store.js';
+export {
+  type ApprovalDecisionRef,
+  type ApprovalPolicy,
+  type ApprovalRequirement,
+  type ApprovalRules,
+  type ApprovalThreadRef,
+  type ApprovalToolRef,
+  approvalRules,
+  DefaultApprovalPolicy,
+  defaultCanDecide,
+  mayDecideApproval,
+  REQUESTER_APPROVER,
+  type ToolCallApprovalColumns,
+  type ToolCallApprovalState,
+  toApprovalPolicy,
+  toolCallApprovalFromRow,
+} from './spi/approval-policy.js';
 export * from './spi/attachment-staging.js';
 export * from './spi/embedding-provider.js';
 export * from './spi/governance-queries.js';

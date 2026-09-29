@@ -161,6 +161,48 @@ curl http://localhost:3333/agent/tool-call/reject \
 
 On approve, the loop runs the tool and continues, recording who approved it. On reject, it records the rejection and feeds a rejection result back to the model, which continues the turn. A decision is always scoped to one `(runId, toolCallId)` pair, so one run can never approve another's call. `runId` may be omitted — a tool call id is unique, so the route reads the run off the call's own row (`AgentStore.getToolCallRunId`) and answers `404` for a call it does not know. That is the body `@dudousxd/nestjs-agent-react` sends; the same holds for `tool-call/answer` and `tool-call/skip`.
 
+Both decision routes take two optional fields: `via` names the surface the decision came through (`'web'` when omitted, 1–64 characters) and `remember: true` (approve only) approves later calls of the same tool in the same thread without asking again. A malformed one is a `400`.
+
+### Approval policy
+
+By default the person chatting approves every `action` call, and a request never lapses. `approvalPolicy` in `config/agent.ts` changes who and for how long:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  // …
+  approvalPolicy: {
+    ttlMs: 15 * 60_000, // every request lapses after 15 minutes
+    tools: {
+      refund: { approver: 'FINANCE' }, // a role decides refunds
+      lookupInvoice: { required: false }, // an action that runs without asking
+    },
+  },
+})
+```
+
+That shorthand covers most deployments. For a decision per actor, thread or agent, pass a whole `ApprovalPolicy` — `requirementFor(tool, actor, thread)` returns `{ required, approver, ttlMs? }`, and an optional `canDecide(actor, { toolCallId, approver, requesterRef })` replaces the default "holds that role" rule (plug an authz gate in there):
+
+```ts
+import { REQUESTER_APPROVER, type ApprovalPolicy } from '@adonis-agora/agent'
+
+const approvalPolicy: ApprovalPolicy = {
+  requirementFor: (tool, actor) =>
+    tool.spec?.ability === 'billing.refund'
+      ? { required: true, approver: 'FINANCE', ttlMs: 3_600_000 }
+      : { required: true, approver: REQUESTER_APPROVER },
+  canDecide: (actor, decision) => actor.roles?.includes(decision.approver) === true,
+}
+```
+
+What changes on the wire and the routes:
+
+- **Who.** `approval-requested` carries the `approver`. For the requester, the approve/reject routes keep the ownership check they always had. For any other approver the caller must pass `canDecide`, else `403` — including the person chatting.
+- **Until when.** With a `ttlMs` the frame carries `expiresAt`, and the run waits at most that long: the inline runner arms a timer, the durable runner hands the time to its signal wait's own timeout (a deadline the runtime journals, so it survives a restart). Nobody deciding in time settles the call `expired`: `approval-settled { status: 'expired' }`, then `tool-output-denied` with reason `approval expired`, and the model is told the approval lapsed — not that someone said no. A decision on a lapsed request answers `410`.
+- **How it settled.** `approval-settled` names `decidedBy`, `decidedVia` and `remember` (or `reason` on a rejection). A remembered approval streams `approval-settled { decidedVia: 'remembered' }` without asking.
+- **History.** `GET /agent/threads/:id` returns each message's `approvals: [{ toolCallId, approver, expiresAt?, status, remember?, decidedBy?, decidedVia?, reason? }]`.
+
+The requirement is decided inside the call's own `persist:toolcall` checkpoint, so a parked durable run keeps the answer it was given even if the policy changes while it waits. The Lucid store adds four nullable `agent_tool_call` columns for it (`approver`, `expires_at`, `remember`, `decided_via`); a custom `AgentStore` opts in with `rememberedApprovals` and `toolCallApproval` (both optional).
+
 ## Re-attaching to a run
 
 Streams survive a dropped connection. A late subscriber to `GET /agent/chat/:runId/stream` replays the run's buffered chunks first, then follows live until `done`. Combined with the thread's `activeStreamId`, a reloading client can find the in-flight run and rejoin its stream.

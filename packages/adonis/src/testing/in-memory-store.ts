@@ -10,10 +10,12 @@ import type {
   StoredMessage,
   ThreadDetail,
   ThreadSummary,
+  ToolCallApproval,
   ToolCallStatus,
   ToolResult,
   UpdateToolCallInput,
 } from '../index.js';
+import { type ToolCallApprovalState, toolCallApprovalFromRow } from '../spi/approval-policy.js';
 
 interface ThreadRow extends ThreadSummary {
   actorRef: string;
@@ -34,6 +36,11 @@ interface ToolCallRow {
   error?: string;
   executionMs?: number;
   createdAt: string;
+  executedByRef?: string;
+  approver?: string;
+  expiresAt?: string;
+  remember?: boolean;
+  decidedVia?: string;
 }
 
 interface UsageRow {
@@ -178,7 +185,7 @@ export class InMemoryAgentStore implements AgentStore {
     }
     return {
       ...this.toSummary(row),
-      messages: row.messages,
+      messages: row.messages.map((message) => this.withApprovals(message)),
       ...(row.activeStreamId !== undefined ? { activeStreamId: row.activeStreamId } : {}),
     };
   }
@@ -303,6 +310,8 @@ export class InMemoryAgentStore implements AgentStore {
       status: input.status,
       createdAt: this.now(),
       ...(input.runId !== undefined ? { runId: input.runId } : {}),
+      ...(input.approver !== undefined ? { approver: input.approver } : {}),
+      ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
     });
   }
 
@@ -321,6 +330,61 @@ export class InMemoryAgentStore implements AgentStore {
     if (input.executionMs !== undefined) {
       row.executionMs = input.executionMs;
     }
+    if (input.executedByRef !== undefined) {
+      row.executedByRef = input.executedByRef;
+    }
+    if (input.remember !== undefined) {
+      row.remember = input.remember;
+    }
+    if (input.decidedVia !== undefined) {
+      row.decidedVia = input.decidedVia;
+    }
+  }
+
+  async rememberedApprovals(threadId: string): Promise<string[]> {
+    const names = new Set<string>();
+    for (const call of this.toolCalls.values()) {
+      if (call.threadId === threadId && call.remember === true) {
+        names.add(call.toolName);
+      }
+    }
+    return [...names];
+  }
+
+  async toolCallApproval(toolCallId: string): Promise<ToolCallApprovalState | null> {
+    const call = this.toolCalls.get(toolCallId);
+    if (call === undefined) {
+      return null;
+    }
+    return {
+      status: call.status,
+      approver: call.approver ?? null,
+      expiresAt: call.expiresAt ?? null,
+    };
+  }
+
+  /** A message with the approval record of every call on it that was put to a person. */
+  private withApprovals(message: StoredMessage): StoredMessage {
+    const approvals: ToolCallApproval[] = [];
+    for (const call of this.toolCalls.values()) {
+      if (call.messageId !== message.id) {
+        continue;
+      }
+      const approval = toolCallApprovalFromRow({
+        toolCallId: call.toolCallId,
+        status: call.status,
+        approver: call.approver,
+        expiresAt: call.expiresAt,
+        remember: call.remember,
+        executedByRef: call.executedByRef,
+        decidedVia: call.decidedVia,
+        error: call.error,
+      });
+      if (approval !== null) {
+        approvals.push(approval);
+      }
+    }
+    return approvals.length > 0 ? { ...message, approvals } : message;
   }
 
   async recordUsage(input: RecordUsageInput): Promise<void> {

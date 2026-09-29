@@ -11,6 +11,11 @@ import type {
   ThreadTurnReader,
   UpdateToolCallInput,
 } from '../spi/agent-store.js';
+import {
+  type ToolCallApprovalColumns,
+  type ToolCallApprovalState,
+  toolCallApprovalFromRow,
+} from '../spi/approval-policy.js';
 import type { AgentUiComponent } from '../stream-events.js';
 import type {
   MessageAttachment,
@@ -19,7 +24,9 @@ import type {
   StoredMessage,
   ThreadDetail,
   ThreadSummary,
+  ToolCallApproval,
   ToolCallRequest,
+  ToolCallStatus,
   ToolResult,
 } from '../types.js';
 import { AGENT_TABLES, ensureAgentTables } from './lucid-schema.js';
@@ -34,6 +41,7 @@ export interface LucidQueryBuilderLike {
   where(column: string, value: unknown): this;
   where(column: string, operator: string, value: unknown): this;
   whereNull(column: string): this;
+  whereIn(column: string, values: readonly unknown[]): this;
   orderBy(column: string, direction: 'asc' | 'desc'): this;
   limit(value: number): this;
   offset(value: number): this;
@@ -216,7 +224,7 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
       .where('thread_id', threadId)
       .orderBy('created_at', 'asc')
       .select('*');
-    const messages = messageRows.map(rowToMessage);
+    const messages = await this.withApprovals(messageRows.map(rowToMessage));
     const last = messages[messages.length - 1];
     const activeStreamId = row.active_stream_id;
     return {
@@ -467,6 +475,10 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
       run_id: input.runId ?? null,
       created_at: Date.now(),
       executed_at: null,
+      approver: input.approver ?? null,
+      expires_at: input.expiresAt !== undefined ? Date.parse(input.expiresAt) : null,
+      remember: null,
+      decided_via: null,
     });
   }
 
@@ -477,8 +489,63 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
     if (input.error !== undefined) patch.error = input.error;
     if (input.executionMs !== undefined) patch.execution_ms = input.executionMs;
     if (input.executedByRef !== undefined) patch.executed_by_ref = input.executedByRef;
+    if (input.remember !== undefined) patch.remember = input.remember ? 1 : 0;
+    if (input.decidedVia !== undefined) patch.decided_via = input.decidedVia;
     if (input.status === 'executed' || input.status === 'failed') patch.executed_at = Date.now();
     await this.db.from(AGENT_TABLES.toolCalls).where('id', input.toolCallId).update(patch);
+  }
+
+  /** Attach, per message, the approval record of every call on it a policy put to a person. */
+  private async withApprovals(messages: StoredMessage[]): Promise<StoredMessage[]> {
+    if (messages.length === 0) return messages;
+    const rows = await this.db
+      .from(AGENT_TABLES.toolCalls)
+      .whereIn(
+        'message_id',
+        messages.map((message) => message.id),
+      )
+      .orderBy('created_at', 'asc')
+      .select('*');
+    const byMessage = new Map<string, ToolCallApproval[]>();
+    for (const call of rows) {
+      const approval = toolCallApprovalFromRow(approvalColumns(call));
+      if (approval === null) continue;
+      const list = byMessage.get(String(call.message_id)) ?? [];
+      list.push(approval);
+      byMessage.set(String(call.message_id), list);
+    }
+    return messages.map((message) => {
+      const approvals = byMessage.get(message.id);
+      return approvals === undefined ? message : { ...message, approvals };
+    });
+  }
+
+  async rememberedApprovals(threadId: string): Promise<string[]> {
+    await this.init();
+    const messageIds = (
+      await this.db.from(AGENT_TABLES.messages).where('thread_id', threadId).select('id')
+    ).map((row) => String(row.id));
+    if (messageIds.length === 0) return [];
+    const rows = await this.db
+      .from(AGENT_TABLES.toolCalls)
+      .whereIn('message_id', messageIds)
+      .where('remember', 1)
+      .select('tool_name');
+    return [...new Set(rows.map((row) => String(row.tool_name)))];
+  }
+
+  async toolCallApproval(toolCallId: string): Promise<ToolCallApprovalState | null> {
+    await this.init();
+    const row = await this.db.from(AGENT_TABLES.toolCalls).where('id', toolCallId).first();
+    if (row === null || row === undefined) return null;
+    return {
+      status: String(row.status) as ToolCallStatus,
+      approver: typeof row.approver === 'string' ? row.approver : null,
+      expiresAt:
+        row.expires_at !== null && row.expires_at !== undefined
+          ? new Date(toInt(row.expires_at)).toISOString()
+          : null,
+    };
   }
 
   async getToolCallRunId(toolCallId: string): Promise<string | null> {
@@ -586,6 +653,24 @@ function threadRowToSummary(row: Record<string, unknown>, lastPreview?: string):
     updatedAt: msToIso(row.updated_at),
     ...(pinnedAt !== null && pinnedAt !== undefined ? { pinnedAt: msToIso(pinnedAt) } : {}),
     ...(lastPreview !== undefined ? { lastMessagePreview: lastPreview.slice(0, 120) } : {}),
+  };
+}
+
+/** A tool-call row's approval columns, in the shape the shared mapping reads. */
+function approvalColumns(row: Record<string, unknown>): ToolCallApprovalColumns {
+  return {
+    toolCallId: String(row.id),
+    status: String(row.status) as ToolCallStatus,
+    approver: typeof row.approver === 'string' ? row.approver : null,
+    expiresAt:
+      row.expires_at !== null && row.expires_at !== undefined
+        ? new Date(toInt(row.expires_at)).toISOString()
+        : null,
+    remember:
+      row.remember === null || row.remember === undefined ? null : toInt(row.remember) === 1,
+    executedByRef: typeof row.executed_by_ref === 'string' ? row.executed_by_ref : null,
+    decidedVia: typeof row.decided_via === 'string' ? row.decided_via : null,
+    error: typeof row.error === 'string' ? row.error : null,
   };
 }
 

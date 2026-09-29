@@ -94,6 +94,12 @@ export interface ToolResult {
    * else reads.
    */
   denied?: true;
+  /**
+   * The approval request lapsed before anyone decided, so the tool never ran. Always set together
+   * with {@link denied}: an expiry IS a refusal to every consumer that only knows that much, and this
+   * flag is for the ones that tell "nobody answered" from "someone said no".
+   */
+  expired?: true;
 }
 
 export interface MessageUsage {
@@ -161,6 +167,22 @@ export interface Decision {
   reason?: string;
   /** Opaque ref of WHO decided, when it wasn't the run's own actor. */
   executedByRef?: string;
+  /**
+   * Approve later calls of the SAME tool in the SAME thread without asking again. Read only on an
+   * approval; the loop answers it through `AgentStore.rememberedApprovals`.
+   */
+  remember?: boolean;
+  /**
+   * The surface the decision came through — `'web'`, `'slack'`, `'console'`, anything the caller
+   * names. Provenance only: persisted with the call, never authorized against.
+   */
+  decidedVia?: string;
+  /**
+   * Nobody decided before the request lapsed. Set by the RUNNER when the approval wait times out
+   * (see `AgentLoopHooks.awaitApproval`'s `timeoutMs`), never by a person — the HTTP surface does not
+   * accept it. Read as a denial the model is told expired.
+   */
+  expired?: true;
 }
 
 export type MessageRole = 'user' | 'assistant' | 'system';
@@ -385,7 +407,37 @@ export interface StoredMessage {
    * `id` — a reloaded thread replays them as `data-ui` parts.
    */
   ui?: AgentUiComponent[];
+  /**
+   * The approval record of every call on this message that was put to a person under an
+   * `ApprovalPolicy` — who had to decide, until when, and how it settled. Read off the tool-call rows
+   * by the store; absent when no call on the message asked for one.
+   */
+  approvals?: ToolCallApproval[];
   createdAt: string;
+}
+
+/**
+ * How one approval stands. `pending` → still parked; `approved` → someone said yes (or a remembered
+ * approval did); `rejected` → someone said no; `expired` → nobody answered before `expiresAt`.
+ */
+export type ToolCallApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired';
+
+/** The persisted approval metadata of one action tool call. See {@link StoredMessage.approvals}. */
+export interface ToolCallApproval {
+  toolCallId: string;
+  /** Who may decide: `'requester'` (the thread's own actor) or a role name. */
+  approver: string;
+  /** ISO-8601 instant the request lapses; absent → it never does. */
+  expiresAt?: string;
+  status: ToolCallApprovalStatus;
+  /** The decision asked for later calls of this tool in this thread to be approved automatically. */
+  remember?: boolean;
+  /** Opaque ref of who decided. Absent while pending and on an expiry. */
+  decidedBy?: string;
+  /** The surface the decision came through (`'web'`, `'slack'`, `'remembered'`, …). */
+  decidedVia?: string;
+  /** What the person said when declining. */
+  reason?: string;
 }
 
 export interface ThreadDetail extends ThreadSummary {
@@ -398,4 +450,6 @@ export type ToolCallStatus =
   | 'pending_approval'
   | 'executed'
   | 'rejected'
-  | 'failed';
+  | 'failed'
+  /** An approval request lapsed before anyone decided; the tool never ran. */
+  | 'expired';

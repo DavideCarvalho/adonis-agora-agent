@@ -6,6 +6,7 @@ import type { MemoryConfig } from './memory.js';
 import type { SkillsConfig } from './skills.js';
 import type { ActorDirectory } from './spi/actor-directory.js';
 import type { ActorResolver } from './spi/actor-resolver.js';
+import type { ApprovalPolicy, ApprovalRules } from './spi/approval-policy.js';
 import type { AttachmentStagingStore } from './spi/attachment-staging.js';
 import type { AgentGovernanceQueries } from './spi/governance-queries.js';
 import type { HistoryWindow } from './spi/history-window.js';
@@ -219,6 +220,17 @@ export interface AgentConfig {
    * `'agent'` to serve the shared React client. `@adonis-agora/agent/client` reads both.
    */
   streamProtocol?: StreamProtocol;
+  /**
+   * Who has to approve an `action` tool call, and for how long the request stays open. Omit → the
+   * person chatting approves, with no expiry (the behaviour before this option).
+   *
+   * The shorthand covers most deployments — `{ ttlMs: 15 * 60_000 }` expires every request after
+   * 15 minutes; `{ tools: { refund: { approver: 'admin' } } }` routes refunds to holders of the
+   * `admin` role. Pass a whole `ApprovalPolicy` to decide per actor, thread or agent, or to plug an
+   * authz gate into `canDecide`. A non-requester approver is enforced on the approve/reject routes
+   * (`403`), and a lapsed request answers `410`.
+   */
+  approvalPolicy?: ApprovalPolicy | ApprovalRules;
   /**
    * Run each turn as a replay-safe durable workflow (over `@adonis-agora/durable`) instead of
    * in-process: LLM turns / tool executions become memoized durable steps, HITL approval suspends the

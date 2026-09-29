@@ -4,6 +4,7 @@ import type { AgentRegistry } from './agent-registry.js';
 import type { MemoryConfig } from './memory.js';
 import type { SkillsConfig } from './skills.js';
 import type { AgentStore } from './spi/agent-store.js';
+import type { ApprovalPolicy } from './spi/approval-policy.js';
 import type { HistoryWindow } from './spi/history-window.js';
 import type { ModelProvider } from './spi/model-provider.js';
 import type { AgentPricingStore } from './spi/pricing-store.js';
@@ -136,6 +137,8 @@ export interface AgentDepsFactoryConfig {
   registry: ToolRegistry;
   agents: AgentRegistry;
   quota?: QuotaStore;
+  /** Shared approval policy for every agent's `action` calls. Undefined → the requester, no expiry. */
+  approvalPolicy?: ApprovalPolicy;
   /** Shared pricing store so every agent's turns are priced from one table. Omit → cost stays `null`. */
   pricingStore?: AgentPricingStore;
   /**
@@ -225,6 +228,9 @@ export class AgentDepsFactory {
       defaultPersona: definition?.defaultPersona ?? 'default',
       ...(definition?.modelId !== undefined ? { modelId: definition.modelId } : {}),
       ...(this.config.quota !== undefined ? { quota: this.config.quota } : {}),
+      ...(this.config.approvalPolicy !== undefined
+        ? { approvalPolicy: this.config.approvalPolicy }
+        : {}),
       ...(this.config.pricingStore !== undefined ? { pricingStore: this.config.pricingStore } : {}),
       ...(this.config.retriever !== undefined ? { retriever: this.config.retriever } : {}),
       ...(this.config.retrievalTopK !== undefined

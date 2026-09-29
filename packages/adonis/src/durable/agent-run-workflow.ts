@@ -29,6 +29,14 @@ export interface DurableAgentRunInput extends AgentRunInput {
  * it. Checked by `instanceof` AND by `name` so a duplicated copy of the durable module (whose class
  * identity differs) is still recognised.
  */
+/**
+ * The runtime's `SignalTimeoutError`, recognized by NAME: the class can differ between a bundled and
+ * a hoisted copy of `@adonis-agora/durable`, so `instanceof` against one import would miss the other.
+ */
+function isSignalTimeout(error: unknown): boolean {
+  return error instanceof Error && error.name === 'SignalTimeoutError';
+}
+
 function isControlFlowSignal(error: unknown): boolean {
   if (error instanceof WorkflowSuspended || error instanceof ContinueAsNew) {
     return true;
@@ -84,7 +92,23 @@ export class AgentRunWorkflow extends BaseWorkflow {
       // A DELEGATED run suspends on its OWN runId, and that wait is answerable: the pending row it
       // writes carries that runId, and so does the `elicitation` frame it forwards into the stream
       // the human is already watching.
-      awaitApproval: (call) => ctx.waitForSignal<Decision>(`tool:${ctx.runId}:${call.id}`),
+      // A policy's time to live becomes the signal wait's own timeout: the runtime journals the
+      // deadline on the first call (reached only for a call the journal says has a ttl) and wakes
+      // the run when it passes. The lapse comes back as a Decision rather than a throw, so the loop
+      // settles the call `expired` on its ordinary rejection checkpoint.
+      awaitApproval: (call, _toolCtx, opts) =>
+        opts?.timeoutMs === undefined
+          ? ctx.waitForSignal<Decision>(`tool:${ctx.runId}:${call.id}`)
+          : ctx
+              .waitForSignal<Decision>(`tool:${ctx.runId}:${call.id}`, {
+                timeoutMs: opts.timeoutMs,
+              })
+              .catch((error: unknown) => {
+                if (isSignalTimeout(error)) {
+                  return { approved: false, expired: true } satisfies Decision;
+                }
+                throw error;
+              }),
       // A question set parks on the SAME signal an approval does, under the tool call's own id — so
       // `POST /agent/tool-call/answer` and `/approve` are one delivery path, and a deployment that
       // only ever wired approval still settles an elicitation.

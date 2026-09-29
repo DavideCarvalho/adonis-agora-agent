@@ -11,6 +11,7 @@ import type {
   ToolResult,
   UsagePurpose,
 } from '../types.js';
+import type { ToolCallApprovalState } from './approval-policy.js';
 
 export interface CreateThreadInput {
   actor: Actor;
@@ -49,6 +50,14 @@ export interface RecordToolCallInput {
   status: ToolCallStatus;
   /** The run (turn) this tool call belongs to, for run-detail assembly + trace deep-links. */
   runId?: string;
+  /**
+   * Who has to approve this call (`'requester'` or a role), from the turn's `ApprovalPolicy`. Set on
+   * an action call that was put to a person — or approved by a remembered decision — and never
+   * otherwise; persisted as `null` when absent.
+   */
+  approver?: string;
+  /** ISO-8601 instant the approval request lapses. Absent → it never does. */
+  expiresAt?: string;
 }
 
 export interface UpdateToolCallInput {
@@ -58,6 +67,10 @@ export interface UpdateToolCallInput {
   error?: string;
   executionMs?: number;
   executedByRef?: string;
+  /** The approval asked for later calls of this tool in this thread to run without asking. */
+  remember?: boolean;
+  /** The surface the decision came through. See {@link import('../types.js').Decision.decidedVia}. */
+  decidedVia?: string;
 }
 
 export interface RecordUsageInput {
@@ -189,6 +202,19 @@ export interface AgentStore {
    * shared React client sends. Optional: without it those routes still take an explicit `runId`.
    */
   getToolCallRunId?(toolCallId: string): Promise<string | null>;
+  /**
+   * OPTIONAL: the names of the tools whose approval someone asked to REMEMBER in this thread — an
+   * approved call persisted with `remember: true`. The loop approves a later call of one of them
+   * without asking, inside that call's own `persist:toolcall` checkpoint. Absent → nothing is ever
+   * remembered, and every call asks.
+   */
+  rememberedApprovals?(threadId: string): Promise<string[]>;
+  /**
+   * OPTIONAL: a call's approval state, or `null` when the call is unknown. Read by the approve/reject
+   * routes to enforce the recorded approver and refuse a decision on a request that already
+   * expired. Absent → every call is treated as the requester's, with no expiry (the old behaviour).
+   */
+  toolCallApproval?(toolCallId: string): Promise<ToolCallApprovalState | null>;
 
   recordUsage(input: RecordUsageInput): Promise<void>;
   quotaToday(actorRef: string, day: string): Promise<{ usedTokens: number }>;

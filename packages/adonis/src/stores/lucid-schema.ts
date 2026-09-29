@@ -80,7 +80,11 @@ export function createTableStatements(): string[] {
       "error" TEXT NULL,
       "run_id" VARCHAR(255) NULL,
       "created_at" BIGINT NOT NULL,
-      "executed_at" BIGINT NULL
+      "executed_at" BIGINT NULL,
+      "approver" VARCHAR(255) NULL,
+      "expires_at" BIGINT NULL,
+      "remember" INTEGER NULL,
+      "decided_via" VARCHAR(64) NULL
     )`,
     `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_run_idx" ON "${t.toolCalls}" ("run_id")`,
     `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_status_created_idx" ON "${t.toolCalls}" ("status", "created_at")`,
@@ -157,6 +161,10 @@ const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }
   { table: AGENT_TABLES.messages, column: 'reasoning', type: 'TEXT NULL' },
   { table: AGENT_TABLES.messages, column: 'reasoning_ms', type: 'INTEGER NULL' },
   { table: AGENT_TABLES.messages, column: 'ui', type: 'TEXT NULL' },
+  { table: AGENT_TABLES.toolCalls, column: 'approver', type: 'VARCHAR(255) NULL' },
+  { table: AGENT_TABLES.toolCalls, column: 'expires_at', type: 'BIGINT NULL' },
+  { table: AGENT_TABLES.toolCalls, column: 'remember', type: 'INTEGER NULL' },
+  { table: AGENT_TABLES.toolCalls, column: 'decided_via', type: 'VARCHAR(64) NULL' },
 ];
 
 /**

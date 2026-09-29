@@ -241,6 +241,14 @@ describe('the loop streams the agent vocabulary', () => {
         id: 'call-0-refund',
         approver: 'requester',
       }),
+      // Who declined it (the run's own actor, since the service call named nobody) — then the outcome.
+      {
+        kind: 'approval-settled',
+        id: 'call-0-refund',
+        status: 'rejected',
+        decidedBy: 'u1',
+        reason: 'not this one',
+      },
       { kind: 'tool-output-denied', id: 'call-0-refund', reason: 'not this one' },
     ]);
   });
