@@ -1,5 +1,0 @@
----
-'@adonis-agora/agent': minor
----
-
-Generative UI from a component catalog, matching `@dudousxd/nestjs-agent`: `@adonis-agora/agent/genui` (and `/genui/builtins`) re-exports the isomorphic catalog of `@dudousxd/nestjs-agent-core/genui` — now an optional peer — so one catalog file serves this server, a NestJS one and the browser. `genui: genui({ catalog, mode?, showTool?, terminal?, resolver?, … })` in `config/agent.ts` registers the tools (`ui__show_<component>`, `ui__render` for a tree, the generic `ui__show`) that validate against the catalog and push through `ctx.emitUi`; the catalog is bound in the container as `AgentGenui`. A `resolver` (a `GenuiCatalogResolver` class built through the container, an instance, or a function) picks the catalog per request. `ToolHandler.describe(scope)` is new: any tool can vary its description and input schema per turn; `ToolRegistry.definitionsFor` takes the turn's `{ threadId, agentName }`, and `invoke` fills a no-op `emitUi` for a context without one.
