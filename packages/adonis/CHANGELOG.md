@@ -1,5 +1,23 @@
 # @adonis-agora/agent
 
+## 0.35.0
+
+### Minor Changes
+
+- [#186](https://github.com/DavideCarvalho/adonis-agora-agent/pull/186) [`e7d75e1`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/e7d75e1f1e931d5071de94d5f9d207eb83c76c42) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Guardrails, and processors you can actually configure
+  
+  - **`@adonis-agora/agent/guardrails`** — PII (Luhn-validated cards, CPF/CNPJ, SSN, IBAN, phones, emails, IPv4), secret (provider key formats, JWT, PEM, entropy-gated assignments), prompt-injection (EN / PT-BR / ES, hidden Unicode, encoded payloads) and tool-poisoning detectors; a rule engine with `allow`/`log`/`redact`/`approve`/`block`, fail modes and reversible redaction (`Vault`); and `createGuardrails(options)`, which runs it on the loop's processor seams — `guardrails.input` / `guardrails.output`, `wrapTool` for tool arguments, `screenTool` for tool definitions — with per-call rule resolution (per tenant) and an audit hook. A port of `@dudousxd/nestjs-agent-core/guardrails`.
+  - **`inputProcessors` / `outputProcessors` in `config/agent.ts`.** The loop has taken processors since they were ported, but nothing between the config and the loop carried them, so an app using the provider could not register one. They now reach every agent's turn, inline and durable.
+  - **`mcpServers[].screen`** — inspect each listed tool definition before it is imported, and skip the ones it refuses (a screen that throws skips the tool too).
+
+- [#185](https://github.com/DavideCarvalho/adonis-agora-agent/pull/185) [`2f4fc8c`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/2f4fc8cf865e1b310280a40e2df91ed7f72caf93) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - First-party HTTP embedding and rerank adapters
+  
+  New `openAiEmbeddings` — an `EmbeddingProvider` over any OpenAI-compatible `/v1/embeddings` (OpenAI, gateways, TEI, Ollama, vLLM), with `embedWithUsage` so embedding spend reaches the ledger and quota — and `HttpReranker`, a `Reranker` over Cohere/Jina/Voyage/TEI-style `/rerank`. Both are dependency-free and throw `HttpModelError`. `@adonis-agora/agent/testing` adds `hashedEmbeddings(dimensions)`, a deterministic Unicode-aware hashed embedder.
+
+- [#184](https://github.com/DavideCarvalho/adonis-agora-agent/pull/184) [`1b8cc02`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/1b8cc02fc447841e01bd58219e5c674413b46cc1) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - pgvector: batched upserts, full-text hybrid search, mixed dimensions
+  
+  `PgVectorStore` now upserts in multi-row `INSERT … ON CONFLICT` statements (`upsertBatchSize`, default 100; duplicate ids in one call keep the last), and gains opt-in `nullableEmbeddings` (`embedding: []` → `NULL`), mixed-dimension tables (`dimension: [768, 1536]`, one partial HNSW index per width, searches compare like with like), and pgvector ≥ 0.8 `iterativeScan` / `efSearch` (`SET LOCAL` inside a Lucid transaction, skipped on older pgvector). New `PgLexicalVectorStore` (Postgres full-text `searchText`), `LexicalVectorStore` / `isLexicalVectorStore` and `LexicalRetriever`; `retrievers.pgvector({ fullText: {} })` returns a `HybridRetriever` of both legs. `HybridRetriever` gains `retrieveWithUsage`, so embedding spend from its legs still reaches the ledger. Everything is off by default.
+
 ## 0.34.1
 
 ### Patch Changes
