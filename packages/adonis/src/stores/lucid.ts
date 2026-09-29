@@ -442,6 +442,14 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
     };
   }
 
+  async setMessageUi(messageId: string, ui: AgentUiComponent[]): Promise<void> {
+    await this.init();
+    await this.db
+      .from(AGENT_TABLES.messages)
+      .where('id', messageId)
+      .update({ ui: safeJson(ui) });
+  }
+
   async setMessageToolResults(messageId: string, results: ToolResult[]): Promise<void> {
     await this.init();
     await this.db

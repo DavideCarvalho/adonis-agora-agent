@@ -21,7 +21,7 @@ import {
   walkTree,
 } from '../src/index.js';
 import type { AiToolCtx } from '../src/spi/tool.js';
-import { FakeModelProvider } from '../src/testing/index.js';
+import { createNoopEmitUi, FakeModelProvider } from '../src/testing/index.js';
 
 /** A 33-page regulation with markdown headings: 3 parts × 2 subparts × clauses, 1-2 pages each. */
 function regulation(): string[] {
@@ -71,6 +71,7 @@ const ctx = (tenantRef: string): AiToolCtx => ({
   threadId: 't',
   runId: 'r',
   requestId: 'q',
+  emitUi: createNoopEmitUi(),
 });
 
 describe('detectHeadings', () => {

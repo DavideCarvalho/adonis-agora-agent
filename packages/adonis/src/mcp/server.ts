@@ -7,6 +7,7 @@ import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { RolesPolicy } from '../spi/roles-policy.js';
 import type { AiToolCtx } from '../spi/tool.js';
 import { ToolNotFoundError, ToolRegistry } from '../tool-registry.js';
+import { createNoopEmitUi } from '../tool-ui.js';
 import type { Actor } from '../types.js';
 
 /**
@@ -140,7 +141,9 @@ export function createMcpServer(options: CreateMcpServerOptions): Server {
           runId: `mcp:${sessionId ?? 'run'}`,
           requestId: `mcp:${sessionId ?? 'req'}`,
         };
-    return { actor, ...ids };
+    // No conversation to push into: `emitUi` accepts the push and does nothing, so a tool that
+    // shows UI in a chat still runs over MCP.
+    return { actor, ...ids, emitUi: createNoopEmitUi(ids.requestId) };
   };
 
   server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {

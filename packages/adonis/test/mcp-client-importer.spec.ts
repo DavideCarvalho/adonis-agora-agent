@@ -17,6 +17,7 @@ import {
 } from '../src/index.js';
 import type { McpServerConfig } from '../src/mcp-client/index.js';
 import { McpToolImporter } from '../src/mcp-client/index.js';
+import { createNoopEmitUi } from '../src/testing/index.js';
 
 const ADMIN: Actor = { id: 'u-1', roles: ['ADMIN'] };
 const OPS: Actor = { id: 'u-2', roles: ['OPS'] };
@@ -25,6 +26,7 @@ const ctx = (actor: Actor): AiToolCtx => ({
   threadId: 't-1',
   runId: 'r-1',
   requestId: 'q-1',
+  emitUi: createNoopEmitUi(),
 });
 
 const weatherTool: Tool = {

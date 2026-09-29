@@ -421,6 +421,15 @@ export {
   isTransientToolError,
 } from './tool-retry.js';
 export {
+  createNoopEmitUi,
+  createUiCollector,
+  type EmitUi,
+  mergeUi,
+  type UiCollector,
+  unwrapToolStepOutput,
+  wrapToolStepOutput,
+} from './tool-ui.js';
+export {
   type ObservedTurnFrames,
   observeTurnFrames,
   type TurnFrameSummary,

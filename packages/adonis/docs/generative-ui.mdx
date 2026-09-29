@@ -58,6 +58,38 @@ Use it when the answer is inherently visual or interactive: metrics/charts, maps
 
 ## Server side
 
+### `ctx.emitUi(component, props, options?)`
+
+The push to reach for. Every tool's context carries it — always present, a no-op outside a conversation (an MCP call), so a tool never branches on where it runs:
+
+```ts
+defineTool(
+  { name: 'orders', kind: 'read', description: 'List recent orders', input: z.object({}) },
+  async (_input, ctx) => {
+    const rows = await Order.query().limit(20)
+    const { id } = await ctx.emitUi('DataTable', { rows: [] }, { version: 2 }) // a placeholder
+    await ctx.emitUi('DataTable', { rows }, { id, version: 2 }) // same id → replaced in place
+    return { count: rows.length } // what the model reads
+  },
+)
+```
+
+- It streams at once — a `ui` frame under `streamProtocol: 'agent'` (`{ kind: 'ui', id, component, props, version?, toolCallId }`), an `event: component` frame under the legacy envelope.
+- `id` defaults to `<toolCallId>:ui:<n>`; pushing an `id` again replaces that component rather than adding one. `props` must be a JSON object (it is snapshotted at the push). `version` names the props' schema version, so a client can keep rendering components an older server persisted.
+- Once the step's tools have settled, every component they pushed is **persisted on the assistant message** (`StoredMessage.ui`, after what the model turn itself streamed), so `GET /agent/threads/:id` returns what the live stream showed. The pushes ride the tool step's journaled result, so a durable replay neither re-streams nor re-persists them. A custom `AgentStore` opts in with `setMessageUi` (optional).
+
+### Terminal tools
+
+A tool whose effect IS the answer — it pushed the UI the user reads — can end the turn: `terminal: true` on `defineTool` / `@AiTool` / `static tool`. Once such a call succeeds no further model call narrates it; a failed one does not end the turn, so the model can recover.
+
+```ts
+defineTool({ name: 'showChart', kind: 'read', description: '…', input, terminal: true }, async (input, ctx) =>
+  ctx.emitUi('Chart', await chartFor(input)),
+)
+```
+
+`ctx.emitComponent(name, data)` below is the older form. It still works — and now goes through the same path, so its components are persisted too.
+
 ### `ctx.emitComponent(name, data)`
 
 Every tool handler's second argument is an [`AiToolCtx`](/docs/agent/authoring/tools#the-tool-context). Under the agent loop it carries an `emitComponent` method:

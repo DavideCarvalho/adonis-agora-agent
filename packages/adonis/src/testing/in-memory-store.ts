@@ -18,6 +18,7 @@ import type {
   UpdateToolCallInput,
 } from '../index.js';
 import { type ToolCallApprovalState, toolCallApprovalFromRow } from '../spi/approval-policy.js';
+import type { AgentUiComponent } from '../stream-events.js';
 
 interface ThreadRow extends ThreadSummary {
   actorRef: string;
@@ -290,6 +291,17 @@ export class InMemoryAgentStore implements AgentStore {
     row.messages.push(message);
     row.updatedAt = message.createdAt;
     return message;
+  }
+
+  async setMessageUi(messageId: string, ui: AgentUiComponent[]): Promise<void> {
+    for (const row of this.threads.values()) {
+      const index = row.messages.findIndex((candidate) => candidate.id === messageId);
+      const message = row.messages[index];
+      if (message !== undefined) {
+        row.messages[index] = { ...message, ui };
+        return;
+      }
+    }
   }
 
   async setMessageToolResults(messageId: string, results: ToolResult[]): Promise<void> {

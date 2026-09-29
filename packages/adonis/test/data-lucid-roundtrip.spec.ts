@@ -2,6 +2,7 @@ import type { Database } from '@adonisjs/lucid/database';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { dataTool, GroupTableAccessPolicy } from '../src/index.js';
 import type { AiToolCtx } from '../src/spi/tool.js';
+import { createNoopEmitUi } from '../src/testing/index.js';
 import { asStoreDb, makeMemoryDb } from './helpers/make-db.js';
 
 let db: Database;
@@ -16,6 +17,7 @@ function ctx(tenantRef?: string): AiToolCtx {
     threadId: 't',
     runId: 'r',
     requestId: 'q',
+    emitUi: createNoopEmitUi(),
     actor: { id: 'a', roles: ['ANALYST'], ...(tenantRef === undefined ? {} : { tenantRef }) },
   };
 }

@@ -11,6 +11,8 @@ export interface AiToolCtx {
   runId: string;
   requestId: string;
   persona?: Persona;
+  /** The agent running the turn, when it has a name. */
+  agentName?: string;
   pageContext?: PageContext;
   /** Optional host handle (e.g. an ORM EntityManager) the app threads through options. */
   host?: unknown;
@@ -20,6 +22,18 @@ export interface AiToolCtx {
    * assembly provides it; other ctx builders may omit it.
    */
   emitComponent?(name: string, data: unknown): void | Promise<void>;
+  /**
+   * Push a component into the conversation: streamed at once as a `ui` frame (a `component` frame
+   * under the legacy envelope) and persisted on the assistant message once the step's tools settle,
+   * so a reload shows it where the live stream did. `id` defaults to `<toolCallId>:ui:<n>`; pushing
+   * an `id` again replaces that component. `props` must be JSON. Always present — outside a
+   * conversation (an MCP call) it accepts the push and does nothing, so a tool never has to branch.
+   */
+  emitUi(
+    component: string,
+    props: Record<string, unknown>,
+    options?: { id?: string; version?: number },
+  ): Promise<{ id: string }>;
 }
 
 /**

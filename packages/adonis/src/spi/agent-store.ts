@@ -205,6 +205,13 @@ export interface AgentStore {
    * fail to compile instead.
    */
   setMessageToolResults(messageId: string, results: ToolResult[]): Promise<void>;
+  /**
+   * OPTIONAL: replace the components persisted on a message (`StoredMessage.ui`) — what the step's
+   * tools pushed through `ctx.emitUi`, merged after what the model turn streamed. Written once the
+   * step's tools settle, from values its checkpoints hold, so a replay writes the same list. Absent →
+   * tool-pushed components stream live but are not persisted.
+   */
+  setMessageUi?(messageId: string, ui: AgentUiComponent[]): Promise<void>;
   truncateFrom(threadId: string, messageId: string): Promise<void>;
   /**
    * OPTIONAL: the thread a message belongs to, or `null` when there is no such message. The

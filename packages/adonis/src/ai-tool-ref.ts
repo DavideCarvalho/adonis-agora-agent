@@ -49,6 +49,8 @@ export interface AiToolOptions {
    * ```
    */
   presentation?: ToolPresentation;
+  /** A successful call ends the turn — no model call narrates what it already showed. */
+  terminal?: boolean;
 }
 
 /** The metadata a tool class carries for discovery + registration — from `@AiTool` or `static tool`. */
@@ -171,6 +173,7 @@ export function defineTool<I = unknown, O = unknown>(
     ...(options.roles !== undefined ? { roles: options.roles } : {}),
     ...(options.ability !== undefined ? { ability: options.ability } : {}),
     ...(options.presentation !== undefined ? { presentation: options.presentation } : {}),
+    ...(options.terminal === true ? { terminal: true } : {}),
   };
   return {
     [AGENT_TOOL_BRAND]: true,

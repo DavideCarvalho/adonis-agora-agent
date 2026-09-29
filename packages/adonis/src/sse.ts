@@ -83,6 +83,7 @@ export function frameToEvents(frame: StreamFrame, position: number): AgentStream
           id: frame.id ?? `ui:${position}`,
           component: frame.name,
           props: isRecord(frame.data) ? frame.data : { value: frame.data },
+          ...(frame.version !== undefined ? { version: frame.version } : {}),
           ...(frame.toolCallId !== undefined ? { toolCallId: frame.toolCallId } : {}),
         },
       ];

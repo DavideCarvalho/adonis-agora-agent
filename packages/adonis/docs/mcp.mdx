@@ -283,7 +283,7 @@ See [Bouncer-backed authorization](/docs/agent/governance/authz-bouncer). The sa
 
 **`action` tools are not gated by HITL over MCP.** `tools/call` runs the handler directly — there is no approval suspend, because MCP has no channel to route an approval decision through. If a tool must never run without a human in the loop, either keep it out of `allowedTools` **and** out of the actor's roles, or move the approval inside the tool's own handler.
 
-**The tool context is thinner.** MCP calls get `{ actor, threadId, runId, requestId }` derived from the session id (`mcp:<sessionId>`), and nothing else: no `persona`, no `pageContext`, no `host`, and no `emitComponent`. A tool that reads any of those must tolerate their absence — they are optional on `AiToolCtx` precisely for this reason.
+**The tool context is thinner.** MCP calls get `{ actor, threadId, runId, requestId }` derived from the session id (`mcp:<sessionId>`), and nothing else: no `persona`, no `pageContext`, no `host`, and no `emitComponent`. A tool that reads any of those must tolerate their absence — they are optional on `AiToolCtx` precisely for this reason. `emitUi` is present but does nothing: there is no conversation to push into.
 
 ## Connecting a client
 

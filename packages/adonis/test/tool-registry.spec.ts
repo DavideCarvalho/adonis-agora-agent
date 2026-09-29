@@ -10,6 +10,7 @@ import {
   ToolNotFoundError,
   ToolRegistry,
 } from '../src/index.js';
+import { createNoopEmitUi } from '../src/testing/index.js';
 
 /** A hand-rolled Standard Schema (no Zod) — proves the registry is validation-library-agnostic. */
 const upperCityValibotLike: StandardSchemaV1<{ city: string }, { city: string }> = {
@@ -34,6 +35,7 @@ function ctxFor(actor: Actor): AiToolCtx {
     threadId: 't1',
     runId: 'r1',
     requestId: 'r1',
+    emitUi: createNoopEmitUi(),
     actor,
   };
 }
