@@ -42,7 +42,7 @@ const reranker = new HttpReranker({
 })
 ```
 
-`openAiEmbeddings` implements `embedWithUsage`, so the provider-reported tokens reach the ledger and the quota. Both throw `HttpModelError` (with the HTTP `status`) on failure. Anything else: wire your own `embed(...)` (a few lines over the Vercel AI SDK's `embedMany`), or use the deterministic `FakeEmbeddingProvider` / `hashedEmbeddings` / `FakeReranker` / `inMemoryRetriever` from [`@adonis-agora/agent/testing`](/docs/agent/testing) for offline work.
+`openAiEmbeddings` implements `embedWithUsage`, so the provider-reported tokens reach the ledger and the quota. A batch the server refuses as too large (413, or TEI's `batch size 64 > maximum allowed batch size 32` — its `--max-client-batch-size` defaults to 32, `batchSize` to 64) is split in halves and retried, and later requests to that server and model use the size that worked; `onWarn` reports each split. Both throw `HttpModelError` (with the HTTP `status`) on failure. Anything else: wire your own `embed(...)` (a few lines over the Vercel AI SDK's `embedMany`), or use the deterministic `FakeEmbeddingProvider` / `hashedEmbeddings` / `FakeReranker` / `inMemoryRetriever` from [`@adonis-agora/agent/testing`](/docs/agent/testing) for offline work.
 </Callout>
 
 ## The bundled retrievers

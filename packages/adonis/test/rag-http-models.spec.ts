@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Passage } from '../src/index.js';
-import { HttpModelError, HttpReranker, openAiEmbeddings } from '../src/index.js';
+import { HttpModelError, HttpReranker, isBatchTooLarge, openAiEmbeddings } from '../src/index.js';
 
 interface Seen {
   url: string;
@@ -156,6 +156,85 @@ const passages: Passage[] = [
   { id: 'b', text: 'beta', score: 0.8, metadata: { k: 1 } },
   { id: 'c', text: 'gamma', score: 0.7 },
 ];
+
+describe('openAiEmbeddings — a server that refuses large batches (TEI max-client-batch-size)', () => {
+  /** TEI's answer to a batch over its limit: 422 + "batch size N > maximum allowed batch size M". */
+  function teiLimited(limit: number) {
+    return (entry: Seen) => {
+      const input = entry.body.input as string[];
+      if (input.length > limit) {
+        return {
+          status: 422,
+          json: {
+            error: `batch size ${input.length} > maximum allowed batch size ${limit}`,
+            error_type: 'Validation',
+          },
+        };
+      }
+      return openAiAnswer(entry);
+    };
+  }
+
+  it('splits a refused batch in halves, keeps input order, and remembers the working size', async () => {
+    respond = teiLimited(3);
+    const warnings: string[] = [];
+    const embedder = openAiEmbeddings({
+      baseUrl: `${base}/split-a/v1`,
+      model: 'm',
+      batchSize: 8,
+      onWarn: (message) => warnings.push(message),
+    });
+    const texts = Array.from({ length: 10 }, (_, i) => 'x'.repeat(i + 1));
+
+    const result = await embedder.embedWithUsage!(texts);
+
+    expect(result.vectors.map((vector) => vector[0])).toEqual(texts.map((text) => text.length));
+    // Only accepted requests count: 10 inputs → 10 tokens.
+    expect(result.usage?.inputTokens).toBe(10);
+    // 8 refused → 4 refused → 2 + 2 accepted; then later batches go out at 2 from the start.
+    const sizes = seen.map((entry) => (entry.body.input as string[]).length);
+    expect(sizes).toEqual([8, 4, 2, 2, 2, 2, 2]);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain('max-client-batch-size');
+
+    // A second provider for the same server and model starts at the learned size.
+    seen = [];
+    const again = openAiEmbeddings({ baseUrl: `${base}/split-a/v1`, model: 'm', batchSize: 8 });
+    await again.embed(texts.slice(0, 4));
+    expect(seen.map((entry) => (entry.body.input as string[]).length)).toEqual([2, 2]);
+  });
+
+  it('treats 413 as too large too', async () => {
+    respond = (entry) =>
+      (entry.body.input as string[]).length > 1
+        ? { status: 413, text: 'Payload Too Large' }
+        : openAiAnswer(entry);
+    const embedder = openAiEmbeddings({ baseUrl: `${base}/split-b/v1`, model: 'm', batchSize: 4 });
+    expect(await embedder.embed(['a', 'bb', 'ccc'])).toHaveLength(3);
+  });
+
+  it('does not split on an error that is not about size, nor below one input', async () => {
+    respond = () => ({ status: 401, json: { error: { message: 'bad key' } } });
+    const embedder = openAiEmbeddings({ baseUrl: `${base}/split-c/v1`, model: 'm', batchSize: 4 });
+    await expect(embedder.embed(['a', 'b'])).rejects.toMatchObject({ status: 401 });
+    expect(seen).toHaveLength(1);
+
+    seen = [];
+    respond = () => ({ status: 413, text: 'too big' });
+    await expect(embedder.embed(['a'])).rejects.toMatchObject({ status: 413 });
+    expect(seen).toHaveLength(1);
+  });
+
+  it('isBatchTooLarge recognises size refusals only', () => {
+    expect(isBatchTooLarge(new HttpModelError(413, 'x'))).toBe(true);
+    expect(
+      isBatchTooLarge(new HttpModelError(422, 'batch size 64 > maximum allowed batch size 32')),
+    ).toBe(true);
+    expect(isBatchTooLarge(new HttpModelError(400, 'too many inputs'))).toBe(true);
+    expect(isBatchTooLarge(new HttpModelError(400, 'invalid model'))).toBe(false);
+    expect(isBatchTooLarge(new Error('batch size'))).toBe(false);
+  });
+});
 
 describe('HttpReranker', () => {
   it('sends a Cohere/TEI-compatible body and re-sorts by relevance_score, cut to topK', async () => {
