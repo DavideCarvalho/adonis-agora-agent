@@ -157,7 +157,7 @@ function render(candidates: TreeLlmCandidate[]): string {
 }
 
 /** Candidates rendered within `maxChars`: full summaries, then shorter, then titles only. */
-function fit(
+function fitCandidates(
   nodes: { node: DocumentTreeNode; depth?: number }[],
   maxChars: number,
 ): { candidates: TreeLlmCandidate[]; text: string } {
@@ -347,7 +347,7 @@ Reply with JSON only: {"thinking": "<why>", "documents": ["<document id>", ...]}
     const singlePassMaxChars = this.options.singlePassMaxChars ?? 40_000;
     const index = indexTree(tree);
     const whole = [...walkTree(tree.nodes)].map(({ node, path }) => ({ node, depth: path.length }));
-    const outline = fit(whole, Number.POSITIVE_INFINITY);
+    const outline = fitCandidates(whole, Number.POSITIVE_INFINITY);
     const title = tree.title ?? tree.source ?? tree.documentId;
     const steps: NavigationStep[] = [];
     const chosen: string[] = [];
@@ -409,7 +409,7 @@ Reply with JSON only: {"thinking": "<which sections answer and why>", "read": ["
           stoppedBy = 'maxSteps';
           break;
         }
-        const shown = fit(
+        const shown = fitCandidates(
           frontier.map((node) => ({ node })),
           singlePassMaxChars,
         );
