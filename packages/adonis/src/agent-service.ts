@@ -14,11 +14,15 @@ import type {
   Actor,
   AgentRunInput,
   MessageAttachment,
+  MessageFeedback,
   PageContext,
   Persona,
   ThreadDetail,
   ThreadSummary,
 } from './types.js';
+
+/** A feedback comment is stored with the message — bounded like any other stored text. */
+const MAX_FEEDBACK_COMMENT_LENGTH = 2000;
 
 export interface ChatParams {
   actor: Actor;
@@ -77,6 +81,64 @@ export class AgentService {
 
   subscribe(runId: string): AsyncIterable<StreamFrame> {
     return this.deps.forAgent().sink.subscribe(runId);
+  }
+
+  /**
+   * Rate a message: `'up'`/`'down'` with an optional comment, or `null` to clear the rating. Checks
+   * nothing about WHO — the route resolves the message's thread (`threadOfMessage`) and its owner
+   * first. Returns the stored rating, or an error the route maps to a status.
+   */
+  async setMessageFeedback(
+    messageId: string,
+    input: { value: unknown; comment?: unknown },
+  ): Promise<
+    { ok: true; feedback: MessageFeedback | null } | { ok: false; status: 400 | 501; error: string }
+  > {
+    const { value } = input;
+    if (value !== null && value !== 'up' && value !== 'down') {
+      return { ok: false, status: 400, error: "value must be 'up', 'down' or null" };
+    }
+    if (input.comment !== undefined && typeof input.comment !== 'string') {
+      return { ok: false, status: 400, error: 'comment must be a string' };
+    }
+    const comment = (input.comment as string | undefined)?.trim();
+    if (comment !== undefined && comment.length > MAX_FEEDBACK_COMMENT_LENGTH) {
+      return {
+        ok: false,
+        status: 400,
+        error: `comment must be at most ${MAX_FEEDBACK_COMMENT_LENGTH} characters`,
+      };
+    }
+    if (this.store.setMessageFeedback === undefined) {
+      return {
+        ok: false,
+        status: 501,
+        error:
+          'Message feedback requires an AgentStore that implements threadOfMessage() and setMessageFeedback().',
+      };
+    }
+    const feedback: MessageFeedback | null =
+      value === null
+        ? null
+        : {
+            value,
+            ...(comment !== undefined && comment.length > 0 ? { comment } : {}),
+            updatedAt: new Date().toISOString(),
+          };
+    await this.store.setMessageFeedback(messageId, feedback);
+    return { ok: true, feedback };
+  }
+
+  /** The thread a message belongs to (`AgentStore.threadOfMessage`); `undefined` when unsupported. */
+  async threadOfMessage(messageId: string): Promise<string | null | undefined> {
+    return this.store.threadOfMessage === undefined
+      ? undefined
+      : this.store.threadOfMessage(messageId);
+  }
+
+  /** Is anything streaming (or buffered) under this run? `true` when the sink cannot say. */
+  async hasStream(runId: string): Promise<boolean> {
+    return (await this.deps.forAgent().sink.has?.(runId)) ?? true;
   }
 
   /** The owning actor ref of a run (turn), or `null` if unknown — for per-actor route ownership checks. */
@@ -238,6 +300,10 @@ export class AgentService {
 
   getThread(threadId: string): Promise<ThreadDetail | null> {
     return this.store.getThread(threadId);
+  }
+
+  renameThread(threadId: string, title: string): Promise<void> {
+    return this.store.setTitle(threadId, title);
   }
 
   deleteThread(threadId: string): Promise<void> {

@@ -3,6 +3,7 @@ import type {
   AgentStore,
   AppendMessageInput,
   CreateThreadInput,
+  MessageFeedback,
   RecordRunEndInput,
   RecordRunStartInput,
   RecordToolCallInput,
@@ -223,7 +224,8 @@ export class InMemoryAgentStore implements AgentStore {
       transient: false,
       createdAt: ts,
       updatedAt: ts,
-      messages: kept.map((message) => ({ ...message })),
+      // Feedback rates a message in ITS thread; a fork starts unrated.
+      messages: kept.map(({ feedback: _feedback, ...message }) => ({ ...message })),
     };
     this.threads.set(id, row);
     return this.toSummary(row);
@@ -292,6 +294,22 @@ export class InMemoryAgentStore implements AgentStore {
     const cutoff = row.messages.findIndex((message) => message.id === messageId);
     if (cutoff >= 0) {
       row.messages = row.messages.slice(0, cutoff);
+    }
+  }
+
+  async threadOfMessage(messageId: string): Promise<string | null> {
+    return this.threadIdForMessage(messageId) ?? null;
+  }
+
+  async setMessageFeedback(messageId: string, feedback: MessageFeedback | null): Promise<void> {
+    for (const row of this.threads.values()) {
+      const index = row.messages.findIndex((candidate) => candidate.id === messageId);
+      const message = row.messages[index];
+      if (message !== undefined) {
+        const { feedback: _previous, ...rest } = message;
+        row.messages[index] = feedback !== null ? { ...rest, feedback } : rest;
+        return;
+      }
     }
   }
 

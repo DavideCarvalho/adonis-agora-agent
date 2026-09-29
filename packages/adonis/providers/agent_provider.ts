@@ -32,6 +32,7 @@ import {
   memoryForgetVerdict,
   offerMemories,
   type PageContext,
+  parseStreamCursor,
   pricingStores,
   type QuotaStore,
   REQUESTER_APPROVER,
@@ -495,7 +496,18 @@ export default class AgentProvider {
       const runId = String(ctx.params.runId);
       const owner = await service.runOwner(runId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
-      await this.#pipe(ctx, service, protocol, runId);
+      // Nothing buffered under the run — it ended while the client was away, or its buffer went with
+      // a restarted process. A 404 reads as "nothing to resume"; subscribing would wait forever.
+      if (!(await service.hasStream(runId))) {
+        return ctx.response.notFound({ error: 'Nothing is streaming under that run.' });
+      }
+      // `?after=<seq>` (or the `Last-Event-ID` a browser EventSource sends on its own) skips the
+      // events a reconnecting client already has; `after` wins when both are present.
+      const after =
+        parseStreamCursor(ctx.request.qs().after) ??
+        parseStreamCursor(ctx.request.header('last-event-id')) ??
+        0;
+      await this.#pipe(ctx, service, protocol, runId, undefined, after);
     });
 
     // 3. POST /agent/chat/:runId/cancel — authenticated + owner-scoped (a caller cancels only its own
@@ -628,6 +640,35 @@ export default class AgentProvider {
       return ctx.response.json(await service.listThreads(actor.id));
     });
 
+    // 6a. POST /agent/messages/:id/feedback — the thread owner rates a message. Only the OWNER: a
+    // rating is the owner's opinion of their own conversation, so no governance bypass here.
+    router.post(p('messages/:id/feedback'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      const messageId = String(ctx.params.id);
+      const threadId = await service.threadOfMessage(messageId);
+      if (threadId === undefined) {
+        return ctx.response.status(501).json({
+          error:
+            'Message feedback requires an AgentStore that implements threadOfMessage() and setMessageFeedback().',
+        });
+      }
+      if (threadId === null) {
+        return ctx.response.notFound({ error: 'message not found' });
+      }
+      const owner = await service.threadOwner(threadId);
+      if (!(await this.#assertOwner(ctx, actor, owner, 'thread', undefined))) return;
+      const body = (ctx.request.body() ?? {}) as { value?: unknown; comment?: unknown };
+      const result = await service.setMessageFeedback(messageId, {
+        value: body.value ?? null,
+        ...(body.comment !== undefined ? { comment: body.comment } : {}),
+      });
+      if (!result.ok) {
+        return ctx.response.status(result.status).json({ error: result.error });
+      }
+      return ctx.response.json({ feedback: result.feedback });
+    });
+
     // 6b. GET /agent/tools?agent= — the tools this caller can reach through an agent, with how a chat
     // surface should talk about each (`presentation`). The same list the model is offered; nothing the
     // caller passes widens it — `agent` only narrows to that agent's allow-list, and an unknown name is
@@ -662,6 +703,26 @@ export default class AgentProvider {
       const owner = await service.threadOwner(threadId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
       return ctx.response.json(await service.getThread(threadId));
+    });
+
+    // 8b. PATCH /agent/threads/:id — rename (`{ title }`), what a thread list's rename calls.
+    // Authenticated + owner-scoped. Unknown keys are ignored, so a client that also sends fields this
+    // server does not store yet is not refused for it.
+    router.patch(p('threads/:id'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      const threadId = String(ctx.params.id);
+      const owner = await service.threadOwner(threadId);
+      if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
+      const body = (ctx.request.body() ?? {}) as { title?: unknown };
+      if (body.title !== undefined) {
+        const title = typeof body.title === 'string' ? body.title.trim() : '';
+        if (title.length === 0 || title.length > 200) {
+          return ctx.response.badRequest({ error: 'title must be a string of 1-200 characters' });
+        }
+        await service.renameThread(threadId, title);
+      }
+      return ctx.response.json({ ok: true });
     });
 
     // 9. DELETE /agent/threads/:id. Authenticated + owner-scoped.
@@ -1233,6 +1294,7 @@ export default class AgentProvider {
     protocol: StreamProtocol,
     runId: string,
     threadId?: string,
+    after = 0,
   ): Promise<void> {
     const raw = ctx.response.response;
     const headers: Record<string, string> = {
@@ -1246,7 +1308,7 @@ export default class AgentProvider {
     raw.writeHead(200, headers);
     raw.write(`event: meta\ndata: ${JSON.stringify({ runId, threadId })}\n\n`);
     if (protocol === 'agent') {
-      const encoder = new AgentSseEncoder();
+      const encoder = new AgentSseEncoder(after);
       for await (const frame of service.subscribe(runId)) {
         const text = encoder.encode(frame);
         if (text.length > 0) raw.write(text);
