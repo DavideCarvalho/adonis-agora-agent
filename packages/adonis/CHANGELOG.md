@@ -1,5 +1,15 @@
 # @adonis-agora/agent
 
+## 0.45.0
+
+### Minor Changes
+
+- [#212](https://github.com/DavideCarvalho/adonis-agora-agent/pull/212) [`bf09375`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/bf09375850a6faa3f8f91d6855e86c34fad3fbdb) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `ctx.emitUi(component, props, { id?, version? })` and terminal tools, matching `@dudousxd/nestjs-agent`. Every tool context now carries `emitUi` (always present; a no-op outside a conversation, e.g. over MCP — `createNoopEmitUi` is exported, also from `./testing`, for contexts a test builds by hand). A push streams at once (`ui` under the agent protocol, `event: component` under the legacy envelope), a repeat `id` replaces it, and every component a step's tools pushed is persisted on the assistant message once they settle (`StoredMessage.ui`; optional `AgentStore.setMessageUi`, implemented by the Lucid and in-memory stores). The pushes ride the tool step's journaled result, so a durable replay neither re-streams nor re-persists them. `ctx.emitComponent` keeps working through the same path. `terminal: true` on a tool ends the turn once a call to it succeeds. `AiToolCtx` gains `agentName`.
+  
+  **Breaking for hand-built contexts:** `AiToolCtx.emitUi` is required, so code that constructs an `AiToolCtx` literal (usually a test calling a handler directly) adds `emitUi: createNoopEmitUi()`.
+
+- [#213](https://github.com/DavideCarvalho/adonis-agora-agent/pull/213) [`4757041`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/47570418418e8733400fd5ce9953bb39f3605014) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Generative UI from a component catalog, matching `@dudousxd/nestjs-agent`: `@adonis-agora/agent/genui` (and `/genui/builtins`) re-exports the isomorphic catalog of `@dudousxd/nestjs-agent-core/genui` — now an optional peer — so one catalog file serves this server, a NestJS one and the browser. `genui: genui({ catalog, mode?, showTool?, terminal?, resolver?, … })` in `config/agent.ts` registers the tools (`ui__show_<component>`, `ui__render` for a tree, the generic `ui__show`) that validate against the catalog and push through `ctx.emitUi`; the catalog is bound in the container as `AgentGenui`. A `resolver` (a `GenuiCatalogResolver` class built through the container, an instance, or a function) picks the catalog per request. `ToolHandler.describe(scope)` is new: any tool can vary its description and input schema per turn; `ToolRegistry.definitionsFor` takes the turn's `{ threadId, agentName }`, and `invoke` fills a no-op `emitUi` for a context without one.
+
 ## 0.44.0
 
 ### Minor Changes
