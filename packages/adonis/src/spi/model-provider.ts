@@ -1,4 +1,5 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
+import type { AgentUiComponent } from '../stream-events.js';
 import type { MessageUsage, ModelMessage, ToolCallRequest, ToolDefinition } from '../types.js';
 import type { SinkWriter } from './token-stream-sink.js';
 
@@ -46,6 +47,16 @@ export interface ModelTurnResult {
    * Omit when the adapter did not constrain generation.
    */
   object?: unknown;
+  /**
+   * The model's thinking this turn, as streamed. Optional: the loop derives it from the `reasoning`
+   * frames the provider wrote to the sink (see `observeTurnFrames`), so a provider only sets it to
+   * override that — e.g. one that receives reasoning it does not stream.
+   */
+  reasoning?: string;
+  /** Time spent thinking this turn, in ms. Derived like {@link reasoning} when omitted. */
+  reasoningMs?: number;
+  /** Components pushed during this turn (`ui` frames). Derived like {@link reasoning} when omitted. */
+  ui?: AgentUiComponent[];
 }
 
 /**

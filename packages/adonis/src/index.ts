@@ -348,4 +348,10 @@ export {
   invokeWithTransientRetry,
   isTransientToolError,
 } from './tool-retry.js';
+export {
+  type ObservedTurnFrames,
+  observeTurnFrames,
+  type TurnFrameSummary,
+  withTurnFrames,
+} from './turn-frames.js';
 export * from './types.js';

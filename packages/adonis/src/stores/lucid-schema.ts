@@ -60,6 +60,9 @@ export function createTableStatements(): string[] {
       "usage" TEXT NULL,
       "persona" VARCHAR(255) NULL,
       "run_id" VARCHAR(255) NULL,
+      "reasoning" TEXT NULL,
+      "reasoning_ms" INTEGER NULL,
+      "ui" TEXT NULL,
       "created_at" BIGINT NOT NULL
     )`,
     `CREATE INDEX IF NOT EXISTS "${t.messages}_thread_created_idx" ON "${t.messages}" ("thread_id", "created_at")`,
@@ -151,6 +154,9 @@ const RUN_ID_COLUMNS: readonly string[] = [
  */
 const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }[] = [
   { table: AGENT_TABLES.runs, column: 'parent_run_id', type: 'VARCHAR(255) NULL' },
+  { table: AGENT_TABLES.messages, column: 'reasoning', type: 'TEXT NULL' },
+  { table: AGENT_TABLES.messages, column: 'reasoning_ms', type: 'INTEGER NULL' },
+  { table: AGENT_TABLES.messages, column: 'ui', type: 'TEXT NULL' },
 ];
 
 /**
