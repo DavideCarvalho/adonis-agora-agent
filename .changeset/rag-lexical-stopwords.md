@@ -1,0 +1,5 @@
+---
+'@adonis-agora/agent': minor
+---
+
+`PgLexicalVectorStore.searchText` (and `retrievers.pgvector({ fullText })`): natural-language questions are searched by their meaningful terms. The question's stop words are dropped (new `fullText.stopWords`, default `DEFAULT_STOP_WORDS`: English, Portuguese and Spanish, only the language(s) the question is written in; `false` keeps every word) and rows holding any remaining term are ranked by the sum of the matched terms' IDF among the matching rows (BM25 without term frequencies), `ts_rank_cd` breaking ties. Before, a question had to match every word and then fell back to any word including stop words, ranked by `ts_rank_cd`, so rows dense in "the/of/which" won: in a 149-question benchmark over 12k chunks this took the keyword-only evidence hit rate from 18% to 75% (hybrid 69% to 80%), and it is faster. Quoted phrases and `-word` still go through `websearch_to_tsquery` as written first; `anyTermFallback: false` keeps the old every-word-only behavior. New exports: `keywordTerms`, `hasSearchSyntax`, `anyTermTsquery`, `DEFAULT_STOP_WORDS`.

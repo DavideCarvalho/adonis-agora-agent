@@ -241,11 +241,11 @@ describe('PgLexicalVectorStore', () => {
     expect(isLexicalVectorStore(new PgVectorStore(new RecordingDb()))).toBe(false);
   });
 
-  it('adds a GIN index over the exact expression it queries', async () => {
+  it('adds a GIN index over the exact expression it queries; explicit syntax runs as written', async () => {
     const db = new RecordingDb();
     const store = new PgLexicalVectorStore(db, { table: 't', fullText: { config: 'english' } });
 
-    await store.searchText('solar panels', { topK: 3, filter: { tenant: 't1' } });
+    await store.searchText('"solar panels" -wind', { topK: 3, filter: { tenant: 't1' } });
 
     expect(flat(store.schemaStatements().at(-1)!)).toBe(
       "CREATE INDEX IF NOT EXISTS t_text_tsv_idx ON t USING gin (to_tsvector('english'::regconfig, text))",
@@ -256,21 +256,55 @@ describe('PgLexicalVectorStore', () => {
       "WHERE to_tsvector('english'::regconfig, text) @@ __tsq.q AND metadata @> ?::jsonb",
     );
     expect(sql).toContain('ts_rank_cd(');
-    expect(db.calls[0]!.bindings).toEqual(['solar panels', '{"tenant":"t1"}', 3]);
+    expect(db.calls[0]!.bindings).toEqual(['"solar panels" -wind', '{"tenant":"t1"}', 3]);
+    // Nothing matched as written: the meaningful terms, ranked.
+    expect(db.calls).toHaveLength(2);
   });
 
-  it('uses a tsvector column you own (no index DDL) and falls back to any word', async () => {
+  it('searches a question by its meaningful terms, ranked by IDF, over a tsvector column you own', async () => {
     const db = new RecordingDb();
     const store = new PgLexicalVectorStore(db, { table: 't', fullText: { column: 'tsv' } });
 
-    await store.searchText('solar-panel warranty?', { topK: 3 });
+    await store.searchText("What's the solar-panel warranty?", {
+      topK: 3,
+      filter: { tenant: 't1' },
+    });
 
     expect(store.schemaStatements().some((statement) => statement.includes('gin'))).toBe(false);
-    expect(db.calls).toHaveLength(2);
-    expect(flat(db.calls[1]!.sql)).toContain(
-      "to_tsquery('simple', ?) AS __tsq(q) WHERE tsv @@ __tsq.q",
+    expect(db.calls).toHaveLength(1);
+    const sql = flat(db.calls[0]!.sql);
+    expect(sql).toContain(
+      "to_tsquery('simple', ?) AS __any(q) WHERE tsv @@ __any.q AND metadata @> ?::jsonb",
     );
-    expect(db.calls[1]!.bindings[0]).toBe("'solar' | 'panel' | 'warranty'");
+    expect(sql).toContain(
+      'ln(1 + ((SELECT count(*) FROM __cand) - count(*) + 0.5) / (count(*) + 0.5))',
+    );
+    expect(db.calls[0]!.bindings).toEqual([
+      'solar panel warranty',
+      "'solar' | 'panel' | 'warranty'",
+      '{"tenant":"t1"}',
+      3,
+      3,
+    ]);
+  });
+
+  it("drops only the stop words of the question's language, none when disabled, or matches as written", async () => {
+    const db = new RecordingDb();
+    await new PgLexicalVectorStore(db).searchText('Qual é o prazo de reembolso?', { topK: 3 });
+    expect(db.calls[0]!.bindings[0]).toBe('prazo reembolso');
+    await new PgLexicalVectorStore(db, { fullText: { stopWords: false } }).searchText(
+      'the warranty',
+      {
+        topK: 3,
+      },
+    );
+    expect(db.calls[1]!.bindings[0]).toBe('the warranty');
+    await new PgLexicalVectorStore(db, { fullText: { anyTermFallback: false } }).searchText(
+      'two words',
+      { topK: 3 },
+    );
+    expect(db.calls).toHaveLength(3);
+    expect(flat(db.calls[2]!.sql)).toContain('websearch_to_tsquery');
   });
 
   it('answers a deny filter or a blank query without a round trip; refuses unsafe identifiers', async () => {
@@ -300,7 +334,7 @@ describe('retrievers.pgvector({ fullText })', () => {
     const result = await retriever.retrieveWithUsage?.('alpha', { topK: 1 });
     expect(result?.passages.map((passage) => passage.id)).toEqual(['a#0']);
     expect(result?.usage).toEqual({ inputTokens: 1, modelId: 'fake-embedding' });
-    expect(db.calls.some((call) => call.sql.includes('websearch_to_tsquery'))).toBe(true);
+    expect(db.calls.some((call) => call.sql.includes('ts_rank_cd('))).toBe(true);
     expect(db.calls.some((call) => call.sql.includes('<=>'))).toBe(true);
   });
 
@@ -323,7 +357,7 @@ describe('LexicalRetriever', () => {
       filter: { a: 1 },
       minScore: 0.9,
     });
-    expect(db.calls[0]!.bindings).toEqual(['word', '{"a":1}', 7]);
+    expect(db.calls[0]!.bindings).toEqual(['word', "'word'", '{"a":1}', 7, 7]);
     expect(db.calls[0]!.sql).not.toContain('>=');
     // …and composes with the embedding leg over the same store.
     expect(

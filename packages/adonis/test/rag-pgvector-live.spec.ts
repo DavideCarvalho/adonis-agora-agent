@@ -414,6 +414,35 @@ describe.skipIf(CONTAINER === undefined)('pgvector upgrades against a live Postg
       filter: { tenant: 't1' },
     });
     expect(fallback.map((passage) => passage.id)).toContain('warranty#0');
+
+    // A question's stop words don't rank; its rare terms do.
+    await store.upsert([
+      {
+        id: 'noise#0',
+        text: 'The claims of the staff are in the office of the company, which is at the end of the road, and the time of the day is on the board.',
+        embedding: [],
+        metadata: { tenant: 't3' },
+      },
+      {
+        id: 'gearbox#0',
+        text: 'Warranty claims for turbine gearboxes go to the Denver depot.',
+        embedding: [],
+        metadata: { tenant: 't3' },
+      },
+      {
+        id: 'expense#0',
+        text: 'Expense claims are due by the 5th; claims without receipts are refused.',
+        embedding: [],
+        metadata: { tenant: 't3' },
+      },
+    ]);
+    const t3 = async (query: string) =>
+      (await store.searchText(query, { topK: 5, filter: { tenant: 't3' } })).map((p) => p.id);
+    expect((await t3('Which depot handles the warranty claims of the gearboxes?'))[0]).toBe(
+      'gearbox#0',
+    );
+    expect((await t3('claims gearboxes'))[0]).toBe('gearbox#0');
+    expect(await t3('"expense claims" -gearboxes')).toEqual(['expense#0']);
     expect((await store.search([1, 0, 0], { topK: 5 })).map((p) => p.id)).toEqual(['warranty#0']);
 
     const embedder = { embed: async (texts: string[]) => texts.map(() => [1, 0, 0]) };
