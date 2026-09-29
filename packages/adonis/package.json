@@ -146,6 +146,7 @@
     "dist/",
     "README.md",
     "CHANGELOG.md",
+    "NOTICE",
     "skills"
   ],
   "sideEffects": false,

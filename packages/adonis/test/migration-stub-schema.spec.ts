@@ -113,13 +113,29 @@ describe('the pgvector migration stub delegates too', async () => {
   });
 });
 
+describe('the tree navigation migration stub delegates too', async () => {
+  const stub = await renderStub('create_agent_rag_trees');
+  const code = await renderStubCode('create_agent_rag_trees');
+
+  it('provisions through PgDocumentTreeStore on the migration connection', () => {
+    expect(code).not.toMatch(/this\.schema\.createTable\(/);
+    expect(stub).toMatch(/new PgDocumentTreeStore\(db\.connection\(this\.db\.connectionName\), \{/);
+    expect(stub).toMatch(/ensureSchema\(\)/);
+    expect(stub).toMatch(/static disableTransactions = true/);
+  });
+});
+
 describe('one stub, one schema', () => {
   it('publishes no separate run-tracking migration', () => {
     // `create_agent_run_tracking.stub` existed only to ALTER in the `run_id` columns the base stub was
     // written before. `createAgentTables` now creates them inline on a fresh database AND repairs them
     // on an old one, so a second file would be a second copy of the same facts.
     const stubs = readdirSync(migrationsDir).filter((entry) => entry.endsWith('.stub'));
-    expect(stubs.sort()).toEqual(['create_agent_rag_chunks.stub', 'create_agent_tables.stub']);
+    expect(stubs.sort()).toEqual([
+      'create_agent_rag_chunks.stub',
+      'create_agent_rag_trees.stub',
+      'create_agent_tables.stub',
+    ]);
   });
 
   it('carries the run_id columns in the table DDL itself', () => {

@@ -1,0 +1,40 @@
+{{{
+  exports({ to: app.migrationsPath(`${new Date().getTime()}_create_agent_rag_trees.ts`) })
+}}}
+import { BaseSchema } from '@adonisjs/lucid/schema'
+import db from '@adonisjs/lucid/services/db'
+import { PgDocumentTreeStore } from '@adonis-agora/agent'
+
+/**
+ * The tables of \`PgDocumentTreeStore\`, the tree navigation store (PageIndex-style retrieval for long
+ * documents): one row per document tree (header columns, a \`jsonb\` metadata column filtered like the
+ * chunk table's, the nodes as \`jsonb\`) and one row per page/section of text the nodes point at.
+ * Postgres only; needs no extension. Delete this file if you do not use tree navigation.
+ *
+ * Like the other migrations, this DELEGATES rather than copying DDL: the store owns the column names
+ * its own queries depend on. Every statement is \`IF NOT EXISTS\`, so this is safe against a database
+ * where \`ensureSchema()\` already ran.
+ *
+ * SET \`TABLE\` / \`UNITS_TABLE\` only if you pass \`table\` / \`unitsTable\` to
+ * \`new PgDocumentTreeStore(db, { ... })\` (the units table defaults to the trees table + \`_units\`).
+ */
+const TABLE = 'agent_rag_trees'
+const UNITS_TABLE = 'agent_rag_trees_units'
+
+export default class extends BaseSchema {
+  /** Same reason as the agent tables migration: the DDL runs on the manager's own pooled connection. */
+  static disableTransactions = true
+
+  async up() {
+    const store = new PgDocumentTreeStore(db.connection(this.db.connectionName), {
+      table: TABLE,
+      unitsTable: UNITS_TABLE,
+    })
+    await store.ensureSchema()
+  }
+
+  async down() {
+    this.schema.dropTableIfExists(UNITS_TABLE)
+    this.schema.dropTableIfExists(TABLE)
+  }
+}

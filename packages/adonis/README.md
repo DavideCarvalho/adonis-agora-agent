@@ -11,8 +11,8 @@ The package is two things layered on top of each other:
   in-process or as a replay-safe durable workflow (via `@adonis-agora/durable`, optional peer).
 - An **AdonisJS integration shell** — a service provider, `defineConfig`, HTTP routes (`/agent/*`,
   `/agent/governance/*`, `/agent/attachments`), Lucid-backed stores, tool discovery from
-  `app/agent_tools`, RAG (pgvector or Qdrant retrievers), a governed read-only SQL tool, and a
-  React chat hook.
+  `app/agent_tools`, RAG (pgvector or Qdrant retrievers, plus PageIndex-style tree navigation for
+  long documents), a governed read-only SQL tool, and a React chat hook.
 
 `read` tools auto-execute, `action` tools gate on human approval (HITL), and `agent` tools delegate
 to another named agent.
@@ -26,9 +26,9 @@ node ace configure @adonis-agora/agent
 
 `configure` registers the provider, wires an Assembler `init` hook that generates the typed
 `app/agent_tools` barrel (falls back to a runtime scan if absent), publishes `config/agent.ts`, and
-publishes three migrations — the base agent tables, additive run-tracking, and a pgvector RAG-chunk
-table (delete whichever you don't use, e.g. the pgvector migration if you retrieve via Qdrant instead;
-run `node ace migration:run` for the rest).
+publishes the migrations — the base agent tables, a pgvector RAG-chunk table, and the tree-navigation
+tables (delete whichever you don't use, e.g. the pgvector migration if you retrieve via Qdrant instead,
+or the trees migration if you don't navigate long documents; run `node ace migration:run` for the rest).
 
 Only `ai` (or a hand-rolled `ModelProvider`) and a model factory are strictly required. Everything
 else is an **optional peer**, imported lazily only when configured:
