@@ -78,6 +78,11 @@ export class AgentService {
   }
 
   /** The owning actor ref of a thread, or `null` if unknown — for per-actor route ownership checks. */
+  /** The run a tool call belongs to (see `AgentStore.getToolCallRunId`); `null` when unknown. */
+  async toolCallRun(toolCallId: string): Promise<string | null> {
+    return (await this.store.getToolCallRunId?.(toolCallId)) ?? null;
+  }
+
   threadOwner(threadId: string): Promise<string | null> {
     return this.store.getThreadActorRef(threadId);
   }

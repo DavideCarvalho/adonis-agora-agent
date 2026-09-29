@@ -471,6 +471,13 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
     await this.db.from(AGENT_TABLES.toolCalls).where('id', input.toolCallId).update(patch);
   }
 
+  async getToolCallRunId(toolCallId: string): Promise<string | null> {
+    await this.init();
+    const row = await this.db.from(AGENT_TABLES.toolCalls).where('id', toolCallId).first();
+    if (row === null || row === undefined || row.run_id == null) return null;
+    return String(row.run_id);
+  }
+
   async recordUsage(input: RecordUsageInput): Promise<void> {
     await this.init();
     await this.db.table(AGENT_TABLES.tokenUsage).insert({

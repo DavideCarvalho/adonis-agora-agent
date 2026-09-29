@@ -83,6 +83,20 @@ export class AgentChatDisconnectedError extends Error {
   }
 }
 
+/**
+ * The server ended the run with `event: error` (agent protocol). Not a dropped connection: the run
+ * is over, so it is surfaced rather than re-attached. `code` is the server's (`quota_exceeded`,
+ * `output_rejected`, `structured_output_invalid`, `run_failed`).
+ */
+export class AgentChatStreamError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = 'AgentChatStreamError';
+    this.code = code;
+  }
+}
+
 const DEFAULT_MAX_ATTEMPTS = 6;
 
 function defaultBackoff(attempt: number): number {
@@ -160,6 +174,9 @@ export function createAgentChatClient(options: AgentChatClientOptions = {}): Age
       if (frame.type === 'done') {
         return true;
       }
+      if (frame.type === 'error') {
+        throw new AgentChatStreamError(frame.code, frame.message);
+      }
       if (frame.type === 'meta') {
         if (frame.runId) {
           sink.handlers.onRunId?.(frame.runId);
@@ -202,7 +219,7 @@ export function createAgentChatClient(options: AgentChatClientOptions = {}): Age
         attempt = 0; // Reconnected: reset the budget; only the next drop counts again.
         sawDone = await consume(response.body, sink);
       } catch (error) {
-        if (signal?.aborted) {
+        if (signal?.aborted || error instanceof AgentChatStreamError) {
           throw error;
         }
         // Dropped again — loop retries until the budget is spent.
@@ -261,7 +278,7 @@ export function createAgentChatClient(options: AgentChatClientOptions = {}): Age
     try {
       sawDone = await consume(response.body, sink);
     } catch (error) {
-      if (signal?.aborted) {
+      if (signal?.aborted || error instanceof AgentChatStreamError) {
         throw error;
       }
       sawDone = false; // Fall through to the re-attach loop instead of surfacing the drop as an error.

@@ -1,4 +1,5 @@
 import type { ElicitationRequest } from '../elicitation.js';
+import type { AgentStreamErrorCode, AgentStreamEvent } from '../stream-events.js';
 
 /**
  * The "data plane": live token transport, decoupled from the durable control plane.
@@ -10,7 +11,23 @@ import type { ElicitationRequest } from '../elicitation.js';
  */
 export type StreamFrame =
   | { t: 'text'; v: string }
-  | { t: 'component'; name: string; data: unknown }
+  /**
+   * A component a tool pushed (`ctx.emitComponent`). `id` and `toolCallId` are stamped by the loop
+   * (`<toolCallId>:ui:<n>`) so the agent protocol can carry it as a `ui` frame a repeat replaces;
+   * a frame buffered before they existed has neither, and is numbered by its position instead.
+   */
+  | { t: 'component'; name: string; data: unknown; id?: string; toolCallId?: string }
+  /**
+   * One frame of the agent stream protocol (`AgentStreamEvent`, shared with `@dudousxd/nestjs-agent`)
+   * that has no older spelling here: reasoning, tool-call announcements and outcomes, step brackets,
+   * title, cancel. The legacy envelope has no place for them and skips them.
+   */
+  | { t: 'event'; event: AgentStreamEvent }
+  /**
+   * The run failed. Streamed as `event: error` `{ code, message }` under the agent protocol; the
+   * legacy envelope writes it as the `[error]` text delta it always did.
+   */
+  | { t: 'error'; code: AgentStreamErrorCode; message: string }
   /**
    * A question set the run is now parked on. Carries the whole request, so a client renders the form
    * — and knows the total ("Question 1 of 3") — without a second fetch. Identical whether a

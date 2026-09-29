@@ -27,10 +27,12 @@ export {
   type AgentLoopResult,
   DEFAULT_MAX_AGENT_APPEARANCES,
   MAX_DELEGATION_DEPTH,
+  outcomeFrame,
   QuotaExceededError,
   runAgentLoop,
   type SettledTask,
   settleAll,
+  streamErrorFrame,
   withBuiltInTools,
 } from './agent-loop.js';
 export { AgentRegistry } from './agent-registry.js';
@@ -282,7 +284,7 @@ export type { RolesPolicy as ToolAuthorizer } from './spi/roles-policy.js';
 export * from './spi/roles-policy.js';
 export * from './spi/token-stream-sink.js';
 export * from './spi/tool.js';
-export { frameToSse } from './sse.js';
+export { AgentSseEncoder, frameToEvents, frameToSse, type StreamProtocol } from './sse.js';
 export type { QdrantRetrieverConfig } from './stores/factory.js';
 export { lucidStoreConnection } from './stores/factory.js';
 export { LedgerQuotaStore } from './stores/ledger-quota.js';
@@ -306,6 +308,13 @@ export {
   dropTableStatements,
   ensureAgentTables,
 } from './stores/lucid-schema.js';
+export type {
+  AgentApprovalRequest,
+  AgentApprovalSettlement,
+  AgentStreamErrorCode,
+  AgentStreamEvent,
+  AgentUiComponent,
+} from './stream-events.js';
 export {
   DEFAULT_STRUCTURED_OUTPUT_INSTRUCTION,
   extractJson,

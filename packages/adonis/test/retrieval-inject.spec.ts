@@ -85,6 +85,8 @@ async function collectStream(service: AgentService, runId: string): Promise<stri
   let text = '';
   for await (const frame of service.subscribe(runId)) {
     if (frame.t === 'text') text += frame.v;
+    // A failure is its own frame now; read it the way the legacy envelope spells it.
+    if (frame.t === 'error') text += `\n[error] ${frame.message}`;
   }
   return text;
 }

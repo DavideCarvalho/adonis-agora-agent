@@ -129,6 +129,10 @@ Leaving `actorResolver` unset makes every actor-scoped route reply `401`. This i
 
 `string`. The route prefix the `/agent/*` routes mount under. **Default `'agent'`** (→ `/agent/chat`, `/agent/threads`, …). Leading/trailing slashes are stripped.
 
+### `streamProtocol`
+
+`'legacy' | 'agent'`. The envelope the chat routes stream. **Default `'legacy'`** — `data: {"delta":…}` text plus named component / elicitation / approval events. `'agent'` streams the chat protocol shared with `@dudousxd/nestjs-agent` (one `AgentStreamEvent` per frame: text, reasoning, tool calls and outcomes, steps, title, …), which `@dudousxd/nestjs-agent-react` renders unchanged. See [Streaming & HTTP](/docs/agent/streaming-and-http#the-sse-envelope).
+
 ### `durable`
 
 `boolean`. Run each turn as a replay-safe durable workflow (over [`@adonis-agora/durable`](/docs/durable)) instead of in-process: LLM/tool steps become memoized checkpoints, HITL approval suspends on a signal (resuming across a restart), and delegation is a tracked child run. **Requires `@adonis-agora/durable` installed and configured** (`config/durable.ts`); if it can't be wired the provider logs a warning and falls back to the inline runner, so setting it is always safe. See [The durable runner](/docs/agent/durability/durable-runner).

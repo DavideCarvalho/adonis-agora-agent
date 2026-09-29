@@ -1,6 +1,6 @@
 import { type AgentDeps, utcDay } from '../agent-deps.js';
 import type { AgentDepsFactory } from '../agent-deps-factory.js';
-import { type AgentLoopHooks, runAgentLoop, settleAll } from '../agent-loop.js';
+import { type AgentLoopHooks, runAgentLoop, settleAll, streamErrorFrame } from '../agent-loop.js';
 import { spannedAgent } from '../diagnostics.js';
 import {
   type ElicitationRequest,
@@ -80,7 +80,7 @@ export class InlineAgentRunner implements AgentRunner {
       await this.store.recordRunEnd({ runId, status: 'failed', error: message });
       // Surface the failure on the live stream and close it, so a subscriber isn't left hanging.
       const writer = await deps.sink.open(runId);
-      await writer.write({ t: 'text', v: `\n[error] ${message}` });
+      await writer.write(streamErrorFrame(error));
       await writer.end();
     });
 
@@ -117,6 +117,9 @@ export class InlineAgentRunner implements AgentRunner {
     await this.store.recordRunEnd({ runId, status: 'cancelled' });
     const deps = this.factory.forAgent();
     const writer = await deps.sink.open(runId);
+    // The last frame before a normal end: without it a reader cannot tell a truncated answer from
+    // a complete one. Not an error — a client that retries a failed stream must not retry this.
+    await writer.write({ t: 'event', event: { kind: 'cancelled' } });
     await writer.end();
   }
 
