@@ -25,6 +25,8 @@ import {
   HumanReplyMismatchError,
   InlineAgentRunner,
   InProcessTokenStreamSink,
+  isQuotaProvider,
+  LedgerQuotaProvider,
   lucidStoreConnection,
   type MemoryConfig,
   type MessageAttachment,
@@ -35,6 +37,8 @@ import {
   type PageContext,
   parseStreamCursor,
   pricingStores,
+  QuotaBlockedError,
+  type QuotaProvider,
   type QuotaStore,
   REQUESTER_APPROVER,
   type Retriever,
@@ -188,7 +192,11 @@ export default class AgentProvider {
     const store = await this.#resolveStore(config);
     const sink = await this.#resolveSink(config);
     // Quota is resolved after the store so a ledger-backed quota can read the store's usage ledger.
-    const quota = await this.#resolveQuota(config, store);
+    // A `QuotaStore` is the loop's daily token check; a `QuotaProvider` (`quotas.windows`) is the send
+    // gate instead. Either way `GET <path>/quota` reports — off the ledger when nothing else does.
+    const resolvedQuota = await this.#resolveQuota(config, store);
+    const quotaProvider = isQuotaProvider(resolvedQuota) ? resolvedQuota : undefined;
+    const quota = isQuotaProvider(resolvedQuota) ? undefined : resolvedQuota;
     const pricingStore = await this.#resolvePricing(config);
     // Governance read-model is resolved after pricing so the Lucid read-model prices its rollups
     // against the same live prices the loop's cost fold uses.
@@ -244,6 +252,10 @@ export default class AgentProvider {
         : new InlineAgentRunner(factory, store);
     const service = new AgentService(runner, store, factory, {
       ...(config.models !== undefined ? { models: toModelCatalog(config.models) } : {}),
+      quota:
+        quotaProvider !== undefined
+          ? { provider: quotaProvider, gated: true }
+          : { provider: new LedgerQuotaProvider(store, quota), gated: false },
     });
     this.app.container.bindValue(AgentService, service);
 
@@ -325,7 +337,10 @@ export default class AgentProvider {
     return typeof directory === 'function' ? directory({ app: this.app }) : directory;
   }
 
-  async #resolveQuota(config: AgentConfig, store: AgentStore): Promise<QuotaStore | undefined> {
+  async #resolveQuota(
+    config: AgentConfig,
+    store: AgentStore,
+  ): Promise<QuotaStore | QuotaProvider | undefined> {
     const quota = config.quota;
     if (quota === undefined) return undefined;
     return typeof quota === 'function' ? quota({ app: this.app, store }) : quota;
@@ -496,6 +511,13 @@ export default class AgentProvider {
       } catch (error) {
         if (error instanceof ModelNotAllowedError) {
           return ctx.response.badRequest({ error: error.message });
+        }
+        if (error instanceof QuotaBlockedError) {
+          return ctx.response.status(429).json({
+            code: 'quota_exceeded',
+            period: error.period,
+            message: error.message,
+          });
         }
         throw error;
       }
@@ -845,6 +867,14 @@ export default class AgentProvider {
       return ctx.response.json({
         forgotten: await memory.provider.forget({ id: entry.id, ctx: { actor, threadId: '' } }),
       });
+    });
+
+    // 11b. GET /agent/quota — every budget window with what was spent in it, and `blocked` naming
+    // the exhausted one.
+    router.get(p('quota'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      return ctx.response.json(await service.quotaReport(actor));
     });
 
     // 12. GET /agent/quota/today.

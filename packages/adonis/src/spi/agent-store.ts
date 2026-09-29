@@ -250,6 +250,16 @@ export interface AgentStore {
 
   recordUsage(input: RecordUsageInput): Promise<void>;
   quotaToday(actorRef: string, day: string): Promise<{ usedTokens: number }>;
+  /**
+   * OPTIONAL: the actor's usage over the UTC days `fromDay`..`toDay` (`YYYY-MM-DD`, inclusive) —
+   * tokens and recorded spend. Feeds the month window (and the day window's spend) of
+   * `GET <path>/quota`; absent → the month window is left out and spend reads `0`.
+   */
+  usageBetween?(
+    actorRef: string,
+    fromDay: string,
+    toDay: string,
+  ): Promise<{ usedTokens: number; costUsd: number }>;
 
   /** Open a run (turn) row at start. Replay-safe: the loop calls it under a durable step. */
   recordRunStart(input: RecordRunStartInput): Promise<void>;

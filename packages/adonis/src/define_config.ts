@@ -14,6 +14,7 @@ import type { ModelCatalog, ModelCatalogView } from './spi/model-catalog.js';
 import type { ModelProvider } from './spi/model-provider.js';
 import type { AgentPricingStore } from './spi/pricing-store.js';
 import type { InputProcessor, OutputProcessor } from './spi/processors.js';
+import type { QuotaProvider } from './spi/quota-provider.js';
 import type { QuotaStore } from './spi/quota-store.js';
 import type { Retriever } from './spi/retriever.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
@@ -101,9 +102,12 @@ export interface AgentConfig {
   /**
    * Daily token budget, or a lazy factory. Omit to disable quotas (fail-open on budget). Use
    * `quotas.ledger({ limitTokens })` to enforce off the persisted token-usage ledger, or
-   * `quotas.memory({ limitTokens })` for a single-process budget.
+   * `quotas.memory({ limitTokens })` for a single-process budget. `quotas.windows({ day?, month? })`
+   * (or your own `QuotaProvider`) sets budget windows in tokens and/or spend: `GET <path>/quota`
+   * reports them and a send while one is exhausted answers `429`. Without any, `GET <path>/quota`
+   * still reports usage from the ledger.
    */
-  quota?: QuotaStore | QuotaFactory;
+  quota?: QuotaStore | QuotaProvider | QuotaFactory;
   /**
    * Prices each turn's tokens into the assistant message's `usage.costUsd`. A provider-reported cost
    * (a gateway) always wins; otherwise the loop estimates from this store's current price rows (fetched
