@@ -184,6 +184,33 @@ A tool's `input` is a [Standard Schema](https://standardschema.dev) — so **Zod
 Zod 3 doesn't expose the Standard JSON Schema extension, so the AI SDK adapter recognizes it by its `zod` vendor tag and converts it natively; Valibot, ArkType, and Zod 4 carry the extension and are converted through it. A bare schema the adapter can't introspect degrades to a permissive object schema for the model — but the loop still validates the real schema before running the tool.
 </Callout>
 
+## Presentation — how a chat surface talks about a tool
+
+A tool name is an identifier, not copy. `presentation` declares the words a chat surface uses instead — beside the input schema, so whoever changes the input re-words the sentence that mentions it. It is never shown to the model.
+
+```ts
+defineTool(
+  {
+    name: 'purgeCache',
+    kind: 'action',
+    description: 'Purge one cache key',
+    input: z.object({ key: z.string() }),
+    presentation: {
+      label: 'Cache purge',
+      running: 'Purging {key}', // `{dotted.path}` placeholders read the call's input
+      done: 'Purged {key}',
+      icon: 'cache', // a key into the client's own glyph map
+      tone: 'destructive',
+      confirm: { title: 'Purge {key}?', verb: 'Purge' }, // the approval prompt
+      result: { kind: 'note', text: 'Freed {bytes} bytes' }, // how the OUTPUT reads
+    },
+  },
+  purge,
+)
+```
+
+The same field works on `@AiTool({ … })` and `static tool = { … }`. `GET /agent/tools?agent=` serves `{ name, kind, presentation? }[]` for the tools the caller can reach — the exact list the model is offered for that actor and agent (an unknown `agent` is a `404`) — which `@dudousxd/nestjs-agent-react`'s `useToolCatalog` reads to narrate calls. A tool with no `presentation` is narrated generically. The shape (`ToolPresentation`, `ToolResultView`, …) is the NestJS library's, exported from this package.
+
 ## Roles & ability
 
 Two optional governance fields on every tool:

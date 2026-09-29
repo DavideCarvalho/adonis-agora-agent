@@ -577,6 +577,23 @@ export default class AgentProvider {
       return ctx.response.json(await service.listThreads(actor.id));
     });
 
+    // 6b. GET /agent/tools?agent= — the tools this caller can reach through an agent, with how a chat
+    // surface should talk about each (`presentation`). The same list the model is offered; nothing the
+    // caller passes widens it — `agent` only narrows to that agent's allow-list, and an unknown name is
+    // a 404 rather than the widest answer (no allow-list at all).
+    router.get(p('tools'), async (ctx: HttpContext) => {
+      const agent = ctx.request.qs().agent as string | undefined;
+      if (agent !== undefined && agent !== defaultAgentName && agents.get(agent) === undefined) {
+        return ctx.response.notFound({ error: `No agent named "${agent}"` });
+      }
+      const actor = await this.#resolveActor(
+        ctx,
+        resolveActorResolver(actorResolver, agents.get(agent ?? defaultAgentName)),
+      );
+      if (actor === null) return;
+      return ctx.response.json(await service.toolCatalog(actor, agent));
+    });
+
     // 7. GET /agent/threads/personas/catalog (before :id so it isn't captured by the param).
     // Authenticated — an anonymous caller reads nothing from the agent surface.
     router.get(p('threads/personas/catalog'), async (ctx: HttpContext) => {

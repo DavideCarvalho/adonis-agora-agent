@@ -98,6 +98,7 @@ function specFromMeta(meta: AiToolMeta, defaultRoles: string[]): ToolSpec {
     inputSchema: meta.input,
     roles: meta.roles ?? defaultRoles,
     ...(meta.ability !== undefined ? { ability: meta.ability } : {}),
+    ...(meta.presentation !== undefined ? { presentation: meta.presentation } : {}),
   };
 }
 

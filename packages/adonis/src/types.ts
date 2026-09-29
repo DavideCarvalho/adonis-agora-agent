@@ -1,6 +1,7 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { ActorResolver } from './spi/actor-resolver.js';
 import type { AgentUiComponent } from './stream-events.js';
+import type { ToolPresentation } from './tool-presentation.js';
 
 /** Who is driving the turn. Roles + tenant come from the host app (nestjs-context/authz). */
 export interface Actor {
@@ -33,6 +34,11 @@ export interface ToolSpec {
   name: string;
   kind: ToolKind;
   description: string;
+  /**
+   * How a person-facing surface talks about this tool (see {@link ToolPresentation}). Never shown
+   * to the model; served to clients by `GET <path>/tools`.
+   */
+  presentation?: ToolPresentation;
   /**
    * Input schema as a [Standard Schema](https://standardschema.dev) — validation-agnostic, so
    * Zod, Valibot, or ArkType all work. The loop validates input via `~standard.validate` before

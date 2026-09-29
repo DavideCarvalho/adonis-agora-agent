@@ -1,5 +1,6 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { AiToolCtx, ToolHandler } from './spi/tool.js';
+import type { ToolPresentation } from './tool-presentation.js';
 import type { ToolSpec } from './types.js';
 
 /**
@@ -35,6 +36,19 @@ export interface AiToolOptions {
    * adapter → `bouncer.forUser(actor).allows(ability)`). Ignored by the default role-based policy.
    */
   ability?: string;
+  /**
+   * How a chat surface talks about this tool without naming it — sentence templates over the call's
+   * input, an icon key, the approval prompt's wording, and how its output reads. Never shown to the
+   * model. Served by `GET <path>/tools` to the actors who can reach the tool:
+   *
+   * ```ts
+   * presentation: {
+   *   label: 'Cache purge', running: 'Purging {key}', done: 'Purged {key}', icon: 'cache',
+   *   tone: 'destructive', confirm: { title: 'Purge {key}?', verb: 'Purge' },
+   * }
+   * ```
+   */
+  presentation?: ToolPresentation;
 }
 
 /** The metadata a tool class carries for discovery + registration — from `@AiTool` or `static tool`. */
@@ -156,6 +170,7 @@ export function defineTool<I = unknown, O = unknown>(
     inputSchema: options.input,
     ...(options.roles !== undefined ? { roles: options.roles } : {}),
     ...(options.ability !== undefined ? { ability: options.ability } : {}),
+    ...(options.presentation !== undefined ? { presentation: options.presentation } : {}),
   };
   return {
     [AGENT_TOOL_BRAND]: true,

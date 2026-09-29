@@ -28,6 +28,7 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 | 4 | `POST /agent/tool-call/approve` | Approve a pending `action` tool call. Body: `{ toolCallId, runId? }`. |
 | 5 | `POST /agent/tool-call/reject` | Reject a pending `action` tool call. Body: `{ toolCallId, runId?, reason? }`. |
 | 6 | `GET /agent/threads` | List the actor's threads. |
+| 6b | `GET /agent/tools?agent=` | The tools the caller can reach through an agent, as `{ name, kind, presentation? }[]` — the same list the model is offered. `404` for an unknown agent. See [Presentation](/docs/agent/authoring/tools#presentation--how-a-chat-surface-talks-about-a-tool). |
 | 7 | `GET /agent/threads/personas/catalog` | The persona `{ id, label }` catalog for a UI picker. |
 | 8 | `GET /agent/threads/:id` | Thread detail (messages + `activeStreamId`), or `null`. |
 | 9 | `DELETE /agent/threads/:id` | Soft-delete a thread. |

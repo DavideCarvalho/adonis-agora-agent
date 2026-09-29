@@ -3,6 +3,7 @@ import type { AgentDepsFactory } from './agent-deps-factory.js';
 import type { AgentRunner } from './spi/agent-runner.js';
 import type { AgentStore } from './spi/agent-store.js';
 import type { StreamFrame } from './spi/token-stream-sink.js';
+import type { ToolCatalogEntry } from './tool-presentation.js';
 import type {
   Actor,
   AgentRunInput,
@@ -136,6 +137,22 @@ export class AgentService {
 
   cancel(runId: string): Promise<void> {
     return this.runner.cancel(runId);
+  }
+
+  /**
+   * The tools THIS actor can reach through an agent, with how a chat surface talks about each —
+   * the same list the model is offered (`ToolRegistry.visibleSpecs` behind `definitionsFor`, against
+   * the agent's allow-list and the roles policy). Built-in tools the loop serves itself (`ask`,
+   * `skill`, `remember`) are not registry tools and are not listed.
+   */
+  async toolCatalog(actor: Actor, agentName?: string): Promise<ToolCatalogEntry[]> {
+    const deps = this.deps.forAgent(agentName);
+    const specs = await deps.registry.visibleSpecs(actor, deps.rolesPolicy, deps.toolAllowList);
+    return specs.map((spec) => ({
+      name: spec.name,
+      kind: spec.kind,
+      ...(spec.presentation !== undefined ? { presentation: spec.presentation } : {}),
+    }));
   }
 
   resolvePersona(agentName?: string, id?: string): Persona | undefined {
