@@ -1,5 +1,13 @@
 # @adonis-agora/agent
 
+## 0.44.0
+
+### Minor Changes
+
+- [#208](https://github.com/DavideCarvalho/adonis-agora-agent/pull/208) [`c945416`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/c9454165f33dc4989d9b0882ca940f5203e22e27) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Model catalog, per-thread and per-send model, matching `@dudousxd/nestjs-agent`: `models` in `config/agent.ts` (a literal `ModelCatalogView` or a `ModelCatalog` deciding per caller) is served by `GET /agent/models?agent=`; `POST /agent/chat { model }` runs a turn on a catalog model and `PATCH /agent/threads/:id { model }` pins one on a thread (`null` unpins) — anything the catalog does not offer as available is a `400`. The pick reaches the provider as `ModelTurnArgs.model` (`aiSdkModel` gains `resolveModel`, and passes the id through verbatim for a gateway string), rides the run's input so a durable replay makes the same choice, and labels usage when the provider reports no model id. `GET /agent/agents` lists the registered agents for a picker (`AgentDefinition.description` is new). `ThreadSummary.model`; Lucid adds a nullable `agent_thread.model` column; `AgentStore` gains optional `updateThread`.
+
+- [#210](https://github.com/DavideCarvalho/adonis-agora-agent/pull/210) [`aedd216`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/aedd21614baea4b8f59511d159eda3116862459e) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Quota v2, matching `@dudousxd/nestjs-agent`: `quota: quotas.windows({ day?: { tokens?, usd? }, month?: { tokens?, usd? } })` (or your own `QuotaProvider`) sets budget windows; `GET /agent/quota` reports `{ windows: [{ period, usedTokens, limitTokens?, usedUsd, limitUsd?, resetsAt }], blocked? }` and a send while a window is exhausted answers `429` `{ code: 'quota_exceeded', period, message }`. Without a budget the route still reports usage off the ledger and never gates; a daily `QuotaStore` keeps being enforced by the loop and lends the day window its ceiling. `AgentStore` gains optional `usageBetween` (Lucid, in-memory) for the month window and recorded spend.
+
 ## 0.43.0
 
 ### Minor Changes
