@@ -47,6 +47,11 @@ export interface ToolSpec {
   inputSchema: StandardSchemaV1;
   /** For `kind: 'agent'` — the name of the agent to delegate to. */
   targetAgent?: string;
+  /**
+   * A successful call ENDS the turn: its effect is the answer (it pushed the UI the user reads), so
+   * no further model call narrates it. A failed call does not end it — the model gets to recover.
+   */
+  terminal?: boolean;
   /** Roles allowed to invoke. Undefined → defaults applied by RolesPolicy (e.g. ADMIN-only). */
   roles?: string[];
   /**

@@ -102,7 +102,7 @@ The vocabulary, field for field, is the NestJS library's [stream protocol](https
 | `tool-output` / `tool-output-error` / `tool-output-denied` | once the step's tools have settled; a person's "no" is `tool-output-denied`, never an error |
 | `elicitation` | a question set the run is parked on (plus `runId`, the run to answer against) |
 | `approval-requested` | an `action` call parked on a person: `approver: 'requester'` (plus `runId`, `toolName`, `input`) |
-| `ui` | a component a tool pushed with `ctx.emitComponent` — `id` is `<toolCallId>:ui:<n>`, so a repeat replaces it |
+| `ui` | a component a tool pushed with `ctx.emitUi` (or the older `ctx.emitComponent`) — `id` defaults to `<toolCallId>:ui:<n>`, a repeat replaces it; persisted on the message once the step's tools settle |
 | `title` | the thread was titled from its first message |
 | `cancelled` | the run was stopped — the last frame before `done`, so a truncated answer reads as one |
 

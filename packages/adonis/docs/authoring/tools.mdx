@@ -230,15 +230,20 @@ interface AiToolCtx {
   threadId: string
   runId: string
   requestId: string
+  agentName?: string
   persona?: Persona
   pageContext?: PageContext
   host?: unknown // optional host handle (e.g. an ORM manager)
+  emitUi(component: string, props: Record<string, unknown>, options?: { id?: string; version?: number }): Promise<{ id: string }>
+  emitComponent?(name: string, data: unknown): void | Promise<void> // the older push
 }
 ```
 
+A test that calls a handler directly builds the ctx itself — pass `emitUi: createNoopEmitUi()` (from `@adonis-agora/agent/testing`).
+
 Identity is single-sourced on `ctx.actor` — read `ctx.actor.id` / `ctx.actor.tenantRef` and scope every query to it. Never trust an id the model passes in its arguments.
 
-The ctx also carries `emitComponent?(name, data)` — a tool can push a typed **UI component** into the run's stream instead of (or alongside) text, and the frontend renders your React component inline. See [Generative UI](/docs/agent/generative-ui).
+`ctx.emitUi(component, props)` pushes a typed **UI component** into the conversation instead of (or alongside) text — streamed live, persisted on the message, rendered by the frontend's own component. See [Generative UI](/docs/agent/generative-ui).
 
 ## Constructor DI (`@inject`)
 

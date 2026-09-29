@@ -7,6 +7,7 @@ import {
   authzToolAuthorizer,
 } from '../src/authz/index.js';
 import type { AiToolCtx } from '../src/spi/tool.js';
+import { createNoopEmitUi } from '../src/testing/index.js';
 import { ToolForbiddenError, ToolRegistry } from '../src/tool-registry.js';
 import type { Actor, ToolSpec } from '../src/types.js';
 
@@ -133,6 +134,7 @@ describe('AuthzToolAuthorizer wired into ToolRegistry (offer filter + invoke re-
     threadId: 't',
     runId: 'r',
     requestId: 'req',
+    emitUi: createNoopEmitUi(),
   });
 
   function registry(): ToolRegistry {

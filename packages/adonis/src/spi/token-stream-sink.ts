@@ -16,7 +16,15 @@ export type StreamFrame =
    * (`<toolCallId>:ui:<n>`) so the agent protocol can carry it as a `ui` frame a repeat replaces;
    * a frame buffered before they existed has neither, and is numbered by its position instead.
    */
-  | { t: 'component'; name: string; data: unknown; id?: string; toolCallId?: string }
+  | {
+      t: 'component';
+      name: string;
+      data: unknown;
+      id?: string;
+      toolCallId?: string;
+      /** Schema version of `data` (`ctx.emitUi`'s `version`). */
+      version?: number;
+    }
   /**
    * One frame of the agent stream protocol (`AgentStreamEvent`, shared with `@dudousxd/nestjs-agent`)
    * that has no older spelling here: reasoning, tool-call announcements and outcomes, step brackets,

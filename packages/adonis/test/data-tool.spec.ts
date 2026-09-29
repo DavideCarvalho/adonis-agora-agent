@@ -8,6 +8,7 @@ import {
   TenantScopeRewriter,
 } from '../src/index.js';
 import type { AiToolCtx } from '../src/spi/tool.js';
+import { createNoopEmitUi } from '../src/testing/index.js';
 
 class FakeRunner implements QueryRunner {
   lastSql: string | undefined;
@@ -26,6 +27,7 @@ function ctx(
     threadId: 'thread-1',
     runId: 'run-1',
     requestId: 'req-1',
+    emitUi: createNoopEmitUi(),
     actor: {
       id: 'actor-1',
       roles: overrides.roles ?? ['ANALYST'],

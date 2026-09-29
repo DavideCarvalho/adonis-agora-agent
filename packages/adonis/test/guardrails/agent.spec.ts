@@ -20,7 +20,11 @@ import {
   type StreamFrame,
   ToolRegistry,
 } from '../../src/index.js';
-import { InMemoryAgentStore, InMemoryTokenStreamSink } from '../../src/testing/index.js';
+import {
+  createNoopEmitUi,
+  InMemoryAgentStore,
+  InMemoryTokenStreamSink,
+} from '../../src/testing/index.js';
 
 const ACTOR: Actor = { id: 'u1', roles: ['ADMIN'], tenantRef: 'acme' };
 const CARD = '4111 1111 1111 1111';
@@ -291,7 +295,13 @@ describe('Guardrails.wrapTool', () => {
       { system: '', messages: [{ role: 'user', content: 'write to ana@acme.com' }] },
       { threadId: 't', actor: ACTOR, step: 0 },
     );
-    const ctx = { threadId: 't', actor: ACTOR, runId: 'r', requestId: 'q' };
+    const ctx = {
+      threadId: 't',
+      actor: ACTOR,
+      runId: 'r',
+      requestId: 'q',
+      emitUi: createNoopEmitUi(),
+    };
     await handler.execute({ to: '[EMAIL_1]', body: 'hi' }, ctx);
     expect(seen).toEqual([{ to: 'ana@acme.com', body: 'hi' }]);
     await expect(handler.execute({ to: 'x', body: `key ${AWS_KEY}` }, ctx)).rejects.toBeInstanceOf(

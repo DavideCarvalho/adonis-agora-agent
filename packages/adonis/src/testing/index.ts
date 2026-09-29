@@ -1,3 +1,4 @@
+export { createNoopEmitUi } from '../tool-ui.js';
 export {
   FakeEmbeddingProvider,
   FakeReranker,
