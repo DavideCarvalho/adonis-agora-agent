@@ -90,6 +90,11 @@ export interface QueuedMessagePatch {
   content?: string;
   /** `null` drops every attachment. */
   attachments?: MessageAttachment[] | null;
+  /**
+   * Mark (or unmark) the message as an interrupt — what `POST <path>/queue/:messageId/interrupt`
+   * does to a message that is already waiting, before it cancels the running turn for it.
+   */
+  interrupt?: boolean;
 }
 
 /**

@@ -345,6 +345,74 @@ describe('chat message queue', () => {
     ]);
   });
 
+  it('runs a WAITING message now: it moves to the head as an interrupt and the turn is cancelled for it', async () => {
+    const { model, store, threadId, url } = await boot();
+    model.hold('first');
+    const first = send(url, { threadId, message: 'first' }).then((res) => res.text());
+    await model.reached('first');
+    const runId = (await store.activeRunForThread(threadId)) as string;
+    await send(url, { threadId, message: 'later' });
+    const urgent = await json(send(url, { threadId, message: 'urgent' }));
+
+    // Another actor cannot, and an unknown id is a 404 — before anything is cancelled.
+    expect(
+      (await call(url, 'POST', `queue/${urgent.messageId}/interrupt`, undefined, 'u2')).status,
+    ).toBe(403);
+    expect((await call(url, 'POST', 'queue/nope/interrupt')).status).toBe(404);
+    expect(await store.activeRunForThread(threadId)).toBe(runId);
+
+    const answer = await call(url, 'POST', `queue/${urgent.messageId}/interrupt`);
+    expect(answer.status).toBe(200);
+    const interrupted = await json(answer);
+    expect(interrupted.interrupting).toBe(runId);
+    expect(interrupted.items.map((item: Json) => [item.content, item.interrupt === true])).toEqual([
+      ['urgent', true],
+      ['later', false],
+    ]);
+
+    const { events } = eventsOf(await first);
+    // The message keeps the id it was queued under: that id is the run it starts as.
+    expect(events.filter((event) => event.kind === 'queue').at(-1)).toMatchObject({
+      started: { messageId: urgent.messageId, runId: urgent.messageId },
+      queue: { items: [{ content: 'later' }], paused: null },
+    });
+    await until(
+      async () => model.seen,
+      (seen) => seen.includes('later'),
+    );
+    expect(model.seen).toEqual(['first', 'urgent', 'later']);
+    model.release('first');
+    expect(await settledTranscript(store, threadId, 2)).toEqual([
+      'user: first',
+      'user: urgent',
+      'assistant: re: urgent',
+      'user: later',
+      'assistant: re: later',
+    ]);
+    // It already started: there is nothing left to interrupt for.
+    expect((await call(url, 'POST', `queue/${urgent.messageId}/interrupt`)).status).toBe(404);
+  });
+
+  it('interrupting with nothing running starts the message, lifting the pause that held it', async () => {
+    const { model, store, threadId, url } = await boot();
+    model.failing.add('boom');
+    model.hold('boom');
+    const failed = send(url, { threadId, message: 'boom' }).then((res) => res.text());
+    await model.reached('boom');
+    const waiting = await json(send(url, { threadId, message: 'after' }));
+    model.release('boom');
+    await failed;
+    expect((await json(call(url, 'GET', `threads/${threadId}/queue`))).paused).toMatchObject({
+      reason: 'run_failed',
+    });
+
+    const started = await json(call(url, 'POST', `queue/${waiting.messageId}/interrupt`));
+    expect(started).toMatchObject({ runId: waiting.messageId, paused: null, items: [] });
+    expect(started.interrupting).toBeUndefined();
+    const transcript = await settledTranscript(store, threadId, 1);
+    expect(transcript.slice(-2)).toEqual(['user: after', 'assistant: re: after']);
+  });
+
   it('edits, reorders and removes queued messages — only the thread owner may', async () => {
     const { model, store, threadId, url } = await boot();
     model.hold('first');

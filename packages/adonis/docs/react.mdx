@@ -1,0 +1,207 @@
+---
+title: React
+description: The full React layer for an AdonisJS app — AgentProvider and useAgentChat with history, resume, the message queue, approvals, attachments, threads, models and quota — over the routes the provider already mounts. Includes a Hello chat for Adonis + Inertia.
+icon: Atom
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+`@adonis-agora/agent/react` is the React side of the agent: one provider, one hook, and everything a chat screen needs already wired — the transcript, streaming, history on reload, re-attaching to a turn that is still running, a message queue for typing ahead, approvals, questions, attachments, threads, the model picker and the quota gate.
+
+It is **headless**. It hands you state and actions; every pixel is yours, so the chat looks like your app and not like a widget.
+
+The hooks are [`@dudousxd/nestjs-agent-react`](https://www.npmjs.com/package/@dudousxd/nestjs-agent-react), re-exported unchanged. This package's routes speak the same wire contract as `@dudousxd/nestjs-agent`, so one React client serves both backends — and a second copy of it here could only drift. What this entry adds is the AdonisJS connection: the session cookie and `@adonisjs/shield`'s CSRF token, with no configuration.
+
+## Install
+
+```bash
+npm i @dudousxd/nestjs-agent-react @ai-sdk/react ai
+```
+
+`@dudousxd/nestjs-agent-react` is an optional peer of `@adonis-agora/agent`: an app that never imports `@adonis-agora/agent/react` never installs it. `react` (`^18 || ^19`) you already have.
+
+## Hello chat — Adonis + Inertia
+
+The provider mounts the HTTP API when the package is configured ([Getting started](/docs/agent/getting-started)), so there is no controller to write. A chat page is a route, a provider and a hook.
+
+```ts title="start/routes.ts"
+router.on('/chat').renderInertia('chat').use(middleware.auth())
+```
+
+```tsx title="inertia/pages/chat.tsx"
+import { AgentProvider, useAgentChat } from '@adonis-agora/agent/react'
+
+export default function ChatPage() {
+  return (
+    <AgentProvider>
+      <Chat />
+    </AgentProvider>
+  )
+}
+
+function Chat() {
+  const chat = useAgentChat()
+  const { transcript, composer, queue } = chat
+
+  return (
+    <main>
+      {transcript.items.map((item) => (
+        <article key={item.id} data-role={item.role}>
+          {item.blocks.map((block) =>
+            block.kind === 'text' ? <p key={block.key}>{block.text}</p> : null,
+          )}
+        </article>
+      ))}
+
+      {/* Sent while the agent was still answering: waiting, server-side, for its turn. */}
+      {queue.items.map((message) => (
+        <article key={message.id} data-role="user" data-queued>
+          <p>{message.text}</p>
+          <button onClick={() => queue.remove(message.id)}>Remove</button>
+        </article>
+      ))}
+
+      {chat.error ? <p role="alert">{chat.error.message}</p> : null}
+
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          void composer.submit()
+        }}
+      >
+        <input value={composer.text} onChange={(event) => composer.setText(event.target.value)} />
+        <button type="submit" disabled={!composer.canSend}>Send</button>
+        {transcript.stop.available ? (
+          <button type="button" onClick={transcript.stop.stop}>Stop</button>
+        ) : null}
+      </form>
+    </main>
+  )
+}
+```
+
+That is a complete chat: it streams, it survives a reload mid-answer, and a message sent while a turn runs is queued instead of refused.
+
+### What `<AgentProvider>` does for an Adonis app
+
+| | Default | Change it with |
+| --- | --- | --- |
+| Routes | same origin, `/agent` | `path` (when `config/agent.ts` sets another), `baseUrl` (an API on another origin) |
+| Session | the cookie rides every request (`credentials: 'same-origin'`) | `credentials="include"` for a cross-origin API |
+| CSRF | shield's token, read from the page **per request**: the `XSRF-TOKEN` cookie as `X-XSRF-TOKEN`, else `<meta name="csrf-token">` as `X-CSRF-TOKEN` | `getHeaders` — yours are merged over it |
+
+With Inertia, shield's `enableXsrfCookie: true` is already what makes form posts work, so nothing is left to configure. It takes every other prop of the underlying provider too (`headers`, `onHttpError`, `attachments`, `genui`, `backend`).
+
+<Callout type="warn" title="Mount the provider">
+A hook used outside `<AgentProvider>` falls back to a bare client that sends no CSRF token, and shield answers every `POST` from it with `403`. Put the provider around whatever renders a chat — a layout is a good place.
+</Callout>
+
+Outside React, or to give one hook a connection of its own, `createAgentClient(options?)` builds the same client:
+
+```ts
+import { createAgentClient } from '@adonis-agora/agent/react'
+
+const agent = createAgentClient()
+const threads = await agent.listThreads()
+```
+
+## Continuing a conversation
+
+Pass a `threadId` and the hook loads that thread's history and, when a turn is still streaming on it, re-attaches to it. A chat without one creates its thread on the first send and tells you:
+
+```tsx
+const chat = useAgentChat({
+  threadId,                                   // from the URL, a prop, your state
+  agent: 'support',                           // a named agent (see Personas & agents)
+  getPageContext: () => ({ kind: 'invoice', id }),
+  onThreadCreated: (id) => router.visit(`/chat/${id}`, { preserveState: true }),
+})
+```
+
+`chat.isLoadingHistory` is `true` from the first render with a `threadId`, so a page can show a skeleton instead of flashing an empty state. The list of conversations is `useThreads()` — `{ threads, rename, remove, refresh }`.
+
+## Typing ahead — the message queue
+
+A message sent while a turn is running is **queued on the thread, server-side**. It survives a reload and runs when the turn ahead of it settles.
+
+```tsx
+const { queue, composer } = useAgentChat()
+
+queue.items          // [{ id, text, files, state: 'sending' | 'queued', interrupt }]
+queue.paused         // why it stopped draining (a failed turn, a Stop, the quota) — or null
+queue.edit(id, text) // change a waiting message
+queue.move(id, 0)    // reorder
+queue.remove(id)
+queue.interrupt(id)  // run THIS one now: the running turn is cancelled for it
+queue.resume()       // lift a pause
+composer.submit({ mode: 'interrupt' }) // send now, cancelling the running turn
+```
+
+`useAgentChat({ whileRunning: 'block' })` restores the older behaviour — the composer refuses a send mid-turn (`composer.blockedBy === 'busy'`). The wire contract is in [Streaming & HTTP](/docs/agent/streaming-and-http#message-queue); the queue needs a store that implements it (the Lucid and in-memory stores do).
+
+## Approvals and questions
+
+When the model calls an `action` tool the run parks until a person decides. The transcript carries that as state on the call — there is nothing to poll:
+
+```tsx
+{item.blocks.map((block) =>
+  block.kind === 'tools'
+    ? block.calls.map((call) =>
+        call.isAwaitingApproval ? (
+          <div key={call.toolCallId}>
+            <p>{call.description.confirm?.title ?? call.name}</p>
+            <button onClick={() => call.approve.run()}>Approve</button>
+            <button onClick={() => chat.reject({ toolCallId: call.toolCallId })}>Decline</button>
+          </div>
+        ) : null,
+      )
+    : null,
+)}
+```
+
+A question set (an agent's intake, or the model's `ask`) arrives as an `elicitation` block with `questions`, `answer.run()` and `skip.run()`. See [Elicitation](/docs/agent/authoring/elicitation) and [Authorization](/docs/agent/governance/authorization) for the server side.
+
+## Attachments
+
+Configure `attachments` in `config/agent.ts` ([Attachments](/docs/agent/authoring/attachments)) and the composer can carry files. It reads the limits from `GET /agent/config`, uploads each file to `POST /agent/attachments`, and attaches the ready ones on `submit()`:
+
+```tsx
+const { files } = chat.composer
+
+<input {...files.inputProps} />
+{files.items.map((file) => (
+  <span key={file.id}>{file.name} — {file.status}</span>
+))}
+```
+
+A reloaded thread returns them on the user message; `messageFiles(message)` reads them back.
+
+## The rest of the surface
+
+| Hook | Reads |
+| --- | --- |
+| `useThreads()` | `GET /agent/threads` — list, rename, delete |
+| `useModels()` / `chat.models` | `GET /agent/models` — the picker, the thread's pin, a lock |
+| `useQuota()` / `chat.quota` | `GET /agent/quota` — budget windows; sends are refused client-side while one is exhausted |
+| `useToolCatalog()` | `GET /agent/tools` — the words a tool call is narrated with |
+| `useAgents()` | `GET /agent/agents` |
+| `useMessageFeedback()` | `POST /agent/messages/:id/feedback` — thumbs up/down |
+| `useAgentConfig()` | `GET /agent/config` |
+| `useComposerAutocomplete()` + `createSkillsSource()` | `GET /agent/skills` — skills after a `/` |
+
+Every route is listed in [Streaming & HTTP](/docs/agent/streaming-and-http). Errors reach you as `AgentHttpError` carrying the server's `status`, `code` and `message` — `chat.error.message` is already the server's words — and `<AgentProvider onHttpError>` sees each one, for an app-wide "401 → sign in again".
+
+## Subpaths
+
+| Import | What it is |
+| --- | --- |
+| `@adonis-agora/agent/react` | the provider, the hooks, the transcript model, `AgentClient` |
+| `@adonis-agora/agent/react/genui` | `GenuiProvider`, `GenerativeUI` — draw the components an agent pushes ([Generative UI](/docs/agent/generative-ui)) |
+| `@adonis-agora/agent/react/genui/json-render` | composed trees through `@json-render/react` |
+| `@adonis-agora/agent/react/markdown` | `AgentMarkdown`, a streaming markdown renderer (`streamdown` and friends are optional peers of the React package) |
+
+The resumable-upload strategy of `@dudousxd/nestjs-agent-react/media` is not re-exported: this package uploads attachments as `multipart`, which the default client already does.
+
+<Callout type="info" title="Not using React?">
+The framework-free stream client stays at `@adonis-agora/agent/client` — see [Browser client](/docs/agent/browser-client).
+</Callout>

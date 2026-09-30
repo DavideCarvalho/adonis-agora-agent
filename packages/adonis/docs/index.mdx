@@ -114,7 +114,7 @@ The response is an SSE stream: an `event: meta` frame with the run and thread id
 - **Multi-agent delegation** — declare `delegatesTo` and an orchestrator gets synthesized `ask_<agent>` tools that hand work to other named agents.
 - **Cost & quota accounting** — a per-turn usage ledger, a daily token quota checked before the model runs, and a pricing table for cost estimates.
 - **Durable persistence** — the agent tables on Postgres / MySQL / SQLite via Lucid, plus an in-memory twin for tests.
-- **A shipped browser client** — a framework-free SSE client that resumes across a dropped connection, and a `useAgentChat` React hook over it.
+- **A shipped React layer** — `<AgentProvider>` + `useAgentChat()` from `@adonis-agora/agent/react`: history, resume, a message queue, approvals, attachments and threads, headless, with the session cookie and CSRF token already wired. A framework-free SSE client for everything else.
 - **An MCP server** — the same governed registry exposed to external assistants over Streamable HTTP, with OAuth or API-key auth.
 - **Retrieval** — memory, pgvector, and Qdrant backends behind one `Retriever` SPI, with tenant-scoped metadata filters.
 
@@ -132,7 +132,8 @@ The response is an SSE stream: an `event: meta` frame with the run and thread id
   <Card title="Governance read-model" href="/docs/agent/governance/read-model" description="Spend, run lifecycle, tool stats, reliability, and the approvals inbox over /agent/governance/*." />
   <Card title="State store" href="/docs/agent/stores/lucid" description="The Lucid tables, the migration, and the in-memory store." />
   <Card title="Streaming & HTTP" href="/docs/agent/streaming-and-http" description="The routes, the SSE envelope, HITL, and re-attaching to a live run." />
-  <Card title="Browser client & React" href="/docs/agent/browser-client" description="The shipped SSE client and the useAgentChat hook — streaming, resume, and component frames." />
+  <Card title="React" href="/docs/agent/react" description="AgentProvider + useAgentChat — a Hello chat for Adonis + Inertia, the message queue, approvals, attachments." />
+  <Card title="Browser client" href="/docs/agent/browser-client" description="The framework-free SSE client — streaming, resume, and component frames." />
   <Card title="MCP server" href="/docs/agent/mcp" description="Expose the same governed tool registry to Claude, Cursor, and any other MCP client." />
   <Card title="Testing" href="/docs/agent/testing" description="The FakeModelProvider, echoScript, and in-memory doubles." />
 </Cards>

@@ -17,6 +17,7 @@ import type { ToolCallApprovalState } from './approval-policy.js';
 export interface CreateThreadInput {
   actor: Actor;
   persona: string;
+  /** A scratch thread: left out of `listThreads` until {@link AgentStore.promoteThread} keeps it. */
   transient?: boolean;
   title?: string;
 }
@@ -191,6 +192,11 @@ export interface AgentStore {
    * { model }` answers `501` without it); a title alone still goes through {@link setTitle}.
    */
   updateThread?(threadId: string, patch: UpdateThreadInput): Promise<void>;
+  /**
+   * OPTIONAL: make a transient thread a regular one, listed by `listThreads` from then on. A thread
+   * that is not transient is left as it is. Absent → `POST <path>/threads/:id/promote` answers `501`.
+   */
+  promoteThread?(threadId: string): Promise<void>;
   setActiveStream(threadId: string, runId: string | null): Promise<void>;
   /**
    * OPTIONAL: clear the thread's active run only if it is still `runId` — so a turn that ends after

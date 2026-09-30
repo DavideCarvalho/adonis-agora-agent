@@ -43,7 +43,7 @@ else is an **optional peer**, imported lazily only when configured:
 | `@adonis-agora/telescope` (`^0.4.0`) | the Telescope watcher extension (`@adonis-agora/agent/telescope`) |
 | `@qdrant/js-client-rest` (`^1.11.0`) | `retrievers.qdrant({...})` |
 | `node-sql-parser` (`^5.3.0`) | the governed `dataTool` (`@adonis-agora/agent/data`) |
-| `react` (`^18` / `^19`) | `useAgentChat` (`@adonis-agora/agent/react`) |
+| `react` (`^18` / `^19`) + `@dudousxd/nestjs-agent-react` (`>=0.28`, with `@ai-sdk/react` and `ai`) | `AgentProvider` / `useAgentChat` (`@adonis-agora/agent/react`) |
 
 ## Configure
 
@@ -78,25 +78,40 @@ approve/reject for HITL `action` tools, quota, and — when `governanceQueries` 
 `/agent/governance/*` read routes. Every route resolves the actor itself (401 on failure); a
 `threadId` passed to `chat` must belong to the caller.
 
-Drive it from the browser with the framework-free client or the React hook:
+Drive it from React with `@adonis-agora/agent/react` — the full headless layer (history, resume, a
+message queue, approvals, attachments, threads), with the session cookie and shield's CSRF token
+already wired:
 
 ```tsx
-import { useAgentChat } from '@adonis-agora/agent/react'
+// npm i @dudousxd/nestjs-agent-react @ai-sdk/react ai
+import { AgentProvider, useAgentChat } from '@adonis-agora/agent/react'
+
+export default function ChatPage() {
+  return (
+    <AgentProvider>
+      <Chat />
+    </AgentProvider>
+  )
+}
 
 function Chat() {
-  const { messages, status, send } = useAgentChat({ basePath: '/agent' })
+  const { transcript, composer, queue } = useAgentChat()
   return (
-    <div>
-      {messages.map((m) => (
-        <p key={m.id}>{m.role}: {m.parts.map((p) => (p.type === 'text' ? p.text : '')).join('')}</p>
+    <form onSubmit={(e) => (e.preventDefault(), void composer.submit())}>
+      {transcript.items.map((item) => (
+        <p key={item.id}>{item.role}: {item.text}</p>
       ))}
-      <button disabled={status === 'streaming'} onClick={() => send('hi')}>Send</button>
-    </div>
+      {queue.items.map((m) => <p key={m.id}>(waiting) {m.text}</p>)}
+      <input value={composer.text} onChange={(e) => composer.setText(e.target.value)} />
+      <button disabled={!composer.canSend}>Send</button>
+    </form>
   )
 }
 ```
 
-or, without React:
+The hooks are [`@dudousxd/nestjs-agent-react`](https://www.npmjs.com/package/@dudousxd/nestjs-agent-react)
+re-exported (an optional peer): this package speaks the same wire contract as `@dudousxd/nestjs-agent`,
+so one React client serves both. Without React, the framework-free stream client:
 
 ```ts
 import { createAgentChatClient } from '@adonis-agora/agent/client'

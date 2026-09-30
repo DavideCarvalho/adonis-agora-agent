@@ -214,6 +214,14 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
       .map((row) => this.toSummary(row));
   }
 
+  async promoteThread(threadId: string): Promise<void> {
+    const row = this.threads.get(threadId);
+    if (row?.transient === true) {
+      row.transient = false;
+      row.updatedAt = this.now();
+    }
+  }
+
   async softDeleteThread(threadId: string): Promise<void> {
     this.threads.delete(threadId);
   }
@@ -353,6 +361,11 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
       } else {
         message.attachments = patch.attachments;
       }
+    }
+    if (patch.interrupt === true) {
+      message.interrupt = true;
+    } else if (patch.interrupt === false) {
+      delete message.interrupt;
     }
     message.updatedAt = this.now();
     return { ...message };

@@ -1,106 +1,20 @@
 ---
-title: Browser client & React
-description: The framework-agnostic SSE client and the useAgentChat React hook shipped in the package — streaming chat, automatic resume across a dropped connection, component frames, and the HITL calls the client deliberately leaves to you.
+title: Browser client
+description: The framework-free SSE client shipped in the package — post a turn, fold the stream into renderable parts, and re-attach automatically across a dropped connection. For React, use @adonis-agora/agent/react.
 icon: MonitorSmartphone
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-The `/agent/chat` SSE envelope is simple enough to parse by hand, and for a long time that was the only option. It no longer is. The package ships the consumer side in two subpaths:
+`@adonis-agora/agent/client` is a small, framework-free client for the chat stream: no React, no Adonis, no runtime dependencies. It posts a turn, decodes the SSE envelope into typed frames, folds them into renderable parts, and silently re-attaches when the connection drops. Use it from a Vue composable, a Svelte store, a server-side consumer, or a plain `fetch` loop.
 
-- **`@adonis-agora/agent/client`** — a framework-agnostic client. No React, no Adonis, no runtime dependencies. It posts a turn, decodes the SSE envelope into typed frames, folds them into renderable parts, and silently re-attaches when the connection drops.
-- **`@adonis-agora/agent/react`** — one hook, `useAgentChat`, that wraps the client in transcript state.
-
-Both are published from the same package that emits the envelope, which is the point: the wire format has exactly one owner, so a change to `AgentSseEncoder` on the server and a change to `decodeFrame` in the browser can never drift apart across two release trains.
-
-<Callout type="info" title="React is an optional peer">
-`react` is declared as an optional peer (`^18 || ^19`). An app that never imports `@adonis-agora/agent/react` never needs it installed — the `./client` subpath has no dependencies at all, so a Vue composable, a Svelte store, or a plain `fetch` loop can use it just as well.
+<Callout type="info" title="Building a React chat?">
+Use [`@adonis-agora/agent/react`](/docs/agent/react) instead. It is the full layer — history, resume, the message queue, approvals, attachments, threads — and it is what this page's client deliberately is not.
 </Callout>
 
-## The hook
+## The client
 
-`useAgentChat` is the fastest path from an installed package to a working chat box. It owns the transcript, the streaming status, and the thread id across turns.
-
-```tsx title="resources/js/components/chat.tsx"
-import { useAgentChat } from '@adonis-agora/agent/react'
-import type { ChatPart } from '@adonis-agora/agent/client'
-import { useState } from 'react'
-
-export function Chat() {
-  const { messages, status, error, send, cancel } = useAgentChat({ basePath: '/agent' })
-  const [draft, setDraft] = useState('')
-
-  return (
-    <div>
-      {messages.map((message) => (
-        <article key={message.id} data-role={message.role}>
-          {message.parts.map(renderPart)}
-          {message.streaming ? <Cursor /> : null}
-        </article>
-      ))}
-
-      {error ? <p role="alert">{error}</p> : null}
-
-      <form
-        onSubmit={(event) => {
-          event.preventDefault()
-          void send(draft)
-          setDraft('')
-        }}
-      >
-        <input value={draft} onChange={(event) => setDraft(event.target.value)} />
-        <button type="submit" disabled={status === 'streaming'}>Send</button>
-        {status === 'streaming' ? <button type="button" onClick={cancel}>Stop</button> : null}
-      </form>
-    </div>
-  )
-}
-```
-
-### What the hook returns
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `messages` | `AgentChatMessage[]` | The transcript. Each entry is `{ id, role: 'user' \| 'assistant', parts, streaming? }`. |
-| `status` | `'idle' \| 'streaming' \| 'error'` | Exactly three states — there is no `'submitted'` or `'ready'`. |
-| `error` | `string \| null` | A **message**, not an `Error`. Cleared at the start of every `send`. |
-| `send` | `(text: string) => Promise<void>` | Takes a bare string. Never rejects — failures land in `error`/`status`. |
-| `cancel` | `() => void` | Drops the client's connection and keeps the partial parts rendered. |
-
-Two behaviours are worth internalising before you build on it.
-
-**`send` is a silent no-op in two cases**: an empty (post-`trim`) string, and a turn already in flight. It does not throw and does not set `error` — so a UI that wants to explain "wait for the reply" must gate on `status === 'streaming'` itself rather than expect a rejection.
-
-**`cancel` is client-side only.** It aborts the browser's fetch. It does *not* call `POST /agent/chat/:runId/cancel`, so the run keeps executing on the server, keeps burning quota, and still persists its assistant message. Wire the HTTP cancel route yourself if "stop" is supposed to mean *stop the run*, not *stop watching it*.
-
-### Options
-
-`UseAgentChatOptions` extends `AgentChatClientOptions`, so every client option is accepted at the top level, plus one hook-specific field:
-
-```ts
-useAgentChat({
-  // client options
-  basePath: '/agent',                       // default '/agent'
-  fetch: myFetch,                           // default globalThis.fetch
-  getHeaders: () => ({ 'X-XSRF-TOKEN': csrf() }),
-  resume: { maxAttempts: 6 },               // or `false` to fail on the first drop
-
-  // hook-specific
-  buildBody: (message) => ({ message, agent: 'support', persona: 'concise' }),
-})
-```
-
-`buildBody` is how you attach `agent`, `persona`, `pageContext`, or `attachments` to every turn. Do **not** set `threadId` in it — the hook injects its own after the first turn and spreads it last, so yours would be overwritten anyway.
-
-`getHeaders` is called fresh on every request, so a rotating CSRF token is always current. The other options are read **once**, when the client is constructed on first render: changing `basePath`, `fetch`, or `resume` later has no effect.
-
-<Callout type="warn" title="The hook has no transcript seeding">
-`messages` is internal state with no setter. There is no way to hydrate a previously persisted thread into the hook, and no `runId` is surfaced, so the client's `resume(runId)` is unreachable from it. A UI that reloads into an existing conversation should fetch `GET /agent/threads/:id` for the history and drive the stream with the raw client below.
-</Callout>
-
-## The raw client
-
-`createAgentChatClient` is the whole hook minus React. Use it for a non-React framework, for a server-side consumer, or whenever you need `resume`.
+`createAgentChatClient` streams one turn at a time and reports the assistant message as it grows.
 
 ```ts title="resources/js/agent.ts"
 import { createAgentChatClient, AgentChatDisconnectedError } from '@adonis-agora/agent/client'
@@ -141,7 +55,7 @@ Both requests it makes carry `credentials: 'include'`, matching the cookie/sessi
 | `onRunId(runId)` | As soon as the run id is known: from the `X-Agent-Run-Id` response header, before the first byte of body. |
 | `onThreadId(threadId)` | Likewise, from `X-Agent-Thread-Id` and then the `meta` frame. |
 
-If the POST itself is rejected, `send` throws a plain `Error('Failed to start agent chat (HTTP <status>).')`. That is the shape a `401`, `403`, or `429` takes — the status is only in the message string, so branch on it by re-checking the endpoint yourself if you need typed handling.
+If the POST itself is refused, `send` throws an `AgentChatHttpError` carrying the server's `status`, its machine-readable `code` (`quota_exceeded`, `model_not_allowed`, …), the parsed `body`, and the server's own words as `message` — the shape a `401`, `403`, or `429` takes.
 
 ### Resume, twice over
 
@@ -237,21 +151,6 @@ for await (const event of readSseStream(response.body!)) {
 
 ## What the client does not do
 
-Two gaps are deliberate, and both matter for planning a UI.
+It has exactly two endpoints: `POST {basePath}/chat` and `GET {basePath}/chat/:runId/stream`. It keeps no transcript, loads no history, and its parts are text and components only — approvals, questions, tool calls, the queue's state and attachments are not modelled. A `202` (the message was queued behind a running turn) is reported as `result.queued`, and following it is up to you.
 
-**No approvals.** The client has exactly two endpoints: `POST {basePath}/chat` and `GET {basePath}/chat/:runId/stream`. Human-in-the-loop is not one of them, and no frame type carries approval state — so when the model calls an `action` tool, the stream simply goes quiet until a decision arrives out of band. Poll `GET /agent/approvals/mine` for the calling actor's own pending calls and post the decision yourself:
-
-```ts
-const pending = await fetch('/agent/approvals/mine', { credentials: 'include' }).then((r) => r.json())
-
-await fetch('/agent/tool-call/approve', {
-  method: 'POST',
-  credentials: 'include',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ runId, toolCallId }),
-})
-```
-
-See [Streaming & HTTP](/docs/agent/streaming-and-http#human-in-the-loop) for the full HITL contract, and [the console](/docs/agent/governance/dashboard) for a ready-made approvals inbox.
-
-**No components.** The `./react` subpath exports the hook and its types — there is no `<Chat>`, no message renderer, no context provider. Chat UI is where every app's design system diverges, so the package stops at the state and hands you the parts.
+Those are all plain routes ([Streaming & HTTP](/docs/agent/streaming-and-http)), so a consumer in any framework can call them; in React, [`@adonis-agora/agent/react`](/docs/agent/react) already does.
