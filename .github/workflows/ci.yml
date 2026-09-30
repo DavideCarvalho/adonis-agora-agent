@@ -16,7 +16,7 @@ jobs:
     # The schema-provisioning tests need real Postgres locks (test/schema-provisioning-postgres.spec.ts).
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_PASSWORD: postgres
         ports:
