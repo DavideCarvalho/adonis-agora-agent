@@ -150,6 +150,11 @@
       "types": "./dist/src/genui/builtins.d.ts",
       "import": "./dist/src/genui/builtins.js",
       "default": "./dist/src/genui/builtins.js"
+    },
+    "./media": {
+      "types": "./dist/src/media/index.d.ts",
+      "import": "./dist/src/media/index.js",
+      "default": "./dist/src/media/index.js"
     }
   },
   "files": [
@@ -178,6 +183,7 @@
     "@adonis-agora/authz": ">=0.4.2 <1.0.0",
     "@adonis-agora/diagnostics": ">=0.1.0 <1.0.0",
     "@adonis-agora/durable": ">=0.8.0 <1.0.0",
+    "@adonis-agora/media": ">=0.18.0 <1.0.0",
     "@adonis-agora/telescope": ">=0.4.0 <1.0.0",
     "@adonisjs/assembler": "^8.4.0",
     "@adonisjs/core": "^7.3.0",
@@ -231,6 +237,9 @@
       "optional": true
     },
     "@dudousxd/nestjs-agent-core": {
+      "optional": true
+    },
+    "@adonis-agora/media": {
       "optional": true
     }
   },

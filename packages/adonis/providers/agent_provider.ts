@@ -18,6 +18,7 @@ import {
   AgentSseEncoder,
   type AgentStore,
   AnonymousActorResolver,
+  AttachmentRefusedError,
   type AttachmentStagingStore,
   DefaultToolAuthorizer,
   discoverTools,
@@ -69,8 +70,8 @@ interface ChatBody {
   agent?: string;
   persona?: string;
   pageContext?: PageContext;
-  /** Already-staged attachments (from `POST /agent/attachments`) to send with this message. */
-  attachments?: MessageAttachment[];
+  /** Uploads to attach, by id alone: `[{ mediaId }]` (anything else is refused with `400`). */
+  attachments?: unknown;
   /** Run this turn on a catalog model (see `GET models`) instead of the thread's pinned one. */
   model?: string;
 }
@@ -105,7 +106,35 @@ function decisionVia(claimed: unknown): string | null {
 /** How many attachments one message may name. */
 const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 
-/** Default per-file size cap when `attachmentMaxBytes` is omitted (20 MiB). */
+/**
+ * Reduce a send's `attachments` to `{ mediaId }` refs, or say why not. One shape: a ref names an
+ * upload, nothing more — a full attachment (url, name, …) is refused rather than trimmed, so a client
+ * that still sends one learns it instead of relying on it; the url is the store's to mint.
+ */
+function attachmentRefs(claimed: unknown): { mediaId: string }[] | string {
+  if (claimed === undefined || claimed === null) return [];
+  if (!Array.isArray(claimed)) return 'attachments must be an array of { mediaId }';
+  if (claimed.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+    return `a message may carry at most ${MAX_ATTACHMENTS_PER_MESSAGE} attachments`;
+  }
+  const refs: { mediaId: string }[] = [];
+  for (const entry of claimed) {
+    if (typeof entry !== 'object' || entry === null || !('mediaId' in entry)) {
+      return 'each attachment must be an object with a mediaId';
+    }
+    if (Object.keys(entry).some((key) => key !== 'mediaId')) {
+      return 'attachments are { mediaId } refs — send nothing but the id';
+    }
+    const { mediaId } = entry as { mediaId: unknown };
+    if (typeof mediaId !== 'string' || mediaId.length === 0) {
+      return 'each attachment must carry a non-empty string mediaId';
+    }
+    refs.push({ mediaId });
+  }
+  return refs;
+}
+
+/** Default per-file size cap when the attachment store declares none (20 MiB). */
 const DEFAULT_MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 /** Default allowlist: what multimodal model providers commonly accept as native image/file parts. */
@@ -127,7 +156,7 @@ const DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES: readonly string[] = [
  *   readdir fallback), registers config-level functional tools and synthesizes `agent`-kind delegate
  *   tools for `delegatesTo` edges, builds the runtime graph (store/sink/quota/authorizer/actor-resolver
  *   → deps factory → the inline runner → the `AgentService` facade), and mounts the `/agent` routes
- *   under `config.path` — plus optional routes (`POST /agent/attachments` when `attachmentStaging` is
+ *   under `config.path` — plus optional routes (`POST /agent/attachments` when `attachments` is
  *   configured; `/agent/approvals/mine` when `governanceQueries` is configured; the cross-actor
  *   `/agent/governance/*` read-model when `governanceQueries` is configured AND a `governanceAuthorize`
  *   gate exists).
@@ -293,6 +322,7 @@ export default class AgentProvider {
         : catalogOf(model) !== undefined
           ? { models: catalogOf(model) as ModelCatalog }
           : {}),
+      ...(attachmentStaging !== undefined ? { attachments: attachmentStaging } : {}),
       quota:
         quotaProvider !== undefined
           ? { provider: quotaProvider, gated: true }
@@ -439,7 +469,7 @@ export default class AgentProvider {
   async #resolveAttachmentStaging(
     config: AgentConfig,
   ): Promise<AttachmentStagingStore | undefined> {
-    const staging = config.attachmentStaging;
+    const staging = config.attachments;
     if (staging === undefined) return undefined;
     return typeof staging === 'function' ? staging({ app: this.app }) : staging;
   }
@@ -508,6 +538,12 @@ export default class AgentProvider {
     const router = await this.app.container.make('router');
     const path = (config.path ?? 'agent').replace(/^\/+|\/+$/g, '');
     const p = (suffix: string) => `${path}/${suffix}`;
+    // One source of attachment limits: what the store declares, else the defaults.
+    const declared = attachmentStaging?.describe?.() ?? {};
+    const attachmentLimits = {
+      maxBytes: declared.maxBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES,
+      allowedContentTypes: declared.allowedContentTypes ?? DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES,
+    };
     const defaultAgentName = config.defaultAgent?.name ?? 'default';
     const protocol: StreamProtocol = config.streamProtocol ?? 'legacy';
 
@@ -528,6 +564,10 @@ export default class AgentProvider {
         const owner = await service.threadOwner(body.threadId);
         if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
       }
+      const refs = attachmentRefs(body.attachments);
+      if (typeof refs === 'string') {
+        return ctx.response.badRequest({ error: refs });
+      }
       let started: { runId: string; threadId: string };
       try {
         started = await service.chat({
@@ -538,9 +578,12 @@ export default class AgentProvider {
           ...(body.agent !== undefined ? { agentName: body.agent } : {}),
           ...(body.persona !== undefined ? { personaId: body.persona } : {}),
           ...(body.pageContext !== undefined ? { pageContext: body.pageContext } : {}),
-          ...(body.attachments !== undefined ? { attachments: body.attachments } : {}),
+          ...(refs.length > 0 ? { attachments: refs } : {}),
         });
       } catch (error) {
+        if (error instanceof AttachmentRefusedError) {
+          return ctx.response.status(error.status).json({ error: error.message });
+        }
         if (error instanceof ModelNotAllowedError) {
           return ctx.response.badRequest({ error: error.message });
         }
@@ -786,7 +829,7 @@ export default class AgentProvider {
       const threadId = String(ctx.params.id);
       const owner = await service.threadOwner(threadId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
-      return ctx.response.json(await service.getThread(threadId));
+      return ctx.response.json(await service.getThread(threadId, actor));
     });
 
     // 8b. PATCH /agent/threads/:id — rename (`{ title }`), what a thread list's rename calls.
@@ -911,9 +954,8 @@ export default class AgentProvider {
         attachments: {
           enabled: attachmentStaging !== undefined,
           upload: attachmentStaging === undefined ? null : 'multipart',
-          maxBytes: config.attachmentMaxBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES,
-          allowedContentTypes:
-            config.attachmentAllowedContentTypes ?? DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES,
+          maxBytes: attachmentLimits.maxBytes,
+          allowedContentTypes: attachmentLimits.allowedContentTypes,
           maxPerMessage: MAX_ATTACHMENTS_PER_MESSAGE,
         },
         models: { enabled: service.hasModelCatalog() },
@@ -931,16 +973,14 @@ export default class AgentProvider {
       return ctx.response.json(await service.quotaReport(actor));
     });
 
-    // 12. POST /agent/attachments — OPTIONAL. Mounted only when `attachmentStaging` is configured, so
+    // 12. POST /agent/attachments — OPTIONAL. Mounted only when `attachments` is configured, so
     // an app without it never exposes an upload surface. Buffers the multipart `file` field, validates
     // it against the size cap + content-type allowlist, then stages it into a model-fetchable
     // MessageAttachment the client sends back on its next `chat` call. Mirrors the SSE routes' envelope
     // (JSON body, actor resolved via the shared resolver, precise HTTP status on rejection).
     if (attachmentStaging !== undefined) {
       const staging = attachmentStaging;
-      const maxBytes = config.attachmentMaxBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES;
-      const allowedContentTypes =
-        config.attachmentAllowedContentTypes ?? DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES;
+      const { maxBytes, allowedContentTypes } = attachmentLimits;
       router.post(p('attachments'), async (ctx: HttpContext) => {
         const actor = await this.#resolveActor(ctx, actorResolver);
         if (actor === null) return;

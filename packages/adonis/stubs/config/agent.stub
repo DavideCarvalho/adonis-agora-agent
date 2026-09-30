@@ -48,12 +48,9 @@ export default defineConfig({
   // dashboard: { enabled: true, path: '/agent/dashboard', authorize: (actor) => actor.roles?.includes('ADMIN') ?? false },
   // governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
 
-  // Multimodal uploads — mounts POST /agent/attachments, which stages a file into a model-fetchable
-  // MessageAttachment the client sends back with its next chat message. Bind your own store (presign
-  // S3/GCS or wrap your media pipeline); \`attachmentStores.memory()\` inlines bytes as a data: URL.
-  // attachmentStaging: attachmentStores.memory(),
-  // attachmentMaxBytes: 20 * 1024 * 1024,
-  // attachmentAllowedContentTypes: ['image/png', 'image/jpeg', 'application/pdf'],
+  // Chat attachments — where uploads live (bring your own store, or @adonis-agora/media on any Drive
+  // disk). Mounts POST /agent/attachments; a send names uploads as { mediaId }, resolved server-side.
+  // attachments: attachmentStores.media(),
 
   // The implicit default agent (base prompt, personas, tool allow-list). Omit for a bare assistant.
   // defaultAgent: {

@@ -8,6 +8,7 @@ import {
   mayDecideApproval,
   type ToolCallApprovalState,
 } from './spi/approval-policy.js';
+import type { AttachmentRef, AttachmentStagingStore } from './spi/attachment-staging.js';
 import {
   findCatalogModel,
   type ModelCatalog,
@@ -39,11 +40,10 @@ export interface ChatParams {
   personaId?: string;
   pageContext?: PageContext;
   /**
-   * Already-staged attachments (image/PDF) for this message — each an `{ mediaId, url, contentType,
-   * name }` produced by the `POST /agent/attachments` upload route (or the host's own staging). The
-   * lib never fetches bytes; the model adapter renders them as native content parts from `url`.
+   * Uploads to attach to this message, named by id (`POST <path>/attachments` answered it). The
+   * configured attachment store resolves each — the url the model fetches is never taken from here.
    */
-  attachments?: MessageAttachment[];
+  attachments?: AttachmentRef[];
   /**
    * Run this turn on a catalog model instead of the thread's pinned one (or the provider default).
    * Refused ({@link ModelNotAllowedError}) unless the catalog lists it as available to this actor.
@@ -65,6 +65,19 @@ export interface AgentServiceOptions {
    * window from the ledger, never gated.
    */
   quota?: { provider: QuotaProvider; gated: boolean };
+  /** Where attachments live (`attachments` in `config/agent.ts`). Absent → a send naming one is refused. */
+  attachments?: AttachmentStagingStore;
+}
+
+/** A send's attachments were refused — `status` is what the chat route answers (`403`, `501`). */
+export class AttachmentRefusedError extends Error {
+  constructor(
+    readonly status: 400 | 403 | 501,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'AttachmentRefusedError';
+  }
 }
 
 export class AgentService {
@@ -190,8 +203,9 @@ export class AgentService {
   async chat(params: ChatParams): Promise<{ runId: string; threadId: string }> {
     await this.assertWithinQuota(params.actor);
     const agentName = params.agentName ?? this.deps.defaultAgentName();
-    // Before the thread exists, so a refused model leaves nothing behind.
+    // Before the thread exists, so a refused model or attachment leaves nothing behind.
     const model = await this.resolveModel(params.actor, agentName, params.model, params.threadId);
+    const attachments = await this.resolveAttachments(params.actor, params.attachments ?? []);
     let threadId = params.threadId;
     if (threadId === undefined) {
       const created = await this.store.createThread({
@@ -210,7 +224,7 @@ export class AgentService {
       agentName,
       ...(persona !== undefined ? { persona } : {}),
       ...(params.pageContext !== undefined ? { pageContext: params.pageContext } : {}),
-      ...(params.attachments !== undefined ? { attachments: params.attachments } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
       ...(model !== undefined ? { model } : {}),
     };
 
@@ -438,8 +452,63 @@ export class AgentService {
     return this.store.listThreads(actorRef);
   }
 
-  getThread(threadId: string): Promise<ThreadDetail | null> {
-    return this.store.getThread(threadId);
+  /**
+   * A thread as `actor` reads it back. Each attachment's url is re-minted by `mediaId` through the
+   * attachment store: the one persisted with the message was minted for THAT turn (a signed url that
+   * expires), so an old turn would otherwise show a dead link. One the store will not resolve for
+   * this actor keeps the url it was stored with.
+   */
+  async getThread(threadId: string, actor?: Actor): Promise<ThreadDetail | null> {
+    const thread = await this.store.getThread(threadId);
+    const staging = this.options.attachments;
+    if (thread === null || actor === undefined || staging === undefined) return thread;
+    if (!thread.messages.some((message) => (message.attachments?.length ?? 0) > 0)) return thread;
+    const messages = await Promise.all(
+      thread.messages.map(async (message) => {
+        if (message.attachments === undefined || message.attachments.length === 0) return message;
+        const attachments = await Promise.all(
+          message.attachments.map(async (attachment) => {
+            try {
+              return (await staging.resolve({ mediaId: attachment.mediaId, actor })) ?? attachment;
+            } catch {
+              return attachment;
+            }
+          }),
+        );
+        return { ...message, attachments };
+      }),
+    );
+    return { ...thread, messages };
+  }
+
+  /**
+   * Turn a send's `{ mediaId }` refs into attachments through the store, for this actor. Refused
+   * ({@link AttachmentRefusedError}) when no store is configured or one ref is not the actor's to use.
+   */
+  private async resolveAttachments(
+    actor: Actor,
+    refs: readonly AttachmentRef[],
+  ): Promise<MessageAttachment[]> {
+    if (refs.length === 0) return [];
+    const staging = this.options.attachments;
+    if (staging === undefined) {
+      throw new AttachmentRefusedError(
+        501,
+        'Attachments are off: set `attachments` in config/agent.ts (e.g. attachmentStores.media()).',
+      );
+    }
+    const resolved: MessageAttachment[] = [];
+    for (const ref of refs) {
+      const attachment = await staging.resolve({ mediaId: ref.mediaId, actor });
+      if (attachment === null) {
+        throw new AttachmentRefusedError(
+          403,
+          `attachment ${ref.mediaId} is not available to this actor`,
+        );
+      }
+      resolved.push(attachment);
+    }
+    return resolved;
   }
 
   renameThread(threadId: string, title: string): Promise<void> {
