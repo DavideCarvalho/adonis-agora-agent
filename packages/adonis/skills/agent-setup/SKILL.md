@@ -233,13 +233,15 @@ function Chat() {
 made mid-turn is queued (`whileRunning: 'block'` to refuse instead). `path` on the provider must
 match `config/agent.ts`'s `path`.
 
-### Pattern 5 — serve an AG-UI client with `agUi: true`
+### Pattern 5 — serve an AG-UI client with `agUiAdapter()`
 
 ```ts
 // config/agent.ts
+import { agUiAdapter } from '@adonis-agora/agent/ag-ui'
+
 export default defineConfig({
   // …
-  agUi: true, // mounts POST <path>/ag-ui — a RunAgentInput in, AG-UI 1.0 events out
+  adapters: [agUiAdapter()], // mounts POST <path>/ag-ui — a RunAgentInput in, AG-UI 1.0 events out
 })
 ```
 

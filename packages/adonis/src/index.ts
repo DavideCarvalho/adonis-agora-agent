@@ -388,6 +388,7 @@ export {
 export * from './spi/model-provider.js';
 export * from './spi/pricing-store.js';
 export * from './spi/processors.js';
+export * from './spi/protocol-adapter.js';
 export {
   exhaustedWindow,
   isQuotaProvider,

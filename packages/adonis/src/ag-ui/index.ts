@@ -4,6 +4,7 @@
  * that mounts its own route instead of the provider's.
  */
 
+export { type AgUiAdapterOptions, agUiAdapter } from './adapter.js';
 export { AgUiEncoder, type AgUiEncoderOptions } from './encoder.js';
 export {
   type ForwardedOptions,

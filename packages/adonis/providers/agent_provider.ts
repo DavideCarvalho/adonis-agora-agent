@@ -2,21 +2,6 @@ import { pathToFileURL } from 'node:url';
 import type { HttpContext } from '@adonisjs/core/http';
 import type { ApplicationService } from '@adonisjs/core/types';
 import {
-  AG_UI_CUSTOM,
-  type AgUiEvent,
-  type AgUiStreamOptions,
-  agUiEvents,
-  agUiSse,
-  parseRunInput,
-  planResume,
-  type ResumeDecision,
-  readAnswersPayload,
-  readApprovalPayload,
-  readContext,
-  readForwardedProps,
-  readUserTurn,
-} from '../src/ag-ui/index.js';
-import {
   type Actor,
   type ActorDirectory,
   type ActorResolver,
@@ -153,18 +138,6 @@ function decisionVia(claimed: unknown): string | null {
 
 /** How many attachments one message may name. */
 const MAX_ATTACHMENTS_PER_MESSAGE = 10;
-
-/** The surface an AG-UI resume decision is recorded as having come through. */
-const AG_UI_VIA = 'ag-ui';
-
-/** Input material the AG-UI route could not use, as the events that say so. */
-function warningEvents(warnings: readonly string[]): AgUiEvent[] {
-  return warnings.map((message) => ({
-    type: 'CUSTOM' as const,
-    name: AG_UI_CUSTOM.warning,
-    value: { message },
-  }));
-}
 
 /**
  * Reduce a send's `attachments` to `{ mediaId }` refs, or say why not. One shape: a ref names an
@@ -776,162 +749,38 @@ export default class AgentProvider {
       return ctx.response.json({ aborted: true });
     });
 
-    // 3b. POST /agent/ag-ui — the same agent over AG-UI 1.0 (opt-in, `agUi` in the config): the body
-    // is a `RunAgentInput`, the answer the run as AG-UI events. A run that stops to ask ends with the
-    // interrupt outcome and is continued by a later request carrying `resume`. Authenticated and
-    // owner-scoped exactly as `chat`, `chat/:runId/stream` and the decision routes are.
-    if (config.agUi !== undefined && config.agUi !== false) {
-      const quietMs = typeof config.agUi === 'object' ? config.agUi.quietMs : undefined;
-      router.post(p('ag-ui'), async (ctx: HttpContext) => {
-        const input = parseRunInput(ctx.request.body());
-        if (typeof input === 'string') {
-          return ctx.response.badRequest({ message: input, code: 'invalid_input' });
-        }
-        const forwarded = readForwardedProps(input.forwardedProps);
-        const agentName = forwarded.agent ?? defaultAgentName;
-        const resolver = resolveActorResolver(actorResolver, agents.get(agentName));
-        const actor = await this.#resolveActor(ctx, resolver);
-        if (actor === null) return;
-        const warnings: string[] = [];
-        if (Array.isArray(input.tools) && input.tools.length > 0) {
-          warnings.push(
-            'Frontend tools are not supported by this agent: the tools list was ignored.',
-          );
-        }
-
-        if (input.resume !== undefined && input.resume.length > 0) {
-          const plan = planResume(input.resume);
-          if (typeof plan === 'string') {
-            return ctx.response.badRequest({ message: plan, code: 'invalid_resume' });
-          }
-          for (const id of plan.unrecognised) {
-            warnings.push(`The resume entry ${id} answers an interrupt this agent did not raise.`);
-          }
-          const first = plan.decisions[0];
-          // A list that answers nothing this agent asked continues nothing: an ordinary run.
-          if (first !== undefined) {
-            const streamRunId = first.address.stream;
-            const owner = await service.runOwner(streamRunId);
-            if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
-            if (!(await service.hasStream(streamRunId))) {
-              return ctx.response.conflict({
-                code: 'run_not_active',
-                message: 'The interrupted run is no longer waiting.',
-              });
+    // 3b. Protocol adapters (`adapters` in the config): other wire protocols over the same runs —
+    // e.g. `agUiAdapter()` mounts `POST <path>/ag-ui`. Each gets the checks these routes use, so an
+    // adapter cannot be more permissive than the native routes by forgetting one.
+    for (const adapter of config.adapters ?? []) {
+      await adapter.mount({
+        service,
+        defaultAgentName,
+        post: (suffix, handler) => void router.post(p(suffix), handler),
+        get: (suffix, handler) => void router.get(p(suffix), handler),
+        resolveActor: (ctx, agentName) =>
+          this.#resolveActor(
+            ctx,
+            agentName === undefined
+              ? actorResolver
+              : resolveActorResolver(actorResolver, agents.get(agentName)),
+          ),
+        assertOwner: (ctx, actor, ownerRef, kind) =>
+          this.#assertOwner(ctx, actor, ownerRef, kind, governanceAuthorize),
+        mayDecide: (ctx, actor, runId, toolCallId) =>
+          this.#mayDecide(ctx, service, actor, runId, toolCallId, governanceAuthorize),
+        refuseSend: (ctx, error) => this.#refuseSend(ctx, error),
+        conflictOnMismatch: (ctx, error) => this.#conflictOnMismatch(ctx, error),
+        ...(attachmentStaging !== undefined
+          ? {
+              attachments: {
+                store: attachmentStaging,
+                maxBytes: attachmentLimits.maxBytes,
+                allowedContentTypes: attachmentLimits.allowedContentTypes,
+                maxPerMessage: MAX_ATTACHMENTS_PER_MESSAGE,
+              },
             }
-            if (
-              !(await this.#settleResume(ctx, service, actor, plan.decisions, governanceAuthorize))
-            ) {
-              return;
-            }
-            await this.#pipeAgUi(ctx, service, streamRunId, {
-              threadId: input.threadId,
-              runId: input.runId,
-              streamRunId,
-              skip: first.address.position,
-              answered: plan.decisions.map((decision) => decision.address.toolCallId),
-              ...(quietMs !== undefined ? { quietMs } : {}),
-              preamble: warningEvents(warnings),
-            });
-            return;
-          }
-        }
-
-        const turn = readUserTurn(input.messages);
-        if (turn === null) {
-          return ctx.response.badRequest({
-            message: 'messages carries no user message to answer',
-            code: 'no_user_message',
-          });
-        }
-        warnings.push(...turn.dropped);
-        // The consumer names the conversation. A thread it already has is continued (its owner
-        // checked, as on `chat`); one nobody has is created under that name.
-        const owner = await service.threadOwner(input.threadId);
-        if (owner !== null) {
-          if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
-        }
-        const refs: { mediaId: string }[] = [];
-        for (const media of turn.media) {
-          const label = `The ${media.kind} "${media.filename}" was not used`;
-          if (attachmentStaging === undefined) {
-            warnings.push(`${label}: attachments are not enabled on this agent.`);
-          } else if (refs.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
-            warnings.push(
-              `${label}: a message carries at most ${MAX_ATTACHMENTS_PER_MESSAGE} attachments.`,
-            );
-          } else if (!attachmentLimits.allowedContentTypes.includes(media.contentType)) {
-            warnings.push(`${label}: ${media.contentType} is not an accepted type.`);
-          } else if (media.data.length > attachmentLimits.maxBytes) {
-            warnings.push(`${label}: it is larger than ${attachmentLimits.maxBytes} bytes.`);
-          } else {
-            try {
-              const staged = await attachmentStaging.stage({
-                data: media.data,
-                filename: media.filename,
-                contentType: media.contentType,
-                sizeBytes: media.data.length,
-                actor,
-              });
-              refs.push({ mediaId: staged.mediaId });
-            } catch {
-              warnings.push(`${label}: it could not be stored.`);
-            }
-          }
-        }
-        if (turn.text.trim().length === 0 && refs.length === 0) {
-          return ctx.response.badRequest({
-            message: 'the user message to answer is empty',
-            code: 'no_user_message',
-          });
-        }
-        const context = readContext(input.context);
-        const pageContext: PageContext | undefined =
-          forwarded.pageContext !== undefined || context !== undefined
-            ? {
-                ...forwarded.pageContext,
-                ...(context !== undefined ? { agUiContext: context } : {}),
-              }
-            : undefined;
-        let started: { runId: string; threadId: string };
-        try {
-          started = await service.chat({
-            actor,
-            message: turn.text,
-            ...(owner !== null ? { threadId: input.threadId } : { newThreadId: input.threadId }),
-            ...(forwarded.agent !== undefined ? { agentName: forwarded.agent } : {}),
-            ...(forwarded.model !== undefined ? { model: forwarded.model } : {}),
-            ...(forwarded.persona !== undefined ? { personaId: forwarded.persona } : {}),
-            ...(pageContext !== undefined ? { pageContext } : {}),
-            ...(refs.length > 0 ? { attachments: refs } : {}),
-          });
-        } catch (error) {
-          if (error instanceof AttachmentRefusedError) {
-            return ctx.response.status(error.status).json({ message: error.message });
-          }
-          if (error instanceof ModelNotAllowedError) {
-            return ctx.response.badRequest({ message: error.message, code: 'model_not_allowed' });
-          }
-          if (error instanceof ChatQueueError) {
-            return this.#refuseQueue(ctx, error);
-          }
-          if (error instanceof QuotaBlockedError) {
-            return ctx.response.status(429).json({
-              code: 'quota_exceeded',
-              period: error.period,
-              message: error.message,
-            });
-          }
-          throw error;
-        }
-        await this.#pipeAgUi(ctx, service, started.runId, {
-          threadId: input.threadId,
-          runId: input.runId,
-          streamRunId: started.runId,
-          streamThreadId: started.threadId,
-          ...(quietMs !== undefined ? { quietMs } : {}),
-          preamble: warningEvents(warnings),
-        });
+          : {}),
       });
     }
 
@@ -1962,145 +1811,31 @@ export default class AgentProvider {
   }
 
   /**
-   * Deliver what an AG-UI resume list decided, through the same calls the native decision routes
-   * make. Everything that can refuse — who may decide, an answer a question's rules reject, a
-   * payload that says nothing — is checked for EVERY entry before the first one is delivered, so a
-   * list with one bad entry settles nothing. Answers `false` after writing the refusal.
+   * Answer a refused send — an attachment, a model, a busy thread, an exhausted budget — the way
+   * `POST <path>/chat` does. `false` for an error that is none of those (the caller rethrows).
    */
-  async #settleResume(
-    ctx: HttpContext,
-    service: AgentService,
-    actor: Actor,
-    decisions: ResumeDecision[],
-    governanceAuthorize: AgentGovernanceAuthorize | undefined,
-  ): Promise<boolean> {
-    const deliveries: (() => Promise<void>)[] = [];
-    for (const { address, entry } of decisions) {
-      const { parked, toolCallId } = address;
-      const abandoned = entry.status === 'cancelled';
-      if (address.kind === 'approval') {
-        if (
-          !(await this.#mayDecide(ctx, service, actor, parked, toolCallId, governanceAuthorize))
-        ) {
-          return false;
-        }
-        const decision = abandoned ? { approved: false } : readApprovalPayload(entry.payload);
-        if (decision === null) {
-          ctx.response.badRequest({
-            code: 'invalid_resume',
-            message: 'an approval is answered with { approved: boolean, reason?, remember? }',
-          });
-          return false;
-        }
-        deliveries.push(() =>
-          decision.approved
-            ? service.approve(parked, toolCallId, {
-                executedByRef: actor.id,
-                via: AG_UI_VIA,
-                ...(decision.remember !== undefined ? { remember: decision.remember } : {}),
-              })
-            : service.reject(
-                parked,
-                toolCallId,
-                decision.reason ?? (abandoned ? 'abandoned' : undefined),
-                {
-                  executedByRef: actor.id,
-                  via: AG_UI_VIA,
-                },
-              ),
-        );
-        continue;
-      }
-      const owner = await service.runOwner(parked);
-      if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return false;
-      if (abandoned) {
-        deliveries.push(() =>
-          service.skip({
-            runId: parked,
-            toolCallId,
-            answeredByRef: actor.id,
-            answeredVia: AG_UI_VIA,
-          }),
-        );
-        continue;
-      }
-      const answers = readAnswersPayload(entry.payload);
-      if (answers === null) {
-        ctx.response.badRequest({
-          code: 'invalid_resume',
-          message: 'a question set is answered with { answers: { <questionId>: string[] } }',
-        });
-        return false;
-      }
-      const problem = await service.answerProblem(toolCallId, answers);
-      if (problem !== null) {
-        ctx.response.badRequest({ code: 'invalid_resume', message: problem });
-        return false;
-      }
-      deliveries.push(() =>
-        service.answer({
-          runId: parked,
-          toolCallId,
-          answers,
-          answeredByRef: actor.id,
-          answeredVia: AG_UI_VIA,
-        }),
-      );
+  #refuseSend(ctx: HttpContext, error: unknown): boolean {
+    if (error instanceof AttachmentRefusedError) {
+      ctx.response.status(error.status).json({ message: error.message });
+      return true;
     }
-    try {
-      for (const deliver of deliveries) await deliver();
-    } catch (error) {
-      this.#conflictOnMismatch(ctx, error);
-      return false;
+    if (error instanceof ModelNotAllowedError) {
+      ctx.response.badRequest({ message: error.message, code: 'model_not_allowed' });
+      return true;
     }
-    return true;
-  }
-
-  /**
-   * Pipe a run to the client as AG-UI 1.0 over SSE: one event per `data:` line, from `RUN_STARTED`
-   * to the run's terminal event. Unlike {@link #pipe}, it ends when the run stops to ask — the
-   * library run stays parked, and the request that answers re-attaches to it.
-   */
-  async #pipeAgUi(
-    ctx: HttpContext,
-    service: AgentService,
-    runId: string,
-    options: AgUiStreamOptions,
-  ): Promise<void> {
-    const raw = ctx.response.response;
-    const headers: Record<string, string> = {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-transform',
-      Connection: 'keep-alive',
-      'X-Accel-Buffering': 'no',
-      'X-Agent-Run-Id': runId,
-    };
-    const pending = ctx.response.getHeaders();
-    for (const [name, value] of Object.entries(pending)) {
-      if (value !== undefined && !(name in headers))
-        raw.setHeader(name, value as string | string[]);
+    if (error instanceof ChatQueueError) {
+      this.#refuseQueue(ctx, error);
+      return true;
     }
-    raw.writeHead(200, headers);
-    let terminal = false;
-    try {
-      for await (const event of agUiEvents(service.subscribe(runId), options)) {
-        if (event.type === 'RUN_FINISHED' || event.type === 'RUN_ERROR') terminal = true;
-        raw.write(agUiSse(event));
-      }
-    } catch {
-      // The stream under the run broke. The status line is long gone, so the failure travels
-      // in-stream — and says nothing of what broke, which is the server's to know.
-      if (!terminal) {
-        raw.write(
-          agUiSse({
-            type: 'RUN_ERROR',
-            message: 'The run could not be followed.',
-            code: 'run_failed',
-          }),
-        );
-      }
+    if (error instanceof QuotaBlockedError) {
+      ctx.response.status(429).json({
+        code: 'quota_exceeded',
+        period: error.period,
+        message: error.message,
+      });
+      return true;
     }
-    raw.end();
+    return false;
   }
 
   /**

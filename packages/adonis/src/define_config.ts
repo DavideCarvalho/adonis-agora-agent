@@ -15,6 +15,7 @@ import type { ModelCatalog, ModelCatalogView } from './spi/model-catalog.js';
 import type { ModelProvider } from './spi/model-provider.js';
 import type { AgentPricingStore } from './spi/pricing-store.js';
 import type { InputProcessor, OutputProcessor } from './spi/processors.js';
+import type { ProtocolAdapter } from './spi/protocol-adapter.js';
 import type { QuotaProvider } from './spi/quota-provider.js';
 import type { Retriever } from './spi/retriever.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
@@ -184,12 +185,12 @@ export interface AgentConfig {
    */
   attachments?: AttachmentStagingStore | AttachmentStagingFactory;
   /**
-   * Serve the agent over AG-UI 1.0 as well: `POST <path>/ag-ui` takes a `RunAgentInput` and answers
-   * with the run as AG-UI events (see `docs/ag-ui.mdx`). Off unless set. `quietMs` is how long a
-   * run that is waiting on a person AND still has other work announced may stay silent before it is
-   * reported interrupted (default 750).
+   * Other wire protocols served over the same runs, each mounting its own routes under `path`.
+   * `agUiAdapter()` from `@adonis-agora/agent/ag-ui` serves AG-UI 1.0 (`POST <path>/ag-ui`, see
+   * `docs/ag-ui.mdx`); a `ProtocolAdapter` of your own works the same way. Omit → only the native
+   * routes.
    */
-  agUi?: boolean | { quietMs?: number };
+  adapters?: ProtocolAdapter[];
   /**
    * Tool authorization gate. Defaults to `DefaultToolAuthorizer` (fail-closed, ADMIN-only; role-set
    * intersection). `authorizer` and `rolesPolicy` are aliases — pass either.
