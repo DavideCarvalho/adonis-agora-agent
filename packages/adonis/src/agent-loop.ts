@@ -1394,6 +1394,9 @@ async function invokeClaimedTool(
       const ui = createUiCollector(call.id, turn.writer);
       const toolCtx: AiToolCtx = {
         ...ctx,
+        // The same for every execution of THIS call (a replay after a crash, a transient retry).
+        toolCallId: call.id,
+        idempotencyKey: `${hooks.runId}:${call.id}`,
         emitUi: ui.emit,
         // The older push, kept: it now goes through the same collector, so it is persisted too.
         emitComponent: async (name: string, data: unknown) => {

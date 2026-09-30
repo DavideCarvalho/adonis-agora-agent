@@ -105,6 +105,15 @@ constructor needing a peer service fails nothing at boot.
 
 Source: `packages/adonis/docs/authoring/tools.mdx` ("Constructor DI").
 
+An action's write and the checkpoint that records it are two writes: a worker that dies between
+them re-runs the tool on recovery. Pass `ctx.idempotencyKey` (`<runId>:<toolCallId>`, the same for
+every execution of one call) on as the downstream idempotency key — a provider's
+`Idempotency-Key`, a unique column on the inserted row, the `id` of a workflow the tool starts — so
+the second attempt lands on the first. It is absent outside a turn (MCP, a direct
+`registry.invoke`), so fall back to a key of your own there.
+
+Source: `packages/adonis/src/spi/tool.ts` (`AiToolCtx.idempotencyKey`).
+
 ### Pattern 2 — let the agent query SQL with `dataTool` (fail-closed)
 
 `dataTool` validates a single SELECT, enforces a REQUIRED role→group→table allow-list

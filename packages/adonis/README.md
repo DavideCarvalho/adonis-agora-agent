@@ -144,6 +144,12 @@ export default class AllocationQueue extends ReadTool<{}, Row[]> {
 }
 ```
 
+An `ActionTool` writes somewhere, and that write and the checkpoint recording it are two writes: a
+worker that dies between them re-runs the tool on recovery. `ctx.idempotencyKey`
+(`<runId>:<toolCallId>`) is the same for every execution of one call — pass it on as the downstream
+idempotency key (a provider's `Idempotency-Key`, a unique column, the `id` of a workflow the tool
+starts) so the second attempt lands on the first.
+
 ### Governed read-only SQL
 
 `@adonis-agora/agent/data` ships `dataTool` — a fail-closed SQL tool: it requires an explicit,
