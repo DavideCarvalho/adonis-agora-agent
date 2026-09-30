@@ -234,7 +234,9 @@ function rowsOf(result: unknown): Record<string, unknown>[] {
  */
 async function existingIndexes(db: LucidRawRunner): Promise<Set<string> | null> {
   const probes = [
-    'SELECT indexname AS name FROM pg_indexes WHERE schemaname = current_schema()',
+    // Every schema on the search path, not only the first: an unqualified `CREATE INDEX … ON "t"`
+    // finds `t` wherever the path does, so that is where its index has to be looked for.
+    'SELECT indexname AS name FROM pg_indexes WHERE schemaname = ANY (current_schemas(false))',
     `SELECT name FROM sqlite_master WHERE type = 'index'`,
   ];
   for (const probe of probes) {
