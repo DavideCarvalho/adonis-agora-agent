@@ -120,6 +120,28 @@ describe.skipIf(url === undefined)('agent schema provisioning on Postgres', () =
     expect(indexes.rows.length).toBeGreaterThan(1);
   });
 
+  it('finds the indexes of tables that live further down the search path', async () => {
+    await createAgentTables(asStoreDb(db));
+    // A schema AHEAD of the one the tables are in — `current_schema()` is now this empty one.
+    await db.rawQuery('CREATE SCHEMA IF NOT EXISTS agent_probe_first');
+    const client = db.connection('pg');
+    const statements: string[] = [];
+    try {
+      await db.transaction(async (trx) => {
+        await trx.rawQuery('SET LOCAL search_path = agent_probe_first, public');
+        await createAgentTables({
+          rawQuery(sql, bindings) {
+            statements.push(sql);
+            return trx.rawQuery(sql, bindings as never);
+          },
+        });
+      });
+    } finally {
+      await client.rawQuery('DROP SCHEMA agent_probe_first CASCADE');
+    }
+    expect(statements.filter((sql) => /^(CREATE INDEX|ALTER)/.test(sql))).toEqual([]);
+  });
+
   it('several processes provisioning an empty database at once all succeed', async () => {
     const results = await Promise.all(
       Array.from({ length: 6 }, () => createAgentTables(asStoreDb(db.connection('pg')))),
