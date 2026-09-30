@@ -485,6 +485,16 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
     return typeof row?.active_stream_id === 'string' ? row.active_stream_id : null;
   }
 
+  async threadHeldByRun(runId: string): Promise<string | null> {
+    await this.init();
+    const row = await this.db
+      .from(AGENT_TABLES.threads)
+      .where('active_stream_id', runId)
+      .whereNull('deleted_at')
+      .first();
+    return row === null || row === undefined ? null : String(row.id);
+  }
+
   /**
    * Compare-and-set, as two conditional updates rather than one `OR` (the structural query builder
    * has no `orWhere`): free → `runId`; else held by `runId` or `replacing` → `runId`. Each statement

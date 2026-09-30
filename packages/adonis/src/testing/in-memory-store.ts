@@ -285,6 +285,15 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
     return this.threads.get(threadId)?.activeStreamId ?? null;
   }
 
+  async threadHeldByRun(runId: string): Promise<string | null> {
+    for (const [threadId, row] of this.threads) {
+      if (row.activeStreamId === runId) {
+        return threadId;
+      }
+    }
+    return null;
+  }
+
   async claimActiveStream(
     threadId: string,
     runId: string,

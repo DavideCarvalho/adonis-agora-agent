@@ -305,6 +305,19 @@ export interface AgentStore {
    * approve/reject), so a caller can only act on runs it owns.
    */
   getRunActorRef(runId: string): Promise<string | null>;
+  /**
+   * OPTIONAL: the thread whose active run is `runId`, or `null` — the reverse of the admission
+   * pointer (`activeRunId` on a thread read).
+   *
+   * A run is admitted to its thread BEFORE it starts executing: a send claims the thread and then
+   * starts the run; a queue drain claims it for the next message and then starts that. Under a
+   * durable runner the body runs in a worker, so there is a window — the time a worker takes to
+   * pick the run up — in which the run holds a thread and has no run row yet. A client attaches in
+   * exactly that window (it was just told the run started), so the routes that address a run read
+   * its owner off the thread it holds when there is no row. Absent → those routes answer `404`
+   * until the run has started.
+   */
+  threadHeldByRun?(runId: string): Promise<string | null>;
   /** Settle a run's outcome (terminal, first-wins). A no-op when the run is unknown or already settled. */
   recordRunEnd(input: RecordRunEndInput): Promise<void>;
 }

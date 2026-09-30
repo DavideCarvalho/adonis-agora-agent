@@ -705,14 +705,44 @@ export class AgentService {
       : this.store.threadOfMessage(messageId);
   }
 
-  /** Is anything streaming (or buffered) under this run? `true` when the sink cannot say. */
+  /**
+   * Is anything streaming (or buffered) under this run — or about to? `true` when the sink cannot
+   * say.
+   *
+   * "About to": a run that holds its thread and has written nothing yet. It was admitted (a send, or
+   * a queue drain handing the thread to the next message) and its body has not reached the sink — on
+   * a durable runner, because no worker has picked it up. A client told that run started attaches
+   * right then; answering "nothing to resume" would make it give up on a turn that is a moment from
+   * streaming. The runner decides whether the holder is alive, as it does for admission: a claim
+   * left by a process that died is not a stream.
+   */
   async hasStream(runId: string): Promise<boolean> {
-    return (await this.deps.forAgent().sink.has?.(runId)) ?? true;
+    const buffered = await this.deps.forAgent().sink.has?.(runId);
+    if (buffered !== false) {
+      return true;
+    }
+    const queue = this.queueing();
+    const threadId = await this.store.threadHeldByRun?.(runId);
+    if (queue === undefined || threadId === undefined || threadId === null) {
+      return false;
+    }
+    return (await queue.holder(threadId, this.runner)).live === runId;
   }
 
-  /** The owning actor ref of a run (turn), or `null` if unknown — for per-actor route ownership checks. */
-  runOwner(runId: string): Promise<string | null> {
-    return this.store.getRunActorRef(runId);
+  /**
+   * The owning actor ref of a run (turn), or `null` if unknown — for per-actor route ownership
+   * checks. A run that holds a thread but has not started executing has no row of its own yet (see
+   * `AgentStore.threadHeldByRun`): its owner is the thread's.
+   */
+  async runOwner(runId: string): Promise<string | null> {
+    const recorded = await this.store.getRunActorRef(runId);
+    if (recorded !== null) {
+      return recorded;
+    }
+    const threadId = await this.store.threadHeldByRun?.(runId);
+    return threadId === undefined || threadId === null
+      ? null
+      : this.store.getThreadActorRef(threadId);
   }
 
   /** The owning actor ref of a thread, or `null` if unknown — for per-actor route ownership checks. */
