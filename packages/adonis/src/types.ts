@@ -1,4 +1,5 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
+import type { AgentIntake } from './elicitation.js';
 import type { ActorResolver } from './spi/actor-resolver.js';
 import type { ChatQueueState } from './spi/chat-queue.js';
 import type { AgentUiComponent } from './stream-events.js';
@@ -387,6 +388,21 @@ export interface AgentDefinition {
    * Undefined → {@link import('./agent-loop.js').DEFAULT_MAX_AGENT_APPEARANCES}.
    */
   maxAgentAppearances?: number;
+  /**
+   * Offer the model the built-in `ask` tool, so it can put a question set to the user when it judges
+   * the scope is missing, and wait for the answers (`POST <path>/tool-call/answer`). Off by default.
+   * See `AgentLoopDeps.ask`.
+   *
+   * The run PARKS on the person. Under the inline runner that wait lives in the process that started
+   * the turn, so the answer has to reach the same replica; under the durable runner (`durable: true`)
+   * it is a journaled signal any replica can deliver.
+   */
+  ask?: boolean;
+  /**
+   * A question set this agent asks before it starts working — authored here, not by the model — on
+   * a thread's first turn, or on every turn. See `AgentLoopDeps.intake`. Parks like {@link ask}.
+   */
+  intake?: AgentIntake;
   /**
    * Per-agent {@link ActorResolver} override. When set, this agent resolves the request's actor with
    * its own resolver instead of the module-global `config.actorResolver` — e.g. an agent that reads

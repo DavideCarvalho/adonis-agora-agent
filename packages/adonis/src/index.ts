@@ -138,6 +138,7 @@ export type {
   LucidGovernanceConfig,
   LucidPricingConfig,
   LucidStoreConfig,
+  LucidTokenSinkConfig,
   MemoryActorDirectoryConfig,
   MemoryRetrieverConfig,
   MemoryStoreConfig,
@@ -210,6 +211,10 @@ export type { AgentGovernanceAuthorize, GovernanceGateVerdict } from './governan
 export { evaluateGovernanceGate } from './governance-gate.js';
 export * from './history-window.js';
 export { InProcessTokenStreamSink } from './in-process-sink.js';
+export {
+  LucidTokenStreamSink,
+  type LucidTokenStreamSinkOptions,
+} from './lucid-token-stream-sink.js';
 export {
   type BuildMemoryBlockInput,
   buildMemoryBlock,
@@ -424,7 +429,9 @@ export {
   dropAgentTables,
   dropTableStatements,
   ensureAgentTables,
+  ensureStreamFrameTable,
   schemaRunner,
+  streamFrameTableStatement,
 } from './stores/lucid-schema.js';
 export type {
   AgentApprovalRequest,

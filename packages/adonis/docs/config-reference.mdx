@@ -53,7 +53,7 @@ export default defineConfig({
 
 ### `sink`
 
-`TokenStreamSink | SinkFactory`. The live token transport (data plane). **Defaults to the in-process sink** (`InProcessTokenStreamSink`), which buffers per run so a client can re-attach. Use `tokenSinks.redis({...})` (aliased `streamTransports.redis`) for the multi-replica Redis sink so any pod serves any run's SSE stream. See [Multi-replica streaming](/docs/agent/redis-streaming).
+`TokenStreamSink | SinkFactory`. The live token transport (data plane). **Defaults to the in-process sink** (`InProcessTokenStreamSink`), which buffers per run so a client can re-attach. Use `tokenSinks.redis({...})` (aliased `streamTransports.redis`) for the multi-replica Redis sink so any pod serves any run's SSE stream, or `tokenSinks.lucid({...})` for the same over the app's SQL database when there is no Redis (`connection`, `tableName`, `pollIntervalMs`, `idlePollIntervalMs`, `flushMs`, `ttlSeconds`, `autoPurge`, `autoCreateTables`). See [Multi-replica streaming](/docs/agent/redis-streaming) and [Multi-replica streaming without Redis](/docs/agent/sql-streaming).
 
 ### `quota`
 
@@ -141,7 +141,7 @@ A public deployment should set a `quota`: model spend is otherwise unbounded (pe
 
 ### `defaultAgent`
 
-`Omit<AgentDefinition, 'name'> & { name?: string }`. The implicit single agent's config — its base `systemPrompt`, `personas`, `defaultPersona`, tool allow-list (`tools`), `delegatesTo`, `modelId`, and `maxSteps`. **Omit for a bare assistant** (`'You are a helpful assistant.'`). Its `name` defaults to `'default'`.
+`Omit<AgentDefinition, 'name'> & { name?: string }`. The implicit single agent's config — its base `systemPrompt`, `personas`, `defaultPersona`, tool allow-list (`tools`), `delegatesTo`, `modelId`, `maxSteps`, and the question surfaces `ask` (offer the model the built-in `ask` tool) and `intake` (an authored question set asked before the work — see [Asking the user](/docs/agent/authoring/elicitation)). **Omit for a bare assistant** (`'You are a helpful assistant.'`). Its `name` defaults to `'default'`.
 
 ### `tools`
 

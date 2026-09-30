@@ -41,6 +41,23 @@ render "Question 1 of 3" rather than discovering a fourth halfway through.
 
 `when: 'thread-start'` (the default) asks once per thread; `'every-turn'` asks before each one.
 
+Under the provider, both surfaces are declared on the agent — `defaultAgent` or an entry of `agents`
+in `config/agent.ts` — and reach the loop from there:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  // …
+  defaultAgent: {
+    ask: true,
+    intake: { questions: [/* … */], when: 'thread-start' },
+  },
+})
+```
+
+A run parked on a question waits where its runner waits: in the process that started it under the
+inline runner, on a durable signal any replica can deliver under `durable: true`. With several
+replicas, see [Several replicas without Redis](/docs/agent/sql-streaming#several-replicas-without-redis).
+
 ## A model-callable `ask`
 
 `ask: true` offers the model a built-in `ask` tool, for the case an intake cannot anticipate. Its

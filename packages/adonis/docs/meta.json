@@ -18,6 +18,7 @@
     "mcp",
     "mcp-client",
     "redis-streaming",
+    "sql-streaming",
     "diagnostics",
     "testing",
     "---Reference---",

@@ -1,3 +1,4 @@
+import type { AgentIntake } from './elicitation.js';
 import type { MemoryConfig } from './memory.js';
 import type { SkillsConfig } from './skills.js';
 import type { AgentStore } from './spi/agent-store.js';
@@ -42,6 +43,10 @@ export interface AgentDeps {
    * through is going in circles.
    */
   maxAgentAppearances?: number;
+  /** Offer the model the built-in `ask` tool — see `AgentLoopDeps.ask`. Undefined → not offered. */
+  ask?: boolean;
+  /** The agent's authored intake question set — see `AgentLoopDeps.intake`. Undefined → none. */
+  intake?: AgentIntake;
   /** Inject-mode retriever: when set, the loop retrieves + folds context into the prompt each run. */
   retriever?: Retriever;
   /** How many passages inject-mode retrieval requests. Undefined → 5. */
