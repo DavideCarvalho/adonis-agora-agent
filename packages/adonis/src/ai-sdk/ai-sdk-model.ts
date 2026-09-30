@@ -245,6 +245,13 @@ async function runTurnOn(
           },
         });
         break;
+      case 'error':
+        // The provider's own failure. Thrown as it is: left alone, the stream ends empty and the
+        // accessors below reject with the SDK's "No output generated. Check the stream for errors."
+        // — which names no cause, and is all anyone would ever read.
+        throw part.error instanceof Error
+          ? part.error
+          : new Error(typeof part.error === 'string' ? part.error : JSON.stringify(part.error));
       default:
         break;
     }

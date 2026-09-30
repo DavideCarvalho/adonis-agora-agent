@@ -1,3 +1,4 @@
+import type { ToolCallOutcome } from '../dangling-tool-calls.js';
 import type { AgentUiComponent } from '../stream-events.js';
 import type {
   Actor,
@@ -246,6 +247,21 @@ export interface AgentStore {
    * shared React client sends. Optional: without it those routes still take an explicit `runId`.
    */
   getToolCallRunId?(toolCallId: string): Promise<string | null>;
+  /**
+   * What is recorded about each of these calls — its status, and the output or error it settled
+   * with. Read when a thread's history holds a tool call its message has no result for (the turn
+   * died mid-step), so the next turn can be told what actually happened instead of being handed a
+   * call answered by nothing. Unknown ids are left out. Absent → such a call is put to the model as
+   * never completed.
+   */
+  toolCallOutcomes?(toolCallIds: string[]): Promise<ToolCallOutcome[]>;
+  /**
+   * Settle every call of `runId` still awaiting a decision as `failed` with `error`, and answer how
+   * many there were. Called when the run ends without settling them — it failed, or it was found
+   * dead — so an approval card never waits on a run that will not come back. Calls already settled
+   * are left alone.
+   */
+  failUnsettledToolCalls?(runId: string, error: string): Promise<number>;
   /**
    * OPTIONAL: the names of the tools whose approval someone asked to REMEMBER in this thread — an
    * approved call persisted with `remember: true`. The loop approves a later call of one of them

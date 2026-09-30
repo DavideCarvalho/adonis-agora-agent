@@ -1,3 +1,4 @@
+import type { ToolCallOutcome } from '../dangling-tool-calls.js';
 import type {
   AgentStore,
   AppendMessageInput,
@@ -843,6 +844,35 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
     const row = await this.db.from(AGENT_TABLES.toolCalls).where('id', toolCallId).first();
     if (row === null || row === undefined || row.run_id == null) return null;
     return String(row.run_id);
+  }
+
+  async toolCallOutcomes(toolCallIds: string[]): Promise<ToolCallOutcome[]> {
+    if (toolCallIds.length === 0) return [];
+    await this.init();
+    const rows = await this.db
+      .from(AGENT_TABLES.toolCalls)
+      .whereIn('id', toolCallIds)
+      .select('id', 'status', 'output', 'error');
+    return rows.map((row: Record<string, unknown>) => {
+      const output = parseJson<unknown>(row.output);
+      return {
+        id: String(row.id),
+        status: String(row.status) as ToolCallStatus,
+        ...(output !== undefined && output !== null ? { output } : {}),
+        ...(typeof row.error === 'string' ? { error: row.error } : {}),
+      };
+    });
+  }
+
+  async failUnsettledToolCalls(runId: string, error: string): Promise<number> {
+    await this.init();
+    const updated = await this.db
+      .from(AGENT_TABLES.toolCalls)
+      .where('run_id', runId)
+      .where('status', 'pending_approval')
+      .update({ status: 'failed', error });
+    const count = Array.isArray(updated) ? updated[0] : updated;
+    return typeof count === 'number' ? count : Number(count ?? 0);
   }
 
   async recordUsage(input: RecordUsageInput): Promise<void> {

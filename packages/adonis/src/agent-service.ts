@@ -1,6 +1,7 @@
 import { utcDay } from './agent-deps.js';
 import type { AgentDepsFactory } from './agent-deps-factory.js';
 import type { ChatQueueService } from './chat-queue-service.js';
+import { RunNotActiveError, settleDeadRun } from './dead-run.js';
 import { readElicitationQuestions, validateElicitationAnswer } from './elicitation-input.js';
 import type { AgentRunner } from './spi/agent-runner.js';
 import type { AgentStore } from './spi/agent-store.js';
@@ -396,6 +397,11 @@ export class AgentService {
 
     const mode = params.mode ?? 'auto';
     const { live, stale } = await queue.holder(threadId, this.runner);
+    if (stale !== null) {
+      // The thread is still pointed at a run that is gone: settle what it left — its row, and any
+      // call still showing an approval card — before another turn reads the thread.
+      await settleDeadRun(this.store, { runId: stale, error: 'the run is no longer running' });
+    }
     // `queue` always answers as a queued send (202), so a client that asked for it handles one
     // shape; an idle thread starts it straight away all the same (`enqueue` kicks the queue).
     if (live === null && mode !== 'queue') {
@@ -720,15 +726,34 @@ export class AgentService {
   }
 
   /**
+   * Refuse a decision addressed at a run that is over. The runtime would take the signal and buffer
+   * it for a run that never comes back — the person's "yes" is accepted, the card says so, and
+   * nothing runs. Settles what the dead run left behind on the way out. A runner that cannot say
+   * whether a run is alive is taken at its word that it is.
+   */
+  private async assertRunWaiting(runId: string): Promise<void> {
+    if (typeof this.runner.isRunActive !== 'function') {
+      return;
+    }
+    const active = await this.runner.isRunActive(runId).catch(() => true);
+    if (active) {
+      return;
+    }
+    await settleDeadRun(this.store, { runId, error: 'the run is no longer running' });
+    throw new RunNotActiveError(runId);
+  }
+
+  /**
    * Approve a parked action call. `executedByRef` is who decided (the routes stamp the caller);
    * `remember` approves later calls of the same tool in the same thread; `via` names the surface the
    * decision came through (`'web'`, `'slack'`, …) — all persisted with the call.
    */
-  approve(
+  async approve(
     runId: string,
     toolCallId: string,
     opts: { executedByRef?: string; remember?: boolean; via?: string } = {},
   ): Promise<void> {
+    await this.assertRunWaiting(runId);
     return this.runner.signal(runId, toolCallId, {
       approved: true,
       ...(opts.executedByRef !== undefined ? { executedByRef: opts.executedByRef } : {}),
@@ -737,12 +762,13 @@ export class AgentService {
     });
   }
 
-  reject(
+  async reject(
     runId: string,
     toolCallId: string,
     reason?: string,
     opts: { executedByRef?: string; via?: string } = {},
   ): Promise<void> {
+    await this.assertRunWaiting(runId);
     return this.runner.signal(runId, toolCallId, {
       approved: false,
       ...(reason !== undefined ? { reason } : {}),
@@ -799,7 +825,7 @@ export class AgentService {
     return null;
   }
 
-  answer(args: {
+  async answer(args: {
     runId: string;
     toolCallId: string;
     answers: Record<string, string[]>;
@@ -807,6 +833,7 @@ export class AgentService {
     /** The surface the answer came through (`'web'`, `'slack'`, …) — an approval's `via`. */
     answeredVia?: string;
   }): Promise<void> {
+    await this.assertRunWaiting(args.runId);
     return this.runner.signal(args.runId, args.toolCallId, {
       answers: args.answers,
       ...(args.answeredByRef !== undefined ? { answeredByRef: args.answeredByRef } : {}),
@@ -820,12 +847,13 @@ export class AgentService {
    * proceeding on an assumption someone declined to confirm is a different fact from proceeding on
    * one they chose.
    */
-  skip(args: {
+  async skip(args: {
     runId: string;
     toolCallId: string;
     answeredByRef?: string;
     answeredVia?: string;
   }): Promise<void> {
+    await this.assertRunWaiting(args.runId);
     return this.runner.signal(args.runId, args.toolCallId, {
       answers: {},
       skipped: true,

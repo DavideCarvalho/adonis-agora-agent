@@ -1,3 +1,4 @@
+import type { ToolCallOutcome } from '../dangling-tool-calls.js';
 import type {
   AgentRunStatus,
   AgentStore,
@@ -514,6 +515,34 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
 
   async getToolCallRunId(toolCallId: string): Promise<string | null> {
     return this.toolCalls.get(toolCallId)?.runId ?? null;
+  }
+
+  async toolCallOutcomes(toolCallIds: string[]): Promise<ToolCallOutcome[]> {
+    const outcomes: ToolCallOutcome[] = [];
+    for (const id of toolCallIds) {
+      const row = this.toolCalls.get(id);
+      if (row !== undefined) {
+        outcomes.push({
+          id,
+          status: row.status,
+          ...(row.output !== undefined ? { output: row.output } : {}),
+          ...(row.error !== undefined ? { error: row.error } : {}),
+        });
+      }
+    }
+    return outcomes;
+  }
+
+  async failUnsettledToolCalls(runId: string, error: string): Promise<number> {
+    let settled = 0;
+    for (const row of this.toolCalls.values()) {
+      if (row.runId === runId && row.status === 'pending_approval') {
+        row.status = 'failed';
+        row.error = error;
+        settled += 1;
+      }
+    }
+    return settled;
   }
 
   async recordToolCall(input: RecordToolCallInput): Promise<void> {

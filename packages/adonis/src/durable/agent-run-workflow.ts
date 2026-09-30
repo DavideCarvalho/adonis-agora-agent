@@ -14,6 +14,8 @@ import {
   streamErrorFrame,
 } from '../agent-loop.js';
 import type { QueuePlan, QueueSettleOutcome } from '../chat-queue-service.js';
+import { RUN_ENDED_BEFORE_TOOL_CALL } from '../dangling-tool-calls.js';
+import { settleDeadRun } from '../dead-run.js';
 import type { HumanReply } from '../elicitation.js';
 import { isReplayIntegrityError } from '../replay-integrity.js';
 import { isChatQueueStore, releaseThreadRun } from '../spi/chat-queue.js';
@@ -299,9 +301,17 @@ export class AgentRunWorkflow extends BaseWorkflow {
       // that actually disagreed. The stream still has to be settled, or the subscriber hangs on a
       // run the engine is about to fail.
       if (isReplayIntegrityError(error)) {
+        // What the checkpoints below would have settled, written straight to the store instead: the
+        // run's row, the calls it left awaiting a decision, and — for a thread's own turn — the
+        // thread, so the next message starts a turn instead of queueing behind a run that is gone.
+        await settleDeadRun(store, {
+          runId: ctx.runId,
+          error: message,
+          ...(isChild ? {} : { threadId: input.threadId }),
+        });
         if (!isChild) {
           const writer = await deps.sink.open(ctx.runId);
-          await writer.write(streamErrorFrame(error));
+          await writer.write(streamErrorFrame(error, ctx.runId));
           await writer.end();
         }
         throw error;
@@ -313,9 +323,12 @@ export class AgentRunWorkflow extends BaseWorkflow {
       // Settle the run's persisted outcome (the loop only records completions — it can't catch its
       // own crash). A checkpointed step so a replay re-settles the ONE row idempotently; first-
       // terminal, so it can't clobber a completion. Each run (parent AND child) owns its own row.
-      await step('persist:run:fail', () =>
-        store.recordRunEnd({ runId: ctx.runId, status: 'failed', error: message }),
-      );
+      await step('persist:run:fail', async () => {
+        await store.recordRunEnd({ runId: ctx.runId, status: 'failed', error: message });
+        // A call this run had put to a person is not waiting for anything any more. Inside the same
+        // checkpoint, so it adds no position to a failing run's journal.
+        await store.failUnsettledToolCalls?.(ctx.runId, RUN_ENDED_BEFORE_TOOL_CALL).catch(() => 0);
+      });
       if (!isChild) {
         // The queue behind a failed turn pauses — its next message would likely fail the same way.
         const queueFrame = await advanceQueue('failed', message);
@@ -324,7 +337,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
         if (queueFrame !== undefined) {
           await writer.write({ t: 'event', event: queueFrame });
         }
-        await writer.write(streamErrorFrame(error));
+        await writer.write(streamErrorFrame(error, ctx.runId));
         await writer.end();
       }
       throw error;

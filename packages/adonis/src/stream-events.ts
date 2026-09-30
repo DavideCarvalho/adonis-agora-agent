@@ -105,4 +105,8 @@ export type AgentStreamErrorCode =
   | 'quota_exceeded'
   | 'output_rejected'
   | 'structured_output_invalid'
+  /** The durable runtime refused a checkpoint position: the run's journal and its code disagree. */
+  | 'replay_diverged'
+  /** A model call ended without producing anything. */
+  | 'model_no_output'
   | 'run_failed';
