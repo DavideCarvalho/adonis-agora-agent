@@ -249,7 +249,7 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
 
   async createThread(input: CreateThreadInput): Promise<ThreadSummary> {
     await this.init();
-    const id = crypto.randomUUID();
+    const id = input.id ?? crypto.randomUUID();
     const now = Date.now();
     await this.db.table(AGENT_TABLES.threads).insert({
       id,

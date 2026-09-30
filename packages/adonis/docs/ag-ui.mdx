@@ -1,0 +1,114 @@
+---
+title: AG-UI
+description: Serve the agent over AG-UI 1.0 — the open agent-to-application protocol — next to the native stream.
+---
+
+[AG-UI](https://docs.ag-ui.com/spec/1.0) is an open protocol between an agent and the application in front of it. With `agUi` on, the same agent answers it as well, so any AG-UI client (`@ag-ui/client`'s `HttpAgent`, CopilotKit, a client in Python or .NET) can drive it without knowing this library. The [native stream](/docs/agent/streaming-and-http) is unchanged and stays the richer surface; AG-UI is a second door onto the same runs.
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  // …
+  agUi: true, // or { quietMs: 750 }
+})
+```
+
+That mounts `POST <path>/ag-ui`. The body is a `RunAgentInput`; the answer is `text/event-stream`, one AG-UI event per `data:` line, from `RUN_STARTED` to `RUN_FINISHED` or `RUN_ERROR`. The route resolves the actor and checks ownership exactly as `chat` does.
+
+```ts
+import { HttpAgent } from '@ag-ui/client'
+
+const agent = new HttpAgent({ url: 'https://app.example/agent/ag-ui' })
+agent.addMessage({ id: crypto.randomUUID(), role: 'user', content: 'Refund order 7' })
+await agent.runAgent()
+```
+
+## What the input means here
+
+| `RunAgentInput` | What this producer does with it |
+| --- | --- |
+| `threadId` | The conversation. A thread the caller already owns is continued; an id nobody has is **created under that id**. Another actor's thread is refused as on `chat`. |
+| `runId` | Echoed on `RUN_STARTED` / `RUN_FINISHED`. The library's own run id travels in the `agora.run` custom event. |
+| `messages` | The **last user message** is the turn to answer. Earlier messages are not read back in: the thread's history is the one the server stored. |
+| content parts | `text` parts are the message's text. A media part carried **inline** (`data`) is staged through the configured [attachment store](/docs/agent/config-reference) and sent to the model. A part by `url` or provider `file` handle is dropped, and an `agora.warning` says so — the model is only handed bytes the server staged itself. |
+| `resume` | Answers to the interrupts of the previous run — see below. |
+| `context` | Rides in the turn's page context as `agUiContext`, where a `PromptBuilder` and the tools read it. |
+| `forwardedProps` | `agent`, `model`, `persona` and `pageContext` are read as the matching fields of a native send. |
+| `tools` | Frontend tools are not supported: the list is ignored, with a warning. |
+| `state` | Ignored; this producer emits no state events. |
+
+Input that is malformed — no `threadId`, no user message, a resume entry without a status — is an HTTP `400` and no stream. A failure after the stream opened is a `RUN_ERROR` event.
+
+## What the stream carries
+
+| Native frame | AG-UI |
+| --- | --- |
+| `text` | `TEXT_MESSAGE_START` / `CONTENT` / `END`, one message per stretch of text |
+| `reasoning` | `REASONING_START`, a reasoning message, `REASONING_END` |
+| `step-start` / `step-finish` | `STEP_STARTED` / `STEP_FINISHED`; the step's usage is folded into the run's |
+| `tool-input-*` | `TOOL_CALL_START` / `ARGS` / `END` |
+| `tool-output`, `-error`, `-denied` | `TOOL_CALL_RESULT` (a failure or a refusal is marked in `metadata['agora.outcome']`) |
+| an approval or question set the run parks on | an `Interrupt` on the closing `RUN_FINISHED` |
+| `cancelled` | `RUN_FINISHED` with the cancelled outcome |
+| an error | `RUN_ERROR` with the native `code` |
+
+`RUN_FINISHED.usage` reports the run's tokens, one entry per model, in the protocol's accounting: input and output are totals, cached and reasoning tokens are parts of them, and a count the provider did not report is absent rather than zero.
+
+What AG-UI has no event for travels as `CUSTOM` events, which a client that does not know them ignores:
+
+| `name` | `value` |
+| --- | --- |
+| `agora.run` | `{ runId, threadId }` — the library's ids, e.g. for `POST <path>/chat/:runId/cancel` |
+| `agora.ui` | a [generative-UI](/docs/agent/generative-ui) component `{ id, component, props, … }`; a repeat `id` replaces |
+| `agora.title` | `{ title }` |
+| `agora.step-usage` | `{ usage, costUsd, reasoningMs }` of one model step |
+| `agora.approval-requested`, `agora.approval-settled`, `agora.elicitation` | the native frames, for a client that renders them live |
+| `agora.queue` | the thread's message queue |
+| `agora.warning` | `{ message }` — input this producer could not use |
+
+Sub-agent attribution (`subagentRunId`) is not written: a delegated agent's work appears in the stream unattributed.
+
+## Interrupts and resume
+
+AG-UI has no channel into a running run. A run that needs an approval or an answer therefore **ends** — `RUN_FINISHED` with `outcome: { type: 'interrupt', interrupts }` — and a later request continues it. Underneath, the library run is still parked where it stopped (durably, with the [durable runner](/docs/agent/durability/durable-runner)); the resume settles what it waits for and re-attaches to it.
+
+```json
+{ "type": "RUN_FINISHED", "threadId": "t1", "runId": "r1",
+  "outcome": { "type": "interrupt", "interrupts": [{
+    "id": "agora_…", "reason": "tool_approval", "toolCallId": "call_1",
+    "message": "Approve refund?",
+    "responseSchema": { "type": "object", "properties": { "approved": { "type": "boolean" } }, "required": ["approved"] },
+    "metadata": { "agora.toolName": "refund", "agora.input": { "id": 7 } } }] } }
+```
+
+The next `RunAgentInput` answers each interrupt in `resume`:
+
+| Interrupt `reason` | `status: 'resolved'` with `payload` | `status: 'cancelled'` |
+| --- | --- | --- |
+| `tool_approval` | `{ approved: true, remember? }` runs the tool; `{ approved: false, reason? }` rejects it (a bare boolean works too) | rejects it |
+| `input_required` (a [question set](/docs/agent/concepts)) | `{ answers: { <questionId>: string[] } }` | skips it — the agent proceeds on its defaults |
+
+The rules the native decision routes enforce apply unchanged: only the run's owner (or the approver the [approval policy](/docs/agent/streaming-and-http#approval-policy) names) may answer, an answer a question refuses is a `400`, a request that lapsed is a `410`, and an interrupt that was already answered is a `409`. Every entry is checked before the first one is delivered. An entry naming an interrupt this agent never raised is skipped with a warning; an interrupt the list leaves out stays open, and the resumed run ends with the interrupt outcome again.
+
+The interrupt `id` is the whole address of what it answers — the run, the call, and how much of the stream was already delivered — so the server keeps nothing between the two requests and **any replica can serve the resume**, given a [token sink](/docs/agent/sql-streaming) the replicas share.
+
+<Callout type="info" title="When is a run 'waiting'?">
+A run is reported interrupted as soon as every tool call it has open is waiting on a person. When it is waiting on someone *and* still has other work announced, the stream gets `quietMs` (default 750) of silence before the run is reported; what that other work produces afterwards is delivered by the resumed run.
+</Callout>
+
+## Building your own route
+
+The provider's route is assembled from exported pieces, for a host that mounts its own:
+
+```ts
+import { agUiEvents, agUiSse, parseRunInput, readUserTurn } from '@adonis-agora/agent/ag-ui'
+
+for await (const event of agUiEvents(service.subscribe(runId), {
+  threadId: input.threadId,
+  runId: input.runId,
+  streamRunId: runId,
+})) {
+  response.write(agUiSse(event))
+}
+```
+
+`AgUiEncoder` is the pure projection underneath (frame in, events out); `planResume`, `readApprovalPayload` and `readAnswersPayload` read a resume list; `encodeInterruptId` / `decodeInterruptId` are the address codec.

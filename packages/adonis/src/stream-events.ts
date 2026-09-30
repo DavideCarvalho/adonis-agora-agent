@@ -60,6 +60,8 @@ export type AgentStreamEvent =
       /** An estimate or the provider's figure; `null` when unpriced — never a fabricated `0`. */
       costUsd?: number | null;
       reasoningMs?: number;
+      /** The model the step ran on, when the provider reported one — what a per-model usage report keys on. */
+      model?: string;
     }
   | { kind: 'text'; text: string }
   | { kind: 'reasoning'; text: string }

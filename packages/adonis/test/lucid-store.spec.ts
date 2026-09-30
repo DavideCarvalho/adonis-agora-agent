@@ -18,6 +18,15 @@ afterEach(async () => {
 });
 
 describe('LucidAgentStore', () => {
+  it('creates a thread under the id the caller names, and refuses one already taken', async () => {
+    const named = await store.createThread({ actor, persona: 'default', id: 'thread-from-client' });
+    expect(named.id).toBe('thread-from-client');
+    expect(await store.getThreadActorRef('thread-from-client')).toBe(actor.id);
+    await expect(
+      store.createThread({ actor, persona: 'default', id: 'thread-from-client' }),
+    ).rejects.toThrow();
+  });
+
   it('creates a thread and reads it back with messages', async () => {
     const thread = await store.createThread({ actor, persona: 'default', title: 'First' });
     expect(thread.title).toBe('First');

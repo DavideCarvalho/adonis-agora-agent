@@ -2852,6 +2852,7 @@ export async function runAgentLoop<TOutput = unknown>(
         usage: turn.usage,
         costUsd,
         ...(turn.reasoningMs !== undefined ? { reasoningMs: turn.reasoningMs } : {}),
+        ...(turn.modelId !== undefined ? { model: turn.modelId } : {}),
       },
     };
     const assistant = await hooks.step(`persist:assistant:${i}`, async () => {
