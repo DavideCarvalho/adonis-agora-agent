@@ -59,7 +59,7 @@ Point an MCP client at `http://localhost:3333/mcp`. It will discover the OAuth f
 
 ## Configuration
 
-`McpConfig` has nine keys — two required, seven optional.
+`McpConfig` has ten keys — two required, eight optional.
 
 | Key | Type | Default | Purpose |
 | --- | --- | --- | --- |
@@ -71,6 +71,7 @@ Point an MCP client at `http://localhost:3333/mcp`. It will discover the OAuth f
 | `actor` | `{ id, roles?, tenantRef? }` | — | The fixed identity for open mode. |
 | `authorizer` | `RolesPolicy` | `DefaultToolAuthorizer(defaultRoles)` | The tool gate. Pass the authz Bouncer adapter here to run MCP under abilities. |
 | `defaultRoles` | `string[]` | `['ADMIN']` | Roles a tool requires when it declares none. Only consulted by the default authorizer. |
+| `emptyRoles` | `'allow' \| 'deny'` | `'allow'` | What an empty roles list means to the default authorizer. Since 0.46 it is open; `'deny'` makes `defaultRoles: []` or a tool's `roles: []` reach nobody. |
 | `allowedTools` | `string[]` | — | Restrict which tools are *listed*. |
 
 <Callout type="warn" title="Fail-closed: no auth and no actor means 401">

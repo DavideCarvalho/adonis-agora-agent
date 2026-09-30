@@ -558,7 +558,11 @@ export default class AgentProvider {
   }
 
   #resolveAuthorizer(config: AgentConfig, defaultRoles: string[]): RolesPolicy {
-    return config.authorizer ?? config.rolesPolicy ?? new DefaultToolAuthorizer(defaultRoles);
+    return (
+      config.authorizer ??
+      config.rolesPolicy ??
+      new DefaultToolAuthorizer(defaultRoles, { emptyRoles: config.emptyRoles ?? 'allow' })
+    );
   }
 
   /**

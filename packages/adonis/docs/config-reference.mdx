@@ -111,6 +111,10 @@ retrievalFilter: (actor) => ({ tenantRef: actor.tenantRef }),
 
 `string[]`. The roles a tool requires when it declares none. **Default `[]`** — no restriction: anyone the actor resolver resolved can call a tool that declares no `roles` (`action` tools still wait for approval). `['ADMIN']` makes an ungoverned tool admin-only, the pre-0.46 default.
 
+### `emptyRoles`
+
+`'allow' | 'deny'`. What an empty roles list means to the default authorizer. **Default `'allow'`** — no restriction. `'deny'` makes it reach nobody: a tool needs `roles` (or a non-empty `defaultRoles`) to be offered or invoked. Since 0.46 an empty list is open; set `'deny'` if your app relied on it denying. Ignored when `authorizer` / `rolesPolicy` is set. See [Authorization](/docs/agent/governance/authorization#closing-the-empty-list).
+
 ### `actorResolver`
 
 `ActorResolver`. Resolves the acting identity per request — the identity seam. **Omit → the endpoints are public** and every browser is its own anonymous actor (`AnonymousActorResolver`: an HttpOnly `agent_anon` cookie, the actor id `anon:` + a SHA-256 of it), announced at boot. `new AuthActorResolver()` requires login (reads `ctx.auth.user`, `401` without); `HeaderActorResolver` or your own also fit.

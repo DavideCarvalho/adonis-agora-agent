@@ -56,6 +56,19 @@ export default defineConfig({
 })
 ```
 
+### Closing the empty list
+
+Since 0.46 an empty roles list means **open**: `roles: []`, `defaultRoles: []` and `registerFunctionalTool(registry, tool, [])` all let every resolved actor through. Before 0.46 the same list denied everyone, and nothing warns on upgrade. If your app uses an empty list to deny — a `roles` computed from permissions that can come out empty, a multi-tenant MCP server — keep it closed with `emptyRoles: 'deny'`:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  // ...
+  emptyRoles: 'deny', // an empty roles list reaches nobody
+})
+```
+
+Closed, the actor needs a role the tool declares: a tool with no `roles` and no `defaultRoles`, or with an explicitly empty list, is neither offered nor invocable, and an actor with no roles reaches nothing. `defineMcpConfig` takes the same key. Building the policy yourself, it is `new ClosedRolesPolicy(defaultRoles)` / `new ClosedToolAuthorizer(defaultRoles)`, or `{ emptyRoles: 'deny' }` as the second argument of `DefaultRolesPolicy` / `DefaultToolAuthorizer`. The default stays `'allow'`.
+
 ## The double check
 
 Authorization runs **twice** through the same `can(actor, tool)`, which is what makes it defense-in-depth:

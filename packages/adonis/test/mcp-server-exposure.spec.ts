@@ -2,7 +2,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { DefaultToolAuthorizer } from '../src/authorizer.js';
 import { createMcpServer } from '../src/mcp/server.js';
+import type { RolesPolicy } from '../src/spi/roles-policy.js';
 import { DefaultRolesPolicy, ToolRegistry } from '../src/tool-registry.js';
 
 const ACTOR = { id: 'u1', roles: ['ADMIN'] };
@@ -33,12 +35,14 @@ function buildRegistry(): ToolRegistry {
   return registry;
 }
 
-async function connect(options: { actions?: 'refuse' | 'execute'; allowedTools?: string[] } = {}) {
+async function connect(
+  options: { actions?: 'refuse' | 'execute'; allowedTools?: string[]; policy?: RolesPolicy } = {},
+) {
   const server = createMcpServer({
     name: 'test',
     version: '0.0.0',
     registry: buildRegistry(),
-    policy: new DefaultRolesPolicy(),
+    policy: options.policy ?? new DefaultRolesPolicy(),
     actorFromAuth: () => ACTOR,
     ...(options.actions !== undefined ? { actions: options.actions } : {}),
     ...(options.allowedTools !== undefined ? { allowedTools: options.allowedTools } : {}),
@@ -90,6 +94,15 @@ describe('what an MCP caller can reach', () => {
 
   it('refuses a tool left off the allow-list, not merely leaves it unadvertised', async () => {
     const client = await connect({ allowedTools: ['nothing_real'] });
+    expect(await names(client)).toEqual([]);
+    const result = await client.callTool({ name: 'search_docs', arguments: {} });
+    expect(result.isError).toBe(true);
+    expect(ran).toEqual([]);
+  });
+
+  it("under emptyRoles: 'deny' a tool with no roles is neither listed nor runnable", async () => {
+    // What mcp_provider binds for `defineMcpConfig({ defaultRoles: [], emptyRoles: 'deny' })`.
+    const client = await connect({ policy: new DefaultToolAuthorizer([], { emptyRoles: 'deny' }) });
     expect(await names(client)).toEqual([]);
     const result = await client.callTool({ name: 'search_docs', arguments: {} });
     expect(result.isError).toBe(true);

@@ -69,7 +69,7 @@ export {
   type AnonymousActorOptions,
   AnonymousActorResolver,
 } from './anonymous-actor-resolver.js';
-export { DefaultToolAuthorizer } from './authorizer.js';
+export { ClosedToolAuthorizer, DefaultToolAuthorizer } from './authorizer.js';
 export * from './base-tool.js';
 export {
   ChatQueueService,
@@ -429,7 +429,10 @@ export type {
 } from './tool-presentation.js';
 export { ALL_AGENTS } from './tool-presentation.js';
 export {
+  ClosedRolesPolicy,
   DefaultRolesPolicy,
+  type EmptyRoles,
+  type RolesPolicyOptions,
   ToolForbiddenError,
   ToolInputInvalidError,
   ToolNotFoundError,
