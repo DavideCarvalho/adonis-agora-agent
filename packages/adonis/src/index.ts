@@ -27,13 +27,16 @@ export {
   type AgentLoopResult,
   APPROVAL_EXPIRED_REASON,
   DEFAULT_MAX_AGENT_APPEARANCES,
+  exposeStreamErrorDetails,
   MAX_DELEGATION_DEPTH,
   outcomeFrame,
   QuotaExceededError,
+  RUN_FAILED_MESSAGE,
   RunCancelledError,
   runAgentLoop,
   type SettledTask,
   settleAll,
+  streamErrorCode,
   streamErrorFrame,
   withBuiltInTools,
 } from './agent-loop.js';
@@ -106,6 +109,13 @@ export {
   defineConfirmedTool,
   withConfirmFields,
 } from './confirmed-tool.js';
+export {
+  danglingToolCallIds,
+  RUN_ENDED_BEFORE_TOOL_CALL,
+  settleDanglingToolCalls,
+  type ToolCallOutcome,
+  UNFINISHED_TOOL_CALL,
+} from './dangling-tool-calls.js';
 export type {
   DataToolConfig,
   DataToolResult,
@@ -126,6 +136,7 @@ export {
   SqlValidator,
   TenantScopeRewriter,
 } from './data/index.js';
+export { RunNotActiveError, settleDeadRun } from './dead-run.js';
 export type {
   ActorDirectoryFactory,
   AgentConfig,

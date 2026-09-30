@@ -54,6 +54,7 @@ import {
   RegenerateNeedsThreadError,
   type Retriever,
   type RolesPolicy,
+  RunNotActiveError,
   registerDelegateTools,
   registerFunctionalTool,
   registerToolsFromBarrel,
@@ -773,7 +774,11 @@ export default class AgentProvider {
         !(await this.#mayDecide(ctx, service, actor, runId, body.toolCallId, governanceAuthorize))
       )
         return;
-      await service.approve(runId, body.toolCallId, { executedByRef: actor.id, remember, via });
+      try {
+        await service.approve(runId, body.toolCallId, { executedByRef: actor.id, remember, via });
+      } catch (error) {
+        return this.#conflictOnMismatch(ctx, error);
+      }
       return ctx.response.json({ ok: true });
     });
 
@@ -799,7 +804,11 @@ export default class AgentProvider {
         !(await this.#mayDecide(ctx, service, actor, runId, body.toolCallId, governanceAuthorize))
       )
         return;
-      await service.reject(runId, body.toolCallId, body.reason, { executedByRef: actor.id, via });
+      try {
+        await service.reject(runId, body.toolCallId, body.reason, { executedByRef: actor.id, via });
+      } catch (error) {
+        return this.#conflictOnMismatch(ctx, error);
+      }
       return ctx.response.json({ ok: true });
     });
 
@@ -1755,6 +1764,11 @@ export default class AgentProvider {
   }
 
   #conflictOnMismatch(ctx: HttpContext, error: unknown): void {
+    // The run the decision was for has ended: nothing is waiting for it (`409 run_not_active`).
+    if (error instanceof RunNotActiveError) {
+      ctx.response.conflict({ code: error.code, message: error.message });
+      return;
+    }
     if (!(error instanceof HumanReplyMismatchError)) {
       throw error;
     }

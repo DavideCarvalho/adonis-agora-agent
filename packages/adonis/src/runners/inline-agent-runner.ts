@@ -12,6 +12,7 @@ import {
   isThreadTurn,
   type QueueSettleOutcome,
 } from '../chat-queue-service.js';
+import { RUN_ENDED_BEFORE_TOOL_CALL } from '../dangling-tool-calls.js';
 import { spannedAgent } from '../diagnostics.js';
 import {
   type ElicitationRequest,
@@ -72,7 +73,17 @@ export class InlineAgentRunner implements AgentRunner {
    * that was running it is gone (a restart), and a thread it still holds is a stale claim.
    */
   async isRunActive(runId: string): Promise<boolean> {
-    return this.live.has(runId);
+    if (this.live.has(runId)) {
+      return true;
+    }
+    // A delegated run is not in `live` (it holds no thread), but one parked on a person is as alive
+    // as its parent: its decision has somewhere to go.
+    for (const key of this.pending.keys()) {
+      if (key.startsWith(`${runId}:`)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async start(
@@ -123,17 +134,17 @@ export class InlineAgentRunner implements AgentRunner {
           return;
         }
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[@adonis-agora/agent] run ${runId} failed: ${message}`);
         // Settle the run's persisted outcome — the loop only records completions (it can't catch its
         // own crash). First-terminal, so this can't clobber a completion that already landed.
         await this.store.recordRunEnd({ runId, status: 'failed', error: message });
+        await this.store.failUnsettledToolCalls?.(runId, RUN_ENDED_BEFORE_TOOL_CALL).catch(() => 0);
         const writer = await deps.sink.open(runId);
         // The queue behind it pauses (a failed turn's next message would likely fail the same way),
         // told to the reader before the error frame.
         await this.settleQueue(writer, input, runId, 'failed', message);
         await releaseThreadRun(this.store, input.threadId, runId);
         // Surface the failure on the live stream and close it, so a subscriber isn't left hanging.
-        await writer.write(streamErrorFrame(error));
+        await writer.write(streamErrorFrame(error, runId));
         await writer.end();
       })
       .catch((error) => {

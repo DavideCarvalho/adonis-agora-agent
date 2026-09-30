@@ -1,4 +1,5 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
+import { danglingToolCallIds, settleDanglingToolCalls } from './dangling-tool-calls.js';
 import {
   publishAgentDelegated,
   publishAgentMessage,
@@ -79,7 +80,7 @@ import type { Passage, RetrievalResult, RetrieveOptions, Retriever } from './spi
 import type { RolesPolicy } from './spi/roles-policy.js';
 import type { SinkWriter, StreamFrame } from './spi/token-stream-sink.js';
 import type { AiToolCtx } from './spi/tool.js';
-import type { AgentStreamEvent, AgentUiComponent } from './stream-events.js';
+import type { AgentStreamErrorCode, AgentStreamEvent, AgentUiComponent } from './stream-events.js';
 import {
   DEFAULT_STRUCTURED_OUTPUT_INSTRUCTION,
   repairInstruction,
@@ -731,7 +732,10 @@ interface RecordedThreadLoad {
 
 /** The three answers, normalized out of whatever shape `load:thread` recorded them in. */
 function threadForTurn(recorded: RecordedThreadLoad | null): ThreadForTurn {
-  const messages = (recorded?.messages ?? []).map(toModelMessage);
+  // Settled once more on the way out of the journal: a payload recorded before the read settled
+  // dangling calls itself, or by a store that cannot read a call's row, still has to reach the model
+  // as a prompt a provider accepts. A no-op on a payload that is already whole.
+  const messages = settleDanglingToolCalls((recorded?.messages ?? []).map(toModelMessage));
   return {
     messages,
     title: recorded?.title ?? null,
@@ -805,7 +809,7 @@ async function readThreadForTurn(
     return page === null
       ? { messages: [], title: null, hasAssistantMessage: false }
       : {
-          messages: page.messages.map(toModelMessage),
+          messages: await settleHistory(deps, page.messages.map(toModelMessage)),
           title: page.title,
           hasAssistantMessage: page.hasAssistantMessage,
         };
@@ -817,10 +821,30 @@ async function readThreadForTurn(
       ? stored
       : stored.slice(Math.max(0, stored.length - Math.max(0, messageLimit)));
   return {
-    messages: window.map(toModelMessage),
+    messages: await settleHistory(deps, window.map(toModelMessage)),
     title: thread?.title ?? null,
     hasAssistantMessage: stored.some((message) => message.role === 'assistant'),
   };
+}
+
+/**
+ * Settle the history's dangling tool calls (see {@link settleDanglingToolCalls}) from the calls' own
+ * rows where the store can read them. Runs INSIDE `load:thread`, so what the rows said is part of
+ * the recorded payload and a replay composes the same prompt without asking again. A store that
+ * cannot answer, or fails to, leaves the calls to be put to the model as never completed.
+ */
+async function settleHistory(
+  deps: AgentLoopDeps,
+  messages: ModelMessage[],
+): Promise<ModelMessage[]> {
+  const dangling = danglingToolCallIds(messages);
+  if (dangling.length === 0) {
+    return messages;
+  }
+  const outcomes = await (deps.store.toolCallOutcomes?.(dangling) ?? Promise.resolve([])).catch(
+    () => [],
+  );
+  return settleDanglingToolCalls(messages, outcomes);
 }
 
 /**
@@ -2196,20 +2220,81 @@ function announcedToolCalls(inner: SinkWriter): {
 }
 
 /**
+ * What a person is told when a run fails for a reason that is ours rather than theirs. The error's
+ * own text is for whoever operates the deployment: it names run ids, checkpoint positions and
+ * provider internals ("non-determinism at <uuid>#41 …", "No output generated. Check the stream for
+ * errors."), which mean nothing to the person reading the chat and are not theirs to see.
+ */
+export const RUN_FAILED_MESSAGE = 'The assistant could not finish this answer. Please try again.';
+
+let streamErrorDetails: boolean | undefined;
+
+/**
+ * Whether an error frame carries the error's own message. Unset → only outside production
+ * (`NODE_ENV !== 'production'`), where the person reading the stream is the one debugging it.
+ * `true`/`false` decides it outright; `undefined` returns to the default.
+ */
+export function exposeStreamErrorDetails(expose: boolean | undefined): void {
+  streamErrorDetails = expose;
+}
+
+function detailsExposed(): boolean {
+  return streamErrorDetails ?? process.env.NODE_ENV !== 'production';
+}
+
+/**
+ * The stable `code` of a failed run — what a client branches on, and translates. `quota_exceeded`,
+ * `output_rejected` and `structured_output_invalid` are outcomes the library words itself;
+ * `replay_diverged` is the durable runtime refusing a checkpoint position, `model_no_output` a model
+ * call that produced nothing, and `run_failed` everything else.
+ */
+export function streamErrorCode(error: unknown): AgentStreamErrorCode {
+  if (error instanceof QuotaExceededError) {
+    return 'quota_exceeded';
+  }
+  if (error instanceof OutputRejectedError) {
+    return 'output_rejected';
+  }
+  if (error instanceof StructuredOutputError) {
+    return 'structured_output_invalid';
+  }
+  if (isReplayIntegrityError(error)) {
+    return 'replay_diverged';
+  }
+  const name = error instanceof Error ? error.name : '';
+  return name === 'AI_NoOutputGeneratedError' || name === 'NoOutputGeneratedError'
+    ? 'model_no_output'
+    : 'run_failed';
+}
+
+/** The codes whose message the library wrote for the person, and is therefore safe to show. */
+const WORDED_CODES = new Set<AgentStreamErrorCode>([
+  'quota_exceeded',
+  'output_rejected',
+  'structured_output_invalid',
+]);
+
+/**
  * The `event: error` frame a runner closes a failed run's stream with, coded the way the NestJS
  * library codes it so a shared client can tell a spent budget from a crash.
+ *
+ * The frame is what the PERSON sees. For a crash it carries a stable `code` and
+ * {@link RUN_FAILED_MESSAGE}; the error itself goes to the log with the run it belongs to. Outside
+ * production the raw message rides the frame as it always did (see
+ * {@link exposeStreamErrorDetails}).
  */
-export function streamErrorFrame(error: unknown): StreamFrame {
-  const message = error instanceof Error ? error.message : String(error);
-  const code =
-    error instanceof QuotaExceededError
-      ? 'quota_exceeded'
-      : error instanceof OutputRejectedError
-        ? 'output_rejected'
-        : error instanceof StructuredOutputError
-          ? 'structured_output_invalid'
-          : 'run_failed';
-  return { t: 'error', code, message };
+export function streamErrorFrame(error: unknown, runId?: string): StreamFrame {
+  const detail = error instanceof Error ? error.message : String(error);
+  const code = streamErrorCode(error);
+  if (WORDED_CODES.has(code)) {
+    return { t: 'error', code, message: detail };
+  }
+  console.error(
+    `[@adonis-agora/agent] run ${runId ?? '(unknown)'} failed (${code}): ${
+      error instanceof Error ? (error.stack ?? detail) : detail
+    }`,
+  );
+  return { t: 'error', code, message: detailsExposed() ? detail : RUN_FAILED_MESSAGE };
 }
 
 export interface AgentLoopResult<TOutput = unknown> {
