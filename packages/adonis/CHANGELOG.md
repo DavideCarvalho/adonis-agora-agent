@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.51.1
+
+### Patch Changes
+
+- [#229](https://github.com/DavideCarvalho/adonis-agora-agent/pull/229) [`6625647`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/66256474c19d27248ee0630451e21c7484dfd56a) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - The index probe that keeps provisioning lock-free on Postgres now looks in every schema on the `search_path` (`current_schemas(false)`), not only the first. With the agent tables in a later schema (`search_path = app, public`, tables in `public`), the probe found no indexes and re-issued every `CREATE INDEX IF NOT EXISTS` — the statement that waits for an open transaction.
+
 ## 0.51.0
 
 ### Minor Changes
