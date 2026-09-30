@@ -21,7 +21,7 @@ export default defineConfig({
 })
 ```
 
-Nothing about the routes, the SSE envelope or the client changes. The sink works with any store (it only needs a Lucid connection), on Postgres, MySQL and SQLite.
+Nothing about the routes, the SSE envelope or the client changes. The sink works with any store (it only needs a Lucid connection). It is tested on Postgres and SQLite; the SQL is written to be portable to MySQL, but that path is not covered by the test suite.
 
 ## What it does
 
@@ -70,6 +70,7 @@ await new LucidTokenStreamSink(db).purgeExpired()
 - **Latency.** Delivery is polled: a frame reaches the browser up to `pollIntervalMs` (plus `flushMs` for text) after it was produced. Text arrives in small bursts rather than token by token.
 - **Database load.** A streamed answer is roughly twenty inserts a second while the model is talking, and each open SSE connection is four small indexed reads a second (one, once the run goes quiet). That is fine for tens of concurrent chats on a database that is already there; it is the wrong place for hundreds.
 - **A crash window.** Text a writer is still gathering lives in the process for at most `flushMs`. A process that dies in that window loses it from the *live* stream; the persisted message is unaffected.
+- **A parked run outlives its buffer.** The TTL counts from the run's last write, so a run parked on a person for longer than `ttlSeconds` has its buffered frames purged while it waits. It still resumes and writes what comes next, but a browser attaching afterwards replays only from there — the persisted thread is the record of what came before. Raise `ttlSeconds` (or set `0` and purge on your own schedule) if people routinely answer later than that.
 
 Use [Redis](/docs/agent/redis-streaming) when you already run it, when you want token-by-token delivery, or when the number of concurrent streams makes polling your database the bottleneck. There is no `LISTEN`/`NOTIFY` wake-up on Postgres: the sink stays on the portable query surface every Lucid dialect has.
 
