@@ -282,9 +282,61 @@ See [Bouncer-backed authorization](/docs/agent/governance/authz-bouncer). The sa
 
 ### Two things MCP does not carry over
 
-**`action` tools are not gated by HITL over MCP.** `tools/call` runs the handler directly — there is no approval suspend, because MCP has no channel to route an approval decision through. If a tool must never run without a human in the loop, either keep it out of `allowedTools` **and** out of the actor's roles, or move the approval inside the tool's own handler.
+**`action` tools are not gated by HITL over MCP.** `tools/call` runs the handler directly — there is no approval suspend, because MCP has no channel to route an approval decision through. If a tool must never run without a human in the loop, either keep it out of `allowedTools` **and** out of the actor's roles, or move the approval inside the tool's own handler — [`defineConfirmedTool`](#writes-with-a-human-gate-defineconfirmedtool) does that.
 
 **The tool context is thinner.** MCP calls get `{ actor, threadId, runId, requestId }` derived from the session id (`mcp:<sessionId>`), and nothing else: no `persona`, no `pageContext`, no `host`, and no `emitComponent`. A tool that reads any of those must tolerate their absence — they are optional on `AiToolCtx` precisely for this reason. `emitUi` is present but does nothing: there is no conversation to push into.
+
+## Writes with a human gate: `defineConfirmedTool`
+
+An `action` tool is off the MCP surface by default, and Claude.ai and Claude Desktop have no elicitation, so there is no protocol-level way to ask the user before a write. `defineConfirmedTool` puts the gate inside the tool, in two calls:
+
+1. Without `confirm`: validates everything, **writes nothing**, returns a preview and a signed `confirmToken`.
+2. With the **same arguments**, `confirm: true` and that token: commits.
+
+```ts title="app/agent_tools/refund_order.ts"
+import { defineConfirmedTool, LucidConfirmTokenStore } from '@adonis-agora/agent'
+import db from '@adonisjs/lucid/services/db'
+import env from '#start/env'
+import { z } from 'zod'
+
+export const refundOrder = defineConfirmedTool(
+  {
+    name: 'refund_order',
+    description: 'Refund an order. Returns a preview first; confirm to commit.',
+    input: z.object({ orderId: z.string() }),
+    roles: ['ADMIN'],
+    secret: () => env.get('APP_KEY').release(),
+    store: new LucidConfirmTokenStore(db),
+  },
+  {
+    // Runs for the preview AND for the confirmation. Throw to refuse.
+    prepare: async ({ orderId }, ctx) => loadRefundableOrder(orderId, ctx.actor),
+    preview: (order) => ({ summary: `Refund ${order.total} to ${order.customer}?`, data: order }),
+    commit: async (order) => ({ summary: 'Refunded.', data: await refund(order) }),
+  },
+)
+```
+
+| Call | Returns |
+| --- | --- |
+| preview | `{ status: 'preview', summary, data, confirmToken, expiresAt, confirm }` — `confirm` is the instruction to the model: show the preview, then call again with the token. |
+| confirmation | `{ status: 'done', summary, data }` |
+| bad token | throws `ConfirmTokenError` (`reason: 'invalid'`) — missing, expired, or issued for other arguments, another actor, tenant or tool. Nothing is written. |
+| spent token | throws `ConfirmTokenError` (`reason: 'used'`). Nothing is written. |
+
+The token is `<expiresAt>.<HMAC-SHA256>` over the tool name, `ctx.actor.id`, `ctx.actor.tenantRef`, the expiry and the canonical arguments (keys sorted, so key order does not matter). It is stateless and lasts `ttlMs` (default 15 minutes). `secret` is required; there is no default.
+
+`input` is your own schema. `confirm` and `confirmToken` are added around it: they are validated by the helper, stripped before your schema runs (a strict schema never sees them), and merged into the JSON Schema `tools/list` advertises. Do not declare fields with those names yourself. `prepare` receives the arguments without them.
+
+The tool registers as `kind: 'read'`: that is what keeps it listed and callable over MCP, and the same tool works in the chat loop.
+
+<Callout type="warn" title="Pass a `store`, or the token is not single use">
+Without `store`, a token commits every time it is sent until it expires — a double tap, a network retry or a model repeating the call writes twice. A `ConfirmTokenStore` marks the token spent: it is claimed right before `commit` (a refusal in `prepare` does not spend it) and released if `commit` throws.
+
+`LucidConfirmTokenStore(db)` keeps the marks in `agent_confirm_token` (created by `createAgentTables`; only the token's SHA-256, the actor and the tool name are stored) and is safe across replicas — the primary key is the lock. `InMemoryConfirmTokenStore` is for tests and a single process. Call `store.purgeExpired()` from a scheduled job to drop expired rows.
+</Callout>
+
+`messages: { confirm, invalid, used }` overrides the English defaults (`{minutes}` in `confirm` is replaced with the lifetime). `canonicalJson`, `signConfirmToken`, `verifyConfirmToken` and `hashConfirmToken` are exported for a gate of your own.
 
 ## Connecting a client
 

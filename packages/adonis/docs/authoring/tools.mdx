@@ -162,6 +162,10 @@ export const purgeCache = defineTool(
 
 You can also pass functional tools directly to the config instead of a file: `defineConfig({ tools: [purgeCache] })`.
 
+### `defineConfirmedTool` — a write that previews first
+
+`defineConfirmedTool(options, { prepare, preview, commit })` is `defineTool` for a write whose human gate lives inside the tool: the first call returns a preview and a signed `confirmToken`, and the same arguments plus `confirm: true` and the token commit. It registers as `kind: 'read'`, so it works where an `action` cannot — over [MCP](/docs/agent/mcp#writes-with-a-human-gate-defineconfirmedtool), where there is no approval channel. In a chat surface with HITL approval, prefer `kind: 'action'`.
+
 ## Tool kinds
 
 The `kind` decides how the loop treats a call:

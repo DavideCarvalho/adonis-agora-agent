@@ -46,6 +46,7 @@ Each infrastructure seam has an in-memory implementation of the same SPI:
 | `InMemoryQuotaStore` | `QuotaStore` | A single-process daily quota for exercising the fail-closed budget gate. |
 | `InMemoryGovernanceQueries` | `AgentGovernanceQueries` | The read-model (spend by model/actor, usage trend, runs, tool stats, reliability, approvals) over in-memory data, with a settable `InMemoryModelPrice` table. |
 | `InMemoryPricingStore` | `AgentPricingStore` | An in-memory model pricing table for exercising the cost fold. |
+| `InMemoryConfirmTokenStore` | `ConfirmTokenStore` | Single-use marks for [`defineConfirmedTool`](/docs/agent/mcp#writes-with-a-human-gate-defineconfirmedtool), in one process. |
 | `InMemoryActorDirectory` | `ActorDirectory` | A fixed `actorRef → label` map for governance-surface tests. |
 | `InMemoryAttachmentStagingStore` | `AttachmentStagingStore` | Stages uploaded bytes into a `data:` URL — exercises the attachments route offline. |
 | `FakeEmbeddingProvider` / `FakeReranker` / `inMemoryRetriever` | RAG SPIs | Deterministic embedding, reranking, and an in-memory retriever for RAG tests. |

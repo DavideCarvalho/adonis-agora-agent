@@ -80,6 +80,32 @@ export {
   type QueuePlan,
   type QueueSettleOutcome,
 } from './chat-queue-service.js';
+export type { ConfirmTokenSubject } from './confirm-token.js';
+export {
+  canonicalJson,
+  confirmTokenExpiry,
+  DEFAULT_CONFIRM_TTL_MS,
+  hashConfirmToken,
+  InMemoryConfirmTokenStore,
+  signConfirmToken,
+  verifyConfirmToken,
+} from './confirm-token.js';
+export type {
+  ConfirmedToolDone,
+  ConfirmedToolMessages,
+  ConfirmedToolOptions,
+  ConfirmedToolOutcome,
+  ConfirmedToolPreview,
+  ConfirmedToolResult,
+  ConfirmedToolSteps,
+  ConfirmFields,
+} from './confirmed-tool.js';
+export {
+  CONFIRM_JSON_SCHEMA_PROPERTIES,
+  ConfirmTokenError,
+  defineConfirmedTool,
+  withConfirmFields,
+} from './confirmed-tool.js';
 export type {
   DataToolConfig,
   DataToolResult,
@@ -327,6 +353,7 @@ export {
 } from './spi/approval-policy.js';
 export * from './spi/attachment-staging.js';
 export * from './spi/chat-queue.js';
+export * from './spi/confirm-token-store.js';
 export * from './spi/embedding-provider.js';
 export * from './spi/governance-queries.js';
 export * from './spi/history-window.js';
@@ -386,6 +413,8 @@ export type {
   LucidRawRunner,
 } from './stores/lucid.js';
 export { LucidAgentStore } from './stores/lucid.js';
+export type { LucidConfirmTokenStoreOptions } from './stores/lucid-confirm-tokens.js';
+export { LucidConfirmTokenStore } from './stores/lucid-confirm-tokens.js';
 export { LucidGovernanceQueries } from './stores/lucid-governance-queries.js';
 export { LucidPricingStore } from './stores/lucid-pricing.js';
 export {
