@@ -96,11 +96,31 @@ A persisted tool call is addressable by exactly the id the model emitted — the
 
 ## Auto-created tables, and turning that off
 
-`stores.lucid()` provisions the agent tables **on first use**, by running the idempotent
-`CREATE TABLE IF NOT EXISTS` DDL. That is the default — `autoCreateTables` is `true` unless you say
-otherwise, matching the convention `@adonis-agora/durable` and `@adonis-agora/authz` follow: a library
-manages its own tables so a fresh app, a test database, or a `node ace repl` script works without a
-migration step first. It is also what lets a pricing seed run before the very first agent turn.
+`stores.lucid()` provisions the agent tables itself: no migration of yours is needed, on a fresh
+database or across an upgrade that adds a column. That is the default — `autoCreateTables` is `true`
+unless you say otherwise, matching the convention `@adonis-agora/durable` and `@adonis-agora/authz`
+follow: a library manages its own tables so a fresh app, a test database, or a `node ace repl` script
+works without a migration step first. It is also what lets a pricing seed run before the very first
+agent turn.
+
+**When it runs.** Once, as the app starts (the provider's `start` hook) — before the HTTP server
+takes a request and before a test runner opens a transaction. An ace command (`migration:run`,
+`list:routes`, a worker) is not provisioned at start; there, and for a store you build by hand, it
+happens on first use instead. Both paths are the same idempotent call.
+
+**What it costs.** Against a schema that is already current it only reads: tables are
+`CREATE TABLE IF NOT EXISTS`, columns are probed, and an index that exists is found in the catalog
+rather than re-issued — so nothing takes a table lock or waits for a transaction someone else has
+open. It is safe with several processes starting at once (web and worker, a rolling deploy): a
+statement that loses the race is re-checked against the database and counted as done.
+
+**Where it runs.** On a connection of its own. If the app has a global transaction open
+(`testUtils.db().withGlobalTransaction()` in a Japa suite), the DDL runs outside it, so the schema is
+not rolled back with the test. SQLite is the exception: it has a single writer, so the DDL stays on
+the transaction's connection.
+
+If the database is not reachable at start, the failure is logged as a warning and the first use
+retries.
 
 The setting governs the pricing store and the governance read-model too, since all three share the
 same tables.
@@ -136,11 +156,20 @@ for (const statement of createTableStatements()) {
 `ensureAgentTables(db)` is exactly what `autoCreateTables: true` calls, so a migration built on it can
 never drift from the auto-created shape.
 
+<Callout type="warn" title="An older create_agent_tables migration with its own DDL">
+A `create_agent_tables` migration published before it delegated to the library calls
+`this.schema.createTable(...)` with no existence guard. It throws on any database the library
+provisioned first — which now includes a fresh test database, since the app starts before
+`testUtils.db().migrate()` runs. Replace its body with the delegating one
+(`await createAgentTables(db.connection(this.db.connectionName))`, `static disableTransactions = true`);
+editing an applied migration is safe, Lucid tracks it by file name.
+</Callout>
+
 <Callout type="warn" title="Upgrading with autoCreateTables: false">
 `createAgentTables` also ALTERs in the columns a newer release added to an existing table (the
 `agent_message` columns `reasoning`, `reasoning_ms` and `ui`, `agent_run.parent_run_id`, the
 `run_id` columns, `agent_thread.queue_pause`) and creates the tables one added
-(`agent_queued_message`). With `autoCreateTables: true` that happens on first use. With it off, nothing
+(`agent_queued_message`). With `autoCreateTables: true` that happens as the app starts. With it off, nothing
 runs it for you: after upgrading, add a migration whose `up()` calls `createAgentTables` again (a
 copy of the published `create_agent_tables` migration under a new timestamp does exactly that) —
 it only adds what is missing.

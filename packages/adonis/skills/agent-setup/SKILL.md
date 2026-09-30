@@ -81,9 +81,12 @@ columns):
 node ace migration:run
 ```
 
-You can skip it: the Lucid store provisions its own tables on first use
-(`autoCreateTables` defaults to true), and the published migration delegates to the same
-`createAgentTables` helper, so the two schemas can never drift.
+You can skip it: the Lucid store provisions and repairs its own tables as the app starts
+(`autoCreateTables` defaults to true; an ace command or a hand-built store does it on first
+use), so an upgrade that adds a column needs no app migration. The published migration
+delegates to the same `createAgentTables` helper, so the two schemas can never drift.
+Only with `autoCreateTables: false` does an upgrade need a migration that calls
+`createAgentTables` again.
 
 Source: `packages/adonis/docs/getting-started.mdx`,
 `packages/adonis/docs/stores/lucid.mdx`.

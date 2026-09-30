@@ -96,7 +96,7 @@ The `lucid` store persists to seven tables (threads, messages, tool calls, token
 node ace migration:run
 ```
 
-You can also skip this step: the Lucid store creates its tables on first use by default, which is why a fresh app works before you have run anything. See [Auto-created tables](/docs/agent/stores/lucid#auto-created-tables-and-turning-that-off) for when to turn that off.
+You can also skip this step: the Lucid store creates (and, across upgrades, repairs) its own tables as the app starts, which is why a fresh app works before you have run anything and an upgrade needs no migration of yours. See [Auto-created tables](/docs/agent/stores/lucid#auto-created-tables-and-turning-that-off) for when to turn that off.
 
 Omitting `store` entirely uses the in-memory store — single-process, no migration — which is perfect for a first spin or for tests. See [State stores](/docs/agent/stores/lucid).
 

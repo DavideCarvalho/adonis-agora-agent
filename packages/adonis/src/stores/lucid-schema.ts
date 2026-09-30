@@ -208,6 +208,77 @@ async function hasColumn(db: LucidRawRunner, table: string, column: string): Pro
   }
 }
 
+/** Rows of a raw query result, whatever the driver wraps them in (`{ rows }`, `[rows, fields]`, rows). */
+function rowsOf(result: unknown): Record<string, unknown>[] {
+  if (Array.isArray(result)) {
+    return Array.isArray(result[0])
+      ? (result[0] as Record<string, unknown>[])
+      : (result as Record<string, unknown>[]);
+  }
+  const rows = (result as { rows?: unknown } | null)?.rows;
+  return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+}
+
+/**
+ * The names of the indexes this database already has, or `null` when the dialect offers no catalog
+ * this knows how to read (then every `CREATE INDEX IF NOT EXISTS` is simply issued).
+ *
+ * This is what keeps an up-to-date schema LOCK-FREE. Postgres takes the table lock for
+ * `CREATE INDEX IF NOT EXISTS` before it looks whether the index is there, and that lock conflicts
+ * with any open transaction that wrote to the table — so the "no-op" statement waits for it. A test
+ * suite that wraps everything in one global transaction never commits, and the wait never ends. A
+ * catalog read takes no such lock, so an index that exists is never touched.
+ *
+ * Postgres first: it is the one dialect where a failed statement poisons an ambient transaction, and
+ * there the first probe succeeds.
+ */
+async function existingIndexes(db: LucidRawRunner): Promise<Set<string> | null> {
+  const probes = [
+    'SELECT indexname AS name FROM pg_indexes WHERE schemaname = current_schema()',
+    `SELECT name FROM sqlite_master WHERE type = 'index'`,
+  ];
+  for (const probe of probes) {
+    try {
+      const rows = rowsOf(await db.rawQuery(probe));
+      return new Set(rows.map((row) => String(row.name)));
+    } catch {
+      // Not this dialect — try the next catalog.
+    }
+  }
+  return null;
+}
+
+/** Does `table` exist? Same zero-row probe as {@link hasColumn}. */
+async function hasTable(db: LucidRawRunner, table: string): Promise<boolean> {
+  try {
+    await db.rawQuery(`SELECT 1 FROM "${table}" WHERE 1 = 0`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Run one DDL statement, tolerating exactly one failure: another process got there first. Several
+ * processes boot at once (web + worker, or a rolling deploy) and each provisions the schema; `IF NOT
+ * EXISTS` is not atomic across sessions (two concurrent `CREATE TABLE IF NOT EXISTS` on Postgres can
+ * both pass the check and one then fails on the catalog's unique index), and `ADD COLUMN` has no
+ * guard at all. So a failure is re-checked against the database: if what the statement was meant to
+ * create is there now, the race was lost and the job is done. Anything else — a permission error, a
+ * lock timeout, a typo — still throws.
+ */
+async function issue(
+  db: LucidRawRunner,
+  statement: string,
+  done: () => Promise<boolean>,
+): Promise<void> {
+  try {
+    await db.rawQuery(statement);
+  } catch (error) {
+    if (!(await done())) throw error;
+  }
+}
+
 /**
  * Idempotently provision the seven agent tables through Lucid's async raw runner (`CREATE TABLE IF
  * NOT EXISTS`), then additively repair a database that predates run tracking by ALTERing in the
@@ -218,6 +289,10 @@ async function hasColumn(db: LucidRawRunner, table: string, column: string): Pro
  * `repairs` result mean "this schema was out of date", not "boot happened". A database created before
  * run tracking shipped has all three tables already, so every `CREATE TABLE IF NOT EXISTS` no-ops and
  * only the repair adds the columns the store now writes on every turn.
+ *
+ * Against a schema that is already current it issues no DDL that takes a table lock: an existing
+ * index is found in the catalog instead of re-issued (see {@link existingIndexes}). And it is safe
+ * with several processes provisioning at once (see {@link issue}).
  *
  * Returns the `<table>.<column>` repairs actually issued, so a caller can report them. Works on every
  * Lucid dialect. For an AdonisJS app prefer the published migration
@@ -233,23 +308,32 @@ export async function createAgentTables(db: LucidRawRunner): Promise<string[]> {
   // not added yet. `CREATE INDEX IF NOT EXISTS` does not save it: the guard is on the INDEX existing,
   // not on the column, so the statement still fails to parse with "no such column: run_id".
   for (const stmt of statements) {
-    if (stmt.startsWith('CREATE TABLE')) await db.rawQuery(stmt);
+    if (!stmt.startsWith('CREATE TABLE')) continue;
+    const table = /^CREATE TABLE IF NOT EXISTS "([^"]+)"/.exec(stmt)?.[1] as string;
+    await issue(db, stmt, () => hasTable(db, table));
   }
 
   const repairs: string[] = [];
+  const addColumn = async (table: string, column: string, type: string) => {
+    if (await hasColumn(db, table, column)) return;
+    await issue(db, `ALTER TABLE "${table}" ADD COLUMN "${column}" ${type}`, () =>
+      hasColumn(db, table, column),
+    );
+    repairs.push(`${table}.${column}`);
+  };
   for (const table of RUN_ID_COLUMNS) {
-    if (await hasColumn(db, table, 'run_id')) continue;
-    await db.rawQuery(`ALTER TABLE "${table}" ADD COLUMN "run_id" VARCHAR(255) NULL`);
-    repairs.push(`${table}.run_id`);
+    await addColumn(table, 'run_id', 'VARCHAR(255) NULL');
   }
   for (const { table, column, type } of ADDITIVE_COLUMNS) {
-    if (await hasColumn(db, table, column)) continue;
-    await db.rawQuery(`ALTER TABLE "${table}" ADD COLUMN "${column}" ${type}`);
-    repairs.push(`${table}.${column}`);
+    await addColumn(table, column, type);
   }
 
+  const indexes = await existingIndexes(db);
   for (const stmt of statements) {
-    if (stmt.startsWith('CREATE INDEX')) await db.rawQuery(stmt);
+    if (!stmt.startsWith('CREATE INDEX')) continue;
+    const index = /^CREATE INDEX IF NOT EXISTS "([^"]+)"/.exec(stmt)?.[1] as string;
+    if (indexes?.has(index)) continue;
+    await issue(db, stmt, async () => (await existingIndexes(db))?.has(index) ?? false);
   }
 
   return repairs;
@@ -280,6 +364,62 @@ export async function dropAgentTables(db: LucidRawRunner): Promise<void> {
   }
 }
 
+/** The slice of a Lucid query client the schema runner reads: is it a transaction, and on what dialect. */
+interface ClientShape {
+  isTransaction?: boolean;
+  dialect?: { name?: string };
+}
+
+/** The slice of Lucid's `Database` manager that hands out clients and tracks global transactions. */
+interface ManagerShape {
+  primaryConnectionName: string;
+  connectionGlobalTransactions: Map<string, ClientShape>;
+  connection(name?: string): LucidRawRunner;
+}
+
+function isManager(db: unknown): db is ManagerShape {
+  const candidate = db as Partial<ManagerShape> | null;
+  return (
+    candidate !== null &&
+    typeof candidate === 'object' &&
+    candidate.connectionGlobalTransactions instanceof Map &&
+    typeof candidate.connection === 'function' &&
+    typeof candidate.primaryConnectionName === 'string'
+  );
+}
+
+/**
+ * The client schema DDL should run on: one of its OWN, outside a global transaction the caller has
+ * open (`db.beginGlobalTransaction()` — what `testUtils.db().withGlobalTransaction()` does for a Japa
+ * suite). Inside that transaction the DDL would be rolled back with the test while the process still
+ * remembers the schema as provisioned, and on Postgres the column probes — which fail by design on a
+ * missing column — would abort the whole transaction.
+ *
+ * Lucid's manager answers every `connection()` with the global transaction while one is registered,
+ * so the registration is lifted for the one synchronous call that builds a plain client and put back
+ * before anything else can run.
+ *
+ * SQLite is left where it is: it has one writer, so a second connection could only wait for the very
+ * transaction it is trying to avoid (and with a pool of one there is no second connection at all).
+ * Its DDL is transactional and a failed probe does not abort anything, so running inside is correct.
+ *
+ * Anything that is not the `Database` manager — a client from `db.connection(name)`, a fake — is
+ * returned as is: a plain client is already outside, and a transaction client cannot be escaped.
+ */
+export function schemaRunner(db: LucidRawRunner): LucidRawRunner {
+  if (!isManager(db)) return db;
+  const name = db.primaryConnectionName;
+  const transaction = db.connectionGlobalTransactions.get(name);
+  if (transaction === undefined) return db;
+  if (/sqlite|libsql/i.test(transaction.dialect?.name ?? '')) return db;
+  db.connectionGlobalTransactions.delete(name);
+  try {
+    return db.connection(name);
+  } finally {
+    db.connectionGlobalTransactions.set(name, transaction);
+  }
+}
+
 /**
  * Provisioning promise memoized per db client, so the three Lucid-backed stores (the agent store,
  * the pricing store, the governance read-model) that share these tables run {@link createAgentTables}
@@ -291,15 +431,17 @@ const provisioned = new WeakMap<object, Promise<void>>();
 
 /**
  * Idempotently ensure the seven agent tables exist, memoized per db client. This is what the stores
- * call on first use when `autoCreateTables` is on (the default) — whichever store touches the
- * connection first provisions the shared schema, so pricing seeds and governance reads work even
- * before the first agent run.
+ * run when `autoCreateTables` is on (the default): the agent provider calls each store's
+ * `ensureSchema()` once as the app starts, and a store used without the provider (a script, a test
+ * that builds one by hand) falls back to it on first use — whichever store touches the connection
+ * first provisions the shared schema, so pricing seeds and governance reads work even before the
+ * first agent run. The DDL runs on {@link schemaRunner}'s client, never inside a global transaction.
  */
 export function ensureAgentTables(db: LucidRawRunner): Promise<void> {
   const key = db as unknown as object;
   let ready = provisioned.get(key);
   if (ready === undefined) {
-    ready = createAgentTables(db)
+    ready = createAgentTables(schemaRunner(db))
       .then(() => undefined)
       .catch((error) => {
         provisioned.delete(key);

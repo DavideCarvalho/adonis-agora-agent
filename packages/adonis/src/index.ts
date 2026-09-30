@@ -395,6 +395,7 @@ export {
   dropAgentTables,
   dropTableStatements,
   ensureAgentTables,
+  schemaRunner,
 } from './stores/lucid-schema.js';
 export type {
   AgentApprovalRequest,

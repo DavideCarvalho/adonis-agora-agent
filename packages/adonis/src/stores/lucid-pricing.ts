@@ -49,6 +49,11 @@ export class LucidPricingStore implements AgentPricingStore {
     return this.autoCreateTables ? ensureAgentTables(this.db) : Promise.resolve();
   }
 
+  /** Provision the shared schema now (what the agent provider calls at app start). Idempotent. */
+  ensureSchema(): Promise<void> {
+    return this.ready();
+  }
+
   async upsertModelPrice(input: ModelPriceInput): Promise<void> {
     await this.ready();
     // Atomic supersede in a transaction: retire the model's current row, then insert the new one.
