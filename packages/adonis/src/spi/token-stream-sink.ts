@@ -71,6 +71,12 @@ export interface SinkWriter {
   write(frame: StreamFrame): void | Promise<void>;
   /** Mark the run's stream finished (no more frames). */
   end(): void | Promise<void>;
+  /**
+   * OPTIONAL: write out anything this writer is still holding back, without ending the stream. Only
+   * a sink that gathers frames before writing them (the Lucid sink coalesces text) has anything to
+   * do here; {@link childSinkWriter} calls it where a delegated run would have ended the stream.
+   */
+  flush?(): void | Promise<void>;
 }
 
 export interface TokenStreamSink {
@@ -96,13 +102,14 @@ export interface TokenStreamSink {
  * Forwarding is what makes a sub-agent visible at all: its own runId is not a stream anyone
  * subscribed to, so a question set it parks on would otherwise be written where nobody reads it.
  * The ancestor owns the stream's lifecycle across however many delegations it spans, so the child's
- * `end()` is a no-op — ending the shared stream mid-parent-run would cut the human off.
+ * `end()` is a no-op — ending the shared stream mid-parent-run would cut the human off. It does
+ * {@link SinkWriter.flush} what the child wrote, so nothing of the delegate's is still held back when
+ * its parent (possibly on another replica) writes the next frame.
  */
 export function childSinkWriter(inner: SinkWriter): SinkWriter {
   return {
     write: (chunk) => inner.write(chunk),
-    end: () => {
-      /* the top-level run owns end() */
-    },
+    // The top-level run owns end().
+    end: () => inner.flush?.(),
   };
 }

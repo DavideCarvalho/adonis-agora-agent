@@ -1,0 +1,104 @@
+---
+title: Multi-replica streaming (SQL, no Redis)
+description: Keep a run's stream in the app's own database with the Lucid token sink, so any replica can serve or resume any run's SSE without Redis — plus the recipe for parked questions and approvals across replicas.
+icon: Database
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The default token sink buffers a run's frames in process memory, so a run can only be watched — and [re-attached](/docs/agent/streaming-and-http#re-attaching-to-a-run) — on the replica that started it. The [Redis transport](/docs/agent/redis-streaming) removes that limit. The **Lucid sink** removes it too, for a deployment that has a SQL database and no Redis: frames are rows in the app's database, and every replica reads them.
+
+## Select it
+
+```ts title="config/agent.ts"
+import { defineConfig, stores, tokenSinks } from '@adonis-agora/agent'
+
+export default defineConfig({
+  model: () => aiSdkModel(openai('gpt-4o-mini')),
+  store: 'lucid',
+  stores: { lucid: stores.lucid() },
+  sink: tokenSinks.lucid(),
+})
+```
+
+Nothing about the routes, the SSE envelope or the client changes. The sink works with any store (it only needs a Lucid connection). It is tested on Postgres and SQLite; the SQL is written to be portable to MySQL, but that path is not covered by the test suite.
+
+## What it does
+
+- **Write.** The replica running the turn appends each frame to `agent_stream_frame` (`run_id`, `seq`, `frame`, `created_at`; primary key `(run_id, seq)`). `seq` starts at 1 per run and has no gaps. The row whose `frame` is `NULL` is the end marker.
+- **Read.** A subscriber reads the rows past its cursor, in order, every `pollIntervalMs`, until it meets the end marker. One that attaches late — or after the run ended — replays from the first row.
+- **Coalesce.** A model streams token by token, and a row per token is more writes than a chat answer deserves. Consecutive `text` frames written within `flushMs` are stored as **one** `text` frame holding their concatenation. Any other frame, and the end of the run, write the gathered text first, so order is kept.
+
+<Callout type="info" title="Event ids and the `after` cursor">
+SSE event ids are counted from the stored frames, and every replica reads the same rows in the same order — so `GET <path>/chat/:runId/stream?after=<seq>` resumes exactly, whichever replica answers. The ids are not the ones the in-process sink would have given the same run (it stores every token as its own frame), which only matters to a cursor carried across a change of sink — a deploy that switches sinks should let running streams finish.
+</Callout>
+
+## Configuration
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `connection` | default connection | Lucid connection name. |
+| `tableName` | `agent_stream_frame` | The frame table. |
+| `pollIntervalMs` | `250` | Gap between two reads of a run being followed — the most a frame waits before a browser sees it. |
+| `idlePollIntervalMs` | `1000` | Gap once the run has written nothing for five seconds (parked on a human, a slow tool). The next frame puts the subscriber back on `pollIntervalMs`. |
+| `flushMs` | `50` | Window consecutive `text` frames are gathered over. `0` writes every frame as its own row. |
+| `ttlSeconds` | `3600` | How long a run's rows are kept after its **last** write. `0` keeps them until you delete them. |
+| `autoPurge` | `true` | Purge lapsed runs after a run ends, at most once a minute per replica. |
+| `autoCreateTables` | `true` | Create the frame table as the app starts. With `false`, the published migration (`createAgentTables`) creates it. |
+| `db` | — | Bring-your-own Lucid database. When set, `'lucid.db'` is not resolved and `connection` is ignored. |
+
+### Cleanup
+
+A run's rows lapse `ttlSeconds` after its last write — an ended run past its replay window and a run that crashed without ending alike. `autoPurge` deletes them as a side effect of streaming, which is enough for a replica that keeps serving turns. To purge on a schedule instead (or as well), call the sink yourself:
+
+```ts
+import { LucidTokenStreamSink } from '@adonis-agora/agent'
+import db from '@adonisjs/lucid/services/db'
+
+// from a scheduled job, on any replica
+await new LucidTokenStreamSink(db).purgeExpired()
+```
+
+`close(runId)` deletes one run's rows at once.
+
+<Callout type="warn" title="Upgrading with autoCreateTables: false">
+`agent_stream_frame` is one of the nine tables `createAgentTables` creates. If your schema is owned by migrations, add one whose `up()` calls `createAgentTables` again — it only adds what is missing.
+</Callout>
+
+## What it costs
+
+- **Latency.** Delivery is polled: a frame reaches the browser up to `pollIntervalMs` (plus `flushMs` for text) after it was produced. Text arrives in small bursts rather than token by token.
+- **Database load.** A streamed answer is roughly twenty inserts a second while the model is talking, and each open SSE connection is four small indexed reads a second (one, once the run goes quiet). That is fine for tens of concurrent chats on a database that is already there; it is the wrong place for hundreds.
+- **A crash window.** Text a writer is still gathering lives in the process for at most `flushMs`. A process that dies in that window loses it from the *live* stream; the persisted message is unaffected.
+- **A parked run outlives its buffer.** The TTL counts from the run's last write, so a run parked on a person for longer than `ttlSeconds` has its buffered frames purged while it waits. It still resumes and writes what comes next, but a browser attaching afterwards replays only from there — the persisted thread is the record of what came before. Raise `ttlSeconds` (or set `0` and purge on your own schedule) if people routinely answer later than that.
+
+Use [Redis](/docs/agent/redis-streaming) when you already run it, when you want token-by-token delivery, or when the number of concurrent streams makes polling your database the bottleneck. There is no `LISTEN`/`NOTIFY` wake-up on Postgres: the sink stays on the portable query surface every Lucid dialect has.
+
+## Several replicas without Redis
+
+The sink makes the *stream* portable. A run parked on a person — an `action` approval, or a question set from [`ask` / `intake`](/docs/agent/authoring/elicitation) — also has to be *resumable* from whichever replica receives the reply. Under the inline runner that wait is a promise in one process; under the [durable runner](/docs/agent/durability/durable-runner) it is a journaled signal. So the whole recipe is three lines of config:
+
+```ts title="config/agent.ts"
+import { defineConfig, stores, tokenSinks } from '@adonis-agora/agent'
+
+export default defineConfig({
+  model: () => aiSdkModel(openai('gpt-4o-mini')),
+  store: 'lucid',
+  stores: { lucid: stores.lucid() },
+  durable: true,                    // parking is a durable signal, not a promise in one process
+  sink: tokenSinks.lucid(),         // any replica serves and resumes any run's stream
+  defaultAgent: { ask: true },      // the model may put a question set to the user
+})
+```
+
+with `@adonis-agora/durable` configured on a store and a transport that are themselves shared between replicas without Redis — its Lucid store and its `db` transport (`config/durable.ts`).
+
+What then happens to a question:
+
+1. Replica A runs the turn. The model calls `ask`; the loop writes the `elicitation` frame and the workflow suspends on the signal `tool:<runId>:<callId>`. Nothing is held in memory.
+2. The browser's SSE connection — on A, on B, or re-opened later with `?after=` — reads the frame from the table.
+3. `POST <path>/tool-call/answer` lands on replica B, which signals the engine. Whichever replica's worker claims the run resumes it, and its frames go to the same table.
+
+The same holds for `POST <path>/tool-call/approve` and `/reject`.
+
+For the underlying class, `LucidTokenStreamSink` is exported from the package root.

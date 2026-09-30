@@ -619,6 +619,49 @@ export interface RedisTokenSinkConfig {
   client?: RedisStreamClient;
 }
 
+/** Options for the Lucid (SQL) multi-replica token-stream sink — several replicas, no Redis. */
+export interface LucidTokenSinkConfig {
+  /** Lucid connection name to use. Defaults to the `Database` default connection. */
+  connection?: string;
+  /** The frame table. Defaults to `agent_stream_frame`. */
+  tableName?: string;
+  /**
+   * Gap (ms) between two reads of a run a subscriber is following — the most a frame waits before a
+   * browser sees it. Defaults to 250.
+   */
+  pollIntervalMs?: number;
+  /**
+   * Gap (ms) between two reads once the run has been quiet for five seconds (parked on a human, a
+   * slow tool). Defaults to 1000.
+   */
+  idlePollIntervalMs?: number;
+  /**
+   * Window (ms) consecutive `text` frames are gathered over and written as one row, so a streamed
+   * answer is a handful of inserts rather than one per token. Defaults to 50; `0` writes every frame.
+   */
+  flushMs?: number;
+  /**
+   * TTL (seconds) of a run's rows, counted from its last write; `purgeExpired()` deletes what has
+   * lapsed. Defaults to 3600 (1h). Set `0` to retain until manual cleanup.
+   */
+  ttlSeconds?: number;
+  /**
+   * Purge lapsed runs as a side effect of ending a run, at most once a minute per replica. Default
+   * `true`. Set `false` to purge only from your own schedule (`sink.purgeExpired()`).
+   */
+  autoPurge?: boolean;
+  /**
+   * Create the frame table when the app starts. Default `true`. Set `false` to run the published
+   * migration (`createAgentTables`, which creates it too) instead.
+   */
+  autoCreateTables?: boolean;
+  /**
+   * Bring-your-own Lucid database (or any {@link LucidDatabaseLike}). When set, `'lucid.db'` is NOT
+   * resolved from the container and `connection` is ignored. Handy for tests and scripts.
+   */
+  db?: LucidDatabaseLike;
+}
+
 /**
  * The token-sink factory namespace used in `config/agent.ts`, mirroring {@link stores}. Also exported as
  * `streamTransports` (an alias — pick whichever name reads better):
@@ -635,7 +678,8 @@ export interface RedisTokenSinkConfig {
  * Omitting `sink` entirely keeps the in-process sink (single replica); `tokenSinks.memory()` selects it
  * explicitly. `tokenSinks.redis()` fans a run's tokens across replicas over Redis pub/sub + a replayable
  * list, keeping the SSE envelope byte-identical. The `@adonisjs/redis` peer is imported ONLY inside the
- * `redis` thunk, so it stays fully optional.
+ * `redis` thunk, so it stays fully optional. `tokenSinks.lucid()` is the multi-replica sink for a
+ * deployment WITHOUT Redis: frames are rows in the app's SQL database, read by polling.
  */
 export const tokenSinks = {
   /** The in-process sink — per-run in-memory buffers, single replica. The default when `sink` is omitted. */
@@ -660,6 +704,30 @@ export const tokenSinks = {
         ...(config.keyPrefix !== undefined ? { keyPrefix: config.keyPrefix } : {}),
         ...(config.ttlSeconds !== undefined ? { ttlSeconds: config.ttlSeconds } : {}),
       });
+    };
+  },
+
+  /**
+   * The Lucid (SQL) multi-replica sink: any pod can serve any run's SSE stream, with no Redis — a
+   * run's frames are rows of `agent_stream_frame` on the app's database, which subscribers poll.
+   * Slower to deliver than Redis (up to `pollIntervalMs`) and it writes to your database on every
+   * streamed answer; pick {@link tokenSinks.redis} when Redis is already there. Requires
+   * `@adonisjs/lucid` installed + configured unless a `db` is passed.
+   */
+  lucid(config: LucidTokenSinkConfig = {}): TokenSinkFactory {
+    return async (ctx) => {
+      const { LucidTokenStreamSink } = await import('../lucid-token-stream-sink.js');
+      const { connection, db: ownDb, ...options } = config;
+      const manager = ownDb === undefined ? await resolveLucidDatabase(ctx.app) : undefined;
+      const db =
+        ownDb ??
+        ((connection !== undefined
+          ? manager?.connection(connection)
+          : manager) as unknown as LucidDatabaseLike);
+      return new LucidTokenStreamSink(
+        db,
+        Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined)),
+      );
     };
   },
 };

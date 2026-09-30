@@ -320,7 +320,7 @@ export default class AgentProvider {
     this.#store = store;
     this.#sink = sink;
     this.#actorDirectory = actorDirectory;
-    this.#schemaOwners = [store, pricingStore, governance];
+    this.#schemaOwners = [store, pricingStore, governance, sink];
 
     const factory = new AgentDepsFactory({
       model,
@@ -398,8 +398,8 @@ export default class AgentProvider {
    * inside whatever the first caller had open: a Japa suite's global transaction held the locks the
    * DDL needed and the run hung.
    *
-   * Every store that manages its own schema exposes `ensureSchema()` (the three Lucid stores do, and
-   * it is a no-op under `autoCreateTables: false`); a custom store may too. Skipped for ace commands
+   * Every store that manages its own schema exposes `ensureSchema()` (the three Lucid stores and the
+   * Lucid token sink do, and it is a no-op under `autoCreateTables: false`); a custom store may too. Skipped for ace commands
    * (`console`): `migration:run` must not find the tables already made by the app it is booting, and
    * `list:routes` must not need a database. A command that does use the agent (a durable worker)
    * falls back to first use, which is the same idempotent call.

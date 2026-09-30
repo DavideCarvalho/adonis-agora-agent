@@ -4,7 +4,7 @@ description: >-
   Set up @adonis-agora/agent in an AdonisJS app: node ace configure @adonis-agora/agent,
   defineConfig in config/agent.ts (model via aiSdkModel from @adonis-agora/agent/ai-sdk,
   stores.lucid()/stores.memory(), quota: { limits }, pricingStores +
-  seedModelPrices + estimateCost, tokenSinks.redis multi-replica SSE sink,
+  seedModelPrices + estimateCost, tokenSinks.redis / tokenSinks.lucid multi-replica SSE sinks,
   AuthActorResolver identity seam), auto-created agent tables vs the published migration,
   the cost fold (null vs $0.00), and route mounting under config path. Use for "set up
   the agent", "config/agent.ts", "agent tables / migration", "costUsd is null or zero",
@@ -180,7 +180,28 @@ export default defineConfig({
 Requires `@adonisjs/redis` installed and configured unless you pass `client:` (a
 bring-your-own `RedisStreamClient`). Pair with `durable: true` for cross-instance resume.
 
+No Redis? `tokenSinks.lucid()` keeps the frames in the app's SQL database instead
+(table `agent_stream_frame`, created with the other agent tables). Subscribers poll
+(`pollIntervalMs`, default 250) and streamed text is coalesced into one row per
+`flushMs` (default 50), so it is slower and it loads the database — prefer Redis when
+it is there. Rows lapse `ttlSeconds` after a run's last write (`purgeExpired()`).
+
+```ts
+export default defineConfig({
+  // ...
+  durable: true,                 // approvals and questions park on a durable signal
+  sink: tokenSinks.lucid(),      // any replica serves and resumes any run's stream
+  defaultAgent: { ask: true },   // offer the model the built-in `ask` tool
+})
+```
+
+`ask` / `intake` are per-agent (`defaultAgent`, `agents[]`). Under the inline runner a
+parked question can only be answered on the replica that started the turn; several
+replicas need `durable: true`.
+
 Source: `packages/adonis/src/stores/factory.ts` (`tokenSinks`),
+`packages/adonis/src/lucid-token-stream-sink.ts`,
+`packages/adonis/docs/sql-streaming.mdx`,
 `packages/adonis/docs/streaming-and-http.mdx` ("Single-replica by default" callout).
 
 ### Pattern 4 — a React chat with `@adonis-agora/agent/react`

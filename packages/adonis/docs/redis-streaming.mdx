@@ -42,4 +42,8 @@ Passing a `client` lets you drive a non-Adonis Redis driver or a test double dir
 
 The Redis sink solves *stream* portability across replicas; the [durable runner](/docs/agent/durability/durable-runner) solves *run* portability and crash-survival (a suspended HITL approval resumes on any pod). Together they give you a horizontally-scaled, crash-proof agent: `sink: tokenSinks.redis(...)` + `durable: true`.
 
+## No Redis?
+
+[`tokenSinks.lucid()`](/docs/agent/sql-streaming) gives the same cross-replica stream over the app's SQL database, polled instead of pushed. It is slower to deliver and it writes to your database on every streamed answer, so prefer Redis when you have it.
+
 For the underlying class, `RedisTokenStreamSink` (and the `RedisStreamClient` interface) are exported from the package root.

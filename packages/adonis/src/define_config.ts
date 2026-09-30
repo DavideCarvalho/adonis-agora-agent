@@ -29,6 +29,7 @@ import type {
   LucidGovernanceConfig,
   LucidPricingConfig,
   LucidStoreConfig,
+  LucidTokenSinkConfig,
   MemoryActorDirectoryConfig,
   MemoryRetrieverConfig,
   MemoryStoreConfig,
@@ -94,6 +95,8 @@ export interface AgentConfig {
    * Live token transport ("data plane"), or a lazy factory. Defaults to the in-process sink (single
    * replica). Use `tokenSinks.redis({...})` (a.k.a. `streamTransports.redis`) for the multi-replica
    * Redis sink so any pod can serve any run's SSE stream — the SSE envelope is unchanged either way.
+   * With several replicas and no Redis, `tokenSinks.lucid()` keeps the frames in the app's SQL
+   * database instead (polled; see `LucidTokenStreamSink`).
    */
   sink?: TokenStreamSink | SinkFactory;
   /**
@@ -350,6 +353,7 @@ export type {
   LucidGovernanceConfig,
   LucidPricingConfig,
   LucidStoreConfig,
+  LucidTokenSinkConfig,
   MemoryActorDirectoryConfig,
   MemoryRetrieverConfig,
   MemoryStoreConfig,

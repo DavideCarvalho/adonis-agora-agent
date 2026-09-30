@@ -264,7 +264,7 @@ The requirement is decided inside the call's own `persist:toolcall` checkpoint, 
 Streams survive a dropped connection. A late subscriber to `GET /agent/chat/:runId/stream` replays the run's buffered chunks first, then follows live until `done`. Combined with the thread's `activeRunId`, a reloading client can find the in-flight run and rejoin its stream.
 
 <Callout type="warn" title="Single-replica by default">
-Re-attach works because the default token sink buffers per run in process memory. That makes it single-replica: a run started on one instance can only be re-attached on that same instance. Switch to the [Redis sink](/docs/agent/redis-streaming) so any pod can serve any run's stream, and pair it with the [durable runner](/docs/agent/durability/durable-runner) for cross-instance resume.
+Re-attach works because the default token sink buffers per run in process memory. That makes it single-replica: a run started on one instance can only be re-attached on that same instance. Switch to the [Redis sink](/docs/agent/redis-streaming) — or, without Redis, the [Lucid sink](/docs/agent/sql-streaming) — so any pod can serve any run's stream, and pair it with the [durable runner](/docs/agent/durability/durable-runner) for cross-instance resume.
 </Callout>
 
 ## Consuming the stream

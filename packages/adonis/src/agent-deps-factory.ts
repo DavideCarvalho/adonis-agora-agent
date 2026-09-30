@@ -265,6 +265,10 @@ export class AgentDepsFactory {
       ...(definition?.maxAgentAppearances !== undefined
         ? { maxAgentAppearances: definition.maxAgentAppearances }
         : {}),
+      // From the agent's DEFINITION, never from a run's input: a durable replay rebuilds these deps
+      // here, and the loop's checkpoint sequence has to come out the same as the first attempt's.
+      ...(definition?.ask !== undefined ? { ask: definition.ask } : {}),
+      ...(definition?.intake !== undefined ? { intake: definition.intake } : {}),
     };
   }
 }
