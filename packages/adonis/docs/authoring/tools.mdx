@@ -36,6 +36,8 @@ export default class GetOrderTool implements ToolHandler<{ orderId: string }> {
 }
 ```
 
+Only `description` and `input` are required. `name` defaults to the class name camelCased with a trailing `Tool` dropped (`GetOrderTool` → `getOrder`, `SQLQueryTool` → `sqlQuery`) and `kind` to `'read'` — so the decorator above could be just `@AiTool({ description, input, roles })`. The same defaults apply to `static tool = { … }`; `defineTool` has no class, so it still needs a `name`.
+
 The decorator stamps its options onto the class; discovery resolves an instance through the IoC container (see [Constructor DI](#constructor-di-inject) below) and binds `execute`.
 
 ## Base classes — `BaseTool` / `ReadTool` / `ActionTool`

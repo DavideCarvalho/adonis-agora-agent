@@ -16,6 +16,7 @@ import {
   AgentService,
   AgentSseEncoder,
   type AgentStore,
+  AnonymousActorResolver,
   type AttachmentStagingStore,
   DefaultToolAuthorizer,
   discoverTools,
@@ -31,6 +32,7 @@ import {
   lucidStoreConnection,
   type MemoryConfig,
   type MessageAttachment,
+  type ModelCatalog,
   ModelNotAllowedError,
   type ModelProvider,
   memoryForgetVerdict,
@@ -54,7 +56,6 @@ import {
   type ToolsBarrel,
   toApprovalPolicy,
   toModelCatalog,
-  UnconfiguredActorResolver,
   withActorLabel,
   withActorLabels,
 } from '../src/index.js';
@@ -71,6 +72,16 @@ interface ChatBody {
   attachments?: MessageAttachment[];
   /** Run this turn on a catalog model (see `GET models`) instead of the thread's pinned one. */
   model?: string;
+}
+
+/** The catalog a model provider carries (`aiSdkModels(…).catalog`), if it carries one. */
+function catalogOf(model: unknown): ModelCatalog | undefined {
+  const catalog = (model as { catalog?: unknown } | null)?.catalog;
+  return typeof catalog === 'object' &&
+    catalog !== null &&
+    typeof (catalog as ModelCatalog).list === 'function'
+    ? (catalog as ModelCatalog)
+    : undefined;
 }
 
 /** A decision's `via` is provenance persisted on the call — bounded like any other stored label. */
@@ -156,7 +167,7 @@ export default class AgentProvider {
     const config = this.app.config.get<AgentConfig>('agent', {} as AgentConfig);
     const registry = await this.app.container.make(ToolRegistry);
     const agents = await this.app.container.make(AgentRegistry);
-    const defaultRoles = config.defaultRoles ?? ['ADMIN'];
+    const defaultRoles = config.defaultRoles ?? [];
 
     // ── Tool discovery: generated barrel first, else the app/agent_tools readdir fallback ──
     // Deferred to `app.booted()` because discovery IMPORTS each tool file, running its top-level
@@ -221,7 +232,15 @@ export default class AgentProvider {
     const retriever = await this.#resolveRetriever(config);
     const attachmentStaging = await this.#resolveAttachmentStaging(config);
     const authorizer = this.#resolveAuthorizer(config, defaultRoles);
-    const actorResolver = config.actorResolver ?? new UnconfiguredActorResolver();
+    // No resolver → the routes are PUBLIC and each browser is its own anonymous actor (an HttpOnly
+    // cookie). Said at boot, with the one line that switches to authenticated mode.
+    if (config.actorResolver === undefined) {
+      console.warn(
+        `[@adonis-agora/agent] No actorResolver configured: the /${(config.path ?? 'agent').replace(/^\/+|\/+$/g, '')}/* endpoints are PUBLIC and every browser is its own anonymous actor. ` +
+          'To require login, set `actorResolver: new AuthActorResolver()` in config/agent.ts.',
+      );
+    }
+    const actorResolver = config.actorResolver ?? new AnonymousActorResolver();
     // Read-side identity lookup for governance/dashboard surfaces (optional; renders raw refs if unset).
     const actorDirectory = await this.#resolveActorDirectory(config);
     this.#store = store;
@@ -263,7 +282,12 @@ export default class AgentProvider {
           new InlineAgentRunner(factory, store))
         : new InlineAgentRunner(factory, store);
     const service = new AgentService(runner, store, factory, {
-      ...(config.models !== undefined ? { models: toModelCatalog(config.models) } : {}),
+      // No `models` → the catalog the model provider carries (`aiSdkModels`), else none.
+      ...(config.models !== undefined
+        ? { models: toModelCatalog(config.models) }
+        : catalogOf(model) !== undefined
+          ? { models: catalogOf(model) as ModelCatalog }
+          : {}),
       quota:
         quotaProvider !== undefined
           ? { provider: quotaProvider, gated: true }
@@ -1396,6 +1420,13 @@ export default class AgentProvider {
       'X-Agent-Run-Id': runId,
       ...(threadId !== undefined ? { 'X-Agent-Thread-Id': threadId } : {}),
     };
+    // Headers the request already set on Adonis's response (the anonymous identity cookie, a
+    // session) — `writeHead` on the raw response would otherwise skip them.
+    const pending = ctx.response.getHeaders();
+    for (const [name, value] of Object.entries(pending)) {
+      if (value !== undefined && !(name in headers))
+        raw.setHeader(name, value as string | string[]);
+    }
     raw.writeHead(200, headers);
     raw.write(`event: meta\ndata: ${JSON.stringify({ runId, threadId })}\n\n`);
     if (protocol === 'agent') {

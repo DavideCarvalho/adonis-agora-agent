@@ -26,13 +26,17 @@ export const headerActorResolver = {
  */
 export async function bootAgentApp(
   agent: Partial<AgentConfig> & Pick<AgentConfig, 'model'>,
+  options: { anonymous?: boolean } = {},
 ): Promise<BootedApp> {
   const ignitor = new IgnitorFactory()
     .withCoreProviders()
     .withCoreConfig()
     .merge({
       rcFileContents: { providers: [() => import('../../providers/agent_provider.js')] },
-      config: { agent: { actorResolver: headerActorResolver, ...agent } },
+      config: {
+        agent:
+          options.anonymous === true ? agent : { actorResolver: headerActorResolver, ...agent },
+      },
     })
     .create(new URL('../../', import.meta.url));
 

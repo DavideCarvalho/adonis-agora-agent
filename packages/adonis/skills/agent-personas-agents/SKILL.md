@@ -152,9 +152,9 @@ delegatesTo: [{ agent: 'researcher', roles: ['ANALYST', 'ADMIN'] }]
 ```
 
 Mechanism: a delegate tool goes through the SAME gate as every other tool. A bare string
-carries nothing, so under `DefaultToolAuthorizer` it is ADMIN-only, and under the authz
-Bouncer adapter a spec without `ability` is denied outright — the edge becomes uncalled
-for everyone but admins.
+carries nothing, so under `DefaultToolAuthorizer` it takes `defaultRoles` (open unless
+configured), and under the authz Bouncer adapter a spec without `ability` is denied
+outright — the edge becomes uncalled for everyone.
 Source: `packages/adonis/docs/authoring/personas-and-agents.mdx` ("Authorizing a
 delegation"), `packages/adonis/src/types.ts` (`DelegateEdge`).
 

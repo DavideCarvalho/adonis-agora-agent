@@ -111,18 +111,18 @@ Anything else is `415`, `text/markdown` included. Passing this **replaces** the 
 
 ### `authorizer` / `rolesPolicy`
 
-`RolesPolicy`. The tool authorization gate; `authorizer` and `rolesPolicy` are **aliases** — pass either. **Defaults to `DefaultToolAuthorizer`** (fail-closed, ADMIN-only, role-set intersection). Swap it to plug an ability-aware policy. See [Authorization](/docs/agent/governance/authorization).
+`RolesPolicy`. The tool authorization gate; `authorizer` and `rolesPolicy` are **aliases** — pass either. **Defaults to `DefaultToolAuthorizer`** (role-set intersection against `tool.roles ?? defaultRoles`; open when that list is empty). Swap it to plug an ability-aware policy. See [Authorization](/docs/agent/governance/authorization).
 
 ### `defaultRoles`
 
-`string[]`. The roles a tool requires when it declares none. **Default `['ADMIN']`** — so an ungoverned tool is admin-only by default.
+`string[]`. The roles a tool requires when it declares none. **Default `[]`** — no restriction: anyone the actor resolver resolved can call a tool that declares no `roles` (`action` tools still wait for approval). `['ADMIN']` makes an ungoverned tool admin-only, the pre-0.46 default.
 
 ### `actorResolver`
 
-`ActorResolver`. Resolves the acting identity per request — the identity seam. **Defaults to a resolver that THROWS on every request**, so the agent never fabricates a caller. Wire `AuthActorResolver`, `HeaderActorResolver`, or your own.
+`ActorResolver`. Resolves the acting identity per request — the identity seam. **Omit → the endpoints are public** and every browser is its own anonymous actor (`AnonymousActorResolver`: an HttpOnly `agent_anon` cookie, the actor id `anon:` + a SHA-256 of it), announced at boot. `new AuthActorResolver()` requires login (reads `ctx.auth.user`, `401` without); `HeaderActorResolver` or your own also fit.
 
 <Callout type="warn">
-Leaving `actorResolver` unset makes every actor-scoped route reply `401`. This is intentional — configure a resolver to serve traffic.
+A public deployment should set a `quota`: model spend is otherwise unbounded (per browser).
 </Callout>
 
 ### `path`

@@ -3,7 +3,7 @@ name: agent-governance
 description: >-
   Lock down @adonis-agora/agent: the ActorResolver identity seam (AuthActorResolver over
   ctx.auth.user with toActor mapper, HeaderActorResolver x-actor-id/x-actor-role behind a
-  gateway, UnconfiguredActorResolver throwing default), DefaultToolAuthorizer role
+  gateway, AnonymousActorResolver public default — one anonymous actor per browser), DefaultToolAuthorizer role
   intersection with the offered-tools + invoke-time double check, object-level ownership
   via evaluateOwnership (404 for unknown ids), governanceAuthorize mounting semantics for
   /agent/governance/* (404 without it) and the dashboard mount refusals,
@@ -24,8 +24,9 @@ sources:
 
 # Governance: identity, authorization, ownership
 
-Authorization in `@adonis-agora/agent` is fail-closed at three layers: **who is calling**
-(an `ActorResolver` that never fabricates an identity), **what they may do** (a
+Authorization in `@adonis-agora/agent` works at three layers: **who is calling**
+(an `ActorResolver` — anonymous per browser when none is configured, `AuthActorResolver` to
+require login), **what they may do** (a
 `RolesPolicy` checked twice — before the model sees a tool and again at invoke time),
 and **which records they may address** (object-level ownership on every run/thread route).
 

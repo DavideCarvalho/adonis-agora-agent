@@ -147,7 +147,7 @@ is not implicitly allowed because you declared the edge.
 
 A bare-string edge declares no `roles` and no `ability`, which means:
 
-- under the default `DefaultToolAuthorizer`, it is **ADMIN-only** (the fallback for any tool with no
+- under the default `DefaultToolAuthorizer`, it takes `defaultRoles` — unrestricted unless you set it (the fallback for any tool with no
   declared roles);
 - under the [authz Bouncer adapter](/docs/agent/governance/authz-bouncer), it is **always denied** —
   that adapter has no role fallback, and a tool with no `ability` is unreachable by construction.

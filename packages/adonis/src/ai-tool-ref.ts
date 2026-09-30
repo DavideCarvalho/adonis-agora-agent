@@ -17,19 +17,24 @@ export const AI_TOOL_META_KEY: unique symbol = Symbol.for('@agora/agent:ai-tool-
 export const AGENT_TOOL_BRAND: unique symbol = Symbol.for('@agora/agent:functional-tool');
 
 export interface AiToolOptions {
-  name: string;
   /**
-   * `read` auto-executes; `action` requires HITL approval. (Core's `ToolKind` also has `agent` for
-   * delegation, but that kind is synthesized from an agent's `delegatesTo` — never authored here.)
+   * What the model calls it. Omit on a class → the class name, camelCased, with a trailing `Tool`
+   * dropped (`GetWeatherTool` → `getWeather`). Required on {@link defineTool}, which has no class.
    */
-  kind: 'read' | 'action';
+  name?: string;
+  /**
+   * `read` auto-executes; `action` requires HITL approval. Default `'read'`. (Core's `ToolKind` also
+   * has `agent` for delegation, but that kind is synthesized from an agent's `delegatesTo` — never
+   * authored here.)
+   */
+  kind?: 'read' | 'action';
   description: string;
   /**
    * Input schema as a [Standard Schema](https://standardschema.dev) — Zod, Valibot, or ArkType.
    * Validated (again) before the handler runs.
    */
   input: StandardSchemaV1;
-  /** Roles allowed to invoke. Omit to inherit the config's `defaultRoles` (ADMIN-only by default). */
+  /** Roles allowed to invoke. Omit to inherit the config's `defaultRoles` (unrestricted by default). */
   roles?: string[];
   /**
    * Authz ability checked by an ability-aware `RolesPolicy` (e.g. an `@adonis-agora/authz` Bouncer
@@ -53,8 +58,30 @@ export interface AiToolOptions {
   terminal?: boolean;
 }
 
-/** The metadata a tool class carries for discovery + registration — from `@AiTool` or `static tool`. */
-export type AiToolMeta = AiToolOptions;
+/**
+ * The metadata a tool class carries for discovery + registration — from `@AiTool` or `static tool` —
+ * with the defaults applied.
+ */
+export type AiToolMeta = AiToolOptions & { name: string; kind: 'read' | 'action' };
+
+/** `GetWeatherTool` → `getWeather`; `SQLQueryTool` → `sqlQuery`. */
+export function toolNameFromClass(className: string): string {
+  const base = className.replace(/Tool$/, '') || className;
+  const leadingCaps = /^[A-Z]+(?=[A-Z][a-z]|$)/.exec(base)?.[0];
+  if (leadingCaps !== undefined && leadingCaps.length > 1) {
+    return leadingCaps.toLowerCase() + base.slice(leadingCaps.length);
+  }
+  return base.charAt(0).toLowerCase() + base.slice(1);
+}
+
+/** Apply the `name` / `kind` defaults, the name taken from `className`. */
+function resolveMeta(options: AiToolOptions, className: string): AiToolMeta {
+  return {
+    ...options,
+    name: options.name ?? toolNameFromClass(className),
+    kind: options.kind ?? 'read',
+  };
+}
 
 /** Structural shape of a tool class: a constructor whose instance implements `execute`. */
 export type ToolClass = abstract new (...args: never[]) => ToolHandler;
@@ -74,7 +101,7 @@ export type ToolClass = abstract new (...args: never[]) => ToolHandler;
 export function AiTool(options: AiToolOptions) {
   return <T extends ToolClass>(target: T): T => {
     Object.defineProperty(target, AI_TOOL_META_KEY, {
-      value: options,
+      value: resolveMeta(options, (target as { name?: string }).name ?? ''),
       enumerable: false,
       configurable: true,
     });
@@ -94,11 +121,14 @@ function decoratorMeta(target: unknown): AiToolMeta | undefined {
 function staticToolMeta(target: unknown): AiToolMeta | undefined {
   if (typeof target !== 'function') return undefined;
   const config = (target as { tool?: Partial<AiToolOptions> }).tool;
-  if (config && typeof config === 'object' && typeof config.name === 'string') {
+  if (config && typeof config === 'object' && typeof config.description === 'string') {
     // `kind` may come from the config itself (BaseTool / @AiTool) or from the kind-specific base's static
     // (ReadTool → 'read', ActionTool → 'action'), which keeps it out of the subclass's `static tool`.
     const kind = config.kind ?? (target as { kind?: AiToolOptions['kind'] }).kind;
-    return { ...config, kind } as AiToolMeta;
+    return resolveMeta(
+      { ...config, ...(kind !== undefined ? { kind } : {}) } as AiToolOptions,
+      (target as { name?: string }).name ?? '',
+    );
   }
   return undefined;
 }
@@ -162,12 +192,12 @@ export function isBrandedFunctionalTool(value: unknown): value is BrandedFunctio
  * ```
  */
 export function defineTool<I = unknown, O = unknown>(
-  options: AiToolOptions,
+  options: AiToolOptions & { name: string },
   execute: (input: I, ctx: AiToolCtx) => Promise<O> | O,
 ): BrandedFunctionalTool {
   const spec: ToolSpec = {
     name: options.name,
-    kind: options.kind,
+    kind: options.kind ?? 'read',
     description: options.description,
     inputSchema: options.input,
     ...(options.roles !== undefined ? { roles: options.roles } : {}),

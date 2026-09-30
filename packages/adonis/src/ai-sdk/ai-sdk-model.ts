@@ -33,6 +33,12 @@ import type {
   ToolDefinition,
   ToolResult,
 } from '../index.js';
+import {
+  type ModelCatalog,
+  type ModelCatalogEntry,
+  type ModelCatalogView,
+  staticModelCatalog,
+} from '../spi/model-catalog.js';
 
 /**
  * Pass-through settings forwarded to the AI SDK `streamText` call (headers, temperature,
@@ -50,13 +56,6 @@ export type AiSdkModelOptions = CallSettings & {
    * {@link import('./attachment-fetch-downloader.js').attachmentFetchDownloader}.
    */
   experimental_download?: Experimental_DownloadFunction;
-  /**
-   * Turn the model a caller picked (`ModelTurnArgs.model` — a `ModelCatalog` id the server already
-   * checked) into the `LanguageModel` to call, e.g. `(id) => openai(id)` or a registry lookup.
-   * Omitted → a string `model` (an AI Gateway id) is replaced by the picked id verbatim, and a
-   * provider instance ignores the pick.
-   */
-  resolveModel?: (id: string) => LanguageModel;
 };
 
 /**
@@ -66,107 +65,215 @@ export type AiSdkModelOptions = CallSettings & {
  * tools are handed to the SDK WITHOUT an `execute` fn, so the SDK returns tool-calls for the agent
  * loop to run as its own (replay-safe) steps.
  */
+function idOf(model: LanguageModel): string | undefined {
+  if (typeof model === 'string') return model;
+  const id = (model as { modelId?: unknown }).modelId;
+  return typeof id === 'string' ? id : undefined;
+}
+
 export function aiSdkModel(model: LanguageModel, opts?: AiSdkModelOptions): ModelProvider {
-  const { resolveModel, ...settings } = opts ?? {};
-  const modelFor = (picked: string | undefined): LanguageModel => {
-    if (picked === undefined) return model;
-    if (resolveModel !== undefined) return resolveModel(picked);
-    return typeof model === 'string' ? picked : model;
-  };
+  const own = idOf(model);
   return {
     async runTurn(args: ModelTurnArgs): Promise<ModelTurnResult> {
-      // `output` makes the provider constrain generation to the schema. It is only offered for a
-      // schema the SDK can convert; for anything else the call goes out unconstrained and the loop
-      // reads the JSON out of the reply text, which is what `toSdkOutput` returning undefined means.
-      const output = args.outputSchema !== undefined ? toSdkOutput(args.outputSchema) : undefined;
-      const result = streamText({
-        ...settings,
-        model: modelFor(args.model),
-        instructions: args.system,
-        messages: mapMessages(args.messages),
-        tools: mapTools(args.tools),
-        ...(output !== undefined ? { output } : {}),
-        ...(args.abortSignal ? { abortSignal: args.abortSignal } : {}),
-      });
-
-      // Text stays a `text` frame (the one kind the output gate reads); everything else the model
-      // streams goes out in the agent protocol's vocabulary, so a client draws the thinking and the
-      // tool cards live. Tool RESULTS and step brackets are the loop's to write.
-      let text = '';
-      for await (const part of result.stream) {
-        switch (part.type) {
-          case 'text-delta':
-            text += part.text;
-            await args.sink.write({ t: 'text', v: part.text });
-            break;
-          case 'reasoning-delta':
-            await args.sink.write({ t: 'event', event: { kind: 'reasoning', text: part.text } });
-            break;
-          case 'tool-input-start':
-            await args.sink.write({
-              t: 'event',
-              event: {
-                kind: 'tool-input-start',
-                id: part.id,
-                name: part.toolName,
-                toolKind: streamToolKind(part.toolName, args.tools),
-              },
-            });
-            break;
-          case 'tool-input-delta':
-            await args.sink.write({
-              t: 'event',
-              event: { kind: 'tool-input-delta', id: part.id, delta: part.delta },
-            });
-            break;
-          case 'tool-call':
-            await args.sink.write({
-              t: 'event',
-              event: {
-                kind: 'tool-input-available',
-                id: part.toolCallId,
-                name: part.toolName,
-                input: part.input,
-                toolKind: streamToolKind(part.toolName, args.tools),
-              },
-            });
-            break;
-          default:
-            break;
-        }
+      // One model, so a pick naming another cannot be honoured — and running this one instead would
+      // answer on a model nobody chose. `aiSdkModels` is the provider for a picker.
+      if (args.model !== undefined && args.model !== own) {
+        throw new Error(
+          `aiSdkModel: this turn picked model "${args.model}", but the provider serves only ` +
+            `"${own ?? 'its one model'}". Offer several with aiSdkModels({ … }).`,
+        );
       }
-
-      // The promise accessors resolve once the stream is fully consumed above. `modelId` and the
-      // reported cost live on the final step (the top-level aliases are deprecated in AI SDK v7).
-      const [toolCalls, usage, finalStep] = await Promise.all([
-        result.toolCalls,
-        result.usage,
-        result.finalStep,
-      ]);
-      // What the provider itself parsed. Handed back for the loop to VALIDATE — never as the
-      // finished answer: "the provider says it matched" is a different claim from "it matches".
-      const object = output === undefined ? undefined : await result.output;
-
-      const modelId = finalStep.response.modelId;
-      const costUsd = extractCostUsd(finalStep.providerMetadata);
-
-      return {
-        text,
-        toolCalls: toolCalls.map(mapToolCall),
-        usage: mapUsage(usage),
-        ...(typeof modelId === 'string' && modelId.length > 0 ? { modelId } : {}),
-        ...(costUsd !== undefined ? { costUsd } : {}),
-        ...(object !== undefined ? { object } : {}),
-      };
+      return runTurnOn(model, opts ?? {}, args);
     },
   };
 }
 
+/** One model `aiSdkModels` offers, with how a picker shows it. */
+export interface AiSdkModelEntry {
+  model: LanguageModel;
+  label?: string;
+  description?: string;
+  badges?: string[];
+  contextWindow?: number;
+  /** The catalog group. Default: the id's `provider/` prefix, else the model's provider. */
+  provider?: string;
+}
+
+export interface AiSdkModelsOptions extends AiSdkModelOptions {
+  /** The model a turn runs on when nobody picked one. Default: the first offered. */
+  default?: string;
+  /** Display names for the catalog groups, e.g. `{ openai: 'OpenAI' }`. */
+  providerLabels?: Record<string, string>;
+}
+
+/** A provider that serves several models, carrying the catalog a picker lists. */
+export interface AiSdkModelsProvider extends ModelProvider {
+  catalog: ModelCatalog;
+}
+
+function groupOf(id: string, entry: AiSdkModelEntry): string {
+  if (entry.provider !== undefined) return entry.provider;
+  const slash = id.indexOf('/');
+  if (slash > 0) return id.slice(0, slash);
+  const provider =
+    typeof entry.model === 'string' ? undefined : (entry.model as { provider?: unknown }).provider;
+  return typeof provider === 'string' ? (provider.split('.')[0] ?? provider) : 'models';
+}
+
 /**
- * Map core `ModelMessage[]` → SDK messages. Tool calls ride on the assistant message as
- * `tool-call` content parts; tool results become a following `tool` message. A message can
- * therefore expand into two SDK messages, so we build the list imperatively.
+ * Several AI SDK models behind one provider — what a model picker needs, and all it needs: the
+ * provider carries its catalog (`.catalog`), which `GET <path>/models` serves when `config/agent.ts`
+ * sets no `models`, and a turn runs on the picked id (else `default`).
+ *
+ * ```ts
+ * model: () => aiSdkModels({ 'openai/gpt-4o-mini': 'openai/gpt-4o-mini', 'openai/gpt-4o': { model: openai('gpt-4o'), badges: ['smart'] } }),
+ * ```
  */
+export function aiSdkModels(
+  models: Record<string, LanguageModel | AiSdkModelEntry>,
+  options: AiSdkModelsOptions = {},
+): AiSdkModelsProvider {
+  const { default: defaultId, providerLabels, ...settings } = options;
+  const entries = Object.entries(models).map(([id, value]) => {
+    const entry: AiSdkModelEntry =
+      typeof value === 'object' && value !== null && 'model' in value
+        ? (value as AiSdkModelEntry)
+        : { model: value as LanguageModel };
+    return [id, entry] as const;
+  });
+  if (entries.length === 0) throw new Error('aiSdkModels: offer at least one model');
+  const byId = new Map(entries);
+  const fallback = defaultId ?? entries[0]?.[0];
+  if (fallback === undefined || !byId.has(fallback)) {
+    throw new Error(`aiSdkModels: default "${defaultId}" is not one of the offered models`);
+  }
+  const groups = new Map<string, ModelCatalogEntry[]>();
+  for (const [id, entry] of entries) {
+    const group = groupOf(id, entry);
+    const list = groups.get(group) ?? [];
+    list.push({
+      id,
+      label: entry.label ?? id,
+      available: true,
+      ...(entry.description !== undefined ? { description: entry.description } : {}),
+      ...(entry.badges !== undefined ? { badges: entry.badges } : {}),
+      ...(entry.contextWindow !== undefined ? { contextWindow: entry.contextWindow } : {}),
+    });
+    groups.set(group, list);
+  }
+  const view: ModelCatalogView = {
+    default: fallback,
+    providers: [...groups].map(([id, list]) => ({
+      id,
+      label: providerLabels?.[id] ?? id.charAt(0).toUpperCase() + id.slice(1),
+      models: list,
+    })),
+  };
+  return {
+    catalog: staticModelCatalog(view),
+    async runTurn(args: ModelTurnArgs): Promise<ModelTurnResult> {
+      const id = args.model ?? fallback;
+      const entry = byId.get(id);
+      if (entry === undefined) {
+        throw new Error(
+          `aiSdkModels: this turn picked model "${id}", which is not offered (${[...byId.keys()].join(', ')}).`,
+        );
+      }
+      return runTurnOn(entry.model, settings, args);
+    },
+  };
+}
+
+async function runTurnOn(
+  model: LanguageModel,
+  settings: AiSdkModelOptions,
+  args: ModelTurnArgs,
+): Promise<ModelTurnResult> {
+  // `output` makes the provider constrain generation to the schema. It is only offered for a
+  // schema the SDK can convert; for anything else the call goes out unconstrained and the loop
+  // reads the JSON out of the reply text, which is what `toSdkOutput` returning undefined means.
+  const output = args.outputSchema !== undefined ? toSdkOutput(args.outputSchema) : undefined;
+  const result = streamText({
+    ...settings,
+    model,
+    instructions: args.system,
+    messages: mapMessages(args.messages),
+    tools: mapTools(args.tools),
+    ...(output !== undefined ? { output } : {}),
+    ...(args.abortSignal ? { abortSignal: args.abortSignal } : {}),
+  });
+
+  // Text stays a `text` frame (the one kind the output gate reads); everything else the model
+  // streams goes out in the agent protocol's vocabulary, so a client draws the thinking and the
+  // tool cards live. Tool RESULTS and step brackets are the loop's to write.
+  let text = '';
+  for await (const part of result.stream) {
+    switch (part.type) {
+      case 'text-delta':
+        text += part.text;
+        await args.sink.write({ t: 'text', v: part.text });
+        break;
+      case 'reasoning-delta':
+        await args.sink.write({ t: 'event', event: { kind: 'reasoning', text: part.text } });
+        break;
+      case 'tool-input-start':
+        await args.sink.write({
+          t: 'event',
+          event: {
+            kind: 'tool-input-start',
+            id: part.id,
+            name: part.toolName,
+            toolKind: streamToolKind(part.toolName, args.tools),
+          },
+        });
+        break;
+      case 'tool-input-delta':
+        await args.sink.write({
+          t: 'event',
+          event: { kind: 'tool-input-delta', id: part.id, delta: part.delta },
+        });
+        break;
+      case 'tool-call':
+        await args.sink.write({
+          t: 'event',
+          event: {
+            kind: 'tool-input-available',
+            id: part.toolCallId,
+            name: part.toolName,
+            input: part.input,
+            toolKind: streamToolKind(part.toolName, args.tools),
+          },
+        });
+        break;
+      default:
+        break;
+    }
+  }
+
+  // The promise accessors resolve once the stream is fully consumed above. `modelId` and the
+  // reported cost live on the final step (the top-level aliases are deprecated in AI SDK v7).
+  const [toolCalls, usage, finalStep] = await Promise.all([
+    result.toolCalls,
+    result.usage,
+    result.finalStep,
+  ]);
+  // What the provider itself parsed. Handed back for the loop to VALIDATE — never as the
+  // finished answer: "the provider says it matched" is a different claim from "it matches".
+  const object = output === undefined ? undefined : await result.output;
+
+  const modelId = finalStep.response.modelId;
+  const costUsd = extractCostUsd(finalStep.providerMetadata);
+
+  return {
+    text,
+    toolCalls: toolCalls.map(mapToolCall),
+    usage: mapUsage(usage),
+    ...(typeof modelId === 'string' && modelId.length > 0 ? { modelId } : {}),
+    ...(costUsd !== undefined ? { costUsd } : {}),
+    ...(object !== undefined ? { object } : {}),
+  };
+}
+
 /** The stream's two-valued tool kind: only an `action` waits for a person before it runs. */
 function streamToolKind(toolName: string, tools: ToolDefinition[]): 'read' | 'action' {
   return tools.find((definition) => definition.name === toolName)?.kind === 'action'

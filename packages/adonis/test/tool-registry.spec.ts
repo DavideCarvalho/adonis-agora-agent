@@ -41,7 +41,8 @@ function ctxFor(actor: Actor): AiToolCtx {
 }
 
 describe('ToolRegistry', () => {
-  const policy = new DefaultRolesPolicy();
+  // Tools declare no roles here, so the policy's defaults decide: ADMIN-only, the posture these cases exercise.
+  const policy = new DefaultRolesPolicy(['ADMIN']);
 
   function registry(): ToolRegistry {
     const reg = new ToolRegistry();
@@ -70,6 +71,14 @@ describe('ToolRegistry', () => {
     const defs = await registry().definitionsFor({ id: 'u1', roles: ['ADMIN'] }, policy);
     expect(defs.map((d) => d.name).sort()).toEqual(['getWeather', 'purgeCache']);
     expect(defs.every((d) => !('execute' in d))).toBe(true);
+  });
+
+  it('leaves a tool without roles open to anyone under the default policy', async () => {
+    const defs = await registry().definitionsFor(
+      { id: 'anon:x', roles: ['anonymous'] },
+      new DefaultRolesPolicy(),
+    );
+    expect(defs.map((d) => d.name).sort()).toEqual(['getWeather', 'purgeCache']);
   });
 
   it('filters out tools the role may not use', async () => {

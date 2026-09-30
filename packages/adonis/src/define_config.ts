@@ -199,7 +199,12 @@ export interface AgentConfig {
   authorizer?: RolesPolicy;
   /** Alias of {@link AgentConfig.authorizer}. */
   rolesPolicy?: RolesPolicy;
-  /** Roles a tool requires when it declares none. Defaults to `['ADMIN']`. */
+  /**
+   * Roles a tool requires when it declares none. Default `[]` — no restriction: every tool is
+   * callable by whoever `actorResolver` resolved (an anonymous visitor included, when none is
+   * configured). `action` tools still park on approval regardless. `['ADMIN']` restores the old
+   * fail-closed default.
+   */
   defaultRoles?: string[];
   /**
    * Resolves the acting actor per request (the identity seam). Defaults to a resolver that THROWS on
@@ -240,12 +245,13 @@ export interface AgentConfig {
   /**
    * Which models a caller may pick — `GET <path>/models`, a send's `model`, a thread's pinned model
    * (`PATCH <path>/threads/:id { model }`). The picked id reaches the model provider as
-   * `ModelTurnArgs.model` (`aiSdkModel`'s `resolveModel` turns it into a `LanguageModel`).
+   * `ModelTurnArgs.model` (`aiSdkModels` runs the turn on it).
    *
    * A fixed list is a literal — `{ default: 'gpt-4o-mini', providers: [{ id: 'openai', label:
    * 'OpenAI', models: [{ id: 'gpt-4o-mini', label: 'GPT-4o mini', available: true }] }] }`; pass a
    * `ModelCatalog` (`list({ actor, agent })`) to decide per caller (plan, budget, provider health).
-   * Omit → an empty catalog, and a request naming a model is refused with `400`.
+   * Omit → the catalog the model provider carries (`aiSdkModels({ … })`), else an empty one, and a
+   * request naming a model is refused with `400`.
    */
   models?: ModelCatalog | ModelCatalogView;
   /**
