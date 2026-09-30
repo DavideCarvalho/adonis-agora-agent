@@ -15,11 +15,8 @@ import type { AttachmentStagingStore } from '../spi/attachment-staging.js';
 import type { EmbeddingProvider } from '../spi/embedding-provider.js';
 import type { AgentGovernanceQueries } from '../spi/governance-queries.js';
 import type { AgentPricingStore } from '../spi/pricing-store.js';
-import type { QuotaProvider } from '../spi/quota-provider.js';
-import type { QuotaStore } from '../spi/quota-store.js';
 import type { Retriever } from '../spi/retriever.js';
 import type { TokenStreamSink } from '../spi/token-stream-sink.js';
-import type { QuotaLimits } from './ledger-quota-provider.js';
 import type { LucidDatabaseLike } from './lucid.js';
 
 /**
@@ -147,82 +144,6 @@ export const stores = {
   },
 };
 
-// ── Quota factories ──────────────────────────────────────────────────────────
-
-/**
- * Runtime context a {@link QuotaFactory} thunk receives — the {@link StoreContext} plus the already
- * built {@link AgentStore}, so a ledger-backed quota store can read the run's own token-usage ledger
- * (no separate quota table). The provider builds the store first, then the quota, then passes it here.
- */
-export interface QuotaContext extends StoreContext {
-  store: AgentStore;
-}
-
-/**
- * A configured quota store: a lazy thunk the agent provider calls at boot. Omitting a quota disables
- * budgeting (fail-open). A plain `() => new InMemoryQuotaStore()` still satisfies this — the context
- * arg is optional to consume.
- */
-export type QuotaFactory = (
-  ctx: QuotaContext,
-) => QuotaStore | QuotaProvider | Promise<QuotaStore | QuotaProvider>;
-
-/** Options for both bundled quota stores — the daily per-actor token budget. */
-export interface QuotaConfig {
-  /** Daily token budget per actor. */
-  limitTokens: number;
-}
-
-/**
- * The quota factory namespace used in `config/agent.ts`, mirroring {@link stores}:
- *
- * ```ts
- * export default defineConfig({
- *   store: 'lucid',
- *   stores: { lucid: stores.lucid() },
- *   quota: quotas.ledger({ limitTokens: 1_000_000 }),
- * })
- * ```
- */
-export const quotas = {
-  /** In-memory per-actor/day budget — single-process, non-durable. Handy for tests and dev apps. */
-  memory(config: QuotaConfig): QuotaFactory {
-    return async () => {
-      const { InMemoryQuotaStore } = await import('../testing/in-memory-quota.js');
-      return new InMemoryQuotaStore(config.limitTokens);
-    };
-  },
-
-  /**
-   * Enforce the budget off the persisted token-usage ledger (the selected `store`) — one source of
-   * truth across replicas, with no double-counting. Pairs with any {@link AgentStore}.
-   */
-  ledger(config: QuotaConfig): QuotaFactory {
-    return async ({ store }) => {
-      const { LedgerQuotaStore } = await import('./ledger-quota.js');
-      return new LedgerQuotaStore(store, config.limitTokens);
-    };
-  },
-
-  /**
-   * Budget windows off the usage ledger — per day and per month, in tokens and/or recorded spend:
-   *
-   * ```ts
-   * quota: quotas.windows({ day: { tokens: 200_000 }, month: { usd: 20 } })
-   * ```
-   *
-   * `GET <path>/quota` reports every window, and a send while one is exhausted is refused with `429`
-   * `{ code: 'quota_exceeded', period }` before the turn starts. Spend is the provider-reported cost
-   * the usage rows recorded (a gateway), so a `usd` ceiling binds only where cost is reported.
-   */
-  windows(limits: QuotaLimits): QuotaFactory {
-    return async ({ store }) => {
-      const { LedgerQuotaProvider } = await import('./ledger-quota-provider.js');
-      return new LedgerQuotaProvider(store, undefined, limits);
-    };
-  },
-};
-
 // ── Pricing factories ────────────────────────────────────────────────────────
 
 /** Runtime context a {@link PricingFactory} thunk receives — the booted application. */
@@ -287,7 +208,7 @@ export const pricingStores = {
  * Runtime context a {@link GovernanceQueriesFactory} thunk receives — the {@link StoreContext} plus the
  * already-resolved {@link AgentPricingStore} (when the app configured one), so the read-model prices its
  * cost rollups against the SAME live prices the loop's cost fold uses. The provider resolves pricing
- * first, then the governance queries, then passes it here (mirroring how {@link QuotaContext} carries the
+ * first, then the governance queries, then passes it here (the way a store-reading factory is handed the
  * built store). `pricingStore` is absent when the app configured none → the read-model reports 0 cost.
  */
 export interface GovernanceQueriesContext extends StoreContext {
@@ -355,7 +276,7 @@ export type RetrieverContext = StoreContext;
 /**
  * A configured retriever: a lazy thunk the agent provider calls at boot to build the {@link Retriever}
  * wired into inject-mode retrieval. Each factory imports the RAG stack inside the thunk, so nothing is
- * loaded until a retriever is actually selected — mirroring {@link stores}/{@link quotas}.
+ * loaded until a retriever is actually selected — mirroring {@link stores}.
  */
 export type RetrieverFactory = (ctx: RetrieverContext) => Retriever | Promise<Retriever>;
 

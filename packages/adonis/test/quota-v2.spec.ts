@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { exhaustedWindow, type QuotaReport, quotaPeriodRange, quotas } from '../src/index.js';
+import { exhaustedWindow, type QuotaReport, quotaPeriodRange } from '../src/index.js';
 import { FakeModelProvider } from '../src/testing/fake-model-provider.js';
 import { type BootedApp, bootAgentApp, readSse } from './helpers/boot-agent-app.js';
 
@@ -49,7 +49,7 @@ describe('quota windows', () => {
   it('refuses a send with 429 quota_exceeded once a window is used up', async () => {
     booted = await bootAgentApp({
       model: new FakeModelProvider(() => ({ text: 'Hello there' })),
-      quota: quotas.windows({ day: { tokens: 5 }, month: { usd: 100 } }),
+      quota: { limits: { day: { tokens: 5 }, month: { usd: 100 } } },
     });
     await readSse(await send(booted.url));
     const report = (await (
@@ -72,14 +72,23 @@ describe('quota windows', () => {
     });
   });
 
-  it('lends a daily QuotaStore ceiling to the report and leaves its enforcement to the loop', async () => {
+  it('takes a QuotaProvider of its own and gates on its report', async () => {
     booted = await bootAgentApp({
       model: new FakeModelProvider(() => ({ text: 'Hello there' })),
-      quota: quotas.memory({ limitTokens: 1000 }),
+      quota: {
+        report: async () => ({
+          windows: [{ period: 'month', usedTokens: 0, usedUsd: 20, limitUsd: 20 }],
+          blocked: { period: 'month', reason: 'Monthly budget reached' },
+        }),
+      },
     });
-    const report = (await (
-      await fetch(`${booted.url}/agent/quota`, { headers })
-    ).json()) as QuotaReport;
-    expect(report.windows[0]).toMatchObject({ period: 'day', limitTokens: 1000 });
+    const refused = await send(booted.url);
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toMatchObject({ code: 'quota_exceeded', period: 'month' });
+  });
+
+  it('no longer serves GET /agent/quota/today', async () => {
+    booted = await bootAgentApp({ model: new FakeModelProvider(() => ({ text: 'Hi' })) });
+    expect((await fetch(`${booted.url}/agent/quota/today`, { headers })).status).toBe(404);
   });
 });

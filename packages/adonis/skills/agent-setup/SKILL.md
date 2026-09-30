@@ -3,7 +3,7 @@ name: agent-setup
 description: >-
   Set up @adonis-agora/agent in an AdonisJS app: node ace configure @adonis-agora/agent,
   defineConfig in config/agent.ts (model via aiSdkModel from @adonis-agora/agent/ai-sdk,
-  stores.lucid()/stores.memory(), quotas.ledger/quotas.memory, pricingStores +
+  stores.lucid()/stores.memory(), quota: { limits }, pricingStores +
   seedModelPrices + estimateCost, tokenSinks.redis multi-replica SSE sink,
   AuthActorResolver identity seam), auto-created agent tables vs the published migration,
   the cost fold (null vs $0.00), and route mounting under config path. Use for "set up
@@ -90,24 +90,22 @@ Source: `packages/adonis/docs/getting-started.mdx`,
 
 ## Core patterns
 
-### Pattern 1 — enforce a daily spend budget with `quotas.ledger`
+### Pattern 1 — set a budget with `quota: { limits }`
 
-Quotas are **opt-in**: omitting `quota` disables budgeting entirely (fail-open).
-Configuring one makes the gate fail-closed — `check()` runs before the first model call
-and over-budget turns throw `QuotaExceededError` before any tokens are spent.
+Budgets are **opt-in**: omitting `quota` means usage is reported (`GET /agent/quota`) but
+never enforced. With limits, a send while a window is exhausted is refused with `429`
+`{ code: 'quota_exceeded', period }` before the turn starts — no tokens spent.
 
 ```ts
-import { defineConfig, quotas } from '@adonis-agora/agent'
-
 export default defineConfig({
   // ...
-  quota: quotas.ledger({ limitTokens: 1_000_000 }), // enforced off the persisted usage ledger
+  quota: { limits: { day: { tokens: 200_000 }, month: { usd: 20 } } },
 })
 ```
 
-`quotas.memory({ limitTokens })` is the single-process variant for tests. The `day`
-(`YYYY-MM-DD`, UTC) is stamped once by the runner, so day-bucketing stays deterministic
-under durable replay.
+Spend (`usd`) is the provider-reported cost the ledger recorded. A budget of your own is a
+`QuotaProvider` (`report({ actor })`) passed as `quota`. `quotas.ledger` / `quotas.memory`,
+`LedgerQuotaStore` and `GET /agent/quota/today` were removed in 0.46.
 
 Source: `packages/adonis/docs/governance/quota-and-cost.mdx`.
 
@@ -206,49 +204,21 @@ wrong for an app whose users log in.
 Source: `packages/adonis/src/anonymous-actor-resolver.ts`,
 `packages/adonis/docs/governance/authorization.mdx` ("No resolver: the endpoints are public").
 
-### MEDIUM — expecting quota enforcement after configuring only a store
+### MEDIUM — shipping a public (anonymous) chat without a budget
 
 ```ts
-// Wrong — no `quota` key means budgets are DISABLED (fail-open), even with a ledger full of usage.
-export default defineConfig({ model, store: 'lucid', stores: { lucid: stores.lucid() } })
+// Wrong — no actorResolver (public) and no quota: model spend is unbounded.
+export default defineConfig({ model })
 ```
 
 ```ts
-// Correct — opt in; the check then runs fail-closed before the first model call.
-export default defineConfig({
-  ...,
-  quota: quotas.ledger({ limitTokens: 500_000 }),
-})
+// Correct — limits apply per actor, i.e. per browser in anonymous mode.
+export default defineConfig({ model, quota: { limits: { day: { tokens: 50_000 } } } })
 ```
 
-Mechanism: the loop skips both `check` and `bump` entirely when `deps.quota` is
-undefined — there is no implicit limit.
-Source: `packages/adonis/docs/governance/quota-and-cost.mdx` ("Quota is opt-in, and off
-means open"), `packages/adonis/src/agent-loop.ts` (`if (deps.quota !== undefined)`).
-
-### HIGH — incrementing counters in a custom QuotaStore's `bump`
-
-```ts
-// Wrong — double-counts every turn when paired with the persisted usage ledger.
-const store: QuotaStore = {
-  async check(actorRef, day) { /* read my counter */ },
-  async bump(actorRef, day, tokens) { await redis.incrBy(key, tokens) },
-}
-```
-
-```ts
-// Correct — a ledger-backed store leaves bump empty: recordUsage already wrote the tokens.
-class LedgerQuota implements QuotaStore {
-  async check(actorRef: string, day: string) { /* sum agent_token_usage */ }
-  async bump(): Promise<void> {} // deliberate no-op — the ledger is the source of truth
-}
-```
-
-Mechanism: `store.recordUsage(...)` has already persisted each turn's tokens;
-`quotas.ledger.check` reads that ledger, so adding again in `bump` counts each turn twice.
-Only a store keeping its OWN tally (`quotas.memory`, a bespoke Redis counter) should add.
-Source: `packages/adonis/docs/governance/quota-and-cost.mdx` ("`bump` is a notification,
-not necessarily an increment"), `packages/adonis/src/stores/ledger-quota.ts`.
+Mechanism: without `quota`, `GET /agent/quota` reports usage off the ledger but nothing
+gates a send. With it, the chat route checks the report before starting the turn.
+Source: `packages/adonis/docs/governance/quota-and-cost.mdx` ("Budgets").
 
 ### MEDIUM — reading `$0.00` rollups as "this model is free"
 

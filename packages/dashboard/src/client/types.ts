@@ -1,6 +1,6 @@
 /**
  * Wire shapes returned by the `@adonis-agora/agent` provider's read-only governance routes
- * (`/agent/governance/*`) plus the per-actor `quota/today` route. These MIRROR the target's SPI
+ * (`/agent/governance/*`) plus the per-actor `quota` route. These MIRROR the target's SPI
  * (`AgentGovernanceQueries` in `src/spi/governance-queries.ts`) exactly — the SPA is a pure consumer,
  * so any drift here is a bug against the server contract, not a local choice.
  */
@@ -87,7 +87,7 @@ export interface ThreadActivityRow {
   lastActivityAt: string;
 }
 
-/** `GET /agent/quota/today` — the caller's token spend so far today. */
+/** The day window of `GET /agent/quota` — the caller's token spend so far today. */
 export interface QuotaToday {
   usedTokens: number;
 }

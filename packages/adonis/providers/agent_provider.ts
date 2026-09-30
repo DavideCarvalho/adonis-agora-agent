@@ -5,6 +5,7 @@ import {
   type Actor,
   type ActorDirectory,
   type ActorResolver,
+  type AgentClientConfig,
   type AgentConfig,
   AgentDepsFactory,
   AgentGenui,
@@ -100,6 +101,9 @@ function decisionVia(claimed: unknown): string | null {
     ? claimed
     : null;
 }
+
+/** How many attachments one message may name. */
+const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 
 /** Default per-file size cap when `attachmentMaxBytes` is omitted (20 MiB). */
 const DEFAULT_MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -214,12 +218,14 @@ export default class AgentProvider {
     const model = await this.#resolveModel(config);
     const store = await this.#resolveStore(config);
     const sink = await this.#resolveSink(config);
-    // Quota is resolved after the store so a ledger-backed quota can read the store's usage ledger.
-    // A `QuotaStore` is the loop's daily token check; a `QuotaProvider` (`quotas.windows`) is the send
-    // gate instead. Either way `GET <path>/quota` reports — off the ledger when nothing else does.
-    const resolvedQuota = await this.#resolveQuota(config, store);
-    const quotaProvider = isQuotaProvider(resolvedQuota) ? resolvedQuota : undefined;
-    const quota = isQuotaProvider(resolvedQuota) ? undefined : resolvedQuota;
+    // One budget: `{ limits }` over the usage ledger, or a `QuotaProvider` of your own — reported by
+    // `GET <path>/quota` and gating a send (`429`). Omitted → reported off the ledger, never gated.
+    const quotaProvider =
+      config.quota === undefined
+        ? undefined
+        : isQuotaProvider(config.quota)
+          ? config.quota
+          : new LedgerQuotaProvider(store, undefined, config.quota.limits);
     const pricingStore = await this.#resolvePricing(config);
     // Governance read-model is resolved after pricing so the Lucid read-model prices its rollups
     // against the same live prices the loop's cost fold uses.
@@ -255,7 +261,6 @@ export default class AgentProvider {
       registry,
       agents,
       defaultAgentName: config.defaultAgent?.name ?? 'default',
-      ...(quota !== undefined ? { quota } : {}),
       ...(config.approvalPolicy !== undefined
         ? { approvalPolicy: toApprovalPolicy(config.approvalPolicy) }
         : {}),
@@ -291,7 +296,7 @@ export default class AgentProvider {
       quota:
         quotaProvider !== undefined
           ? { provider: quotaProvider, gated: true }
-          : { provider: new LedgerQuotaProvider(store, quota), gated: false },
+          : { provider: new LedgerQuotaProvider(store), gated: false },
     });
     this.app.container.bindValue(AgentService, service);
 
@@ -371,15 +376,6 @@ export default class AgentProvider {
     const directory = config.actorDirectory;
     if (directory === undefined) return null;
     return typeof directory === 'function' ? directory({ app: this.app }) : directory;
-  }
-
-  async #resolveQuota(
-    config: AgentConfig,
-    store: AgentStore,
-  ): Promise<QuotaStore | QuotaProvider | undefined> {
-    const quota = config.quota;
-    if (quota === undefined) return undefined;
-    return typeof quota === 'function' ? quota({ app: this.app, store }) : quota;
   }
 
   /**
@@ -905,19 +901,34 @@ export default class AgentProvider {
       });
     });
 
+    // 11a. GET /agent/config — server facts a client would otherwise repeat (attachment limits, whether
+    // a picker / quota / anonymous identity is in play). Resolves the actor like every route, so an
+    // anonymous browser gets its identity on whichever request comes first.
+    router.get(p('config'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      const clientConfig: AgentClientConfig = {
+        attachments: {
+          enabled: attachmentStaging !== undefined,
+          upload: attachmentStaging === undefined ? null : 'multipart',
+          maxBytes: config.attachmentMaxBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES,
+          allowedContentTypes:
+            config.attachmentAllowedContentTypes ?? DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES,
+          maxPerMessage: MAX_ATTACHMENTS_PER_MESSAGE,
+        },
+        models: { enabled: service.hasModelCatalog() },
+        quota: { enforced: config.quota !== undefined },
+        identity: { anonymous: actorResolver instanceof AnonymousActorResolver },
+      };
+      return ctx.response.json(clientConfig);
+    });
+
     // 11b. GET /agent/quota — every budget window with what was spent in it, and `blocked` naming
     // the exhausted one.
     router.get(p('quota'), async (ctx: HttpContext) => {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
       return ctx.response.json(await service.quotaReport(actor));
-    });
-
-    // 12. GET /agent/quota/today.
-    router.get(p('quota/today'), async (ctx: HttpContext) => {
-      const actor = await this.#resolveActor(ctx, actorResolver);
-      if (actor === null) return;
-      return ctx.response.json(await service.quotaToday(actor.id));
     });
 
     // 12. POST /agent/attachments — OPTIONAL. Mounted only when `attachmentStaging` is configured, so

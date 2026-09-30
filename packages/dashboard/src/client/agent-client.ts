@@ -44,7 +44,7 @@ export interface AgentClientOptions {
 
 /**
  * A framework-free browser client for the `@adonis-agora/agent` provider's READ surface: the five
- * `/agent/governance/*` rollups plus the per-actor `quota/today`. Same-origin, `credentials:
+ * `/agent/governance/*` rollups plus the per-actor `quota`. Same-origin, `credentials:
  * 'same-origin'` so the host's actor/auth cookie gates every call exactly as it gates the routes
  * server-side. No third-party HTTP dependency.
  */
@@ -124,8 +124,11 @@ export class AgentClient {
     );
   }
 
-  quotaToday(): Promise<QuotaToday> {
-    return this.get<QuotaToday>('/quota/today');
+  /** Today's window of `GET /agent/quota` — the caller's token spend so far today. */
+  async quotaToday(): Promise<QuotaToday> {
+    const report = await this.get<{ windows?: { period: string; usedTokens: number }[] }>('/quota');
+    const day = report.windows?.find((window) => window.period === 'day');
+    return { usedTokens: day?.usedTokens ?? 0 };
   }
 
   // ── Run lifecycle governance (the run-tracking read-model). ─────────────────

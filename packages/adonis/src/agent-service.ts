@@ -79,6 +79,11 @@ export class AgentService {
    * The models `actor` may pick for `agent` (`GET <path>/models`). An empty catalog when none is
    * configured, so a picker simply has nothing to offer.
    */
+  /** Is a model catalog configured (so `GET <path>/models` lists something)? */
+  hasModelCatalog(): boolean {
+    return this.options.models !== undefined;
+  }
+
   async listModels(actor: Actor, agent?: string): Promise<ModelCatalogView> {
     if (this.options.models === undefined) {
       return { providers: [], default: null };
@@ -167,8 +172,7 @@ export class AgentService {
 
   /**
    * Refuse a turn the actor's budget no longer covers — only when a budget was configured
-   * (`quotas.windows(…)` or a `QuotaProvider`): the default report is informational, and a daily
-   * `QuotaStore` keeps being enforced by the loop as it always was.
+   * (`quota: { limits }` or a `QuotaProvider`): the default report is informational.
    */
   private async assertWithinQuota(actor: Actor): Promise<void> {
     if (this.options.quota?.gated !== true) {
@@ -210,8 +214,8 @@ export class AgentService {
       ...(model !== undefined ? { model } : {}),
     };
 
+    // The runner marks the thread's active run itself, before the turn can end.
     const { runId } = await this.runner.start(input);
-    await this.store.setActiveStream(threadId, runId);
     return { runId, threadId };
   }
 

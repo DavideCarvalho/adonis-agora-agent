@@ -390,6 +390,12 @@ export interface ThreadSummary {
    * `model` runs on it. `null` → the provider's default. Undefined for a store that does not persist it.
    */
   model?: string | null;
+  /**
+   * The run streaming on this thread right now — the one a reloading client re-attaches to
+   * (`GET <path>/chat/:runId/stream`) — or `null` when none is. Set when a turn starts, cleared when
+   * it ends.
+   */
+  activeRunId?: string | null;
 }
 
 export interface StoredMessage {
@@ -476,7 +482,6 @@ export interface ToolCallApproval {
 
 export interface ThreadDetail extends ThreadSummary {
   messages: StoredMessage[];
-  activeStreamId?: string;
 }
 
 export type ToolCallStatus =
@@ -487,3 +492,29 @@ export type ToolCallStatus =
   | 'failed'
   /** An approval request lapsed before anyone decided; the tool never ran. */
   | 'expired';
+
+/** The attachment rules in force — what the upload route enforces (`GET <path>/config`). */
+export interface AgentAttachmentConfig {
+  /** An upload store is configured, so uploads work at all. */
+  enabled: boolean;
+  /** How a client uploads (`null` when `enabled` is false). */
+  upload: 'multipart' | 'resumable' | null;
+  maxBytes: number;
+  allowedContentTypes: readonly string[];
+  /** How many attachments one message may name. */
+  maxPerMessage: number;
+}
+
+/**
+ * `GET <path>/config` — server facts a client would otherwise repeat (the shape of
+ * `@dudousxd/nestjs-agent`'s `AgentClientConfig`, which its React `useAgentConfig` reads).
+ */
+export interface AgentClientConfig {
+  attachments: AgentAttachmentConfig;
+  /** A model catalog is available, so `GET <path>/models` lists something to pick. */
+  models: { enabled: boolean };
+  /** Sends are refused with `429` once `GET <path>/quota` reports `blocked`. */
+  quota: { enforced: boolean };
+  /** No `actorResolver`: every browser is its own anonymous actor. */
+  identity: { anonymous: boolean };
+}

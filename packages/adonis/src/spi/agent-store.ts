@@ -192,6 +192,12 @@ export interface AgentStore {
    */
   updateThread?(threadId: string, patch: UpdateThreadInput): Promise<void>;
   setActiveStream(threadId: string, runId: string | null): Promise<void>;
+  /**
+   * OPTIONAL: clear the thread's active run only if it is still `runId` — so a turn that ends after
+   * a newer one started on the same thread does not blank the newer one's pointer. Absent →
+   * `setActiveStream(threadId, null)`.
+   */
+  clearActiveStream?(threadId: string, runId: string): Promise<void>;
 
   appendMessage(input: AppendMessageInput): Promise<StoredMessage>;
   /**
@@ -279,4 +285,17 @@ export interface AgentStore {
   getRunActorRef(runId: string): Promise<string | null>;
   /** Settle a run's outcome (terminal, first-wins). A no-op when the run is unknown or already settled. */
   recordRunEnd(input: RecordRunEndInput): Promise<void>;
+}
+
+/** Clear `threadId`'s active run if it is still `runId` (see {@link AgentStore.clearActiveStream}). */
+export async function clearActiveRun(
+  store: AgentStore,
+  threadId: string,
+  runId: string,
+): Promise<void> {
+  if (store.clearActiveStream !== undefined) {
+    await store.clearActiveStream(threadId, runId);
+    return;
+  }
+  await store.setActiveStream(threadId, null);
 }

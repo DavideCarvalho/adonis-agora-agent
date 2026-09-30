@@ -57,7 +57,7 @@ export default defineConfig({
 
 ### `quota`
 
-`QuotaStore | QuotaFactory`. The daily token budget. **Omit to disable quotas** (fail-open on budget). When set, the budget is checked before the model runs (fail-closed). Use `quotas.ledger({ limitTokens })` to enforce off the persisted usage ledger, or `quotas.memory({ limitTokens })` for a single-process budget. See [Quota & cost](/docs/agent/governance/quota-and-cost).
+`{ limits: { day?: { tokens?, usd? }, month?: { tokens?, usd? } } } | QuotaProvider`. The caller's budget — reported by `GET /agent/quota` and gating a send (`429 quota_exceeded`) once a window is exhausted. **Omit → reported off the ledger, never enforced.** See [Budgets](/docs/agent/governance/quota-and-cost#budgets).
 
 ### `pricingStore`
 

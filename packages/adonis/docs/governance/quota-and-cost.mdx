@@ -1,85 +1,35 @@
 ---
 title: Quota & cost
-description: Meter agent spend — a fail-closed daily token quota checked before the model runs, a per-turn usage ledger with real or estimated cost, and the model pricing table.
+description: Meter agent spend — budget windows per day and month (tokens and spend) checked before a turn starts, a per-turn usage ledger with real or estimated cost, and the model pricing table.
 icon: Gauge
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-Once an agent can spend tokens on a user's behalf, you want a budget and a bill. `@adonis-agora/agent` gives you a **daily token quota** checked before each turn and a **usage ledger** that records every turn's tokens and cost.
+Once an agent can spend tokens on a user's behalf, you want a budget and a bill. `@adonis-agora/agent` gives you **budget windows** checked before each turn and a **usage ledger** that records every turn's tokens and cost.
 
-## The daily quota
+## Budgets
 
-A `QuotaStore` is a two-method seam:
-
-```ts
-interface QuotaStore {
-  check(actorRef: string, day: string): Promise<QuotaState> // { usedTokens, limitTokens, withinLimit }
-  bump(actorRef: string, day: string, tokens: number): Promise<void>
-}
-```
-
-The loop uses it in two places:
-
-- **`check` runs before the first model call.** If the actor is over budget for the day, the turn throws `QuotaExceededError` and **no tokens are spent** — the model is never called. This is the fail-closed, pre-model gate.
-- **`bump` runs after each model turn**, handing the store that turn's `inputTokens + outputTokens`.
-
-The `day` (`YYYY-MM-DD`, UTC) is stamped once by the runner and threaded through the loop, so quota-by-day stays deterministic under replay.
-
-<Callout type="warn" title="`bump` is a notification, not necessarily an increment">
-The loop calls `bump` after every turn, but what the store does with it is the store's business — and
-the recommended `quotas.ledger` implements it as a **deliberate no-op**:
-
-```ts
-async bump(): Promise<void> {
-  // No-op: the ledger is the source of truth — recordUsage already persisted this turn's tokens.
-}
-```
-
-That is not an oversight. `store.recordUsage(...)` has already written the turn's tokens to
-`agent_token_usage`, which is what `check` reads; incrementing a second counter would double-count
-every turn. So if you write your own `QuotaStore` over the persisted ledger, `bump` should stay empty
-too. Only a store that keeps its **own** tally — `quotas.memory`, a bespoke Redis counter — should
-actually add anything in `bump`.
-</Callout>
-
-<Callout type="warn" title="Quota is opt-in, and off means open">
-Omit `quota` in the config and quotas are **disabled** — the loop skips the check and bump entirely (fail-open on budget). When you *do* configure a quota store, the budget gate is fail-closed. Wire one with the `quotas` factory to enforce spend limits:
-
-```ts title="config/agent.ts"
-import { defineConfig, quotas } from '@adonis-agora/agent'
-
-export default defineConfig({
-  // ...
-  quota: quotas.ledger({ limitTokens: 1_000_000 }), // enforce off the persisted usage ledger
-})
-```
-
-`quotas.ledger` enforces the budget off the persisted token-usage ledger (one source of truth across replicas); `quotas.memory({ limitTokens })` is a single-process budget for tests and small apps. Any custom `QuotaStore` (e.g. a bespoke Redis counter) satisfies the same two methods.
-</Callout>
-
-`GET /agent/quota/today` reports what the calling actor has **spent** today: the response is exactly
-`{ usedTokens }`, summed from the usage ledger over the UTC day. It does not carry the limit or the
-remainder — the route reads the store directly and never consults the configured `QuotaStore`, so it
-answers the same way whether or not a budget is enforced. A UI that wants to show "820k of 1M used"
-needs the limit from its own config.
-
-## Budget windows
-
-`quotas.windows` sets ceilings per UTC day and per calendar month, in tokens and/or recorded spend:
+One option, `quota`, sets ceilings per UTC day and per calendar month, in tokens and/or recorded spend:
 
 ```ts title="config/agent.ts"
 export default defineConfig({
   // …
-  quota: quotas.windows({ day: { tokens: 200_000 }, month: { usd: 20 } }),
+  quota: { limits: { day: { tokens: 200_000 }, month: { usd: 20 } } },
 })
 ```
 
-`GET /agent/quota` reports every window — `{ windows: [{ period, usedTokens, limitTokens?, usedUsd, limitUsd?, resetsAt }], blocked?: { period, reason } }` — and while one is exhausted `POST /agent/chat` answers `429` `{ code: 'quota_exceeded', period, message }` before the turn starts. That is the shape `@dudousxd/nestjs-agent-react`'s `useQuota` renders and `useAgentChat({ blocked })` reads.
+`GET /agent/quota` reports every window — `{ windows: [{ period, usedTokens, limitTokens?, usedUsd, limitUsd?, resetsAt }], blocked?: { period, reason } }` — and while one is exhausted `POST /agent/chat` answers `429` `{ code: 'quota_exceeded', period, message }` before the turn starts, so no tokens are spent. That is the shape `@dudousxd/nestjs-agent-react`'s `useQuota` renders, and `GET /agent/config` says `quota.enforced: true`.
 
-Without a budget, `GET /agent/quota` still reports the day and month windows off the ledger (no ceilings, never blocked); with a daily `QuotaStore` (`quotas.ledger` / `quotas.memory`) the day window carries its ceiling and the loop keeps enforcing it as above. A budget of your own — an AI-gateway spend cap, a plan's allowance — is a `QuotaProvider` (`report({ actor })`) passed as `quota`.
+Without `quota`, `GET /agent/quota` still reports the day and month windows off the ledger — no ceilings, never blocked. For a public (anonymous) deployment that means unbounded model spend, so set limits there; they apply per actor, which is per browser in anonymous mode.
+
+A budget of your own — an AI-gateway spend cap, a plan's allowance — is a `QuotaProvider` (`report({ actor, now? })`) passed as `quota`; its `blocked` gates sends the same way.
 
 Spend is what the usage rows recorded, i.e. the provider-reported cost (a gateway): a `usd` ceiling only binds where cost is reported. The month window needs a store with `usageBetween` (Lucid and in-memory have it).
+
+<Callout type="info" title="Migrating from quotas.ledger / quotas.memory">
+The `quotas.*` factories, `LedgerQuotaStore` and `GET /agent/quota/today` are gone (0.46). `quota: quotas.ledger({ limitTokens: N })` becomes `quota: { limits: { day: { tokens: N } } }`. The check moved from inside the turn to the send: a request over budget is refused with `429` instead of a run that fails with `quota_exceeded`. Drain in-flight durable runs started under the old option before upgrading — their journals hold the loop's quota checkpoints.
+</Callout>
 
 ## The usage ledger
 

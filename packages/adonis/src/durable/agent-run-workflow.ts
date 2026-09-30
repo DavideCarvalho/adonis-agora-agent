@@ -8,6 +8,7 @@ import { utcDay } from '../agent-deps.js';
 import { type AgentLoopHooks, runAgentLoop, settleAll, streamErrorFrame } from '../agent-loop.js';
 import type { HumanReply } from '../elicitation.js';
 import { isReplayIntegrityError } from '../replay-integrity.js';
+import { clearActiveRun } from '../spi/agent-store.js';
 import { childSinkWriter } from '../spi/token-stream-sink.js';
 import type { AgentRunInput, Decision } from '../types.js';
 import { getDurableAgentContext } from './agent-run-context.js';
@@ -155,7 +156,12 @@ export class AgentRunWorkflow extends BaseWorkflow {
     };
 
     try {
-      return await runAgentLoop({ ...deps, day }, input, hooks);
+      const result = await runAgentLoop({ ...deps, day }, input, hooks);
+      // The top-level run owns the thread's active-run pointer (a child runs on a scratch thread).
+      if (!isChild) {
+        await ctx.localStep('deactivate', () => clearActiveRun(store, input.threadId, ctx.runId));
+      }
+      return result;
     } catch (error) {
       // A suspend / continue-as-new is control flow, not a failure — let the engine handle it.
       if (isControlFlowSignal(error)) {
@@ -186,6 +192,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
         store.recordRunEnd({ runId: ctx.runId, status: 'failed', error: message }),
       );
       if (!isChild) {
+        await ctx.localStep('deactivate', () => clearActiveRun(store, input.threadId, ctx.runId));
         const writer = await deps.sink.open(ctx.runId);
         await writer.write(streamErrorFrame(error));
         await writer.end();
