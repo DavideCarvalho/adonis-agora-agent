@@ -1,5 +1,73 @@
 # @adonis-agora/agent
 
+## 0.53.0
+
+### Minor Changes
+
+- [#237](https://github.com/DavideCarvalho/adonis-agora-agent/pull/237) [`ea405b3`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/ea405b37f63527fbd89063610c497ec7e0e679e9) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `emptyRoles: 'deny'` — a ready-made closed roles gate, for apps where an empty roles list means "no one". Closes [#235](https://github.com/DavideCarvalho/adonis-agora-agent/issues/235).
+  
+  **Upgrade note for 0.46, which did not say it outright:** since 0.46 `DefaultRolesPolicy` / `DefaultToolAuthorizer` treat an empty roles list as **open**. Before, `[]` denied everyone. So `roles: []` on a tool, `defaultRoles: []`, `registerFunctionalTool(registry, tool, [])` and any computed `roles` that can come out empty ("the roles holding permission X" when none does) went from reaching nobody to reaching every resolved actor, with no error and no warning. On a multi-tenant MCP server that is silent and serious.
+  
+  The default does not change — an empty list is still open, which is what makes `defineConfig({ model })` a working chat. What is new is the switch to keep it closed:
+  
+  ```ts
+  // config/agent.ts and config/mcp.ts
+  export default defineConfig({ emptyRoles: 'deny' })
+  export default defineMcpConfig({ name, version, defaultRoles: [], emptyRoles: 'deny' })
+  
+  // or the policy itself
+  new ClosedRolesPolicy(defaultRoles) // = new DefaultRolesPolicy(defaultRoles, { emptyRoles: 'deny' })
+  new ClosedToolAuthorizer(defaultRoles) // = new DefaultToolAuthorizer(defaultRoles, { emptyRoles: 'deny' })
+  ```
+  
+  Closed, the actor needs a role the tool declares (else one of `defaultRoles`): a tool with no `roles` and no default roles, or with an explicitly empty list, is neither offered nor invocable, and an actor with no roles reaches nothing.
+  
+  - `DefaultRolesPolicy` and `DefaultToolAuthorizer` take a second argument, `{ emptyRoles?: 'allow' | 'deny' }` (default `'allow'`); `ClosedRolesPolicy`, `ClosedToolAuthorizer` and the `EmptyRoles` / `RolesPolicyOptions` types are exported from the root entry.
+  - `emptyRoles` on `defineConfig` and `defineMcpConfig`, passed to the default authorizer. It is ignored when you set your own `authorizer` / `rolesPolicy`.
+
+- `defineConfirmedTool` — a write with a human gate that works over MCP: the first call validates everything, writes nothing and returns a preview plus a signed `confirmToken`; the same arguments with `confirm: true` and the token commit. Closes [#233](https://github.com/DavideCarvalho/adonis-agora-agent/issues/233).
+  
+  `createMcpServer` keeps `action` tools off the surface and Claude.ai / Claude Desktop have no elicitation, so every app exposing writes over MCP was rebuilding this gate inside a `read` tool. It is now one helper:
+  
+  ```ts
+  import { defineConfirmedTool, LucidConfirmTokenStore } from '@adonis-agora/agent'
+  
+  export const refundOrder = defineConfirmedTool(
+    { name: 'refund_order', description: '…', input: z.object({ orderId: z.string() }),
+      secret: () => env.get('APP_KEY').release(), store: new LucidConfirmTokenStore(db) },
+    {
+      prepare: async ({ orderId }, ctx) => loadRefundableOrder(orderId, ctx.actor),
+      preview: (order) => ({ summary: `Refund ${order.total}?`, data: order }),
+   (order) => ({ summary: 'Refunded.', data: await refund(order) }),
+    },
+  )
+  ```
+  
+  - The token is `<expiresAt>.<HMAC-SHA256>` over the tool, `ctx.actor.id`, `ctx.actor.tenantRef`, the expiry and the canonical arguments: stateless, and useless for another actor, tenant, tool or argument, or after `ttlMs` (default 15 minutes). `secret` is required — there is no default.
+  - `confirm` / `confirmToken` are added around the app's own Standard Schema (`withConfirmFields`): validated by the helper, stripped before the app schema runs, and merged into the JSON Schema `tools/list` and the model see. `prepare` receives the arguments without them.
+  - Results: `{ status: 'preview', summary, data, confirmToken, expiresAt, confirm }` and `{ status: 'done', summary, data }`. A refused confirmation throws `ConfirmTokenError` (`reason: 'invalid' | 'used'`) and writes nothing. `messages` overrides the English wording.
+  - Single use through the new `ConfirmTokenStore` SPI (`claim` / `release` / `purgeExpired`): the token is claimed right before `commit` (a refusal in `prepare` does not spend it) and released if `commit` throws. `LucidConfirmTokenStore` keeps the marks — the token's SHA-256, the actor, the tool — in a new `agent_confirm_token` table and is safe across replicas; `InMemoryConfirmTokenStore` (also in `@adonis-agora/agent/testing`) is for tests and a single process. **Without a `store` a token is not single use.**
+  - `createAgentTables` creates `agent_confirm_token` (`AGENT_TABLES.confirmTokens`). With `autoCreateTables: true` it appears as the app starts; with it off, add a migration that calls `createAgentTables` again.
+  - `canonicalJson`, `signConfirmToken`, `verifyConfirmToken`, `confirmTokenExpiry` and `hashConfirmToken` are exported for a gate of your own.
+
+- [#240](https://github.com/DavideCarvalho/adonis-agora-agent/pull/240) [`f071d8a`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/f071d8abe8f01c3eb135baba0cf39dd7707f2fa4) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Several replicas without Redis: `tokenSinks.lucid()` keeps a run's stream in the app's SQL database, and `ask` / `intake` are now reachable from `config/agent.ts` ([#234](https://github.com/DavideCarvalho/adonis-agora-agent/issues/234)).
+  
+  A run parked on a person was already replica-safe under the durable runner (`durable: true` parks on a journaled signal, not a promise in one process). What a Redis-less deployment was missing is a stream every replica can read, and a way to turn the question surfaces on through the provider.
+  
+  ```ts
+  export default defineConfig({
+    // …
+    durable: true,
+    sink: tokenSinks.lucid(),
+    defaultAgent: { ask: true },
+  })
+  ```
+  
+  - `LucidTokenStreamSink` / `tokenSinks.lucid({ connection, tableName, pollIntervalMs, idlePollIntervalMs, flushMs, ttlSeconds, autoPurge, autoCreateTables, db })` — frames are rows of `agent_stream_frame` (`run_id`, `seq`, `frame`, `created_at`), numbered per run with no gaps; subscribers poll (250 ms, 1 s once a run goes quiet) and replay from the first row, so a subscriber on another replica, a late one and one arriving after the end all see the same stream. Consecutive `text` frames written within `flushMs` (50 ms) are stored as one frame, so a streamed answer is a handful of inserts rather than one per token; SSE event ids are counted from the stored frames and an `after` cursor resumes exactly on any replica. Rows lapse `ttlSeconds` (1 h) after a run's last write: `purgeExpired()` deletes them, and a replica calls it on its own after a run ends (`autoPurge`). Slower to deliver than Redis and it writes to your database on every answer — keep `tokenSinks.redis()` when Redis is there.
+  - `agent_stream_frame` is one of the nine tables of `createAgentTables()` / `AGENT_TABLES.streamFrames` (dropped by `dropAgentTables()`); the sink also creates it for itself at startup. `streamFrameTableStatement()` and `ensureStreamFrameTable()` are exported. With `autoCreateTables: false`, add a migration that calls `createAgentTables` again.
+  - `AgentDefinition.ask` and `AgentDefinition.intake` (`defaultAgent`, `agents[]`) are threaded through `AgentDepsFactory.forAgent()` into the loop, for the inline and the durable runner alike. They were only settable on `AgentLoopDeps`, so an app using the provider could not offer the `ask` tool at all.
+  - `SinkWriter.flush?()` — optional; `childSinkWriter`'s `end()` now calls it, so a delegated run's gathered text is written before its parent's next frame. Sinks that hold nothing back need no change.
+
 ## 0.52.1
 
 ### Patch Changes
