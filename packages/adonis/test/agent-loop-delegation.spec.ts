@@ -32,7 +32,7 @@ import {
 function buildRegistry(): ToolRegistry {
   const reg = new ToolRegistry();
   // A delegate tool synthesized the way `registerDelegateTools` does: kind 'agent', no roles, no
-  // ability. Under `DefaultRolesPolicy` (ADMIN-only fallback) only an ADMIN actor may call it.
+  // ability. Under `DefaultRolesPolicy(['ADMIN'])` (an ADMIN-only fallback) only an ADMIN actor may call it.
   reg.register(
     {
       name: 'ask_billing',
@@ -55,7 +55,7 @@ function buildDeps(overrides: Partial<AgentLoopDeps> = {}): {
     model: new FakeModelProvider(() => ({ text: 'unused' })),
     store,
     registry: buildRegistry(),
-    rolesPolicy: new DefaultRolesPolicy(),
+    rolesPolicy: new DefaultRolesPolicy(['ADMIN']),
     day: '2026-07-29',
     systemPrompt: 'You are a test agent.',
     ...overrides,

@@ -1,22 +1,26 @@
 ---
 title: Authorization
-description: The fail-closed governance model — the DefaultToolAuthorizer (ADMIN-only, role intersection), the offered-and-invoke double check, and the ActorResolver identity seam that never fabricates a caller.
+description: Who is calling and what they may do — the ActorResolver identity seam (anonymous per-browser by default, one line to require login), the DefaultToolAuthorizer role intersection, and the offered-and-invoke double check.
 icon: ShieldCheck
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-Authorization in `@adonis-agora/agent` is **fail-closed**: nothing is reachable unless it's explicitly allowed, and the acting identity is never invented. Two seams enforce it — the **actor resolver** (who is calling) and the **roles policy** (what they may do).
+Two seams decide access — the **actor resolver** (who is calling) and the **roles policy** (what they may do). With neither configured the agent is a free public chat: every browser is its own anonymous actor and every tool without `roles` is callable. One line each tightens it.
 
 ## The actor resolver — who is calling
 
-Every request resolves to an `Actor` (`{ id, roles?, tenantRef? }`) through the configured `ActorResolver`. This is the identity seam, and it is deliberately hostile to accidents:
+Every request resolves to an `Actor` (`{ id, roles?, tenantRef? }`) through the configured `ActorResolver` — the identity seam.
 
-<Callout type="warn" title="No resolver, no service">
-When `config/agent.ts` sets no `actorResolver`, the provider installs `UnconfiguredActorResolver`, which **throws on every request**. The agent will not fabricate a caller from a default. A route whose actor can't be resolved replies `401` and short-circuits — it never runs the model.
+<Callout type="warn" title="No resolver: the endpoints are public">
+When `config/agent.ts` sets no `actorResolver`, the provider installs `AnonymousActorResolver` and says so at boot. Each browser gets its own identity: on its first request the response sets `agent_anon=<32 random bytes, base64url>; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax` (plus `Secure` over HTTPS), and the actor is `{ id: 'anon:' + SHA-256(token), roles: ['anonymous'] }`. Threads, quota and attachments belong to that id, so visitors never see each other's. The cookie is `HttpOnly` (page scripts cannot read it), server-minted and needs no secret. It is the same contract as `@dudousxd/nestjs-agent`'s. Set a `quota` for a public deployment — model spend is otherwise unbounded, per browser.
+
+To require login, one line: `actorResolver: new AuthActorResolver()`. A route whose actor can't be resolved then replies `401` and never runs the model.
 </Callout>
 
-Three resolvers ship:
+The resolvers that ship:
+
+- **`AnonymousActorResolver`** — the default described above. Options: `cookieName`, `maxAgeDays`, `sameSite` (`'none'` for a cross-site client, which forces `Secure`), `secure`, `path`, `roles`.
 
 - **`AuthActorResolver`** (recommended) — reads Adonis's authenticated principal off `ctx.auth.user` (populated by `@adonisjs/auth`). Fail-closed: throws when no user is authenticated. Pass a `toActor` mapper when your user model doesn't expose `id` / `roles` / `tenantRef` directly:
 
@@ -32,7 +36,7 @@ Three resolvers ship:
 
 - **`HeaderActorResolver`** (demos / gateways) — trusts `x-actor-id` (required), `x-actor-role` (comma-separated → `roles`), and `x-tenant-ref`. It throws when `x-actor-id` is absent and grants **no** default role (missing `x-actor-role` → `roles: []`, i.e. no tools). Only safe behind a gateway that strips and re-sets these headers from a verified principal.
 
-- **`UnconfiguredActorResolver`** — the throwing default described above.
+- **`UnconfiguredActorResolver`** — throws on every request: an explicit "nobody" for a surface that must never serve anonymously.
 
 You can also implement `ActorResolver` yourself — it's a one-method interface, `resolve(req): Actor | Promise<Actor>`.
 
@@ -40,8 +44,8 @@ You can also implement `ActorResolver` yourself — it's a one-method interface,
 
 Tool authorization is a `RolesPolicy` — `can(actor, tool): boolean | Promise<boolean>`. The default binding is `DefaultToolAuthorizer`:
 
-- **Fail-closed, ADMIN-only by default.** A tool that declares no `roles` is invocable *only* by an actor holding one of the configured `defaultRoles` (`['ADMIN']` unless you override it).
-- **Set intersection.** Authorization is `actor.roles ∩ (tool.roles ?? defaultRoles) ≠ ∅`. Give a tool an explicit `roles: ['MEMBER']` to open it to non-admins.
+- **Open unless restricted.** A tool that declares no `roles` takes `defaultRoles`, which is `[]` — no restriction — unless you set it. `action` tools still park on approval regardless (for an anonymous visitor that is a confirmation, since the requester approves). `defaultRoles: ['ADMIN']` restores the old fail-closed posture.
+- **Set intersection.** Otherwise authorization is `actor.roles ∩ (tool.roles ?? defaultRoles) ≠ ∅`. Give a tool `roles: ['ADMIN']` to restrict it.
 
 Configure it via `defaultRoles`, or swap the whole policy via `authorizer` (aliased `rolesPolicy`):
 

@@ -141,12 +141,17 @@ export class ToolRegistry {
   }
 }
 
-/** Default gate: one of the actor's roles must be in spec.roles (defaulting to ADMIN-only). */
+/**
+ * Default gate: one of the actor's roles must be in `spec.roles` (else the default roles). An empty
+ * list means no restriction — the default: a tool is callable by whoever the actor resolver resolved,
+ * an anonymous visitor included. `action` tools still park on approval regardless.
+ */
 export class DefaultRolesPolicy implements RolesPolicy {
-  constructor(private readonly defaultRoles: string[] = ['ADMIN']) {}
+  constructor(private readonly defaultRoles: string[] = []) {}
 
   can(actor: Actor, tool: ToolSpec): boolean {
     const allowed = tool.roles ?? this.defaultRoles;
+    if (allowed.length === 0) return true;
     return (actor.roles ?? []).some((role) => allowed.includes(role));
   }
 }

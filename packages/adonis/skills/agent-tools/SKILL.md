@@ -6,7 +6,7 @@ description: >-
   discovery from app/agent_tools via the .adonisjs/agent/tools.js barrel (toolsHook with
   source/importAlias/output) vs the runtime scan fallback, Standard Schema inputs
   (Zod/Valibot/ArkType), AiToolCtx actor scoping, constructor DI (@inject, lazy + cached),
-  roles/ability fail-closed gating under defaultRoles, and the dataTool governed read-only
+  roles/ability gating under defaultRoles (open by default), and the dataTool governed read-only
   SQL satellite. Use for "write a tool", "my tool is never called", "tool forbidden",
   "agent_tools barrel not generating", or "let the agent query the database".
 metadata:
@@ -167,23 +167,24 @@ Source: `packages/adonis/docs/authoring/tools.mdx` ("Configuring the generator")
 
 ## Common mistakes
 
-### CRITICAL — shipping tools without `roles` and calling them unreachable
+### CRITICAL — shipping a privileged tool without `roles`
 
 ```ts
-// Wrong — no roles → inherits defaultRoles ['ADMIN']; MEMBER actors never see this tool.
-static tool = { name: 'get_order', description: '...', input }
+// Wrong — no roles → inherits defaultRoles, which is [] (open) by default: every actor,
+// an anonymous visitor included, is offered this tool.
+static tool = { name: 'refund_order', kind: 'action', description: '...', input }
 ```
 
 ```ts
-// Correct — declare who may invoke.
-static tool = { name: 'get_order', description: '...', input, roles: ['MEMBER'] }
+// Correct — declare who may invoke (or set defaultRoles: ['ADMIN'] to close every tool by default).
+static tool = { name: 'refund_order', kind: 'action', description: '...', input, roles: ['ADMIN'] }
 ```
 
 Mechanism: `definitionsFor` filters the offered tool list through the role gate BEFORE
-each model turn, so a tool the actor cannot invoke is never described to the model — it
-cannot call what it was never shown. This is why "the model didn't call my tool" is
-usually an authorization default, not a prompt problem.
-Source: `packages/adonis/docs/authoring/tools.mdx` (fail-closed callout),
+each model turn, and `invoke` re-checks it. A tool with no `roles` takes `defaultRoles`;
+an empty list is no restriction. An `action` still parks on approval — but by default the
+requester approves, so for a public chat that is only a confirmation.
+Source: `packages/adonis/docs/governance/authorization.mdx`,
 `packages/adonis/src/tool-registry.ts` (`DefaultRolesPolicy.can`).
 
 ### HIGH — trusting an id from the model's arguments instead of `ctx.actor`

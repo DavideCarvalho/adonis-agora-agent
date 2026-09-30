@@ -53,7 +53,12 @@ export {
   defineTool,
   isBrandedFunctionalTool,
   readAiToolMeta,
+  toolNameFromClass,
 } from './ai-tool-ref.js';
+export {
+  type AnonymousActorOptions,
+  AnonymousActorResolver,
+} from './anonymous-actor-resolver.js';
 export { DefaultToolAuthorizer } from './authorizer.js';
 export * from './base-tool.js';
 export type {

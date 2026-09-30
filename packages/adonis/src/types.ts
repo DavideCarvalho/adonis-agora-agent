@@ -52,7 +52,7 @@ export interface ToolSpec {
    * no further model call narrates it. A failed call does not end it — the model gets to recover.
    */
   terminal?: boolean;
-  /** Roles allowed to invoke. Undefined → defaults applied by RolesPolicy (e.g. ADMIN-only). */
+  /** Roles allowed to invoke. Undefined → defaults applied by RolesPolicy (unrestricted unless `defaultRoles` is set). */
   roles?: string[];
   /**
    * An authorization ability name (e.g. 'cache.purge'). Consumed by an ability-aware RolesPolicy
@@ -315,8 +315,8 @@ export interface DelegateEdge {
   /** Name of the agent to delegate to — the `target` in `ask_<target>`. */
   agent: string;
   /**
-   * Roles allowed to invoke the synthesized delegate tool. Omitted → the `RolesPolicy` default,
-   * which is ADMIN-only under {@link import('./authorizer.js').DefaultToolAuthorizer}.
+   * Roles allowed to invoke the synthesized delegate tool. Omitted → the `RolesPolicy` default
+   * (`defaultRoles`; unrestricted unless configured, under {@link import('./authorizer.js').DefaultToolAuthorizer}).
    */
   roles?: string[];
   /**
@@ -345,10 +345,10 @@ export interface AgentDefinition {
    * Other agents this agent may delegate to. Each edge is auto-registered as an `agent`-kind tool
    * named `ask_<target>`, which the loop authorizes exactly like any other tool.
    *
-   * A bare string declares the edge with no authorization annotation, which is fail-closed on
-   * purpose: under the default {@link import('./authorizer.js').DefaultToolAuthorizer} a tool with
-   * no `roles` is ADMIN-only, and under the `@adonis-agora/agent/authz` adapter a tool with no
-   * `ability` is denied outright — so under authz a bare edge can never be called. Use the
+   * A bare string declares the edge with no authorization annotation: under the default
+   * {@link import('./authorizer.js').DefaultToolAuthorizer} it takes `defaultRoles` (unrestricted
+   * unless configured), and under the `@adonis-agora/agent/authz` adapter a tool with no `ability`
+   * is denied outright — so under authz a bare edge can never be called. Use the
    * {@link DelegateEdge} object form to declare the `roles` and/or `ability` the delegate tool
    * carries.
    */

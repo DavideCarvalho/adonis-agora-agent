@@ -41,8 +41,8 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 | 11 | `GET /agent/quota/today` | The actor's token spend today: `{ usedTokens }`. |
 | 12 | `GET /agent/approvals/mine` <span data-opt>optional</span> | The **calling actor's own** pending HITL approvals, oldest first. Query: `limit?` (default `50`, clamped to `200`). Mounts with `governanceQueries` but is **not** behind `governanceAuthorize` — it is always scoped to `actor.id`, so a non-admin surface (e.g. a coordinator's chat) can poll its own suspended tool calls even when the cross-actor read-model is ADMIN-only. |
 
-<Callout type="info" title="Actor-scoped routes fail closed">
-Routes that need identity — chat, threads list, quota — resolve the actor first. If the resolver throws (or none is configured), the route replies `401` and never runs. See [Authorization](/docs/agent/governance/authorization).
+<Callout type="info" title="Every route resolves the actor first">
+Routes that need identity — chat, threads list, quota — resolve the actor first. With no `actorResolver` configured each browser is its own anonymous actor (an HttpOnly `agent_anon` cookie set on its first request); with one, a resolver that throws makes the route reply `401` and never run. See [Authorization](/docs/agent/governance/authorization).
 </Callout>
 
 <Callout type="warn" title="Owner-scoped routes (IDOR protection)">
@@ -152,28 +152,27 @@ They are read off the frames inside the model call's own checkpoint, so a durabl
 
 ## Models
 
-A turn's model is the send's `model`, else the thread's pinned model, else the provider's default. `models` in `config/agent.ts` decides what a caller may pick — a fixed list is a literal:
+A turn's model is the send's `model`, else the thread's pinned model, else the provider's default. The simple way to offer a picker is `aiSdkModels` — several models behind one provider, which carries its own catalog:
 
 ```ts title="config/agent.ts"
+import { aiSdkModels } from '@adonis-agora/agent/ai-sdk'
+import { openai } from '@ai-sdk/openai'
+
 export default defineConfig({
-  model: () => aiSdkModel('openai/gpt-4o-mini'), // a gateway id: the pick replaces it verbatim
-  models: {
-    default: 'openai/gpt-4o-mini',
-    providers: [
+  model: () =>
+    aiSdkModels(
       {
-        id: 'openai',
-        label: 'OpenAI',
-        models: [
-          { id: 'openai/gpt-4o-mini', label: 'GPT-4o mini', badges: ['fast'], available: true },
-          { id: 'openai/gpt-4o', label: 'GPT-4o', available: true },
-        ],
+        'openai/gpt-4o-mini': { model: openai('gpt-4o-mini'), label: 'GPT-4o mini', badges: ['fast'] },
+        'openai/gpt-4o': { model: openai('gpt-4o'), label: 'GPT-4o' },
       },
-    ],
-  },
+      { default: 'openai/gpt-4o-mini', providerLabels: { openai: 'OpenAI' } },
+    ),
 })
 ```
 
-To decide per caller (plan, budget, provider health), pass a `ModelCatalog` — `list({ actor, agent })` returns the same view, with `available: false` and an `unavailableReason` for what the caller cannot use right now. The server refuses (`400`) any model the catalog does not list as available, on a send and when pinning — a client only ever sends ids the catalog listed, but the server does not trust that. The picked id reaches the provider as `ModelTurnArgs.model`; with a provider instance rather than a gateway id, give `aiSdkModel` a `resolveModel: (id) => openai(id)`. The pick rides the run's input, so a durable replay runs on the same model, and it labels the turn's usage when the provider reports no model id.
+With no `models` in the config, `GET /agent/models` serves that catalog and a turn runs on the picked id. `aiSdkModel(model)` serves one model and refuses a pick naming another (the turn fails) rather than silently answering on a model nobody chose.
+
+To decide per caller (plan, budget, provider health), set `models` to a `ModelCatalog` — `list({ actor, agent })` returns the same view, with `available: false` and an `unavailableReason` for what the caller cannot use right now — or to a literal view for a fixed list. The server refuses (`400`) any model the catalog does not list as available, on a send and when pinning — a client only ever sends ids the catalog listed, but the server does not trust that. The picked id reaches the provider as `ModelTurnArgs.model`. The pick rides the run's input, so a durable replay runs on the same model, and it labels the turn's usage when the provider reports no model id.
 
 ## Human-in-the-loop
 

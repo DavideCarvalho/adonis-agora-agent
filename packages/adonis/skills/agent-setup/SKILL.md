@@ -63,7 +63,8 @@ export default defineConfig({
     lucid: stores.lucid(),   // persists to SQL via @adonisjs/lucid
   },
 
-  // Identity seam — fail-closed. Without a resolver every request throws → 401.
+  // Identity. Omitted → endpoints PUBLIC, one anonymous actor per browser (HttpOnly cookie).
+  // This line requires login instead (ctx.auth.user; 401 without).
   actorResolver: new AuthActorResolver(),
 
   defaultAgent: {
@@ -181,15 +182,17 @@ Source: `packages/adonis/src/stores/factory.ts` (`tokenSinks`),
 
 ## Common mistakes
 
-### HIGH — omitting `actorResolver` and shipping 401s everywhere
+### HIGH — omitting `actorResolver` in an app that has logins
 
 ```ts
-// Wrong — UnconfiguredActorResolver THROWS on every request; all routes answer 401.
+// Wrong for an app with users — no resolver means the endpoints are PUBLIC: every browser
+// is its own anonymous actor (anon:<sha256 of an HttpOnly cookie>), and your users'
+// threads are not tied to their accounts.
 export default defineConfig({ model: () => aiSdkModel(openai('gpt-4o-mini')) })
 ```
 
 ```ts
-// Correct — read the authenticated principal; no identity is ever fabricated.
+// Correct — one line requires login (reads ctx.auth.user; 401 without).
 import { AuthActorResolver } from '@adonis-agora/agent'
 export default defineConfig({
   model: () => aiSdkModel(openai('gpt-4o-mini')),
@@ -197,11 +200,11 @@ export default defineConfig({
 })
 ```
 
-Mechanism: the provider installs `UnconfiguredActorResolver` by default, whose
-`resolve()` unconditionally throws rather than invent a caller — the route replies 401
-before the model ever runs.
-Source: `packages/adonis/src/actor-resolver.ts` (`UnconfiguredActorResolver`),
-`packages/adonis/docs/governance/authorization.mdx` ("No resolver, no service").
+Mechanism: with no resolver the provider installs `AnonymousActorResolver` and logs a boot
+notice that the endpoints are public. Right for a free public chat (set a `quota` there);
+wrong for an app whose users log in.
+Source: `packages/adonis/src/anonymous-actor-resolver.ts`,
+`packages/adonis/docs/governance/authorization.mdx` ("No resolver: the endpoints are public").
 
 ### MEDIUM — expecting quota enforcement after configuring only a store
 

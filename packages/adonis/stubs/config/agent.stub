@@ -1,7 +1,8 @@
 {{{
   exports({ to: app.configPath('agent.ts') })
 }}}
-import { defineConfig, stores, AuthActorResolver } from '@adonis-agora/agent'
+import { defineConfig, stores } from '@adonis-agora/agent'
+// import { AuthActorResolver } from '@adonis-agora/agent'
 // import { attachmentStores } from '@adonis-agora/agent'
 // import { aiSdkModel } from '@adonis-agora/agent/ai-sdk'
 // import { openai } from '@ai-sdk/openai'
@@ -9,8 +10,9 @@ import { defineConfig, stores, AuthActorResolver } from '@adonis-agora/agent'
 /**
  * Configuration for @adonis-agora/agent. Only \`model\` is required. Pick a \`store\` by name from the
  * \`stores\` map (each driver's peer is imported lazily, only when selected); omit \`store\` for the
- * in-memory store. The runner is in-process by default (\`durable\` is deferred). The actor resolver
- * defaults to one that THROWS — the agent never fabricates a caller — so wire a real one.
+ * in-memory store. The runner is in-process by default (\`durable\` is deferred). With no
+ * \`actorResolver\` the endpoints are PUBLIC: every browser is its own anonymous actor (an HttpOnly
+ * cookie). Uncomment the \`actorResolver\` line below to require login.
  *
  * Publish the tables with \`node ace migration:run\` after configuring.
  */
@@ -31,12 +33,12 @@ export default defineConfig({
     lucid: stores.lucid(),
   },
 
-  // Identity seam — reads ctx.auth.user (fail-closed: throws when unauthenticated). Swap for your own
-  // resolver, or HeaderActorResolver behind a trusted gateway.
-  actorResolver: new AuthActorResolver(),
+  // Identity. Omitted → public, one anonymous actor per browser. This line requires login instead
+  // (reads ctx.auth.user; 401 without). Or HeaderActorResolver behind a trusted gateway.
+  // actorResolver: new AuthActorResolver(),
 
   // path: 'agent',            // → /agent/chat, /agent/threads, ...
-  // defaultRoles: ['ADMIN'],  // roles a tool requires when it declares none (fail-closed)
+  // defaultRoles: ['ADMIN'],  // roles a tool requires when it declares none (default: none — open)
   // maxSteps: 8,              // cap on model↔tool iterations per turn
 
   // Governance console — served automatically at <path>/dashboard (default /agent/dashboard), no

@@ -1,6 +1,6 @@
 import type { StandardJSONSchemaV1, StandardSchemaV1 } from '@standard-schema/spec';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { aiSdkModel } from '../src/ai-sdk/ai-sdk-model.js';
+import { aiSdkModel, aiSdkModels } from '../src/ai-sdk/ai-sdk-model.js';
 import type { ModelMessage, SinkWriter, StreamFrame, ToolDefinition } from '../src/index.js';
 
 const { streamTextMock } = vi.hoisted(() => ({ streamTextMock: vi.fn() }));
@@ -130,26 +130,55 @@ describe('aiSdkModel', () => {
     ]);
   });
 
-  it('runs a turn on the picked model: resolved when asked, verbatim for a gateway id', async () => {
-    const run = (
-      model: Parameters<typeof aiSdkModel>[0],
-      opts?: Parameters<typeof aiSdkModel>[1],
-    ) =>
-      aiSdkModel(model, opts).runTurn({
+  it('refuses a pick the single model cannot honour, and accepts its own id', async () => {
+    const run = (model: string) =>
+      aiSdkModel('openai/gpt-4o').runTurn({
         system: '',
         messages: [],
         tools: [],
         sink: createSink(),
-        model: 'openai/gpt-4o-mini',
+        model,
       });
+    await expect(run('openai/gpt-4o-mini')).rejects.toThrow(/aiSdkModels/);
     await run('openai/gpt-4o');
-    expect(streamTextMock.mock.calls.at(-1)?.[0]).toMatchObject({ model: 'openai/gpt-4o-mini' });
-    streamTextMock.mockReturnValue(fakeStreamResult());
-    await run('openai/gpt-4o', { resolveModel: (id) => `resolved:${id}` });
-    expect(streamTextMock.mock.calls.at(-1)?.[0]).toMatchObject({
-      model: 'resolved:openai/gpt-4o-mini',
+    expect(streamTextMock.mock.calls.at(-1)?.[0]).toMatchObject({ model: 'openai/gpt-4o' });
+  });
+
+  it('aiSdkModels serves the picked model, the default otherwise, and carries its catalog', async () => {
+    const provider = aiSdkModels(
+      {
+        'openai/gpt-4o-mini': 'openai/gpt-4o-mini',
+        'openai/gpt-4o': { model: 'openai/gpt-4o', badges: ['smart'] },
+      },
+      { default: 'openai/gpt-4o-mini', providerLabels: { openai: 'OpenAI' } },
+    );
+    expect(await provider.catalog.list({ actor: { id: 'u1' } })).toEqual({
+      default: 'openai/gpt-4o-mini',
+      providers: [
+        {
+          id: 'openai',
+          label: 'OpenAI',
+          models: [
+            { id: 'openai/gpt-4o-mini', label: 'openai/gpt-4o-mini', available: true },
+            { id: 'openai/gpt-4o', label: 'openai/gpt-4o', available: true, badges: ['smart'] },
+          ],
+        },
+      ],
     });
-    expect(streamTextMock.mock.calls.at(-1)?.[0]).not.toHaveProperty('resolveModel');
+    const turn = (model?: string) =>
+      provider.runTurn({
+        system: '',
+        messages: [],
+        tools: [],
+        sink: createSink(),
+        ...(model ? { model } : {}),
+      });
+    await turn('openai/gpt-4o');
+    expect(streamTextMock.mock.calls.at(-1)?.[0]).toMatchObject({ model: 'openai/gpt-4o' });
+    streamTextMock.mockReturnValue(fakeStreamResult());
+    await turn();
+    expect(streamTextMock.mock.calls.at(-1)?.[0]).toMatchObject({ model: 'openai/gpt-4o-mini' });
+    await expect(turn('nope')).rejects.toThrow(/not offered/);
   });
 
   it('maps SDK tool calls to ToolCallRequest', async () => {

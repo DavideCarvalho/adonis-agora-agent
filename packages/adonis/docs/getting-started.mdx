@@ -69,7 +69,8 @@ export default defineConfig({
     lucid: stores.lucid(),
   },
 
-  // Identity seam — fail-closed. Without a resolver, every request 401s.
+  // Identity. Omit it and the endpoints are public — every browser is its own anonymous actor
+  // (an HttpOnly cookie). This line requires login instead (reads ctx.auth.user; 401 without).
   actorResolver: new AuthActorResolver(),
 
   // The implicit single agent. Omit for a bare assistant.
@@ -123,8 +124,8 @@ export default class GetWeatherTool implements ToolHandler<{ city: string }> {
 }
 ```
 
-<Callout type="warn" title="Tools are fail-closed">
-A tool that declares no `roles` inherits `defaultRoles` — `['ADMIN']` by default. Give a tool an explicit `roles` list (like `['MEMBER']` above) so non-admin actors can reach it. A tool the actor's role can't invoke is never even shown to the model. See [Authorization](/docs/agent/governance/authorization).
+<Callout type="warn" title="Tools are open unless restricted">
+A tool that declares no `roles` inherits `defaultRoles` — `[]`, no restriction, by default: anyone the actor resolver resolved can call it (an anonymous visitor included). Give it a `roles` list to restrict it, or set `defaultRoles: ['ADMIN']` to make that the default. `action` tools still wait for approval. A tool the actor can't invoke is never even shown to the model. See [Authorization](/docs/agent/governance/authorization).
 </Callout>
 
 Prefer a function to a class? Use `defineTool`:
