@@ -24,8 +24,7 @@ export interface AiToolCtx {
    */
   emitComponent?(name: string, data: unknown): void | Promise<void>;
   /**
-   * Push a component into the conversation: streamed at once as a `ui` frame (a `component` frame
-   * under the legacy envelope) and persisted on the assistant message once the step's tools settle,
+   * Push a component into the conversation: streamed at once as a `ui` frame and persisted on the assistant message once the step's tools settle,
    * so a reload shows it where the live stream did. `id` defaults to `<toolCallId>:ui:<n>`; pushing
    * an `id` again replaces that component. `props` must be JSON. Always present — outside a
    * conversation (an MCP call) it accepts the push and does nothing, so a tool never has to branch.

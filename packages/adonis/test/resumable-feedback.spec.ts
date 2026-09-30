@@ -59,7 +59,6 @@ describe('the REST surface of #211 over HTTP', () => {
     const sink = new InProcessTokenStreamSink();
     booted = await bootAgentApp({
       model: new FakeModelProvider(() => ({ text: 'Hi.' })),
-      streamProtocol: 'agent',
       sink,
     });
     const { url } = booted;

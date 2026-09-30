@@ -44,13 +44,13 @@ Use it when the answer is inherently visual or interactive: metrics/charts, maps
 
 <Step>
 
-**The provider serializes each frame to SSE.** A text frame stays the legacy `data: {"delta":...}`; a component frame becomes an `event: component` frame carrying `{ name, data }`.
+**The provider serializes each frame to SSE** in the agent stream protocol: a text frame becomes `{"kind":"text","text":...}`; a component frame becomes a `ui` event carrying `{ id, component, props }`.
 
 </Step>
 
 <Step>
 
-**The client switches on the event type** — plain `data` frames append text; `component` frames look up `name` in a component registry and render it with `data`.
+**The client switches on the event `kind`** — `text` events append text; `ui` events look up `component` in a component registry and render it with `props`.
 
 </Step>
 
@@ -74,7 +74,7 @@ defineTool(
 )
 ```
 
-- It streams at once — a `ui` frame under `streamProtocol: 'agent'` (`{ kind: 'ui', id, component, props, version?, toolCallId }`), an `event: component` frame under the legacy envelope.
+- It streams at once as a `ui` event (`{ kind: 'ui', id, component, props, version?, toolCallId }`).
 - `id` defaults to `<toolCallId>:ui:<n>`; pushing an `id` again replaces that component rather than adding one. `props` must be a JSON object (it is snapshotted at the push). `version` names the props' schema version, so a client can keep rendering components an older server persisted.
 - Once the step's tools have settled, every component they pushed is **persisted on the assistant message** (`StoredMessage.ui`, after what the model turn itself streamed), so `GET /agent/threads/:id` returns what the live stream showed. The pushes ride the tool step's journaled result, so a durable replay neither re-streams nor re-persists them. A custom `AgentStore` opts in with `setMessageUi` (optional).
 
@@ -104,7 +104,6 @@ import { catalog } from '#genui/catalog'
 
 export default defineConfig({
   model,
-  streamProtocol: 'agent',
   genui: genui({ catalog }),
 })
 ```
@@ -237,18 +236,9 @@ export type StreamFrame =
 
 `ctx.emitComponent('weather_card', card)` is sugar for writing `{ t: 'component', name: 'weather_card', data: card }` to the run's `SinkWriter`. Text tokens from the model are the `{ t: 'text'; v }` arm. Both flow through the same [`TokenStreamSink`](/docs/agent/streaming-and-http#re-attaching-to-a-run) — so component frames get the same buffering/replay guarantees as text: a late subscriber that re-attaches replays every component frame emitted so far, in order, before following live.
 
-### The `event: component` SSE frame
+### The `ui` stream event
 
-The exported `frameToSse` helper maps each frame to its wire envelope:
-
-```ts
-export function frameToSse(frame: StreamFrame): string {
-  if (frame.t === 'component') {
-    return `event: component\ndata: ${JSON.stringify({ name: frame.name, data: frame.data })}\n\n`
-  }
-  return `data: ${JSON.stringify({ delta: frame.v })}\n\n`
-}
-```
+`AgentSseEncoder` (exported) writes each frame as the `AgentStreamEvent`s it stands for. A component frame becomes a `ui` event; one that carries no data object is wrapped as `{ value: data }`, and one buffered without an id is numbered by its position (`ui:<n>`) so a replay replaces rather than duplicates it.
 
 So a run that emits a weather card mid-sentence produces this on the wire (`POST /agent/chat` or `GET /agent/chat/:runId/stream`):
 
@@ -256,13 +246,17 @@ So a run that emits a weather card mid-sentence produces this on the wire (`POST
 event: meta
 data: {"runId":"7f3…","threadId":"a12…"}
 
-data: {"delta":"The weather in "}
-data: {"delta":"Lisbon:"}
+id: 1
+data: {"kind":"text","text":"The weather in "}
 
-event: component
-data: {"name":"weather_card","data":{"city":"Lisbon","tempC":21,"condition":"sunny","humidity":48}}
+id: 2
+data: {"kind":"text","text":"Lisbon:"}
 
-data: {"delta":" Looks like a nice day."}
+id: 3
+data: {"kind":"ui","id":"c1:ui:0","component":"weather_card","props":{"city":"Lisbon","tempC":21,"condition":"sunny","humidity":48},"toolCallId":"c1"}
+
+id: 4
+data: {"kind":"text","text":" Looks like a nice day."}
 
 event: done
 data: {}
@@ -270,13 +264,9 @@ data: {}
 
 The key facts a client relies on:
 
-- **Text frames are unchanged** — a plain `data:` frame with `{"delta": "..."}`, byte-for-byte the legacy envelope. Any text-only consumer keeps working with zero changes.
-- **A component frame is a *named* SSE event** — `event: component`, whose `data:` is `{ "name": string, "data": <your payload> }`.
-- **Order is preserved** — the frame lands exactly where `emitComponent` was called relative to the surrounding text.
-
-<Callout type="info" title="Backward compatible by construction">
-Because the only new thing on the wire is a *named* event (`event: component`), a client that only reads the default (unnamed) `message` event — i.e. reads text `delta`s and ignores the rest — behaves exactly as before. Generative UI is purely additive.
-</Callout>
+- **Every frame is an `AgentStreamEvent`** dispatched on `kind` — `text`, `ui`, and the rest of the shared vocabulary. A reader skips kinds it does not know.
+- **A `ui` event carries `{ id, component, props }`**; a second `ui` with the same `id` replaces the first in place.
+- **Order is preserved** — the event lands exactly where `emitUi`/`emitComponent` was called relative to the surrounding text.
 
 ## Client side
 
@@ -327,7 +317,7 @@ export function Chat() {
 }
 ```
 
-That is the whole client integration. The SSE parsing, the `component` event decoding, the folding of consecutive text deltas into one part, and the re-attach on a dropped connection are all handled — see [Browser client & React](/docs/agent/browser-client).
+That is the whole client integration. The SSE parsing, the `ui` event decoding, the folding of consecutive text deltas into one part, and the re-attach on a dropped connection are all handled — see [Browser client & React](/docs/agent/browser-client).
 
 ### Without React
 
@@ -368,10 +358,9 @@ await ctx.emitComponent?.('trend_chart', { series, unit: 'mg/dL' })
 yields, frame for frame:
 
 ```text
-data: {"delta":"olha "}
-event: component
-data: {"name":"trend_chart","data":{"series":[...],"unit":"mg/dL"}}
-data: {"delta":"tá subindo"}
+data: {"kind":"text","text":"olha "}
+data: {"kind":"ui","id":"ui:1","component":"trend_chart","props":{"series":[...],"unit":"mg/dL"}}
+data: {"kind":"text","text":"tá subindo"}
 ```
 
 The client appends `"olha "`, drops the chart component into the transcript, then appends `"tá subindo"` after it — a chart embedded mid-sentence, exactly where the tool put it.
@@ -430,11 +419,11 @@ for await (const f of sink.subscribe('r1')) frames.push(f)
 // → [ {t:'text',v:'olha '}, {t:'component',name:'trend_chart',data:{unit:'mg/dL'}}, {t:'text',v:'tá subindo'} ]
 ```
 
-And at the wire level, `frameToSse({ t: 'component', name, data })` is a pure function — assert the exact envelope without booting HTTP:
+And at the wire level, `frameToEvents(frame, position)` is a pure function — assert the exact events without booting HTTP:
 
 ```ts
-frameToSse({ t: 'component', name: 'card', data: { a: 1 } })
-// → 'event: component\ndata: {"name":"card","data":{"a":1}}\n\n'
+frameToEvents({ t: 'component', name: 'card', data: { a: 1 } }, 0)
+// → [{ kind: 'ui', id: 'ui:0', component: 'card', props: { a: 1 } }]
 ```
 
 ## See also

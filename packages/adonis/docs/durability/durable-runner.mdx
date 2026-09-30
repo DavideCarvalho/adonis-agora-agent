@@ -57,10 +57,10 @@ A sub-agent's HITL wait is a real wait, on **its own** run: `tool:<childRunId>:<
 
 So the id rides on the frame. Both parked-work frames carry it:
 
-| SSE event | Payload | Answer with |
+| Stream event | Payload | Answer with |
 | --- | --- | --- |
-| `event: approval` | `{runId, id, toolName, input}` | `POST /agent/tool-call/approve` \| `/reject` |
-| `event: elicitation` | `{runId, id, request}` | `POST /agent/tool-call/answer` \| `/skip` |
+| `approval-requested` | `{kind, id, approver, runId, toolName, input}` | `POST /agent/tool-call/approve` \| `/reject` |
+| `elicitation` | `{kind, id, request, runId}` | `POST /agent/tool-call/answer` \| `/skip` |
 
 **`runId` is the run that is parked, not the stream it arrived on.** For a top-level run the two are the same; for a delegated one they are not, and reading the run off the `meta` frame instead would signal the ancestor and leave the child suspended. `decodeFrame` in `@adonis-agora/agent/client` surfaces both as `{ type: 'approval' | 'elicitation', runId, toolCallId, … }`, and drops a frame whose `runId` is missing rather than handing on one you cannot act on.
 

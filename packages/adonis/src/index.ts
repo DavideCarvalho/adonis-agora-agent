@@ -344,13 +344,7 @@ export type { RolesPolicy as ToolAuthorizer } from './spi/roles-policy.js';
 export * from './spi/roles-policy.js';
 export * from './spi/token-stream-sink.js';
 export * from './spi/tool.js';
-export {
-  AgentSseEncoder,
-  frameToEvents,
-  frameToSse,
-  parseStreamCursor,
-  type StreamProtocol,
-} from './sse.js';
+export { AgentSseEncoder, frameToEvents, parseStreamCursor } from './sse.js';
 export type { QdrantRetrieverConfig } from './stores/factory.js';
 export { lucidStoreConnection } from './stores/factory.js';
 export {

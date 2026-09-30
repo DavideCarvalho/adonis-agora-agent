@@ -24,7 +24,6 @@ import {
   discoverTools,
   evaluateGovernanceGate,
   evaluateOwnership,
-  frameToSse,
   governanceQueries as governanceQueriesFactories,
   HumanReplyMismatchError,
   InlineAgentRunner,
@@ -52,7 +51,6 @@ import {
   registerFunctionalTool,
   registerToolsFromBarrel,
   resolveActorResolver,
-  type StreamProtocol,
   type TokenStreamSink,
   ToolRegistry,
   type ToolsBarrel,
@@ -545,7 +543,6 @@ export default class AgentProvider {
       allowedContentTypes: declared.allowedContentTypes ?? DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES,
     };
     const defaultAgentName = config.defaultAgent?.name ?? 'default';
-    const protocol: StreamProtocol = config.streamProtocol ?? 'legacy';
 
     // 1. POST /agent/chat — resolve actor, start the run, SSE-pipe the token stream. When the caller
     // continues an EXISTING thread (`body.threadId`), it must own it: otherwise an authenticated caller
@@ -596,7 +593,7 @@ export default class AgentProvider {
         }
         throw error;
       }
-      await this.#pipe(ctx, service, protocol, started.runId, started.threadId);
+      await this.#pipe(ctx, service, started.runId, started.threadId);
     });
 
     // 2. GET /agent/chat/:runId/stream — re-attach SSE. Authenticated: the actor resolver reads the
@@ -619,7 +616,7 @@ export default class AgentProvider {
         parseStreamCursor(ctx.request.qs().after) ??
         parseStreamCursor(ctx.request.header('last-event-id')) ??
         0;
-      await this.#pipe(ctx, service, protocol, runId, undefined, after);
+      await this.#pipe(ctx, service, runId, undefined, after);
     });
 
     // 3. POST /agent/chat/:runId/cancel — authenticated + owner-scoped (a caller cancels only its own
@@ -1449,15 +1446,13 @@ export default class AgentProvider {
    * raw Node response directly (Adonis has no SSE helper) and ends only on stream completion — the
    * sink closes on run finish, not on suspend.
    *
-   * The sink carries typed `StreamFrame`s; `protocol` picks the envelope they are written in. Under
-   * `'agent'` each frame becomes the `AgentStreamEvent`s it stands for (`AgentSseEncoder`) and a
-   * failure ends the stream with `event: error` instead of `done`; under `'legacy'` `frameToSse`
-   * writes the original `data: {"delta":...}` / `event: component` envelope byte-for-byte.
+   * The sink carries typed `StreamFrame`s; each becomes the `AgentStreamEvent`s it stands for
+   * (`AgentSseEncoder`, the protocol shared with `@dudousxd/nestjs-agent`), and a failure ends the
+   * stream with `event: error` instead of `done`.
    */
   async #pipe(
     ctx: HttpContext,
     service: AgentService,
-    protocol: StreamProtocol,
     runId: string,
     threadId?: string,
     after = 0,
@@ -1480,21 +1475,12 @@ export default class AgentProvider {
     }
     raw.writeHead(200, headers);
     raw.write(`event: meta\ndata: ${JSON.stringify({ runId, threadId })}\n\n`);
-    if (protocol === 'agent') {
-      const encoder = new AgentSseEncoder(after);
-      for await (const frame of service.subscribe(runId)) {
-        const text = encoder.encode(frame);
-        if (text.length > 0) raw.write(text);
-      }
-      raw.write(encoder.close());
-      raw.end();
-      return;
-    }
+    const encoder = new AgentSseEncoder(after);
     for await (const frame of service.subscribe(runId)) {
-      const text = frameToSse(frame);
+      const text = encoder.encode(frame);
       if (text.length > 0) raw.write(text);
     }
-    raw.write('event: done\ndata: {}\n\n');
+    raw.write(encoder.close());
     raw.end();
   }
 }

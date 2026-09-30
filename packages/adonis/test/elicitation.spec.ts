@@ -4,6 +4,7 @@ import { decodeFrame, parseSseEvent } from '../src/client/index.js';
 import {
   type AgentLoopDeps,
   type AgentLoopHooks,
+  AgentSseEncoder,
   ASK_TOOL_NAME,
   askInputSchema,
   DEFAULT_INTAKE_PREAMBLE,
@@ -12,7 +13,6 @@ import {
   type ElicitationQuestion,
   type ElicitationReply,
   type ElicitationRequest,
-  frameToSse,
   type HumanReply,
   isHumanDecision,
   normalizeElicitationReply,
@@ -579,27 +579,19 @@ describe('a question set a delegated run parks on', () => {
 });
 
 describe('the elicitation stream frame', () => {
-  it('serializes as its own SSE event, carrying the whole request and the run to answer', () => {
-    const sse = frameToSse({
-      t: 'elicitation',
-      runId: 'child-1',
-      id: 'req-1',
-      request: request(),
-    });
-    expect(sse.startsWith('event: elicitation\n')).toBe(true);
+  const sseOf = (runId: string, id: string) =>
+    new AgentSseEncoder().encode({ t: 'elicitation', runId, id, request: request() });
+
+  it('serializes as an elicitation event, carrying the whole request and the run to answer', () => {
+    const sse = sseOf('child-1', 'req-1');
+    expect(sse).toContain('"kind":"elicitation"');
     expect(sse).toContain('"runId":"child-1"');
     expect(sse).toContain('"id":"req-1"');
     expect(sse).toContain('How wide should I go?');
   });
 
   it('round-trips through the client decoder with the run and call to address', () => {
-    const sse = frameToSse({
-      t: 'elicitation',
-      runId: 'child-1',
-      id: 'req-1',
-      request: request(),
-    });
-    const event = parseSseEvent(sse.trimEnd());
+    const event = parseSseEvent(sseOf('child-1', 'req-1').trimEnd());
     expect(event).not.toBeNull();
     // Without this the id is on the wire and unreadable by the library's own client.
     expect(event && decodeFrame(event)).toMatchObject({
@@ -607,9 +599,5 @@ describe('the elicitation stream frame', () => {
       runId: 'child-1',
       toolCallId: 'req-1',
     });
-  });
-
-  it('leaves a text frame’s envelope byte-identical', () => {
-    expect(frameToSse({ t: 'text', v: 'hi' })).toBe('data: {"delta":"hi"}\n\n');
   });
 });

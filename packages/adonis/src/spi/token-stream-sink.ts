@@ -28,12 +28,11 @@ export type StreamFrame =
   /**
    * One frame of the agent stream protocol (`AgentStreamEvent`, shared with `@dudousxd/nestjs-agent`)
    * that has no older spelling here: reasoning, tool-call announcements and outcomes, step brackets,
-   * title, cancel. The legacy envelope has no place for them and skips them.
+   * title, cancel.
    */
   | { t: 'event'; event: AgentStreamEvent }
   /**
-   * The run failed. Streamed as `event: error` `{ code, message }` under the agent protocol; the
-   * legacy envelope writes it as the `[error]` text delta it always did.
+   * The run failed. Streamed as `event: error` `{ code, message }`.
    */
   | { t: 'error'; code: AgentStreamErrorCode; message: string }
   /**

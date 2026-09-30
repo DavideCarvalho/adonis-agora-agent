@@ -21,16 +21,16 @@ function sseStream(frames: string[]): ReadableStream<Uint8Array> {
 
 describe('parseSseEvent', () => {
   it('reads a named event and its data', () => {
-    expect(parseSseEvent('event: component\ndata: {"name":"x"}')).toEqual({
-      event: 'component',
-      data: '{"name":"x"}',
+    expect(parseSseEvent('event: meta\ndata: {"runId":"r1"}')).toEqual({
+      event: 'meta',
+      data: '{"runId":"r1"}',
     });
   });
 
   it('defaults the event name to message', () => {
-    expect(parseSseEvent('data: {"delta":"oi"}')).toEqual({
+    expect(parseSseEvent('id: 1\ndata: {"kind":"text","text":"oi"}')).toEqual({
       event: 'message',
-      data: '{"delta":"oi"}',
+      data: '{"kind":"text","text":"oi"}',
     });
   });
 
@@ -41,15 +41,21 @@ describe('parseSseEvent', () => {
 });
 
 describe('decodeFrame', () => {
-  it('decodes text, component, meta and done', () => {
-    expect(decodeFrame({ event: 'message', data: '{"delta":"hi"}' })).toEqual({
+  it('decodes text, ui, meta and done', () => {
+    expect(decodeFrame({ event: 'message', data: '{"kind":"text","text":"hi"}' })).toEqual({
       type: 'text',
       delta: 'hi',
     });
-    expect(decodeFrame({ event: 'component', data: '{"name":"chart","data":{"m":1}}' })).toEqual({
+    expect(
+      decodeFrame({
+        event: 'message',
+        data: '{"kind":"ui","id":"u1","component":"chart","props":{"m":1}}',
+      }),
+    ).toEqual({
       type: 'component',
       name: 'chart',
       data: { m: 1 },
+      id: 'u1',
     });
     expect(decodeFrame({ event: 'meta', data: '{"runId":"r1","threadId":"t1"}' })).toEqual({
       type: 'meta',
@@ -62,8 +68,10 @@ describe('decodeFrame', () => {
   it('returns null for malformed or empty payloads', () => {
     expect(decodeFrame({ event: 'message', data: 'not-json' })).toBeNull();
     expect(decodeFrame({ event: 'message', data: 'null' })).toBeNull();
-    expect(decodeFrame({ event: 'message', data: '{"delta":""}' })).toBeNull();
-    expect(decodeFrame({ event: 'component', data: '{"data":{}}' })).toBeNull(); // no name
+    expect(decodeFrame({ event: 'message', data: '{"kind":"text","text":""}' })).toBeNull();
+    // The retired `{"delta"}` envelope and its named events are not frames any more.
+    expect(decodeFrame({ event: 'message', data: '{"delta":"hi"}' })).toBeNull();
+    expect(decodeFrame({ event: 'component', data: '{"name":"x","data":{}}' })).toBeNull();
   });
 });
 
@@ -96,14 +104,17 @@ describe('foldPart', () => {
 describe('readSseStream', () => {
   it('splits frames across chunk boundaries', async () => {
     // The `\n\n` separator is split across two chunks to exercise the buffer.
-    const stream = sseStream(['data: {"delta":"a"}\n', '\ndata: {"delta":"b"}\n\n']);
+    const stream = sseStream([
+      'data: {"kind":"text","text":"a"}\n',
+      '\ndata: {"kind":"text","text":"b"}\n\n',
+    ]);
     const events = [];
     for await (const event of readSseStream(stream)) {
       events.push(event);
     }
     expect(events).toEqual([
-      { event: 'message', data: '{"delta":"a"}' },
-      { event: 'message', data: '{"delta":"b"}' },
+      { event: 'message', data: '{"kind":"text","text":"a"}' },
+      { event: 'message', data: '{"kind":"text","text":"b"}' },
     ]);
   });
 });

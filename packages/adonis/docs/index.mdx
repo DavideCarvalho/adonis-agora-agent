@@ -100,7 +100,7 @@ curl -N http://localhost:3333/agent/chat \
   -d '{"message":"What is the weather in Lisbon?"}'
 ```
 
-The response is an SSE stream: an `event: meta` frame with the run and thread ids, then `data: {"delta":"..."}` frames per token, then `event: done`. See [Streaming & HTTP](/docs/agent/streaming-and-http).
+The response is an SSE stream: an `event: meta` frame with the run and thread ids, then one `data:` frame per `AgentStreamEvent` (`{"kind":"text","text":"..."}` per token, plus steps, tool calls, …), then `event: done`. See [Streaming & HTTP](/docs/agent/streaming-and-http).
 
 </Step>
 </Steps>

@@ -165,8 +165,14 @@ The reply streams back as Server-Sent Events:
 event: meta
 data: {"runId":"...","threadId":"..."}
 
-data: {"delta":"The "}
-data: {"delta":"weather "}
+id: 1
+data: {"kind":"step-start"}
+
+id: 2
+data: {"kind":"text","text":"The "}
+
+id: 3
+data: {"kind":"text","text":"weather "}
 ...
 event: done
 data: {}

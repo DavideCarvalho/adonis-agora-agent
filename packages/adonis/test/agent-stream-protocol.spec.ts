@@ -10,7 +10,6 @@ import {
   type AgentStreamEvent,
   DefaultToolAuthorizer,
   frameToEvents,
-  frameToSse,
   InlineAgentRunner,
   InProcessTokenStreamSink,
   type StreamFrame,
@@ -58,7 +57,7 @@ describe('agent protocol encoding', () => {
     expect(sse.endsWith('event: done\ndata: {}\n\n')).toBe(true);
   });
 
-  it('maps a parked action to approval-requested, keeping what the legacy frame carried', () => {
+  it('maps a parked action to approval-requested, carrying the run, tool and input to decide on', () => {
     expect(
       frameToEvents(
         { t: 'approval', runId: 'r1', id: 'c1', toolName: 'refund', input: { id: 7 } },
@@ -88,14 +87,6 @@ describe('agent protocol encoding', () => {
       'event: error\ndata: {"code":"quota_exceeded","message":"Daily token quota exceeded"}\n\n',
     );
   });
-
-  it('keeps the legacy envelope byte-identical and skips what it cannot spell', () => {
-    expect(frameToSse({ t: 'text', v: 'hi' })).toBe('data: {"delta":"hi"}\n\n');
-    expect(frameToSse({ t: 'event', event: { kind: 'step-start' } })).toBe('');
-    expect(frameToSse({ t: 'error', code: 'run_failed', message: 'boom' })).toBe(
-      'data: {"delta":"\\n[error] boom"}\n\n',
-    );
-  });
 });
 
 describe('the package client reads the agent protocol', () => {
@@ -121,6 +112,9 @@ describe('the package client reads the agent protocol', () => {
       code: 'run_failed',
       message: 'boom',
     });
+    // The retired `{"delta"}` envelope is not a frame any more.
+    expect(decode('data: {"delta":"hi"}')).toBeNull();
+    expect(decode('event: component\ndata: {"name":"Card","data":{}}')).toBeNull();
     expect(decode('data: {"kind":"step-start"}')).toEqual({
       type: 'event',
       event: { kind: 'step-start' },

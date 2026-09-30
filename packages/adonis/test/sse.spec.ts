@@ -1,33 +1,15 @@
 import { expect, it } from 'vitest';
 import { decodeFrame, foldPart, parseSseEvent } from '../src/client/index.js';
-import { frameToSse } from '../src/sse.js';
+import { AgentSseEncoder } from '../src/sse.js';
 
-it('encodes a text frame as the delta envelope (byte-identical to legacy)', () => {
-  expect(frameToSse({ t: 'text', v: 'hi' })).toBe('data: {"delta":"hi"}\n\n');
-});
-
-it('encodes a component frame as an event: component frame', () => {
-  expect(frameToSse({ t: 'component', name: 'card_metrica', data: { a: 1 } })).toBe(
-    'event: component\ndata: {"name":"card_metrica","data":{"a":1}}\n\n',
+it('encodes a text frame as a numbered agent-protocol text event', () => {
+  expect(new AgentSseEncoder().encode({ t: 'text', v: 'hi' })).toBe(
+    'id: 1\ndata: {"kind":"text","text":"hi"}\n\n',
   );
 });
 
-it('encodes a parked action as an event: approval frame carrying the run to answer', () => {
-  expect(
-    frameToSse({
-      t: 'approval',
-      runId: 'child-1',
-      id: 'call-0-voidInvoice',
-      toolName: 'voidInvoice',
-      input: { id: 'i-1' },
-    }),
-  ).toBe(
-    'event: approval\ndata: {"runId":"child-1","id":"call-0-voidInvoice","toolName":"voidInvoice","input":{"id":"i-1"}}\n\n',
-  );
-});
-
-it('round-trips an approval frame through the client decoder', () => {
-  const sse = frameToSse({
+it('encodes a parked action as approval-requested, carrying the run to answer', () => {
+  const sse = new AgentSseEncoder().encode({
     t: 'approval',
     runId: 'child-1',
     id: 'call-0-voidInvoice',
@@ -45,8 +27,15 @@ it('round-trips an approval frame through the client decoder', () => {
   });
 });
 
-it('drops an approval frame with no run to address, rather than half-decoding it', () => {
-  const event = parseSseEvent('event: approval\ndata: {"id":"c-1","toolName":"voidInvoice"}');
+it('reads an approval-requested with no run to address as a plain event, not an approval', () => {
+  const event = parseSseEvent(
+    'data: {"kind":"approval-requested","id":"c-1","approver":"requester","toolName":"voidInvoice"}',
+  );
+  expect(event && decodeFrame(event)).toMatchObject({ type: 'event' });
+});
+
+it('does not decode the retired {"delta"} envelope', () => {
+  const event = parseSseEvent('data: {"delta":"hi"}');
   expect(event && decodeFrame(event)).toBeNull();
 });
 

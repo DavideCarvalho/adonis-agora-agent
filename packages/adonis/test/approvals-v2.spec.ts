@@ -207,7 +207,6 @@ describe('approvals v2 over HTTP', () => {
   it('enforces a role approver: 403 for the requester, 200 for a holder of the role', async () => {
     booted = await bootAgentApp({
       model: new FakeModelProvider(refundOnce),
-      streamProtocol: 'agent',
       tools: [refund],
       approvalPolicy: { tools: { refund: { approver: 'FINANCE' } } },
     });
@@ -239,7 +238,6 @@ describe('approvals v2 over HTTP', () => {
   it('answers 410 on a lapsed request and 400 on a malformed decision', async () => {
     booted = await bootAgentApp({
       model: new FakeModelProvider(refundOnce),
-      streamProtocol: 'agent',
       tools: [refund],
       approvalPolicy: { ttlMs: 20 },
     });
