@@ -48,8 +48,9 @@ function buildInline(script: FakeScript) {
     agents,
   });
   const runner = new InlineAgentRunner(factory, store);
-  const service = new AgentService(runner, store, factory);
-  return { service, store, sink, registry };
+  const staging = new InMemoryAttachmentStagingStore();
+  const service = new AgentService(runner, store, factory, { attachments: staging });
+  return { service, store, sink, registry, staging };
 }
 
 function buildDurable(script: FakeScript) {
@@ -69,8 +70,9 @@ function buildDurable(script: FakeScript) {
   setDurableAgentContext({ factory, store });
   registerAgentWorkflow(engine);
   const runner = new DurableAgentRunner(engine);
-  const service = new AgentService(runner, store, factory);
-  return { service, store, sink, registry, engine };
+  const staging = new InMemoryAttachmentStagingStore();
+  const service = new AgentService(runner, store, factory, { attachments: staging });
+  return { service, store, sink, registry, engine, staging };
 }
 
 async function collectStream(service: AgentService, runId: string): Promise<string> {
@@ -112,6 +114,7 @@ describe('attachment staging (in-memory)', () => {
         contentType: 'text/plain',
         sizeBytes: 11,
         actorId: 'u1',
+        url: attachment.url,
       },
     ]);
   });
@@ -125,7 +128,7 @@ describe('multimodal messages (inline)', () => {
       return { text: 'i see them' };
     };
     const g = buildInline(script);
-    const staging = new InMemoryAttachmentStagingStore();
+    const staging = g.staging;
     const image = await staging.stage({
       data: Buffer.from('PNGDATA'),
       filename: 'pic.png',
@@ -144,7 +147,8 @@ describe('multimodal messages (inline)', () => {
     const { runId } = await g.service.chat({
       actor,
       message: 'what is in these?',
-      attachments: [image, doc],
+      // Named by id alone; the service resolves each through the store.
+      attachments: [{ mediaId: image.mediaId }, { mediaId: doc.mediaId }],
     });
     await collectStream(g.service, runId);
 
@@ -177,12 +181,6 @@ describe('multimodal messages (inline)', () => {
 
 describe('multimodal messages (durable replay)', () => {
   it('memoizes the attachment persist across a suspend/resume — persisted exactly once', async () => {
-    const attachment: MessageAttachment = {
-      mediaId: 'media-1',
-      url: 'data:image/png;base64,QUJD',
-      contentType: 'image/png',
-      name: 'pic.png',
-    };
     let sawAttachmentAfterResume = false;
     // Turn 0 requests an action tool → the run suspends on approval; the body replays on resume.
     const script: FakeScript = (args, turnIndex) => {
@@ -196,6 +194,13 @@ describe('multimodal messages (durable replay)', () => {
       return { text: 'done' };
     };
     const g = buildDurable(script);
+    const attachment: MessageAttachment = await g.staging.stage({
+      data: Buffer.from('ABC'),
+      filename: 'pic.png',
+      contentType: 'image/png',
+      sizeBytes: 3,
+      actor,
+    });
     g.registry.register(
       {
         name: 'danger',
@@ -210,7 +215,7 @@ describe('multimodal messages (durable replay)', () => {
     const { runId } = await g.service.chat({
       actor,
       message: 'look at this',
-      attachments: [attachment],
+      attachments: [{ mediaId: attachment.mediaId }],
     });
     await waitFor(() => g.store.toolCallRows().some((r) => r.status === 'pending_approval'));
 

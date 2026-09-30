@@ -1,6 +1,6 @@
 ---
 title: Attachments & multimodal
-description: Let users attach images and PDFs to a message so a vision-capable model sees them natively — the MessageAttachment shape, the attachment-staging SPI, and the optional POST /agent/attachments upload route.
+description: Let users attach images and PDFs to a message so a vision-capable model sees them natively — the MessageAttachment shape, the bring-your-own attachment store (media-backed by default), the POST /agent/attachments upload route, and { mediaId } refs resolved server-side.
 icon: Paperclip
 ---
 
@@ -33,22 +33,37 @@ They're persisted with the message and replayed as-is; the AI SDK adapter render
 The lib never downloads bytes — `url` has to be something the provider can fetch: a presigned URL, a proxy, or a `data:` URI. That upload-time work is the staging seam below.
 </Callout>
 
-## The staging seam & upload route
+## Turning attachments on
 
-`AttachmentStagingStore` is a one-method seam — `stage(input) → MessageAttachment` — that persists uploaded bytes somewhere fetchable and returns the reference. Wiring it via `attachmentStaging` mounts an optional **`POST /agent/attachments`** upload route:
+One option, `attachments`, names where uploads live — and that is the bring-your-own-storage seam:
 
 ```ts title="config/agent.ts"
 import { defineConfig, attachmentStores } from '@adonis-agora/agent'
 
 export default defineConfig({
   model: () => aiSdkModel(openai('gpt-4o')),
-  attachmentStaging: attachmentStores.memory(), // encodes bytes into a data: URL (tests/dev)
-  attachmentMaxBytes: 20 * 1024 * 1024, // default 20 MiB
-  // attachmentAllowedContentTypes: [...] // replaces the 7-entry default below
+  attachments: attachmentStores.media(), // @adonis-agora/media: any Drive disk (S3, GCS, R2, fs)
 })
 ```
 
-The route buffers the multipart `file` field, validates it against the size cap (`413` on overflow) and the content-type allow-list (`415` when disallowed), resolves the actor (the same fail-closed resolver as chat), stages it, and returns the `MessageAttachment`. The client then sends that reference on its next `chat` call.
+- **`attachmentStores.media(options?)`** keeps uploads in [`@adonis-agora/media`](/docs/media) (an optional peer — register `@adonis-agora/media/media_provider` and configure `config/media.ts`): a media row per file in its own collection (`agent-attachments`), owned by the actor, on the media library's default disk or `disk`. Options: `maxBytes`, `allowedContentTypes`, `collection`, `ownerType`, `disk`, `visibility` (`'private'` → signed, short-lived urls; `'public'` → the disk's url), `urlExpiresInSeconds`, `resolveUrl(record, { disk })` (a CDN or proxy route), `canAccess({ record, actor, allowed })` (widen or narrow who may attach a file; by default only its uploader). On a disk that cannot sign, the model gets the bytes inline as a `data:` url (logged once — fine in dev, not in production).
+- **`attachmentStores.memory({ maxBytes?, allowedContentTypes? })`** — tests and demos: the bytes become a `data:` url.
+- **Your own store** — any `AttachmentStagingStore`: `stage(input)` stores an upload and answers the attachment; `resolve({ mediaId, actor })` answers the attachment with a url the model can fetch **now**, or `null` when the actor may not use it; optional `describe()` declares `{ maxBytes, allowedContentTypes }`.
+
+Omit `attachments` and they are off: no upload route, and a send naming one answers `501`.
+
+## The upload route and the send
+
+With a store configured, **`POST /agent/attachments`** takes a multipart `file`, checks it against the store's limits — `413` over the size cap, `415` for a type not on the list — and answers the `MessageAttachment` (`{ mediaId, url, contentType, name }`). `GET /agent/config` reports the same limits (`attachments: { enabled, upload: 'multipart', maxBytes, allowedContentTypes, maxPerMessage }`), which is where `@dudousxd/nestjs-agent-react`'s `useAttachments` takes its defaults from.
+
+A send then names uploads **by id only**:
+
+```json
+POST /agent/chat
+{ "message": "what's in this?", "attachments": [{ "mediaId": "3f2c…" }] }
+```
+
+That is the one shape — an entry carrying anything besides `mediaId` is refused with `400`, and at most 10 per message. The server resolves each id through the store for the calling actor (`403` for one it may not use), so the url the model fetches is never taken from the request. `GET /agent/threads/:id` returns the attachments on the user message with the url **re-minted** by `mediaId` on every read, so an old turn's signed link has not expired.
 
 ### The content-type allow-list
 
@@ -58,19 +73,7 @@ The default is an **exact-match list of seven types** — what multimodal provid
 ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf', 'text/plain', 'text/csv']
 ```
 
-There is no wildcard and no prefix rule: the uploaded type must be one of those strings. `text/markdown`, `image/svg+xml`, `image/heic`, and `application/json` are all `415`.
-
-Setting `attachmentAllowedContentTypes` **replaces** the list rather than extending it, so spread what you want to keep:
-
-```ts
-attachmentAllowedContentTypes: ['image/png', 'image/jpeg', 'application/pdf', 'text/markdown'],
-```
-
-Widen it only to types your model provider actually renders. An accepted upload that the provider cannot read fails later, in the model call, where the error is far less obvious than a `415` at the door.
-
-<Callout type="info" title="The route is opt-in">
-Omit `attachmentStaging` and no upload surface is exposed — a client sends already-staged `MessageAttachment` references directly on `chat`. `attachmentStores.memory()` covers tests and dev (it `data:`-encodes the bytes); a real deployment binds its own store presigning against S3/GCS or wrapping the host's media pipeline.
-</Callout>
+There is no wildcard and no prefix rule. A store's `allowedContentTypes` **replaces** the list rather than extending it, so spread what you want to keep. Widen it only to types your model provider actually renders.
 
 ## Non-public object stores — the download bypass
 
@@ -100,8 +103,8 @@ It mirrors the default's routing — a URL the model supports natively is left t
 
 ## The flow
 
-1. Client `POST`s a file to `/agent/attachments` → receives a `MessageAttachment`.
-2. Client `POST`s to `/agent/chat` with `{ message, attachments: [ …that reference… ] }`.
-3. The loop persists the attachment with the user message and passes each `url` to the model as a native image/file part.
+1. Client `POST`s a file to `/agent/attachments` → receives a `MessageAttachment` (keep its `mediaId`).
+2. Client `POST`s to `/agent/chat` with `{ message, attachments: [{ mediaId }] }`.
+3. The server resolves each id through the store, persists the attachments with the user message, and passes each `url` to the model as a native image/file part.
 
 To index uploaded files into RAG instead of (or as well as) attaching them to a turn, see [RAG media ingestion](/docs/agent/retrieval/media-ingestion).

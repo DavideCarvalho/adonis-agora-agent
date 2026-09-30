@@ -38,7 +38,7 @@ export {
 } from './agent-loop.js';
 export { AgentRegistry } from './agent-registry.js';
 export type { ChatParams } from './agent-service.js';
-export { AgentService } from './agent-service.js';
+export { AgentService, type AgentServiceOptions, AttachmentRefusedError } from './agent-service.js';
 export type {
   AiToolMeta,
   AiToolOptions,

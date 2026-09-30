@@ -85,15 +85,9 @@ retrievalFilter: (actor) => ({ tenantRef: actor.tenantRef }),
 
 **Omit and inject-mode retrieval is UNSCOPED**: every actor retrieves over the whole corpus. That is fine for a single-tenant corpus and a leak in any other. See [RAG & retrieval](/docs/agent/retrieval/rag#scoping-inject-mode-with-retrievalfilter).
 
-### `attachmentStaging` / `attachmentMaxBytes` / `attachmentAllowedContentTypes`
+### `attachments`
 
-`attachmentStaging`: `AttachmentStagingStore | AttachmentStagingFactory`. Upload-side seam for message attachments (image/PDF). When set, the provider mounts `POST /agent/attachments`. Use `attachmentStores.memory()` for tests, or your own store. **Omit → no upload route.** `attachmentMaxBytes`: per-file cap (**default 20 MiB**). `attachmentAllowedContentTypes`: allowed upload types, matched **exactly** — no wildcards, no prefix rule. The default is these seven:
-
-```ts
-['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf', 'text/plain', 'text/csv']
-```
-
-Anything else is `415`, `text/markdown` included. Passing this **replaces** the list rather than extending it, so spread the defaults you still want. See [Attachments & multimodal](/docs/agent/authoring/attachments).
+`AttachmentStagingStore | AttachmentStagingFactory`. Where chat attachments live — `attachmentStores.media()` (on `@adonis-agora/media`), `attachmentStores.memory()` (tests), or your own store. When set, `POST /agent/attachments` accepts uploads within the store's limits (`describe()`; default 20 MiB and images/PDF/plain text/CSV) and a send names them as `attachments: [{ mediaId }]`, resolved by the store. **Omit → attachments are off.** Replaces `attachmentStaging` / `attachmentMaxBytes` / `attachmentAllowedContentTypes` (0.46). See [Attachments & multimodal](/docs/agent/authoring/attachments).
 
 ### `actorDirectory`
 

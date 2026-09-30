@@ -238,26 +238,23 @@ a free model. Per-run/per-usage rows keep their nulls.
 Source: `packages/adonis/docs/governance/quota-and-cost.mdx` ("`null` in the ledger,
 `0` in the rollups").
 
-### MEDIUM — replacing the allowed attachment content types instead of extending
+### HIGH — sending attachment objects instead of `{ mediaId }` refs
 
 ```ts
-// Wrong — REPLACES the default list: png/jpeg/pdf/csv now get 415.
-attachmentAllowedContentTypes: ['application/json']
+// Wrong — 400: a send names uploads by id only; a url from the client is never trusted.
+{ message, attachments: [{ mediaId, url, contentType, name }] }
 ```
 
 ```ts
-// Types match EXACTLY (no wildcards); spread the defaults you still want.
-attachmentAllowedContentTypes: [
-  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
-  'application/pdf', 'text/plain', 'text/csv',
-  'text/markdown', // your addition
-],
+// Correct — the configured store (attachments: attachmentStores.media()) resolves the url.
+{ message, attachments: [{ mediaId }] }
 ```
 
-Mechanism: passing `attachmentAllowedContentTypes` replaces the default list rather than
-merging, and matching is exact — no `text/*` prefix rule — so anything absent is rejected
-with 415.
-Source: `packages/adonis/src/define_config.ts` (`AgentConfig.attachmentAllowedContentTypes`).
+Mechanism: the chat route refuses any key besides `mediaId`, then resolves each id through
+`AttachmentStagingStore.resolve({ mediaId, actor })` (`403` for another actor's upload).
+Limits come from the store (`attachmentStores.media({ maxBytes, allowedContentTypes })`);
+`allowedContentTypes` replaces the default list and matches exactly.
+Source: `packages/adonis/docs/authoring/attachments.mdx`.
 
 See also: `agent-tools/SKILL.md` — registering tools the model can actually call;
 `agent-governance/SKILL.md` — what `AuthActorResolver` feeds into.

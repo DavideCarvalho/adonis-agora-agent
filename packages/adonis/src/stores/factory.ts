@@ -1,4 +1,9 @@
 import type { ApplicationService } from '@adonisjs/core/types';
+import type {
+  MediaAttachmentsOptions,
+  MediaStorageLike,
+  MediaStoreLike,
+} from '../media/media-attachment-staging.js';
 import type { HybridRetrieverOptions } from '../rag/hybrid-retriever.js';
 import type { IngestDocument } from '../rag/ingest.js';
 import type {
@@ -11,7 +16,10 @@ import type { QdrantClientLike, QdrantMetric } from '../rag/qdrant-store.js';
 import type { RedisStreamClient } from '../redis-stream-client.js';
 import type { ActorDirectory } from '../spi/actor-directory.js';
 import type { AgentStore } from '../spi/agent-store.js';
-import type { AttachmentStagingStore } from '../spi/attachment-staging.js';
+import type {
+  AttachmentStagingDescription,
+  AttachmentStagingStore,
+} from '../spi/attachment-staging.js';
 import type { EmbeddingProvider } from '../spi/embedding-provider.js';
 import type { AgentGovernanceQueries } from '../spi/governance-queries.js';
 import type { AgentPricingStore } from '../spi/pricing-store.js';
@@ -530,29 +538,53 @@ export type AttachmentStagingFactory = (
 ) => AttachmentStagingStore | Promise<AttachmentStagingStore>;
 
 /**
- * The attachment-staging factory namespace used in `config/agent.ts`, mirroring {@link stores}:
+ * The attachment-store factory namespace used in `config/agent.ts`:
  *
  * ```ts
  * export default defineConfig({
- *   model: () => aiSdkModel({ model: '...' }),
- *   attachmentStaging: attachmentStores.memory(),
+ *   model,
+ *   attachments: attachmentStores.media(), // uploads on @adonis-agora/media, any Drive disk
  * })
  * ```
  *
- * A real deployment binds its own staging store (presigning against S3/GCS or wrapping the host's
- * media pipeline) by passing an instance; `attachmentStores.memory` covers tests and the offline demo.
+ * Bring your own storage by passing an {@link AttachmentStagingStore} instance instead.
  */
 export const attachmentStores = {
   /**
-   * In-memory staging — encodes the uploaded bytes into a `data:` URL the model provider fetches
-   * inline (no external object store, no presigning). Single-process; handy for tests and dev apps.
+   * Uploads stored through `@adonis-agora/media` (register `@adonis-agora/media/media_provider`
+   * and configure `config/media.ts`): media rows in their own collection, one owner per actor, on
+   * any Drive disk. The url the model fetches is minted per request — signed and short-lived by
+   * default — so it is never taken from the client. See `MediaAttachmentsOptions`.
    */
-  memory(): AttachmentStagingFactory {
+  media(options: MediaAttachmentsOptions = {}): AttachmentStagingFactory {
+    return async ({ app }) => {
+      // A variable specifier: `@adonis-agora/media` is an optional peer, loaded only when selected.
+      const mediaPackage = '@adonis-agora/media';
+      const media = (await import(mediaPackage)) as {
+        MediaManager: abstract new (...args: never[]) => unknown;
+      };
+      const manager = (await app.container.make(media.MediaManager as never)) as {
+        storage: MediaStorageLike;
+        store: MediaStoreLike;
+      };
+      const { MediaAttachmentStaging } = await import('../media/media-attachment-staging.js');
+      return new MediaAttachmentStaging(
+        { storage: manager.storage, store: manager.store },
+        options,
+      );
+    };
+  },
+
+  /**
+   * In memory — the uploaded bytes become a `data:` url the model reads inline. Single-process and
+   * lost on restart: tests and demos. `limits` sets the size cap / content types it declares.
+   */
+  memory(limits: AttachmentStagingDescription = {}): AttachmentStagingFactory {
     return async () => {
       const { InMemoryAttachmentStagingStore } = await import(
         '../testing/in-memory-attachment-staging.js'
       );
-      return new InMemoryAttachmentStagingStore();
+      return new InMemoryAttachmentStagingStore(limits);
     };
   },
 };

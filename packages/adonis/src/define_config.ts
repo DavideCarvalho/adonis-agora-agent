@@ -170,24 +170,15 @@ export interface AgentConfig {
    */
   retrievalFilter?: (actor: Actor) => Record<string, unknown>;
   /**
-   * Upload-side seam for message attachments (image/PDF). When set, the provider mounts the optional
-   * `POST /agent/attachments` route, which stages an uploaded file through this store and returns a
-   * {@link import('./spi/attachment-staging.js').MessageAttachment} the client sends with the next
-   * chat message. Pass a store instance, or a lazy `attachmentStores.*()` factory
-   * (`attachmentStores.memory()` encodes bytes into a `data:` URL for tests/dev). Omit → no upload
-   * route; a client sends already-staged attachment references directly on `chat`.
+   * Where chat attachments are stored — the bring-your-own-storage seam. `attachmentStores.media()`
+   * keeps them in `@adonis-agora/media` (any Drive disk: S3, GCS, R2, the filesystem);
+   * `attachmentStores.memory()` inlines them for tests and demos; or pass your own
+   * `AttachmentStagingStore`. When set, `POST <path>/attachments` accepts uploads (the store's
+   * `describe()` sets the size cap and content types; default 20 MiB, images/PDF/text/CSV) and a send
+   * names them as `attachments: [{ mediaId }]` — the url the model fetches is resolved by the store,
+   * never taken from the request. Omit → attachments are off.
    */
-  attachmentStaging?: AttachmentStagingStore | AttachmentStagingFactory;
-  /** Per-file byte cap the upload route enforces. Default 20 MiB. */
-  attachmentMaxBytes?: number;
-  /**
-   * Allowed upload content types, matched EXACTLY (no wildcards, no `text/*` prefix rule). Default:
-   * `['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf', 'text/plain',
-   * 'text/csv']` — what multimodal providers commonly accept as native image/file parts. Anything
-   * else, `text/markdown` included, is rejected with `415`. Passing this REPLACES the default list
-   * rather than extending it, so spread the types you still want.
-   */
-  attachmentAllowedContentTypes?: string[];
+  attachments?: AttachmentStagingStore | AttachmentStagingFactory;
   /**
    * Tool authorization gate. Defaults to `DefaultToolAuthorizer` (fail-closed, ADMIN-only; role-set
    * intersection). `authorizer` and `rolesPolicy` are aliases — pass either.

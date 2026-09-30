@@ -12,7 +12,7 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 
 | Surface | Mounts when |
 | --- | --- |
-| `POST /agent/attachments` | `attachmentStaging` is set — see [Attachments](/docs/agent/authoring/attachments). |
+| `POST /agent/attachments` | `attachments` is set — see [Attachments](/docs/agent/authoring/attachments). |
 | `GET /agent/approvals/mine` | a governance read-model resolves. Not behind `governanceAuthorize`; always scoped to the caller. |
 | `/agent/governance/*` (11 routes) | a read-model resolves **and** a `governanceAuthorize` gate is configured. Without the gate they are **not mounted at all** and answer `404` — see [Governance read-model](/docs/agent/governance/read-model). |
 | `GET\|POST /agent/governance/pricing` | the above, **plus** a `pricingStore`. |
@@ -22,7 +22,7 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 
 | # | Method & path | Purpose |
 | --- | --- | --- |
-| 1 | `POST /agent/chat` | Start a run. Resolves the actor, creates or continues a thread, and **streams the reply as SSE**. Body: `{ message, threadId?, agent?, persona?, attachments?, pageContext?, model? }` — `model` must be a catalog model available to the caller (`400` otherwise). |
+| 1 | `POST /agent/chat` | Start a run. Resolves the actor, creates or continues a thread, and **streams the reply as SSE**. Body: `{ message, threadId?, agent?, persona?, attachments?: { mediaId }[], pageContext?, model? }` — `model` must be a catalog model available to the caller (`400` otherwise). |
 | 2 | `GET /agent/chat/:runId/stream` | **Re-attach** to a run's live token stream (reconnect / resume). |
 | 3 | `POST /agent/chat/:runId/cancel` | Abort a run. Returns `{ aborted: true }`. |
 | 4 | `POST /agent/tool-call/approve` | Approve a pending `action` tool call. Body: `{ toolCallId, runId? }`. |

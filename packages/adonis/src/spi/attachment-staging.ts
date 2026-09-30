@@ -1,6 +1,6 @@
 import type { Actor, MessageAttachment } from '../types.js';
 
-/** Input to {@link AttachmentStagingStore.stage} — the raw bytes plus who uploaded them. */
+/** One uploaded file, as the upload route hands it to {@link AttachmentStagingStore.stage}. */
 export interface StageAttachmentInput {
   data: Buffer;
   filename: string;
@@ -9,20 +9,41 @@ export interface StageAttachmentInput {
   actor: Actor;
 }
 
+/** What a chat send names an upload by — the id alone. */
+export interface AttachmentRef {
+  mediaId: string;
+}
+
+/** A request to turn an uploaded file's id into what the model fetches, for one actor. */
+export interface ResolveAttachmentInput {
+  mediaId: string;
+  actor: Actor;
+}
+
+/** What {@link AttachmentStagingStore.describe} declares — the rules the upload route enforces. */
+export interface AttachmentStagingDescription {
+  maxBytes?: number;
+  allowedContentTypes?: readonly string[];
+}
+
 /**
- * Optional upload-side seam for message attachments (an image/PDF a user attaches to a chat message
- * before the model ever sees it). The lib never fetches bytes itself — {@link MessageAttachment.url}
- * must already be reachable by the model provider — so something has to turn an uploaded file into
- * that URL first. A store adapter (or a thin wrapper over the host's own media pipeline) implements
- * this and is wired via `defineConfig({ attachmentStaging })` — pass an instance, a lazy
- * `attachmentStores.*()` factory, or omit it. When omitted the optional `POST /agent/attachments`
- * upload route is never mounted, so a client sends already-staged {@link MessageAttachment}s directly.
+ * Where uploaded attachments live — the seam that makes storage bring-your-own. The upload route
+ * hands it the bytes (`stage`); a chat send names uploads by id only (`{ mediaId }`) and the server
+ * asks it for the url the model fetches (`resolve`) — a url in the request is never trusted.
+ *
+ * Shipped: `attachmentStores.media()` over `@adonis-agora/media` (any Drive disk), and
+ * `attachmentStores.memory()` for tests and demos. Anything else — a presigning S3 store, the host's
+ * own media pipeline — implements these methods.
  */
 export interface AttachmentStagingStore {
-  /**
-   * Persist an uploaded file somewhere the model can later fetch (a presigned URL, a proxy, or a
-   * `data:` URI) and return the {@link MessageAttachment} to send with the next chat message. The lib
-   * never fetches bytes; the returned url must be reachable by the model provider.
-   */
+  /** Store an uploaded file for `actor`; answer the attachment, `mediaId` first. */
   stage(input: StageAttachmentInput): Promise<MessageAttachment>;
+  /**
+   * The attachment `mediaId` names, with a url the model provider can fetch NOW — or `null` when it
+   * is unknown or `actor` may not use it. Called on every send that names it and again when a thread
+   * is read back, so a short-lived presigned url is re-minted rather than served dead.
+   */
+  resolve(input: ResolveAttachmentInput): Promise<MessageAttachment | null>;
+  /** The size cap and content types this store accepts. Absent → the defaults. */
+  describe?(): AttachmentStagingDescription;
 }
