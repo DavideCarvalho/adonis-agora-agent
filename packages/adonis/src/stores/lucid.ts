@@ -17,12 +17,21 @@ import {
   type ToolCallApprovalState,
   toolCallApprovalFromRow,
 } from '../spi/approval-policy.js';
+import type {
+  ChatQueueStore,
+  EnqueueMessageInput,
+  QueuedMessage,
+  QueuedMessagePatch,
+  QueuePause,
+} from '../spi/chat-queue.js';
 import type { AgentUiComponent } from '../stream-events.js';
 import type {
+  Actor,
   MessageAttachment,
   MessageFeedback,
   MessageRole,
   MessageUsage,
+  PageContext,
   StoredMessage,
   ThreadDetail,
   ThreadSummary,
@@ -129,6 +138,43 @@ function safeJson(value: unknown): string | null {
   }
 }
 
+/**
+ * How many rows an `update`/`delete` touched. Knex answers a bare count on SQLite/MySQL and Postgres,
+ * Lucid may wrap it in an array, and a raw driver result carries it as `rowCount`/`changes`/
+ * `affectedRows` — read whichever is there. Unknown → `0` (a compare-and-set that cannot prove it
+ * won must say it lost).
+ */
+function affectedRows(result: unknown): number {
+  if (typeof result === 'number') return result;
+  if (typeof result === 'bigint') return Number(result);
+  if (Array.isArray(result)) return result.length === 0 ? 0 : affectedRows(result[0]);
+  if (typeof result === 'object' && result !== null) {
+    const record = result as Record<string, unknown>;
+    for (const key of ['rowCount', 'changes', 'affectedRows'] as const) {
+      if (typeof record[key] === 'number') return record[key];
+    }
+  }
+  return 0;
+}
+
+function queuedMessageFromRow(row: Record<string, unknown>): QueuedMessage {
+  const attachments = parseJson<MessageAttachment[]>(row.attachments);
+  const pageContext = parseJson<PageContext>(row.page_context);
+  return {
+    id: String(row.id),
+    threadId: String(row.thread_id),
+    actor: parseJson<Actor>(row.actor) ?? { id: '' },
+    content: String(row.content ?? ''),
+    ...(attachments !== undefined && attachments.length > 0 ? { attachments } : {}),
+    ...(typeof row.agent_name === 'string' ? { agentName: row.agent_name } : {}),
+    ...(typeof row.model === 'string' ? { model: row.model } : {}),
+    ...(pageContext !== undefined ? { pageContext } : {}),
+    ...(toInt(row.interrupt) === 1 ? { interrupt: true } : {}),
+    createdAt: msToIso(row.created_at),
+    updatedAt: msToIso(row.updated_at),
+  };
+}
+
 function parseJson<T>(text: unknown): T | undefined {
   if (typeof text !== 'string' || text.length === 0) return undefined;
   try {
@@ -166,7 +212,7 @@ const TURN_MESSAGE_COLUMNS = [
  * Usually you don't construct this directly: `config/agent.ts` selects it via `stores.lucid({ ... })`
  * and the provider builds it, lazily importing `@adonisjs/lucid` only when the `lucid` store is chosen.
  */
-export class LucidAgentStore implements AgentStore, ThreadTurnReader {
+export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueStore {
   private readonly autoCreateTables: boolean;
   private ready: Promise<void> | null = null;
 
@@ -403,6 +449,177 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
       .from(AGENT_TABLES.threads)
       .where('id', threadId)
       .update({ active_stream_id: runId });
+  }
+
+  // ── Chat queue (ChatQueueStore) ────────────────────────────────────────────
+
+  async activeRunForThread(threadId: string): Promise<string | null> {
+    await this.init();
+    const row = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
+    return typeof row?.active_stream_id === 'string' ? row.active_stream_id : null;
+  }
+
+  /**
+   * Compare-and-set, as two conditional updates rather than one `OR` (the structural query builder
+   * has no `orWhere`): free → `runId`; else held by `runId` or `replacing` → `runId`. Each statement
+   * is atomic and re-checks its own predicate under the row lock, so of two racing claims exactly
+   * one matches.
+   */
+  async claimActiveStream(
+    threadId: string,
+    runId: string,
+    options: { replacing?: string } = {},
+  ): Promise<boolean> {
+    await this.init();
+    const free = await this.db
+      .from(AGENT_TABLES.threads)
+      .where('id', threadId)
+      .whereNull('active_stream_id')
+      .update({ active_stream_id: runId });
+    if (affectedRows(free) > 0) {
+      return true;
+    }
+    const holders = options.replacing !== undefined ? [runId, options.replacing] : [runId];
+    const handed = await this.db
+      .from(AGENT_TABLES.threads)
+      .where('id', threadId)
+      .whereIn('active_stream_id', holders)
+      .update({ active_stream_id: runId });
+    return affectedRows(handed) > 0;
+  }
+
+  async releaseActiveStream(threadId: string, runId: string): Promise<boolean> {
+    await this.init();
+    const released = await this.db
+      .from(AGENT_TABLES.threads)
+      .where('id', threadId)
+      .where('active_stream_id', runId)
+      .update({ active_stream_id: null });
+    return affectedRows(released) > 0;
+  }
+
+  async enqueueMessage(input: EnqueueMessageInput): Promise<QueuedMessage> {
+    await this.init();
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    await this.db.transaction(async (trx) => {
+      const rows = await trx
+        .from(AGENT_TABLES.queuedMessages)
+        .where('thread_id', input.threadId)
+        .select('position');
+      const positions = rows.map((row) => toInt(row.position));
+      // The head takes `min - 1` and the tail `max + 1`, so nothing already waiting is rewritten.
+      const position =
+        positions.length === 0
+          ? 0
+          : input.at === 'head'
+            ? Math.min(...positions) - 1
+            : Math.max(...positions) + 1;
+      await trx.table(AGENT_TABLES.queuedMessages).insert({
+        id,
+        thread_id: input.threadId,
+        actor: safeJson(input.actor) ?? '{}',
+        content: input.content,
+        attachments:
+          input.attachments !== undefined && input.attachments.length > 0
+            ? safeJson(input.attachments)
+            : null,
+        agent_name: input.agentName ?? null,
+        model: input.model ?? null,
+        page_context: input.pageContext !== undefined ? safeJson(input.pageContext) : null,
+        interrupt: input.interrupt === true ? 1 : 0,
+        position,
+        created_at: now,
+        updated_at: now,
+      });
+    });
+    const stored = await this.getQueuedMessage(id);
+    if (stored === null) {
+      throw new Error(`queued message ${id} vanished after insert`);
+    }
+    return stored;
+  }
+
+  async listQueue(threadId: string): Promise<QueuedMessage[]> {
+    await this.init();
+    const rows = await this.db
+      .from(AGENT_TABLES.queuedMessages)
+      .where('thread_id', threadId)
+      .orderBy('position', 'asc')
+      .select('*');
+    return rows.map(queuedMessageFromRow);
+  }
+
+  async getQueuedMessage(id: string): Promise<QueuedMessage | null> {
+    await this.init();
+    const row = await this.db.from(AGENT_TABLES.queuedMessages).where('id', id).first();
+    return row === null || row === undefined ? null : queuedMessageFromRow(row);
+  }
+
+  async updateQueuedMessage(id: string, patch: QueuedMessagePatch): Promise<QueuedMessage | null> {
+    await this.init();
+    const update: Record<string, unknown> = { updated_at: Date.now() };
+    if (patch.content !== undefined) update.content = patch.content;
+    if (patch.attachments !== undefined) {
+      update.attachments =
+        patch.attachments === null || patch.attachments.length === 0
+          ? null
+          : safeJson(patch.attachments);
+    }
+    const updated = await this.db.from(AGENT_TABLES.queuedMessages).where('id', id).update(update);
+    return affectedRows(updated) > 0 ? this.getQueuedMessage(id) : null;
+  }
+
+  async moveQueuedMessage(id: string, index: number): Promise<boolean> {
+    await this.init();
+    return this.db.transaction(async (trx) => {
+      const target = await trx.from(AGENT_TABLES.queuedMessages).where('id', id).first();
+      if (target === null || target === undefined) {
+        return false;
+      }
+      const rows = await trx
+        .from(AGENT_TABLES.queuedMessages)
+        .where('thread_id', String(target.thread_id))
+        .orderBy('position', 'asc')
+        .select('id');
+      const order = rows.map((row) => String(row.id)).filter((rowId) => rowId !== id);
+      order.splice(Math.max(0, Math.min(order.length, Math.trunc(index))), 0, id);
+      // A move rewrites the whole run order as `0..n-1`.
+      for (const [position, rowId] of order.entries()) {
+        await trx.from(AGENT_TABLES.queuedMessages).where('id', rowId).update({ position });
+      }
+      return true;
+    });
+  }
+
+  /** A conditional delete: `false` when the row was already gone (a drain lost its head). */
+  async removeQueuedMessage(id: string): Promise<boolean> {
+    await this.init();
+    const removed = await this.db.from(AGENT_TABLES.queuedMessages).where('id', id).delete();
+    return affectedRows(removed) > 0;
+  }
+
+  async clearQueue(threadId: string): Promise<number> {
+    await this.init();
+    const removed = await this.db
+      .from(AGENT_TABLES.queuedMessages)
+      .where('thread_id', threadId)
+      .delete();
+    return affectedRows(removed);
+  }
+
+  async queuePause(threadId: string): Promise<QueuePause | null> {
+    await this.init();
+    const row = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
+    return parseJson<QueuePause>(row?.queue_pause) ?? null;
+  }
+
+  async setQueuePause(threadId: string, pause: QueuePause | null): Promise<void> {
+    await this.init();
+    await this.db
+      .from(AGENT_TABLES.threads)
+      .where('id', threadId)
+      .update({ queue_pause: pause === null ? null : safeJson(pause) });
   }
 
   async appendMessage(input: AppendMessageInput): Promise<StoredMessage> {

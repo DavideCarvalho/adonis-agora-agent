@@ -116,7 +116,7 @@ export function useAgentChat(options: UseAgentChatOptions = {}): UseAgentChatRes
     };
 
     try {
-      await clientRef.current.send({
+      const result = await clientRef.current.send({
         body,
         signal: controller.signal,
         onParts: applyParts,
@@ -124,6 +124,19 @@ export function useAgentChat(options: UseAgentChatOptions = {}): UseAgentChatRes
           threadIdRef.current = id;
         },
       });
+      if (result.queued !== undefined) {
+        // Another turn holds the thread (another tab, another device): the server queued the
+        // message. If it started at once, follow its run; otherwise there is no answer to show yet
+        // — it arrives when the turn ahead settles (a reload of the thread shows it).
+        if (result.queued.runId !== undefined) {
+          await clientRef.current.resume(result.queued.runId, {
+            signal: controller.signal,
+            onParts: applyParts,
+          });
+        } else {
+          setMessages((prev) => prev.filter((message) => message.id !== assistantId));
+        }
+      }
       stopStreaming();
       setStatus('idle');
     } catch (caught) {

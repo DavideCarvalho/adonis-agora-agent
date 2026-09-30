@@ -22,7 +22,7 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 
 | # | Method & path | Purpose |
 | --- | --- | --- |
-| 1 | `POST /agent/chat` | Start a run. Resolves the actor, creates or continues a thread, and **streams the reply as SSE**. Body: `{ message, threadId?, agent?, persona?, attachments?: { mediaId }[], pageContext?, model?, regenerate?: true }` — `model` must be a catalog model available to the caller (`400` otherwise) and applies to **this turn only** (see [Models](#models)); `regenerate` see [Regenerating an answer](#regenerating-an-answer). |
+| 1 | `POST /agent/chat` | Start a run. Resolves the actor, creates or continues a thread, and **streams the reply as SSE**. Body: `{ message, threadId?, agent?, persona?, attachments?: { mediaId }[], pageContext?, model?, regenerate?: true }` — `model` must be a catalog model available to the caller (`400` otherwise) and applies to **this turn only** (see [Models](#models)); `regenerate` see [Regenerating an answer](#regenerating-an-answer); `mode?: 'auto' \| 'queue' \| 'interrupt'` see [Message queue](#message-queue) — a send on a thread whose turn is still running answers `202 { queued: true, … }` JSON instead of a stream. |
 | 2 | `GET /agent/chat/:runId/stream` | **Re-attach** to a run's live token stream (reconnect / resume). |
 | 3 | `POST /agent/chat/:runId/cancel` | Abort a run. Returns `{ aborted: true }`. |
 | 4 | `POST /agent/tool-call/approve` | Approve a pending `action` tool call. Body: `{ toolCallId, runId? }`. |
@@ -35,6 +35,11 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 | 8 | `GET /agent/threads/:id` | Thread detail (messages + `activeRunId`, the run streaming right now or `null` — the one to re-attach to), or `null`. Thread summaries carry `activeRunId` too. |
 | 8b | `PATCH /agent/threads/:id` | `{ title?, model? }` — rename (1–200 characters) and/or pin a catalog model on the thread (`null` unpins; `400` for a model the catalog does not offer, `501` on a store without `updateThread`). Answers `{ ok: true }`. |
 | 8c | `POST /agent/messages/:id/feedback` | Rate a message: `{ value: 'up' \| 'down' \| null, comment? }` → `{ feedback: { value, comment?, updatedAt } \| null }` (`null` clears). Only the thread's owner — `403` otherwise; `404` unknown message; `400` a bad value; `501` on a store without `threadOfMessage` + `setMessageFeedback`. The rating comes back as `StoredMessage.feedback` and is not copied to a fork. |
+| 8d | `GET /agent/threads/:id/queue` | The thread's [message queue](#message-queue): `{ items: QueuedMessageView[], paused: QueuePause \| null }`. |
+| 8e | `DELETE /agent/threads/:id/queue` | Drop every waiting message (and lift a pause). Answers the (empty) queue. |
+| 8f | `POST /agent/threads/:id/queue/resume` | Lift a pause and start the head when nothing is running. Answers the queue, plus `runId` when the head started. |
+| 8g | `PATCH /agent/queue/:messageId` | `{ message?, attachments?: { mediaId }[] \| null, position? }` — edit and/or move a waiting message. Answers the queue; `410` when it already started or was removed, `404` unknown, `403` another actor's. |
+| 8h | `DELETE /agent/queue/:messageId` | Remove a waiting message. Answers the queue; `410` / `404` / `403` as above. |
 | 9 | `DELETE /agent/threads/:id` | Soft-delete a thread. |
 | 10 | `POST /agent/threads/:id/fork-from/:messageId` | Fork a thread up to a message (regenerate / branch). |
 | 11b | `GET /agent/quota` | `{ windows: [{ period, usedTokens?, limitTokens?, usedUsd, limitUsd?, resetsAt?, warnAt? }], blocked?, warning?: { period, ratio, reason? } }` — see [Budget windows](/docs/agent/governance/quota-and-cost#budget-windows). `usedTokens` is omitted for a USD-only budget; `warning` names the fullest window past its `warnAt` (never while `blocked`). A send while one is exhausted answers `429` `{ code: 'quota_exceeded', period, message }`. |
@@ -156,6 +161,39 @@ To decide per caller (plan, budget, provider health), set `models` to a `ModelCa
 ## Regenerating an answer
 
 `POST /agent/chat { threadId, regenerate: true }` answers the thread's last user message again — the retry button under the last answer. The server requires `threadId` (`400`, `code: 'thread_required'`, without one) and the caller's own thread; stores **no** user message (`message` is ignored — the stored one is answered); drops the answer(s) after that user message, so the model does not see the answer it is replacing; and streams the new answer as a normal run under a new `runId`. `model`, `agent` and `pageContext` apply as on any send. The truncation is its own durable step (`regenerate:truncate`), so a replay never truncates twice and a normal turn journals exactly what it always did.
+
+## Message queue
+
+A person can keep typing while a turn is running. A message sent then is **queued on the thread, server-side** — it survives a reload, a closed tab, another device — and runs as soon as the turn ahead of it settles, exactly as if it had been sent then. It is not part of the transcript until it runs: the turn it starts appends it as its user message. The contract is `@dudousxd/nestjs-agent`'s (its `docs/stream-protocol.md`, *Message queue*), so `chat.queue` in `@dudousxd/nestjs-agent-react` works against this server unchanged.
+
+`POST /agent/chat` takes `mode`:
+
+| `mode` | Thread idle | Thread busy (a turn is running) |
+| --- | --- | --- |
+| `'auto'` (default) | starts the turn, streams it | queues it at the tail → `202` |
+| `'queue'` | queues it, and starts it at once → `202` with `runId` | queues it at the tail → `202` |
+| `'interrupt'` (or `interrupt: true`) | starts the turn, streams it | queues it at the **head**, cancels the running turn → `202` with `interrupting` |
+
+The `202` body is `{ queued: true, threadId, messageId, position, queue: { items, paused }, runId?, interrupting? }` — `position` is 0-based (`0` runs next), `runId` is present only when the message started straight away, and **a queued message's run id is its own `messageId`**, so a client can name the run before it starts. Everything a send carries (`agent`, `model`, `attachments`, `pageContext`) is resolved and checked when it is queued (`400` / `403` / `429` then, not later) and stored with the message; the actor is the one who queued it. `regenerate` is refused with `409 { code: 'run_active' }` while a turn runs.
+
+When the turn holding the thread settles, the server decides what follows **before** writing that turn's terminal frame, and announces it as the stream's last event — `{"kind":"queue","queue":{…},"started":{"messageId","runId"}}` (attach to the new run with `GET /agent/chat/:runId/stream`), or a `queue.paused` saying why nothing starts:
+
+| The turn… | The queue |
+| --- | --- |
+| completed | the head starts |
+| failed | pauses (`run_failed`, `message` = the failure) |
+| was cancelled (Stop) | pauses (`cancelled`) |
+| was cancelled by an interrupt | the interrupt's message (the head) starts |
+
+The head's actor is checked against the [quota](/docs/agent/governance/quota-and-cost#budgets) as it starts; an exhausted budget pauses the queue (`quota_exceeded`) instead. A paused queue keeps every message and starts nothing until `POST /agent/threads/:id/queue/resume`. Every change to the queue while a turn holds the thread (queued, edited, moved, removed) is also written into that turn's stream as a `queue` event — a whole snapshot, never a delta. `GET /agent/threads/:id` carries `queue` too.
+
+**One turn per thread.** The thread's active run (`activeRunId`) is the admission lock, and every write to it is a compare-and-set (`claimActiveStream` / `releaseActiveStream` on the store), so a settling run on a worker and a send on a web pod cannot both start a turn. A holder that is no longer running (a process that crashed mid-turn) is replaced by the next send or resume rather than queued behind for ever. With the durable runner the handoff is journaled (`queue:completed` / `queue:failed` local steps behind `ctx.patched('agent:chat-queue')`, then `ctx.startChild` under the message's id), so a replay never starts a message twice and a run in flight when you upgrade replays the history it has.
+
+The queue needs a store that implements `ChatQueueStore` — the Lucid store (table `agent_queued_message`, column `agent_thread.queue_pause`; both created by `createAgentTables`) and the in-memory store do. A custom store that does not keeps the old behaviour (a send on a busy thread starts a second, concurrent turn) and the queue routes answer `501`; `CHAT_QUEUE_STORE_CONTRACT` in `@adonis-agora/agent/testing` checks an implementation of your own.
+
+<Callout type="warn" title="In-process callers: chat() refuses, send() queues">
+`AgentService.chat()` stays start-or-refuse: on a thread whose turn is still running it throws a `ChatQueueError` (`status: 409`, `code: 'run_active'`) instead of queueing. `AgentService.send()` is the form that queues (what `POST /agent/chat` calls). Before 0.50 a second `chat()` on a busy thread started a concurrent turn.
+</Callout>
 
 ## Human-in-the-loop
 

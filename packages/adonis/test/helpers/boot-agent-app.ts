@@ -2,10 +2,13 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { IgnitorFactory } from '@adonisjs/core/factories/core/ignitor';
 import type { HttpContext } from '@adonisjs/core/http';
+import type { ApplicationService } from '@adonisjs/core/types';
 import type { Actor, AgentConfig } from '../../src/index.js';
 
 export interface BootedApp {
   url: string;
+  /** The booted application — e.g. `app.container.make(AgentService)`. */
+  app: ApplicationService;
   close(): Promise<void>;
 }
 
@@ -52,6 +55,7 @@ export async function bootAgentApp(
   const { port } = node.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}`,
+    app: app as unknown as ApplicationService,
     async close() {
       await new Promise<void>((resolve) => node.close(() => resolve()));
     },

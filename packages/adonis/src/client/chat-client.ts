@@ -20,6 +20,30 @@ export interface AgentChatRequestBody {
    * server drops the old answer and streams a new one under a new run.
    */
   regenerate?: true;
+  /**
+   * What to do when the thread already has a turn running: `'auto'` (default — run now, else wait
+   * in the thread's queue), `'queue'` (always queue), `'interrupt'` (cancel the running turn and run
+   * this next). A queued send answers `202` — see {@link AgentChatQueued}.
+   */
+  mode?: 'auto' | 'queue' | 'interrupt';
+}
+
+/**
+ * What `POST {basePath}/chat` answers (`202`) when the message waits in its thread's queue instead
+ * of running: nothing streams. `runId` is present when it started straight away (attach with
+ * {@link AgentChatClient.resume}); otherwise it runs — under `messageId` as its run id — once the
+ * turn ahead of it settles, announced by a `queue` event with `started` in that turn's stream.
+ */
+export interface AgentChatQueued {
+  queued: true;
+  threadId: string;
+  messageId: string;
+  /** 0-based place in the queue (`0` → runs next). */
+  position: number;
+  queue: { items: { id: string; content: string; [key: string]: unknown }[]; paused: unknown };
+  runId?: string;
+  /** The run an interrupt cancelled to make room for it. */
+  interrupting?: string;
 }
 
 /** Options for {@link createAgentChatClient}. */
@@ -71,6 +95,8 @@ export interface AgentChatResult {
   runId?: string;
   threadId?: string;
   parts: ChatPart[];
+  /** Present when the server queued the message instead of streaming a reply (`202`). */
+  queued?: AgentChatQueued;
 }
 
 /**
@@ -311,6 +337,19 @@ export function createAgentChatClient(options: AgentChatClientOptions = {}): Age
     });
     if (!response.ok) {
       throw await httpError(response);
+    }
+    if (response.status === 202) {
+      // The thread already has a turn running: the message waits in its queue, and nothing streams.
+      const queued = (await response.json()) as AgentChatQueued;
+      if (typeof queued.threadId === 'string') {
+        sendOptions.onThreadId?.(queued.threadId);
+      }
+      return {
+        parts: [],
+        queued,
+        ...(typeof queued.threadId === 'string' ? { threadId: queued.threadId } : {}),
+        ...(typeof queued.runId === 'string' ? { runId: queued.runId } : {}),
+      };
     }
     if (!response.body) {
       throw new Error(`Failed to start agent chat (HTTP ${response.status}): no response body.`);

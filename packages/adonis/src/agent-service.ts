@@ -1,5 +1,6 @@
 import { utcDay } from './agent-deps.js';
 import type { AgentDepsFactory } from './agent-deps-factory.js';
+import type { ChatQueueService } from './chat-queue-service.js';
 import { readElicitationQuestions, validateElicitationAnswer } from './elicitation-input.js';
 import type { AgentRunner } from './spi/agent-runner.js';
 import type { AgentStore } from './spi/agent-store.js';
@@ -9,6 +10,7 @@ import {
   type ToolCallApprovalState,
 } from './spi/approval-policy.js';
 import type { AttachmentRef, AttachmentStagingStore } from './spi/attachment-staging.js';
+import type { ChatQueueState } from './spi/chat-queue.js';
 import {
   findCatalogModel,
   type ModelCatalog,
@@ -57,6 +59,52 @@ export interface ChatParams {
    * the answer(s) after that user message and starts a new run.
    */
   regenerate?: boolean;
+  /** What to do when the thread already has a turn running — see {@link ChatSendMode}. */
+  mode?: ChatSendMode;
+}
+
+/**
+ * What a send does when its thread already has a turn running:
+ *  - `'auto'` (default) — run now when the thread is idle, else wait in the thread's queue.
+ *  - `'queue'` — always wait in the queue, behind whatever is already waiting (it still starts at
+ *    once when nothing is running and nothing is ahead of it).
+ *  - `'interrupt'` — cancel the running turn and run this one next, ahead of the queue.
+ */
+export type ChatSendMode = 'auto' | 'queue' | 'interrupt';
+
+/** A send that is waiting in its thread's queue instead of running. */
+export interface QueuedSend {
+  threadId: string;
+  queued: true;
+  /** The queued message's id — also the run id it will start under. */
+  messageId: string;
+  /** 0-based place in the queue at the time it was queued (`0` → next). */
+  position: number;
+  queue: ChatQueueState;
+  /** The turn it started under, when it started straight away (an idle thread). */
+  runId?: string;
+  /** The run an interrupt cancelled to make room for it. */
+  interrupting?: string;
+}
+
+/** What {@link AgentService.send} did: started a turn, or queued the message. */
+export type ChatSendResult = { runId: string; threadId: string; queued?: undefined } | QueuedSend;
+
+/**
+ * A queue request the service refuses — `status` and `code` are what the routes answer:
+ * `409 run_active` (a start-or-refuse {@link AgentService.chat}, or a regenerate, on a busy thread),
+ * `410` (a queued message that already started or was removed), `404` (no such queued message),
+ * `400` (a bad patch), `501` (the store cannot hold a queue).
+ */
+export class ChatQueueError extends Error {
+  constructor(
+    readonly status: 400 | 404 | 409 | 410 | 501,
+    message: string,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = 'ChatQueueError';
+  }
 }
 
 /** `regenerate: true` on a send without a `threadId` — there is no answer to regenerate. */
@@ -83,6 +131,12 @@ export interface AgentServiceOptions {
   quota?: { provider: QuotaProvider; gated: boolean };
   /** Where attachments live (`attachments` in `config/agent.ts`). Absent → a send naming one is refused. */
   attachments?: AttachmentStagingStore;
+  /**
+   * The thread message queue — the same instance the runner drains with. Absent (or over a store
+   * that is not a `ChatQueueStore`) → a send on a busy thread starts a second, concurrent turn, as
+   * before the queue existed.
+   */
+  queue?: ChatQueueService;
 }
 
 /** A send's attachments were refused — `status` is what the chat route answers (`403`, `501`). */
@@ -246,7 +300,55 @@ export class AgentService {
     }
   }
 
+  /** The queue service when the bound store can hold a queue, else `undefined`. */
+  private queueing(): ChatQueueService | undefined {
+    return this.options.queue?.supported === true ? this.options.queue : undefined;
+  }
+
+  /** The queue service, or a `501` naming what is missing. */
+  private requireQueue(): ChatQueueService {
+    const queue = this.queueing();
+    if (queue === undefined) {
+      throw new ChatQueueError(
+        501,
+        'Queueing messages requires an AgentStore that implements ChatQueueStore; the bound store does not.',
+      );
+    }
+    return queue;
+  }
+
+  /**
+   * Start a turn — for in-process callers that need a run id back. A send that would have to wait
+   * (its thread already has a turn running) is refused with a `409 run_active`
+   * {@link ChatQueueError} instead; {@link send} is the form that queues it.
+   */
   async chat(params: ChatParams): Promise<{ runId: string; threadId: string }> {
+    const result = await this.send({ ...params, mode: 'auto' });
+    if (result.queued !== true) {
+      return result;
+    }
+    if (result.runId !== undefined) {
+      // The thread freed up while it was being queued, and it started straight away.
+      return { runId: result.runId, threadId: result.threadId };
+    }
+    // Take it back out, so this call has no effect — unless it started in the meantime.
+    const queue = this.requireQueue();
+    if (!(await queue.queueStore().removeQueuedMessage(result.messageId))) {
+      return { runId: result.messageId, threadId: result.threadId };
+    }
+    await queue.publish(result.threadId);
+    throw new ChatQueueError(
+      409,
+      `thread ${result.threadId} already has a turn running`,
+      'run_active',
+    );
+  }
+
+  /**
+   * Send a message: start a turn, or — when its thread already has one running — queue the message
+   * to run after it (see {@link ChatSendMode}). What `POST <path>/chat` calls.
+   */
+  async send(params: ChatParams): Promise<ChatSendResult> {
     if (params.regenerate === true && params.threadId === undefined) {
       throw new RegenerateNeedsThreadError();
     }
@@ -278,9 +380,205 @@ export class AgentService {
       ...(params.regenerate === true ? { regenerate: true } : {}),
     };
 
-    // The runner marks the thread's active run itself, before the turn can end.
-    const { runId } = await this.runner.start(input);
-    return { runId, threadId };
+    const queue = this.queueing();
+    if (queue === undefined) {
+      // No admission to take: a store that predates the queue starts every send at once. The
+      // runner marks the thread's active run itself, before the turn can end.
+      const { runId } = await this.runner.start(input);
+      return { runId, threadId };
+    }
+
+    const mode = params.mode ?? 'auto';
+    const { live, stale } = await queue.holder(threadId, this.runner);
+    // `queue` always answers as a queued send (202), so a client that asked for it handles one
+    // shape; an idle thread starts it straight away all the same (`enqueue` kicks the queue).
+    if (live === null && mode !== 'queue') {
+      const runId = crypto.randomUUID();
+      if (
+        await queue
+          .queueStore()
+          .claimActiveStream(threadId, runId, stale !== null ? { replacing: stale } : {})
+      ) {
+        return { runId: await this.startClaimed(queue, input, runId), threadId };
+      }
+      // Lost the race for the thread to another send: fall through and queue behind it.
+    }
+    if (params.regenerate === true) {
+      throw new ChatQueueError(
+        409,
+        'cannot regenerate while a turn is running on this thread',
+        'run_active',
+      );
+    }
+    return this.enqueue(queue, input, mode, live);
+  }
+
+  /**
+   * Start a turn the thread is already claimed for, under the claimed id. A runner that minted an
+   * id of its own anyway gets the thread re-pointed at it; one that fails to start frees the thread.
+   */
+  private async startClaimed(
+    queue: ChatQueueService,
+    input: AgentRunInput,
+    runId: string,
+  ): Promise<string> {
+    const store = queue.queueStore();
+    let started: string;
+    try {
+      started = (await this.runner.start(input, { runId })).runId;
+    } catch (error) {
+      await store.releaseActiveStream(input.threadId, runId);
+      throw error;
+    }
+    if (started !== runId) {
+      await store.claimActiveStream(input.threadId, started, { replacing: runId });
+    }
+    return started;
+  }
+
+  /** Put a send in its thread's queue, then drain it if the thread turned out to be free. */
+  private async enqueue(
+    queue: ChatQueueService,
+    input: AgentRunInput,
+    mode: ChatSendMode,
+    live: string | null,
+  ): Promise<QueuedSend> {
+    const store = queue.queueStore();
+    const threadId = input.threadId;
+    const interrupting = mode === 'interrupt' && live !== null ? live : undefined;
+    const queued = await store.enqueueMessage({
+      threadId,
+      actor: input.actor,
+      content: input.userText,
+      ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
+      ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+      ...(input.model !== undefined ? { model: input.model } : {}),
+      ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
+      ...(interrupting !== undefined ? { interrupt: true, at: 'head' as const } : {}),
+    });
+    let runId: string | undefined;
+    if (interrupting !== undefined) {
+      // An interrupt is a person choosing to run this now: whatever paused the queue, they are
+      // overriding it. The cancel settles into the queue, which starts this message.
+      await store.setQueuePause(threadId, null);
+      await queue.publish(threadId);
+      await this.runner.cancel(interrupting);
+    } else {
+      // The run holding the thread may have settled between our look and our enqueue — its drain
+      // then found nothing. Starting the head here covers that; with a live holder it does nothing.
+      runId = await queue.kick(threadId, this.runner);
+      if (runId === undefined) {
+        await queue.publish(threadId);
+      }
+    }
+    const state = await queue.state(threadId);
+    const position = state.items.findIndex((item) => item.id === queued.id);
+    return {
+      threadId,
+      queued: true,
+      messageId: queued.id,
+      position: position === -1 ? 0 : position,
+      queue: state,
+      ...(runId !== undefined && runId === queued.id ? { runId } : {}),
+      ...(interrupting !== undefined ? { interrupting } : {}),
+    };
+  }
+
+  /** Can this deployment queue messages (the store is a `ChatQueueStore` and a queue is wired)? */
+  queueSupported(): boolean {
+    return this.queueing() !== undefined;
+  }
+
+  /** `GET <path>/threads/:id/queue` — the thread's waiting messages and whether it drains. */
+  getQueue(threadId: string): Promise<ChatQueueState> {
+    return this.requireQueue().state(threadId);
+  }
+
+  /** The thread a queued message waits on — `null` when there is no such message. */
+  async queuedMessageThread(messageId: string): Promise<string | null> {
+    const message = await this.requireQueue().queueStore().getQueuedMessage(messageId);
+    return message?.threadId ?? null;
+  }
+
+  /**
+   * `PATCH <path>/queue/:messageId` — change a waiting message's text and/or attachments, and/or
+   * move it to `position` in the queue. Answers the thread's queue.
+   */
+  async updateQueuedMessage(
+    actor: Actor,
+    messageId: string,
+    patch: { message?: string; attachments?: AttachmentRef[] | null; position?: number },
+  ): Promise<ChatQueueState> {
+    const queue = this.requireQueue();
+    const store = queue.queueStore();
+    const current = await store.getQueuedMessage(messageId);
+    if (current === null) {
+      throw new ChatQueueError(404, `queued message ${messageId} not found`);
+    }
+    if (patch.message !== undefined && patch.message.trim().length === 0) {
+      throw new ChatQueueError(400, 'message must not be empty');
+    }
+    if (patch.position !== undefined && (!Number.isInteger(patch.position) || patch.position < 0)) {
+      throw new ChatQueueError(400, 'position must be a non-negative integer');
+    }
+    const attachments =
+      patch.attachments === undefined || patch.attachments === null
+        ? patch.attachments
+        : await this.resolveAttachments(actor, patch.attachments);
+    const gone = new ChatQueueError(
+      410,
+      `queued message ${messageId} already started or was removed`,
+    );
+    if (patch.message !== undefined || attachments !== undefined) {
+      const updated = await store.updateQueuedMessage(messageId, {
+        ...(patch.message !== undefined ? { content: patch.message } : {}),
+        ...(attachments !== undefined ? { attachments } : {}),
+      });
+      if (updated === null) {
+        throw gone;
+      }
+    }
+    if (
+      patch.position !== undefined &&
+      !(await store.moveQueuedMessage(messageId, patch.position))
+    ) {
+      throw gone;
+    }
+    return queue.publish(current.threadId);
+  }
+
+  /** `DELETE <path>/queue/:messageId` — drop a waiting message. Answers the thread's queue. */
+  async removeQueuedMessage(messageId: string): Promise<ChatQueueState> {
+    const queue = this.requireQueue();
+    const store = queue.queueStore();
+    const current = await store.getQueuedMessage(messageId);
+    if (current === null) {
+      throw new ChatQueueError(404, `queued message ${messageId} not found`);
+    }
+    if (!(await store.removeQueuedMessage(messageId))) {
+      throw new ChatQueueError(410, `queued message ${messageId} already started or was removed`);
+    }
+    return queue.publish(current.threadId);
+  }
+
+  /** `DELETE <path>/threads/:id/queue` — drop every waiting message (and any pause). */
+  async clearQueue(threadId: string): Promise<ChatQueueState> {
+    const queue = this.requireQueue();
+    await queue.queueStore().clearQueue(threadId);
+    await queue.queueStore().setQueuePause(threadId, null);
+    return queue.publish(threadId);
+  }
+
+  /**
+   * `POST <path>/threads/:id/queue/resume` — lift a pause and start the head when nothing is
+   * running. Answers the queue, and the run the head started under, if it did.
+   */
+  async resumeQueue(threadId: string): Promise<ChatQueueState & { runId?: string }> {
+    const queue = this.requireQueue();
+    await queue.queueStore().setQueuePause(threadId, null);
+    const runId = await queue.kick(threadId, this.runner);
+    const state = runId === undefined ? await queue.publish(threadId) : await queue.state(threadId);
+    return { ...state, ...(runId !== undefined ? { runId } : {}) };
   }
 
   subscribe(runId: string): AsyncIterable<StreamFrame> {
@@ -534,7 +832,13 @@ export class AgentService {
    * this actor keeps the url it was stored with.
    */
   async getThread(threadId: string, actor?: Actor): Promise<ThreadDetail | null> {
-    const thread = await this.store.getThread(threadId);
+    const stored = await this.store.getThread(threadId);
+    const queue = this.queueing();
+    // The waiting messages ride along, so a reload shows them without a second request.
+    const thread =
+      stored !== null && queue !== undefined
+        ? { ...stored, queue: await queue.state(threadId) }
+        : stored;
     const staging = this.options.attachments;
     if (thread === null || actor === undefined || staging === undefined) return thread;
     if (!thread.messages.some((message) => (message.attachments?.length ?? 0) > 0)) return thread;
