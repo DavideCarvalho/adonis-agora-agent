@@ -109,8 +109,9 @@ export interface LucidDatabaseLike extends LucidClientLike, LucidRawRunner {
 
 export interface LucidAgentStoreOptions {
   /**
-   * Provision the agent tables on first use (via {@link ensureAgentTables}), so the lib manages its
-   * own schema — the ecosystem convention (mirrors `@adonis-agora/durable` and `@adonis-agora/authz`).
+   * Provision the agent tables (via {@link ensureAgentTables}) — as the app starts when the agent
+   * provider built the store, else on first use — so the lib manages its own schema, the ecosystem
+   * convention (mirrors `@adonis-agora/durable` and `@adonis-agora/authz`).
    * Default `true`. Set `false` to opt out and run the published migration (`createAgentTables` /
    * `node ace configure @adonis-agora/agent`) instead — e.g. when you want the schema versioned.
    * The same flag governs the pricing store and the governance read-model, which share these tables.
@@ -225,9 +226,24 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
 
   private init(): Promise<void> {
     if (this.ready === null) {
-      this.ready = this.autoCreateTables ? ensureAgentTables(this.db) : Promise.resolve();
+      const ready = this.autoCreateTables ? ensureAgentTables(this.db) : Promise.resolve();
+      // A failed provisioning is not remembered: the next call tries again.
+      ready.catch(() => {
+        if (this.ready === ready) this.ready = null;
+      });
+      this.ready = ready;
     }
     return this.ready;
+  }
+
+  /**
+   * Provision (or repair) the agent tables now. The agent provider calls this once as the app starts,
+   * so no request — and no transaction a caller happens to have open — ever pays for DDL. Idempotent;
+   * a no-op under `autoCreateTables: false`. Every other method still awaits it, which is what keeps
+   * a store built by hand (no provider) working.
+   */
+  ensureSchema(): Promise<void> {
+    return this.init();
   }
 
   async createThread(input: CreateThreadInput): Promise<ThreadSummary> {

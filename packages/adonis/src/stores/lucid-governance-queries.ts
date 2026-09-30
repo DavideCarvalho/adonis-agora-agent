@@ -187,6 +187,11 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     return this.autoCreateTables ? ensureAgentTables(this.db) : Promise.resolve();
   }
 
+  /** Provision the shared schema now (what the agent provider calls at app start). Idempotent. */
+  ensureSchema(): Promise<void> {
+    return this.ready();
+  }
+
   private async loadPricing(): Promise<Map<string, CurrentModelPrice>> {
     const pricing = new Map<string, CurrentModelPrice>();
     if (this.pricingStore === undefined) return pricing;

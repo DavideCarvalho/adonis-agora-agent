@@ -206,6 +206,8 @@ export default class AgentProvider {
   #sink: TokenStreamSink | null = null;
   #actorDirectory: ActorDirectory | null = null;
   #mcpTools: McpToolImporter | null = null;
+  /** Whatever was built at boot that may own a schema: the store, the pricing store, the read-model. */
+  #schemaOwners: unknown[] = [];
 
   constructor(protected app: ApplicationService) {}
 
@@ -315,6 +317,7 @@ export default class AgentProvider {
     this.#store = store;
     this.#sink = sink;
     this.#actorDirectory = actorDirectory;
+    this.#schemaOwners = [store, pricingStore, governance];
 
     const factory = new AgentDepsFactory({
       model,
@@ -386,6 +389,39 @@ export default class AgentProvider {
     );
   }
 
+  /**
+   * Provision (or repair) the agent tables once, as the app starts — before the HTTP server takes a
+   * request and before a test runner opens its first transaction. Left to first use, the DDL ran
+   * inside whatever the first caller had open: a Japa suite's global transaction held the locks the
+   * DDL needed and the run hung.
+   *
+   * Every store that manages its own schema exposes `ensureSchema()` (the three Lucid stores do, and
+   * it is a no-op under `autoCreateTables: false`); a custom store may too. Skipped for ace commands
+   * (`console`): `migration:run` must not find the tables already made by the app it is booting, and
+   * `list:routes` must not need a database. A command that does use the agent (a durable worker)
+   * falls back to first use, which is the same idempotent call.
+   *
+   * A failure here is reported, not fatal: the app may be starting ahead of its database, and the
+   * first use retries — and surfaces the error to the caller if it is still there.
+   */
+  async start() {
+    const owners = this.#schemaOwners;
+    this.#schemaOwners = [];
+    if (this.app.getEnvironment() === 'console') return;
+    for (const owner of owners) {
+      const ensureSchema = (owner as { ensureSchema?: unknown } | null | undefined)?.ensureSchema;
+      if (typeof ensureSchema !== 'function') continue;
+      try {
+        await ensureSchema.call(owner);
+      } catch (error) {
+        console.warn(
+          '[@adonis-agora/agent] Could not provision the agent tables at startup; it will be retried on first use.',
+          error,
+        );
+      }
+    }
+  }
+
   async shutdown() {
     // The Lucid store shares the app's `db` (it owns no connection to close); the in-process sink
     // holds only per-run buffers that GC with the provider. Drop refs so a hot reload starts clean.
@@ -395,6 +431,7 @@ export default class AgentProvider {
     this.#store = null;
     this.#sink = null;
     this.#actorDirectory = null;
+    this.#schemaOwners = [];
   }
 
   /**
