@@ -3,12 +3,14 @@ title: AG-UI
 description: Serve the agent over AG-UI 1.0 — the open agent-to-application protocol — next to the native stream.
 ---
 
-[AG-UI](https://docs.ag-ui.com/spec/1.0) is an open protocol between an agent and the application in front of it. With `agUi` on, the same agent answers it as well, so any AG-UI client (`@ag-ui/client`'s `HttpAgent`, CopilotKit, a client in Python or .NET) can drive it without knowing this library. The [native stream](/docs/agent/streaming-and-http) is unchanged and stays the richer surface; AG-UI is a second door onto the same runs.
+[AG-UI](https://docs.ag-ui.com/spec/1.0) is an open protocol between an agent and the application in front of it. With the AG-UI adapter in `adapters`, the same agent answers it as well, so any AG-UI client (`@ag-ui/client`'s `HttpAgent`, CopilotKit, a client in Python or .NET) can drive it without knowing this library. The [native stream](/docs/agent/streaming-and-http) is unchanged and stays the richer surface; AG-UI is a second door onto the same runs.
 
 ```ts title="config/agent.ts"
+import { agUiAdapter } from '@adonis-agora/agent/ag-ui'
+
 export default defineConfig({
   // …
-  agUi: true, // or { quietMs: 750 }
+  adapters: [agUiAdapter()], // or agUiAdapter({ path: 'ag-ui', quietMs: 750 })
 })
 ```
 
@@ -94,6 +96,10 @@ The interrupt `id` is the whole address of what it answers — the run, the call
 <Callout type="info" title="When is a run 'waiting'?">
 A run is reported interrupted as soon as every tool call it has open is waiting on a person. When it is waiting on someone *and* still has other work announced, the stream gets `quietMs` (default 750) of silence before the run is reported; what that other work produces afterwards is delivered by the resumed run.
 </Callout>
+
+## Adapters
+
+`adapters` takes any `ProtocolAdapter` — `{ name, mount(host) }`. The provider hands `mount` a `ProtocolAdapterHost`: the `AgentService`, `post` / `get` to mount routes under the agent's path, and the same gates the native routes pass through (`resolveActor`, `assertOwner`, `mayDecide`, `refuseSend`, `conflictOnMismatch`, the attachment store and its limits). `agUiAdapter()` is written against that interface and nothing else, so a protocol of your own is built the same way, without touching the provider.
 
 ## Building your own route
 

@@ -2,7 +2,7 @@ import { HttpAgent } from '@ag-ui/client';
 import type { BaseEvent, Interrupt, RunAgentInput } from '@ag-ui/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { type AgUiEvent, decodeInterruptId } from '../src/ag-ui/index.js';
+import { type AgUiEvent, agUiAdapter, decodeInterruptId } from '../src/ag-ui/index.js';
 import { type AgentConfig, AgentService, attachmentStores, defineTool } from '../src/index.js';
 import { FakeModelProvider, type FakeScript } from '../src/testing/fake-model-provider.js';
 import { assertConforms, assertInputSchema } from './helpers/ag-ui.js';
@@ -22,7 +22,11 @@ afterEach(async () => {
 });
 
 function bootApp(script: FakeScript, extra: Partial<AgentConfig> = {}): Promise<BootedApp> {
-  return bootAgentApp({ model: new FakeModelProvider(script), agUi: { quietMs: 80 }, ...extra });
+  return bootAgentApp({
+    model: new FakeModelProvider(script),
+    adapters: [agUiAdapter({ quietMs: 80 })],
+    ...extra,
+  });
 }
 
 const refund = defineTool(
@@ -77,6 +81,21 @@ function input(overrides: Partial<RunAgentInput> = {}): RunAgentInput {
 }
 
 describe('POST /agent/ag-ui', () => {
+  it('mounts where the adapter says', async () => {
+    booted = await bootAgentApp({
+      model: new FakeModelProvider(() => ({ text: 'hi' })),
+      adapters: [agUiAdapter({ path: 'copilot' })],
+    });
+    expect((await post(booted.url, input())).status).toBe(404);
+    const response = await fetch(`${booted.url}/agent/copilot`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-actor-id': 'u1' },
+      body: JSON.stringify(input()),
+    });
+    expect(response.status).toBe(200);
+    await readSse(response);
+  });
+
   it('is not mounted unless the config asks for it', async () => {
     booted = await bootAgentApp({ model: new FakeModelProvider(() => ({ text: 'hi' })) });
     expect((await post(booted.url, input())).status).toBe(404);
