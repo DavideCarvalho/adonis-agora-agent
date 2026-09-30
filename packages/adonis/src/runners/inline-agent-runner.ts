@@ -9,7 +9,7 @@ import {
   isHumanDecision,
 } from '../elicitation.js';
 import type { AgentRunner } from '../spi/agent-runner.js';
-import type { AgentStore } from '../spi/agent-store.js';
+import { type AgentStore, clearActiveRun } from '../spi/agent-store.js';
 import { childSinkWriter } from '../spi/token-stream-sink.js';
 import type { Actor, AgentRunInput, Decision } from '../types.js';
 
@@ -38,6 +38,8 @@ interface ParkedWait {
  */
 export class InlineAgentRunner implements AgentRunner {
   private readonly pending = new Map<string, ParkedWait>();
+  /** The thread of each run this process started — what a cancel clears the active run of. */
+  private readonly threadOfRun = new Map<string, string>();
 
   constructor(
     private readonly factory: AgentDepsFactory,
@@ -66,23 +68,32 @@ export class InlineAgentRunner implements AgentRunner {
     // Emitted by the runner (not the shared loop) because the inline runner executes the loop exactly
     // once; the durable runner's body replays, so it roots its trace by traceId instead. Zero-cost
     // when unobserved.
+    // The thread's active run is set BEFORE the loop starts — a fast turn could otherwise end (and
+    // clear it) before it was ever set — and cleared when the turn ends, however it ends.
+    await this.store.setActiveStream(input.threadId, runId);
+    this.threadOfRun.set(runId, input.threadId);
     void spannedAgent(
       'turn',
       runId,
       { runId },
       () => runAgentLoop({ ...deps, day }, input, hooks),
       (result) => ({ textLength: result.text.length }),
-    ).catch(async (error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[@adonis-agora/agent] run ${runId} failed: ${message}`);
-      // Settle the run's persisted outcome — the loop only records completions (it can't catch its
-      // own crash). First-terminal, so this can't clobber a completion that already landed.
-      await this.store.recordRunEnd({ runId, status: 'failed', error: message });
-      // Surface the failure on the live stream and close it, so a subscriber isn't left hanging.
-      const writer = await deps.sink.open(runId);
-      await writer.write(streamErrorFrame(error));
-      await writer.end();
-    });
+    )
+      .finally(() => {
+        this.threadOfRun.delete(runId);
+        return clearActiveRun(this.store, input.threadId, runId).catch(() => undefined);
+      })
+      .catch(async (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[@adonis-agora/agent] run ${runId} failed: ${message}`);
+        // Settle the run's persisted outcome — the loop only records completions (it can't catch its
+        // own crash). First-terminal, so this can't clobber a completion that already landed.
+        await this.store.recordRunEnd({ runId, status: 'failed', error: message });
+        // Surface the failure on the live stream and close it, so a subscriber isn't left hanging.
+        const writer = await deps.sink.open(runId);
+        await writer.write(streamErrorFrame(error));
+        await writer.end();
+      });
 
     return { runId };
   }
@@ -115,6 +126,10 @@ export class InlineAgentRunner implements AgentRunner {
     // Best-effort: settle the run `cancelled` (first-terminal, so a completed run stays completed),
     // then close the live stream so a subscriber isn't left hanging.
     await this.store.recordRunEnd({ runId, status: 'cancelled' });
+    const threadId = this.threadOfRun.get(runId);
+    if (threadId !== undefined) {
+      await clearActiveRun(this.store, threadId, runId);
+    }
     const deps = this.factory.forAgent();
     const writer = await deps.sink.open(runId);
     // The last frame before a normal end: without it a reader cannot tell a truncated answer from

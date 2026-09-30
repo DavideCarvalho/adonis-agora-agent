@@ -189,7 +189,6 @@ export class InMemoryAgentStore implements AgentStore {
     return {
       ...this.toSummary(row),
       messages: row.messages.map((message) => this.withApprovals(message)),
-      ...(row.activeStreamId !== undefined ? { activeStreamId: row.activeStreamId } : {}),
     };
   }
 
@@ -254,6 +253,13 @@ export class InMemoryAgentStore implements AgentStore {
       row.model = patch.model;
     }
     row.updatedAt = this.now();
+  }
+
+  async clearActiveStream(threadId: string, runId: string): Promise<void> {
+    const row = this.threads.get(threadId);
+    if (row !== undefined && row.activeStreamId === runId) {
+      delete row.activeStreamId;
+    }
   }
 
   async setActiveStream(threadId: string, runId: string | null): Promise<void> {
@@ -628,6 +634,7 @@ export class InMemoryAgentStore implements AgentStore {
       ...(row.pinnedAt !== undefined ? { pinnedAt: row.pinnedAt } : {}),
       ...(last !== undefined ? { lastMessagePreview: last.content.slice(0, 120) } : {}),
       model: row.model ?? null,
+      activeRunId: row.activeStreamId ?? null,
     };
   }
 }

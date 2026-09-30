@@ -228,11 +228,9 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
       .select('*');
     const messages = await this.withApprovals(messageRows.map(rowToMessage));
     const last = messages[messages.length - 1];
-    const activeStreamId = row.active_stream_id;
     return {
       ...threadRowToSummary(row, last?.content),
       messages,
-      ...(typeof activeStreamId === 'string' ? { activeStreamId } : {}),
     };
   }
 
@@ -388,6 +386,15 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader {
     if (patch.title !== undefined) update.title = patch.title;
     if (patch.model !== undefined) update.model = patch.model;
     await this.db.from(AGENT_TABLES.threads).where('id', threadId).update(update);
+  }
+
+  async clearActiveStream(threadId: string, runId: string): Promise<void> {
+    await this.init();
+    await this.db
+      .from(AGENT_TABLES.threads)
+      .where('id', threadId)
+      .where('active_stream_id', runId)
+      .update({ active_stream_id: null });
   }
 
   async setActiveStream(threadId: string, runId: string | null): Promise<void> {
@@ -715,6 +722,7 @@ function threadRowToSummary(row: Record<string, unknown>, lastPreview?: string):
     ...(pinnedAt !== null && pinnedAt !== undefined ? { pinnedAt: msToIso(pinnedAt) } : {}),
     ...(lastPreview !== undefined ? { lastMessagePreview: lastPreview.slice(0, 120) } : {}),
     model: typeof row.model === 'string' ? row.model : null,
+    activeRunId: typeof row.active_stream_id === 'string' ? row.active_stream_id : null,
   };
 }
 

@@ -146,3 +146,63 @@ describe('the REST surface of #211 over HTTP', () => {
     expect(bad.status).toBe(400);
   });
 });
+
+describe('activeRunId and GET /agent/config', () => {
+  let booted: BootedApp | null = null;
+  afterEach(async () => {
+    await booted?.close();
+    booted = null;
+  });
+  const as = { 'content-type': 'application/json', 'x-actor-id': 'u1' };
+
+  it('names the run streaming on a thread while it runs, and null once it ended', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    booted = await bootAgentApp({
+      model: {
+        async runTurn(args) {
+          await gate;
+          await args.sink.write({ t: 'text', v: 'Hi.' });
+          return { text: 'Hi.', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1 } };
+        },
+      },
+    });
+    const { url } = booted;
+    const response = await fetch(`${url}/agent/chat`, {
+      method: 'POST',
+      headers: as,
+      body: JSON.stringify({ message: 'hello' }),
+    });
+    const runId = response.headers.get('x-agent-run-id');
+    const threadId = response.headers.get('x-agent-thread-id');
+    const during = (await (
+      await fetch(`${url}/agent/threads/${threadId}`, { headers: as })
+    ).json()) as ThreadDetail;
+    expect(during.activeRunId).toBe(runId);
+    expect(during).not.toHaveProperty('activeStreamId');
+    release();
+    await readSse(response);
+    const after = (await (await fetch(`${url}/agent/threads`, { headers: as })).json()) as {
+      activeRunId: string | null;
+    }[];
+    expect(after[0]?.activeRunId).toBeNull();
+  });
+
+  it('reports the server facts a client would otherwise repeat', async () => {
+    booted = await bootAgentApp({ model: new FakeModelProvider(() => ({ text: 'Hi.' })) });
+    expect(await (await fetch(`${booted.url}/agent/config`, { headers: as })).json()).toEqual({
+      attachments: {
+        enabled: false,
+        upload: null,
+        maxBytes: 20 * 1024 * 1024,
+        allowedContentTypes: expect.any(Array),
+        maxPerMessage: 10,
+      },
+      models: { enabled: false },
+      quota: { enforced: false },
+      identity: { anonymous: false },
+    });
+  });
+});

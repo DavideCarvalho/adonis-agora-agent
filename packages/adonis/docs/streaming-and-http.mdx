@@ -32,13 +32,13 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 | 6d | `GET /agent/agents` | The registered agents for a picker: `{ name, description, isDefault? }[]`. |
 | 6b | `GET /agent/tools?agent=` | The tools the caller can reach through an agent, as `{ name, kind, presentation? }[]` — the same list the model is offered. `404` for an unknown agent. See [Presentation](/docs/agent/authoring/tools#presentation--how-a-chat-surface-talks-about-a-tool). |
 | 7 | `GET /agent/threads/personas/catalog` | The persona `{ id, label }` catalog for a UI picker. |
-| 8 | `GET /agent/threads/:id` | Thread detail (messages + `activeStreamId`), or `null`. |
+| 8 | `GET /agent/threads/:id` | Thread detail (messages + `activeRunId`, the run streaming right now or `null` — the one to re-attach to), or `null`. Thread summaries carry `activeRunId` too. |
 | 8b | `PATCH /agent/threads/:id` | `{ title?, model? }` — rename (1–200 characters) and/or pin a catalog model on the thread (`null` unpins; `400` for a model the catalog does not offer, `501` on a store without `updateThread`). Answers `{ ok: true }`. |
 | 8c | `POST /agent/messages/:id/feedback` | Rate a message: `{ value: 'up' \| 'down' \| null, comment? }` → `{ feedback: { value, comment?, updatedAt } \| null }` (`null` clears). Only the thread's owner — `403` otherwise; `404` unknown message; `400` a bad value; `501` on a store without `threadOfMessage` + `setMessageFeedback`. The rating comes back as `StoredMessage.feedback` and is not copied to a fork. |
 | 9 | `DELETE /agent/threads/:id` | Soft-delete a thread. |
 | 10 | `POST /agent/threads/:id/fork-from/:messageId` | Fork a thread up to a message (regenerate / branch). |
 | 11b | `GET /agent/quota` | Every budget window with its usage — see [Budget windows](/docs/agent/governance/quota-and-cost#budget-windows). A send while one is exhausted answers `429` `{ code: 'quota_exceeded', period, message }`. |
-| 11 | `GET /agent/quota/today` | The actor's token spend today: `{ usedTokens }`. |
+| 11 | `GET /agent/config` | Server facts a client would otherwise repeat: `{ attachments: { enabled, upload, maxBytes, allowedContentTypes, maxPerMessage }, models: { enabled }, quota: { enforced }, identity: { anonymous } }` (what the React `useAgentConfig` reads). |
 | 12 | `GET /agent/approvals/mine` <span data-opt>optional</span> | The **calling actor's own** pending HITL approvals, oldest first. Query: `limit?` (default `50`, clamped to `200`). Mounts with `governanceQueries` but is **not** behind `governanceAuthorize` — it is always scoped to `actor.id`, so a non-admin surface (e.g. a coordinator's chat) can poll its own suspended tool calls even when the cross-actor read-model is ADMIN-only. |
 
 <Callout type="info" title="Every route resolves the actor first">
@@ -236,7 +236,7 @@ The requirement is decided inside the call's own `persist:toolcall` checkpoint, 
 
 ## Re-attaching to a run
 
-Streams survive a dropped connection. A late subscriber to `GET /agent/chat/:runId/stream` replays the run's buffered chunks first, then follows live until `done`. Combined with the thread's `activeStreamId`, a reloading client can find the in-flight run and rejoin its stream.
+Streams survive a dropped connection. A late subscriber to `GET /agent/chat/:runId/stream` replays the run's buffered chunks first, then follows live until `done`. Combined with the thread's `activeRunId`, a reloading client can find the in-flight run and rejoin its stream.
 
 <Callout type="warn" title="Single-replica by default">
 Re-attach works because the default token sink buffers per run in process memory. That makes it single-replica: a run started on one instance can only be re-attached on that same instance. Switch to the [Redis sink](/docs/agent/redis-streaming) so any pod can serve any run's stream, and pair it with the [durable runner](/docs/agent/durability/durable-runner) for cross-instance resume.

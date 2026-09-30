@@ -38,6 +38,9 @@ export class DurableAgentRunner implements AgentRunner {
     const stamped: DurableAgentRunInput = { ...input, day: input.day ?? utcDay() };
     // Own the run id so we can still return it when the run suspends synchronously on start (below).
     const runId = crypto.randomUUID();
+    // Before the engine starts it: a run the engine drives synchronously could otherwise end (and
+    // clear it) before it was set. The workflow clears it when the run ends.
+    await this.store?.setActiveStream(input.threadId, runId);
     try {
       await this.engine.start(AgentRunWorkflow, stamped, runId);
     } catch (error) {

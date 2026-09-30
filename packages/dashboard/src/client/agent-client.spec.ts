@@ -43,8 +43,10 @@ describe('AgentClient', () => {
     await client.usageTrend(range);
     await client.recentToolCalls();
     await client.recentThreads();
-    fetchMock.mockResolvedValueOnce(jsonResponse({ usedTokens: 0 }));
-    await client.quotaToday();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ windows: [{ period: 'day', usedTokens: 7, usedUsd: 0 }] }),
+    );
+    expect(await client.quotaToday()).toEqual({ usedTokens: 7 });
 
     const urls = fetchMock.mock.calls.map((c) => c[0]);
     expect(urls).toEqual([
@@ -52,7 +54,7 @@ describe('AgentClient', () => {
       '/agent/governance/usage/trend?from=2026-03-01&to=2026-03-01',
       '/agent/governance/tool-calls/recent?limit=10',
       '/agent/governance/threads/recent?limit=10',
-      '/agent/quota/today',
+      '/agent/quota',
     ]);
   });
 

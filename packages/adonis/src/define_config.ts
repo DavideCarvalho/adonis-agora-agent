@@ -16,7 +16,6 @@ import type { ModelProvider } from './spi/model-provider.js';
 import type { AgentPricingStore } from './spi/pricing-store.js';
 import type { InputProcessor, OutputProcessor } from './spi/processors.js';
 import type { QuotaProvider } from './spi/quota-provider.js';
-import type { QuotaStore } from './spi/quota-store.js';
 import type { Retriever } from './spi/retriever.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
 import type { TokenStreamSink } from './spi/token-stream-sink.js';
@@ -37,9 +36,6 @@ import type {
   PgVectorRetrieverConfig,
   PricingContext,
   PricingFactory,
-  QuotaConfig,
-  QuotaContext,
-  QuotaFactory,
   RedisTokenSinkConfig,
   RetrieverContext,
   RetrieverFactory,
@@ -52,12 +48,12 @@ import {
   attachmentStores,
   governanceQueries,
   pricingStores,
-  quotas,
   retrievers,
   stores,
   streamTransports,
   tokenSinks,
 } from './stores/factory.js';
+import type { QuotaLimits } from './stores/ledger-quota-provider.js';
 import type { ToolTransientRetrySetting } from './tool-retry.js';
 import type { Actor, AgentDefinition } from './types.js';
 
@@ -101,14 +97,14 @@ export interface AgentConfig {
    */
   sink?: TokenStreamSink | SinkFactory;
   /**
-   * Daily token budget, or a lazy factory. Omit to disable quotas (fail-open on budget). Use
-   * `quotas.ledger({ limitTokens })` to enforce off the persisted token-usage ledger, or
-   * `quotas.memory({ limitTokens })` for a single-process budget. `quotas.windows({ day?, month? })`
-   * (or your own `QuotaProvider`) sets budget windows in tokens and/or spend: `GET <path>/quota`
-   * reports them and a send while one is exhausted answers `429`. Without any, `GET <path>/quota`
-   * still reports usage from the ledger.
+   * The caller's budget. `{ limits: { day?: { tokens?, usd? }, month?: { tokens?, usd? } } }` puts
+   * ceilings on the built-in ledger provider; a `QuotaProvider` of your own replaces it. Either way
+   * `GET <path>/quota` reports it and a send whose report comes back `blocked` is refused with `429`
+   * before the turn starts. Omit → reported (usage off the ledger), never enforced — for a public
+   * (anonymous) deployment that means unbounded model spend, so set limits there; they apply per
+   * actor, which is per browser in anonymous mode.
    */
-  quota?: QuotaStore | QuotaProvider | QuotaFactory;
+  quota?: { limits: QuotaLimits } | QuotaProvider;
   /**
    * Prices each turn's tokens into the assistant message's `usage.costUsd`. A provider-reported cost
    * (a gateway) always wins; otherwise the loop estimates from this store's current price rows (fetched
@@ -374,9 +370,6 @@ export type {
   PgVectorRetrieverConfig,
   PricingContext,
   PricingFactory,
-  QuotaConfig,
-  QuotaContext,
-  QuotaFactory,
   RedisTokenSinkConfig,
   RetrieverContext,
   RetrieverFactory,
@@ -389,7 +382,6 @@ export {
   attachmentStores,
   governanceQueries,
   pricingStores,
-  quotas,
   retrievers,
   stores,
   streamTransports,

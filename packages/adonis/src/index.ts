@@ -100,9 +100,6 @@ export type {
   PgVectorRetrieverConfig,
   PricingContext,
   PricingFactory,
-  QuotaConfig,
-  QuotaContext,
-  QuotaFactory,
   RedisTokenSinkConfig,
   RetrieverContext,
   RetrieverFactory,
@@ -118,7 +115,6 @@ export {
   defineConfig,
   governanceQueries,
   pricingStores,
-  quotas,
   retrievers,
   stores,
   streamTransports,
@@ -357,7 +353,6 @@ export {
 } from './sse.js';
 export type { QdrantRetrieverConfig } from './stores/factory.js';
 export { lucidStoreConnection } from './stores/factory.js';
-export { LedgerQuotaStore } from './stores/ledger-quota.js';
 export {
   LedgerQuotaProvider,
   type QuotaLimits,
