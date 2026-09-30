@@ -7,6 +7,7 @@ import {
   type QuotaReport,
   type QuotaWindow,
   quotaPeriodRange,
+  quotaWarning,
 } from '../spi/quota-provider.js';
 import type { QuotaStore } from '../spi/quota-store.js';
 
@@ -20,6 +21,15 @@ export interface QuotaWindowLimits {
 export interface QuotaLimits {
   day?: QuotaWindowLimits;
   month?: QuotaWindowLimits;
+}
+
+/** {@link LedgerQuotaProvider}'s tuning beyond the ceilings. */
+export interface LedgerQuotaOptions {
+  /**
+   * The soft limit: the share of a ceiling (`0..1`) past which the report carries a `warning`.
+   * Stamped on every window that has a ceiling. Omit → no warnings.
+   */
+  warnAt?: number;
 }
 
 /**
@@ -36,6 +46,7 @@ export class LedgerQuotaProvider implements QuotaProvider {
     private readonly store: AgentStore,
     private readonly quota?: QuotaStore,
     private readonly limits: QuotaLimits = {},
+    private readonly options: LedgerQuotaOptions = {},
   ) {}
 
   async report(query: QuotaQuery): Promise<QuotaReport> {
@@ -48,7 +59,12 @@ export class LedgerQuotaProvider implements QuotaProvider {
       windows.push(this.window('month', used.usedTokens, used.costUsd, range.resetsAt));
     }
     const blocked = exhaustedWindow(windows);
-    return { windows, ...(blocked !== undefined ? { blocked } : {}) };
+    const warning = quotaWarning(windows);
+    return {
+      windows,
+      ...(blocked !== undefined ? { blocked } : {}),
+      ...(warning !== undefined ? { warning } : {}),
+    };
   }
 
   private async dayWindow(actorRef: string, now: Date): Promise<QuotaWindow> {
@@ -78,6 +94,10 @@ export class LedgerQuotaProvider implements QuotaProvider {
       usedUsd,
       ...(limits.usd !== undefined ? { limitUsd: limits.usd } : {}),
       resetsAt,
+      ...(this.options.warnAt !== undefined &&
+      (limits.tokens !== undefined || limits.usd !== undefined)
+        ? { warnAt: this.options.warnAt }
+        : {}),
     };
   }
 }

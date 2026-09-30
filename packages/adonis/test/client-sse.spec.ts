@@ -27,10 +27,11 @@ describe('parseSseEvent', () => {
     });
   });
 
-  it('defaults the event name to message', () => {
+  it('defaults the event name to message, and keeps the frame id', () => {
     expect(parseSseEvent('id: 1\ndata: {"kind":"text","text":"oi"}')).toEqual({
       event: 'message',
       data: '{"kind":"text","text":"oi"}',
+      id: '1',
     });
   });
 

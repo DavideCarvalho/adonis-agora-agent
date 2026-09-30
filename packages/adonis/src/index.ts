@@ -38,7 +38,12 @@ export {
 } from './agent-loop.js';
 export { AgentRegistry } from './agent-registry.js';
 export type { ChatParams } from './agent-service.js';
-export { AgentService, type AgentServiceOptions, AttachmentRefusedError } from './agent-service.js';
+export {
+  AgentService,
+  type AgentServiceOptions,
+  AttachmentRefusedError,
+  RegenerateNeedsThreadError,
+} from './agent-service.js';
 export type {
   AiToolMeta,
   AiToolOptions,
@@ -334,8 +339,11 @@ export {
   type QuotaProvider,
   type QuotaQuery,
   type QuotaReport,
+  type QuotaWarning,
   type QuotaWindow,
   quotaPeriodRange,
+  quotaUsedRatio,
+  quotaWarning,
 } from './spi/quota-provider.js';
 export * from './spi/quota-store.js';
 export * from './spi/reranker.js';
@@ -348,6 +356,7 @@ export { AgentSseEncoder, frameToEvents, parseStreamCursor } from './sse.js';
 export type { QdrantRetrieverConfig } from './stores/factory.js';
 export { lucidStoreConnection } from './stores/factory.js';
 export {
+  type LedgerQuotaOptions,
   LedgerQuotaProvider,
   type QuotaLimits,
   type QuotaWindowLimits,
@@ -402,6 +411,7 @@ export type {
   ToolResultField,
   ToolResultView,
 } from './tool-presentation.js';
+export { ALL_AGENTS } from './tool-presentation.js';
 export {
   DefaultRolesPolicy,
   ToolForbiddenError,

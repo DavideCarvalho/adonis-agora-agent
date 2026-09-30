@@ -253,6 +253,20 @@ export interface Persona {
   allowedTools?: string[];
 }
 
+/** One agent as `GET <path>/agents` lists it — what an agent picker renders. */
+export interface AgentCatalogEntry {
+  name: string;
+  description: string;
+  /** Whether this is the agent a turn uses when the caller names none. Omitted when not the default. */
+  isDefault?: true;
+  /**
+   * The catalog model this agent always runs on, when the model catalog locks it to one — an agent
+   * picker can say so before a chat starts. `GET <path>/models?agent=` reports the same lock as
+   * `locked`.
+   */
+  lockedModel?: string;
+}
+
 /** Everything needed to run one agent turn. */
 export interface AgentRunInput {
   threadId: string;
@@ -263,7 +277,12 @@ export interface AgentRunInput {
   attachments?: MessageAttachment[];
   persona?: Persona;
   pageContext?: PageContext;
-  isRegenerate?: boolean;
+  /**
+   * Answer the thread's last user message again instead of appending {@link userText} (ignored):
+   * the loop drops every message after that user message — the answer being replaced — and runs
+   * the turn on what is left. What `POST <path>/chat { threadId, regenerate: true }` starts.
+   */
+  regenerate?: boolean;
   /** YYYY-MM-DD stamped by the runner so quota/day stays deterministic under durable replay. */
   day?: string;
   /** Which named agent runs this turn. Omitted → the default/single agent. */

@@ -3,6 +3,7 @@ export {
   type AgentChatClientOptions,
   AgentChatDisconnectedError,
   type AgentChatHandlers,
+  AgentChatHttpError,
   type AgentChatRequestBody,
   type AgentChatResult,
   type AgentChatResumeOptions,

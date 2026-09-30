@@ -20,6 +20,7 @@ import type { StreamFrame } from './spi/token-stream-sink.js';
 import type { ToolCatalogEntry } from './tool-presentation.js';
 import type {
   Actor,
+  AgentCatalogEntry,
   AgentRunInput,
   MessageAttachment,
   MessageFeedback,
@@ -45,10 +46,25 @@ export interface ChatParams {
    */
   attachments?: AttachmentRef[];
   /**
-   * Run this turn on a catalog model instead of the thread's pinned one (or the provider default).
+   * Run THIS turn on a catalog model instead of the thread's pinned one (or the provider default).
+   * Never stored on the thread — only `setThreadModel` (`PATCH <path>/threads/:id { model }`) pins.
    * Refused ({@link ModelNotAllowedError}) unless the catalog lists it as available to this actor.
    */
   model?: string;
+  /**
+   * Answer the thread's last user message again (the retry under the last answer): requires
+   * `threadId` ({@link RegenerateNeedsThreadError}), ignores `message`, stores no user message, drops
+   * the answer(s) after that user message and starts a new run.
+   */
+  regenerate?: boolean;
+}
+
+/** `regenerate: true` on a send without a `threadId` — there is no answer to regenerate. */
+export class RegenerateNeedsThreadError extends Error {
+  constructor() {
+    super('regenerate requires an existing threadId');
+    this.name = 'RegenerateNeedsThreadError';
+  }
 }
 
 /**
@@ -127,13 +143,29 @@ export class AgentService {
     return entry.id;
   }
 
-  /** The model a turn runs on: the send's own, else the thread's pinned one, else none. */
+  /**
+   * The model a turn runs on: the send's own (that turn only — never stored on the thread), else the
+   * thread's pinned one, else none. An agent the catalog locks to one model runs on it whatever was
+   * sent or pinned, and a send naming another model is refused.
+   */
   private async resolveModel(
     actor: Actor,
     agent: string,
     requested: string | undefined,
     threadId: string | undefined,
   ): Promise<string | undefined> {
+    const locked =
+      this.options.models !== undefined
+        ? (await this.options.models.list({ actor, agent })).locked
+        : undefined;
+    if (locked !== undefined) {
+      if (requested !== undefined && requested !== locked.model) {
+        throw new ModelNotAllowedError(
+          `model "${requested}" cannot be selected: ${locked.reason ?? `this agent always uses "${locked.model}"`}`,
+        );
+      }
+      return locked.model;
+    }
     const pinned =
       requested === undefined && threadId !== undefined
         ? ((await this.store.getThread(threadId))?.model ?? null)
@@ -160,18 +192,32 @@ export class AgentService {
     return true;
   }
 
-  /** The registered agents, for a picker (`GET <path>/agents`). */
-  listAgents(): { name: string; description: string; isDefault?: true }[] {
+  /**
+   * The registered agents, for a picker (`GET <path>/agents`). With a model catalog, an agent it
+   * locks to one model for this actor carries `lockedModel` — the same lock `GET <path>/models`
+   * reports as `locked`.
+   */
+  async listAgents(actor: Actor): Promise<AgentCatalogEntry[]> {
     const defaultName = this.deps.defaultAgentName();
     const listed = this.deps.agentDefinitions();
-    const entries = listed.map((definition) => ({
+    const entries: AgentCatalogEntry[] = listed.map((definition) => ({
       name: definition.name,
       description: definition.description ?? '',
       ...(definition.name === defaultName ? { isDefault: true as const } : {}),
     }));
-    return entries.some((entry) => entry.name === defaultName)
+    const all = entries.some((entry) => entry.name === defaultName)
       ? entries
       : [{ name: defaultName, description: '', isDefault: true as const }, ...entries];
+    const models = this.options.models;
+    if (models === undefined) {
+      return all;
+    }
+    return Promise.all(
+      all.map(async (entry) => {
+        const locked = (await models.list({ actor, agent: entry.name })).locked;
+        return locked !== undefined ? { ...entry, lockedModel: locked.model } : entry;
+      }),
+    );
   }
 
   /** The actor's budget across windows (`GET <path>/quota`). */
@@ -201,6 +247,9 @@ export class AgentService {
   }
 
   async chat(params: ChatParams): Promise<{ runId: string; threadId: string }> {
+    if (params.regenerate === true && params.threadId === undefined) {
+      throw new RegenerateNeedsThreadError();
+    }
     await this.assertWithinQuota(params.actor);
     const agentName = params.agentName ?? this.deps.defaultAgentName();
     // Before the thread exists, so a refused model or attachment leaves nothing behind.
@@ -226,6 +275,7 @@ export class AgentService {
       ...(params.pageContext !== undefined ? { pageContext: params.pageContext } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(model !== undefined ? { model } : {}),
+      ...(params.regenerate === true ? { regenerate: true } : {}),
     };
 
     // The runner marks the thread's active run itself, before the turn can end.
@@ -395,10 +445,13 @@ export class AgentService {
     toolCallId: string;
     answers: Record<string, string[]>;
     answeredByRef?: string;
+    /** The surface the answer came through (`'web'`, `'slack'`, …) — an approval's `via`. */
+    answeredVia?: string;
   }): Promise<void> {
     return this.runner.signal(args.runId, args.toolCallId, {
       answers: args.answers,
       ...(args.answeredByRef !== undefined ? { answeredByRef: args.answeredByRef } : {}),
+      ...(args.answeredVia !== undefined ? { answeredVia: args.answeredVia } : {}),
     });
   }
 
@@ -408,11 +461,17 @@ export class AgentService {
    * proceeding on an assumption someone declined to confirm is a different fact from proceeding on
    * one they chose.
    */
-  skip(args: { runId: string; toolCallId: string; answeredByRef?: string }): Promise<void> {
+  skip(args: {
+    runId: string;
+    toolCallId: string;
+    answeredByRef?: string;
+    answeredVia?: string;
+  }): Promise<void> {
     return this.runner.signal(args.runId, args.toolCallId, {
       answers: {},
       skipped: true,
       ...(args.answeredByRef !== undefined ? { answeredByRef: args.answeredByRef } : {}),
+      ...(args.answeredVia !== undefined ? { answeredVia: args.answeredVia } : {}),
     });
   }
 
@@ -434,6 +493,22 @@ export class AgentService {
       kind: spec.kind,
       ...(spec.presentation !== undefined ? { presentation: spec.presentation } : {}),
     }));
+  }
+
+  /**
+   * `GET <path>/tools?agent=*`: the union of {@link toolCatalog} across the default agent and every
+   * registered one — each tool this actor reaches through ANY of them, once (first agent wins its
+   * entry), under the same gates.
+   */
+  async toolCatalogForAllAgents(actor: Actor): Promise<ToolCatalogEntry[]> {
+    const names = [undefined, ...this.deps.agentDefinitions().map((definition) => definition.name)];
+    const entries = new Map<string, ToolCatalogEntry>();
+    for (const name of names) {
+      for (const entry of await this.toolCatalog(actor, name)) {
+        if (!entries.has(entry.name)) entries.set(entry.name, entry);
+      }
+    }
+    return [...entries.values()];
   }
 
   resolvePersona(agentName?: string, id?: string): Persona | undefined {

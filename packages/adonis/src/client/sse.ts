@@ -49,6 +49,11 @@ export type ChatFrame =
 export interface SseEvent {
   event: string;
   data: string;
+  /**
+   * The frame's `id:` — its sequence number in the run. Strictly increasing within a run, gaps
+   * allowed; `meta`, `done` and `error` carry none.
+   */
+  id?: string;
 }
 
 /**
@@ -57,18 +62,21 @@ export interface SseEvent {
  */
 export function parseSseEvent(frame: string): SseEvent | null {
   let event = 'message';
+  let id: string | undefined;
   const dataLines: string[] = [];
   for (const line of frame.split('\n')) {
     if (line.startsWith('event:')) {
       event = line.slice('event:'.length).trim();
     } else if (line.startsWith('data:')) {
       dataLines.push(line.slice('data:'.length).trim());
+    } else if (line.startsWith('id:')) {
+      id = line.slice('id:'.length).trim();
     }
   }
   if (dataLines.length === 0) {
     return null;
   }
-  return { event, data: dataLines.join('\n') };
+  return { event, data: dataLines.join('\n'), ...(id !== undefined ? { id } : {}) };
 }
 
 /**

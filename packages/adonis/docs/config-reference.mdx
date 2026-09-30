@@ -57,7 +57,7 @@ export default defineConfig({
 
 ### `quota`
 
-`{ limits: { day?: { tokens?, usd? }, month?: { tokens?, usd? } } } | QuotaProvider`. The caller's budget — reported by `GET /agent/quota` and gating a send (`429 quota_exceeded`) once a window is exhausted. **Omit → reported off the ledger, never enforced.** See [Budgets](/docs/agent/governance/quota-and-cost#budgets).
+`{ limits: { day?: { tokens?, usd? }, month?: { tokens?, usd? } }, warnAt?: number } | QuotaProvider`. The caller's budget; `warnAt` (`0..1`) is the soft limit past which `GET /agent/quota` carries a `warning` — reported by `GET /agent/quota` and gating a send (`429 quota_exceeded`) once a window is exhausted. **Omit → reported off the ledger, never enforced.** See [Budgets](/docs/agent/governance/quota-and-cost#budgets).
 
 ### `pricingStore`
 

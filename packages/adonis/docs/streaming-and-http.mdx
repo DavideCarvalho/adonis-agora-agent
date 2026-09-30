@@ -22,24 +22,28 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 
 | # | Method & path | Purpose |
 | --- | --- | --- |
-| 1 | `POST /agent/chat` | Start a run. Resolves the actor, creates or continues a thread, and **streams the reply as SSE**. Body: `{ message, threadId?, agent?, persona?, attachments?: { mediaId }[], pageContext?, model? }` — `model` must be a catalog model available to the caller (`400` otherwise). |
+| 1 | `POST /agent/chat` | Start a run. Resolves the actor, creates or continues a thread, and **streams the reply as SSE**. Body: `{ message, threadId?, agent?, persona?, attachments?: { mediaId }[], pageContext?, model?, regenerate?: true }` — `model` must be a catalog model available to the caller (`400` otherwise) and applies to **this turn only** (see [Models](#models)); `regenerate` see [Regenerating an answer](#regenerating-an-answer). |
 | 2 | `GET /agent/chat/:runId/stream` | **Re-attach** to a run's live token stream (reconnect / resume). |
 | 3 | `POST /agent/chat/:runId/cancel` | Abort a run. Returns `{ aborted: true }`. |
 | 4 | `POST /agent/tool-call/approve` | Approve a pending `action` tool call. Body: `{ toolCallId, runId? }`. |
 | 5 | `POST /agent/tool-call/reject` | Reject a pending `action` tool call. Body: `{ toolCallId, runId?, reason? }`. |
 | 6 | `GET /agent/threads` | List the actor's threads. |
-| 6c | `GET /agent/models?agent=` | The models the caller may pick: `{ providers: [{ id, label, models: [{ id, label, description?, badges?, available, unavailableReason?, contextWindow? }] }], default }` — see [Models](#models). An empty catalog when none is configured. |
-| 6d | `GET /agent/agents` | The registered agents for a picker: `{ name, description, isDefault? }[]`. |
-| 6b | `GET /agent/tools?agent=` | The tools the caller can reach through an agent, as `{ name, kind, presentation? }[]` — the same list the model is offered. `404` for an unknown agent. See [Presentation](/docs/agent/authoring/tools#presentation--how-a-chat-surface-talks-about-a-tool). |
+| 6c | `GET /agent/models?agent=` | The models the caller may pick: `{ providers: [{ id, label, models: [{ id, label, description?, badges?, available, unavailableReason?, contextWindow? }] }], default, locked?: { model, reason? } }` — see [Models](#models). An empty catalog when none is configured. |
+| 6d | `GET /agent/agents` | The registered agents for a picker: `{ name, description, isDefault?, lockedModel? }[]` — `lockedModel` when the catalog locks that agent to one model for the caller. |
+| 6b | `GET /agent/tools?agent=` | The tools the caller can reach through an agent, as `{ name, kind, presentation? }[]` — the same list the model is offered. `?agent=*` (`ALL_AGENTS`) is the union across every agent, each tool once, under the same gates. `404` for an unknown agent. See [Presentation](/docs/agent/authoring/tools#presentation--how-a-chat-surface-talks-about-a-tool). |
 | 7 | `GET /agent/threads/personas/catalog` | The persona `{ id, label }` catalog for a UI picker. |
 | 8 | `GET /agent/threads/:id` | Thread detail (messages + `activeRunId`, the run streaming right now or `null` — the one to re-attach to), or `null`. Thread summaries carry `activeRunId` too. |
 | 8b | `PATCH /agent/threads/:id` | `{ title?, model? }` — rename (1–200 characters) and/or pin a catalog model on the thread (`null` unpins; `400` for a model the catalog does not offer, `501` on a store without `updateThread`). Answers `{ ok: true }`. |
 | 8c | `POST /agent/messages/:id/feedback` | Rate a message: `{ value: 'up' \| 'down' \| null, comment? }` → `{ feedback: { value, comment?, updatedAt } \| null }` (`null` clears). Only the thread's owner — `403` otherwise; `404` unknown message; `400` a bad value; `501` on a store without `threadOfMessage` + `setMessageFeedback`. The rating comes back as `StoredMessage.feedback` and is not copied to a fork. |
 | 9 | `DELETE /agent/threads/:id` | Soft-delete a thread. |
 | 10 | `POST /agent/threads/:id/fork-from/:messageId` | Fork a thread up to a message (regenerate / branch). |
-| 11b | `GET /agent/quota` | Every budget window with its usage — see [Budget windows](/docs/agent/governance/quota-and-cost#budget-windows). A send while one is exhausted answers `429` `{ code: 'quota_exceeded', period, message }`. |
+| 11b | `GET /agent/quota` | `{ windows: [{ period, usedTokens?, limitTokens?, usedUsd, limitUsd?, resetsAt?, warnAt? }], blocked?, warning?: { period, ratio, reason? } }` — see [Budget windows](/docs/agent/governance/quota-and-cost#budget-windows). `usedTokens` is omitted for a USD-only budget; `warning` names the fullest window past its `warnAt` (never while `blocked`). A send while one is exhausted answers `429` `{ code: 'quota_exceeded', period, message }`. |
 | 11 | `GET /agent/config` | Server facts a client would otherwise repeat: `{ attachments: { enabled, upload, maxBytes, allowedContentTypes, maxPerMessage }, models: { enabled }, quota: { enforced }, identity: { anonymous } }` (what the React `useAgentConfig` reads). |
 | 12 | `GET /agent/approvals/mine` <span data-opt>optional</span> | The **calling actor's own** pending HITL approvals, oldest first. Query: `limit?` (default `50`, clamped to `200`). Mounts with `governanceQueries` but is **not** behind `governanceAuthorize` — it is always scoped to `actor.id`, so a non-admin surface (e.g. a coordinator's chat) can poll its own suspended tool calls even when the cross-actor read-model is ADMIN-only. |
+
+<Callout type="info" title="Refusals answer { message, code? }">
+Every refused request answers its HTTP status with a JSON body `{ message, code? }` — `message` in words a person can read, `code` a machine-readable reason where there is one (`unauthorized`, `model_not_allowed`, `thread_required`, `quota_exceeded`, …). `@adonis-agora/agent/client` throws it as `AgentChatHttpError` (`status`, `code`, `body`, and the server's `message` as its own); `@dudousxd/nestjs-agent-react` reads the same body.
+</Callout>
 
 <Callout type="info" title="Every route resolves the actor first">
 Routes that need identity — chat, threads list, quota — resolve the actor first. With no `actorResolver` configured each browser is its own anonymous actor (an HttpOnly `agent_anon` cookie set on its first request); with one, a resolver that throws makes the route reply `401` and never run. See [Authorization](/docs/agent/governance/authorization).
@@ -143,7 +147,15 @@ export default defineConfig({
 
 With no `models` in the config, `GET /agent/models` serves that catalog and a turn runs on the picked id. `aiSdkModel(model)` serves one model and refuses a pick naming another (the turn fails) rather than silently answering on a model nobody chose.
 
+A send's `model` applies to **that turn only** — the server never stores it on the thread, whether the send creates the thread or continues one. Pinning is its own request, `PATCH /agent/threads/:id { model }` (`null` unpins), and only a pin outlives the turn.
+
+**Locking an agent to one model.** A catalog that answers `locked: { model, reason? }` for an agent runs every turn of that agent on `locked.model`, whatever the send or the thread's pin names, and refuses a send naming another model with `400` (`code: 'model_not_allowed'`). `GET /agent/agents` reports it as `lockedModel`. List the other models as unavailable as well, so a client that predates the field cannot pick them.
+
 To decide per caller (plan, budget, provider health), set `models` to a `ModelCatalog` — `list({ actor, agent })` returns the same view, with `available: false` and an `unavailableReason` for what the caller cannot use right now — or to a literal view for a fixed list. The server refuses (`400`) any model the catalog does not list as available, on a send and when pinning — a client only ever sends ids the catalog listed, but the server does not trust that. The picked id reaches the provider as `ModelTurnArgs.model`. The pick rides the run's input, so a durable replay runs on the same model, and it labels the turn's usage when the provider reports no model id.
+
+## Regenerating an answer
+
+`POST /agent/chat { threadId, regenerate: true }` answers the thread's last user message again — the retry button under the last answer. The server requires `threadId` (`400`, `code: 'thread_required'`, without one) and the caller's own thread; stores **no** user message (`message` is ignored — the stored one is answered); drops the answer(s) after that user message, so the model does not see the answer it is replacing; and streams the new answer as a normal run under a new `runId`. `model`, `agent` and `pageContext` apply as on any send. The truncation is its own durable step (`regenerate:truncate`), so a replay never truncates twice and a normal turn journals exactly what it always did.
 
 ## Human-in-the-loop
 
