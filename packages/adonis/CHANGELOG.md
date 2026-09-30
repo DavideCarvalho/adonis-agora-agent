@@ -1,5 +1,22 @@
 # @adonis-agora/agent
 
+## 0.47.0
+
+### Minor Changes
+
+- [#218](https://github.com/DavideCarvalho/adonis-agora-agent/pull/218) [`a27f79b`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/a27f79bc2f7a0d5dceb6b1ffa7b857ca467fab25) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Chat attachments by id, media-backed, bring-your-own storage — matching `@dudousxd/nestjs-agent`'s refs-only contract.
+  
+  - **One `attachments` option (BREAKING).** `attachments: attachmentStores.media()` stores uploads through `@adonis-agora/media` (an optional peer; any Drive disk — S3, GCS, R2, the filesystem): a media row per file in its own collection, owned by the actor, with signed short-lived urls by default (`visibility`, `urlExpiresInSeconds`, `resolveUrl`, `canAccess`, `maxBytes`, `allowedContentTypes`, `disk`, `collection`). `attachmentStores.memory({ maxBytes?, allowedContentTypes? })` for tests; or pass your own `AttachmentStagingStore`. Replaces `attachmentStaging`, `attachmentMaxBytes` and `attachmentAllowedContentTypes`; limits now come from the store's `describe()`. `@adonis-agora/agent/media` exports `MediaAttachmentStaging` to wire over a media setup of your own.
+  - **Refs only (BREAKING).** `POST /agent/chat` takes `attachments: [{ mediaId }]` — anything else in an entry is `400`, at most 10 — and resolves each through the store for the calling actor (`403` for one it may not use, `501` when attachments are off). The url the model fetches is never taken from the request.
+  - **`AttachmentStagingStore.resolve({ mediaId, actor })`** is now required (the store mints the url per request); `describe()` is optional. `GET /agent/threads/:id` re-mints each attachment's url by `mediaId`, so an old turn's signed link has not expired. `GET /agent/config` reports the store's limits.
+
+- [#216](https://github.com/DavideCarvalho/adonis-agora-agent/pull/216) [`b032763`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/b03276346c6a7679b795a598da06f49c945a7f57) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - One way each, matching `@dudousxd/nestjs-agent`'s consolidation ([#230](https://github.com/DavideCarvalho/adonis-agora-agent/issues/230)):
+  
+  - **One `quota` option (BREAKING).** `quota: { limits: { day?: { tokens?, usd? }, month?: { tokens?, usd? } } }` or a `QuotaProvider`. The `quotas.*` factories (`ledger`, `memory`, `windows`), `LedgerQuotaStore` and `QuotaStore`-as-`quota` are removed; migrate `quota: quotas.ledger({ limitTokens: N })` to `quota: { limits: { day: { tokens: N } } }`. The check moved to the send (`429 quota_exceeded` before the turn starts). Drain in-flight durable runs started under the old option first — their journals hold the loop's quota checkpoints.
+  - **`GET /agent/quota/today` removed** — read the day window of `GET /agent/quota`. The governance dashboard now does.
+  - **`activeRunId` only.** Thread summaries and details carry `activeRunId` (the run streaming right now, `null` otherwise) instead of `ThreadDetail.activeStreamId`. The runners set it before a turn starts and clear it when it ends (`clearActiveStream`, optional on `AgentStore`, only clears a pointer still naming that run), so a reloading client resumes only a live run.
+  - **`GET /agent/config`** — `{ attachments: { enabled, upload, maxBytes, allowedContentTypes, maxPerMessage }, models: { enabled }, quota: { enforced }, identity: { anonymous } }`, what the React `useAgentConfig` reads.
+
 ## 0.46.0
 
 ### Minor Changes
