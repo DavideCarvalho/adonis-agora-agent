@@ -1,45 +1,6 @@
 import type { StreamFrame } from './spi/token-stream-sink.js';
 import type { AgentStreamEvent } from './stream-events.js';
 
-/**
- * Which envelope a run's SSE is written in.
- *
- * - `'agent'` — the chat stream protocol shared with `@dudousxd/nestjs-agent`: one `AgentStreamEvent`
- *   JSON object per `data:` frame (`{"kind":"text","text":…}`, tool calls, reasoning, steps, …),
- *   `event: error` on failure. `@dudousxd/nestjs-agent-react` renders it unchanged.
- * - `'legacy'` — this package's original envelope: `data: {"delta":…}` for text, `event: component`,
- *   `event: elicitation`, `event: approval`. Frames it has no spelling for are skipped.
- */
-export type StreamProtocol = 'agent' | 'legacy';
-
-/**
- * Serializes a {@link StreamFrame} into the LEGACY SSE envelope. A text frame becomes
- * `data: {"delta":...}`; a component frame becomes `event: component\ndata: {name,data}`; a question
- * set becomes `event: elicitation`, carrying the whole request so a client can render the form
- * without a second fetch; a parked `action` becomes `event: approval`, carrying the tool and its
- * arguments. Both of those also carry the `runId` to answer against, which for a delegated
- * sub-agent is not the run this stream is keyed by. A failure is the `[error]` text delta it always
- * was. An agent-protocol-only frame (`t: 'event'`) has no spelling here and yields `''`.
- */
-export function frameToSse(frame: StreamFrame): string {
-  if (frame.t === 'component') {
-    return `event: component\ndata: ${JSON.stringify({ name: frame.name, data: frame.data })}\n\n`;
-  }
-  if (frame.t === 'approval') {
-    return `event: approval\ndata: ${JSON.stringify({ runId: frame.runId, id: frame.id, toolName: frame.toolName, input: frame.input })}\n\n`;
-  }
-  if (frame.t === 'elicitation') {
-    return `event: elicitation\ndata: ${JSON.stringify({ runId: frame.runId, id: frame.id, request: frame.request })}\n\n`;
-  }
-  if (frame.t === 'event') {
-    return '';
-  }
-  if (frame.t === 'error') {
-    return `data: ${JSON.stringify({ delta: `\n[error] ${frame.message}` })}\n\n`;
-  }
-  return `data: ${JSON.stringify({ delta: frame.v })}\n\n`;
-}
-
 /** An event plus fields outside the shared vocabulary (allowed: readers ignore what they do not know). */
 function withExtra(event: AgentStreamEvent, extra: Record<string, unknown>): AgentStreamEvent {
   return { ...extra, ...event };

@@ -327,7 +327,7 @@ describe('InlineAgentRunner + AgentService over the Lucid store', () => {
     const frames: StreamFrame[] = [];
     for await (const frame of g.service.subscribe(runId)) frames.push(frame);
     // A coded error frame, not prose: the agent protocol writes it as `event: error`
-    // `{ code: 'quota_exceeded' }`, the legacy envelope as the `[error]` delta it always was.
+    // `{ code: 'quota_exceeded' }`.
     const failure = frames.find((frame) => frame.t === 'error');
     expect(failure).toMatchObject({ t: 'error', code: 'quota_exceeded' });
     expect(failure?.t === 'error' && failure.message).toMatch(/quota/i);

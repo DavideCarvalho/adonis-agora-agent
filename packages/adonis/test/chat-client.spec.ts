@@ -36,7 +36,7 @@ function fakeResponse(init: {
 
 const META = (runId: string, threadId = 't1') =>
   `event: meta\ndata: ${JSON.stringify({ runId, threadId })}\n\n`;
-const TEXT = (delta: string) => `data: ${JSON.stringify({ delta })}\n\n`;
+const TEXT = (text: string) => `data: ${JSON.stringify({ kind: 'text', text })}\n\n`;
 const DONE = 'event: done\ndata: {}\n\n';
 
 function textOf(parts: ChatPart[]): string {

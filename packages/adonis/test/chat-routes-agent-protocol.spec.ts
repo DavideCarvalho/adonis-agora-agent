@@ -19,10 +19,10 @@ afterEach(async () => {
 const json = { 'content-type': 'application/json', 'x-actor-id': 'u1' };
 
 function bootApp(script: FakeScript, extra: Partial<AgentConfig> = {}): Promise<BootedApp> {
-  return bootAgentApp({ model: new FakeModelProvider(script), streamProtocol: 'agent', ...extra });
+  return bootAgentApp({ model: new FakeModelProvider(script), ...extra });
 }
 
-describe('POST /agent/chat under streamProtocol: agent', () => {
+describe('POST /agent/chat speaks the agent protocol', () => {
   it('writes meta, the AgentStreamEvent frames and done', async () => {
     booted = await bootApp(() => ({ text: 'Hello there' }));
     const response = await fetch(`${booted.url}/agent/chat`, {

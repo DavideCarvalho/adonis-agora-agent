@@ -30,9 +30,8 @@ export interface RedisTokenStreamSinkOptions {
  * (`${keyPrefix}:${runId}:state`), so an SSE handler on ANOTHER replica that subscribes after the run
  * finished still sees the ending and closes the stream.
  *
- * The yielded frames are identical (frame-for-frame) to the in-process sink's, so the SSE envelope
- * the provider pipes (`data: {"delta":...}` for text, a component event for `{ t: 'component' }`)
- * is unchanged — swapping this in is transparent to clients.
+ * The yielded frames are identical (frame-for-frame) to the in-process sink's, so the agent-protocol
+ * SSE the provider pipes is unchanged — swapping this in is transparent to clients.
  *
  * The host supplies a {@link RedisStreamClient} adapter over its own Redis driver; `subscribe` needs a
  * connection in subscriber mode (see the client docs). Wire it with `defineConfig({ sink:

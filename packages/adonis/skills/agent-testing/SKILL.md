@@ -215,8 +215,8 @@ Source: `packages/adonis/src/tool-registry.ts` (`definitionsFor`, `invoke`),
 
 ```ts
 // Wrong — frames are typed objects, not an SSE byte stream.
-const raw = await res.text() // 'data: {"delta":"..."}\n\n'
-expect(raw).toContain('delta')
+const raw = await res.text() // 'id: 1\ndata: {"kind":"text","text":"..."}\n\n'
+expect(raw).toContain('"kind":"text"')
 ```
 
 ```ts
@@ -227,10 +227,10 @@ for await (const frame of sink.subscribe(runId)) {
 ```
 
 Mechanism: `InMemoryTokenStreamSink.subscribe` yields `StreamFrame` objects; the SSE
-envelope (`event: meta` / `data: {"delta":...}` / `event: done`) is produced by the
-provider's route handler via `frameToSse`, a layer tests never cross.
+envelope (`event: meta` / `data: <AgentStreamEvent>` / `event: done`) is produced by the
+provider's route handler via `AgentSseEncoder`, a layer tests never cross.
 Source: `packages/adonis/docs/testing.mdx` (StreamFrame note),
-`packages/adonis/src/sse.ts` (`frameToSse`).
+`packages/adonis/src/sse.ts` (`AgentSseEncoder`).
 
 See also: `agent-tools/SKILL.md` — registering real tools into the test registry;
 `agent-setup/SKILL.md` — why `day` is a required, runner-stamped loop dep.

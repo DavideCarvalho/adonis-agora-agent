@@ -55,16 +55,11 @@ The persona catalog route is registered *before* `threads/:id` so it isn't captu
 
 ## The SSE envelope
 
-`POST /agent/chat` and `GET /agent/chat/:runId/stream` reply with `Content-Type: text/event-stream`. Which envelope the frames are written in is `streamProtocol` in `config/agent.ts`:
+`POST /agent/chat` and `GET /agent/chat/:runId/stream` reply with `Content-Type: text/event-stream`, written in the chat stream protocol shared with `@dudousxd/nestjs-agent`: one `AgentStreamEvent` JSON object per `data:` frame. `@dudousxd/nestjs-agent-react` (transport, `useAgentChat`, transcript model) reads it unchanged, and so does `@adonis-agora/agent/client`.
 
-| `streamProtocol` | Wire | Read by |
-| --- | --- | --- |
-| `'legacy'` (default) | `data: {"delta":"…"}` per text chunk, plus named `event: component` / `event: elicitation` / `event: approval` frames | clients written against this package's original envelope |
-| `'agent'` | one `AgentStreamEvent` JSON object per `data:` frame — the chat stream protocol shared with `@dudousxd/nestjs-agent` | `@dudousxd/nestjs-agent-react` (transport, `useAgentChat`, transcript model) unchanged, and `@adonis-agora/agent/client` |
-
-`@adonis-agora/agent/client` reads both, so switching is a server-side change. The default stays `'legacy'` so an upgrade never changes the bytes an existing hand-written reader parses.
-
-### `streamProtocol: 'agent'`
+<Callout type="warn" title="The legacy delta envelope is gone">
+Before 0.48 the default was a `'legacy'` envelope — `data: {"delta":"…"}` per text chunk plus named `event: component` / `event: elicitation` / `event: approval` frames — selected by a `streamProtocol` option. Both the envelope and the option are removed: every server speaks the protocol below. A hand-written reader of `{"delta"}` reads `{"kind":"text","text":…}` instead (and `ui` / `elicitation` / `approval-requested` events in place of the named frames), or moves to one of the clients above.
+</Callout>
 
 ```text
 event: meta
@@ -111,30 +106,6 @@ Every event frame carries an SSE `id:` — its 1-based position in the run (`id:
 A failed run ends with `event: error` + `data: {"code","message"}` instead of `done`; the codes are `quota_exceeded`, `output_rejected`, `structured_output_invalid` and `run_failed`.
 
 Frames are written from inside the loop's existing checkpoints, so a durable replay never streams one twice and no checkpoint moved.
-
-### `streamProtocol: 'legacy'`
-
-```text
-event: meta
-data: {"runId":"<uuid>","threadId":"<uuid>"}
-
-data: {"delta":"The "}
-data: {"delta":"weather "}
-data: {"delta":"in Lisbon is 21°C."}
-
-event: done
-data: {}
-```
-
-- A single **`meta`** frame first, carrying the `runId` and `threadId`.
-- One **`data`** frame per streamed chunk, each `{"delta": "<text>"}`.
-- A terminating **`done`** frame when the run completes. A failed run writes `{"delta":"\n[error] <message>"}` and then `done`.
-
-Frames with no legacy spelling (reasoning, tool calls, steps, title) are not written.
-
-<Callout type="info" title="Component frames (Generative UI)">
-A tool can also emit a typed UI component into the stream, which appears as a named `event: component` frame (`data: {"name":...,"data":...}`) interleaved with the text `delta`s. The text envelope above is unchanged — text-only clients ignore the extra event. See [Generative UI](/docs/agent/generative-ui).
-</Callout>
 
 The response also sets `X-Agent-Run-Id` and `X-Agent-Thread-Id` headers (plus `Cache-Control: no-cache, no-transform` and `X-Accel-Buffering: no` so proxies don't buffer the stream). The stream ends only on run **completion** — the token sink stays open across a HITL suspend, so an approved-then-resumed run keeps one continuous stream.
 
@@ -257,4 +228,4 @@ function Chat() {
 
 Both are covered in full — options, resume semantics, component frames, and the HITL calls the client deliberately leaves to you — in [Browser client & React](/docs/agent/browser-client).
 
-For a non-JavaScript consumer, or a bespoke reader, the envelopes above are the whole contract: read `text/event-stream`, dispatch on the `event:` name, and read an unnamed event as a text `delta` (legacy) or an `AgentStreamEvent` dispatched on its `kind` (agent) — tolerating kinds you do not know. To use the NestJS library's React package against this server, set `streamProtocol: 'agent'`.
+For a non-JavaScript consumer, or a bespoke reader, the envelope above is the whole contract: read `text/event-stream`, dispatch on the `event:` name (`meta`, `error`, `done`), and read an unnamed event as an `AgentStreamEvent` dispatched on its `kind` — tolerating kinds you do not know. The NestJS library's React package works against this server as-is.

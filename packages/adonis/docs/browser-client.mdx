@@ -11,7 +11,7 @@ The `/agent/chat` SSE envelope is simple enough to parse by hand, and for a long
 - **`@adonis-agora/agent/client`** — a framework-agnostic client. No React, no Adonis, no runtime dependencies. It posts a turn, decodes the SSE envelope into typed frames, folds them into renderable parts, and silently re-attaches when the connection drops.
 - **`@adonis-agora/agent/react`** — one hook, `useAgentChat`, that wraps the client in transcript state.
 
-Both are published from the same package that emits the envelope, which is the point: the wire format has exactly one owner, so a change to `frameToSse` on the server and a change to `decodeFrame` in the browser can never drift apart across two release trains.
+Both are published from the same package that emits the envelope, which is the point: the wire format has exactly one owner, so a change to `AgentSseEncoder` on the server and a change to `decodeFrame` in the browser can never drift apart across two release trains.
 
 <Callout type="info" title="React is an optional peer">
 `react` is declared as an optional peer (`^18 || ^19`). An app that never imports `@adonis-agora/agent/react` never needs it installed — the `./client` subpath has no dependencies at all, so a Vue composable, a Svelte store, or a plain `fetch` loop can use it just as well.
@@ -206,7 +206,7 @@ function renderPart(part: ChatPart, index: number) {
 }
 ```
 
-That is all Generative UI needs on the client — the decoder already handles the `event: component` frames. See [Generative UI](/docs/agent/generative-ui) for the tool side.
+That is all Generative UI needs on the client — the decoder already turns the `ui` events into component parts. See [Generative UI](/docs/agent/generative-ui) for the tool side.
 
 ### Building your own consumer
 
@@ -233,7 +233,7 @@ for await (const event of readSseStream(response.body!)) {
 }
 ```
 
-`readSseStream` buffers across chunk boundaries (a `\n\n` separator split between two network packets is handled) and releases the reader lock on exit. `parseSseEvent` is the same parser one frame at a time, if you already have the framing. `decodeFrame` never throws: malformed JSON, an empty `delta`, and a `component` frame with no `name` all return `null`, so a corrupt frame degrades to a skipped frame rather than a crashed loop.
+`readSseStream` buffers across chunk boundaries (a `\n\n` separator split between two network packets is handled) and releases the reader lock on exit. `parseSseEvent` is the same parser one frame at a time, if you already have the framing. `decodeFrame` never throws: malformed JSON, a payload with no `kind` (including the retired `{"delta"}` envelope), and an empty `text` all return `null`, so a corrupt frame degrades to a skipped frame rather than a crashed loop.
 
 ## What the client does not do
 

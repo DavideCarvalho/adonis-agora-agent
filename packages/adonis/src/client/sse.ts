@@ -1,15 +1,14 @@
 /**
- * Client-side counterpart to {@link import('../sse.js').frameToSse}: parses the provider's SSE
- * envelope back into typed frames the browser can render. Kept framework-agnostic (no React, no
- * Adonis) so any consumer — a React hook, a Vue composable, a plain fetch loop — decodes the wire
- * format the same way, and so the envelope stays owned by the package that emits it.
+ * Client-side counterpart to {@link import('../sse.js').AgentSseEncoder}: parses the provider's SSE
+ * back into typed frames the browser can render. Kept framework-agnostic (no React, no Adonis) so
+ * any consumer — a React hook, a Vue composable, a plain fetch loop — decodes the wire format the
+ * same way, and so the envelope stays owned by the package that emits it.
  *
- * Wire format (see `frameToSse` + the provider's `#pipe`):
+ * Wire format — the agent stream protocol shared with `@dudousxd/nestjs-agent`:
  * - `event: meta\ndata: {runId,threadId}`   — sent once, first, before any token
- * - `data: {"delta":"..."}`                  — a text chunk (default event, no `event:` line)
- * - `event: component\ndata: {name,data}`    — a rendered component
- * - `event: approval\ndata: {runId,id,toolName,input}` — an action tool awaiting approve/reject
- * - `event: elicitation\ndata: {runId,id,request}` — a question set the run is parked on
+ * - `id: <seq>\ndata: <AgentStreamEvent>`    — one event per frame (`{"kind":"text","text":…}`,
+ *   `ui`, `elicitation`, `approval-requested`, reasoning, tool calls, steps, title, …)
+ * - `event: error\ndata: {code,message}`     — the run failed (terminal)
  * - `event: done\ndata: {}`                  — the run's stream finished
  */
 
@@ -27,7 +26,7 @@ export type ChatFrame =
   | { type: 'meta'; runId?: string; threadId?: string }
   /** A failed run (`event: error` under the agent protocol). Terminal, like `done`. */
   | { type: 'error'; code: string; message: string }
-  /** An agent-protocol frame with no legacy counterpart — reasoning, tool calls, steps, title, … */
+  /** Any other agent-protocol event — reasoning, tool calls, steps, title, … */
   | { type: 'event'; event: Record<string, unknown> & { kind: string } }
   /**
    * A question set the run is parked on, with everything needed to answer it: `runId` and
@@ -92,66 +91,6 @@ export function decodeFrame(event: SseEvent): ChatFrame | null {
       return null;
     }
   }
-  if (event.event === 'approval') {
-    try {
-      const parsed = JSON.parse(event.data) as {
-        runId?: unknown;
-        id?: unknown;
-        toolName?: unknown;
-        input?: unknown;
-      };
-      // A decision with no run and no call to address is not a decision anyone can deliver.
-      if (
-        typeof parsed?.runId !== 'string' ||
-        typeof parsed.id !== 'string' ||
-        typeof parsed.toolName !== 'string'
-      ) {
-        return null;
-      }
-      return {
-        type: 'approval',
-        runId: parsed.runId,
-        toolCallId: parsed.id,
-        toolName: parsed.toolName,
-        input: parsed.input,
-      };
-    } catch {
-      return null;
-    }
-  }
-  if (event.event === 'elicitation') {
-    try {
-      const parsed = JSON.parse(event.data) as {
-        runId?: unknown;
-        id?: unknown;
-        request?: unknown;
-      };
-      // A form with no run to answer against is not renderable as one, so it is dropped rather
-      // than handed on half-usable.
-      if (typeof parsed?.runId !== 'string' || typeof parsed.id !== 'string') {
-        return null;
-      }
-      return {
-        type: 'elicitation',
-        runId: parsed.runId,
-        toolCallId: parsed.id,
-        request: parsed.request as ElicitationRequest,
-      };
-    } catch {
-      return null;
-    }
-  }
-  if (event.event === 'component') {
-    try {
-      const parsed = JSON.parse(event.data) as { name?: unknown; data?: unknown };
-      if (typeof parsed?.name !== 'string') {
-        return null;
-      }
-      return { type: 'component', name: parsed.name, data: parsed.data };
-    } catch {
-      return null;
-    }
-  }
   if (event.event === 'error') {
     try {
       const parsed = JSON.parse(event.data) as { code?: unknown; message?: unknown };
@@ -164,27 +103,23 @@ export function decodeFrame(event: SseEvent): ChatFrame | null {
       return { type: 'error', code: 'run_failed', message: 'The run failed.' };
     }
   }
-  // Default event: a text delta (legacy envelope) or an agent-protocol event (`{ kind, … }`).
+  // Default event: one `AgentStreamEvent` (`{ kind, … }`).
   try {
-    const parsed = JSON.parse(event.data) as { delta?: unknown; kind?: unknown } | null;
-    if (typeof parsed?.kind === 'string') {
-      return decodeAgentEvent(parsed as Record<string, unknown> & { kind: string });
-    }
-    const delta = parsed?.delta;
-    if (typeof delta !== 'string' || delta.length === 0) {
+    const parsed = JSON.parse(event.data) as { kind?: unknown } | null;
+    if (typeof parsed?.kind !== 'string') {
       return null;
     }
-    return { type: 'text', delta };
+    return decodeAgentEvent(parsed as Record<string, unknown> & { kind: string });
   } catch {
     return null;
   }
 }
 
 /**
- * One frame of the agent stream protocol (`streamProtocol: 'agent'`) as the same {@link ChatFrame}s
- * the legacy envelope decodes to, so a caller of this client reads either server the same way. A
- * kind with no legacy counterpart (reasoning, tool calls, steps, title, …) arrives as
- * `{ type: 'event' }`, which {@link foldPart} ignores and `onFrame` still sees.
+ * One frame of the agent stream protocol as a {@link ChatFrame}. The kinds this client folds into a
+ * message or acts on (text, ui, elicitation, approval-requested) get their own frame; every other
+ * kind (reasoning, tool calls, steps, title, …) arrives as `{ type: 'event' }`, which
+ * {@link foldPart} ignores and `onFrame` still sees.
  */
 function decodeAgentEvent(event: Record<string, unknown> & { kind: string }): ChatFrame | null {
   if (event.kind === 'text') {

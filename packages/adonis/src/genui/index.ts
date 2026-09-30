@@ -86,7 +86,7 @@ async function resolveCatalogFn(
  * import { genui } from '@adonis-agora/agent/genui'
  * import { catalog } from '#genui/catalog' // defineCatalog([...]) — shared with the browser
  *
- * export default defineConfig({ model, streamProtocol: 'agent', genui: genui({ catalog }) })
+ * export default defineConfig({ model, genui: genui({ catalog }) })
  * ```
  *
  * Registers a `ui__show_<component>` tool per model-facing component (or one `ui__render` tree tool

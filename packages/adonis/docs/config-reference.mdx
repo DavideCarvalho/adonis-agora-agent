@@ -127,10 +127,6 @@ A public deployment should set a `quota`: model spend is otherwise unbounded (pe
 
 `ModelCatalog | ModelCatalogView`. Which models a caller may pick — served by `GET /agent/models`, checked on a send's `model` and on `PATCH /agent/threads/:id { model }`. A literal view for a fixed list, a `ModelCatalog` (`list({ actor, agent })`) to decide per caller. **Omit → an empty catalog**, and a request naming a model is refused. See [Models](/docs/agent/streaming-and-http#models).
 
-### `streamProtocol`
-
-`'legacy' | 'agent'`. The envelope the chat routes stream. **Default `'legacy'`** — `data: {"delta":…}` text plus named component / elicitation / approval events. `'agent'` streams the chat protocol shared with `@dudousxd/nestjs-agent` (one `AgentStreamEvent` per frame: text, reasoning, tool calls and outcomes, steps, title, …), which `@dudousxd/nestjs-agent-react` renders unchanged. See [Streaming & HTTP](/docs/agent/streaming-and-http#the-sse-envelope).
-
 ### `durable`
 
 `boolean`. Run each turn as a replay-safe durable workflow (over [`@adonis-agora/durable`](/docs/durable)) instead of in-process: LLM/tool steps become memoized checkpoints, HITL approval suspends on a signal (resuming across a restart), and delegation is a tracked child run. **Requires `@adonis-agora/durable` installed and configured** (`config/durable.ts`); if it can't be wired the provider logs a warning and falls back to the inline runner, so setting it is always safe. See [The durable runner](/docs/agent/durability/durable-runner).

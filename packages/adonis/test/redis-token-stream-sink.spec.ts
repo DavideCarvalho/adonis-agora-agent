@@ -121,7 +121,7 @@ describe('RedisTokenStreamSink', () => {
     await wRe.end();
     const reFrames = await collect(redis.subscribe('run-eq'));
 
-    // Same frames, same order → identical `data: {"delta":...}` / component SSE output.
+    // Same frames, same order → identical agent-protocol SSE output.
     expect(reFrames).toEqual(inFrames);
   });
 
