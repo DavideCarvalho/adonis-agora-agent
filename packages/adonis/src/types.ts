@@ -1,5 +1,6 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { ActorResolver } from './spi/actor-resolver.js';
+import type { ChatQueueState } from './spi/chat-queue.js';
 import type { AgentUiComponent } from './stream-events.js';
 import type { ToolPresentation } from './tool-presentation.js';
 
@@ -501,6 +502,11 @@ export interface ToolCallApproval {
 
 export interface ThreadDetail extends ThreadSummary {
   messages: StoredMessage[];
+  /**
+   * Messages sent while a turn was running, waiting to run after it, and whether the queue is
+   * draining. Present when the store supports a queue (`ChatQueueStore`); omitted otherwise.
+   */
+  queue?: ChatQueueState;
 }
 
 export type ToolCallStatus =

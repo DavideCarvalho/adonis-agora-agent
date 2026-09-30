@@ -30,6 +30,7 @@ export {
   MAX_DELEGATION_DEPTH,
   outcomeFrame,
   QuotaExceededError,
+  RunCancelledError,
   runAgentLoop,
   type SettledTask,
   settleAll,
@@ -42,6 +43,10 @@ export {
   AgentService,
   type AgentServiceOptions,
   AttachmentRefusedError,
+  ChatQueueError,
+  type ChatSendMode,
+  type ChatSendResult,
+  type QueuedSend,
   RegenerateNeedsThreadError,
 } from './agent-service.js';
 export type {
@@ -66,6 +71,15 @@ export {
 } from './anonymous-actor-resolver.js';
 export { DefaultToolAuthorizer } from './authorizer.js';
 export * from './base-tool.js';
+export {
+  ChatQueueService,
+  type ChatQueueServiceOptions,
+  isThreadTurn,
+  type QueuedTurn,
+  type QueuedTurnStarter,
+  type QueuePlan,
+  type QueueSettleOutcome,
+} from './chat-queue-service.js';
 export type {
   DataToolConfig,
   DataToolResult,
@@ -312,6 +326,7 @@ export {
   toolCallApprovalFromRow,
 } from './spi/approval-policy.js';
 export * from './spi/attachment-staging.js';
+export * from './spi/chat-queue.js';
 export * from './spi/embedding-provider.js';
 export * from './spi/governance-queries.js';
 export * from './spi/history-window.js';

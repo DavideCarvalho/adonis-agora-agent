@@ -441,6 +441,35 @@ export interface AgentLoopHooks {
    * no positions has no older shape to preserve.
    */
   patched?(id: string): Promise<boolean>;
+  /**
+   * Has someone asked this run to stop? Asked between steps and again once a step's model call has
+   * answered (before anything of it is persisted); `true` unwinds the turn with
+   * {@link RunCancelledError}. A tool that is already executing is not interrupted.
+   *
+   * For a runner that records NO positions (the inline runner): the question is asked live, outside
+   * any checkpoint, so a runner that replays a journal must leave it undefined — its runtime's own
+   * cancel stops the run.
+   */
+  cancelled?(): Promise<boolean>;
+}
+
+/**
+ * Someone asked this run to stop, and it did. NOT a failure: the runner that set
+ * {@link AgentLoopHooks.cancelled} settles the run `cancelled` and ends its stream with a
+ * `cancelled` frame rather than an error.
+ */
+export class RunCancelledError extends Error {
+  constructor() {
+    super('Run cancelled');
+    this.name = 'RunCancelledError';
+  }
+}
+
+/** Unwind the turn if the runner says it was asked to stop (see {@link AgentLoopHooks.cancelled}). */
+async function haltIfCancelled(hooks: AgentLoopHooks): Promise<void> {
+  if (hooks.cancelled !== undefined && (await hooks.cancelled())) {
+    throw new RunCancelledError();
+  }
 }
 
 export class QuotaExceededError extends Error {
@@ -2483,6 +2512,8 @@ export async function runAgentLoop<TOutput = unknown>(
   // and prematurely close the live stream. We only end on normal completion — the throw propagates
   // to the engine, and the resumed replay reaches the writer.end() below.
   for (let i = 0; i < maxSteps; i += 1) {
+    // Between steps, and therefore before the next model call: the cheapest point to stop at.
+    await haltIfCancelled(hooks);
     const tools = withBuiltInTools({
       tools: await deps.registry.definitionsFor(
         input.actor,
@@ -2723,6 +2754,9 @@ export async function runAgentLoop<TOutput = unknown>(
     const messageCalls = [...turn.toolCalls, ...synthetic.map((entry) => entry.call)];
     const syntheticResults = synthetic.map((entry) => entry.result);
 
+    // A Stop that landed while the model was answering: nothing of this step is persisted, so the
+    // thread does not gain an answer after whatever the stop made room for.
+    await haltIfCancelled(hooks);
     const finishFrame: StreamFrame = {
       t: 'event',
       event: {

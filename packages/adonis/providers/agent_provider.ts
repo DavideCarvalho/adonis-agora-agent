@@ -21,6 +21,10 @@ import {
   AnonymousActorResolver,
   AttachmentRefusedError,
   type AttachmentStagingStore,
+  ChatQueueError,
+  ChatQueueService,
+  type ChatSendMode,
+  type ChatSendResult,
   DefaultToolAuthorizer,
   discoverTools,
   evaluateGovernanceGate,
@@ -82,6 +86,23 @@ interface ChatBody {
    * stores no user message, drops the answer(s) after it, starts a new run.
    */
   regenerate?: unknown;
+  /**
+   * What to do when the thread already has a turn running: `'auto'` (default — run now, else queue),
+   * `'queue'` (always queue, answering `202`), `'interrupt'` (cancel the running turn, run this next).
+   */
+  mode?: unknown;
+  /** Shorthand for `mode: 'interrupt'`. */
+  interrupt?: unknown;
+}
+
+/** A send's `mode`, or `null` when it names none of the three. `interrupt: true` is `'interrupt'`. */
+function sendMode(body: ChatBody): ChatSendMode | null {
+  if (body.mode === undefined) {
+    return body.interrupt === true ? 'interrupt' : 'auto';
+  }
+  return body.mode === 'auto' || body.mode === 'queue' || body.mode === 'interrupt'
+    ? body.mode
+    : null;
 }
 
 /** The catalog a model provider carries (`aiSdkModels(…).catalog`), if it carries one. */
@@ -323,12 +344,21 @@ export default class AgentProvider {
     });
     // `durable: true` runs each turn as a replay-safe `@adonis-agora/durable` workflow; it degrades
     // gracefully to the in-process runner when the durable peer isn't installed/configured.
+    // The thread message queue: a send on a thread whose turn is still running waits here and
+    // starts when that turn settles. One instance, shared by the service (which queues) and the
+    // runner (which drains); inert on a store that is not a `ChatQueueStore`.
+    const queue = new ChatQueueService(store, sink, {
+      ...(quotaProvider !== undefined ? { quota: quotaProvider } : {}),
+      ...(attachmentStaging !== undefined ? { attachments: attachmentStaging } : {}),
+      personaFor: (agentName) => service.resolvePersona(agentName),
+    });
     const runner =
       config.durable === true
-        ? ((await this.#resolveDurableRunner(factory, store)) ??
-          new InlineAgentRunner(factory, store))
-        : new InlineAgentRunner(factory, store);
-    const service = new AgentService(runner, store, factory, {
+        ? ((await this.#resolveDurableRunner(factory, store, queue, sink)) ??
+          new InlineAgentRunner(factory, store, queue))
+        : new InlineAgentRunner(factory, store, queue);
+    const service: AgentService = new AgentService(runner, store, factory, {
+      queue,
       // No `models` → the catalog the model provider carries (`aiSdkModels`), else none.
       ...(config.models !== undefined
         ? { models: toModelCatalog(config.models) }
@@ -502,6 +532,8 @@ export default class AgentProvider {
   async #resolveDurableRunner(
     factory: AgentDepsFactory,
     store: AgentStore,
+    queue: ChatQueueService,
+    sink: TokenStreamSink,
   ): Promise<AgentRunner | null> {
     try {
       const durable = await import('@adonis-agora/durable');
@@ -509,9 +541,9 @@ export default class AgentProvider {
       const { DurableAgentRunner, registerAgentWorkflow, setDurableAgentContext } = await import(
         '../src/durable/index.js'
       );
-      setDurableAgentContext({ factory, store });
+      setDurableAgentContext({ factory, store, queue });
       registerAgentWorkflow(engine);
-      return new DurableAgentRunner(engine, store);
+      return new DurableAgentRunner(engine, store, queue, sink);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(
@@ -587,10 +619,15 @@ export default class AgentProvider {
       if (typeof refs === 'string') {
         return ctx.response.badRequest({ message: refs });
       }
-      let started: { runId: string; threadId: string };
+      const mode = sendMode(body);
+      if (mode === null) {
+        return ctx.response.badRequest({ message: "mode must be 'auto', 'queue' or 'interrupt'" });
+      }
+      let started: ChatSendResult;
       try {
-        started = await service.chat({
+        started = await service.send({
           actor,
+          mode,
           // A regenerate answers the stored user message; whatever `message` says is ignored.
           message: regenerate ? '' : body.message,
           ...(regenerate ? { regenerate: true } : {}),
@@ -611,6 +648,9 @@ export default class AgentProvider {
         if (error instanceof RegenerateNeedsThreadError) {
           return ctx.response.badRequest({ message: error.message, code: 'thread_required' });
         }
+        if (error instanceof ChatQueueError) {
+          return this.#refuseQueue(ctx, error);
+        }
         if (error instanceof QuotaBlockedError) {
           return ctx.response.status(429).json({
             code: 'quota_exceeded',
@@ -619,6 +659,11 @@ export default class AgentProvider {
           });
         }
         throw error;
+      }
+      if (started.queued === true) {
+        // The thread already has a turn running: the message waits in its queue (`202`, JSON — no
+        // stream). `runId` is there when it started straight away; attach to it with `GET …/stream`.
+        return ctx.response.status(202).json(started);
       }
       await this.#pipe(ctx, service, started.runId, started.threadId);
     });
@@ -918,6 +963,65 @@ export default class AgentProvider {
         await service.renameThread(threadId, title);
       }
       return ctx.response.json({ ok: true });
+    });
+
+    // 8d. The thread message queue — messages sent while a turn was running, waiting to run after
+    // it. Owner-scoped like the thread routes; each answers the queue (`{ items, paused }`) and
+    // publishes it into the stream of the run holding the thread. `501` on a store without a queue.
+    router.get(p('threads/:id/queue'), async (ctx: HttpContext) => {
+      const threadId = await this.#ownedThread(ctx, service, actorResolver, governanceAuthorize);
+      if (threadId === null) return;
+      return this.#queueAnswer(ctx, () => service.getQueue(threadId));
+    });
+    router.delete(p('threads/:id/queue'), async (ctx: HttpContext) => {
+      const threadId = await this.#ownedThread(ctx, service, actorResolver, governanceAuthorize);
+      if (threadId === null) return;
+      return this.#queueAnswer(ctx, () => service.clearQueue(threadId));
+    });
+    router.post(p('threads/:id/queue/resume'), async (ctx: HttpContext) => {
+      const threadId = await this.#ownedThread(ctx, service, actorResolver, governanceAuthorize);
+      if (threadId === null) return;
+      return this.#queueAnswer(ctx, () => service.resumeQueue(threadId));
+    });
+    router.patch(p('queue/:messageId'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      const messageId = String(ctx.params.messageId);
+      if (!(await this.#ownsQueuedMessage(ctx, service, actor, messageId, governanceAuthorize)))
+        return;
+      const body = (ctx.request.body() ?? {}) as {
+        message?: unknown;
+        attachments?: unknown;
+        position?: unknown;
+      };
+      if (body.message !== undefined && typeof body.message !== 'string') {
+        return ctx.response.badRequest({ message: 'message must be a string' });
+      }
+      if (body.position !== undefined && typeof body.position !== 'number') {
+        return ctx.response.badRequest({ message: 'position must be a non-negative integer' });
+      }
+      const refs =
+        body.attachments === undefined || body.attachments === null
+          ? body.attachments
+          : attachmentRefs(body.attachments);
+      if (typeof refs === 'string') {
+        return ctx.response.badRequest({ message: refs });
+      }
+      return this.#queueAnswer(ctx, () =>
+        service.updateQueuedMessage(actor, messageId, {
+          ...(typeof body.message === 'string' ? { message: body.message } : {}),
+          ...(refs !== undefined ? { attachments: refs } : {}),
+          ...(typeof body.position === 'number' ? { position: body.position } : {}),
+        }),
+      );
+    });
+    router.delete(p('queue/:messageId'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      const messageId = String(ctx.params.messageId);
+      if (!(await this.#ownsQueuedMessage(ctx, service, actor, messageId, governanceAuthorize)))
+        return;
+      return this.#queueAnswer(ctx, () => service.removeQueuedMessage(messageId));
     });
 
     // 9. DELETE /agent/threads/:id. Authenticated + owner-scoped.
@@ -1486,6 +1590,74 @@ export default class AgentProvider {
       return false;
     }
     return true;
+  }
+
+  /** A refused queue request: the error's own status, as `{ message, code? }`. */
+  #refuseQueue(ctx: HttpContext, error: ChatQueueError): void {
+    ctx.response
+      .status(error.status)
+      .json({ message: error.message, ...(error.code !== undefined ? { code: error.code } : {}) });
+  }
+
+  /** Answer a queue route: the service's result, or the refusal it threw. */
+  async #queueAnswer(ctx: HttpContext, work: () => Promise<unknown>): Promise<void> {
+    try {
+      ctx.response.json(await work());
+    } catch (error) {
+      if (error instanceof ChatQueueError) {
+        return this.#refuseQueue(ctx, error);
+      }
+      if (error instanceof AttachmentRefusedError) {
+        ctx.response.status(error.status).json({ message: error.message });
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /** The `:id` thread once the caller is shown to own it; `null` after replying 401/403/404. */
+  async #ownedThread(
+    ctx: HttpContext,
+    service: AgentService,
+    actorResolver: ActorResolver,
+    governanceAuthorize: AgentGovernanceAuthorize | undefined,
+  ): Promise<string | null> {
+    const actor = await this.#resolveActor(ctx, actorResolver);
+    if (actor === null) return null;
+    const threadId = String(ctx.params.id);
+    const owner = await service.threadOwner(threadId);
+    return (await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))
+      ? threadId
+      : null;
+  }
+
+  /**
+   * Does `actor` own the thread a queued message waits on? Replies `404` for a message that does
+   * not exist (or a store without a queue answers `501`), `403` for another actor's.
+   */
+  async #ownsQueuedMessage(
+    ctx: HttpContext,
+    service: AgentService,
+    actor: Actor,
+    messageId: string,
+    governanceAuthorize: AgentGovernanceAuthorize | undefined,
+  ): Promise<boolean> {
+    let threadId: string | null;
+    try {
+      threadId = await service.queuedMessageThread(messageId);
+    } catch (error) {
+      if (error instanceof ChatQueueError) {
+        this.#refuseQueue(ctx, error);
+        return false;
+      }
+      throw error;
+    }
+    if (threadId === null) {
+      ctx.response.notFound({ message: `queued message ${messageId} not found` });
+      return false;
+    }
+    const owner = await service.threadOwner(threadId);
+    return this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize);
   }
 
   #conflictOnMismatch(ctx: HttpContext, error: unknown): void {

@@ -1,5 +1,10 @@
 export { createNoopEmitUi } from '../tool-ui.js';
 export {
+  CHAT_QUEUE_STORE_CONTRACT,
+  type ChatQueueContractCase,
+  type ChatQueueContractSubject,
+} from './chat-queue-store-contract.js';
+export {
   FakeEmbeddingProvider,
   FakeReranker,
   hashedEmbeddings,

@@ -18,6 +18,13 @@ import type {
   UpdateToolCallInput,
 } from '../index.js';
 import { type ToolCallApprovalState, toolCallApprovalFromRow } from '../spi/approval-policy.js';
+import type {
+  ChatQueueStore,
+  EnqueueMessageInput,
+  QueuedMessage,
+  QueuedMessagePatch,
+  QueuePause,
+} from '../spi/chat-queue.js';
 import type { AgentUiComponent } from '../stream-events.js';
 
 interface ThreadRow extends ThreadSummary {
@@ -154,8 +161,11 @@ export interface GovernanceThreadRow {
 }
 
 /** A fully in-memory `AgentStore` for tests and the offline demo. */
-export class InMemoryAgentStore implements AgentStore {
+export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
   private readonly threads = new Map<string, ThreadRow>();
+  /** Each thread's waiting messages, in run order. */
+  private readonly queues = new Map<string, QueuedMessage[]>();
+  private readonly pauses = new Map<string, QueuePause>();
   private readonly toolCalls = new Map<string, ToolCallRow>();
   private readonly usage: UsageRow[] = [];
   private readonly runs = new Map<string, RunRow>();
@@ -260,6 +270,144 @@ export class InMemoryAgentStore implements AgentStore {
     if (row !== undefined && row.activeStreamId === runId) {
       delete row.activeStreamId;
     }
+  }
+
+  async activeRunForThread(threadId: string): Promise<string | null> {
+    return this.threads.get(threadId)?.activeStreamId ?? null;
+  }
+
+  async claimActiveStream(
+    threadId: string,
+    runId: string,
+    options: { replacing?: string } = {},
+  ): Promise<boolean> {
+    const row = this.threads.get(threadId);
+    if (row === undefined) {
+      return false;
+    }
+    const holder = row.activeStreamId;
+    if (holder !== undefined && holder !== runId && holder !== options.replacing) {
+      return false;
+    }
+    row.activeStreamId = runId;
+    return true;
+  }
+
+  async releaseActiveStream(threadId: string, runId: string): Promise<boolean> {
+    const row = this.threads.get(threadId);
+    if (row?.activeStreamId !== runId) {
+      return false;
+    }
+    delete row.activeStreamId;
+    return true;
+  }
+
+  async enqueueMessage(input: EnqueueMessageInput): Promise<QueuedMessage> {
+    const ts = this.now();
+    const message: QueuedMessage = {
+      id: crypto.randomUUID(),
+      threadId: input.threadId,
+      actor: input.actor,
+      content: input.content,
+      ...(input.attachments !== undefined && input.attachments.length > 0
+        ? { attachments: input.attachments }
+        : {}),
+      ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+      ...(input.model !== undefined ? { model: input.model } : {}),
+      ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
+      ...(input.interrupt === true ? { interrupt: true } : {}),
+      createdAt: ts,
+      updatedAt: ts,
+    };
+    const queue = this.queues.get(input.threadId) ?? [];
+    if (input.at === 'head') {
+      queue.unshift(message);
+    } else {
+      queue.push(message);
+    }
+    this.queues.set(input.threadId, queue);
+    return { ...message };
+  }
+
+  async listQueue(threadId: string): Promise<QueuedMessage[]> {
+    return (this.queues.get(threadId) ?? []).map((message) => ({ ...message }));
+  }
+
+  async getQueuedMessage(id: string): Promise<QueuedMessage | null> {
+    const found = this.findQueued(id);
+    return found === undefined ? null : { ...found.message };
+  }
+
+  async updateQueuedMessage(id: string, patch: QueuedMessagePatch): Promise<QueuedMessage | null> {
+    const found = this.findQueued(id);
+    if (found === undefined) {
+      return null;
+    }
+    const { message } = found;
+    if (patch.content !== undefined) {
+      message.content = patch.content;
+    }
+    if (patch.attachments !== undefined) {
+      if (patch.attachments === null || patch.attachments.length === 0) {
+        delete message.attachments;
+      } else {
+        message.attachments = patch.attachments;
+      }
+    }
+    message.updatedAt = this.now();
+    return { ...message };
+  }
+
+  async moveQueuedMessage(id: string, index: number): Promise<boolean> {
+    const found = this.findQueued(id);
+    if (found === undefined) {
+      return false;
+    }
+    const { queue, position, message } = found;
+    queue.splice(position, 1);
+    const target = Math.max(0, Math.min(queue.length, Math.trunc(index)));
+    queue.splice(target, 0, message);
+    return true;
+  }
+
+  async removeQueuedMessage(id: string): Promise<boolean> {
+    const found = this.findQueued(id);
+    if (found === undefined) {
+      return false;
+    }
+    found.queue.splice(found.position, 1);
+    return true;
+  }
+
+  async clearQueue(threadId: string): Promise<number> {
+    const count = this.queues.get(threadId)?.length ?? 0;
+    this.queues.delete(threadId);
+    return count;
+  }
+
+  async queuePause(threadId: string): Promise<QueuePause | null> {
+    return this.pauses.get(threadId) ?? null;
+  }
+
+  async setQueuePause(threadId: string, pause: QueuePause | null): Promise<void> {
+    if (pause === null) {
+      this.pauses.delete(threadId);
+    } else {
+      this.pauses.set(threadId, pause);
+    }
+  }
+
+  private findQueued(
+    id: string,
+  ): { queue: QueuedMessage[]; position: number; message: QueuedMessage } | undefined {
+    for (const queue of this.queues.values()) {
+      const position = queue.findIndex((message) => message.id === id);
+      const message = queue[position];
+      if (message !== undefined) {
+        return { queue, position, message };
+      }
+    }
+    return undefined;
   }
 
   async setActiveStream(threadId: string, runId: string | null): Promise<void> {

@@ -5,11 +5,19 @@ import {
   WorkflowSuspended,
 } from '@adonis-agora/durable';
 import { utcDay } from '../agent-deps.js';
-import { type AgentLoopHooks, runAgentLoop, settleAll, streamErrorFrame } from '../agent-loop.js';
+import {
+  type AgentLoopHooks,
+  RunCancelledError,
+  runAgentLoop,
+  settleAll,
+  streamErrorFrame,
+} from '../agent-loop.js';
+import type { QueuePlan, QueueSettleOutcome } from '../chat-queue-service.js';
 import type { HumanReply } from '../elicitation.js';
 import { isReplayIntegrityError } from '../replay-integrity.js';
-import { clearActiveRun } from '../spi/agent-store.js';
+import { isChatQueueStore, releaseThreadRun } from '../spi/chat-queue.js';
 import { childSinkWriter } from '../spi/token-stream-sink.js';
+import type { AgentStreamEvent } from '../stream-events.js';
 import type { AgentRunInput, Decision } from '../types.js';
 import { getDurableAgentContext } from './agent-run-context.js';
 
@@ -73,11 +81,63 @@ export class AgentRunWorkflow extends BaseWorkflow {
   static override workflow = { name: 'agora.agent.run', version: '1' };
 
   async run(ctx: WorkflowCtx, input: DurableAgentRunInput): Promise<{ text: string }> {
-    const { factory, store } = getDurableAgentContext();
+    const { factory, store, queue } = getDurableAgentContext();
     const day = input.day ?? utcDay();
     const deps = factory.forAgent(input.agentName);
     const isChild = input.sinkRunId !== undefined;
     const sinkRunId = input.sinkRunId ?? ctx.runId;
+    /**
+     * Move the thread past this settling turn — to the next queued message, started here as a
+     * fire-and-forget `ctx.startChild` under the message's own id, or to a paused/empty queue — and
+     * answer the `queue` frame to write before the turn's terminal.
+     *
+     * Journaled: the decision (which message, claimed and popped) is one `localStep`, so a replay
+     * reads it back instead of popping a second message, and the start is the runtime's own
+     * replay-safe spawn. Gated by `ctx.patched`, so a run recorded before the queue existed replays
+     * against the history it has. A no-op for a sub-agent's run and on a store without a queue.
+     */
+    const advanceQueue = async (
+      outcome: QueueSettleOutcome,
+      error?: string,
+    ): Promise<AgentStreamEvent | undefined> => {
+      if (queue === undefined || !queue.supported || isChild) {
+        return undefined;
+      }
+      if (!(await ctx.patched('agent:chat-queue'))) {
+        return undefined;
+      }
+      const plan = await ctx.localStep(`queue:${outcome}`, async (): Promise<QueuePlan> => {
+        try {
+          return await queue.plan({
+            threadId: input.threadId,
+            runId: ctx.runId,
+            outcome,
+            ...(error !== undefined ? { error } : {}),
+          });
+        } catch {
+          // Not worth failing a settling turn over: the queue is picked up by the next send or
+          // resume on the thread.
+          return {};
+        }
+      });
+      const next = plan.next;
+      if (next === undefined) {
+        return plan.frame;
+      }
+      try {
+        await ctx.startChild(AgentRunWorkflow, next.input, next.runId);
+        return plan.frame;
+      } catch (failure) {
+        if (isControlFlowSignal(failure)) {
+          throw failure;
+        }
+        const reason = failure instanceof Error ? failure.message : String(failure);
+        return ctx.localStep('queue:restore', async () => {
+          await queue.restore(input.threadId, next, 'start_failed', reason);
+          return queue.pausedFrame(input.threadId);
+        });
+      }
+    };
     // The chain this run sits on, with its own agent appended — what lets a child recognise a
     // delegation back to an agent the chain has already passed through. Derived from the workflow's
     // input, so it is the same on every replay and on every pod.
@@ -116,10 +176,35 @@ export class AgentRunWorkflow extends BaseWorkflow {
       awaitAnswers: (request) => ctx.waitForSignal<HumanReply>(`tool:${ctx.runId}:${request.id}`),
       // A child forwards into the top-level sink (so the human watching the parent sees it) but must
       // not end it; a top-level run opens and owns its own sink keyed by its runId.
-      openSink: async () =>
-        isChild ? childSinkWriter(await deps.sink.open(sinkRunId)) : deps.sink.open(ctx.runId),
+      // A thread's own turn hands the thread to its queue just before the loop ends the stream, so
+      // the reader learns what runs next from the `queue` frame, before the end.
+      openSink: async () => {
+        if (isChild) {
+          return childSinkWriter(await deps.sink.open(sinkRunId));
+        }
+        const writer = await deps.sink.open(ctx.runId);
+        return {
+          write: (frame) => writer.write(frame),
+          end: async () => {
+            const frame = await advanceQueue('completed');
+            if (frame !== undefined) {
+              await writer.write({ t: 'event', event: frame });
+            }
+            await writer.end();
+          },
+        };
+      },
       // Every side effect + control-flow read is a durable local step (memoized on replay).
       step: (name, fn) => ctx.localStep(name, fn),
+      // A thread's own turn that no longer holds its thread was stopped from outside its body (a
+      // Stop, or an interrupt that already started the next message): it must not write an answer
+      // after whatever took its place. Asked live, only where the queue's compare-and-set admission
+      // is in force — there a run holds its thread from its claim to its own settle, on every replay.
+      ...(queue?.supported === true && !isChild && isChatQueueStore(store)
+        ? {
+            cancelled: async () => (await store.activeRunForThread(input.threadId)) !== ctx.runId,
+          }
+        : {}),
       // Lets the tool transient-retry loop tell a real suspend/continue-as-new apart from a
       // retryable tool error, so a control-flow signal is never swallowed by a retry.
       isControlFlowError: isControlFlowSignal,
@@ -159,13 +244,19 @@ export class AgentRunWorkflow extends BaseWorkflow {
       const result = await runAgentLoop({ ...deps, day }, input, hooks);
       // The top-level run owns the thread's active-run pointer (a child runs on a scratch thread).
       if (!isChild) {
-        await ctx.localStep('deactivate', () => clearActiveRun(store, input.threadId, ctx.runId));
+        // Conditional: a turn that handed the thread to the next queued message must not clear it.
+        await ctx.localStep('deactivate', () => releaseThreadRun(store, input.threadId, ctx.runId));
       }
       return result;
     } catch (error) {
       // A suspend / continue-as-new is control flow, not a failure — let the engine handle it.
       if (isControlFlowSignal(error)) {
         throw error;
+      }
+      // Stopped from outside (see `cancelled` above): whoever stopped it already settled the run's
+      // row, its thread and its stream. Nothing to record, and nothing of this turn to keep.
+      if (error instanceof RunCancelledError) {
+        return { text: '' };
       }
       const message = error instanceof Error ? error.message : String(error);
       // A replay-integrity failure gets the stream half of this path but NOT the checkpoint half.
@@ -192,8 +283,13 @@ export class AgentRunWorkflow extends BaseWorkflow {
         store.recordRunEnd({ runId: ctx.runId, status: 'failed', error: message }),
       );
       if (!isChild) {
-        await ctx.localStep('deactivate', () => clearActiveRun(store, input.threadId, ctx.runId));
+        // The queue behind a failed turn pauses — its next message would likely fail the same way.
+        const queueFrame = await advanceQueue('failed', message);
+        await ctx.localStep('deactivate', () => releaseThreadRun(store, input.threadId, ctx.runId));
         const writer = await deps.sink.open(ctx.runId);
+        if (queueFrame !== undefined) {
+          await writer.write({ t: 'event', event: queueFrame });
+        }
         await writer.write(streamErrorFrame(error));
         await writer.end();
       }

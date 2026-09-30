@@ -84,7 +84,7 @@ describe('autoCreateTables defaults to true (the lib manages its own schema)', (
     await store.createThread({ actor, persona: 'default' });
     await pricing.listCurrentPrices();
     await gov.spendByModel({ fromDay: '2026-01-01', toDay: '2026-12-31' });
-    // Six tables, created exactly once — not eighteen (6 × 3 stores).
-    expect(ddlCount).toBe(6);
+    // Seven tables (the six, plus the chat queue's), created exactly once — not 7 × 3 stores.
+    expect(ddlCount).toBe(7);
   });
 });

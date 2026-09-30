@@ -1,6 +1,17 @@
 import { type AgentDeps, utcDay } from '../agent-deps.js';
 import type { AgentDepsFactory } from '../agent-deps-factory.js';
-import { type AgentLoopHooks, runAgentLoop, settleAll, streamErrorFrame } from '../agent-loop.js';
+import {
+  type AgentLoopHooks,
+  RunCancelledError,
+  runAgentLoop,
+  settleAll,
+  streamErrorFrame,
+} from '../agent-loop.js';
+import {
+  type ChatQueueService,
+  isThreadTurn,
+  type QueueSettleOutcome,
+} from '../chat-queue-service.js';
 import { spannedAgent } from '../diagnostics.js';
 import {
   type ElicitationRequest,
@@ -8,9 +19,10 @@ import {
   HumanReplyMismatchError,
   isHumanDecision,
 } from '../elicitation.js';
-import type { AgentRunner } from '../spi/agent-runner.js';
-import { type AgentStore, clearActiveRun } from '../spi/agent-store.js';
-import { childSinkWriter } from '../spi/token-stream-sink.js';
+import type { AgentRunner, AgentRunStartOptions } from '../spi/agent-runner.js';
+import type { AgentStore } from '../spi/agent-store.js';
+import { releaseThreadRun } from '../spi/chat-queue.js';
+import { childSinkWriter, type SinkWriter } from '../spi/token-stream-sink.js';
 import type { Actor, AgentRunInput, Decision } from '../types.js';
 
 /**
@@ -21,6 +33,8 @@ import type { Actor, AgentRunInput, Decision } from '../types.js';
 interface ParkedWait {
   on: 'approval' | 'answers';
   resolve: (reply: HumanReply) => void;
+  /** Unwind the parked turn (a cancel). */
+  reject: (error: Error) => void;
 }
 
 /**
@@ -38,20 +52,39 @@ interface ParkedWait {
  */
 export class InlineAgentRunner implements AgentRunner {
   private readonly pending = new Map<string, ParkedWait>();
-  /** The thread of each run this process started — what a cancel clears the active run of. */
-  private readonly threadOfRun = new Map<string, string>();
+  /**
+   * The input of each top-level run this process is running — what {@link isRunActive} answers
+   * from, and what a cancel settles the thread (and its queue) of.
+   */
+  private readonly live = new Map<string, AgentRunInput>();
+  /** Runs someone asked to stop; the loop observes it at its next safe point. */
+  private readonly cancelled = new Set<string>();
 
   constructor(
     private readonly factory: AgentDepsFactory,
     private readonly store: AgentStore,
+    /** The thread message queue this runner drains when a thread's own turn settles. */
+    private readonly queue?: ChatQueueService,
   ) {}
 
-  async start(input: AgentRunInput): Promise<{ runId: string }> {
-    const runId = crypto.randomUUID();
+  /**
+   * In-process, so exact: a run this process is not running is not running anywhere — the process
+   * that was running it is gone (a restart), and a thread it still holds is a stale claim.
+   */
+  async isRunActive(runId: string): Promise<boolean> {
+    return this.live.has(runId);
+  }
+
+  async start(
+    input: AgentRunInput,
+    options: AgentRunStartOptions = {},
+  ): Promise<{ runId: string }> {
+    const runId = options.runId ?? crypto.randomUUID();
     const day = input.day ?? utcDay();
     const deps = this.factory.forAgent(input.agentName);
     const hooks = this.topLevelHooks({
       runId,
+      input,
       deps,
       actor: input.actor,
       day,
@@ -70,8 +103,10 @@ export class InlineAgentRunner implements AgentRunner {
     // when unobserved.
     // The thread's active run is set BEFORE the loop starts — a fast turn could otherwise end (and
     // clear it) before it was ever set — and cleared when the turn ends, however it ends.
+    // (A run the queue claimed the thread for already holds it under this id; setting it again is a
+    // no-op.)
     await this.store.setActiveStream(input.threadId, runId);
-    this.threadOfRun.set(runId, input.threadId);
+    this.live.set(runId, input);
     void spannedAgent(
       'turn',
       runId,
@@ -79,23 +114,85 @@ export class InlineAgentRunner implements AgentRunner {
       () => runAgentLoop({ ...deps, day }, input, hooks),
       (result) => ({ textLength: result.text.length }),
     )
-      .finally(() => {
-        this.threadOfRun.delete(runId);
-        return clearActiveRun(this.store, input.threadId, runId).catch(() => undefined);
-      })
+      // The drain already moved the thread on (or released it) before the stream ended; this only
+      // catches a turn that ended without one. Conditional, so it never clears a successor's claim.
+      .then(() => releaseThreadRun(this.store, input.threadId, runId))
       .catch(async (error) => {
+        if (error instanceof RunCancelledError) {
+          // `cancel` already settled the run, its thread and its stream; the loop only had to stop.
+          return;
+        }
         const message = error instanceof Error ? error.message : String(error);
         console.error(`[@adonis-agora/agent] run ${runId} failed: ${message}`);
         // Settle the run's persisted outcome — the loop only records completions (it can't catch its
         // own crash). First-terminal, so this can't clobber a completion that already landed.
         await this.store.recordRunEnd({ runId, status: 'failed', error: message });
-        // Surface the failure on the live stream and close it, so a subscriber isn't left hanging.
         const writer = await deps.sink.open(runId);
+        // The queue behind it pauses (a failed turn's next message would likely fail the same way),
+        // told to the reader before the error frame.
+        await this.settleQueue(writer, input, runId, 'failed', message);
+        await releaseThreadRun(this.store, input.threadId, runId);
+        // Surface the failure on the live stream and close it, so a subscriber isn't left hanging.
         await writer.write(streamErrorFrame(error));
         await writer.end();
+      })
+      .catch((error) => {
+        console.error(
+          `[@adonis-agora/agent] run ${runId} could not be settled: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      })
+      .finally(() => {
+        this.live.delete(runId);
+        this.cancelled.delete(runId);
       });
 
     return { runId };
+  }
+
+  /**
+   * Move the thread past a settling TOP-LEVEL run — to the next queued message, which starts here,
+   * or to a paused/empty queue — and write the resulting `queue` frame into this run's stream. A
+   * no-op without a queue-capable store, and for a run that is not a thread's own turn.
+   *
+   * Never throws: the run is settling either way, and a queue that could not be advanced is picked
+   * up by the next send or resume on the thread.
+   */
+  private async settleQueue(
+    writer: SinkWriter,
+    input: AgentRunInput,
+    runId: string,
+    outcome: QueueSettleOutcome,
+    error?: string,
+  ): Promise<void> {
+    const queue = this.queue;
+    if (queue === undefined || !queue.supported || !isThreadTurn(input)) {
+      return;
+    }
+    // A Stop that arrived too late to interrupt anything (the turn's last model call was already
+    // answering) still means stop: the queue behind it pauses as it would after a cancel.
+    const settled = outcome === 'completed' && this.cancelled.has(runId) ? 'cancelled' : outcome;
+    try {
+      const frame = await queue.handoff(
+        {
+          threadId: input.threadId,
+          runId,
+          outcome: settled,
+          ...(error !== undefined ? { error } : {}),
+        },
+        (next, nextRunId) => this.start(next, { runId: nextRunId }),
+      );
+      if (frame !== undefined) {
+        await writer.write({ t: 'event', event: frame });
+      }
+    } catch (failure) {
+      console.error(
+        `[@adonis-agora/agent] could not advance the queue of thread ${input.threadId} after run ${runId}: ${
+          failure instanceof Error ? failure.message : String(failure)
+        }`,
+      );
+    }
   }
 
   /**
@@ -123,15 +220,28 @@ export class InlineAgentRunner implements AgentRunner {
   }
 
   async cancel(runId: string): Promise<void> {
+    // The loop stops at its next safe point (between steps, or once the model call it is in has
+    // answered); a turn parked on a human is unwound now.
+    this.cancelled.add(runId);
+    for (const [key, parked] of this.pending) {
+      if (key.startsWith(`${runId}:`)) {
+        this.pending.delete(key);
+        parked.reject(new RunCancelledError());
+      }
+    }
     // Best-effort: settle the run `cancelled` (first-terminal, so a completed run stays completed),
     // then close the live stream so a subscriber isn't left hanging.
     await this.store.recordRunEnd({ runId, status: 'cancelled' });
-    const threadId = this.threadOfRun.get(runId);
-    if (threadId !== undefined) {
-      await clearActiveRun(this.store, threadId, runId);
-    }
     const deps = this.factory.forAgent();
     const writer = await deps.sink.open(runId);
+    const input = this.live.get(runId);
+    if (input !== undefined) {
+      // An interrupt's message starts now; anything else queued pauses behind the Stop.
+      await this.settleQueue(writer, input, runId, 'cancelled');
+      await releaseThreadRun(this.store, input.threadId, runId);
+    } else {
+      this.cancelled.delete(runId);
+    }
     // The last frame before a normal end: without it a reader cannot tell a truncated answer from
     // a complete one. Not an error — a client that retries a failed stream must not retry this.
     await writer.write({ t: 'event', event: { kind: 'cancelled' } });
@@ -140,6 +250,7 @@ export class InlineAgentRunner implements AgentRunner {
 
   private topLevelHooks(args: {
     runId: string;
+    input: AgentRunInput;
     deps: AgentDeps;
     actor: Actor;
     day: string;
@@ -148,11 +259,26 @@ export class InlineAgentRunner implements AgentRunner {
     /** How many delegations deep this run already is. */
     depth: number;
   }): AgentLoopHooks {
-    const { runId, deps, actor, day, chainBelow, depth } = args;
+    const { runId, input, deps, actor, day, chainBelow, depth } = args;
     return {
       runId,
       durable: false,
-      openSink: () => deps.sink.open(runId),
+      // The loop ends the stream when the turn completes. Just before, the thread passes to the next
+      // queued message (or is released), and the reader is told which — so by the time a client sees
+      // the run end, the thread is already free or already running what it queued.
+      openSink: async () => {
+        const writer = await deps.sink.open(runId);
+        return this.queue === undefined
+          ? writer
+          : {
+              write: (frame) => writer.write(frame),
+              end: async () => {
+                await this.settleQueue(writer, input, runId, 'completed');
+                await writer.end();
+              },
+            };
+      },
+      cancelled: async () => this.cancelled.has(runId),
       ...this.humanHooks(runId),
       step: (_name, fn) => fn(),
       // Nothing here records a position, so a turn's read tools can simply overlap.
@@ -213,8 +339,8 @@ export class InlineAgentRunner implements AgentRunner {
   }
 
   private park(key: string, on: ParkedWait['on']): Promise<HumanReply> {
-    return new Promise<HumanReply>((resolve) => {
-      this.pending.set(key, { on, resolve });
+    return new Promise<HumanReply>((resolve, reject) => {
+      this.pending.set(key, { on, resolve, reject });
     });
   }
 
@@ -246,6 +372,8 @@ export class InlineAgentRunner implements AgentRunner {
       // A delegated run parks on a human like any other, keyed by ITS OWN runId — which is the id
       // its pending row and its forwarded frames both carry, so the wait can be answered.
       ...this.humanHooks(runId),
+      // A child stops when the run a human is actually watching is stopped.
+      cancelled: async () => this.cancelled.has(sinkRunId),
       step: (_name, fn) => fn(),
       parallel: settleAll,
       runAgent: (childName, childTask) =>

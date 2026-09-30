@@ -1,4 +1,5 @@
 import type { AgentDepsFactory } from '../agent-deps-factory.js';
+import type { ChatQueueService } from '../chat-queue-service.js';
 import type { AgentStore } from '../spi/agent-store.js';
 
 /**
@@ -14,6 +15,11 @@ import type { AgentStore } from '../spi/agent-store.js';
 export interface DurableAgentContext {
   factory: AgentDepsFactory;
   store: AgentStore;
+  /**
+   * The thread message queue a settling turn hands its thread to. Set on every pod of a deployment
+   * or on none: whether a turn writes the queue checkpoints must not depend on which pod replays it.
+   */
+  queue?: ChatQueueService;
 }
 
 let current: DurableAgentContext | undefined;
