@@ -67,6 +67,12 @@ export interface ChatParams {
   transient?: boolean;
   /** What to do when the thread already has a turn running — see {@link ChatSendMode}. */
   mode?: ChatSendMode;
+  /**
+   * When creating a thread (no `threadId`), ask the store to create it under this id — the id an
+   * AG-UI consumer named the conversation with. A store may ignore it (`CreateThreadInput.id`); the
+   * thread's real id is always the one on the result.
+   */
+  newThreadId?: string;
 }
 
 /**
@@ -369,6 +375,7 @@ export class AgentService {
         actor: params.actor,
         persona: params.personaId ?? this.deps.forAgent(agentName).defaultPersona,
         ...(params.transient === true ? { transient: true } : {}),
+        ...(params.newThreadId !== undefined ? { id: params.newThreadId } : {}),
       });
       threadId = created.id;
     }

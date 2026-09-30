@@ -21,6 +21,13 @@ export interface CreateThreadInput {
   /** A scratch thread: left out of `listThreads` until {@link AgentStore.promoteThread} keeps it. */
   transient?: boolean;
   title?: string;
+  /**
+   * Create the thread under THIS id instead of a generated one — for a caller whose protocol names
+   * the conversation itself (AG-UI's `threadId`). OPTIONAL to honour: a store that ignores it still
+   * creates a thread, under an id of its own, and the caller reads the id off the result. A store
+   * that honours it rejects an id already taken (soft-deleted threads included).
+   */
+  id?: string;
 }
 
 /** Patch applied by {@link AgentStore.updateThread}. An omitted key leaves that field untouched. */

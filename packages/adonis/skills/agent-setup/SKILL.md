@@ -233,7 +233,41 @@ function Chat() {
 made mid-turn is queued (`whileRunning: 'block'` to refuse instead). `path` on the provider must
 match `config/agent.ts`'s `path`.
 
+### Pattern 5 — serve an AG-UI client with `agUi: true`
+
+```ts
+// config/agent.ts
+export default defineConfig({
+  // …
+  agUi: true, // mounts POST <path>/ag-ui — a RunAgentInput in, AG-UI 1.0 events out
+})
+```
+
+```ts
+import { HttpAgent } from '@ag-ui/client'
+
+const agent = new HttpAgent({ url: '/agent/ag-ui' })
+agent.addMessage({ id: crypto.randomUUID(), role: 'user', content: 'Refund order 7' })
+await agent.runAgent()
+```
+
+A run that parks on an approval or a question set ENDS with `outcome: { type: 'interrupt' }`;
+answer it in the next request's `resume` (`{ approved: boolean }` for `tool_approval`,
+`{ answers }` for `input_required`). The interrupt id is the whole address, so with a shared
+token sink any replica serves the resume. The native stream is unchanged.
+
+Source: `packages/adonis/docs/ag-ui.mdx`, `packages/adonis/src/ag-ui/`.
+
 ## Common mistakes
+
+### MEDIUM — restating history to the AG-UI route and expecting it to be read
+
+The route answers the LAST user message of `messages`; the thread's history is the one the server
+stored under `threadId`. Media parts must be inline (`source.type: 'data'`) and need
+`attachments:` configured — a `url` or `file` source is dropped with an `agora.warning`.
+
+Source: `packages/adonis/docs/ag-ui.mdx`.
+
 
 ### HIGH — calling `useAgentChat()` outside `<AgentProvider>`
 

@@ -184,6 +184,13 @@ export interface AgentConfig {
    */
   attachments?: AttachmentStagingStore | AttachmentStagingFactory;
   /**
+   * Serve the agent over AG-UI 1.0 as well: `POST <path>/ag-ui` takes a `RunAgentInput` and answers
+   * with the run as AG-UI events (see `docs/ag-ui.mdx`). Off unless set. `quietMs` is how long a
+   * run that is waiting on a person AND still has other work announced may stay silent before it is
+   * reported interrupted (default 750).
+   */
+  agUi?: boolean | { quietMs?: number };
+  /**
    * Tool authorization gate. Defaults to `DefaultToolAuthorizer` (fail-closed, ADMIN-only; role-set
    * intersection). `authorizer` and `rolesPolicy` are aliases — pass either.
    */

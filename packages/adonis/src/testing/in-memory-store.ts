@@ -176,7 +176,10 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
   }
 
   async createThread(input: CreateThreadInput): Promise<ThreadSummary> {
-    const id = crypto.randomUUID();
+    const id = input.id ?? crypto.randomUUID();
+    if (this.threads.has(id)) {
+      throw new Error(`thread ${id} already exists`);
+    }
     const ts = this.now();
     const row: ThreadRow = {
       id,
