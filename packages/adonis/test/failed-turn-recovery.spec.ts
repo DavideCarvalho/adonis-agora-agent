@@ -82,6 +82,7 @@ function buildGraph() {
   const registry = new ToolRegistry();
   const prompts: ModelMessage[][] = [];
   const executions: Record<string, number> = {};
+  const keys: Record<string, (string | undefined)[]> = {};
   const model = new FakeModelProvider((args) => {
     prompts.push(args.messages);
     const asked = args.messages.filter((message) => message.role === 'user' && message.content);
@@ -119,14 +120,15 @@ function buildGraph() {
         roles: ['ADMIN'],
       },
       {
-        execute: async () => {
+        execute: async (_input, ctx) => {
+          keys[name] = [...(keys[name] ?? []), ctx.idempotencyKey];
           executions[name] = (executions[name] ?? 0) + 1;
           return { done: name };
         },
       },
     );
   }
-  return { store, service, engine, prompts, executions };
+  return { store, service, engine, prompts, executions, keys };
 }
 
 async function frames(
@@ -190,6 +192,11 @@ describe('a turn that died mid-step', () => {
 
       // Nothing is left waiting on the dead run.
       expect(g.executions).toEqual({ save_exam: 1, record_measure: 1 });
+      // Each call was handed the key that is the same for every execution of it.
+      expect(g.keys).toEqual({
+        save_exam: [`${runId}:${SAVE}`],
+        record_measure: [`${runId}:${MEASURE}`],
+      });
       const rows = g.store.toolCallRows();
       expect(rows.filter((row) => row.status === 'pending_approval')).toEqual([]);
       expect(rows.map((row) => row.status)).toEqual(['executed', 'failed']);
