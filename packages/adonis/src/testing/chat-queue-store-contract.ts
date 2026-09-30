@@ -121,6 +121,29 @@ export const CHAT_QUEUE_STORE_CONTRACT: readonly ChatQueueContractCase[] = [
     },
   },
   {
+    name: 'turns a waiting message into an interrupt, and back',
+    async run({ store, threadId }) {
+      const queued = await store.enqueueMessage({
+        threadId,
+        actor: ACTOR,
+        content: 'now',
+        attachments: [ATTACHMENT],
+      });
+      const promoted = await store.updateQueuedMessage(queued.id, { interrupt: true });
+      check(promoted?.interrupt === true, 'the patch answers the interrupt', promoted);
+      check(promoted?.content === 'now', 'content untouched by an interrupt patch', promoted);
+      check(promoted?.attachments?.length === 1, 'attachments untouched', promoted);
+      const read = await store.getQueuedMessage(queued.id);
+      check(read?.interrupt === true, 'the interrupt is stored', read);
+      const listed = (await store.listQueue(threadId)).find((message) => message.id === queued.id);
+      check(listed?.interrupt === true, 'the interrupt is listed', listed);
+      const edited = await store.updateQueuedMessage(queued.id, { content: 'now!' });
+      check(edited?.interrupt === true, 'a text edit keeps the interrupt', edited);
+      const demoted = await store.updateQueuedMessage(queued.id, { interrupt: false });
+      check(demoted?.interrupt !== true, 'interrupt: false clears it', demoted);
+    },
+  },
+  {
     name: 'moves a message to an index, clamped',
     async run(subject) {
       const { store, threadId } = subject;

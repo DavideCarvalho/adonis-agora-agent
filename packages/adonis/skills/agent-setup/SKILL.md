@@ -19,6 +19,8 @@ sources:
   - "DavideCarvalho/adonis-agent:packages/adonis/docs/config-reference.mdx"
   - "DavideCarvalho/adonis-agent:packages/adonis/src/define_config.ts"
   - "DavideCarvalho/adonis-agent:packages/adonis/src/stores/factory.ts"
+  - "DavideCarvalho/adonis-agent:packages/adonis/docs/react.mdx"
+  - "DavideCarvalho/adonis-agent:packages/adonis/src/react/index.ts"
 ---
 
 # Setting up @adonis-agora/agent
@@ -181,7 +183,48 @@ bring-your-own `RedisStreamClient`). Pair with `durable: true` for cross-instanc
 Source: `packages/adonis/src/stores/factory.ts` (`tokenSinks`),
 `packages/adonis/docs/streaming-and-http.mdx` ("Single-replica by default" callout).
 
+### Pattern 4 — a React chat with `@adonis-agora/agent/react`
+
+The React layer is `@dudousxd/nestjs-agent-react` re-exported (an optional peer — install it with
+`@ai-sdk/react` and `ai`), plus an `AgentProvider` that already sends the session cookie and
+shield's CSRF token. No controller, no fetch code:
+
+```tsx
+import { AgentProvider, useAgentChat } from '@adonis-agora/agent/react'
+
+export default function ChatPage() {
+  return (
+    <AgentProvider>
+      <Chat />
+    </AgentProvider>
+  )
+}
+
+function Chat() {
+  const { transcript, composer, queue } = useAgentChat({ threadId, agent: 'support' })
+  // transcript.items[].blocks — text / tools (approvals) / elicitation / ui
+  // queue.items — messages sent while a turn was running, waiting server-side
+  // composer.text / setText / submit() / canSend / files
+}
+```
+
+`useAgentChat({ threadId })` loads the thread and re-attaches to a turn still streaming on it. A send
+made mid-turn is queued (`whileRunning: 'block'` to refuse instead). `path` on the provider must
+match `config/agent.ts`'s `path`.
+
 ## Common mistakes
+
+### HIGH — calling `useAgentChat()` outside `<AgentProvider>`
+
+```tsx
+// Wrong — falls back to a bare client with no CSRF header: shield answers every POST with 403.
+function Chat() { const chat = useAgentChat() }  // no provider above
+
+// Correct — the provider reads XSRF-TOKEN (or <meta name="csrf-token">) per request.
+<AgentProvider><Chat /></AgentProvider>
+```
+
+Outside React, `createAgentClient()` from the same entry builds the client with the same defaults.
 
 ### HIGH — omitting `actorResolver` in an app that has logins
 

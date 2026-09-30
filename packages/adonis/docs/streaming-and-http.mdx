@@ -22,7 +22,7 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 
 | # | Method & path | Purpose |
 | --- | --- | --- |
-| 1 | `POST /agent/chat` | Start a run. Resolves the actor, creates or continues a thread, and **streams the reply as SSE**. Body: `{ message, threadId?, agent?, persona?, attachments?: { mediaId }[], pageContext?, model?, regenerate?: true }` — `model` must be a catalog model available to the caller (`400` otherwise) and applies to **this turn only** (see [Models](#models)); `regenerate` see [Regenerating an answer](#regenerating-an-answer); `mode?: 'auto' \| 'queue' \| 'interrupt'` see [Message queue](#message-queue) — a send on a thread whose turn is still running answers `202 { queued: true, … }` JSON instead of a stream. |
+| 1 | `POST /agent/chat` | Start a run. Resolves the actor, creates or continues a thread, and **streams the reply as SSE**. Body: `{ message, threadId?, agent?, persona?, attachments?: { mediaId }[], pageContext?, model?, regenerate?: true, transient?: true }` — `transient` starts a NEW thread as a scratch conversation, left out of `GET /agent/threads` until promoted (10b); `model` must be a catalog model available to the caller (`400` otherwise) and applies to **this turn only** (see [Models](#models)); `regenerate` see [Regenerating an answer](#regenerating-an-answer); `mode?: 'auto' \| 'queue' \| 'interrupt'` see [Message queue](#message-queue) — a send on a thread whose turn is still running answers `202 { queued: true, … }` JSON instead of a stream. |
 | 2 | `GET /agent/chat/:runId/stream` | **Re-attach** to a run's live token stream (reconnect / resume). |
 | 3 | `POST /agent/chat/:runId/cancel` | Abort a run. Returns `{ aborted: true }`. |
 | 4 | `POST /agent/tool-call/approve` | Approve a pending `action` tool call. Body: `{ toolCallId, runId? }`. |
@@ -40,8 +40,12 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 | 8f | `POST /agent/threads/:id/queue/resume` | Lift a pause and start the head when nothing is running. Answers the queue, plus `runId` when the head started. |
 | 8g | `PATCH /agent/queue/:messageId` | `{ message?, attachments?: { mediaId }[] \| null, position? }` — edit and/or move a waiting message. Answers the queue; `410` when it already started or was removed, `404` unknown, `403` another actor's. |
 | 8h | `DELETE /agent/queue/:messageId` | Remove a waiting message. Answers the queue; `410` / `404` / `403` as above. |
+| 8i | `POST /agent/queue/:messageId/interrupt` | Run a waiting message **now**: it moves to the head as an interrupt, any pause is lifted, and the running turn is cancelled for it. Answers the queue plus `interrupting` (the cancelled run) — or `runId` when nothing was running and it started at once. `410` / `404` / `403` as above. |
 | 9 | `DELETE /agent/threads/:id` | Soft-delete a thread. |
 | 10 | `POST /agent/threads/:id/fork-from/:messageId` | Fork a thread up to a message (regenerate / branch). |
+| 10b | `POST /agent/threads/:id/promote` | Keep a transient thread (one started with `POST /agent/chat { transient: true }`): it joins `GET /agent/threads`. `{ ok: true }`; `501` on a store without `promoteThread`. |
+| 10c | `DELETE /agent/threads/:id/from/:messageId` | Drop a message and everything after it — the "edit and resend" primitive. `{ ok: true }`. |
+| 10d | `GET /agent/skills?threadId=` | The skills this caller can invoke right now, scope-resolved — the same list the model is offered: `{ name, description, scope, shadows? }[]`. An empty list when no skills are configured. |
 | 11b | `GET /agent/quota` | `{ windows: [{ period, usedTokens?, limitTokens?, usedUsd, limitUsd?, resetsAt?, warnAt? }], blocked?, warning?: { period, ratio, reason? } }` — see [Budget windows](/docs/agent/governance/quota-and-cost#budget-windows). `usedTokens` is omitted for a USD-only budget; `warning` names the fullest window past its `warnAt` (never while `blocked`). A send while one is exhausted answers `429` `{ code: 'quota_exceeded', period, message }`. |
 | 11 | `GET /agent/config` | Server facts a client would otherwise repeat: `{ attachments: { enabled, upload, maxBytes, allowedContentTypes, maxPerMessage }, models: { enabled }, quota: { enforced }, identity: { anonymous } }` (what the React `useAgentConfig` reads). |
 | 12 | `GET /agent/approvals/mine` <span data-opt>optional</span> | The **calling actor's own** pending HITL approvals, oldest first. Query: `limit?` (default `50`, clamped to `200`). Mounts with `governanceQueries` but is **not** behind `governanceAuthorize` — it is always scoped to `actor.id`, so a non-admin surface (e.g. a coordinator's chat) can poll its own suspended tool calls even when the cross-actor read-model is ADMIN-only. |
@@ -265,17 +269,16 @@ Re-attach works because the default token sink buffers per run in process memory
 
 ## Consuming the stream
 
-The package ships the client. `@adonis-agora/agent/client` posts a turn, decodes the envelope above into typed frames, and re-attaches automatically when the connection drops; `@adonis-agora/agent/react` wraps it in a `useAgentChat` hook:
+The package ships both consumers. In React, `@adonis-agora/agent/react` is the whole layer — the provider, `useAgentChat`, the transcript model, the queue, approvals, attachments:
 
 ```tsx
-import { useAgentChat } from '@adonis-agora/agent/react'
+import { AgentProvider, useAgentChat } from '@adonis-agora/agent/react'
 
 function Chat() {
-  const { messages, status, error, send, cancel } = useAgentChat({ basePath: '/agent' })
-  // messages[].parts is ChatPart[] — text and component parts in emission order
+  const { transcript, composer, queue } = useAgentChat() // under <AgentProvider>
 }
 ```
 
-Both are covered in full — options, resume semantics, component frames, and the HITL calls the client deliberately leaves to you — in [Browser client & React](/docs/agent/browser-client).
+See [React](/docs/agent/react). Outside React, `@adonis-agora/agent/client` posts a turn, decodes the envelope above into typed frames, and re-attaches automatically when the connection drops — see [Browser client](/docs/agent/browser-client).
 
 For a non-JavaScript consumer, or a bespoke reader, the envelope above is the whole contract: read `text/event-stream`, dispatch on the `event:` name (`meta`, `error`, `done`), and read an unnamed event as an `AgentStreamEvent` dispatched on its `kind` — tolerating kinds you do not know. The NestJS library's React package works against this server as-is.

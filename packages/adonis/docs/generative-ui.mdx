@@ -270,58 +270,48 @@ The key facts a client relies on:
 
 ## Client side
 
-The package ships the consumer: `@adonis-agora/agent/client` decodes component frames out of the box, and `@adonis-agora/agent/react` folds them into message parts. You supply one thing — a **registry** mapping each `name` to the React component that renders its `data`.
+The server never sends markup, so you own every pixel. You supply one thing — a **registry** mapping each component name to the React component that renders its props.
 
-### 1. A component registry
+### In React
 
-The server never sends markup, so you own every pixel here.
+`@adonis-agora/agent/react/genui` draws pushed components with your renderers. Hand the registry to the provider once; every `ui` block of the transcript is then one `<GenerativeUI>`:
 
-```tsx title="app/registry.tsx"
-import type { ChatPart } from '@adonis-agora/agent/client'
-import { WeatherCard } from './components/WeatherCard'
-import { TrendChart } from './components/TrendChart'
+```tsx title="inertia/pages/chat.tsx"
+import { AgentProvider, useAgentChat } from '@adonis-agora/agent/react'
+import { GenerativeUI, type GenuiRegistry } from '@adonis-agora/agent/react/genui'
+import { WeatherCard } from '~/components/weather_card'
+import { TrendChart } from '~/components/trend_chart'
+import { catalog } from '#genui/catalog' // optional: the file the server uses — props are validated before drawing
 
-const REGISTRY: Record<string, React.ComponentType<{ data: any }>> = {
-  weather_card: ({ data }) => <WeatherCard {...data} />,
-  trend_chart: ({ data }) => <TrendChart series={data.series} unit={data.unit} />,
-}
+const registry: GenuiRegistry = { weather_card: WeatherCard, trend_chart: TrendChart }
 
-export function renderPart(part: ChatPart, key: number) {
-  if (part.type === 'text') return <p key={key}>{part.text}</p>
-  const Component = REGISTRY[part.name]
-  // Unknown name → render nothing (or a fallback). Never eval a server-supplied string.
-  return Component ? <Component key={key} data={part.data} /> : null
-}
-```
-
-### 2. Render the parts
-
-`useAgentChat` gives you a transcript whose assistant messages are already `ChatPart[]` — text and component parts, in emission order:
-
-```tsx title="app/Chat.tsx"
-import { useAgentChat } from '@adonis-agora/agent/react'
-import { renderPart } from './registry'
-
-export function Chat() {
-  const { messages, status, send } = useAgentChat({ basePath: '/agent' })
-
+export default function ChatPage() {
   return (
-    <div>
-      {messages.map((message) => (
-        <article key={message.id} data-role={message.role}>
-          {message.parts.map(renderPart)}
-        </article>
-      ))}
-    </div>
+    <AgentProvider genui={{ registry, catalog }}>
+      <Chat />
+    </AgentProvider>
   )
 }
+
+function Chat() {
+  const { transcript } = useAgentChat()
+  return transcript.items.map((item) => (
+    <article key={item.id} data-role={item.role}>
+      {item.blocks.map((block) => {
+        if (block.kind === 'text') return <p key={block.key}>{block.text}</p>
+        if (block.kind === 'ui') return <GenerativeUI key={block.key} part={block} />
+        return null
+      })}
+    </article>
+  ))
+}
 ```
 
-That is the whole client integration. The SSE parsing, the `ui` event decoding, the folding of consecutive text deltas into one part, and the re-attach on a dropped connection are all handled — see [Browser client & React](/docs/agent/browser-client).
+A component the registry does not know renders nothing (or your `fallback`) — a name is a lookup, never something to evaluate. A repeated `id` replaces the component in place, and a reloaded thread draws the same components from the message's persisted `ui` list. See [React](/docs/agent/react) for the rest of the hook.
 
 ### Without React
 
-The same decoding is available framework-free. `foldPart` is a pure reducer over the decoded frames:
+The framework-free client decodes the same frames into parts. `foldPart` is a pure reducer over them:
 
 ```ts
 import { createAgentChatClient } from '@adonis-agora/agent/client'
@@ -428,7 +418,8 @@ frameToEvents({ t: 'component', name: 'card', data: { a: 1 } }, 0)
 
 ## See also
 
-- [Browser client & React](/docs/agent/browser-client) — the shipped SSE client and the `useAgentChat` hook that decode these frames.
+- [React](/docs/agent/react) — the provider and `useAgentChat`, whose transcript carries these components as `ui` blocks.
+- [Browser client](/docs/agent/browser-client) — the framework-free SSE client that decodes the same frames.
 - [Tools](/docs/agent/authoring/tools) — how to author the tool that calls `emitComponent`, and the full `AiToolCtx`.
 - [Streaming & HTTP](/docs/agent/streaming-and-http) — the SSE envelope, the routes that carry component frames, and re-attaching to a live run.
 - [Redis streaming](/docs/agent/redis-streaming) — the multi-replica sink that replays component frames across pods.

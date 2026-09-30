@@ -361,6 +361,15 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
     return rows.map((row) => threadRowToSummary(row));
   }
 
+  async promoteThread(threadId: string): Promise<void> {
+    await this.init();
+    await this.db
+      .from(AGENT_TABLES.threads)
+      .where('id', threadId)
+      .where('transient', 1)
+      .update({ transient: 0, updated_at: Date.now() });
+  }
+
   async softDeleteThread(threadId: string): Promise<void> {
     await this.init();
     await this.db
@@ -582,6 +591,7 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
           ? null
           : safeJson(patch.attachments);
     }
+    if (patch.interrupt !== undefined) update.interrupt = patch.interrupt ? 1 : 0;
     const updated = await this.db.from(AGENT_TABLES.queuedMessages).where('id', id).update(update);
     return affectedRows(updated) > 0 ? this.getQueuedMessage(id) : null;
   }

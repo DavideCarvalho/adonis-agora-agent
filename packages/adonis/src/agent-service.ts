@@ -59,6 +59,11 @@ export interface ChatParams {
    * the answer(s) after that user message and starts a new run.
    */
   regenerate?: boolean;
+  /**
+   * When creating a thread (no `threadId`), start it transient — a scratch conversation left out of
+   * the thread list until {@link AgentService.promoteThread} keeps it. Ignored with a `threadId`.
+   */
+  transient?: boolean;
   /** What to do when the thread already has a turn running — see {@link ChatSendMode}. */
   mode?: ChatSendMode;
 }
@@ -362,6 +367,7 @@ export class AgentService {
       const created = await this.store.createThread({
         actor: params.actor,
         persona: params.personaId ?? this.deps.forAgent(agentName).defaultPersona,
+        ...(params.transient === true ? { transient: true } : {}),
       });
       threadId = created.id;
     }
@@ -545,6 +551,61 @@ export class AgentService {
       throw gone;
     }
     return queue.publish(current.threadId);
+  }
+
+  /**
+   * `POST <path>/queue/:messageId/interrupt` — run a waiting message NOW: it moves to the head of
+   * its queue as an interrupt, any pause is lifted, and the turn holding the thread is cancelled for
+   * it (the cancel settles into the queue, which starts it). With nothing running it starts at once.
+   *
+   * One request rather than "remove it, then send it again with `mode: 'interrupt'`", because a
+   * client cannot compose that safely: the message is lost if the second request fails, and runs
+   * twice if another tab's drain starts it in between. Here it never leaves the queue. Answers the
+   * queue, plus `interrupting` (the run that was cancelled) or `runId` (the run the message started
+   * under — its own id).
+   */
+  async interruptQueuedMessage(
+    messageId: string,
+  ): Promise<ChatQueueState & { runId?: string; interrupting?: string }> {
+    const queue = this.requireQueue();
+    const store = queue.queueStore();
+    const current = await store.getQueuedMessage(messageId);
+    if (current === null) {
+      throw new ChatQueueError(404, `queued message ${messageId} not found`);
+    }
+    const threadId = current.threadId;
+    const gone = () =>
+      new ChatQueueError(410, `queued message ${messageId} already started or was removed`);
+    const marked = await store.updateQueuedMessage(messageId, { interrupt: true });
+    if (marked === null) {
+      throw gone();
+    }
+    if (marked.interrupt !== true) {
+      // Cancelling for a message the store did not mark would pause the queue behind the cancel
+      // instead of starting it — refuse before anything is cancelled.
+      throw new ChatQueueError(
+        501,
+        'Interrupting a queued message requires a ChatQueueStore whose updateQueuedMessage stores `interrupt`; the bound store ignored it.',
+      );
+    }
+    if (!(await store.moveQueuedMessage(messageId, 0))) {
+      throw gone();
+    }
+    // A person choosing to run this now overrides whatever paused the queue.
+    await store.setQueuePause(threadId, null);
+    const { live } = await queue.holder(threadId, this.runner);
+    if (live !== null && live !== messageId && (await store.getQueuedMessage(messageId)) !== null) {
+      const state = await queue.publish(threadId);
+      await this.runner.cancel(live);
+      return { ...state, interrupting: live };
+    }
+    if (live !== null) {
+      // The drain started it while this request was on its way: it is the running turn already.
+      return { ...(await queue.state(threadId)), runId: messageId };
+    }
+    const runId = await queue.kick(threadId, this.runner);
+    const state = runId === undefined ? await queue.publish(threadId) : await queue.state(threadId);
+    return { ...state, ...(runId !== undefined ? { runId } : {}) };
   }
 
   /** `DELETE <path>/queue/:messageId` — drop a waiting message. Answers the thread's queue. */
@@ -896,6 +957,26 @@ export class AgentService {
 
   deleteThread(threadId: string): Promise<void> {
     return this.store.softDeleteThread(threadId);
+  }
+
+  /**
+   * Make a transient thread a regular one (listed by {@link listThreads}). `false` when the store
+   * cannot — it has no `promoteThread`.
+   */
+  async promoteThread(threadId: string): Promise<boolean> {
+    if (this.store.promoteThread === undefined) {
+      return false;
+    }
+    await this.store.promoteThread(threadId);
+    return true;
+  }
+
+  /**
+   * Drop a message and everything after it — the "edit and resend" primitive: the client then sends
+   * a fresh turn on the shortened thread.
+   */
+  truncateThreadFrom(threadId: string, messageId: string): Promise<void> {
+    return this.store.truncateFrom(threadId, messageId);
   }
 
   forkThread(threadId: string, fromMessageId: string): Promise<ThreadSummary> {

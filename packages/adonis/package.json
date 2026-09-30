@@ -141,6 +141,21 @@
       "import": "./dist/src/react/index.js",
       "default": "./dist/src/react/index.js"
     },
+    "./react/genui": {
+      "types": "./dist/src/react/genui/index.d.ts",
+      "import": "./dist/src/react/genui/index.js",
+      "default": "./dist/src/react/genui/index.js"
+    },
+    "./react/genui/json-render": {
+      "types": "./dist/src/react/genui/json-render.d.ts",
+      "import": "./dist/src/react/genui/json-render.js",
+      "default": "./dist/src/react/genui/json-render.js"
+    },
+    "./react/markdown": {
+      "types": "./dist/src/react/markdown.d.ts",
+      "import": "./dist/src/react/markdown.js",
+      "default": "./dist/src/react/markdown.js"
+    },
     "./genui": {
       "types": "./dist/src/genui/index.d.ts",
       "import": "./dist/src/genui/index.js",
@@ -190,6 +205,7 @@
     "@adonisjs/lucid": "^22.4.0",
     "@adonisjs/redis": "^9.2.0 || ^10.0.0 || ^11.0.0",
     "@dudousxd/nestjs-agent-core": ">=0.26.0 <1.0.0",
+    "@dudousxd/nestjs-agent-react": ">=0.28.0 <1.0.0",
     "@qdrant/js-client-rest": "^1.11.0",
     "ai": "^7.0.0",
     "node-sql-parser": "^5.3.0",
@@ -239,6 +255,9 @@
     "@dudousxd/nestjs-agent-core": {
       "optional": true
     },
+    "@dudousxd/nestjs-agent-react": {
+      "optional": true
+    },
     "@adonis-agora/media": {
       "optional": true
     }
@@ -252,17 +271,24 @@
     "@adonisjs/core": "7.5.2",
     "@adonisjs/lucid": "22.4.2",
     "@adonisjs/redis": "11.0.0",
-    "@dudousxd/nestjs-agent-core": "0.26.0",
+    "@ai-sdk/react": "^4.0.125",
+    "@dudousxd/nestjs-agent-core": "0.33.0",
+    "@dudousxd/nestjs-agent-react": "0.28.0",
     "@qdrant/js-client-rest": "1.19.0",
     "@tanstack/intent": "0.4.0",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
     "@types/node": "26.6.3",
     "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
     "ai": "7.0.102",
     "better-sqlite3": "13.0.3",
+    "jsdom": "30.1.1",
     "luxon": "3.7.2",
     "node-sql-parser": "5.4.0",
     "pg": "8.23.0",
     "react": "19.3.0",
+    "react-dom": "19.3.0",
     "typescript": "7.0.2",
     "vitest": "5.0.2",
     "zod": "4.6.5"

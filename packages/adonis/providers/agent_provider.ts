@@ -43,6 +43,7 @@ import {
   type ModelProvider,
   memoryForgetVerdict,
   offerMemories,
+  offerSkills,
   type PageContext,
   parseStreamCursor,
   pricingStores,
@@ -93,6 +94,8 @@ interface ChatBody {
   mode?: unknown;
   /** Shorthand for `mode: 'interrupt'`. */
   interrupt?: unknown;
+  /** Start a NEW thread transient (left out of `GET threads` until promoted). Ignored with `threadId`. */
+  transient?: unknown;
 }
 
 /** A send's `mode`, or `null` when it names none of the three. `interrupt: true` is `'interrupt'`. */
@@ -668,6 +671,7 @@ export default class AgentProvider {
           // A regenerate answers the stored user message; whatever `message` says is ignored.
           message: regenerate ? '' : body.message,
           ...(regenerate ? { regenerate: true } : {}),
+          ...(body.transient === true ? { transient: true } : {}),
           ...(typeof body.model === 'string' && body.model.length > 0 ? { model: body.model } : {}),
           ...(body.threadId !== undefined ? { threadId: body.threadId } : {}),
           ...(body.agent !== undefined ? { agentName: body.agent } : {}),
@@ -1052,6 +1056,16 @@ export default class AgentProvider {
         }),
       );
     });
+    // Run a waiting message now — the "send this one now" button on a queued bubble. Answers the
+    // queue plus `interrupting` (the run it cancelled) or `runId` (nothing was running; it started).
+    router.post(p('queue/:messageId/interrupt'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      const messageId = String(ctx.params.messageId);
+      if (!(await this.#ownsQueuedMessage(ctx, service, actor, messageId, governanceAuthorize)))
+        return;
+      return this.#queueAnswer(ctx, () => service.interruptQueuedMessage(messageId));
+    });
     router.delete(p('queue/:messageId'), async (ctx: HttpContext) => {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
@@ -1080,6 +1094,45 @@ export default class AgentProvider {
       const owner = await service.threadOwner(threadId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
       return ctx.response.json(await service.forkThread(threadId, String(ctx.params.messageId)));
+    });
+
+    // 10b. POST /agent/threads/:id/promote — keep a transient thread (it joins `GET threads`).
+    router.post(p('threads/:id/promote'), async (ctx: HttpContext) => {
+      const threadId = await this.#ownedThread(ctx, service, actorResolver, governanceAuthorize);
+      if (threadId === null) return;
+      if (!(await service.promoteThread(threadId))) {
+        return ctx.response.status(501).json({
+          message: 'Promoting a thread requires an AgentStore that implements promoteThread().',
+        });
+      }
+      return ctx.response.json({ ok: true });
+    });
+
+    // 10c. DELETE /agent/threads/:id/from/:messageId — drop a message and everything after it, the
+    // "edit and resend" primitive.
+    router.delete(p('threads/:id/from/:messageId'), async (ctx: HttpContext) => {
+      const threadId = await this.#ownedThread(ctx, service, actorResolver, governanceAuthorize);
+      if (threadId === null) return;
+      await service.truncateThreadFrom(threadId, String(ctx.params.messageId));
+      return ctx.response.json({ ok: true });
+    });
+
+    // 10d. GET /agent/skills?threadId= — the skills THIS caller can invoke right now, scope-resolved:
+    // the same list the model is offered, built by the same call, so what a composer suggests after
+    // a `/` and what the agent can reach cannot drift apart. No skills configured → an empty list.
+    // `threadId` only ever reaches the host's own resolver and provider; nothing here reads the
+    // thread, so an unknown id widens nothing.
+    const skills = config.skills;
+    router.get(p('skills'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (actor === null) return;
+      if (skills === undefined) return ctx.response.json([]);
+      const threadId = ctx.request.qs().threadId;
+      const offer = await offerSkills(skills, {
+        actor,
+        threadId: typeof threadId === 'string' ? threadId : '',
+      });
+      return ctx.response.json(offer.entries);
     });
 
     // 11. GET /agent/memories + DELETE /agent/memories/:id — what the assistant believes about THIS
