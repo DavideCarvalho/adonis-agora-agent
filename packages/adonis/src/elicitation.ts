@@ -137,6 +137,11 @@ export interface ElicitationReply {
   skipped?: boolean;
   /** Opaque ref of WHO answered, when it wasn't the run's own actor. */
   answeredByRef?: string;
+  /**
+   * The surface the answer came through — `'web'`, `'slack'`, `'console'`, … — the counterpart of
+   * an approval's `decidedVia`.
+   */
+  answeredVia?: string;
 }
 
 /** A settled elicitation: what the agent proceeds on, and how it got there. */
@@ -146,6 +151,13 @@ export interface ElicitationOutcome {
   skipped: boolean;
   /** Question ids filled from the request's `defaults` rather than by the human. */
   defaulted: string[];
+  /**
+   * Who answered (or skipped) — the reply's `answeredByRef` (the answering actor's id). The
+   * counterpart of an approval's `decidedBy`. Absent when the reply did not say.
+   */
+  answeredBy?: string;
+  /** The surface it came through (`'web'`, `'slack'`, …) — an approval's `decidedVia`. */
+  answeredVia?: string;
 }
 
 /**
@@ -173,10 +185,12 @@ export function normalizeElicitationReply(reply: HumanReply): ElicitationReply {
     return reply as ElicitationReply;
   }
   const answeredByRef = candidate.answeredByRef ?? candidate.executedByRef;
+  const answeredVia = candidate.answeredVia ?? candidate.decidedVia;
   return {
     answers: {},
     ...(candidate.approved === false || candidate.skipped === true ? { skipped: true } : {}),
     ...(answeredByRef !== undefined ? { answeredByRef } : {}),
+    ...(answeredVia !== undefined ? { answeredVia } : {}),
   };
 }
 
@@ -214,7 +228,13 @@ export function resolveElicitation(args: {
     );
     answers[question.id] = question.multiple === true ? valid : valid.slice(0, 1);
   }
-  return { answers, skipped: reply.skipped === true, defaulted };
+  return {
+    answers,
+    skipped: reply.skipped === true,
+    defaulted,
+    ...(reply.answeredByRef !== undefined ? { answeredBy: reply.answeredByRef } : {}),
+    ...(reply.answeredVia !== undefined ? { answeredVia: reply.answeredVia } : {}),
+  };
 }
 
 /**

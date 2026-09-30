@@ -17,6 +17,7 @@ import {
   AgentService,
   AgentSseEncoder,
   type AgentStore,
+  ALL_AGENTS,
   AnonymousActorResolver,
   AttachmentRefusedError,
   type AttachmentStagingStore,
@@ -45,6 +46,7 @@ import {
   type QuotaProvider,
   type QuotaStore,
   REQUESTER_APPROVER,
+  RegenerateNeedsThreadError,
   type Retriever,
   type RolesPolicy,
   registerDelegateTools,
@@ -70,8 +72,16 @@ interface ChatBody {
   pageContext?: PageContext;
   /** Uploads to attach, by id alone: `[{ mediaId }]` (anything else is refused with `400`). */
   attachments?: unknown;
-  /** Run this turn on a catalog model (see `GET models`) instead of the thread's pinned one. */
+  /**
+   * Run THIS turn on a catalog model (see `GET models`) instead of the thread's pinned one. Never
+   * stored on the thread: `PATCH threads/:id { model }` is the only pin.
+   */
   model?: string;
+  /**
+   * `true` → answer the thread's last user message again: requires `threadId`, ignores `message`,
+   * stores no user message, drops the answer(s) after it, starts a new run.
+   */
+  regenerate?: unknown;
 }
 
 /** The catalog a model provider carries (`aiSdkModels(…).catalog`), if it carries one. */
@@ -252,7 +262,12 @@ export default class AgentProvider {
         ? undefined
         : isQuotaProvider(config.quota)
           ? config.quota
-          : new LedgerQuotaProvider(store, undefined, config.quota.limits);
+          : new LedgerQuotaProvider(
+              store,
+              undefined,
+              config.quota.limits,
+              config.quota.warnAt !== undefined ? { warnAt: config.quota.warnAt } : {},
+            );
     const pricingStore = await this.#resolvePricing(config);
     // Governance read-model is resolved after pricing so the Lucid read-model prices its rollups
     // against the same live prices the loop's cost fold uses.
@@ -561,15 +576,24 @@ export default class AgentProvider {
         const owner = await service.threadOwner(body.threadId);
         if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
       }
+      const regenerate = body.regenerate === true;
+      if (regenerate && body.threadId === undefined) {
+        return ctx.response.badRequest({
+          message: 'regenerate requires an existing threadId',
+          code: 'thread_required',
+        });
+      }
       const refs = attachmentRefs(body.attachments);
       if (typeof refs === 'string') {
-        return ctx.response.badRequest({ error: refs });
+        return ctx.response.badRequest({ message: refs });
       }
       let started: { runId: string; threadId: string };
       try {
         started = await service.chat({
           actor,
-          message: body.message,
+          // A regenerate answers the stored user message; whatever `message` says is ignored.
+          message: regenerate ? '' : body.message,
+          ...(regenerate ? { regenerate: true } : {}),
           ...(typeof body.model === 'string' && body.model.length > 0 ? { model: body.model } : {}),
           ...(body.threadId !== undefined ? { threadId: body.threadId } : {}),
           ...(body.agent !== undefined ? { agentName: body.agent } : {}),
@@ -579,10 +603,13 @@ export default class AgentProvider {
         });
       } catch (error) {
         if (error instanceof AttachmentRefusedError) {
-          return ctx.response.status(error.status).json({ error: error.message });
+          return ctx.response.status(error.status).json({ message: error.message });
         }
         if (error instanceof ModelNotAllowedError) {
-          return ctx.response.badRequest({ error: error.message });
+          return ctx.response.badRequest({ message: error.message, code: 'model_not_allowed' });
+        }
+        if (error instanceof RegenerateNeedsThreadError) {
+          return ctx.response.badRequest({ message: error.message, code: 'thread_required' });
         }
         if (error instanceof QuotaBlockedError) {
           return ctx.response.status(429).json({
@@ -608,7 +635,7 @@ export default class AgentProvider {
       // Nothing buffered under the run — it ended while the client was away, or its buffer went with
       // a restarted process. A 404 reads as "nothing to resume"; subscribing would wait forever.
       if (!(await service.hasStream(runId))) {
-        return ctx.response.notFound({ error: 'Nothing is streaming under that run.' });
+        return ctx.response.notFound({ message: 'Nothing is streaming under that run.' });
       }
       // `?after=<seq>` (or the `Last-Event-ID` a browser EventSource sends on its own) skips the
       // events a reconnecting client already has; `after` wins when both are present.
@@ -647,7 +674,7 @@ export default class AgentProvider {
       const via = decisionVia(body.via);
       if (remember === null || via === null) {
         return ctx.response.badRequest({
-          error: `remember must be a boolean and via a string of 1-${MAX_VIA_LENGTH} characters`,
+          message: `remember must be a boolean and via a string of 1-${MAX_VIA_LENGTH} characters`,
         });
       }
       const runId = await this.#runOfToolCall(ctx, service, body);
@@ -673,7 +700,7 @@ export default class AgentProvider {
       const via = decisionVia(body.via);
       if (via === null) {
         return ctx.response.badRequest({
-          error: `via must be a string of 1-${MAX_VIA_LENGTH} characters`,
+          message: `via must be a string of 1-${MAX_VIA_LENGTH} characters`,
         });
       }
       const runId = await this.#runOfToolCall(ctx, service, body);
@@ -696,7 +723,14 @@ export default class AgentProvider {
         runId?: string;
         toolCallId: string;
         answers?: Record<string, string[]>;
+        via?: unknown;
       };
+      const via = decisionVia(body.via);
+      if (via === null) {
+        return ctx.response.badRequest({
+          message: `via must be a string of 1-${MAX_VIA_LENGTH} characters`,
+        });
+      }
       const runId = await this.#runOfToolCall(ctx, service, body);
       if (runId === null) return;
       const owner = await service.runOwner(runId);
@@ -705,7 +739,7 @@ export default class AgentProvider {
       // the person who typed it hears why — rather than signalled and quietly dropped by the loop.
       const problem = await service.answerProblem(body.toolCallId, body.answers ?? {});
       if (problem !== null) {
-        return ctx.response.badRequest({ error: problem });
+        return ctx.response.badRequest({ message: problem });
       }
       try {
         await service.answer({
@@ -713,6 +747,7 @@ export default class AgentProvider {
           toolCallId: body.toolCallId,
           answers: body.answers ?? {},
           answeredByRef: actor.id,
+          answeredVia: via,
         });
       } catch (error) {
         return this.#conflictOnMismatch(ctx, error);
@@ -725,7 +760,17 @@ export default class AgentProvider {
     router.post(p('tool-call/skip'), async (ctx: HttpContext) => {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
-      const body = (ctx.request.body() ?? {}) as { runId?: string; toolCallId: string };
+      const body = (ctx.request.body() ?? {}) as {
+        runId?: string;
+        toolCallId: string;
+        via?: unknown;
+      };
+      const via = decisionVia(body.via);
+      if (via === null) {
+        return ctx.response.badRequest({
+          message: `via must be a string of 1-${MAX_VIA_LENGTH} characters`,
+        });
+      }
       const runId = await this.#runOfToolCall(ctx, service, body);
       if (runId === null) return;
       const owner = await service.runOwner(runId);
@@ -735,6 +780,7 @@ export default class AgentProvider {
           runId,
           toolCallId: body.toolCallId,
           answeredByRef: actor.id,
+          answeredVia: via,
         });
       } catch (error) {
         return this.#conflictOnMismatch(ctx, error);
@@ -758,12 +804,12 @@ export default class AgentProvider {
       const threadId = await service.threadOfMessage(messageId);
       if (threadId === undefined) {
         return ctx.response.status(501).json({
-          error:
+          message:
             'Message feedback requires an AgentStore that implements threadOfMessage() and setMessageFeedback().',
         });
       }
       if (threadId === null) {
-        return ctx.response.notFound({ error: 'message not found' });
+        return ctx.response.notFound({ message: 'message not found' });
       }
       const owner = await service.threadOwner(threadId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'thread', undefined))) return;
@@ -773,7 +819,7 @@ export default class AgentProvider {
         ...(body.comment !== undefined ? { comment: body.comment } : {}),
       });
       if (!result.ok) {
-        return ctx.response.status(result.status).json({ error: result.error });
+        return ctx.response.status(result.status).json({ message: result.error });
       }
       return ctx.response.json({ feedback: result.feedback });
     });
@@ -790,17 +836,23 @@ export default class AgentProvider {
     router.get(p('agents'), async (ctx: HttpContext) => {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
-      return ctx.response.json(service.listAgents());
+      return ctx.response.json(await service.listAgents(actor));
     });
 
     // 6b. GET /agent/tools?agent= — the tools this caller can reach through an agent, with how a chat
     // surface should talk about each (`presentation`). The same list the model is offered; nothing the
     // caller passes widens it — `agent` only narrows to that agent's allow-list, and an unknown name is
-    // a 404 rather than the widest answer (no allow-list at all).
+    // a 404 rather than the widest answer (no allow-list at all). `?agent=*` is the union across every
+    // agent: each tool this caller reaches through any of them, once, under the same gates.
     router.get(p('tools'), async (ctx: HttpContext) => {
       const agent = ctx.request.qs().agent as string | undefined;
+      if (agent === ALL_AGENTS) {
+        const actor = await this.#resolveActor(ctx, actorResolver);
+        if (actor === null) return;
+        return ctx.response.json(await service.toolCatalogForAllAgents(actor));
+      }
       if (agent !== undefined && agent !== defaultAgentName && agents.get(agent) === undefined) {
-        return ctx.response.notFound({ error: `No agent named "${agent}"` });
+        return ctx.response.notFound({ message: `No agent named "${agent}"` });
       }
       const actor = await this.#resolveActor(
         ctx,
@@ -840,20 +892,20 @@ export default class AgentProvider {
       if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
       const body = (ctx.request.body() ?? {}) as { title?: unknown; model?: unknown };
       if (body.model !== undefined && body.model !== null && typeof body.model !== 'string') {
-        return ctx.response.badRequest({ error: 'model must be a string or null' });
+        return ctx.response.badRequest({ message: 'model must be a string or null' });
       }
       if (body.model !== undefined) {
         try {
           const pinned = await service.setThreadModel(actor, threadId, body.model as string | null);
           if (!pinned) {
             return ctx.response.status(501).json({
-              error:
+              message:
                 "Pinning a thread's model requires an AgentStore that implements updateThread().",
             });
           }
         } catch (error) {
           if (error instanceof ModelNotAllowedError) {
-            return ctx.response.badRequest({ error: error.message });
+            return ctx.response.badRequest({ message: error.message });
           }
           throw error;
         }
@@ -861,7 +913,7 @@ export default class AgentProvider {
       if (body.title !== undefined) {
         const title = typeof body.title === 'string' ? body.title.trim() : '';
         if (title.length === 0 || title.length > 200) {
-          return ctx.response.badRequest({ error: 'title must be a string of 1-200 characters' });
+          return ctx.response.badRequest({ message: 'title must be a string of 1-200 characters' });
         }
         await service.renameThread(threadId, title);
       }
@@ -925,16 +977,16 @@ export default class AgentProvider {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
       if (memory === undefined) {
-        return ctx.response.notFound({ error: 'No memory is configured in this deployment.' });
+        return ctx.response.notFound({ message: 'No memory is configured in this deployment.' });
       }
       const id = String(ctx.params.id);
       const entry = (await everyMemoryOf(actor)).entries.find((candidate) => candidate.id === id);
       if (entry === undefined) {
-        return ctx.response.notFound({ error: `No memory with id "${id}".` });
+        return ctx.response.notFound({ message: `No memory with id "${id}".` });
       }
       const verdict = memoryForgetVerdict({ record: entry, actor });
       if (!verdict.allowed) {
-        return ctx.response.forbidden({ error: verdict.reason });
+        return ctx.response.forbidden({ message: verdict.reason });
       }
       return ctx.response.json({
         forgotten: await memory.provider.forget({ id: entry.id, ctx: { actor, threadId: '' } }),
@@ -983,20 +1035,20 @@ export default class AgentProvider {
         if (actor === null) return;
         const file = ctx.request.file('file');
         if (file === null || file.tmpPath === undefined) {
-          return ctx.response.status(400).json({ error: 'multipart field "file" is required' });
+          return ctx.response.status(400).json({ message: 'multipart field "file" is required' });
         }
         const contentType =
           file.headers?.['content-type']?.split(';')[0]?.trim() ?? `${file.type}/${file.subtype}`;
         if (!allowedContentTypes.includes(contentType)) {
           return ctx.response.status(415).json({
-            error: `content type "${contentType}" is not allowed (allowed: ${allowedContentTypes.join(', ')})`,
+            message: `content type "${contentType}" is not allowed (allowed: ${allowedContentTypes.join(', ')})`,
           });
         }
         const sizeBytes = file.size;
         if (sizeBytes > maxBytes) {
           return ctx.response
             .status(413)
-            .json({ error: `file exceeds the ${maxBytes}-byte limit` });
+            .json({ message: `file exceeds the ${maxBytes}-byte limit` });
         }
         const { readFile } = await import('node:fs/promises');
         const data = await readFile(file.tmpPath);
@@ -1126,7 +1178,7 @@ export default class AgentProvider {
         if (gov.threadDetail === undefined) {
           return ctx.response
             .status(501)
-            .json({ error: 'this governance adapter does not support thread detail' });
+            .json({ message: 'this governance adapter does not support thread detail' });
         }
         const detail = await withActorLabel(
           await gov.threadDetail(String(ctx.params.id)),
@@ -1258,7 +1310,7 @@ export default class AgentProvider {
             typeof body.outputPricePer1m !== 'number'
           ) {
             return ctx.response.status(400).json({
-              error:
+              message:
                 'body must be {modelId: string, inputPricePer1m: number, outputPricePer1m: number, cacheWritePricePer1m?: number, cacheReadPricePer1m?: number}',
             });
           }
@@ -1289,7 +1341,7 @@ export default class AgentProvider {
     try {
       const actor = await actorResolver.resolve(ctx);
       if (actor === null || actor === undefined) {
-        ctx.response.status(401).json({ error: 'unauthorized' });
+        ctx.response.status(401).json({ message: 'unauthorized', code: 'unauthorized' });
         return null;
       }
       return actor;
@@ -1298,9 +1350,10 @@ export default class AgentProvider {
       // in production, every request here is untrusted by definition, so the detail stays server-side
       // (dev/test keeps it, matching `evaluateDashboardGate`/`evaluateGovernanceGate`'s `debug` knob).
       const debug = !this.app.inProduction;
-      ctx.response
-        .status(401)
-        .json({ error: debug && error instanceof Error ? error.message : 'unauthorized' });
+      ctx.response.status(401).json({
+        message: debug && error instanceof Error ? error.message : 'unauthorized',
+        code: 'unauthorized',
+      });
       return null;
     }
   }
@@ -1325,7 +1378,7 @@ export default class AgentProvider {
       !this.app.inProduction,
     );
     if (!verdict.ok) {
-      ctx.response.status(verdict.status).json({ error: verdict.error });
+      ctx.response.status(verdict.status).json({ message: verdict.error });
       return null;
     }
     return actor;
@@ -1356,7 +1409,7 @@ export default class AgentProvider {
     const verdict = evaluateOwnership(actor.id, ownerRef, privileged);
     if (!verdict.ok) {
       const error = verdict.status === 404 ? `${kind} not found` : 'forbidden';
-      ctx.response.status(verdict.status).json({ error });
+      ctx.response.status(verdict.status).json({ message: error });
       return false;
     }
     return true;
@@ -1382,7 +1435,7 @@ export default class AgentProvider {
     const runId =
       typeof body.toolCallId === 'string' ? await service.toolCallRun(body.toolCallId) : null;
     if (runId === null) {
-      ctx.response.notFound({ error: 'Unknown tool call.' });
+      ctx.response.notFound({ message: 'Unknown tool call.' });
       return null;
     }
     return runId;
@@ -1412,11 +1465,11 @@ export default class AgentProvider {
       if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return false;
     } else {
       if (owner === null) {
-        ctx.response.notFound({ error: 'Unknown run.' });
+        ctx.response.notFound({ message: 'Unknown run.' });
         return false;
       }
       if (!(await service.mayDecide(actor, { toolCallId, approver, requesterRef: owner }))) {
-        ctx.response.forbidden({ error: `This approval is for ${approver}.` });
+        ctx.response.forbidden({ message: `This approval is for ${approver}.` });
         return false;
       }
     }
@@ -1427,7 +1480,9 @@ export default class AgentProvider {
           approval.expiresAt !== null &&
           Date.parse(approval.expiresAt) <= Date.now()));
     if (lapsed) {
-      ctx.response.gone({ error: `The approval request for tool call ${toolCallId} has expired.` });
+      ctx.response.gone({
+        message: `The approval request for tool call ${toolCallId} has expired.`,
+      });
       return false;
     }
     return true;
@@ -1437,7 +1492,7 @@ export default class AgentProvider {
     if (!(error instanceof HumanReplyMismatchError)) {
       throw error;
     }
-    ctx.response.conflict({ error: error.message });
+    ctx.response.conflict({ message: error.message });
   }
 
   /**

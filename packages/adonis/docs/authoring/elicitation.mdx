@@ -88,7 +88,11 @@ Both surfaces:
 - emit the same `elicitation` stream frame, carrying the whole request **and the `runId` to answer it against**;
 - park on the same `tool:<runId>:<callId>` signal a HITL approval already waits on.
 
-`POST /agent/tool-call/answer` and `/skip` mirror `approve`/`reject`, with the same ownership check.
+`POST /agent/tool-call/answer` and `/skip` mirror `approve`/`reject`, with the same ownership check,
+and take `via?` (the surface the answer came through, 1–64 characters, `'web'` when omitted). The
+settled outcome — streamed as the call's `tool-output` and persisted as its result — carries
+`answeredBy` (the answering actor's id) and `answeredVia`, the counterparts of an approval's
+`decidedBy` / `decidedVia`.
 `AgentLoopHooks.awaitAnswers` is optional: a host that only implemented `awaitApproval` still
 completes an elicitation, reading approve as "confirmed the pre-picked answers" and reject as
 "skipped".

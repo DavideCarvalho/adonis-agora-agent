@@ -2250,16 +2250,37 @@ export async function runAgentLoop<TOutput = unknown>(
   // Attachments arrive already staged (the upload route + AttachmentStagingStore turned bytes into a
   // model-fetchable url), so persisting them here is a plain field write — no IO to wrap in a step.
   // The multimodal content parts are built by the model adapter at turn time from the url.
-  await hooks.step('persist:user', () =>
-    deps.store.appendMessage({
-      threadId: input.threadId,
-      role: 'user',
-      content: input.userText,
-      runId: hooks.runId,
-      ...(persona !== undefined ? { persona: persona.id } : {}),
-      ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
-    }),
-  );
+  if (input.regenerate === true) {
+    // Answer the last exchange again: drop every message after the thread's last user message
+    // (keeping it), then answer it. No user message is appended. Its own step name, so a run that
+    // is not a regenerate journals exactly what it always did.
+    await hooks.step('regenerate:truncate', async () => {
+      const existing = await deps.store.getThread(input.threadId);
+      const messages = existing?.messages ?? [];
+      let lastUserIndex = -1;
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        if (messages[index]?.role === 'user') {
+          lastUserIndex = index;
+          break;
+        }
+      }
+      const firstDropped = messages[lastUserIndex + 1];
+      if (firstDropped !== undefined) {
+        await deps.store.truncateFrom(input.threadId, firstDropped.id);
+      }
+    });
+  } else {
+    await hooks.step('persist:user', () =>
+      deps.store.appendMessage({
+        threadId: input.threadId,
+        role: 'user',
+        content: input.userText,
+        runId: hooks.runId,
+        ...(persona !== undefined ? { persona: persona.id } : {}),
+        ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
+      }),
+    );
+  }
 
   const thread = threadForTurn(
     await hooks.step<RecordedThreadLoad | null>('load:thread', () =>

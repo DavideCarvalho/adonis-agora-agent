@@ -153,7 +153,7 @@ export default class DashboardProvider {
         return;
       const segments = safeAssetSegments(ctx.params['*']);
       if (segments === null) {
-        return ctx.response.status(400).json({ error: 'bad asset path' });
+        return ctx.response.status(400).json({ message: 'bad asset path' });
       }
       await this.#sendAsset(ctx, segments, apiBase, mount);
     });

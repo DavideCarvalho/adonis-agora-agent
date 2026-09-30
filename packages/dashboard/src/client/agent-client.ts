@@ -126,7 +126,9 @@ export class AgentClient {
 
   /** Today's window of `GET /agent/quota` — the caller's token spend so far today. */
   async quotaToday(): Promise<QuotaToday> {
-    const report = await this.get<{ windows?: { period: string; usedTokens: number }[] }>('/quota');
+    const report = await this.get<{ windows?: { period: string; usedTokens?: number }[] }>(
+      '/quota',
+    );
     const day = report.windows?.find((window) => window.period === 'day');
     return { usedTokens: day?.usedTokens ?? 0 };
   }

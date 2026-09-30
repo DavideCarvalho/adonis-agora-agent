@@ -71,6 +71,12 @@ export type ToolResultView =
   | { kind: 'elsewhere' };
 
 /**
+ * `GET <base>/tools?agent=*`: every tool the actor reaches through ANY agent, each once — for a
+ * surface that shows several agents' conversations.
+ */
+export const ALL_AGENTS = '*';
+
+/**
  * One tool as `GET <base>/tools` reports it: the tools THIS actor may be offered by the chosen agent,
  * with how each is spoken about. `presentation` is absent for a tool that declared none — a client
  * then narrates it generically rather than falling back to its name.

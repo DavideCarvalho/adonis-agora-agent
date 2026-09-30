@@ -19,11 +19,13 @@ export default defineConfig({
 })
 ```
 
-`GET /agent/quota` reports every window — `{ windows: [{ period, usedTokens, limitTokens?, usedUsd, limitUsd?, resetsAt }], blocked?: { period, reason } }` — and while one is exhausted `POST /agent/chat` answers `429` `{ code: 'quota_exceeded', period, message }` before the turn starts, so no tokens are spent. That is the shape `@dudousxd/nestjs-agent-react`'s `useQuota` renders, and `GET /agent/config` says `quota.enforced: true`.
+`GET /agent/quota` reports every window — `{ windows: [{ period, usedTokens?, limitTokens?, usedUsd, limitUsd?, resetsAt, warnAt? }], blocked?: { period, reason }, warning?: { period, ratio, reason? } }` — and while one is exhausted `POST /agent/chat` answers `429` `{ code: 'quota_exceeded', period, message }` before the turn starts, so no tokens are spent. That is the shape `@dudousxd/nestjs-agent-react`'s `useQuota` renders, and `GET /agent/config` says `quota.enforced: true`.
 
 Without `quota`, `GET /agent/quota` still reports the day and month windows off the ledger — no ceilings, never blocked. For a public (anonymous) deployment that means unbounded model spend, so set limits there; they apply per actor, which is per browser in anonymous mode.
 
-A budget of your own — an AI-gateway spend cap, a plan's allowance — is a `QuotaProvider` (`report({ actor, now? })`) passed as `quota`; its `blocked` gates sends the same way.
+**Soft limit.** `quota: { limits, warnAt: 0.8 }` stamps `warnAt` on every ledger window that has a ceiling; past that share of it the report carries `warning: { period, ratio }` — the fullest such window, never while one is `blocked` — so a client can say "80% of today's budget used" before the send that gets refused. `quotaWarning(windows)` derives the same value from any report.
+
+A budget of your own — an AI-gateway spend cap, a plan's allowance — is a `QuotaProvider` (`report({ actor, now? })`) passed as `quota`; its `blocked` gates sends the same way. A USD-only budget leaves `usedTokens` (and `limitTokens`) out of its windows rather than sending `0`; `exhaustedWindow` reads a missing `usedTokens` as `0`.
 
 Spend is what the usage rows recorded, i.e. the provider-reported cost (a gateway): a `usd` ceiling only binds where cost is reported. The month window needs a store with `usageBetween` (Lucid and in-memory have it).
 

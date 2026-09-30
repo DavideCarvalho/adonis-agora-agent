@@ -24,9 +24,23 @@ export interface ModelCatalogProviderGroup {
   models: ModelCatalogEntry[];
 }
 
+/** The agent always runs on one model: the picker shows it and offers no choice. */
+export interface ModelCatalogLock {
+  /** The catalog id every turn runs on. */
+  model: string;
+  /** Why, in words a picker can show ("This assistant always uses GPT-5"). */
+  reason?: string;
+}
+
 /** What `GET <base>/models` answers. */
 export interface ModelCatalogView {
   providers: ModelCatalogProviderGroup[];
+  /**
+   * Present when the agent is locked to one model. Every turn runs on `locked.model` — a send's own
+   * `model` and a thread's pin included — and a send naming another model is refused (`400`). List
+   * the other models as unavailable too, so an older client that ignores the lock cannot pick them.
+   */
+  locked?: ModelCatalogLock;
   /** The model a turn runs on when nobody picked one; `null` when the provider decides. */
   default: string | null;
 }

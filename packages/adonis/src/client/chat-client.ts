@@ -11,7 +11,15 @@ export interface AgentChatRequestBody {
   agent?: string;
   persona?: string;
   pageContext?: { kind?: string; [key: string]: unknown };
+  /** Uploads named by id alone (`POST <base>/attachments` answered them). */
   attachments?: unknown[];
+  /** Run THIS turn on a catalog model (`GET <base>/models`). Never pins it on the thread. */
+  model?: string;
+  /**
+   * Answer the thread's last user message again (needs `threadId`; `message` is ignored): the
+   * server drops the old answer and streams a new one under a new run.
+   */
+  regenerate?: true;
 }
 
 /** Options for {@link createAgentChatClient}. */
@@ -81,6 +89,49 @@ export class AgentChatDisconnectedError extends Error {
     this.threadId = threadId;
     this.parts = parts;
   }
+}
+
+/**
+ * The server refused the request before any stream started — a non-2xx answer. `message` is the
+ * server's own words (`{ message, code? }`, the body every refusal answers), `code` its
+ * machine-readable reason (`quota_exceeded`, `model_not_allowed`, `thread_required`, …) and `body`
+ * the parsed answer, or `undefined` when it was not JSON.
+ */
+export class AgentChatHttpError extends Error {
+  readonly status: number;
+  readonly code: string | undefined;
+  readonly body: unknown;
+  constructor(status: number, message: string, code: string | undefined, body: unknown) {
+    super(message);
+    this.name = 'AgentChatHttpError';
+    this.status = status;
+    this.code = code;
+    this.body = body;
+  }
+}
+
+/** Read a refused response into an {@link AgentChatHttpError}, keeping the server's words. */
+async function httpError(response: Response): Promise<AgentChatHttpError> {
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = undefined;
+  }
+  const record = (typeof body === 'object' && body !== null ? body : {}) as {
+    message?: unknown;
+    code?: unknown;
+  };
+  const message =
+    typeof record.message === 'string' && record.message.length > 0
+      ? record.message
+      : `Failed to start agent chat (HTTP ${response.status}).`;
+  return new AgentChatHttpError(
+    response.status,
+    message,
+    typeof record.code === 'string' ? record.code : undefined,
+    body,
+  );
 }
 
 /**
@@ -258,8 +309,11 @@ export function createAgentChatClient(options: AgentChatClientOptions = {}): Age
       headers: headers({ 'Content-Type': 'application/json', Accept: 'text/event-stream' }),
       body: JSON.stringify(body),
     });
-    if (!response.ok || !response.body) {
-      throw new Error(`Failed to start agent chat (HTTP ${response.status}).`);
+    if (!response.ok) {
+      throw await httpError(response);
+    }
+    if (!response.body) {
+      throw new Error(`Failed to start agent chat (HTTP ${response.status}): no response body.`);
     }
     // The provider sets these before any byte; capture the runId now so a mid-stream drop (before the
     // `meta` frame) can still re-attach.

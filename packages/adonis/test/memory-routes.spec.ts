@@ -143,8 +143,8 @@ describe('what the assistant believes about you, and how you take it back', () =
       ...asActor('u1'),
     });
     expect(response.status).toBe(403);
-    const body = (await response.json()) as { error?: string };
-    expect(String(body.error)).toContain('administrative action');
+    const body = (await response.json()) as { message?: string };
+    expect(String(body.message)).toContain('administrative action');
     expect(provider.forgotten).toEqual([]);
   });
 

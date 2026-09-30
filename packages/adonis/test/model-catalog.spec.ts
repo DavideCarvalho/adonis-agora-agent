@@ -52,7 +52,8 @@ describe('model catalog', () => {
     const unavailable = await send(url, { message: 'hi', model: 'big' });
     expect(unavailable.status).toBe(400);
     expect(await unavailable.json()).toEqual({
-      error: 'model "big" is not available: Upgrade to Pro',
+      message: 'model "big" is not available: Upgrade to Pro',
+      code: 'model_not_allowed',
     });
     expect((await send(url, { message: 'hi', model: 'nope' })).status).toBe(400);
   });
