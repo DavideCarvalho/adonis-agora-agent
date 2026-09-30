@@ -147,11 +147,41 @@ export class ToolRegistry {
  * an anonymous visitor included. `action` tools still park on approval regardless.
  */
 export class DefaultRolesPolicy implements RolesPolicy {
-  constructor(private readonly defaultRoles: string[] = []) {}
+  private readonly emptyRoles: EmptyRoles;
+
+  constructor(
+    private readonly defaultRoles: string[] = [],
+    options: RolesPolicyOptions = {},
+  ) {
+    this.emptyRoles = options.emptyRoles ?? 'allow';
+  }
 
   can(actor: Actor, tool: ToolSpec): boolean {
     const allowed = tool.roles ?? this.defaultRoles;
-    if (allowed.length === 0) return true;
+    if (allowed.length === 0) return this.emptyRoles === 'allow';
     return (actor.roles ?? []).some((role) => allowed.includes(role));
+  }
+}
+
+/**
+ * What an empty roles list means to {@link DefaultRolesPolicy}: `'allow'` (the default) — no
+ * restriction; `'deny'` — nobody.
+ */
+export type EmptyRoles = 'allow' | 'deny';
+
+export interface RolesPolicyOptions {
+  /** What an empty roles list means. Default `'allow'`. */
+  emptyRoles?: EmptyRoles;
+}
+
+/**
+ * The closed gate — {@link DefaultRolesPolicy} with `emptyRoles: 'deny'`: the actor needs a role the
+ * tool declares (else one of the default roles). A tool with no `roles` and no default roles, or with
+ * an explicitly empty list, reaches nobody. For apps where an empty list means "no one" — a computed
+ * `roles` that can come out empty, a multi-tenant MCP surface.
+ */
+export class ClosedRolesPolicy extends DefaultRolesPolicy {
+  constructor(defaultRoles: string[] = []) {
+    super(defaultRoles, { emptyRoles: 'deny' });
   }
 }

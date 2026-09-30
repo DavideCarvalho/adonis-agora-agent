@@ -45,6 +45,11 @@ export default defineMcpConfig({
   // requests are rejected 401.
   // actor: { id: 'mcp', roles: ['ADMIN'] },
 
+  // Roles a tool requires when it declares none (default ['ADMIN']). An empty list is open unless
+  // emptyRoles is 'deny', which makes it reach nobody.
+  // defaultRoles: ['ADMIN'],
+  // emptyRoles: 'deny',
+
   // Restrict the exposed tools to an allow-list by name.
   // allowedTools: ['calcular_estatisticas', 'estatistica_inferencial'],
 })

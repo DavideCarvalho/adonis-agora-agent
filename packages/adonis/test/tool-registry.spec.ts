@@ -4,7 +4,12 @@ import { z } from 'zod';
 import {
   type Actor,
   type AiToolCtx,
+  ClosedRolesPolicy,
+  ClosedToolAuthorizer,
   DefaultRolesPolicy,
+  DefaultToolAuthorizer,
+  defineTool,
+  registerFunctionalTool,
   ToolForbiddenError,
   ToolInputInvalidError,
   ToolNotFoundError,
@@ -162,5 +167,73 @@ describe('ToolRegistry', () => {
     );
     // Says whether there was one, so a caller pruning a list can tell a no-op from a removal.
     expect(reg.unregister('voidInvoice')).toBe(false);
+  });
+});
+
+describe('an empty roles list', () => {
+  const tool = (roles?: string[]) => ({
+    name: 'listInvoices',
+    kind: 'read' as const,
+    description: 'l',
+    inputSchema: z.object({}),
+    ...(roles !== undefined ? { roles } : {}),
+  });
+  const staff: Actor = { id: 'u1', roles: ['STAFF'] };
+  const nobody: Actor = { id: 'u2' };
+
+  it('is open by default — declared empty, or undeclared with empty defaults', () => {
+    for (const policy of [new DefaultRolesPolicy(), new DefaultToolAuthorizer()]) {
+      expect(policy.can(staff, tool([]))).toBe(true);
+      expect(policy.can(staff, tool())).toBe(true);
+      expect(policy.can(nobody, tool())).toBe(true);
+    }
+    expect(new DefaultRolesPolicy([], { emptyRoles: 'allow' }).can(nobody, tool([]))).toBe(true);
+  });
+
+  it("reaches nobody under emptyRoles: 'deny'", () => {
+    const closed = [
+      new ClosedRolesPolicy(),
+      new ClosedToolAuthorizer(),
+      new DefaultRolesPolicy([], { emptyRoles: 'deny' }),
+      new DefaultToolAuthorizer([], { emptyRoles: 'deny' }),
+    ];
+    for (const policy of closed) {
+      expect(policy.can(staff, tool([]))).toBe(false);
+      expect(policy.can(staff, tool())).toBe(false);
+      expect(policy.can(staff, tool(['STAFF']))).toBe(true);
+      expect(policy.can(staff, tool(['ADMIN']))).toBe(false);
+      expect(policy.can(nobody, tool(['STAFF']))).toBe(false);
+      expect(policy.can({ id: 'u3', roles: [] }, tool(['STAFF']))).toBe(false);
+    }
+  });
+
+  it('closed, a declared empty list is not rescued by the default roles', () => {
+    const policy = new ClosedRolesPolicy(['STAFF']);
+    expect(policy.can(staff, tool())).toBe(true);
+    expect(policy.can(staff, tool([]))).toBe(false);
+  });
+
+  it('closed, a tool registered with empty default roles is neither offered nor invocable', async () => {
+    const reg = new ToolRegistry();
+    // registerFunctionalTool writes the defaults onto the spec: the tool carries `roles: []`.
+    registerFunctionalTool(
+      reg,
+      defineTool(
+        { name: 'listInvoices', kind: 'read', description: 'l', input: z.object({}) },
+        async () => ({
+          ok: true,
+        }),
+      ),
+      [],
+    );
+
+    const open = new DefaultRolesPolicy();
+    expect((await reg.definitionsFor(staff, open)).map((t) => t.name)).toEqual(['listInvoices']);
+
+    const closed = new ClosedRolesPolicy();
+    expect(await reg.definitionsFor(staff, closed)).toEqual([]);
+    await expect(reg.invoke('listInvoices', {}, ctxFor(staff), closed)).rejects.toBeInstanceOf(
+      ToolForbiddenError,
+    );
   });
 });

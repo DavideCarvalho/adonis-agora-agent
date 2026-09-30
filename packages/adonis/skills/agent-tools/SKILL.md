@@ -182,7 +182,8 @@ static tool = { name: 'refund_order', kind: 'action', description: '...', input,
 
 Mechanism: `definitionsFor` filters the offered tool list through the role gate BEFORE
 each model turn, and `invoke` re-checks it. A tool with no `roles` takes `defaultRoles`;
-an empty list is no restriction. An `action` still parks on approval — but by default the
+an empty list is no restriction (since 0.46 — before, it denied everyone; `emptyRoles: 'deny'`
+in the config, or `ClosedRolesPolicy`, keeps it closed). An `action` still parks on approval — but by default the
 requester approves, so for a public chat that is only a confirmation.
 Source: `packages/adonis/docs/governance/authorization.mdx`,
 `packages/adonis/src/tool-registry.ts` (`DefaultRolesPolicy.can`).

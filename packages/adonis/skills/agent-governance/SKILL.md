@@ -50,6 +50,7 @@ export default defineConfig({
     }),
   }),
   defaultRoles: ['STAFF'],       // roles a tool requires when it declares none
+  // emptyRoles: 'deny',         // an empty roles list reaches nobody (default 'allow': open since 0.46)
 })
 ```
 

@@ -39,6 +39,7 @@ export default defineConfig({
 
   // path: 'agent',            // → /agent/chat, /agent/threads, ...
   // defaultRoles: ['ADMIN'],  // roles a tool requires when it declares none (default: none — open)
+  // emptyRoles: 'deny',       // an empty roles list reaches nobody (default: 'allow' — open)
   // maxSteps: 8,              // cap on model↔tool iterations per turn
 
   // Governance console — served automatically at <path>/dashboard (default /agent/dashboard), no

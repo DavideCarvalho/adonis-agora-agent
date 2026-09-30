@@ -53,6 +53,7 @@ import {
   tokenSinks,
 } from './stores/factory.js';
 import type { QuotaLimits } from './stores/ledger-quota-provider.js';
+import type { EmptyRoles } from './tool-registry.js';
 import type { ToolTransientRetrySetting } from './tool-retry.js';
 import type { Actor, AgentDefinition } from './types.js';
 
@@ -193,6 +194,12 @@ export interface AgentConfig {
    * fail-closed default.
    */
   defaultRoles?: string[];
+  /**
+   * What an empty roles list means to the default authorizer: `'allow'` (default) — no restriction;
+   * `'deny'` — nobody, so a tool needs `roles` (or a non-empty `defaultRoles`) to be reachable. Only
+   * consulted when no `authorizer` is set.
+   */
+  emptyRoles?: EmptyRoles;
   /**
    * Resolves the acting actor per request (the identity seam). Defaults to a resolver that THROWS on
    * every request — the agent never fabricates a caller. Wire `AuthActorResolver` / `HeaderActorResolver`.

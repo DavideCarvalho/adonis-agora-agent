@@ -54,7 +54,9 @@ export default class McpProvider {
     const config = this.app.config.get<McpConfig>('mcp', {} as McpConfig);
     const registry = await this.app.container.make(ToolRegistry);
     const defaultRoles = config.defaultRoles ?? ['ADMIN'];
-    const authorizer = config.authorizer ?? new DefaultToolAuthorizer(defaultRoles);
+    const authorizer =
+      config.authorizer ??
+      new DefaultToolAuthorizer(defaultRoles, { emptyRoles: config.emptyRoles ?? 'allow' });
     const auth =
       config.auth !== undefined ? await resolveMcpAuth(config.auth, { app: this.app }) : undefined;
     this.#publicOrigin =

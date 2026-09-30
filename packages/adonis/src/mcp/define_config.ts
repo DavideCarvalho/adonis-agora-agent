@@ -1,4 +1,5 @@
 import type { RolesPolicy } from '../spi/roles-policy.js';
+import type { EmptyRoles } from '../tool-registry.js';
 import type { McpAuth, McpAuthFactory } from './auth.js';
 import { anyOf, apiKeyAuth, authKitAuth, McpAuthError } from './auth.js';
 
@@ -55,6 +56,12 @@ export interface McpConfig {
   authorizer?: RolesPolicy;
   /** Roles a tool requires when it declares none. Defaults to `['ADMIN']`. */
   defaultRoles?: string[];
+  /**
+   * What an empty roles list means to the default authorizer: `'allow'` (default) — no restriction;
+   * `'deny'` — nobody, so a tool needs `roles` (or a non-empty `defaultRoles`) to be reachable. Only
+   * consulted when no `authorizer` is set.
+   */
+  emptyRoles?: EmptyRoles;
   /**
    * Restrict the exposed tools to this allow-list of names. Omit → all tools the acting actor's roles
    * permit are exposed.
