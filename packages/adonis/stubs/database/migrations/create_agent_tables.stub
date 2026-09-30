@@ -6,8 +6,9 @@ import db from '@adonisjs/lucid/services/db'
 import { createAgentTables, dropAgentTables } from '@adonis-agora/agent'
 
 /**
- * The seven tables for the @adonis-agora/agent \`lucid\` store: threads, messages, tool calls, token
- * usage, model pricing, the run lifecycle, and the chat message queue — plus their indexes.
+ * The eight tables for the @adonis-agora/agent \`lucid\` store: threads, messages, tool calls, token
+ * usage, model pricing, the run lifecycle, the chat message queue, and the spent confirm tokens — plus
+ * their indexes.
  *
  * This migration DELEGATES to the library instead of reproducing its DDL. The schema belongs to the
  * library: \`LucidAgentStore\`, the pricing store and the governance read-model all decide together what

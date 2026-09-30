@@ -19,6 +19,7 @@ sources:
   - "DavideCarvalho/adonis-agent:packages/adonis/docs/authoring/data-satellite.mdx"
   - "DavideCarvalho/adonis-agent:packages/adonis/src/ai-tool-ref.ts"
   - "DavideCarvalho/adonis-agent:packages/adonis/src/tool-discovery.ts"
+  - "DavideCarvalho/adonis-agent:packages/adonis/src/confirmed-tool.ts"
 ---
 
 # Writing governed tools for @adonis-agora/agent
@@ -164,6 +165,40 @@ the runtime scan you were replacing.
 
 Source: `packages/adonis/docs/authoring/tools.mdx` ("Configuring the generator"),
 `packages/adonis/src/hooks/tools.ts` (`ToolsHookOptions`).
+
+### Pattern 4 — a write reachable over MCP: `defineConfirmedTool`
+
+An `action` never reaches an MCP client (no approval channel, and Claude.ai/Desktop have no
+elicitation). For a write that must be callable there, put the gate inside the tool: the
+first call previews and returns a signed `confirmToken`; the same arguments plus
+`confirm: true` and the token commit.
+
+```ts
+import { defineConfirmedTool, LucidConfirmTokenStore } from '@adonis-agora/agent'
+
+export const refundOrder = defineConfirmedTool(
+  {
+    name: 'refund_order',
+    description: 'Refund an order. Returns a preview first; confirm to commit.',
+    input: z.object({ orderId: z.string() }), // confirm / confirmToken are added for you
+    roles: ['ADMIN'],
+    secret: () => env.get('APP_KEY').release(), // required, no default
+    store: new LucidConfirmTokenStore(db), // without it the token is NOT single use
+  },
+  {
+    prepare: async ({ orderId }, ctx) => loadRefundableOrder(orderId, ctx.actor), // throw to refuse
+    preview: (order) => ({ summary: `Refund ${order.total}?`, data: order }), // writes nothing
+    commit: async (order) => ({ summary: 'Refunded.', data: await refund(order) }),
+  },
+)
+```
+
+`prepare` runs on the preview and again on the confirmation — put every rule the commit
+relies on there. The token is bound to tool + `ctx.actor.id` + `ctx.actor.tenantRef` +
+arguments and expires (`ttlMs`, default 15 min).
+
+Source: `packages/adonis/docs/mcp.mdx` ("Writes with a human gate"),
+`packages/adonis/src/confirmed-tool.ts`.
 
 ## Common mistakes
 

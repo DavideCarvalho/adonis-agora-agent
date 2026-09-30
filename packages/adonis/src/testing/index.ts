@@ -1,3 +1,4 @@
+export { InMemoryConfirmTokenStore } from '../confirm-token.js';
 export { createNoopEmitUi } from '../tool-ui.js';
 export {
   CHAT_QUEUE_STORE_CONTRACT,

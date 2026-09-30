@@ -90,7 +90,7 @@ The actor resolver defaults to one that **throws on every request**. The agent w
 
 ## 3. Run the migration
 
-The `lucid` store persists to seven tables (threads, messages, tool calls, token usage, model pricing, the run lifecycle, and the chat message queue). Apply the migration:
+The `lucid` store persists to eight tables (threads, messages, tool calls, token usage, model pricing, the run lifecycle, the chat message queue, and spent confirm tokens). Apply the migration:
 
 ```bash
 node ace migration:run

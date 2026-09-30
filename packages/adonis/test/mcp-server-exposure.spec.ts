@@ -3,8 +3,11 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { DefaultToolAuthorizer } from '../src/authorizer.js';
+import { InMemoryConfirmTokenStore } from '../src/confirm-token.js';
+import { defineConfirmedTool } from '../src/confirmed-tool.js';
 import { createMcpServer } from '../src/mcp/server.js';
 import type { RolesPolicy } from '../src/spi/roles-policy.js';
+import { registerFunctionalTool } from '../src/tool-discovery.js';
 import { DefaultRolesPolicy, ToolRegistry } from '../src/tool-registry.js';
 
 const ACTOR = { id: 'u1', roles: ['ADMIN'] };
@@ -107,5 +110,82 @@ describe('what an MCP caller can reach', () => {
     const result = await client.callTool({ name: 'search_docs', arguments: {} });
     expect(result.isError).toBe(true);
     expect(ran).toEqual([]);
+  });
+});
+
+describe('a confirmed write over MCP', () => {
+  async function connectWithRefund() {
+    const written: unknown[] = [];
+    const registry = new ToolRegistry();
+    registerFunctionalTool(
+      registry,
+      defineConfirmedTool<{ orderId: string }, { orderId: string }>(
+        {
+          name: 'refund_order',
+          description: 'Refund an order.',
+          input: z.object({ orderId: z.string() }).strict(),
+          secret: 'a-secret',
+          store: new InMemoryConfirmTokenStore(),
+        },
+        {
+          prepare: (args) => args,
+          preview: (args) => ({ summary: `Refund ${args.orderId}?` }),
+          commit: (args) => {
+            written.push(args);
+            return { summary: 'Refunded.' };
+          },
+        },
+      ),
+      [],
+    );
+    const server = createMcpServer({
+      name: 'test',
+      version: '0.0.0',
+      registry,
+      policy: new DefaultRolesPolicy(),
+      actorFromAuth: () => ACTOR,
+    });
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+    const call = async (args: Record<string, unknown>) => {
+      const result = await client.callTool({ name: 'refund_order', arguments: args });
+      const text = (result.content as { text: string }[])[0]?.text ?? '';
+      return { isError: result.isError === true, text };
+    };
+    return { client, call, written };
+  }
+
+  it('is listed — with the two confirmation fields in its schema — though it writes', async () => {
+    const { client } = await connectWithRefund();
+    const [tool] = (await client.listTools()).tools;
+    expect(tool?.name).toBe('refund_order');
+    expect(Object.keys(tool?.inputSchema.properties ?? {})).toEqual([
+      'orderId',
+      'confirm',
+      'confirmToken',
+    ]);
+    expect(tool?.inputSchema.required).toEqual(['orderId']);
+  });
+
+  it('previews, commits on the confirmation, and refuses the token a second time', async () => {
+    const { call, written } = await connectWithRefund();
+    const preview = JSON.parse((await call({ orderId: 'o-1' })).text);
+    expect(preview).toMatchObject({ status: 'preview', summary: 'Refund o-1?' });
+    expect(written).toEqual([]);
+
+    const confirm = { orderId: 'o-1', confirm: true, confirmToken: preview.confirmToken };
+    const tampered = await call({ ...confirm, orderId: 'o-2' });
+    expect(tampered.isError).toBe(true);
+    expect(written).toEqual([]);
+
+    expect(JSON.parse((await call(confirm)).text)).toEqual({
+      status: 'done',
+      summary: 'Refunded.',
+    });
+    const again = await call(confirm);
+    expect(again.isError).toBe(true);
+    expect(again.text).toContain('already confirmed');
+    expect(written).toEqual([{ orderId: 'o-1' }]);
   });
 });
