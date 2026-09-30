@@ -527,6 +527,21 @@ describe('chat message queue', () => {
     await first;
   });
 
+  it('knows who owns a run that holds its thread before it has a run row', async () => {
+    const { store, threadId, url } = await boot();
+    // Admitted to the thread, not started: what a drain leaves for the instant before the next run
+    // begins (and, on a durable runner, until a worker picks it up).
+    await store.claimActiveStream(threadId, 'q-1');
+    // Another actor is told it is not theirs — not that it does not exist…
+    expect((await call(url, 'GET', 'chat/q-1/stream', undefined, 'u2')).status).toBe(403);
+    // …and the owner reaches the stream check. The inline runner runs in this process and knows no
+    // such run, so the claim is a stale one: nothing to resume.
+    const owner = await call(url, 'GET', 'chat/q-1/stream');
+    expect(owner.status).toBe(404);
+    expect(await owner.json()).toEqual({ message: 'Nothing is streaming under that run.' });
+    expect((await call(url, 'GET', 'chat/never-ran/stream')).status).toBe(404);
+  });
+
   it('rejects an unknown mode', async () => {
     const { threadId, url } = await boot();
     expect((await send(url, { threadId, message: 'x', mode: 'later' })).status).toBe(400);

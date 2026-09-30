@@ -134,6 +134,55 @@ afterEach(() => {
 });
 
 describe('chat message queue — durable runner', () => {
+  it('lets a client attach to a run that holds its thread but has not started executing yet', async () => {
+    const app = await buildApp();
+    // What a send or a queue drain does BEFORE starting the run: admit it to the thread. Under a
+    // durable runner the body then waits for a worker — the window a client attaches in.
+    expect(await app.store.claimActiveStream(app.threadId, 'q-1')).toBe(true);
+    expect(await app.store.getRunActorRef('q-1')).toBeNull();
+
+    expect(await app.service.runOwner('q-1')).toBe(ACTOR.id);
+    expect(await app.service.hasStream('q-1')).toBe(true);
+
+    // A run that holds nothing is still unknown, and nothing to resume.
+    expect(await app.service.runOwner('never-ran')).toBeNull();
+    expect(await app.service.hasStream('never-ran')).toBe(false);
+
+    // Once it gives the thread up without having streamed, there is nothing to attach to either.
+    await app.store.releaseActiveStream(app.threadId, 'q-1');
+    expect(await app.service.runOwner('q-1')).toBeNull();
+    expect(await app.service.hasStream('q-1')).toBe(false);
+  });
+
+  it('a queued message is attachable from the moment the settling turn announces it', async () => {
+    const app = await buildApp();
+    app.model.hold('first');
+    const first = started(
+      await app.service.send({ actor: ACTOR, threadId: app.threadId, message: 'first' }),
+    );
+    await app.model.reached('first');
+    const queued = await app.service.send({
+      actor: ACTOR,
+      threadId: app.threadId,
+      message: 'second',
+    });
+    if (queued.queued !== true) throw new Error('expected the send to queue');
+    app.model.hold('second');
+    const settled = drain(app.service, first);
+    app.model.release('first');
+    const { frames } = await settled;
+    // The settling turn's stream named the run the queue handed the thread to…
+    expect(frames.filter((frame) => frame.kind === 'queue').at(-1)).toMatchObject({
+      started: { runId: queued.messageId },
+    });
+    // …and a client that attaches on that frame finds a run it owns, with a stream to follow.
+    expect(await app.service.runOwner(queued.messageId)).toBe(ACTOR.id);
+    expect(await app.service.hasStream(queued.messageId)).toBe(true);
+    app.model.release('second');
+    const answer = await drain(app.service, queued.messageId);
+    expect(answer.frames).toContainEqual({ kind: 'text', text: 're: second' });
+  });
+
   it('hands the thread to the next queued message, as a run under its own id', async () => {
     const app = await buildApp();
     try {
