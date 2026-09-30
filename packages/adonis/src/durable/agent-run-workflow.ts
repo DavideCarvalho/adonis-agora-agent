@@ -1,3 +1,4 @@
+import * as durable from '@adonis-agora/durable';
 import {
   BaseWorkflow,
   ContinueAsNew,
@@ -55,6 +56,34 @@ function isControlFlowSignal(error: unknown): boolean {
 }
 
 /**
+ * Run a checkpoint's BODY outside the ambient workflow ctx.
+ *
+ * The runtime keeps the running workflow's ctx in an `AsyncLocalStorage` for the whole turn, and a
+ * `BaseWorkflow` static reads it to route: inside a workflow, `SomeWorkflow.dispatch(...)` becomes
+ * `ctx.startChild` and `SomeWorkflow.start(...)` becomes `ctx.child` — each of which takes a
+ * POSITION in the journal. That is right in a workflow body and wrong in a step body, and a step
+ * body is where everything the application wrote runs: a tool's `execute`, a processor, a store. A
+ * tool that starts a workflow of the app's own (directly, or through a service three calls down)
+ * would record `spawn:<id>` at the position after its own `tool:<callId>`, from inside that step.
+ * The first attempt then writes `persist:toolexec:<callId>` one position further on; a replay skips
+ * the completed step's body, never asks for the spawn's position, and offers it to
+ * `persist:toolexec:<callId>` instead — which the runtime refuses as non-determinism, failing a run
+ * nothing had changed under. It only takes a resume after such a tool to get there: a second action
+ * awaiting approval in the same step, or an approval in any later one.
+ *
+ * Outside the ambient ctx those statics go to the engine, as they do from a controller: the started
+ * run is a run of its own, and the step memoizes the body's result so a replay never starts it
+ * twice. Resolved off the namespace because `workflowAls` is not exported by every
+ * `@adonis-agora/durable` this package accepts as a peer; a runtime without it has no ambient ctx
+ * to leave.
+ */
+const ambientWorkflowCtx = (durable as { workflowAls?: { exit<T>(fn: () => T): T } }).workflowAls;
+
+function outsideWorkflowCtx<T>(fn: () => Promise<T>): Promise<T> {
+  return ambientWorkflowCtx === undefined ? fn() : ambientWorkflowCtx.exit(fn);
+}
+
+/**
  * The agent turn AS a durable workflow — the replay-safe counterpart of `InlineAgentRunner`. The
  * shared `runAgentLoop` body drives model→tools→model exactly as inline; the durable hooks make it
  * suspend-and-resume:
@@ -86,6 +115,11 @@ export class AgentRunWorkflow extends BaseWorkflow {
     const deps = factory.forAgent(input.agentName);
     const isChild = input.sinkRunId !== undefined;
     const sinkRunId = input.sinkRunId ?? ctx.runId;
+    // Every checkpoint this workflow writes. The body runs outside the ambient workflow ctx, so
+    // nothing the application does in there — a tool dispatching a workflow of its own, a store, a
+    // quota provider — can take a position in this run's journal (see {@link outsideWorkflowCtx}).
+    const step = <T>(name: string, fn: () => Promise<T>): Promise<T> =>
+      ctx.localStep(name, () => outsideWorkflowCtx(fn));
     /**
      * Move the thread past this settling turn — to the next queued message, started here as a
      * fire-and-forget `ctx.startChild` under the message's own id, or to a paused/empty queue — and
@@ -106,7 +140,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
       if (!(await ctx.patched('agent:chat-queue'))) {
         return undefined;
       }
-      const plan = await ctx.localStep(`queue:${outcome}`, async (): Promise<QueuePlan> => {
+      const plan = await step(`queue:${outcome}`, async (): Promise<QueuePlan> => {
         try {
           return await queue.plan({
             threadId: input.threadId,
@@ -132,7 +166,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
           throw failure;
         }
         const reason = failure instanceof Error ? failure.message : String(failure);
-        return ctx.localStep('queue:restore', async () => {
+        return step('queue:restore', async () => {
           await queue.restore(input.threadId, next, 'start_failed', reason);
           return queue.pausedFrame(input.threadId);
         });
@@ -195,7 +229,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
         };
       },
       // Every side effect + control-flow read is a durable local step (memoized on replay).
-      step: (name, fn) => ctx.localStep(name, fn),
+      step,
       // A thread's own turn that no longer holds its thread was stopped from outside its body (a
       // Stop, or an interrupt that already started the next message): it must not write an answer
       // after whatever took its place. Asked live, only where the queue's compare-and-set admission
@@ -218,7 +252,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
       // Delegation: a fresh transient subthread (checkpointed so its id is replay-stable), then a
       // tracked child run that streams into this run's own top-level sink.
       runAgent: async (agentName, task) => {
-        const subThreadId = await ctx.localStep(`subthread:${agentName}`, async () => {
+        const subThreadId = await step(`subthread:${agentName}`, async () => {
           const thread = await store.createThread({
             actor: input.actor,
             persona: 'default',
@@ -245,7 +279,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
       // The top-level run owns the thread's active-run pointer (a child runs on a scratch thread).
       if (!isChild) {
         // Conditional: a turn that handed the thread to the next queued message must not clear it.
-        await ctx.localStep('deactivate', () => releaseThreadRun(store, input.threadId, ctx.runId));
+        await step('deactivate', () => releaseThreadRun(store, input.threadId, ctx.runId));
       }
       return result;
     } catch (error) {
@@ -279,13 +313,13 @@ export class AgentRunWorkflow extends BaseWorkflow {
       // Settle the run's persisted outcome (the loop only records completions — it can't catch its
       // own crash). A checkpointed step so a replay re-settles the ONE row idempotently; first-
       // terminal, so it can't clobber a completion. Each run (parent AND child) owns its own row.
-      await ctx.localStep('persist:run:fail', () =>
+      await step('persist:run:fail', () =>
         store.recordRunEnd({ runId: ctx.runId, status: 'failed', error: message }),
       );
       if (!isChild) {
         // The queue behind a failed turn pauses — its next message would likely fail the same way.
         const queueFrame = await advanceQueue('failed', message);
-        await ctx.localStep('deactivate', () => releaseThreadRun(store, input.threadId, ctx.runId));
+        await step('deactivate', () => releaseThreadRun(store, input.threadId, ctx.runId));
         const writer = await deps.sink.open(ctx.runId);
         if (queueFrame !== undefined) {
           await writer.write({ t: 'event', event: queueFrame });

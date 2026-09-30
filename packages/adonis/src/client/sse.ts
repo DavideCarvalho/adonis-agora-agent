@@ -127,7 +127,7 @@ export function decodeFrame(event: SseEvent): ChatFrame | null {
  * One frame of the agent stream protocol as a {@link ChatFrame}. The kinds this client folds into a
  * message or acts on (text, ui, elicitation, approval-requested) get their own frame; every other
  * kind (reasoning, tool calls, steps, title, …) arrives as `{ type: 'event' }`, which
- * {@link foldPart} ignores and `onFrame` still sees.
+ * {@link foldPart} ignores — but for a `step-start`, see there — and `onFrame` still sees.
  */
 function decodeAgentEvent(event: Record<string, unknown> & { kind: string }): ChatFrame | null {
   if (event.kind === 'text') {
@@ -171,7 +171,9 @@ function decodeAgentEvent(event: Record<string, unknown> & { kind: string }): Ch
 
 /**
  * Folds a renderable {@link ChatFrame} (text or component) into the message's parts, concatenating
- * consecutive text deltas into the trailing text part and appending components in order.
+ * consecutive text deltas into the trailing text part and appending components in order. A
+ * `step-start` closes the text before it with a paragraph break ({@link STEP_SEPARATOR}), so two
+ * model steps never run into each other.
  * `meta`/`elicitation`/`approval`/`done` are control frames and are ignored here — a form to put to
  * the user is not a part of the assistant's message. Returns a new array (never mutates the input).
  */
@@ -197,8 +199,27 @@ export function foldPart(parts: ChatPart[], frame: ChatFrame): ChatPart[] {
     }
     return [...parts, { type: 'text', text: frame.delta }];
   }
+  if (frame.type === 'event' && frame.event.kind === 'step-start') {
+    // A new model step. What it says is a new paragraph, not the continuation of a sentence: the
+    // step before it ended to call tools, so its text stops wherever the model stopped ("…before
+    // answering.") and the next one would otherwise be glued to it ("…before answering.Let me…").
+    // Only text the message already ends with is closed — a step that opens after a component, or
+    // first, has nothing to be separated from.
+    const last = parts[parts.length - 1];
+    if (
+      last &&
+      last.type === 'text' &&
+      last.text.trim().length > 0 &&
+      !last.text.endsWith('\n\n')
+    ) {
+      return [...parts.slice(0, -1), { type: 'text', text: `${last.text}${STEP_SEPARATOR}` }];
+    }
+  }
   return parts;
 }
+
+/** What separates the text of two consecutive model steps in one message: a paragraph break. */
+export const STEP_SEPARATOR = '\n\n';
 
 /**
  * Reads a byte {@link ReadableStream} (a `fetch` `response.body`) as a sequence of raw SSE events,

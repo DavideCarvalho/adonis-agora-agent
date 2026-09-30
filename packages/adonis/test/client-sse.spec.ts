@@ -95,6 +95,28 @@ describe('foldPart', () => {
     ]);
   });
 
+  it('separates the text of two consecutive model steps with a paragraph break', () => {
+    const stepStart = { type: 'event', event: { kind: 'step-start' } } as const;
+    let parts: ChatPart[] = [];
+    parts = foldPart(parts, stepStart);
+    parts = foldPart(parts, { type: 'text', delta: 'Vou olhar antes de responder.' });
+    parts = foldPart(parts, { type: 'event', event: { kind: 'step-finish' } });
+    parts = foldPart(parts, stepStart);
+    parts = foldPart(parts, { type: 'text', delta: 'Deixa a Vó comparar.' });
+    expect(parts).toEqual([
+      { type: 'text', text: 'Vou olhar antes de responder.\n\nDeixa a Vó comparar.' },
+    ]);
+  });
+
+  it('adds no break where a step has no text before it, or the text already ends in one', () => {
+    const stepStart = { type: 'event', event: { kind: 'step-start' } } as const;
+    expect(foldPart([], stepStart)).toEqual([]);
+    const afterComponent: ChatPart[] = [{ type: 'component', name: 'grafico', data: {} }];
+    expect(foldPart(afterComponent, stepStart)).toEqual(afterComponent);
+    const closed: ChatPart[] = [{ type: 'text', text: 'pronto.\n\n' }];
+    expect(foldPart(closed, stepStart)).toEqual(closed);
+  });
+
   it('ignores meta and done control frames', () => {
     const parts: ChatPart[] = [{ type: 'text', text: 'x' }];
     expect(foldPart(parts, { type: 'meta', runId: 'r' })).toEqual(parts);

@@ -20,4 +20,5 @@ export {
   parseSseEvent,
   readSseStream,
   type SseEvent,
+  STEP_SEPARATOR,
 } from './sse.js';
