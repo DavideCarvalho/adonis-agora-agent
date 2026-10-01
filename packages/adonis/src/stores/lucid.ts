@@ -108,6 +108,19 @@ export interface LucidDatabaseLike extends LucidClientLike, LucidRawRunner {
   transaction<T>(callback: (trx: LucidClientLike) => Promise<T>): Promise<T>;
 }
 
+/**
+ * `query` in the order its messages were appended: `seq`, which append assigns, then `created_at`
+ * and `id` for the rows from before `seq` existed (they all hold 0, and so sort first). `created_at`
+ * alone could not order a transcript: two messages of one turn routinely share a millisecond, and
+ * the database then returned them in either order.
+ */
+export function inAppendOrder<Q extends LucidQueryBuilderLike>(
+  query: Q,
+  direction: 'asc' | 'desc',
+): Q {
+  return query.orderBy('seq', direction).orderBy('created_at', direction).orderBy('id', direction);
+}
+
 export interface LucidAgentStoreOptions {
   /**
    * Provision the agent tables (via {@link ensureAgentTables}) — as the app starts when the agent
@@ -284,11 +297,10 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
       .whereNull('deleted_at')
       .first();
     if (row === null || row === undefined) return null;
-    const messageRows = await this.db
-      .from(AGENT_TABLES.messages)
-      .where('thread_id', threadId)
-      .orderBy('created_at', 'asc')
-      .select('*');
+    const messageRows = await inAppendOrder(
+      this.db.from(AGENT_TABLES.messages).where('thread_id', threadId),
+      'asc',
+    ).select('*');
     const messages = await this.withApprovals(messageRows.map(rowToMessage));
     const last = messages[messages.length - 1];
     return {
@@ -328,11 +340,10 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
     limit: number | undefined,
   ): Promise<StoredMessage[]> {
     if (limit !== undefined && limit <= 0) return [];
-    const query = this.db
-      .from(AGENT_TABLES.messages)
-      .where('thread_id', threadId)
-      .orderBy('created_at', 'desc')
-      .orderBy('id', 'desc');
+    const query = inAppendOrder(
+      this.db.from(AGENT_TABLES.messages).where('thread_id', threadId),
+      'desc',
+    );
     if (limit !== undefined) query.limit(limit);
     const rows = await query.select(...TURN_MESSAGE_COLUMNS);
     return rows.reverse().map(rowToMessage);
@@ -386,11 +397,10 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
       if (source === null || source === undefined) {
         throw new Error(`thread ${threadId} not found`);
       }
-      const messageRows = await trx
-        .from(AGENT_TABLES.messages)
-        .where('thread_id', threadId)
-        .orderBy('created_at', 'asc')
-        .select('*');
+      const messageRows = await inAppendOrder(
+        trx.from(AGENT_TABLES.messages).where('thread_id', threadId),
+        'asc',
+      ).select('*');
       const cutoff = messageRows.findIndex((m) => String(m.id) === fromMessageId);
       const kept = cutoff >= 0 ? messageRows.slice(0, cutoff + 1) : messageRows;
 
@@ -415,10 +425,12 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
         updated_at: now,
         deleted_at: null,
       });
-      for (const m of kept) {
+      for (const [index, m] of kept.entries()) {
         // New message id: the message PK is unique, so a fork copies content under fresh ids.
         await trx.table(AGENT_TABLES.messages).insert({
           id: crypto.randomUUID(),
+          // Numbered afresh in the order just read, so the copy reads back in the original's order.
+          seq: index + 1,
           thread_id: id,
           role: m.role,
           content: m.content,
@@ -530,7 +542,13 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
       .where('id', threadId)
       .whereIn('active_stream_id', holders)
       .update({ active_stream_id: runId });
-    return affectedRows(handed) > 0;
+    if (affectedRows(handed) > 0) {
+      return true;
+    }
+    // Zero can still be a win: a MySQL connection without FOUND_ROWS reports CHANGED rows, and
+    // re-claiming a thread this run already holds changes nothing. The row says who holds it now.
+    const held = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
+    return held !== null && held !== undefined && held.active_stream_id === runId;
   }
 
   async releaseActiveStream(threadId: string, runId: string): Promise<boolean> {
@@ -672,8 +690,10 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
     await this.init();
     const id = crypto.randomUUID();
     const now = Date.now();
+    const seq = await this.nextMessageSeq(input.threadId);
     await this.db.table(AGENT_TABLES.messages).insert({
       id,
+      seq,
       thread_id: input.threadId,
       role: input.role,
       content: input.content,
@@ -716,6 +736,20 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
     };
   }
 
+  /**
+   * The next `seq` in a thread: one past its highest. Two appends racing on ONE thread can draw the
+   * same number — the turn loop never does that, and the tie then falls back to `created_at`, `id`.
+   */
+  private async nextMessageSeq(threadId: string): Promise<number> {
+    const [last] = await this.db
+      .from(AGENT_TABLES.messages)
+      .where('thread_id', threadId)
+      .orderBy('seq', 'desc')
+      .limit(1)
+      .select('seq');
+    return toInt(last?.seq) + 1;
+  }
+
   async setMessageUi(messageId: string, ui: AgentUiComponent[]): Promise<void> {
     await this.init();
     await this.db
@@ -735,11 +769,10 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
   async truncateFrom(threadId: string, messageId: string): Promise<void> {
     await this.init();
     await this.db.transaction(async (trx) => {
-      const rows = await trx
-        .from(AGENT_TABLES.messages)
-        .where('thread_id', threadId)
-        .orderBy('created_at', 'asc')
-        .select('id');
+      const rows = await inAppendOrder(
+        trx.from(AGENT_TABLES.messages).where('thread_id', threadId),
+        'asc',
+      ).select('id');
       const cutoff = rows.findIndex((m) => String(m.id) === messageId);
       if (cutoff < 0) return;
       const doomed = rows.slice(cutoff).map((m) => String(m.id));
@@ -850,6 +883,7 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
         messages.map((message) => message.id),
       )
       .orderBy('created_at', 'asc')
+      .orderBy('id', 'asc')
       .select('*');
     const byMessage = new Map<string, ToolCallApproval[]>();
     for (const call of rows) {

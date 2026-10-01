@@ -28,8 +28,24 @@ export function makeMemoryDb(): Database {
   );
 }
 
-/** A fresh in-memory db with the five agent tables already created. */
+/**
+ * A fresh database with the agent tables already created — in-memory SQLite, or, in the `postgres` /
+ * `mysql` test projects (`AGENT_TEST_BACKEND`), a throwaway database on that server (see
+ * `vitest.config.ts` and `test/helpers/real-db.ts`), so every spec built on this runs on all three.
+ * `db.manager.closeAll()` also drops the throwaway database.
+ */
 export async function makeStoreDb(): Promise<Database> {
+  const backend = process.env.AGENT_TEST_BACKEND;
+  if (backend === 'postgres' || backend === 'mysql') {
+    const { openBackend } = await import('./real-db.js');
+    const handle = await openBackend(backend);
+    const closeAll = handle.db.manager.closeAll.bind(handle.db.manager);
+    handle.db.manager.closeAll = async (...args: Parameters<typeof closeAll>) => {
+      await closeAll(...args);
+      await handle.close();
+    };
+    return handle.db;
+  }
   const db = makeMemoryDb();
   await createAgentTables(db as unknown as LucidDatabaseLike);
   return db;

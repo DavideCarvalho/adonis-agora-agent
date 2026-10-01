@@ -1,6 +1,7 @@
 import type { SinkWriter, StreamFrame, TokenStreamSink } from './spi/token-stream-sink.js';
 import type { LucidDatabaseLike } from './stores/lucid.js';
 import { AGENT_TABLES, ensureStreamFrameTable, rowsOf } from './stores/lucid-schema.js';
+import { portableSql } from './stores/sql-dialect.js';
 
 /** Default TTL (seconds) for a run's rows: 1h past its last write, the same window the Redis sink keeps. */
 const DEFAULT_TTL_SECONDS = 3600;
@@ -90,13 +91,18 @@ function toInt(value: unknown): number {
 
 /**
  * Did this insert lose the race for a `(run_id, seq)`? Read off the driver's own code — Postgres
- * `23505`, SQLite `SQLITE_CONSTRAINT_*`, MySQL `ER_DUP_ENTRY`/1062, SQL Server 2627 — so nothing
+ * `23505`, SQLite `SQLITE_CONSTRAINT_*`, MySQL `ER_DUP_ENTRY`/1062 (or its deadlock victim, 1213),
+ * SQL Server 2627 — so nothing
  * else (a missing table, a lost connection) is ever retried as though it were one.
  */
 function isUniqueViolation(error: unknown): boolean {
   const e = error as { code?: unknown; errno?: unknown; number?: unknown } | null;
   if (e === null || typeof e !== 'object') return false;
   if (e.code === '23505' || e.code === 'ER_DUP_ENTRY') return true;
+  // InnoDB settles two `INSERT … SELECT MAX(seq) + 1` into one run (both taking gap locks on the
+  // same range) by rolling one back as a deadlock victim, not with a duplicate key: the same lost
+  // race, just as safe to retry.
+  if (e.code === 'ER_LOCK_DEADLOCK' || e.errno === 1213) return true;
   if (typeof e.code === 'string' && e.code.startsWith('SQLITE_CONSTRAINT')) return true;
   return e.errno === 1062 || e.number === 2627;
 }
@@ -253,8 +259,11 @@ export class LucidTokenStreamSink implements TokenStreamSink {
         // The next number and the insert are one statement; see the class comment for why the
         // primary key, not a lock, is what settles two writers asking at once.
         await this.db.rawQuery(
-          `INSERT INTO "${this.table}" ("run_id", "seq", "frame", "created_at") ` +
-            `SELECT ?, COALESCE(MAX("seq"), 0) + 1, ?, ? FROM "${this.table}" WHERE "run_id" = ?`,
+          portableSql(
+            this.db,
+            `INSERT INTO "${this.table}" ("run_id", "seq", "frame", "created_at") ` +
+              `SELECT ?, COALESCE(MAX("seq"), 0) + 1, ?, ? FROM "${this.table}" WHERE "run_id" = ?`,
+          ),
           [runId, frame, Date.now(), runId],
         );
         return;
@@ -384,7 +393,10 @@ export class LucidTokenStreamSink implements TokenStreamSink {
     // MySQL refuses. A run that writes between the two was idle for the whole TTL a moment ago.
     const lapsed = rowsOf(
       await this.db.rawQuery(
-        `SELECT "run_id" AS run_id FROM "${this.table}" GROUP BY "run_id" HAVING MAX("created_at") < ?`,
+        portableSql(
+          this.db,
+          `SELECT "run_id" AS run_id FROM "${this.table}" GROUP BY "run_id" HAVING MAX("created_at") < ?`,
+        ),
         [cutoff],
       ),
     ).map((row) => String(row.run_id));

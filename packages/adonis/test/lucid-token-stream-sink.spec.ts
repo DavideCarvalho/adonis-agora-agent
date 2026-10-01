@@ -14,7 +14,9 @@ import {
   type TokenStreamSink,
   tokenSinks,
 } from '../src/index.js';
+import { portableSql } from '../src/stores/sql-dialect.js';
 import { makeMemoryDb } from './helpers/make-db.js';
+import { openBackend } from './helpers/real-db.js';
 
 /**
  * The Lucid sink against a real database — in-memory SQLite always, and a real Postgres when
@@ -54,8 +56,8 @@ interface Backend {
   skip: boolean;
   /** A table of this spec's own on Postgres, so a parallel spec dropping the agent tables cannot take it. */
   table: string;
-  /** The databases of replica A and replica B. */
-  open(): Database[];
+  /** The databases of replica A and replica B, and how to let them go. */
+  open(): Promise<{ dbs: Database[]; close(): Promise<void> }>;
 }
 
 const backends: Backend[] = [
@@ -64,13 +66,34 @@ const backends: Backend[] = [
     skip: false,
     table: AGENT_TABLES.streamFrames,
     // `:memory:` is per connection, so both "replicas" have to go through the one database object.
-    open: () => [makeMemoryDb()],
+    open: async () => {
+      const db = makeMemoryDb();
+      return { dbs: [db], close: () => db.manager.closeAll() };
+    },
   },
   {
     name: 'postgres',
     skip: url === undefined,
     table: 'agent_stream_frame_sink_spec',
-    open: () => [makePgDb(), makePgDb()],
+    open: async () => {
+      const dbs = [makePgDb(), makePgDb()];
+      return {
+        dbs,
+        close: async () => {
+          for (const db of dbs) await db.manager.closeAll();
+        },
+      };
+    },
+  },
+  {
+    // A throwaway database of its own, two pools over it: two replicas sharing nothing else.
+    name: 'mysql',
+    skip: process.env.AGENT_TEST_MYSQL_URL === undefined,
+    table: AGENT_TABLES.streamFrames,
+    open: async () => {
+      const handle = await openBackend('mysql', { tables: false });
+      return { dbs: [handle.db, handle.replica()], close: () => handle.close() };
+    },
   },
 ];
 
@@ -94,6 +117,7 @@ const step = (index: number): StreamFrame => ({
 describe.each(backends)('LucidTokenStreamSink on $name', (backend) => {
   describe.skipIf(backend.skip)('', () => {
     let dbs: Database[];
+    let close: () => Promise<void>;
     let runId: string;
 
     /** A sink on replica `replica` (0 = A, 1 = B). Fast timings so the suite does not wait on polls. */
@@ -115,15 +139,17 @@ describe.each(backends)('LucidTokenStreamSink on $name', (backend) => {
       ).length;
 
     beforeEach(async () => {
-      dbs = backend.open();
-      await asDb(dbs[0] as Database).rawQuery(`DROP TABLE IF EXISTS "${backend.table}"`);
+      ({ dbs, close } = await backend.open());
+      const first = asDb(dbs[0] as Database);
+      await first.rawQuery(portableSql(first, `DROP TABLE IF EXISTS "${backend.table}"`));
       // A run id of this test's own: nothing here depends on the table being empty.
       runId = `run-${crypto.randomUUID()}`;
     });
 
     afterEach(async () => {
-      await asDb(dbs[0] as Database).rawQuery(`DROP TABLE IF EXISTS "${backend.table}"`);
-      for (const db of dbs) await db.manager.closeAll();
+      const first = asDb(dbs[0] as Database);
+      await first.rawQuery(portableSql(first, `DROP TABLE IF EXISTS "${backend.table}"`));
+      await close();
     });
 
     it('yields the frames in the order they were written, then ends', async () => {

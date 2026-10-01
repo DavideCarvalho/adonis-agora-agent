@@ -61,6 +61,15 @@ the checkpoints on either side stay sequential in call order.
 `historyWindow` bounds how much of a thread rides into a turn — a message count, a token budget, or
 both, optionally folding what it left out into a leading summary.
 
+## Testing against real databases
+
+`pnpm test` runs everything on in-memory SQLite. `pnpm test:db` runs it again with the Lucid store
+suites on **Postgres 16 and MySQL 8.4** as well: testcontainers starts one container per dialect for
+the run (each spec gets its own throwaway database) and removes them at the end, so all it needs is
+Docker. Without Docker the Postgres/MySQL cases are reported as skipped and SQLite still runs; under CI
+(or `AGENT_TEST_REQUIRE_REAL_DB=1`) a missing Docker fails the run instead. `AGENT_TEST_PG_URL` /
+`AGENT_TEST_MYSQL_URL` point the suites at servers you already run (a user that may `CREATE DATABASE`).
+
 ## License
 
 MIT
