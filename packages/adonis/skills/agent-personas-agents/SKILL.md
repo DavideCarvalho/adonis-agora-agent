@@ -2,10 +2,9 @@
 name: agent-personas-agents
 description: >-
   Shape @adonis-agora/agent behavior per request: personas (Persona { id, label,
-  description, systemPrompt string | PromptBuilder, allowedTools, aliases }, defaultPersona,
-  send → thread pin → default resolution, PATCH /agent/threads/:id { persona }, 400
-  persona_not_found, GET /agent/agents personas/defaultPersona, the persona:resolve durable
-  checkpoint, allowedTools enforced on invoke and handoffs), named agents (agents: AgentDefinition[] with
+  systemPrompt, allowedTools, aliases }, defaultPersona, send → thread pin → default,
+  PATCH threads/:id { persona }, 400 persona_not_found, GET /agent/agents, the
+  persona:resolve durable checkpoint), named agents (agents: AgentDefinition[] with
   tools/maxSteps/actorResolver overrides), delegatesTo multi-agent delegation via
   synthesized ask_<target> agent-kind tools and DelegateEdge { agent, roles, ability, detached }
   (detached → start_<target>, a background run that posts its answer back into the thread),
