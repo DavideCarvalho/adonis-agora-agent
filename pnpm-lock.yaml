@@ -241,7 +241,10 @@ importers:
         version: 0.33.0
       '@dudousxd/nestjs-agent-react':
         specifier: 0.31.0
-        version: 0.31.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(ai@7.0.102(zod@4.6.5))(react@19.3.0)
+        version: 0.31.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(ai@7.0.102(zod@4.6.5))(react@19.3.0)
+      '@dudousxd/nestjs-media-client':
+        specifier: 0.3.0
+        version: 0.3.0
       '@qdrant/js-client-rest':
         specifier: 1.19.0
         version: 1.19.0(typescript@7.0.2)
@@ -1097,6 +1100,10 @@ packages:
         optional: true
       reflect-metadata:
         optional: true
+
+  '@dudousxd/nestjs-media-client@0.3.0':
+    resolution: {integrity: sha512-8KikFJAaVyoQ1f5wEnmxRltvMCfhmH+n3cL4sRJ37By+BX8BD1m/fd6ywTSkpCAgcq3/OXHz+VA10PtskU+okQ==}
+    engines: {node: '>=20.3.0'}
 
   '@esbuild/aix-ppc64@0.28.1':
     resolution: {integrity: sha512-Svl7tq8k/08+p6CXPpRjQ1fKX+1odH/BQbb48fV6fj3CWHhsoIOoY87w1oHXm0qEpkIK3ZfVgp0hed3XBXzXMQ==}
@@ -4619,18 +4626,22 @@ snapshots:
       - '@nestjs/core'
       - reflect-metadata
 
-  '@dudousxd/nestjs-agent-react@0.31.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(ai@7.0.102(zod@4.6.5))(react@19.3.0)':
+  '@dudousxd/nestjs-agent-react@0.31.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(ai@7.0.102(zod@4.6.5))(react@19.3.0)':
     dependencies:
       '@ai-sdk/react': 4.0.125(react@19.3.0)(zod@4.6.5)
       '@dudousxd/nestjs-agent-core': 0.34.0
       ai: 7.0.102(zod@4.6.5)
       react: 19.3.0
+    optionalDependencies:
+      '@dudousxd/nestjs-media-client': 0.3.0
     transitivePeerDependencies:
       - '@nestjs/common'
       - '@nestjs/core'
       - reflect-metadata
 
   '@dudousxd/nestjs-diagnostics@0.7.2': {}
+
+  '@dudousxd/nestjs-media-client@0.3.0': {}
 
   '@esbuild/aix-ppc64@0.28.1':
     optional: true

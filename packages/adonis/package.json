@@ -156,6 +156,11 @@
       "import": "./dist/src/react/genui/json-render.js",
       "default": "./dist/src/react/genui/json-render.js"
     },
+    "./react/media": {
+      "types": "./dist/src/react/media.d.ts",
+      "import": "./dist/src/react/media.js",
+      "default": "./dist/src/react/media.js"
+    },
     "./react/markdown": {
       "types": "./dist/src/react/markdown.d.ts",
       "import": "./dist/src/react/markdown.js",
@@ -211,6 +216,7 @@
     "@adonisjs/redis": "^9.2.0 || ^10.0.0 || ^11.0.0",
     "@dudousxd/nestjs-agent-core": ">=0.26.0 <1.0.0",
     "@dudousxd/nestjs-agent-react": ">=0.30.0 <1.0.0",
+    "@dudousxd/nestjs-media-client": ">=0.3.0 <1.0.0",
     "@qdrant/js-client-rest": "^1.11.0",
     "ai": "^7.0.0",
     "node-sql-parser": "^5.3.0",
@@ -263,6 +269,9 @@
     "@dudousxd/nestjs-agent-react": {
       "optional": true
     },
+    "@dudousxd/nestjs-media-client": {
+      "optional": true
+    },
     "@adonis-agora/media": {
       "optional": true
     }
@@ -281,6 +290,7 @@
     "@ai-sdk/react": "^4.0.125",
     "@dudousxd/nestjs-agent-core": "0.33.0",
     "@dudousxd/nestjs-agent-react": "0.31.0",
+    "@dudousxd/nestjs-media-client": "0.3.0",
     "@qdrant/js-client-rest": "1.19.0",
     "@tanstack/intent": "0.4.0",
     "@testing-library/dom": "10.4.2",

@@ -4,14 +4,19 @@
  * the app's `MediaManager`; use the class directly to wire it over a media setup of your own.
  */
 export {
+  type BeginMediaUploadInput,
+  type BeginMediaUploadResult,
   DEFAULT_AGENT_MEDIA_COLLECTION,
   DEFAULT_AGENT_MEDIA_OWNER_TYPE,
+  DEFAULT_AGENT_MEDIA_TUS_BASE_PATH,
   MediaAttachmentStaging,
   type MediaAttachmentStagingDeps,
   type MediaAttachmentsOptions,
   type MediaDiskLike,
   type MediaRecordLike,
+  type MediaResumableLike,
   type MediaStorageLike,
   type MediaStoreLike,
+  MediaUploadRefusedError,
   type ReferencedMediaLike,
 } from './media-attachment-staging.js';

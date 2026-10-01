@@ -176,6 +176,14 @@ const { files } = chat.composer
 
 A reloaded thread returns them on the user message; `messageFiles(message)` reads them back.
 
+For large files over a resumable media library (`uploads.resumable` in `config/media.ts`), upload in chunks over tus instead — same composer, one prop; it needs the optional peer `@dudousxd/nestjs-media-client`:
+
+```tsx
+import { mediaAttachments } from '@adonis-agora/agent/react/media'
+
+<AgentProvider attachments={{ upload: mediaAttachments() }}><Chat /></AgentProvider>
+```
+
 ## The rest of the surface
 
 | Hook | Reads |
@@ -201,8 +209,7 @@ Every route is listed in [Streaming & HTTP](/docs/agent/streaming-and-http). Err
 | `@adonis-agora/agent/react/genui` | `GenuiProvider`, `GenerativeUI` — draw the components an agent pushes ([Generative UI](/docs/agent/generative-ui)) |
 | `@adonis-agora/agent/react/genui/json-render` | composed trees through `@json-render/react` |
 | `@adonis-agora/agent/react/markdown` | `AgentMarkdown`, a streaming markdown renderer (`streamdown` and friends are optional peers of the React package) |
-
-The resumable-upload strategy of `@dudousxd/nestjs-agent-react/media` is not re-exported: this package uploads attachments as `multipart`, which the default client already does.
+| `@adonis-agora/agent/react/media` | `mediaAttachments()` — resumable (tus) attachment uploads ([Resumable uploads](/docs/agent/authoring/attachments#resumable-uploads-tus)) |
 
 <Callout type="info" title="Not using React?">
 The framework-free stream client stays at `@adonis-agora/agent/client` — see [Browser client](/docs/agent/browser-client).

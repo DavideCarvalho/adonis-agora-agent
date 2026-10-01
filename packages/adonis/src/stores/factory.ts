@@ -1,6 +1,7 @@
 import type { ApplicationService } from '@adonisjs/core/types';
 import type {
   MediaAttachmentsOptions,
+  MediaResumableLike,
   MediaStorageLike,
   MediaStoreLike,
 } from '../media/media-attachment-staging.js';
@@ -572,6 +573,8 @@ export const attachmentStores = {
       const manager = (await app.container.make(media.MediaManager as never)) as {
         storage: MediaStorageLike;
         store: MediaStoreLike;
+        hasResumable?: boolean;
+        resumable?: MediaResumableLike;
       };
       const { MediaAttachmentStaging } = await import('../media/media-attachment-staging.js');
       return new MediaAttachmentStaging(
@@ -579,6 +582,8 @@ export const attachmentStores = {
           storage: manager.storage,
           store: manager.store,
           ...(agentStore !== undefined ? { agentStore } : {}),
+          // `uploads.resumable` in config/media.ts → resumable (tus) uploads, else multipart only.
+          uploads: manager.hasResumable === true ? (manager.resumable ?? null) : null,
         },
         options,
       );

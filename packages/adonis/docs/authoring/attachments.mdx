@@ -54,7 +54,28 @@ Omit `attachments` and they are off: no upload route, and a send naming one answ
 
 ## The upload route and the send
 
-With a store configured, **`POST /agent/attachments`** takes a multipart `file`, checks it against the store's limits — `413` over the size cap, `415` for a type not on the list — and answers the `MessageAttachment` (`{ mediaId, url, contentType, name }`). `GET /agent/config` reports the same limits (`attachments: { enabled, upload: 'multipart', maxBytes, allowedContentTypes, maxPerMessage }`), which is where `@dudousxd/nestjs-agent-react`'s `useAttachments` takes its defaults from.
+With a store configured, **`POST /agent/attachments`** takes a multipart `file`, checks it against the store's limits — `413` over the size cap, `415` for a type not on the list — and answers the `MessageAttachment` (`{ mediaId, url, contentType, name }`). `GET /agent/config` reports the same limits (`attachments: { enabled, upload, maxBytes, allowedContentTypes, maxPerMessage }` — `upload` is `'resumable'` when the routes below are mounted, else `'multipart'`), which is where `@dudousxd/nestjs-agent-react`'s `useAttachments` takes its defaults from.
+
+### Resumable uploads (tus)
+
+With `attachmentStores.media()` over a media library that has `uploads.resumable` in `config/media.ts` (and its tus `routes.enabled`), large files upload in chunks and resume after a dropped connection. The agent's routes never carry a byte:
+
+| Route | Does |
+| --- | --- |
+| `POST /agent/attachments/uploads` | `{ filename, contentType, size }` → validates against the store's limits (`400` / `413` / `415`), opens a tus session the actor owns, answers `{ mediaId, uploadId, location }` |
+| `PATCH <location>` | the bytes, to `@adonis-agora/media`'s own tus routes (`/media/uploads/tus/:id` by default — set `tusBasePath` if `routes.prefix` differs) |
+| `POST /agent/attachments/uploads/:mediaId/complete` | confirms the bytes landed whole and answers the `MessageAttachment` — `409` while they are still missing, `422` (and the upload dropped) when the size does not match, `404` for an id that is not the caller's |
+| `DELETE /agent/attachments/uploads/:mediaId` | drops one of the caller's uploads, aborting it if still in flight |
+
+These routes are mounted only when the media library is resumable, and then `GET /agent/config` reports `upload: 'resumable'`. The multipart route stays. On the client it is one line — see [React → Attachments](/docs/agent/react#attachments):
+
+```tsx
+import { mediaAttachments } from '@adonis-agora/agent/react/media'
+
+<AgentProvider attachments={{ upload: mediaAttachments() }}>
+```
+
+An upload is not attachable until it completes: a send naming a pending `mediaId` is refused like an unknown one. If `routes.collection` is set on the media library's tus routes, its `acceptsMimeTypes` also gates these uploads.
 
 A send then names uploads **by id only**:
 
