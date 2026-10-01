@@ -34,8 +34,8 @@ preflight?(
 
 **Files:** `packages/core/src/spi/tool.ts`, `tool-registry.ts`, `agent-loop.ts`, authoring de ferramenta funcional, exports e testes de registry/loop.
 
-- [ ] Executar baseline focal de approvals e registry.
-- [ ] Escrever os cenários abaixo antes da implementação e verificar que falham pelo comportamento ausente.
+- [x] Executar baseline focal de approvals e registry.
+- [x] Escrever os cenários abaixo antes da implementação e verificar que falham pelo comportamento ausente.
 
 ```ts
 // Cenário principal: o domínio já tem o reembolso.
@@ -47,40 +47,47 @@ const handler = {
 // Assert: resultado refunded:true, nenhum approval-requested, execute nunca chamado.
 ```
 
-- [ ] Expor o contrato acima para classes e ferramentas funcionais.
-- [ ] Executar gates e parsing antes de `prepare`; retornar denied/completed sem cartão.
-- [ ] Journalizar preparação no checkpoint existente de modelo/claim; quando o worker que ofereceu a ferramenta difere do coordenador, enviar o resultado confiável no retorno journaled do modelo e consumi-lo no claim. Sobrescrever qualquer stamp vindo do provider. Não inserir checkpoint incondicional em runs antigos.
-- [ ] Checar `execute` após autorização e parsing atuais, dentro da invocação, também em chamada direta/MCP.
-- [ ] Testar aprovação automática e lembrada, input inválido, gates recusadas, hook que lança, domínio mudado entre cartão e clique e replay.
-- [ ] Recusa do domínio nunca faz retry, mesmo com motivo contendo deadlock ou classificador customizado aceitando todos os erros. Escapar outputs comuns com marcadores internos; replays de journals antigos continuam legíveis.
+- [x] Expor o contrato acima para classes e ferramentas funcionais.
+- [x] Executar gates e parsing antes de `prepare`; retornar denied/completed sem cartão.
+- [x] Journalizar preparação no checkpoint existente de modelo/claim; quando o worker que ofereceu a ferramenta difere do coordenador, enviar o resultado confiável no retorno journaled do modelo e consumi-lo no claim. Sobrescrever qualquer stamp vindo do provider. Não inserir checkpoint incondicional em runs antigos.
+- [x] Checar `execute` após autorização e parsing atuais, dentro da invocação, também em chamada direta/MCP.
+- [x] Testar aprovação automática e lembrada, input inválido, gates recusadas, hook que lança, domínio mudado entre cartão e clique e replay.
+- [x] Recusa do domínio nunca faz retry, mesmo com motivo contendo deadlock ou classificador customizado aceitando todos os erros. Escapar outputs comuns com marcadores internos; replays de journals antigos continuam legíveis.
 
 ## Task 2 — Aviary: cartão, persistência e React
 
 **Files:** protocolo/eventos/tipos core, store SPI, packages/store-drizzle e packages/store-mikro-orm, React transcript/approvals/presentation, testes de store e durable.
 
-- [ ] Teste inicial: preparar confirmação `Refund order 7?`; stream e histórico preservam o texto, inclusive após replay/reload.
-- [ ] Adicionar `confirmation?: ToolConfirmation` ao pedido de aprovação e à leitura persistida.
-- [ ] Persistir confirmation no registro da chamada sem quebrar linhas antigas (campo nullable).
-- [ ] Consumir o override no React, com fallback aos templates estáticos para cartões sem override.
-- [ ] Validar paridade de stores, testes de renderer e persistência de confirmação.
-- [ ] Documentar API, adicionar changesets e passar checks focais, typecheck e lint dos arquivos alterados.
+- [x] Teste inicial: preparar confirmação `Refund order 7?`; stream e histórico preservam o texto, inclusive após replay/reload.
+- [x] Adicionar `confirmation?: ToolConfirmation` ao pedido de aprovação e à leitura persistida.
+- [x] Persistir confirmation no registro da chamada sem quebrar linhas antigas (campo nullable).
+- [x] Consumir o override no React, com fallback aos templates estáticos para cartões sem override.
+- [x] Validar paridade de stores, testes de renderer e persistência de confirmação.
+- [x] Documentar API, adicionar changesets e passar checks focais, typecheck e lint dos arquivos alterados.
 
 ## Task 3 — Agora: mesma API e comportamentos
 
 **Files:** `packages/adonis/src/spi/tool.ts`, `ai-tool-ref.ts`, `tool-registry.ts`, `agent-loop.ts`, `spi/agent-store.ts`, `spi/approval-policy.ts`, `types.ts`, `stream-events.ts`, `spi/token-stream-sink.ts`, `stores/lucid{,-schema}.ts`, `testing/in-memory-store.ts`, migration stub, testes approvals/registry/durable/store e docs.
 
-- [ ] Executar baseline focal de approvals e registry.
-- [ ] Repetir os cenários de falha antes da implementação.
-- [ ] Adaptar o mesmo contrato às gates e checkpoints do Agora, preservando variantes de persona e retry. Preparar na origem do resultado journaled de modelo para preservar a retomada por um processo sem ferramenta registrada antes do primeiro claim; não adicionar transporte remoto onde o runner não o tem.
-- [ ] Acrescentar confirmation ao wire e histórico, com coluna nullable e provisionamento/migração consistente.
-- [ ] Usar a camada React compartilhada; verificar com build local da Aviary sem gravar paths locais nas dependências publicadas.
-- [ ] O cliente nativo sem React preserva confirmação, aprovador, validade e motivo. Ferramentas sem hook e frames antigos mantêm campos opcionais ausentes quando não fornecidos.
-- [ ] Documentar, adicionar changeset e passar checks focais, typecheck e lint dos arquivos alterados.
+- [x] Executar baseline focal de approvals e registry.
+- [x] Repetir os cenários de falha antes da implementação.
+- [x] Adaptar o mesmo contrato às gates e checkpoints do Agora, preservando variantes de persona e retry. Preparar na origem do resultado journaled de modelo para preservar a retomada por um processo sem ferramenta registrada antes do primeiro claim; não adicionar transporte remoto onde o runner não o tem.
+- [x] Acrescentar confirmation ao wire e histórico, com coluna nullable e provisionamento/migração consistente.
+- [x] Usar a camada React compartilhada; verificar com build local da Aviary sem gravar paths locais nas dependências publicadas.
+- [x] O cliente nativo sem React preserva confirmação, aprovador, validade e motivo. Ferramentas sem hook e frames antigos mantêm campos opcionais ausentes quando não fornecidos.
+- [x] Documentar, adicionar changeset e passar checks focais, typecheck e lint dos arquivos alterados.
 
 ## Task 4 — Revisão e entrega pareada
 
-- [ ] Revisão de requisitos: nenhuma action automática/lembrada pula preflight; replay não recalcula cartão; denied/completed não criam efeito; gates atuais continuam aplicadas.
-- [ ] Revisão de qualidade: tipos equivalentes nos dois repos, sem `as any`, sem duplicar React/catalog, sem checkpoints incompatíveis e sem prometer exatamente uma escrita sob crash.
-- [ ] Rodar testes focais finais e checks completos apropriados em cada repo. Registrar comandos e resultados reais.
-- [ ] Criar PRs pareados e registrar ambos no T3. Não mergear nem publicar automaticamente.
-- [ ] Mostrar plano detalhado da próxima etapa: propostas independentes, estados e corridas nos dois servidores.
+- [x] Revisão de requisitos: nenhuma action automática/lembrada pula preflight; replay não recalcula cartão; denied/completed não criam efeito; gates atuais continuam aplicadas.
+- [x] Revisão de qualidade: tipos equivalentes nos dois repos, sem `as any`, sem duplicar React/catalog, sem checkpoints incompatíveis e sem prometer exatamente uma escrita sob crash.
+- [x] Rodar testes focais finais e checks completos apropriados em cada repo. Registrar comandos e resultados reais.
+- [x] Criar PRs pareados e registrar ambos no T3. Não mergear nem publicar automaticamente.
+- [x] Mostrar plano detalhado da próxima etapa: propostas independentes, estados e corridas nos dois servidores.
+
+## Evidência da entrega — 2026-10-01
+
+- Aviary/Nest: suíte completa final com 2818 testes passando; typechecks e build finais passaram.
+- Agora/Adonis: suíte completa final com 1776 testes passando e 89 skipped; typecheck e build finais passaram. Os três failures encontrados na primeira rodada foram corrigidos e a suíte completa foi reexecutada.
+- PRs pareados abertos e vinculados no T3: [Nest #283](https://github.com/DavideCarvalho/nestjs-agent/pull/283) e [Agora #274](https://github.com/DavideCarvalho/adonis-agora-agent/pull/274). Sem merge/publicação automática.
+- Próxima etapa documentada em [independent-proposals](2026-10-01-independent-proposals.md), somente para revisão; implementação ainda não iniciada.
