@@ -250,6 +250,7 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
       // Feedback rates a message in ITS thread; a fork starts unrated.
       messages: kept.map(({ feedback: _feedback, ...message }) => ({ ...message })),
       ...(source.model != null ? { model: source.model } : {}),
+      ...(source.defaultAgent != null ? { defaultAgent: source.defaultAgent } : {}),
     };
     this.threads.set(id, row);
     return this.toSummary(row);
@@ -274,7 +275,14 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
     if (patch.model !== undefined) {
       row.model = patch.model;
     }
+    if (patch.defaultAgent !== undefined) {
+      row.defaultAgent = patch.defaultAgent;
+    }
     row.updatedAt = this.now();
+  }
+
+  async defaultAgentForThread(threadId: string): Promise<string | null> {
+    return this.threads.get(threadId)?.defaultAgent ?? null;
   }
 
   async clearActiveStream(threadId: string, runId: string): Promise<void> {
@@ -862,6 +870,7 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
       ...(row.pinnedAt !== undefined ? { pinnedAt: row.pinnedAt } : {}),
       ...(last !== undefined ? { lastMessagePreview: last.content.slice(0, 120) } : {}),
       model: row.model ?? null,
+      defaultAgent: row.defaultAgent ?? null,
       activeRunId: row.activeStreamId ?? null,
     };
   }

@@ -51,6 +51,7 @@ export {
   type ChatSendResult,
   type QueuedSend,
   RegenerateNeedsThreadError,
+  UnknownAgentError,
 } from './agent-service.js';
 export type {
   AiToolMeta,

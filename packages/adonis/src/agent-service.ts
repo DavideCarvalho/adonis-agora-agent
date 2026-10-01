@@ -152,6 +152,14 @@ export interface AgentServiceOptions {
 }
 
 /** A send's attachments were refused — `status` is what the chat route answers (`403`, `501`). */
+/** A thread's `defaultAgent` named an agent this app does not register. */
+export class UnknownAgentError extends Error {
+  constructor(readonly agentName: string) {
+    super(`unknown agent "${agentName}"`);
+    this.name = 'UnknownAgentError';
+  }
+}
+
 export class AttachmentRefusedError extends Error {
   constructor(
     readonly status: 400 | 403 | 501,
@@ -247,15 +255,74 @@ export class AgentService {
    * thread's default agent. `false` when the store cannot persist it (no `updateThread`).
    */
   async setThreadModel(actor: Actor, threadId: string, model: string | null): Promise<boolean> {
+    return this.updateThreadSettings(actor, threadId, { model });
+  }
+
+  /**
+   * Set a thread's default agent and/or pin its model (`PATCH <path>/threads/:id`). `null` clears
+   * either. The model is checked against the catalog for the agent the thread's next turn runs as —
+   * the one this patch sets, else the thread's own default, else the configured one. A
+   * `defaultAgent` that names no registered agent is refused ({@link UnknownAgentError}). `false`
+   * when the store cannot persist it (no `updateThread`). Ownership is the caller's to check.
+   */
+  async updateThreadSettings(
+    actor: Actor,
+    threadId: string,
+    patch: { defaultAgent?: string | null; model?: string | null },
+  ): Promise<boolean> {
+    if (patch.defaultAgent === undefined && patch.model === undefined) {
+      return true;
+    }
     if (this.store.updateThread === undefined) {
       return false;
     }
-    const pinned =
-      model === null
-        ? null
-        : await this.assertModelAllowed(actor, this.deps.defaultAgentName(), model);
-    await this.store.updateThread(threadId, { model: pinned });
+    if (typeof patch.defaultAgent === 'string' && !this.isKnownAgent(patch.defaultAgent)) {
+      throw new UnknownAgentError(patch.defaultAgent);
+    }
+    const model =
+      patch.model === undefined || patch.model === null
+        ? patch.model
+        : await this.assertModelAllowed(
+            actor,
+            patch.defaultAgent ?? (await this.resolveAgentName(undefined, threadId)),
+            patch.model,
+          );
+    await this.store.updateThread(threadId, {
+      ...(patch.defaultAgent !== undefined ? { defaultAgent: patch.defaultAgent } : {}),
+      ...(model !== undefined ? { model } : {}),
+    });
     return true;
+  }
+
+  private isKnownAgent(name: string): boolean {
+    return (
+      name === this.deps.defaultAgentName() ||
+      this.deps.agentDefinitions().some((definition) => definition.name === name)
+    );
+  }
+
+  /**
+   * The agent a send runs as: the one it names, else the thread's own default agent (when the
+   * thread exists and has one), else the configured default.
+   */
+  private async resolveAgentName(
+    agentName: string | undefined,
+    threadId: string | undefined,
+  ): Promise<string> {
+    if (agentName !== undefined) {
+      return agentName;
+    }
+    if (threadId !== undefined) {
+      const reader = this.store.defaultAgentForThread?.bind(this.store);
+      const threadDefault =
+        reader !== undefined
+          ? await reader(threadId)
+          : ((await this.store.getThread(threadId))?.defaultAgent ?? null);
+      if (threadDefault !== null && threadDefault !== undefined) {
+        return threadDefault;
+      }
+    }
+    return this.deps.defaultAgentName();
   }
 
   /**
@@ -365,7 +432,8 @@ export class AgentService {
       throw new RegenerateNeedsThreadError();
     }
     await this.assertWithinQuota(params.actor);
-    const agentName = params.agentName ?? this.deps.defaultAgentName();
+    // The send's own agent, else the thread's default agent, else the configured default.
+    const agentName = await this.resolveAgentName(params.agentName, params.threadId);
     // Before the thread exists, so a refused model or attachment leaves nothing behind.
     const model = await this.resolveModel(params.actor, agentName, params.model, params.threadId);
     const attachments = await this.resolveAttachments(params.actor, params.attachments ?? []);

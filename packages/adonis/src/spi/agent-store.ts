@@ -35,6 +35,8 @@ export interface UpdateThreadInput {
   title?: string;
   /** `null` unpins the thread's model (turns run on the provider default). */
   model?: string | null;
+  /** The agent a send that names none runs as; `null` → the configured default agent. */
+  defaultAgent?: string | null;
 }
 
 export interface AppendMessageInput {
@@ -200,6 +202,12 @@ export interface AgentStore {
    * { model }` answers `501` without it); a title alone still goes through {@link setTitle}.
    */
   updateThread?(threadId: string, patch: UpdateThreadInput): Promise<void>;
+  /**
+   * OPTIONAL: the thread's own default agent (`UpdateThreadInput.defaultAgent`), or `null` when it
+   * has none or does not exist. Read on every send that names no agent, so it is one scalar rather
+   * than {@link getThread}'s whole transcript; a store without it is read through `getThread`.
+   */
+  defaultAgentForThread?(threadId: string): Promise<string | null>;
   /**
    * OPTIONAL: make a transient thread a regular one, listed by `listThreads` from then on. A thread
    * that is not transient is left as it is. Absent → `POST <path>/threads/:id/promote` answers `501`.

@@ -410,6 +410,7 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
         summary_message_count: 0,
         active_stream_id: null,
         model: source.model ?? null,
+        default_agent: source.default_agent ?? null,
         created_at: now,
         updated_at: now,
         deleted_at: null,
@@ -457,7 +458,14 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
     const update: Record<string, unknown> = { updated_at: Date.now() };
     if (patch.title !== undefined) update.title = patch.title;
     if (patch.model !== undefined) update.model = patch.model;
+    if (patch.defaultAgent !== undefined) update.default_agent = patch.defaultAgent;
     await this.db.from(AGENT_TABLES.threads).where('id', threadId).update(update);
+  }
+
+  async defaultAgentForThread(threadId: string): Promise<string | null> {
+    await this.init();
+    const row = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
+    return typeof row?.default_agent === 'string' ? row.default_agent : null;
   }
 
   async clearActiveStream(threadId: string, runId: string): Promise<void> {
@@ -1047,6 +1055,7 @@ function threadRowToSummary(row: Record<string, unknown>, lastPreview?: string):
     ...(pinnedAt !== null && pinnedAt !== undefined ? { pinnedAt: msToIso(pinnedAt) } : {}),
     ...(lastPreview !== undefined ? { lastMessagePreview: lastPreview.slice(0, 120) } : {}),
     model: typeof row.model === 'string' ? row.model : null,
+    defaultAgent: typeof row.default_agent === 'string' ? row.default_agent : null,
     activeRunId: typeof row.active_stream_id === 'string' ? row.active_stream_id : null,
   };
 }

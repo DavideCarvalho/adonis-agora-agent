@@ -67,6 +67,7 @@ export function createTableStatements(): string[] {
       "active_stream_id" VARCHAR(255) NULL,
       "model" VARCHAR(255) NULL,
       "queue_pause" TEXT NULL,
+      "default_agent" VARCHAR(255) NULL,
       "created_at" BIGINT NOT NULL,
       "updated_at" BIGINT NOT NULL,
       "deleted_at" BIGINT NULL
@@ -214,6 +215,7 @@ const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }
   { table: AGENT_TABLES.messages, column: 'feedback', type: 'TEXT NULL' },
   { table: AGENT_TABLES.threads, column: 'model', type: 'VARCHAR(255) NULL' },
   { table: AGENT_TABLES.threads, column: 'queue_pause', type: 'TEXT NULL' },
+  { table: AGENT_TABLES.threads, column: 'default_agent', type: 'VARCHAR(255) NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'approver', type: 'VARCHAR(255) NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'expires_at', type: 'BIGINT NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'remember', type: 'INTEGER NULL' },
