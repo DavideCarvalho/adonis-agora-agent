@@ -64,6 +64,7 @@ import {
   type ToolsBarrel,
   toApprovalPolicy,
   toModelCatalog,
+  UnknownAgentError,
   withActorLabel,
   withActorLabels,
 } from '../src/index.js';
@@ -1025,21 +1026,37 @@ export default class AgentProvider {
       const threadId = String(ctx.params.id);
       const owner = await service.threadOwner(threadId);
       if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
-      const body = (ctx.request.body() ?? {}) as { title?: unknown; model?: unknown };
+      const body = (ctx.request.body() ?? {}) as {
+        title?: unknown;
+        model?: unknown;
+        defaultAgent?: unknown;
+      };
       if (body.model !== undefined && body.model !== null && typeof body.model !== 'string') {
         return ctx.response.badRequest({ message: 'model must be a string or null' });
       }
-      if (body.model !== undefined) {
+      if (
+        body.defaultAgent !== undefined &&
+        body.defaultAgent !== null &&
+        typeof body.defaultAgent !== 'string'
+      ) {
+        return ctx.response.badRequest({ message: 'defaultAgent must be a string or null' });
+      }
+      if (body.model !== undefined || body.defaultAgent !== undefined) {
         try {
-          const pinned = await service.setThreadModel(actor, threadId, body.model as string | null);
-          if (!pinned) {
+          const saved = await service.updateThreadSettings(actor, threadId, {
+            ...(body.model !== undefined ? { model: body.model as string | null } : {}),
+            ...(body.defaultAgent !== undefined
+              ? { defaultAgent: body.defaultAgent as string | null }
+              : {}),
+          });
+          if (!saved) {
             return ctx.response.status(501).json({
               message:
-                "Pinning a thread's model requires an AgentStore that implements updateThread().",
+                "Setting a thread's model or default agent requires an AgentStore that implements updateThread().",
             });
           }
         } catch (error) {
-          if (error instanceof ModelNotAllowedError) {
+          if (error instanceof ModelNotAllowedError || error instanceof UnknownAgentError) {
             return ctx.response.badRequest({ message: error.message });
           }
           throw error;

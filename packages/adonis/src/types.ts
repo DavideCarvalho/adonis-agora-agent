@@ -437,6 +437,12 @@ export interface ThreadSummary {
    */
   model?: string | null;
   /**
+   * The agent this thread's turns run as when a send names none (`PATCH /threads/:id
+   * { defaultAgent }`). `null` → the configured default agent. Undefined for a store that does not
+   * persist it.
+   */
+  defaultAgent?: string | null;
+  /**
    * The run streaming on this thread right now — the one a reloading client re-attaches to
    * (`GET <path>/chat/:runId/stream`) — or `null` when none is. Set when a turn starts, cleared when
    * it ends.

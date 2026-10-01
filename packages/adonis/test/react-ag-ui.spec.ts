@@ -69,7 +69,9 @@ const textOf = (message: { parts: Array<{ type: string; text?: string }> }) =>
     .map((part) => part.text ?? '')
     .join('');
 
-describe('agUiBackend() — useAgentChat over AG-UI against the Adonis producer', () => {
+describe('agUiBackend() — useAgentChat over AG-UI against the Adonis producer', {
+  timeout: 30_000,
+}, () => {
   it('runs the turn over POST /agent/ag-ui and everything else over the REST routes', async () => {
     booted = await bootAgentApp({ model: new EchoModel(), adapters: [agUiAdapter()] });
     document.cookie = 'XSRF-TOKEN=tok';

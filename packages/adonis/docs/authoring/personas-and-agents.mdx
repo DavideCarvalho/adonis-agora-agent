@@ -92,7 +92,7 @@ export default defineConfig({
 })
 ```
 
-A request targets an agent by name via the `agent` field on `POST /agent/chat` (omit it for the default). Model, store, sink, and governance are shared across all agents; each definition overrides only its own prompt, tools, personas, `defaultPersona`, `modelId`, `maxSteps`, `maxDelegationDepth`, `maxAgentAppearances`, and `actorResolver`.
+A request targets an agent by name via the `agent` field on `POST /agent/chat`. Omit it and the turn runs as the **thread's** default agent — `PATCH /agent/threads/:id { defaultAgent: 'billing' }` sets it, `null` clears it (a name no agent is registered under is a `400`) — else as the configured default. Model, store, sink, and governance are shared across all agents; each definition overrides only its own prompt, tools, personas, `defaultPersona`, `modelId`, `maxSteps`, `maxDelegationDepth`, `maxAgentAppearances`, and `actorResolver`.
 
 ### Per-agent identity
 
