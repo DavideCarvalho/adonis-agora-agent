@@ -24,6 +24,9 @@
     `autoCreateTables: false`, add a migration whose `up()` calls `createAgentTables` again.
   - **`claimActiveStream`** admits the holder re-claiming its own thread on a MySQL connection without
     `FOUND_ROWS`, which reports changed rather than matched rows.
+  - **Concurrent provisioning on MySQL.** Several processes creating the schema at once could fail
+    on `CREATE INDEX` with a deadlock (MySQL rolls one session back while the other's index is not
+    yet in the catalog); a statement rolled back that way is now sent again.
   - **The Lucid token sink** retries a writer InnoDB rolled back as a deadlock victim — how MySQL
     settles two replicas appending to one run at once — like a duplicate key.
 
