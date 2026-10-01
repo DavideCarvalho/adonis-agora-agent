@@ -1,8 +1,7 @@
 import type { HttpContext } from '@adonisjs/core/http';
-import type { AgentService } from '../agent-service.js';
-import type { ProtocolAdapter, ProtocolAdapterHost } from '../spi/protocol-adapter.js';
-import type { Actor, PageContext } from '../types.js';
 import {
+  AG_UI_CUSTOM,
+  type AgUiEvent,
   parseRunInput,
   planResume,
   type ResumeDecision,
@@ -11,9 +10,11 @@ import {
   readContext,
   readForwardedProps,
   readUserTurn,
-} from './input.js';
+} from '@dudousxd/nestjs-agent-core/ag-ui';
+import type { AgentService } from '../agent-service.js';
+import type { ProtocolAdapter, ProtocolAdapterHost } from '../spi/protocol-adapter.js';
+import type { Actor, PageContext } from '../types.js';
 import { type AgUiStreamOptions, agUiEvents, agUiSse } from './stream.js';
-import { AG_UI_CUSTOM, type AgUiEvent } from './types.js';
 
 export interface AgUiAdapterOptions {
   /** Where the route mounts, under the agent's path. Default `'ag-ui'` → `POST <path>/ag-ui`. */

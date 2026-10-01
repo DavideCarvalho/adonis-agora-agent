@@ -237,8 +237,8 @@ importers:
         specifier: ^4.0.125
         version: 4.0.125(react@19.3.0)(zod@4.6.5)
       '@dudousxd/nestjs-agent-core':
-        specifier: 0.33.0
-        version: 0.33.0
+        specifier: 0.36.0
+        version: 0.36.0
       '@dudousxd/nestjs-agent-react':
         specifier: 0.31.0
         version: 0.31.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(ai@7.0.102(zod@4.6.5))(react@19.3.0)
@@ -1030,11 +1030,11 @@ packages:
     resolution: {integrity: sha512-QxULHAm7cNu72w97JUNCBFODFaXpbDg+dP8b/oWFAZ2MTRppA3U00Y2L1HqaS4J6yBqxwa/Y3nMBaxVKbB/NsA==}
     engines: {node: '>=20.19.0'}
 
-  '@dudousxd/nestjs-agent-core@0.33.0':
-    resolution: {integrity: sha512-pQcSjNvfUpuK5a9maN+VTkRBdMLuXGfylQecJJEuO2rf91zkb/sPNVUqgHh1sB7DX837zDjxBakrzx8oDSjA6g==}
-
   '@dudousxd/nestjs-agent-core@0.34.0':
     resolution: {integrity: sha512-b2xK7pWoxQq/NjbTqzoiysd4FBtXJ67gmE/nIcemCDObY4+GTSmcAPXieXpJZH+9S+8YPGWwW+Zjm2Rt438RYw==}
+
+  '@dudousxd/nestjs-agent-core@0.36.0':
+    resolution: {integrity: sha512-q6vykpTOlE2iUYmy/tD1XRLuc5O+KJQ4+Raw7GzBxGhNxUsnrq2uwBkpHZW60OCQWQ/NkMEh5w9WxMgpv794ig==}
 
   '@dudousxd/nestjs-agent-react@0.31.0':
     resolution: {integrity: sha512-hl1rK+AHMeNiiGfO4i+hlhvWPTOyfASrjr8lPLq+IhuFr7CeDpn4QoTDP0ju4TtoGkaA2tVjylXOMa5lrOSbiw==}
@@ -4608,7 +4608,7 @@ snapshots:
 
   '@csstools/css-tokenizer@4.0.0': {}
 
-  '@dudousxd/nestjs-agent-core@0.33.0':
+  '@dudousxd/nestjs-agent-core@0.34.0':
     dependencies:
       '@dudousxd/nestjs-diagnostics': 0.7.2
       '@standard-schema/spec': 1.1.0
@@ -4617,7 +4617,7 @@ snapshots:
       - '@nestjs/core'
       - reflect-metadata
 
-  '@dudousxd/nestjs-agent-core@0.34.0':
+  '@dudousxd/nestjs-agent-core@0.36.0':
     dependencies:
       '@dudousxd/nestjs-diagnostics': 0.7.2
       '@standard-schema/spec': 1.1.0

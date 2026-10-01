@@ -129,4 +129,4 @@ for await (const event of agUiEvents(service.subscribe(runId), {
 }
 ```
 
-`AgUiEncoder` is the pure projection underneath (frame in, events out); `planResume`, `readApprovalPayload` and `readAnswersPayload` read a resume list; `encodeInterruptId` / `decodeInterruptId` are the address codec.
+The projection is shared with `@dudousxd/nestjs-agent`: it lives once, framework-free, in `@dudousxd/nestjs-agent-core/ag-ui` (an optional peer — install 0.35 or later to use this entry), and `@adonis-agora/agent/ag-ui` re-exports it, with `AgUiEncoder` and `agUiEvents` reading this package's `StreamFrame`s (`toAgUiFrame` / `agUiFrames` are the mapping). `AgUiEncoder` is the pure projection underneath (frame in, events out); `planResume`, `readApprovalPayload` and `readAnswersPayload` read a resume list; `encodeInterruptId` / `decodeInterruptId` are the address codec.
