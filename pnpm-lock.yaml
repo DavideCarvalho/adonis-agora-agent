@@ -269,6 +269,9 @@ importers:
       agent-0-56:
         specifier: npm:@adonis-agora/agent@0.56.0
         version: '@adonis-agora/agent@0.56.0(b44684d62c2cc5a7830341894cf016a3)'
+      agent-0-58:
+        specifier: npm:@adonis-agora/agent@0.58.0
+        version: '@adonis-agora/agent@0.58.0(b44684d62c2cc5a7830341894cf016a3)'
       ai:
         specifier: 7.0.102
         version: 7.0.102(zod@4.6.5)
@@ -370,6 +373,63 @@ packages:
       '@adonisjs/lucid': ^22.4.0
       '@adonisjs/redis': ^9.2.0 || ^10.0.0 || ^11.0.0
       '@dudousxd/nestjs-agent-core': '>=0.26.0 <1.0.0'
+      '@dudousxd/nestjs-agent-react': '>=0.30.0 <1.0.0'
+      '@dudousxd/nestjs-media-client': '>=0.3.0 <1.0.0'
+      '@qdrant/js-client-rest': ^1.11.0
+      ai: ^7.0.0
+      node-sql-parser: ^5.3.0
+      react: ^18.0.0 || ^19.0.0
+      zod: ^4.0.0
+    peerDependenciesMeta:
+      '@adonis-agora/authz':
+        optional: true
+      '@adonis-agora/diagnostics':
+        optional: true
+      '@adonis-agora/durable':
+        optional: true
+      '@adonis-agora/media':
+        optional: true
+      '@adonis-agora/telescope':
+        optional: true
+      '@adonisjs/assembler':
+        optional: true
+      '@adonisjs/core':
+        optional: true
+      '@adonisjs/lucid':
+        optional: true
+      '@adonisjs/redis':
+        optional: true
+      '@dudousxd/nestjs-agent-core':
+        optional: true
+      '@dudousxd/nestjs-agent-react':
+        optional: true
+      '@dudousxd/nestjs-media-client':
+        optional: true
+      '@qdrant/js-client-rest':
+        optional: true
+      ai:
+        optional: true
+      node-sql-parser:
+        optional: true
+      react:
+        optional: true
+      zod:
+        optional: true
+
+  '@adonis-agora/agent@0.58.0':
+    resolution: {integrity: sha512-oENv7n2e/Y5YOaoRjKFrA7g3QhLjtkpe6D51DsFTKrfxyUwXcR+UXZdVlpT6D0Rnpumwg66dwD+NIC0gbyUvBQ==}
+    engines: {node: '>=20.6.0'}
+    peerDependencies:
+      '@adonis-agora/authz': '>=0.4.2 <1.0.0'
+      '@adonis-agora/diagnostics': '>=0.1.0 <1.0.0'
+      '@adonis-agora/durable': '>=0.8.0 <1.0.0'
+      '@adonis-agora/media': '>=0.18.0 <1.0.0'
+      '@adonis-agora/telescope': '>=0.4.0 <1.0.0'
+      '@adonisjs/assembler': ^8.4.0
+      '@adonisjs/core': ^7.3.0
+      '@adonisjs/lucid': ^22.4.0
+      '@adonisjs/redis': ^9.2.0 || ^10.0.0 || ^11.0.0
+      '@dudousxd/nestjs-agent-core': '>=0.35.0 <1.0.0'
       '@dudousxd/nestjs-agent-react': '>=0.30.0 <1.0.0'
       '@dudousxd/nestjs-media-client': '>=0.3.0 <1.0.0'
       '@qdrant/js-client-rest': ^1.11.0
@@ -3880,6 +3940,32 @@ packages:
 snapshots:
 
   '@adonis-agora/agent@0.56.0(b44684d62c2cc5a7830341894cf016a3)':
+    dependencies:
+      '@modelcontextprotocol/sdk': 1.30.1(supports-color@10.2.2)(zod@4.6.5)
+      '@standard-schema/spec': 1.1.0
+    optionalDependencies:
+      '@adonis-agora/authz': 0.16.1(@adonis-agora/diagnostics@0.2.10(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/redis@11.0.0(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2))(ioredis@6.0.0(supports-color@10.2.2)))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(pg@8.23.0)(supports-color@10.2.2))
+      '@adonis-agora/diagnostics': 0.2.10(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/redis@11.0.0(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2))(ioredis@6.0.0(supports-color@10.2.2))
+      '@adonis-agora/durable': 0.41.1(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(pg@8.23.0)(supports-color@10.2.2))(@adonisjs/redis@11.0.0(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2))(ioredis@6.0.0(supports-color@10.2.2))(vitest@5.0.2(@types/node@26.6.3)(jsdom@30.1.1)(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.1)(yaml@2.9.0)))
+      '@adonis-agora/media': 0.18.1(@adonis-agora/telescope@0.21.1(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(pg@8.23.0)(supports-color@10.2.2)))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/drive@4.0.0(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1)))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(pg@8.23.0)(supports-color@10.2.2))
+      '@adonis-agora/telescope': 0.21.1(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(pg@8.23.0)(supports-color@10.2.2))
+      '@adonisjs/assembler': 8.5.2(typescript@7.0.2)
+      '@adonisjs/core': 7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1)
+      '@adonisjs/lucid': 22.4.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(pg@8.23.0)(supports-color@10.2.2)
+      '@adonisjs/redis': 11.0.0(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2)
+      '@dudousxd/nestjs-agent-core': 0.36.0
+      '@dudousxd/nestjs-agent-react': 0.31.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(ai@7.0.102(zod@4.6.5))(react@19.3.0)
+      '@dudousxd/nestjs-media-client': 0.3.0
+      '@qdrant/js-client-rest': 1.19.0(typescript@7.0.2)
+      ai: 7.0.102(zod@4.6.5)
+      node-sql-parser: 5.4.0
+      react: 19.3.0
+      zod: 4.6.5
+    transitivePeerDependencies:
+      - '@cfworker/json-schema'
+      - supports-color
+
+  '@adonis-agora/agent@0.58.0(b44684d62c2cc5a7830341894cf016a3)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.30.1(supports-color@10.2.2)(zod@4.6.5)
       '@standard-schema/spec': 1.1.0

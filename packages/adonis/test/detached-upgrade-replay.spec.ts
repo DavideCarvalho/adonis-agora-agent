@@ -5,6 +5,9 @@ import { Database } from '@adonisjs/lucid/database';
 import * as before from 'agent-0-56';
 import * as beforeDurable from 'agent-0-56/durable';
 import * as beforeTesting from 'agent-0-56/testing';
+import * as before58 from 'agent-0-58';
+import * as before58Durable from 'agent-0-58/durable';
+import * as before58Testing from 'agent-0-58/testing';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import * as afterDurable from '../src/durable/index.js';
@@ -37,6 +40,12 @@ const BEFORE = {
   agent: before as unknown as Module,
   durable: beforeDurable as unknown as DurableModule,
   testing: beforeTesting as unknown as TestingModule,
+} satisfies Code;
+/** The release that started a detached delegation as a `spawn:` child of the turn. */
+const BEFORE_58 = {
+  agent: before58 as unknown as Module,
+  durable: before58Durable as unknown as DurableModule,
+  testing: before58Testing as unknown as TestingModule,
 } satisfies Code;
 const AFTER = { agent: after, durable: afterDurable, testing: afterTesting } satisfies Code;
 
@@ -220,6 +229,15 @@ async function checkpointNames(phase: Phase, runId: string): Promise<string[]> {
   return (await phase.engine.listCheckpoints(runId)).map((checkpoint) => checkpoint.name);
 }
 
+/** The run `runId`'s single `detach:` step started. */
+async function detachedChildOf(phase: Phase, runId: string): Promise<string> {
+  const detaches = (await phase.engine.listCheckpoints(runId)).filter((checkpoint) =>
+    checkpoint.name.startsWith('detach:'),
+  );
+  expect(detaches).toHaveLength(1);
+  return String(detaches[0]?.output);
+}
+
 const dialects: ['sqlite' | 'pg'][] = [
   ['sqlite'],
   ...(pgUrl !== undefined ? [['pg'] as ['pg']] : []),
@@ -235,6 +253,7 @@ describe.each(dialects)('a run parked on 0.56.0, replayed on this release (%s)',
     );
     afterDurable.setDurableAgentContext(undefined);
     BEFORE.durable.setDurableAgentContext(undefined);
+    BEFORE_58.durable.setDurableAgentContext(undefined);
     for (const key of Object.keys(executions)) delete executions[key];
     if (db !== undefined && dialect === 'pg') {
       await db.rawQuery(`DROP SCHEMA IF EXISTS "${PG_SCHEMA}" CASCADE`).catch(() => undefined);
@@ -354,9 +373,10 @@ describe.each(dialects)('a run parked on 0.56.0, replayed on this release (%s)',
     // The parent finishes WITHOUT the answer: the delegate is parked on its own approval.
     expect(await settled(next, runId)).toEqual({ status: 'completed' });
     const names = await checkpointNames(next, runId);
-    const spawns = names.filter((name) => name.startsWith('spawn:'));
-    expect(spawns).toHaveLength(1);
-    const child = (spawns[0] as string).slice('spawn:'.length);
+    // The shape this release starts a detached run with: a run of its own, from a `detach:` step.
+    expect(names.filter((name) => name.startsWith('spawn:'))).toEqual([]);
+    expect(names).toContain('patch:agent:detached-unlinked');
+    const child = await detachedChildOf(next, runId);
     const purgeId = await parked(next, child, 'purge_cache');
     await next.service.approve(child, purgeId);
 
@@ -372,3 +392,111 @@ describe.each(dialects)('a run parked on 0.56.0, replayed on this release (%s)',
     expect(executions).toEqual({ 'record_measure:b': 1, 'purge_cache:bg': 1 });
   });
 });
+
+/**
+ * A run parked on 0.58.0 — the release whose detached delegation was a `spawn:` child of the turn —
+ * replayed on this one, which starts it as a run of its own. Such a run's journal holds the `spawn:`,
+ * so it must replay it (no `patch:` marker, no `detach:`), and its Stop still cascades to the child:
+ * what this release can still do for it is settle that child's card instead of leaving it "started".
+ */
+describe.each(dialects)(
+  'a detached run parked on 0.58.0, replayed on this release (%s)',
+  (dialect) => {
+    let db: Database | undefined;
+    afterEach(async () => {
+      await Promise.all(
+        engines.splice(0).map((engine) => engine.drain(5_000).catch(() => undefined)),
+      );
+      afterDurable.setDurableAgentContext(undefined);
+      BEFORE_58.durable.setDurableAgentContext(undefined);
+      for (const key of Object.keys(executions)) delete executions[key];
+      if (db !== undefined && dialect === 'pg') {
+        await db.rawQuery(`DROP SCHEMA IF EXISTS "${PG_SCHEMA}" CASCADE`).catch(() => undefined);
+      }
+      await db?.manager.closeAll();
+      db = undefined;
+    });
+
+    /** Detaches, then parks on its own action: the parent is live after its `spawn:`. */
+    const script = (args: { system: string }, turnIndex: number) => {
+      if (args.system.includes('research worker')) {
+        return turnIndex === 0
+          ? { text: 'digging', toolCall: { name: 'purge_cache', input: { value: 'bg' } } }
+          : { text: 'RESEARCH ANSWER' };
+      }
+      if (turnIndex === 0) {
+        return { text: 'starting', toolCall: { name: 'start_research', input: { task: 'dig' } } };
+      }
+      if (turnIndex === 1) {
+        return { text: 'and this', toolCall: { name: 'record_measure', input: { value: 'c' } } };
+      }
+      return { text: 'ORCH DONE' };
+    };
+
+    async function parkOn58(): Promise<{
+      stateStore: LucidStateStore;
+      runId: string;
+      threadId: string;
+      child: string;
+    }> {
+      db = await freshDb(dialect);
+      const stateStore = new LucidStateStore(db);
+      await stateStore.ensureSchema();
+      const old = await deploy(BEFORE_58, db, stateStore, script, { detached: true });
+      const { runId, threadId } = await old.service.chat({ actor, message: 'go' });
+      await parked(old, runId, 'record_measure');
+      const spawns = (await checkpointNames(old, runId)).filter((name) =>
+        name.startsWith('spawn:'),
+      );
+      expect(spawns).toHaveLength(1);
+      const child = (spawns[0] as string).slice('spawn:'.length);
+      await parked(old, child, 'purge_cache');
+      return { stateStore, runId, threadId, child };
+    }
+
+    it('replays the `spawn:` it journaled, and the child it started still delivers once', async () => {
+      const { stateStore, runId, threadId, child } = await parkOn58();
+      await after.createAgentTables(db as never);
+      const next = await deploy(AFTER, db as Database, stateStore, script, { detached: true });
+
+      const measure = await parked(next, runId, 'record_measure');
+      await next.service.approve(runId, measure);
+      expect(await settled(next, runId)).toEqual({ status: 'completed' });
+      const purge = await parked(next, child, 'purge_cache');
+      await next.service.approve(child, purge);
+      expect(await settled(next, child)).toEqual({ status: 'completed' });
+
+      const names = await checkpointNames(next, runId);
+      expect(names.filter((name) => name.startsWith('spawn:'))).toEqual([`spawn:${child}`]);
+      expect(names).not.toContain('patch:agent:detached-unlinked');
+      expect(names.filter((name) => name.startsWith('detach:'))).toEqual([]);
+      const messages = (await next.store.getThread(threadId))?.messages ?? [];
+      expect(messages.filter((message) => message.content === 'RESEARCH ANSWER')).toHaveLength(1);
+      expect(executions).toEqual({ 'record_measure:c': 1, 'purge_cache:bg': 1 });
+    });
+
+    it('settles the card of the child its Stop still cascades to', async () => {
+      const { stateStore, runId, threadId, child } = await parkOn58();
+      await after.createAgentTables(db as never);
+      const next = await deploy(AFTER, db as Database, stateStore, script, { detached: true });
+
+      await next.service.cancel(runId);
+      expect((await settled(next, runId)).status).toBe('cancelled');
+      expect((await settled(next, child)).status).toBe('cancelled');
+      const card = await eventually(async () => {
+        const row = await next.db
+          .from(after.AGENT_TABLES.toolCalls)
+          .where('tool_name', 'start_research')
+          .first();
+        const output = typeof row?.output === 'string' ? JSON.parse(row.output) : row?.output;
+        return output?.status === 'cancelled' ? output : undefined;
+      }, 'the card to say the child was stopped');
+      expect(card).toMatchObject({ detached: true, status: 'cancelled', runId: child });
+      const told = ((await next.store.getThread(threadId))?.messages ?? []).filter((message) =>
+        message.content.includes('was stopped before it could answer'),
+      );
+      expect(told).toHaveLength(1);
+      expect(executions).toEqual({});
+    });
+  },
+);

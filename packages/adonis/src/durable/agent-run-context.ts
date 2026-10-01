@@ -1,3 +1,4 @@
+import type { WorkflowEngine } from '@adonis-agora/durable';
 import type { AgentDepsFactory } from '../agent-deps-factory.js';
 import type { ChatQueueService } from '../chat-queue-service.js';
 import type { AgentStore } from '../spi/agent-store.js';
@@ -20,6 +21,14 @@ export interface DurableAgentContext {
    * or on none: whether a turn writes the queue checkpoints must not depend on which pod replays it.
    */
   queue?: ChatQueueService;
+  /**
+   * The engine a DETACHED delegation is started on, as a run of its own (not a `spawn:` child, which
+   * a Stop on the delegating turn would cascade to). The provider sets it. Absent, the engine
+   * `registerAgentWorkflow` was last called with is used — every wiring calls it — and failing that,
+   * `AgentRunWorkflow.dispatch` from outside the ambient ctx, which resolves the engine the way any
+   * `BaseWorkflow` static does.
+   */
+  engine?: WorkflowEngine;
 }
 
 let current: DurableAgentContext | undefined;
@@ -41,4 +50,16 @@ export function getDurableAgentContext(): DurableAgentContext {
     );
   }
   return current;
+}
+
+let registered: WorkflowEngine | undefined;
+
+/** @internal Recorded by `registerAgentWorkflow`: the engine the agent workflow runs on. */
+export function rememberAgentEngine(engine: WorkflowEngine | undefined): void {
+  registered = engine;
+}
+
+/** @internal The engine a detached delegation starts on — see {@link DurableAgentContext.engine}. */
+export function agentEngine(context: DurableAgentContext): WorkflowEngine | undefined {
+  return context.engine ?? registered;
 }

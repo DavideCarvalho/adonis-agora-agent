@@ -23,7 +23,7 @@ import { isChatQueueStore, releaseThreadRun } from '../spi/chat-queue.js';
 import { childSinkWriter } from '../spi/token-stream-sink.js';
 import type { AgentStreamEvent } from '../stream-events.js';
 import type { AgentRunInput, Decision } from '../types.js';
-import { getDurableAgentContext } from './agent-run-context.js';
+import { agentEngine, getDurableAgentContext } from './agent-run-context.js';
 
 /**
  * The workflow input. A superset of {@link AgentRunInput} carrying the one field only the durable
@@ -105,9 +105,10 @@ function outsideWorkflowCtx<T>(fn: () => Promise<T>): Promise<T> {
  *    sub-agent's own HITL wait can be seen, and therefore answered.
  *  - `runAgent(name, task)` → `ctx.child(AgentRunWorkflow, …)` — sub-agent delegation is a tracked,
  *    replay-safe CHILD run (a node in the durable dashboard) that streams into the top-level sink.
- *  - `startAgent(…)` → `ctx.startChild(AgentRunWorkflow, …)` — a DETACHED delegation: a `spawn:`
- *    position and no suspend, so the turn ends with a receipt; the child owns its own stream and
- *    posts its answer into the delegating thread (`deliverTo`).
+ *  - `startAgent(…)` → a run of its own, started from a journaled `detach:<toolCallId>` step — a
+ *    DETACHED delegation: no suspend, so the turn ends with a receipt; the child owns its own stream
+ *    and posts its answer into the delegating thread (`deliverTo`), and a Stop on this turn does not
+ *    reach it. A run that journaled a `spawn:` (`ctx.startChild`) there before replays that.
  *  - `openSink()` → the run's own sink writer (top-level) or a {@link childSinkWriter} (a child).
  *
  * Instantiated by the engine with no arguments; its deps come from {@link getDurableAgentContext}.
@@ -116,7 +117,9 @@ export class AgentRunWorkflow extends BaseWorkflow {
   static override workflow = { name: 'agora.agent.run', version: '1' };
 
   async run(ctx: WorkflowCtx, input: DurableAgentRunInput): Promise<{ text: string }> {
-    const { factory, store, queue } = getDurableAgentContext();
+    const context = getDurableAgentContext();
+    const { factory, store, queue } = context;
+    const engine = agentEngine(context);
     const day = input.day ?? utcDay();
     const deps = factory.forAgent(input.agentName);
     // Three shapes of run, told apart by their input alone (so every replay and every pod agrees):
@@ -193,6 +196,50 @@ export class AgentRunWorkflow extends BaseWorkflow {
       ...(input.delegationPath ?? []),
       ...(input.agentName !== undefined ? [input.agentName] : []),
     ];
+    /**
+     * Start a detached delegation as a TOP-LEVEL run, under an id derived from this run and the call.
+     *
+     * Not `ctx.startChild`: the engine treats a `spawn:` child as part of its parent, and a cancel on
+     * the parent cascades to it. A detached run is exactly the work the person did NOT ask to stop —
+     * they stopped the turn they were watching. Cascaded, it died parked on its approval, where its
+     * body never runs again, so its card said "started" for ever. The agent-level edge stays on the
+     * input (`parentRunId`).
+     *
+     * One `detach:<toolCallId>` localStep, its body outside the ambient ctx: the start writes no
+     * position in this run, the recorded result keeps a replay from starting it again, and a body
+     * re-run after a crash between the start and the checkpoint asks for the same id, which the
+     * engine answers with the run it already has. Stamped with this run's namespace, as
+     * `ctx.startChild` would have stamped it.
+     */
+    const startDetached = (toolCallId: string, childInput: DurableAgentRunInput): Promise<string> =>
+      step(`detach:${toolCallId}`, async () => {
+        const childRunId = `${ctx.runId}.detached.${toolCallId}`;
+        const namespace = engine
+          ? await engine
+              .getRun(ctx.runId)
+              .then((run) => run?.namespace)
+              .catch(() => undefined)
+          : undefined;
+        const options = namespace !== undefined ? { namespace } : {};
+        try {
+          if (engine !== undefined) {
+            await engine.start(AgentRunWorkflow, childInput, childRunId, options);
+          } else if (ambientWorkflowCtx !== undefined) {
+            await AgentRunWorkflow.dispatch(childInput, { runId: childRunId, ...options });
+          } else {
+            throw new Error(
+              '[@adonis-agora/agent] a detached delegation needs the engine in the durable agent context (setDurableAgentContext({ engine })).',
+            );
+          }
+        } catch (error) {
+          // A driving dispatcher can surface the new run's own suspend here — control flow of THAT
+          // run, not a failed start (see `DurableAgentRunner.start`).
+          if (!isControlFlowSignal(error)) {
+            throw error;
+          }
+        }
+        return childRunId;
+      });
     const hooks: AgentLoopHooks = {
       runId: ctx.runId,
       durable: true,
@@ -297,6 +344,10 @@ export class AgentRunWorkflow extends BaseWorkflow {
       //     child's OWN runId, which is what `tool-call/approve` resolves a decision to.
       //   - `deliverTo` instead: the parent's tool result is a receipt, so the answer needs an address
       //     of its own, and by the time it exists nobody else is holding one.
+      //   - no runtime parent: the engine cascades a cancel to every `spawn:` child, and a Stop on
+      //     this turn is not a Stop on the work it handed off. So the run is started on its own from
+      //     a `detach:<toolCallId>` step (see `startDetached`), behind `ctx.patched` — a run that
+      //     journaled the `spawn:` before this release gets `false` at that position and replays it.
       startAgent: async ({ agentName, task, toolCallId }) => {
         const subThreadId = await step(`subthread:${agentName}`, async () => {
           const thread = await store.createThread({
@@ -306,7 +357,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
           });
           return thread.id;
         });
-        const childRunId = await ctx.startChild(AgentRunWorkflow, {
+        const childInput = {
           agentName,
           threadId: subThreadId,
           actor: input.actor,
@@ -316,8 +367,11 @@ export class AgentRunWorkflow extends BaseWorkflow {
           delegationPath: chainBelow,
           parentRunId: ctx.runId,
           deliverTo: { threadId: input.threadId, toolCallId },
-        } satisfies DurableAgentRunInput);
-        return { runId: childRunId };
+        } satisfies DurableAgentRunInput;
+        if (!(await ctx.patched('agent:detached-unlinked'))) {
+          return { runId: await ctx.startChild(AgentRunWorkflow, childInput) };
+        }
+        return { runId: await startDetached(toolCallId, childInput) };
       },
     };
     /**

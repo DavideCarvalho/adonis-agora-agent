@@ -596,7 +596,7 @@ export default class AgentProvider {
       const { DurableAgentRunner, registerAgentWorkflow, setDurableAgentContext } = await import(
         '../src/durable/index.js'
       );
-      setDurableAgentContext({ factory, store, queue });
+      setDurableAgentContext({ factory, store, queue, engine });
       registerAgentWorkflow(engine);
       return new DurableAgentRunner(engine, store, queue, sink);
     } catch (error) {

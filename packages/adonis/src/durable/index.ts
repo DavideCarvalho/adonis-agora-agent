@@ -1,5 +1,6 @@
 import type { WorkflowEngine } from '@adonis-agora/durable';
 import { registerWorkflowClass } from '@adonis-agora/durable';
+import { rememberAgentEngine } from './agent-run-context.js';
 import { AgentRunWorkflow } from './agent-run-workflow.js';
 
 export {
@@ -26,4 +27,5 @@ export { DurableAgentRunner } from './durable-agent-runner.js';
  */
 export function registerAgentWorkflow(engine: WorkflowEngine): void {
   registerWorkflowClass(engine, AgentRunWorkflow);
+  rememberAgentEngine(engine);
 }
