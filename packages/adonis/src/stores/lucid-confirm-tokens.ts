@@ -1,6 +1,7 @@
 import type { ConfirmTokenClaim, ConfirmTokenStore } from '../spi/confirm-token-store.js';
 import type { LucidDatabaseLike } from './lucid.js';
 import { AGENT_TABLES, ensureAgentTables } from './lucid-schema.js';
+import { dialectOf } from './sql-dialect.js';
 
 /** Options for {@link LucidConfirmTokenStore}. */
 export interface LucidConfirmTokenStoreOptions {
@@ -9,23 +10,6 @@ export interface LucidConfirmTokenStoreOptions {
    * `false` to run the migration.
    */
   autoCreateTables?: boolean;
-}
-
-/** The slice of a Lucid client that says which dialect it speaks. */
-interface DialectShape {
-  dialect?: { name?: string };
-  connection?(name?: string): DialectShape;
-}
-
-/** The dialect name of a client, or of the manager's default connection. `''` when it cannot be told. */
-function dialectOf(db: unknown): string {
-  const client = db as DialectShape;
-  if (typeof client.dialect?.name === 'string') return client.dialect.name;
-  try {
-    return client.connection?.().dialect?.name ?? '';
-  } catch {
-    return '';
-  }
 }
 
 /** How many rows a raw write touched, whatever the driver wraps it in. */

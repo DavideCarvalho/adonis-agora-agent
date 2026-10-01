@@ -85,6 +85,21 @@ connection from the pool.
 
 Threads are indexed on `(actor_ref, updated_at)` for list ordering, messages on `(thread_id, created_at)` for load, and usage on `(actor_ref, created_at)` so the daily quota scan stays fast. Booleans are stored as `INTEGER` (0/1) and timestamps as `BIGINT` epoch-ms — no dialect-only types.
 
+The DDL is written once and spoken in each dialect's own terms. On **MySQL** that means backtick
+identifiers, `LONGTEXT` where the others say `TEXT` (MySQL's `TEXT` stops at 64 KB, and a long answer
+or tool output would fail the insert), no `IF NOT EXISTS` on an index (the catalog is read first),
+and tables created `ENGINE=InnoDB` with `utf8mb4_bin` — the foreign keys need InnoDB, and the binary
+collation makes `actor_ref = 'alice'` miss `'ALICE'`, exactly as on Postgres and SQLite. The foreign
+keys are table constraints, which MySQL enforces (it silently ignores a column-level `REFERENCES`), so
+deleting a thread takes its messages, tool calls, usage and runs with it on every dialect. CI runs
+every Lucid store suite on SQLite, Postgres 16 and MySQL 8.4.
+
+Messages carry a per-thread `seq`, assigned on append, which is what orders a transcript: two
+messages of one turn routinely share a millisecond, and `created_at` alone let the database return
+them in either order. A row written before the column existed holds 0 and sorts first, by
+`created_at`, as before. With `autoCreateTables: false`, add a migration whose `up()` calls
+`createAgentTables` again — it only adds what is missing.
+
 <Callout type="info" title="The model-supplied tool-call id is the primary key">
 A persisted tool call is addressable by exactly the id the model emitted — the same id a client sends to `POST /agent/tool-call/approve`. That invariant is what makes HITL approval resolve the right pending call.
 </Callout>

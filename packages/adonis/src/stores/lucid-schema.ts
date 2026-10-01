@@ -1,4 +1,5 @@
 import type { LucidRawRunner } from './lucid.js';
+import { isMySql, portableSql } from './sql-dialect.js';
 
 /**
  * The nine agent table names. They match the cross-adapter snake_case contract the reference Drizzle
@@ -18,6 +19,31 @@ export const AGENT_TABLES = {
   /** A run's live stream, buffered for replay by the Lucid token sink (`tokenSinks.lucid()`). */
   streamFrames: 'agent_stream_frame',
 } as const;
+
+/**
+ * One statement of this module, as `db`'s dialect has to read it. The statements are written once,
+ * Postgres/SQLite-style; MySQL needs four things changed, and every one of them used to fail or
+ * silently misbehave there:
+ *
+ * - identifiers in backticks — a `"quoted"` name is a string literal to MySQL, so every statement
+ *   failed to parse;
+ * - `TEXT` as `LONGTEXT` — MySQL's `TEXT` holds 64 KB, and a long answer, a tool's output or a stream
+ *   frame past that failed the insert;
+ * - no `IF NOT EXISTS` on `CREATE INDEX`, which MySQL does not have (the catalog is read first, see
+ *   {@link existingIndexes});
+ * - InnoDB with a case-sensitive collation: the foreign keys need InnoDB, and under MySQL's default
+ *   `utf8mb4_0900_ai_ci` an actor `alice` read the threads of an actor `ALICE`. Postgres and SQLite
+ *   compare those exactly; `utf8mb4_bin` makes MySQL do the same.
+ */
+export function forDialect(statement: string, mysql: boolean): string {
+  if (!mysql) return statement;
+  let out = statement.replaceAll('"', '`').replace(/\bTEXT\b/g, 'LONGTEXT');
+  out = out.replace(/^CREATE INDEX IF NOT EXISTS /, 'CREATE INDEX ');
+  if (/^CREATE TABLE /.test(out)) {
+    out = `${out} ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`;
+  }
+  return out;
+}
 
 /**
  * `CREATE TABLE IF NOT EXISTS` for the Lucid token sink's frame buffer, under `table` (the sink takes
@@ -75,7 +101,7 @@ export function createTableStatements(): string[] {
     `CREATE INDEX IF NOT EXISTS "${t.threads}_actor_updated_idx" ON "${t.threads}" ("actor_ref", "updated_at")`,
     `CREATE TABLE IF NOT EXISTS "${t.messages}" (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
-      "thread_id" VARCHAR(255) NOT NULL REFERENCES "${t.threads}" ("id") ON DELETE CASCADE,
+      "thread_id" VARCHAR(255) NOT NULL,
       "role" VARCHAR(255) NOT NULL,
       "content" TEXT NOT NULL,
       "tool_calls" TEXT NULL,
@@ -90,13 +116,15 @@ export function createTableStatements(): string[] {
       "ui" TEXT NULL,
       "feedback" TEXT NULL,
       "agent_name" VARCHAR(255) NULL,
-      "created_at" BIGINT NOT NULL
+      "seq" BIGINT NOT NULL DEFAULT 0,
+      "created_at" BIGINT NOT NULL,
+      FOREIGN KEY ("thread_id") REFERENCES "${t.threads}" ("id") ON DELETE CASCADE
     )`,
     `CREATE INDEX IF NOT EXISTS "${t.messages}_thread_created_idx" ON "${t.messages}" ("thread_id", "created_at")`,
     `CREATE INDEX IF NOT EXISTS "${t.messages}_run_idx" ON "${t.messages}" ("run_id")`,
     `CREATE TABLE IF NOT EXISTS "${t.toolCalls}" (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
-      "message_id" VARCHAR(255) NOT NULL REFERENCES "${t.messages}" ("id") ON DELETE CASCADE,
+      "message_id" VARCHAR(255) NOT NULL,
       "tool_name" VARCHAR(255) NOT NULL,
       "tool_type" VARCHAR(255) NOT NULL,
       "input" TEXT NULL,
@@ -111,13 +139,14 @@ export function createTableStatements(): string[] {
       "approver" VARCHAR(255) NULL,
       "expires_at" BIGINT NULL,
       "remember" INTEGER NULL,
-      "decided_via" VARCHAR(64) NULL
+      "decided_via" VARCHAR(64) NULL,
+      FOREIGN KEY ("message_id") REFERENCES "${t.messages}" ("id") ON DELETE CASCADE
     )`,
     `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_run_idx" ON "${t.toolCalls}" ("run_id")`,
     `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_status_created_idx" ON "${t.toolCalls}" ("status", "created_at")`,
     `CREATE TABLE IF NOT EXISTS "${t.tokenUsage}" (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
-      "thread_id" VARCHAR(255) NOT NULL REFERENCES "${t.threads}" ("id") ON DELETE CASCADE,
+      "thread_id" VARCHAR(255) NOT NULL,
       "actor_ref" VARCHAR(255) NOT NULL,
       "message_id" VARCHAR(255) NULL,
       "model_id" VARCHAR(255) NOT NULL,
@@ -128,7 +157,8 @@ export function createTableStatements(): string[] {
       "cache_read_tokens" INTEGER NULL,
       "cost_usd" DOUBLE PRECISION NULL,
       "run_id" VARCHAR(255) NULL,
-      "created_at" BIGINT NOT NULL
+      "created_at" BIGINT NOT NULL,
+      FOREIGN KEY ("thread_id") REFERENCES "${t.threads}" ("id") ON DELETE CASCADE
     )`,
     `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_actor_created_idx" ON "${t.tokenUsage}" ("actor_ref", "created_at")`,
     `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_run_idx" ON "${t.tokenUsage}" ("run_id")`,
@@ -144,7 +174,7 @@ export function createTableStatements(): string[] {
     )`,
     `CREATE TABLE IF NOT EXISTS "${t.runs}" (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
-      "thread_id" VARCHAR(255) NOT NULL REFERENCES "${t.threads}" ("id") ON DELETE CASCADE,
+      "thread_id" VARCHAR(255) NOT NULL,
       "agent_name" VARCHAR(255) NULL,
       "parent_run_id" VARCHAR(255) NULL,
       "actor_ref" VARCHAR(255) NOT NULL,
@@ -157,14 +187,15 @@ export function createTableStatements(): string[] {
       "output_tokens" INTEGER NOT NULL DEFAULT 0,
       "cost_usd" DOUBLE PRECISION NULL,
       "error" TEXT NULL,
-      "durable" INTEGER NOT NULL DEFAULT 0
+      "durable" INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY ("thread_id") REFERENCES "${t.threads}" ("id") ON DELETE CASCADE
     )`,
     `CREATE INDEX IF NOT EXISTS "${t.runs}_started_idx" ON "${t.runs}" ("started_at")`,
     `CREATE INDEX IF NOT EXISTS "${t.runs}_actor_started_idx" ON "${t.runs}" ("actor_ref", "started_at")`,
     `CREATE INDEX IF NOT EXISTS "${t.runs}_status_started_idx" ON "${t.runs}" ("status", "started_at")`,
     `CREATE TABLE IF NOT EXISTS "${t.queuedMessages}" (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
-      "thread_id" VARCHAR(255) NOT NULL REFERENCES "${t.threads}" ("id") ON DELETE CASCADE,
+      "thread_id" VARCHAR(255) NOT NULL,
       "actor" TEXT NOT NULL,
       "content" TEXT NOT NULL,
       "attachments" TEXT NULL,
@@ -174,7 +205,8 @@ export function createTableStatements(): string[] {
       "interrupt" INTEGER NOT NULL DEFAULT 0,
       "position" INTEGER NOT NULL,
       "created_at" BIGINT NOT NULL,
-      "updated_at" BIGINT NOT NULL
+      "updated_at" BIGINT NOT NULL,
+      FOREIGN KEY ("thread_id") REFERENCES "${t.threads}" ("id") ON DELETE CASCADE
     )`,
     `CREATE INDEX IF NOT EXISTS "${t.queuedMessages}_thread_position_idx" ON "${t.queuedMessages}" ("thread_id", "position")`,
     // The primary key IS the lock: two confirmations of one token race on the insert and one loses.
@@ -215,6 +247,8 @@ const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }
   { table: AGENT_TABLES.messages, column: 'ui', type: 'TEXT NULL' },
   { table: AGENT_TABLES.messages, column: 'feedback', type: 'TEXT NULL' },
   { table: AGENT_TABLES.messages, column: 'agent_name', type: 'VARCHAR(255) NULL' },
+  // A message's place in its thread, assigned on append. 0 on a row from before: those sort first.
+  { table: AGENT_TABLES.messages, column: 'seq', type: 'BIGINT NOT NULL DEFAULT 0' },
   { table: AGENT_TABLES.threads, column: 'model', type: 'VARCHAR(255) NULL' },
   { table: AGENT_TABLES.threads, column: 'queue_pause', type: 'TEXT NULL' },
   { table: AGENT_TABLES.threads, column: 'default_agent', type: 'VARCHAR(255) NULL' },
@@ -235,7 +269,7 @@ const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }
  */
 async function hasColumn(db: LucidRawRunner, table: string, column: string): Promise<boolean> {
   try {
-    await db.rawQuery(`SELECT "${column}" FROM "${table}" WHERE 1 = 0`);
+    await db.rawQuery(portableSql(db, `SELECT "${column}" FROM "${table}" WHERE 1 = 0`));
     return true;
   } catch {
     return false;
@@ -267,6 +301,13 @@ export function rowsOf(result: unknown): Record<string, unknown>[] {
  * there the first probe succeeds.
  */
 async function existingIndexes(db: LucidRawRunner): Promise<Set<string> | null> {
+  // MySQL first there: it has no `pg_indexes`, and its own catalog is the only probe that answers.
+  const mysqlProbe =
+    'SELECT index_name AS name FROM information_schema.statistics WHERE table_schema = DATABASE()';
+  if (isMySql(db)) {
+    const rows = rowsOf(await db.rawQuery(mysqlProbe));
+    return new Set(rows.map((row) => String(row.name ?? row.NAME)));
+  }
   const probes = [
     // Every schema on the search path, not only the first: an unqualified `CREATE INDEX … ON "t"`
     // finds `t` wherever the path does, so that is where its index has to be looked for.
@@ -287,7 +328,7 @@ async function existingIndexes(db: LucidRawRunner): Promise<Set<string> | null> 
 /** Does `table` exist? Same zero-row probe as {@link hasColumn}. */
 async function hasTable(db: LucidRawRunner, table: string): Promise<boolean> {
   try {
-    await db.rawQuery(`SELECT 1 FROM "${table}" WHERE 1 = 0`);
+    await db.rawQuery(portableSql(db, `SELECT 1 FROM "${table}" WHERE 1 = 0`));
     return true;
   } catch {
     return false;
@@ -337,6 +378,7 @@ async function issue(
  */
 export async function createAgentTables(db: LucidRawRunner): Promise<string[]> {
   const statements = createTableStatements();
+  const mysql = isMySql(db);
 
   // Order matters, in three phases rather than one pass. Tables first, then the `run_id` repair, then
   // indexes — because `createTableStatements` includes `CREATE INDEX ... ON "agent_message" ("run_id")`,
@@ -346,14 +388,16 @@ export async function createAgentTables(db: LucidRawRunner): Promise<string[]> {
   for (const stmt of statements) {
     if (!stmt.startsWith('CREATE TABLE')) continue;
     const table = /^CREATE TABLE IF NOT EXISTS "([^"]+)"/.exec(stmt)?.[1] as string;
-    await issue(db, stmt, () => hasTable(db, table));
+    await issue(db, forDialect(stmt, mysql), () => hasTable(db, table));
   }
 
   const repairs: string[] = [];
   const addColumn = async (table: string, column: string, type: string) => {
     if (await hasColumn(db, table, column)) return;
-    await issue(db, `ALTER TABLE "${table}" ADD COLUMN "${column}" ${type}`, () =>
-      hasColumn(db, table, column),
+    await issue(
+      db,
+      forDialect(`ALTER TABLE "${table}" ADD COLUMN "${column}" ${type}`, mysql),
+      () => hasColumn(db, table, column),
     );
     repairs.push(`${table}.${column}`);
   };
@@ -369,7 +413,11 @@ export async function createAgentTables(db: LucidRawRunner): Promise<string[]> {
     if (!stmt.startsWith('CREATE INDEX')) continue;
     const index = /^CREATE INDEX IF NOT EXISTS "([^"]+)"/.exec(stmt)?.[1] as string;
     if (indexes?.has(index)) continue;
-    await issue(db, stmt, async () => (await existingIndexes(db))?.has(index) ?? false);
+    await issue(
+      db,
+      forDialect(stmt, mysql),
+      async () => (await existingIndexes(db))?.has(index) ?? false,
+    );
   }
 
   return repairs;
@@ -398,7 +446,7 @@ export function dropTableStatements(): string[] {
 /** Drop the nine agent tables. Destructive and irreversible — this erases every thread and every ledger row. */
 export async function dropAgentTables(db: LucidRawRunner): Promise<void> {
   for (const stmt of dropTableStatements()) {
-    await db.rawQuery(stmt);
+    await db.rawQuery(portableSql(db, stmt));
   }
 }
 
@@ -502,5 +550,7 @@ export async function ensureStreamFrameTable(
 ): Promise<void> {
   const runner = schemaRunner(db);
   if (await hasTable(runner, table)) return;
-  await issue(runner, streamFrameTableStatement(table), () => hasTable(runner, table));
+  await issue(runner, forDialect(streamFrameTableStatement(table), isMySql(runner)), () =>
+    hasTable(runner, table),
+  );
 }

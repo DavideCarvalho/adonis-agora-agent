@@ -24,7 +24,7 @@ import type {
 } from '../spi/governance-queries.js';
 import type { AgentPricingStore, CurrentModelPrice } from '../spi/pricing-store.js';
 import { estimateCost, resolveModelPrice } from '../spi/pricing-store.js';
-import type { LucidDatabaseLike } from './lucid.js';
+import { inAppendOrder, type LucidDatabaseLike } from './lucid.js';
 import { AGENT_TABLES, ensureAgentTables } from './lucid-schema.js';
 
 function toInt(value: unknown): number {
@@ -424,11 +424,10 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     const runRow = await this.db.from(AGENT_TABLES.runs).where('id', runId).first();
     if (runRow === null || runRow === undefined) return null;
 
-    const messageRows = await this.db
-      .from(AGENT_TABLES.messages)
-      .where('run_id', runId)
-      .orderBy('created_at', 'asc')
-      .select('*');
+    const messageRows = await inAppendOrder(
+      this.db.from(AGENT_TABLES.messages).where('run_id', runId),
+      'asc',
+    ).select('*');
     const toolCallRows = await this.db
       .from(AGENT_TABLES.toolCalls)
       .where('run_id', runId)
@@ -687,10 +686,10 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       .orderBy('started_at', 'desc')
       .limit(20)
       .select('*');
-    const messageRows = await this.db
-      .from(AGENT_TABLES.messages)
-      .where('thread_id', threadId)
-      .orderBy('created_at', 'desc')
+    const messageRows = await inAppendOrder(
+      this.db.from(AGENT_TABLES.messages).where('thread_id', threadId),
+      'desc',
+    )
       .limit(50)
       .select('*');
     const allRunIds = await this.db

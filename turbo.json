@@ -14,7 +14,14 @@
     },
     "test": {
       "dependsOn": ["^build", "build"],
-      "env": ["AGENT_TEST_PG_URL"],
+      "env": [
+        "AGENT_TEST_PG_URL",
+        "AGENT_TEST_MYSQL_URL",
+        "AGENT_TEST_REAL_DB",
+        "AGENT_TEST_REQUIRE_REAL_DB",
+        "CI"
+      ],
+      "passThroughEnv": ["DOCKER_HOST", "DOCKER_*", "TESTCONTAINERS_*"],
       "outputs": ["coverage/**"]
     },
     "test:watch": {
