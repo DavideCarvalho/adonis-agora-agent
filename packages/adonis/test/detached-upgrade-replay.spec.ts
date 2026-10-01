@@ -91,8 +91,11 @@ async function freshDb(dialect: 'sqlite' | 'pg'): Promise<Database> {
   return db;
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: the fake model's script, shared by two versions' types.
-type Script = (args: any, turnIndex: number) => unknown;
+/** The fake model's script, shared by two versions' types. */
+type Script = (args: never, turnIndex: number) => unknown;
+
+/** Every engine a test deployed, drained before its database goes away. */
+const engines: WorkflowEngine[] = [];
 
 /** Counts every real execution of a tool, across both phases. */
 const executions: Record<string, number> = {};
@@ -162,6 +165,7 @@ async function deploy(
     defaultAgentName: 'orch',
   });
   const engine = new WorkflowEngine({ store: stateStore });
+  engines.push(engine);
   durable.setDurableAgentContext({ factory, store });
   durable.registerAgentWorkflow(engine);
   const service = new agent.AgentService(
@@ -224,6 +228,11 @@ const dialects: ['sqlite' | 'pg'][] = [
 describe.each(dialects)('a run parked on 0.56.0, replayed on this release (%s)', (dialect) => {
   let db: Database | undefined;
   afterEach(async () => {
+    // Settle whatever an engine still has in flight (a child's completion notice, a reconcile)
+    // before the tables it writes to are dropped.
+    await Promise.all(
+      engines.splice(0).map((engine) => engine.drain(5_000).catch(() => undefined)),
+    );
     afterDurable.setDurableAgentContext(undefined);
     BEFORE.durable.setDurableAgentContext(undefined);
     for (const key of Object.keys(executions)) delete executions[key];
