@@ -240,8 +240,8 @@ importers:
         specifier: 0.33.0
         version: 0.33.0
       '@dudousxd/nestjs-agent-react':
-        specifier: 0.28.0
-        version: 0.28.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(ai@7.0.102(zod@4.6.5))(react@19.3.0)
+        specifier: 0.31.0
+        version: 0.31.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(ai@7.0.102(zod@4.6.5))(react@19.3.0)
       '@qdrant/js-client-rest':
         specifier: 1.19.0
         version: 1.19.0(typescript@7.0.2)
@@ -1030,8 +1030,11 @@ packages:
   '@dudousxd/nestjs-agent-core@0.33.0':
     resolution: {integrity: sha512-pQcSjNvfUpuK5a9maN+VTkRBdMLuXGfylQecJJEuO2rf91zkb/sPNVUqgHh1sB7DX837zDjxBakrzx8oDSjA6g==}
 
-  '@dudousxd/nestjs-agent-react@0.28.0':
-    resolution: {integrity: sha512-bAnLTA8DPXRkTwX2EXd1pAhyZaEd+EFoaZldt1wQ0jpRccGuG0Xg7EHUk/xYM3IkuDX/503O9bhkoRS8qLzOKQ==}
+  '@dudousxd/nestjs-agent-core@0.34.0':
+    resolution: {integrity: sha512-b2xK7pWoxQq/NjbTqzoiysd4FBtXJ67gmE/nIcemCDObY4+GTSmcAPXieXpJZH+9S+8YPGWwW+Zjm2Rt438RYw==}
+
+  '@dudousxd/nestjs-agent-react@0.31.0':
+    resolution: {integrity: sha512-hl1rK+AHMeNiiGfO4i+hlhvWPTOyfASrjr8lPLq+IhuFr7CeDpn4QoTDP0ju4TtoGkaA2tVjylXOMa5lrOSbiw==}
     peerDependencies:
       '@ai-sdk/react': ^4.0.0
       '@dudousxd/nestjs-media-client': '>=0.3.0'
@@ -4607,10 +4610,19 @@ snapshots:
       - '@nestjs/core'
       - reflect-metadata
 
-  '@dudousxd/nestjs-agent-react@0.28.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(ai@7.0.102(zod@4.6.5))(react@19.3.0)':
+  '@dudousxd/nestjs-agent-core@0.34.0':
+    dependencies:
+      '@dudousxd/nestjs-diagnostics': 0.7.2
+      '@standard-schema/spec': 1.1.0
+    transitivePeerDependencies:
+      - '@nestjs/common'
+      - '@nestjs/core'
+      - reflect-metadata
+
+  '@dudousxd/nestjs-agent-react@0.31.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(ai@7.0.102(zod@4.6.5))(react@19.3.0)':
     dependencies:
       '@ai-sdk/react': 4.0.125(react@19.3.0)(zod@4.6.5)
-      '@dudousxd/nestjs-agent-core': 0.33.0
+      '@dudousxd/nestjs-agent-core': 0.34.0
       ai: 7.0.102(zod@4.6.5)
       react: 19.3.0
     transitivePeerDependencies:

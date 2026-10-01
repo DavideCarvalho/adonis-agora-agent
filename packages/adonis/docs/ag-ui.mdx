@@ -24,6 +24,18 @@ agent.addMessage({ id: crypto.randomUUID(), role: 'user', content: 'Refund order
 await agent.runAgent()
 ```
 
+## From React — `useAgentChat` over AG-UI
+
+`@adonis-agora/agent/react` can drive this route (or any AG-UI 1.0 producer) through the same hooks as the native stream. `agUiBackend()` sends the chat turn over AG-UI and keeps everything else — threads, the queue, approvals, uploads — on the REST routes, with the session cookie and the shield CSRF token on every request:
+
+```tsx
+import { AgentProvider, agUiBackend, useAgentChat } from '@adonis-agora/agent/react'
+
+<AgentProvider backend={agUiBackend()}><Chat /></AgentProvider>
+```
+
+`agUiBackend({ path })` follows a non-default `path`; `url` points it at another producer; `agUi` takes the consumer's own options (`forwardedProps`, `content` for sending a file as AG-UI content parts). The consumer itself — `agUiChatStream`, `reframeAgUiStream`, the `AgUiActivity` / `AgUiInterrupt` ui parts — is `@dudousxd/nestjs-agent-react`'s, re-exported; the Adonis `agUiChatStream` only adds the CSRF header, read per call. Requires `@dudousxd/nestjs-agent-react` 0.30 or later.
+
 ## What the input means here
 
 | `RunAgentInput` | What this producer does with it |
