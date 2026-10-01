@@ -747,7 +747,8 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
   }
 
   /**
-   * Of `mediaIds`, the ones a surviving message in one of this actor's threads still carries.
+   * Of `mediaIds`, the ones a surviving message — or one waiting in a thread's queue — in one of this
+   * actor's threads still carries.
    *
    * The match on the attachment's `mediaId` runs here rather than in SQL: the column is JSON text,
    * and every dialect this store targets spells "an array element with this field" differently
@@ -776,9 +777,18 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
       )
       .where('attachments', 'is not', null)
       .select('attachments');
+    // A message waiting in a thread's queue has been sent and not yet run: what it carries is in use.
+    const queued = await this.db
+      .from(AGENT_TABLES.queuedMessages)
+      .whereIn(
+        'thread_id',
+        threads.map((thread) => String(thread.id)),
+      )
+      .where('attachments', 'is not', null)
+      .select('attachments');
     const wanted = new Set(mediaIds);
     const found = new Set<string>();
-    for (const row of rows) {
+    for (const row of [...rows, ...queued]) {
       for (const attachment of parseJson<MessageAttachment[]>(row.attachments) ?? []) {
         if (wanted.has(attachment.mediaId)) {
           found.add(attachment.mediaId);

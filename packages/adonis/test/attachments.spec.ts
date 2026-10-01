@@ -115,6 +115,7 @@ describe('attachment staging (in-memory)', () => {
         sizeBytes: 11,
         actorId: 'u1',
         url: attachment.url,
+        createdAt: expect.any(String),
       },
     ]);
   });

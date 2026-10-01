@@ -2,8 +2,10 @@ import { randomUUID } from 'node:crypto';
 import type {
   AttachmentStagingDescription,
   AttachmentStagingStore,
+  ListStagedAttachmentsInput,
   ResolveAttachmentInput,
   StageAttachmentInput,
+  StagedAttachment,
 } from '../spi/attachment-staging.js';
 import type { Actor, MessageAttachment } from '../types.js';
 
@@ -38,6 +40,8 @@ export interface MediaStoreLike {
   find(id: string): Promise<MediaRecordLike | null>;
   delete(id: string): Promise<void>;
   nextOrder(ownerType: string, ownerId: string, collection: string): Promise<number>;
+  /** Every media row of one owner (in one collection) — what the staged-attachment inventory reads. */
+  listByOwner?(ownerType: string, ownerId: string, collection?: string): Promise<MediaRecordLike[]>;
 }
 
 /** A Drive disk as `@adonis-agora/media` hands it out, the part used here. */
@@ -338,6 +342,34 @@ export class MediaAttachmentStaging implements AttachmentStagingStore {
     const ready = await this.ensureReady(record);
     if (typeof ready === 'string') return null;
     return this.toAttachment(ready, { forModel: true });
+  }
+
+  /**
+   * The actor's staged attachments, newest first: their own media rows in this store's collection —
+   * sent or not, and a resumable upload still in flight too (it is theirs, and it is staged). Metadata
+   * only; a url is only ever minted by {@link resolve}.
+   */
+  async list(input: ListStagedAttachmentsInput): Promise<StagedAttachment[]> {
+    const listByOwner = this.deps.store.listByOwner?.bind(this.deps.store);
+    if (listByOwner === undefined) {
+      throw new MediaUploadRefusedError(
+        501,
+        'Listing attachments needs a media store that can enumerate an owner (listByOwner) — upgrade @adonis-agora/media.',
+      );
+    }
+    const records = await listByOwner(this.ownerType, input.actor.id, this.collection);
+    const entries = records
+      .filter((record) => this.isOurs(record) && record.ownerId === input.actor.id)
+      .map((record) => ({
+        mediaId: record.id,
+        name: record.fileName,
+        contentType: record.mimeType,
+        sizeBytes: record.size,
+        createdAt: new Date(record.createdAt).toISOString(),
+      }))
+      .filter((entry) => input.stagedBefore === undefined || entry.createdAt < input.stagedBefore)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return input.limit === undefined ? entries : entries.slice(0, input.limit);
   }
 
   private async canUse(record: MediaRecordLike, actor: Actor): Promise<boolean> {

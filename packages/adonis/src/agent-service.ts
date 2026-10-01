@@ -10,7 +10,12 @@ import {
   mayDecideApproval,
   type ToolCallApprovalState,
 } from './spi/approval-policy.js';
-import type { AttachmentRef, AttachmentStagingStore } from './spi/attachment-staging.js';
+import type {
+  AttachmentRef,
+  AttachmentStagingStore,
+  ListStagedAttachmentsInput,
+  StagedAttachment,
+} from './spi/attachment-staging.js';
 import type { ChatQueueState } from './spi/chat-queue.js';
 import {
   findCatalogModel,
@@ -167,6 +172,20 @@ export class AttachmentRefusedError extends Error {
   ) {
     super(message);
     this.name = 'AttachmentRefusedError';
+  }
+}
+
+/**
+ * The staged-attachment inventory cannot be answered here — no attachment store, a store without
+ * `list`, or an agent store without `referencedMediaIds`. `status` is what `GET <path>/attachments`
+ * answers. Never answered with an empty list instead: "no inventory" and "no files" are opposite
+ * facts, and a sweep that read the first as the second would delete files that are in use.
+ */
+export class AttachmentInventoryError extends Error {
+  readonly status = 501 as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'AttachmentInventoryError';
   }
 }
 
@@ -1082,6 +1101,91 @@ export class AgentService {
       resolved.push(attachment);
     }
     return resolved;
+  }
+
+  /**
+   * Every file this actor has staged, newest first — across threads, including uploads that were
+   * never sent, which nothing else on this surface can see (`GET <path>/attachments`). Metadata only:
+   * a url is minted per request by `resolve`, so it can stay short-lived.
+   *
+   * Refused ({@link AttachmentInventoryError}) when the configured attachment store keeps no
+   * inventory (`AttachmentStagingStore.list`).
+   */
+  async listAttachments(
+    actor: Actor,
+    options: { limit?: number } = {},
+  ): Promise<StagedAttachment[]> {
+    const list = this.attachmentInventory();
+    return list({ actor, ...(options.limit !== undefined ? { limit: options.limit } : {}) });
+  }
+
+  /**
+   * This actor's staged media that no live message — and no message waiting in a thread's queue —
+   * references, and that is old enough not to be an upload in flight: the candidate set for a sweep.
+   * Returns them; never deletes them. The bytes are the host's, and so is the decision:
+   *
+   * ```ts
+   * const service = await app.container.make(AgentService)
+   * for (const file of await service.collectableAttachments(actor, { olderThan: subDays(new Date(), 7) })) {
+   *   await media.delete(file.mediaId)
+   * }
+   * ```
+   *
+   * `olderThan` is required and has no default: how long a composer may sit open with a file attached
+   * is the host's knowledge. The staging store is asked to apply it, and the result is filtered again
+   * here — a store that ignored the hint would otherwise hand back an upload someone is about to send.
+   *
+   * Both halves must be answerable or this refuses ({@link AttachmentInventoryError}): an
+   * unanswerable reference query means "cannot tell", and treating it as "nothing is referenced"
+   * would mark every attachment the actor ever sent as safe to delete.
+   */
+  async collectableAttachments(
+    actor: Actor,
+    options: { olderThan: Date; limit?: number },
+  ): Promise<StagedAttachment[]> {
+    const list = this.attachmentInventory();
+    const referencedMediaIds = this.store.referencedMediaIds?.bind(this.store);
+    if (referencedMediaIds === undefined) {
+      throw new AttachmentInventoryError(
+        'Collecting attachments needs an AgentStore that implements referencedMediaIds(): the ' +
+          'bound store cannot say which media a message still references, and guessing would ' +
+          'delete files that are in use.',
+      );
+    }
+    const stagedBefore = options.olderThan.toISOString();
+    const inventory = await list({
+      actor,
+      stagedBefore,
+      ...(options.limit !== undefined ? { limit: options.limit } : {}),
+    });
+    const aged = inventory.filter((entry) => entry.createdAt < stagedBefore);
+    if (aged.length === 0) {
+      return [];
+    }
+    const referenced = new Set(
+      await referencedMediaIds(
+        actor.id,
+        aged.map((entry) => entry.mediaId),
+      ),
+    );
+    return aged.filter((entry) => !referenced.has(entry.mediaId));
+  }
+
+  /** The configured store's `list`, or a refusal — never an empty inventory in its place. */
+  private attachmentInventory(): (
+    input: ListStagedAttachmentsInput,
+  ) => Promise<StagedAttachment[]> {
+    const staging = this.options.attachments;
+    const list = staging?.list?.bind(staging);
+    if (list === undefined) {
+      throw new AttachmentInventoryError(
+        staging === undefined
+          ? 'Attachments are off: set `attachments` in config/agent.ts (e.g. attachmentStores.media()).'
+          : 'Listing attachments needs an attachment store that implements list(); the host owns ' +
+              'the staged bytes, so only its store can enumerate them.',
+      );
+    }
+    return list;
   }
 
   renameThread(threadId: string, title: string): Promise<void> {

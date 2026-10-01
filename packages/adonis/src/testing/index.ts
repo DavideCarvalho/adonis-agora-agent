@@ -25,6 +25,7 @@ export {
 } from './fake-model-provider.js';
 export { InMemoryActorDirectory } from './in-memory-actor-directory.js';
 export {
+  type InMemoryAttachmentStagingOptions,
   InMemoryAttachmentStagingStore,
   type StagedRecord,
 } from './in-memory-attachment-staging.js';
