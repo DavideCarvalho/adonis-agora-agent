@@ -2,7 +2,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import type { AiToolCtx, ToolHandler } from '../src/index.js';
+import type { Actor, AiToolCtx, ToolHandler } from '../src/index.js';
 import {
   AgentDepsFactory,
   AgentRegistry,
@@ -203,6 +203,154 @@ describe('tool discovery', () => {
     expect(registerToolExport(registry, GetTimeTool, ['ADMIN'])).not.toBeNull();
     const out = await registry.invoke('getTime', {}, anyCtx, allowAll as never);
     expect(out).toEqual({ iso: '2020-01-01T00:00:00Z' });
+  });
+});
+
+/** Stands in for a config service / entitlement table — mutable, so a test can flip it live. */
+class Switchboard {
+  featureOn = false;
+  entitled = new Set<string>();
+}
+
+class FlaggedTool implements ToolHandler<Record<string, never>> {
+  static tool = {
+    name: 'flaggedTool',
+    kind: 'read',
+    description: 'behind a deployment flag',
+    input: z.object({}),
+  } as const;
+
+  constructor(private readonly switchboard: Switchboard) {}
+
+  isEnabled(): boolean {
+    return this.switchboard.featureOn;
+  }
+
+  async execute() {
+    return { ok: true };
+  }
+}
+
+class EntitledTool implements ToolHandler<Record<string, never>> {
+  static tool = {
+    name: 'entitledTool',
+    kind: 'read',
+    description: 'per-user entitlement',
+    input: z.object({}),
+  } as const;
+
+  constructor(private readonly switchboard: Switchboard) {}
+
+  canUse(actor: Actor): boolean {
+    return this.switchboard.entitled.has(actor.id);
+  }
+
+  async execute() {
+    return { ok: true };
+  }
+}
+
+@AiTool({
+  name: 'staticallyOffTool',
+  description: 'off by decorator',
+  input: z.object({}),
+  enabled: false,
+})
+class StaticallyOffTool implements ToolHandler<Record<string, never>> {
+  async execute() {
+    return { ok: true };
+  }
+}
+
+class PlainTool implements ToolHandler<Record<string, never>> {
+  static tool = {
+    name: 'plainTool',
+    kind: 'read',
+    description: 'no gates of its own',
+    input: z.object({}),
+  } as const;
+
+  async execute() {
+    return { ok: true };
+  }
+}
+
+/**
+ * `isEnabled()` / `canUse()` live on the tool CLASS, while the registry holds a wrapper discovery
+ * builds. These cover the forwarding: a gate that stayed behind on the class would be one an app
+ * declares, sees no error for, and that never runs.
+ */
+describe('tool discovery — availability gates on the class', () => {
+  const actor: Actor = { id: 'u1', roles: ['ADMIN'] };
+  const policy = new DefaultRolesPolicy();
+
+  function build() {
+    const switchboard = new Switchboard();
+    const registry = new ToolRegistry();
+    const fakeApp = {
+      container: {
+        make: async (cls: unknown) => new (cls as new (s: Switchboard) => ToolHandler)(switchboard),
+      },
+    };
+    for (const tool of [FlaggedTool, EntitledTool, StaticallyOffTool, PlainTool]) {
+      registerToolExport(registry, tool, [], fakeApp as never);
+    }
+    return { switchboard, registry };
+  }
+
+  async function toolNames(registry: ToolRegistry, who: Actor = actor): Promise<string[]> {
+    return (await registry.definitionsFor(who, policy)).map((definition) => definition.name).sort();
+  }
+
+  it("reads isEnabled() off the class, with the class's injected dependencies", async () => {
+    const { switchboard, registry } = build();
+    // `entitledTool` is absent for a second reason (nobody is entitled yet) — covered below.
+    expect(await toolNames(registry)).toEqual(['plainTool']);
+
+    switchboard.featureOn = true;
+    // No re-registration, no restart: the next turn asks the tool again.
+    expect(await toolNames(registry)).toEqual(['flaggedTool', 'plainTool']);
+  });
+
+  it('reads canUse() off the class, per actor', async () => {
+    const { switchboard, registry } = build();
+    switchboard.entitled.add('u1');
+
+    expect(await toolNames(registry)).toContain('entitledTool');
+    expect(await toolNames(registry, { id: 'u2', roles: ['ADMIN'] })).not.toContain('entitledTool');
+  });
+
+  it('honours a declared `enabled: false`', async () => {
+    const { registry } = build();
+    expect(await toolNames(registry)).not.toContain('staticallyOffTool');
+  });
+
+  it('leaves a tool that declares no gates fully available', async () => {
+    const { registry } = build();
+    expect(await toolNames(registry)).toContain('plainTool');
+  });
+
+  it('forwards the gates for a class instantiated without a container, too', async () => {
+    class SelfGated implements ToolHandler<Record<string, never>> {
+      static tool = {
+        name: 'selfGated',
+        kind: 'read',
+        description: 'refuses everyone but u1',
+        input: z.object({}),
+      } as const;
+
+      canUse(who: Actor): boolean {
+        return who.id === 'u1';
+      }
+
+      async execute() {
+        return { ok: true };
+      }
+    }
+    const registry = new ToolRegistry();
+    registerToolExport(registry, SelfGated, []);
+    expect(await toolNames(registry)).toEqual(['selfGated']);
+    expect(await toolNames(registry, { id: 'u2' })).toEqual([]);
   });
 });
 

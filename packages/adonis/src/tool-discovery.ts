@@ -9,9 +9,9 @@ import {
   readAiToolMeta,
   type ToolClass,
 } from './ai-tool-ref.js';
-import type { ToolHandler } from './spi/tool.js';
+import type { ToolDescribeScope, ToolHandler } from './spi/tool.js';
 import type { ToolRegistry } from './tool-registry.js';
-import type { ToolSpec } from './types.js';
+import type { Actor, ToolSpec } from './types.js';
 
 /** A tool registered at boot, echoed back so the provider can log what it wired. */
 export interface RegisteredTool {
@@ -50,28 +50,47 @@ export function registerToolExport(
     return null;
   }
 
+  // `isEnabled()` / `canUse()` / `describe()` live on the tool CLASS, while the registry holds the
+  // wrapper built here. Each is forwarded only when the class declares it — a gate left behind on
+  // the class would be one an app declares, sees no error for, and that never runs.
+  const declares = (method: 'isEnabled' | 'canUse' | 'describe'): boolean =>
+    typeof (proto as Record<string, unknown> | undefined)?.[method] === 'function';
+
+  let resolveInstance: () => Promise<ToolHandler>;
   if (app === undefined) {
     // No container: instantiate now (no DI); skip if construction throws — pre-DI behavior.
     const instance = instantiate(cls);
     if (instance === null) {
       return null;
     }
-    registry.register(specFromMeta(meta, defaultRoles), {
-      execute: (input, ctx) => instance.execute(input, ctx),
-    });
+    resolveInstance = () => Promise.resolve(instance);
   } else {
     // Container DI: resolve the tool (and its `@inject`'d deps) through the IoC container — the
     // idiomatic Adonis way. LAZY on first use and then cached: discovery runs in the provider's
     // `boot()`, before the app is fully booted, so an eager `container.make()` could fail resolving
     // a peer service — the same reason the Lucid store factory resolves lazily.
     let instancePromise: Promise<ToolHandler> | undefined;
-    registry.register(specFromMeta(meta, defaultRoles), {
-      execute: (input, ctx) => {
-        instancePromise ??= app.container.make(cls) as unknown as Promise<ToolHandler>;
-        return instancePromise.then((instance) => instance.execute(input, ctx));
-      },
-    });
+    resolveInstance = () => {
+      instancePromise ??= app.container.make(cls) as unknown as Promise<ToolHandler>;
+      return instancePromise;
+    };
   }
+  const handler: ToolHandler = {
+    execute: async (input, ctx) => (await resolveInstance()).execute(input, ctx),
+    // Called through the instance so each keeps its `this` (and its injected deps).
+    ...(declares('isEnabled')
+      ? { isEnabled: async () => (await resolveInstance()).isEnabled?.() ?? true }
+      : {}),
+    ...(declares('canUse')
+      ? { canUse: async (actor: Actor) => (await resolveInstance()).canUse?.(actor) ?? true }
+      : {}),
+    ...(declares('describe')
+      ? {
+          describe: async (scope: ToolDescribeScope) => (await resolveInstance()).describe?.(scope),
+        }
+      : {}),
+  };
+  registry.register(specFromMeta(meta, defaultRoles), handler);
   return { name: meta.name, source: 'class' };
 }
 
@@ -98,6 +117,7 @@ function specFromMeta(meta: AiToolMeta, defaultRoles: string[]): ToolSpec {
     inputSchema: meta.input,
     roles: meta.roles ?? defaultRoles,
     ...(meta.ability !== undefined ? { ability: meta.ability } : {}),
+    ...(meta.enabled !== undefined ? { enabled: meta.enabled } : {}),
     ...(meta.presentation !== undefined ? { presentation: meta.presentation } : {}),
     ...(meta.terminal === true ? { terminal: true } : {}),
   };

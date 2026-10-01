@@ -50,7 +50,7 @@ export default class GetWeather extends ReadTool<Input, { tempC: number }> {
     name: 'get_weather',
     description: 'Current weather for a city.',
     input,
-    roles: ['MEMBER'], // omit → config.defaultRoles (['ADMIN'] by default)
+    roles: ['MEMBER'], // omit → config.defaultRoles ([] — open — by default)
   }
 
   async execute({ city }: Input, _ctx: AiToolCtx) {
@@ -208,6 +208,24 @@ arguments and expires (`ttlMs`, default 15 min).
 
 Source: `packages/adonis/docs/mcp.mdx` ("Writes with a human gate"),
 `packages/adonis/src/confirmed-tool.ts`.
+
+## Feature flags and per-user gates — `enabled`, `isEnabled()`, `canUse(actor)`
+
+```ts
+// A flag with no service behind it: on the options (boolean, or a predicate re-read every turn).
+static tool = { name: 'search_docs', description: '...', input, enabled: () => env.get('DOCS') === true }
+
+// A flag or entitlement that needs a service: methods on the (container-resolved) class.
+isEnabled() { return this.flags.on('docs') }
+canUse(actor: Actor) { return this.plans.includesDocs(actor.tenantRef) }
+```
+
+`defineTool` / `defineConfirmedTool` take `enabled` and `canUse` as options; `mcpServers[]`
+takes both per server. Order on the offered list AND on invoke: allow-list → `enabled` →
+`RolesPolicy` → `canUse`; none can widen. A disabled tool is never shown to the model and
+invoking one throws `ToolDisabledError` (not `ToolForbiddenError`). Prefer these to registering a
+tool conditionally, and to refusing inside `execute` (which costs the model a turn).
+Source: `packages/adonis/docs/authoring/tools.mdx`, `packages/adonis/src/tool-filters.ts`.
 
 ## Common mistakes
 

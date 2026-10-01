@@ -76,6 +76,8 @@ Authorization runs **twice** through the same `can(actor, tool)`, which is what 
 1. **Offered-tools filter.** Before each model turn, `ToolRegistry.definitionsFor(actor, policy, allowedTools)` drops every tool the actor's role can't invoke — so a forbidden tool is never even described to the model. The persona/agent allow-list is applied on top as a second filter layer.
 2. **Invoke-time re-check.** When the loop actually runs a tool, `ToolRegistry.invoke` re-checks `policy.can(...)` (and re-validates the input schema) before calling the handler. Even if a tool leaked into a call, it's refused with `ToolForbiddenError`.
 
+Two per-tool gates sit around the policy on both layers: `enabled` / `isEnabled()` runs **before** it (a disabled tool is absent, and invoking one raises `ToolDisabledError`), and the tool's own `canUse(actor)` runs **after** it, for a per-actor decision the app-wide policy cannot express. Neither can widen what the policy allows. See [Turning a tool off, and gating it per user](/docs/agent/authoring/tools#turning-a-tool-off-and-gating-it-per-user).
+
 <Callout type="info" title="One policy, both layers">
 Both checks call the same `can(actor, tool)`, so swapping the policy — for the ability-aware authz adapter, or your own — changes offer and invoke together. They can never disagree about what an actor may reach.
 </Callout>

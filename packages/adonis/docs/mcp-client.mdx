@@ -41,6 +41,8 @@ A tool imported from an MCP server was written by someone outside this codebase 
 | `include` / `exclude` | Which remote tool names to import. `exclude` is applied after `include`. |
 | `namespace` | The tool-name prefix: the server name (default), a string, or `false` for none. |
 | `roles` / `ability` | What the `RolesPolicy` checks every tool from this server against. Omit → the app's `defaultRoles`. |
+| `enabled` | Whether this server's tools exist in this deployment — a boolean, or a predicate re-read every turn (a feature flag). A disabled server's tools stay imported but are never offered or invocable, so turning it back on needs no refresh. Omit → enabled. |
+| `canUse` | `(actor) => boolean \| Promise<boolean>` — a per-actor gate on every tool from this server, after the `RolesPolicy`, on both the offered list and the call. For what a role cannot express (the actor's plan, a per-user connection to the remote). |
 | `connectTimeoutMs` / `requestTimeoutMs` | Caps on the handshake (10s) and on `tools/list` plus every call (30s). Both are the SDK's own per-request timeouts, so a timed-out request is *cancelled on the wire* rather than abandoned. |
 | `transientRetry` | In-place retry for a call that failed transiently. Defaults to `{ attempts: 2, backoffMs: 150 }`; `false` surfaces the first failure. Which failures qualify depends on the tool's `kind` — see [An approved action is never issued twice](#an-approved-action-is-never-issued-twice). |
 | `validator` | Compiles each tool's JSON Schema. Defaults to the MCP SDK's AJV adapter. |
@@ -65,7 +67,7 @@ A server that was down at boot is not lost — the importer's `refresh(name)` re
 
 `refresh()` is the server's **current** answer to `tools/list`, not an addition to what it once said. A tool the server has dropped or renamed is unregistered: it stops being offered to the model, and calling it raises `ToolNotFoundError` here instead of failing on somebody else's machine several seconds later. Only names this importer registered for *that* server are eligible — never the application's own, never another server's — and a freed name is claimable by the next server in configuration order within the same refresh.
 
-A server that could not be **reached** prunes nothing. Its tools are unknown, not gone, and a network blip is not a reason to withdraw a working tool from the model.
+A server that answers with an **empty** list is a real answer, and retires every tool it owned. A server that could not be **reached** prunes nothing. Its tools are unknown, not gone, and a network blip is not a reason to withdraw a working tool from the model.
 
 `refresh(name)` for a name no open server matches warns and returns `0`, rather than leaving a `0` that reads identically to a server which answered with no tools.
 

@@ -2,6 +2,12 @@ import type { StandardSchemaV1 } from '@standard-schema/spec';
 import { filterToolsByRole, personaFilterTools } from './personas.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
 import type { AiToolCtx, ToolDescribeScope, ToolHandler } from './spi/tool.js';
+import {
+  canActorUseTool,
+  filterToolsByCanUse,
+  filterToolsByEnabled,
+  isToolEnabled,
+} from './tool-filters.js';
 import { createNoopEmitUi } from './tool-ui.js';
 import type { Actor, ToolDefinition, ToolSpec } from './types.js';
 
@@ -10,6 +16,22 @@ export class ToolForbiddenError extends Error {
   constructor(public readonly toolName: string) {
     super(`Tool "${toolName}" is not allowed for this role`);
     this.name = 'ToolForbiddenError';
+  }
+}
+
+/**
+ * Thrown when a registered tool is invoked while this deployment has it turned off (`enabled` /
+ * `isEnabled()`). Distinct from {@link ToolForbiddenError}, which is about the actor, and from
+ * {@link ToolNotFoundError}, which is about a name nobody registered — an operator reading a log
+ * needs to tell "you flipped the flag" apart from "that tool does not exist in this build".
+ *
+ * Reachable in normal operation, not just from a forged call: a HITL `action` approved before the
+ * flag was turned off runs its tool afterwards.
+ */
+export class ToolDisabledError extends Error {
+  constructor(public readonly toolName: string) {
+    super(`Tool "${toolName}" is disabled in this deployment`);
+    this.name = 'ToolDisabledError';
   }
 }
 
@@ -77,20 +99,28 @@ export class ToolRegistry {
     return [...this.entries.values()].map((entry) => entry.spec);
   }
 
-  /** The tools to offer the model for this actor+persona, after the two filter layers. */
+  /**
+   * The tools to offer the model for this actor+agent, after the four filter layers: what this
+   * agent pinned, what this deployment has enabled, what this actor's role allows, and what each
+   * tool's own `canUse` allows this actor.
+   *
+   * Every layer only ever removes tools, so no arrangement of them can widen what a turn reaches.
+   * The allow-list goes FIRST, even though it is the narrowest statement: it is a pure name-set
+   * match, while each of the three below it may be a round trip — an authz service, a feature-flag
+   * store, an entitlement table — and this runs once per model step.
+   */
   async definitionsFor(
     actor: Actor,
     policy: RolesPolicy,
     allowedTools?: string[],
     scope: Omit<ToolDescribeScope, 'actor'> = {},
   ): Promise<ToolDefinition[]> {
-    const visible = await this.visibleSpecs(actor, policy, allowedTools);
+    const visible = await this.visibleEntries(actor, policy, allowedTools);
     return Promise.all(
-      visible.map(async (spec) => {
-        const handler = this.entries.get(spec.name)?.handler;
+      visible.map(async ({ spec, handler }) => {
         // After every gate: a tool this actor cannot reach is never asked to describe itself.
         const override =
-          handler?.describe === undefined ? undefined : await handler.describe({ actor, ...scope });
+          handler.describe === undefined ? undefined : await handler.describe({ actor, ...scope });
         return {
           name: spec.name,
           kind: spec.kind,
@@ -102,20 +132,47 @@ export class ToolRegistry {
   }
 
   /**
-   * The specs {@link definitionsFor} offers the model, whole — the same filters in the same order.
-   * For a surface that lists what an actor can reach (`GET <path>/tools`), which must never disagree
-   * with what the model is actually shown.
+   * The specs {@link definitionsFor} offers the model, whole — the same four gates (allow-list,
+   * enabled, role, `canUse`) in the same order. For a surface that lists what an actor can reach
+   * (`GET <path>/tools`), which must never disagree with what the model is actually shown.
    */
   async visibleSpecs(
     actor: Actor,
     policy: RolesPolicy,
     allowedTools?: string[],
   ): Promise<ToolSpec[]> {
-    const roleScoped = await filterToolsByRole(this.allSpecs(), actor, policy);
-    return personaFilterTools(roleScoped, allowedTools);
+    return (await this.visibleEntries(actor, policy, allowedTools)).map(({ spec }) => spec);
   }
 
-  /** Run a tool. Re-checks the role (defense-in-depth) and re-parses the input via Zod. */
+  private async visibleEntries(
+    actor: Actor,
+    policy: RolesPolicy,
+    allowedTools?: string[],
+  ): Promise<Entry[]> {
+    const pinnedNames = new Set(
+      personaFilterTools(this.allSpecs(), allowedTools).map((spec) => spec.name),
+    );
+    const pinned = [...this.entries.values()].filter((entry) => pinnedNames.has(entry.spec.name));
+    const live = await filterToolsByEnabled(pinned);
+    const allowedByRole = new Set(
+      (
+        await filterToolsByRole(
+          live.map((entry) => entry.spec),
+          actor,
+          policy,
+        )
+      ).map((spec) => spec.name),
+    );
+    const roleScoped = live.filter((entry) => allowedByRole.has(entry.spec.name));
+    return filterToolsByCanUse(roleScoped, actor);
+  }
+
+  /**
+   * Run a tool. Re-checks that the tool is enabled, that the role allows it and that the tool's own
+   * `canUse` admits the actor (defense-in-depth — a call can reach here from a replayed durable step
+   * or an approval granted before the flag moved, neither of which went through `definitionsFor`
+   * again) and re-parses the input.
+   */
   async invoke(
     name: string,
     input: unknown,
@@ -126,7 +183,13 @@ export class ToolRegistry {
     if (entry === undefined) {
       throw new ToolNotFoundError(name);
     }
+    if (!(await isToolEnabled(entry.spec, entry.handler))) {
+      throw new ToolDisabledError(name);
+    }
     if (!(await policy.can(ctx.actor, entry.spec))) {
+      throw new ToolForbiddenError(name);
+    }
+    if (!(await canActorUseTool(ctx.actor, entry.handler))) {
       throw new ToolForbiddenError(name);
     }
     const validation = await entry.spec.inputSchema['~standard'].validate(input);

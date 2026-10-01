@@ -311,6 +311,32 @@ describe('Guardrails.wrapTool', () => {
   });
 });
 
+describe('Guardrails.wrapTool — the wrapped tool keeps its gates', () => {
+  it('forwards isEnabled, canUse and describe to the handler it wraps', async () => {
+    const guardrails = createGuardrails({ pii: 'redact' });
+    const handler = guardrails.wrapTool('search', {
+      execute: async () => 'ok',
+      isEnabled: () => false,
+      canUse: (actor) => actor.id === 'u-ok',
+      describe: () => ({ description: 'per turn' }),
+    });
+    expect(await handler.isEnabled?.()).toBe(false);
+    expect(await handler.canUse?.({ id: 'u-ok' })).toBe(true);
+    expect(await handler.canUse?.({ id: 'u-no' })).toBe(false);
+    expect(await handler.describe?.({ actor: { id: 'u-ok' } })).toEqual({
+      description: 'per turn',
+    });
+  });
+
+  it('adds no gate a handler did not declare', () => {
+    const guardrails = createGuardrails({ pii: 'redact' });
+    const handler = guardrails.wrapTool('search', { execute: async () => 'ok' });
+    expect(handler.isEnabled).toBeUndefined();
+    expect(handler.canUse).toBeUndefined();
+    expect(handler.describe).toBeUndefined();
+  });
+});
+
 describe('tool definition screening', () => {
   const poisoned = {
     name: 'add',
