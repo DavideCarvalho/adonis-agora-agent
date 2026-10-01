@@ -10,7 +10,7 @@ The default setup is a single agent. Two features let you go further: **personas
 
 ## Personas
 
-A persona is a named variant of an agent: its own system prompt, and optionally a tool allow-list. The caller selects one per request (the `persona` field on `POST /agent/chat`), and it's pinned onto the thread.
+A persona is a named variant of ONE agent: its own system prompt and, optionally, a narrower tool allow-list. Everything else — the agent's model, its access rules, its handoffs, its history — stays the agent's. A variant that needs any of those to differ is its own agent, not a persona. Personas speak the same wire as `@dudousxd/nestjs-agent` (`POST /agent/chat { persona }`, `forwardedProps.persona`, `persona` on messages and threads), so the shared React package drives them as-is.
 
 ```ts title="config/agent.ts"
 export default defineConfig({
@@ -25,41 +25,74 @@ export default defineConfig({
       {
         id: 'shopper',
         label: 'Shopping assistant',
+        description: 'Find and track products',
         systemPrompt: 'Help the customer find and track products. Be concise.',
         allowedTools: ['getOrder', 'searchProducts'],
       },
       {
         id: 'support',
         label: 'Support agent',
-        systemPrompt: 'Help resolve issues. You may issue refunds with approval.',
+        systemPrompt: (ctx) => `${ctx.basePrompt}\nHelp resolve issues. Refunds need approval.`,
         allowedTools: ['getOrder', 'issueRefund'],
+        aliases: ['support-agent'], // the agent this persona replaced — see below
       },
     ],
   },
 })
 ```
 
-Two things a persona controls:
+What a persona controls:
 
-- **The prompt.** A persona's `systemPrompt` is resolved *with the agent's base prompt available as `basePrompt`*, so a persona can wrap or extend the base rather than replace it. It can be a flat string or a `PromptBuilder` — `(ctx) => string | Promise<string>` — composed per request from the actor, persona, and page context.
-- **The tool allow-list.** If `allowedTools` is set, only those tool names are offered — *after* role filtering. So the effective tool set is: registered tools ∩ the actor's role ∩ the persona's allow-list ∩ the agent's allow-list.
+- **The prompt.** A flat `systemPrompt` stands in for the agent's base prompt. A `PromptBuilder` — `(ctx) => string | Promise<string>` — is handed the base as `ctx.basePrompt`, so it can wrap it instead. No `systemPrompt` keeps the base prompt, which can itself read `ctx.persona`.
+- **The tools.** With `allowedTools`, only those names are offered — after the agent's own allow-list, `enabled`, the roles policy and `canUse`. It narrows, never widens. And it is enforced, not only offered: a call the model names anyway is refused by `ToolRegistry.invoke` (`ToolForbiddenError`), and a handoff (`ask_<agent>` / `start_<agent>`) that is not on the list is refused before the delegate starts.
 
-<Callout type="info" title="Catalog">
-`GET /agent/threads/personas/catalog` returns the `{ id, label }` list so a UI can render a persona picker. Omit personas entirely for a plain assistant.
+Tools see the persona as `ctx.persona`, and every message the turn writes — the user's, the assistant's, the intake's — records its id (`StoredMessage.persona`).
+
+### Which persona a send runs under
+
+Most specific first:
+
+1. the send's own `persona` (`POST /agent/chat { persona }`, AG-UI `forwardedProps.persona`, `ChatParams.personaId`);
+2. else the thread's pinned persona, when the agent of this send declares it;
+3. else the agent's `defaultPersona` (or, without one, a persona whose id is `'default'`);
+4. else none — the base prompt and the agent's tools, exactly as without personas.
+
+A persona a send **names** is pinned on the thread, so the next send that names none keeps it; one the send fell back to is not pinned. `PATCH /agent/threads/:id { persona }` pins one directly (`null` clears it). An id the agent does not declare is refused with `400` and `code: 'persona_not_found'` — on a send before anything is created, and on the patch.
+
+<Callout type="info" title="Pickers">
+`GET /agent/agents` lists each agent's `personas` (`{ id, label, description? }`) and its `defaultPersona` — what `useAgents().personasOf(agent)` and `defaultPersonaOf(agent)` read in the React package. A thread's pin is `ThreadSummary.persona` (`null` when none). `GET /agent/threads/personas/catalog` still answers the default agent's list.
 </Callout>
+
+### Durable: a parked run keeps the persona it started with
+
+The service resolves the persona to an **id** before the run starts, so only the id rides the run's input (and a queued message). The loop then looks the definition up once and freezes it — id, label, allow-list and the resolved prompt — in a `persona:resolve` checkpoint, ahead of every other. A run that parks on an approval and resumes days later, on another deployment, runs every later step on the prompt and the offer it started with, even if the persona was edited or removed in between. If the persona is gone when the run first resolves it, the turn runs under none.
+
+Only a run that names a persona spends that checkpoint; a run without one records exactly the sequence it always did. A run started by a release before 0.60 carries the persona in its input instead, and replays as it was recorded, with no `persona:resolve`.
+
+Because the prompt is resolved inside that checkpoint, a `PromptBuilder` is called once per run, not once per resume — still, keep it to stable inputs (actor, persona, page context) rather than wall-clock time or randomness.
+
+### A queued message keeps its persona
+
+A send that waits in the thread's queue stores the persona it resolved (`agent_queued_message.persona`), and the turn it starts runs under that one. A message queued before this column existed resolves one as it starts — the thread's pin, then the agent's default — and is never refused.
+
+### Folding agents into personas: `aliases`
+
+`aliases` lets an app merge separate agents into personas of one without migrating data. A name in a persona's `aliases` resolves, everywhere an agent name is read, to the agent that owns the persona under that persona: a send's `agent`, a thread's `defaultAgent` (stored or patched), a queued message's agent, and a run that is in flight under the old name — served with the persona applied as config. A name that is still a registered agent is never an alias.
+
+### Stores
+
+`agent_thread.persona` holds the pin (an empty string is "none pinned"; the column predates pins, so an older thread holds whatever it was created with, and the routes report a pin no agent declares as `null`). `agent_message.persona` holds each message's persona. `agent_queued_message.persona` is new: `createAgentTables` — and so the published migration and `autoCreateTables` — adds it to an existing table on SQLite, Postgres and MySQL. A store of your own implements the optional `personaForThread(threadId)` and `UpdateThreadInput.persona`, and round-trips `persona` on queued messages.
 
 The prompt context available to a `PromptBuilder`:
 
 ```ts
 interface PromptContext {
   actor: Actor
-  persona?: Persona
+  persona?: Persona // the persona the turn runs under
   pageContext?: PageContext
   basePrompt: string // the agent's own resolved base prompt
 }
 ```
-
-Because the loop resolves the prompt once per turn from stable inputs, a `PromptBuilder` stays replay-safe — don't reach for wall-clock time or randomness inside it.
 
 ## Named agents
 

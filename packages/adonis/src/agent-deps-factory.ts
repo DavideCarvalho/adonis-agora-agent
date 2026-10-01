@@ -2,6 +2,14 @@ import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { AgentDeps } from './agent-deps.js';
 import type { AgentRegistry } from './agent-registry.js';
 import type { MemoryConfig } from './memory.js';
+import {
+  defaultPersonaOf,
+  findPersona,
+  intersectAllowLists,
+  PersonaNotFoundError,
+  personaCatalogEntry,
+  resolvePersonaAlias,
+} from './personas.js';
 import type { SkillsConfig } from './skills.js';
 import type { AgentStore } from './spi/agent-store.js';
 import type { ApprovalPolicy } from './spi/approval-policy.js';
@@ -15,7 +23,15 @@ import type { RolesPolicy } from './spi/roles-policy.js';
 import type { TokenStreamSink } from './spi/token-stream-sink.js';
 import type { ToolRegistry } from './tool-registry.js';
 import type { ToolTransientRetrySetting } from './tool-retry.js';
-import type { Actor, AgentDefinition, DelegateEdge, Persona } from './types.js';
+import type {
+  Actor,
+  AgentDefinition,
+  DelegateEdge,
+  Persona,
+  PersonaCatalogEntry,
+  PromptBuilder,
+  PromptContext,
+} from './types.js';
 
 /** The synthesized `agent`-kind tool name for an edge to `target`: `ask_<target>`, or `start_<target>` for a detached one. */
 export function delegateToolName(target: string, options: { detached?: boolean } = {}): string {
@@ -222,8 +238,78 @@ export class AgentDepsFactory {
     return [...(definition.tools ?? []), ...delegated];
   }
 
+  /** Is `name` a registered agent — or the implicit default one? */
+  isAgent(name: string): boolean {
+    return name === this.defaultAgentName() || this.config.agents.get(name) !== undefined;
+  }
+
+  /**
+   * The agent a name stands for: itself when it is a registered agent (or unknown — the bare
+   * assistant), else the agent whose persona took the name over ({@link Persona.aliases}) and that
+   * persona.
+   */
+  resolveAgent(name: string): { agentName: string; persona?: string } {
+    if (this.isAgent(name)) {
+      return { agentName: name };
+    }
+    const alias = resolvePersonaAlias(this.agentDefinitions(), name);
+    return alias === undefined
+      ? { agentName: name }
+      : { agentName: alias.agent, persona: alias.persona };
+  }
+
+  /** `agentName`'s personas as a picker reads them. Empty when it declares none. */
+  personaCatalog(agentName: string): PersonaCatalogEntry[] {
+    return (this.config.agents.get(agentName)?.personas ?? []).map(personaCatalogEntry);
+  }
+
+  /** The persona `agentName` runs under when nothing names one. Undefined → none. */
+  defaultPersona(agentName: string): string | undefined {
+    return defaultPersonaOf(this.config.agents.get(agentName));
+  }
+
+  /** Does `agentName` declare a persona `id`? */
+  hasPersona(agentName: string, id: string): boolean {
+    return findPersona(this.config.agents.get(agentName), id) !== undefined;
+  }
+
+  /**
+   * The persona a turn of `agentName` runs under, most specific first: the one the send names
+   * (refused with {@link PersonaNotFoundError} when the agent does not declare it), else the thread's
+   * pinned one when this agent declares it, else the agent's default. Undefined → none.
+   */
+  resolvePersona(args: {
+    agentName: string;
+    requested?: string;
+    threadPersona?: string | null;
+  }): string | undefined {
+    if (args.requested !== undefined) {
+      if (!this.hasPersona(args.agentName, args.requested)) {
+        throw new PersonaNotFoundError(args.agentName, args.requested);
+      }
+      return args.requested;
+    }
+    const pinned = args.threadPersona ?? undefined;
+    if (pinned !== undefined && this.hasPersona(args.agentName, pinned)) {
+      return pinned;
+    }
+    return this.defaultPersona(args.agentName);
+  }
+
   forAgent(agentName?: string): AgentDeps {
     const name = agentName ?? this.defaultAgentName();
+    // A name a persona took over (`Persona.aliases`): a run journaled under the old agent name — or a
+    // caller still naming it — is served by the agent that owns the persona, with it applied.
+    if (agentName !== undefined && !this.isAgent(agentName)) {
+      const alias = resolvePersonaAlias(this.agentDefinitions(), agentName);
+      const persona =
+        alias === undefined
+          ? undefined
+          : findPersona(this.config.agents.get(alias.agent), alias.persona);
+      if (alias !== undefined && persona !== undefined) {
+        return this.withPersona(this.forAgent(alias.agent), persona);
+      }
+    }
     const definition = this.config.agents.get(name);
     const personas = new Map<string, Persona>();
     for (const persona of definition?.personas ?? []) {
@@ -279,5 +365,28 @@ export class AgentDepsFactory {
       ...(definition?.ask !== undefined ? { ask: definition.ask } : {}),
       ...(definition?.intake !== undefined ? { intake: definition.intake } : {}),
     };
+  }
+
+  /**
+   * A persona baked into an agent's deps — how a run journaled under an agent name that a persona has
+   * since taken over ({@link Persona.aliases}) is served. That run names no persona of its own (it
+   * predates the fold, and its input cannot change), so the persona applies the way the old agent's
+   * own config did: as config, re-read on every replay, with no checkpoint of its own.
+   */
+  private withPersona(deps: AgentDeps, persona: Persona): AgentDeps {
+    const base = deps.systemPrompt;
+    const resolve = async (prompt: string | PromptBuilder, ctx: PromptContext) =>
+      typeof prompt === 'function' ? prompt(ctx) : prompt;
+    const own = persona.systemPrompt;
+    const systemPrompt: PromptBuilder = async (ctx) => {
+      const scoped: PromptContext = { ...ctx, persona };
+      if (own === undefined) {
+        return resolve(base, scoped);
+      }
+      const basePrompt = typeof own === 'function' ? await resolve(base, scoped) : '';
+      return resolve(own, { ...scoped, basePrompt });
+    };
+    const toolAllowList = intersectAllowLists(deps.toolAllowList, persona.allowedTools);
+    return { ...deps, systemPrompt, ...(toolAllowList !== undefined ? { toolAllowList } : {}) };
   }
 }

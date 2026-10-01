@@ -46,6 +46,7 @@ import {
   offerMemories,
   offerSkills,
   type PageContext,
+  PersonaNotFoundError,
   parseStreamCursor,
   pricingStores,
   QuotaBlockedError,
@@ -60,6 +61,7 @@ import {
   registerFunctionalTool,
   registerToolsFromBarrel,
   resolveActorResolver,
+  resolvePersonaAlias,
   type TokenStreamSink,
   ToolRegistry,
   type ToolsBarrel,
@@ -366,7 +368,7 @@ export default class AgentProvider {
     const queue = new ChatQueueService(store, sink, {
       ...(quotaProvider !== undefined ? { quota: quotaProvider } : {}),
       ...(attachmentStaging !== undefined ? { attachments: attachmentStaging } : {}),
-      personaFor: (agentName) => service.resolvePersona(agentName),
+      resolveTarget: (message) => service.queuedTarget(message),
     });
     const runner =
       config.durable === true
@@ -655,7 +657,12 @@ export default class AgentProvider {
       // Read the body first so the target agent is known: an agent with its own `actorResolver`
       // (e.g. one that reads the caller from the body) resolves the actor with it, else the global.
       const body = (ctx.request.body() ?? {}) as ChatBody;
-      const agentName = body.agent ?? defaultAgentName;
+      // A name a persona took over (`Persona.aliases`) is answered by the agent that owns it.
+      const named = body.agent ?? defaultAgentName;
+      const agentName =
+        agents.get(named) !== undefined
+          ? named
+          : (resolvePersonaAlias(agents.list(), named)?.agent ?? named);
       const resolver = resolveActorResolver(actorResolver, agents.get(agentName));
       const actor = await this.#resolveActor(ctx, resolver);
       if (actor === null) return;
@@ -690,7 +697,9 @@ export default class AgentProvider {
           ...(typeof body.model === 'string' && body.model.length > 0 ? { model: body.model } : {}),
           ...(body.threadId !== undefined ? { threadId: body.threadId } : {}),
           ...(body.agent !== undefined ? { agentName: body.agent } : {}),
-          ...(body.persona !== undefined ? { personaId: body.persona } : {}),
+          ...(typeof body.persona === 'string' && body.persona.length > 0
+            ? { personaId: body.persona }
+            : {}),
           ...(body.pageContext !== undefined ? { pageContext: body.pageContext } : {}),
           ...(refs.length > 0 ? { attachments: refs } : {}),
         });
@@ -700,6 +709,9 @@ export default class AgentProvider {
         }
         if (error instanceof ModelNotAllowedError) {
           return ctx.response.badRequest({ message: error.message, code: 'model_not_allowed' });
+        }
+        if (error instanceof PersonaNotFoundError) {
+          return ctx.response.badRequest({ message: error.message, code: error.code });
         }
         if (error instanceof RegenerateNeedsThreadError) {
           return ctx.response.badRequest({ message: error.message, code: 'thread_required' });
@@ -1038,6 +1050,7 @@ export default class AgentProvider {
         title?: unknown;
         model?: unknown;
         defaultAgent?: unknown;
+        persona?: unknown;
       };
       if (body.model !== undefined && body.model !== null && typeof body.model !== 'string') {
         return ctx.response.badRequest({ message: 'model must be a string or null' });
@@ -1049,23 +1062,34 @@ export default class AgentProvider {
       ) {
         return ctx.response.badRequest({ message: 'defaultAgent must be a string or null' });
       }
-      if (body.model !== undefined || body.defaultAgent !== undefined) {
+      if (body.persona !== undefined && body.persona !== null && typeof body.persona !== 'string') {
+        return ctx.response.badRequest({ message: 'persona must be a string or null' });
+      }
+      if (
+        body.model !== undefined ||
+        body.defaultAgent !== undefined ||
+        body.persona !== undefined
+      ) {
         try {
           const saved = await service.updateThreadSettings(actor, threadId, {
             ...(body.model !== undefined ? { model: body.model as string | null } : {}),
             ...(body.defaultAgent !== undefined
               ? { defaultAgent: body.defaultAgent as string | null }
               : {}),
+            ...(body.persona !== undefined ? { persona: body.persona as string | null } : {}),
           });
           if (!saved) {
             return ctx.response.status(501).json({
               message:
-                "Setting a thread's model or default agent requires an AgentStore that implements updateThread().",
+                "Setting a thread's model, default agent or persona requires an AgentStore that implements updateThread().",
             });
           }
         } catch (error) {
           if (error instanceof ModelNotAllowedError || error instanceof UnknownAgentError) {
             return ctx.response.badRequest({ message: error.message });
+          }
+          if (error instanceof PersonaNotFoundError) {
+            return ctx.response.badRequest({ message: error.message, code: error.code });
           }
           throw error;
         }
@@ -1927,6 +1951,10 @@ export default class AgentProvider {
     }
     if (error instanceof ModelNotAllowedError) {
       ctx.response.badRequest({ message: error.message, code: 'model_not_allowed' });
+      return true;
+    }
+    if (error instanceof PersonaNotFoundError) {
+      ctx.response.badRequest({ message: error.message, code: error.code });
       return true;
     }
     if (error instanceof ChatQueueError) {

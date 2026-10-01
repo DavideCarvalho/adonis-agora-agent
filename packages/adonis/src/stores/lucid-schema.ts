@@ -200,6 +200,7 @@ export function createTableStatements(): string[] {
       "content" TEXT NOT NULL,
       "attachments" TEXT NULL,
       "agent_name" VARCHAR(255) NULL,
+      "persona" VARCHAR(255) NULL,
       "model" VARCHAR(255) NULL,
       "page_context" TEXT NULL,
       "interrupt" INTEGER NOT NULL DEFAULT 0,
@@ -252,6 +253,8 @@ const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }
   { table: AGENT_TABLES.threads, column: 'model', type: 'VARCHAR(255) NULL' },
   { table: AGENT_TABLES.threads, column: 'queue_pause', type: 'TEXT NULL' },
   { table: AGENT_TABLES.threads, column: 'default_agent', type: 'VARCHAR(255) NULL' },
+  // The persona a queued message's send resolved, so it starts under that one.
+  { table: AGENT_TABLES.queuedMessages, column: 'persona', type: 'VARCHAR(255) NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'approver', type: 'VARCHAR(255) NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'expires_at', type: 'BIGINT NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'remember', type: 'INTEGER NULL' },

@@ -182,6 +182,7 @@ function queuedMessageFromRow(row: Record<string, unknown>): QueuedMessage {
     content: String(row.content ?? ''),
     ...(attachments !== undefined && attachments.length > 0 ? { attachments } : {}),
     ...(typeof row.agent_name === 'string' ? { agentName: row.agent_name } : {}),
+    ...(typeof row.persona === 'string' && row.persona.length > 0 ? { persona: row.persona } : {}),
     ...(typeof row.model === 'string' ? { model: row.model } : {}),
     ...(pageContext !== undefined ? { pageContext } : {}),
     ...(toInt(row.interrupt) === 1 ? { interrupt: true } : {}),
@@ -269,7 +270,8 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
       actor_ref: input.actor.id,
       tenant_ref: input.actor.tenantRef ?? null,
       title: input.title ?? 'New chat',
-      persona: input.persona,
+      // NOT NULL since the first schema: an empty string is "none pinned" (see `pinnedPersona`).
+      persona: input.persona ?? '',
       transient: input.transient ? 1 : 0,
       pinned_at: null,
       summary: null,
@@ -282,7 +284,7 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
     return {
       id,
       title: input.title ?? 'New chat',
-      persona: input.persona,
+      persona: pinnedPersona(input.persona),
       transient: input.transient ?? false,
       createdAt: new Date(now).toISOString(),
       updatedAt: new Date(now).toISOString(),
@@ -407,13 +409,13 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
       const id = crypto.randomUUID();
       const now = Date.now();
       const title = String(source.title);
-      const persona = String(source.persona);
+      const persona = pinnedPersona(source.persona);
       await trx.table(AGENT_TABLES.threads).insert({
         id,
         actor_ref: source.actor_ref,
         tenant_ref: source.tenant_ref ?? null,
         title,
-        persona,
+        persona: persona ?? '',
         transient: 0,
         pinned_at: null,
         summary: null,
@@ -472,6 +474,7 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
     if (patch.title !== undefined) update.title = patch.title;
     if (patch.model !== undefined) update.model = patch.model;
     if (patch.defaultAgent !== undefined) update.default_agent = patch.defaultAgent;
+    if (patch.persona !== undefined) update.persona = patch.persona ?? '';
     await this.db.from(AGENT_TABLES.threads).where('id', threadId).update(update);
   }
 
@@ -479,6 +482,12 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
     await this.init();
     const row = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
     return typeof row?.default_agent === 'string' ? row.default_agent : null;
+  }
+
+  async personaForThread(threadId: string): Promise<string | null> {
+    await this.init();
+    const row = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
+    return pinnedPersona(row?.persona);
   }
 
   async clearActiveStream(threadId: string, runId: string): Promise<void> {
@@ -588,6 +597,7 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
             ? safeJson(input.attachments)
             : null,
         agent_name: input.agentName ?? null,
+        persona: input.persona ?? null,
         model: input.model ?? null,
         page_context: input.pageContext !== undefined ? safeJson(input.pageContext) : null,
         interrupt: input.interrupt === true ? 1 : 0,
@@ -1092,12 +1102,21 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
   }
 }
 
+/**
+ * A thread's `persona` column as the pin it stands for. The column is `NOT NULL` (an empty string is
+ * "none pinned"), so `null` is never stored; a store written before pins existed holds whatever its
+ * thread was created with, which the service reads as a pin only where the agent declares it.
+ */
+function pinnedPersona(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
 function threadRowToSummary(row: Record<string, unknown>, lastPreview?: string): ThreadSummary {
   const pinnedAt = row.pinned_at;
   return {
     id: String(row.id),
     title: String(row.title),
-    persona: String(row.persona),
+    persona: pinnedPersona(row.persona),
     transient: toInt(row.transient) !== 0,
     createdAt: msToIso(row.created_at),
     updatedAt: msToIso(row.updated_at),

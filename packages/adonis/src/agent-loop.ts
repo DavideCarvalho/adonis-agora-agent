@@ -39,6 +39,7 @@ import {
   rememberToolDefinition,
   writeMemory,
 } from './memory.js';
+import { intersectAllowLists, personaFromTurn } from './personas.js';
 import {
   createFrameBuffer,
   createIncrementalGate,
@@ -108,6 +109,7 @@ import type {
   Decision,
   MessageUsage,
   ModelMessage,
+  Persona,
   PromptBuilder,
   PromptContext,
   StoredMessage,
@@ -116,6 +118,7 @@ import type {
   ToolKind,
   ToolResult,
   ToolSpec,
+  TurnPersona,
 } from './types.js';
 
 export interface AgentLoopDeps<TOutput = unknown> {
@@ -150,6 +153,12 @@ export interface AgentLoopDeps<TOutput = unknown> {
   host?: unknown;
   /** Agent-level tool allow-list (intersected with the persona's). Undefined → all tools. */
   toolAllowList?: string[];
+  /**
+   * The agent's personas, by id. Read ONLY when the run names one by id (`AgentRunInput.persona`),
+   * and then only once, inside the `persona:resolve` checkpoint — so a replay runs under the persona
+   * the turn started with even after this changed. Undefined → no personas.
+   */
+  personas?: ReadonlyMap<string, Persona>;
   /**
    * How many agent→agent delegations deep a chain may go. Defaults to {@link MAX_DELEGATION_DEPTH}.
    *
@@ -511,21 +520,111 @@ async function resolvePrompt(prompt: string | PromptBuilder, ctx: PromptContext)
 }
 
 /**
- * The effective system prompt for a turn: resolve the agent's base prompt first, then — if the
- * request selected a persona — resolve the persona prompt with that base as `basePrompt`, so a
- * persona builder can wrap the agent's base rather than discard it.
+ * The effective system prompt for a turn. A persona that carries a prompt stands in for the base —
+ * already resolved, with the base it may wrap, in {@link resolveTurnPersona} (inside `persona:resolve`
+ * for a run that names its persona by id), so a replay reads back the exact text the turn started
+ * with. Otherwise the agent's base prompt, which sees the persona too.
  */
-async function resolveSystemPrompt(deps: AgentLoopDeps, input: AgentRunInput): Promise<string> {
-  const base: Omit<PromptContext, 'basePrompt'> = {
+async function resolveSystemPrompt(
+  deps: AgentLoopDeps,
+  input: AgentRunInput,
+  persona: TurnPersona | undefined,
+): Promise<string> {
+  if (persona?.prompt !== undefined) {
+    return persona.prompt;
+  }
+  return resolvePrompt(deps.systemPrompt, { ...promptContext(input, persona), basePrompt: '' });
+}
+
+/** What every prompt builder of a turn is handed, short of `basePrompt`. */
+function promptContext(
+  input: AgentRunInput,
+  persona: TurnPersona | undefined,
+): Omit<PromptContext, 'basePrompt'> {
+  return {
     actor: input.actor,
-    ...(input.persona !== undefined ? { persona: input.persona } : {}),
+    ...(persona !== undefined ? { persona: personaFromTurn(persona) } : {}),
     ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
   };
-  const basePrompt = await resolvePrompt(deps.systemPrompt, { ...base, basePrompt: '' });
-  if (input.persona === undefined) {
-    return basePrompt;
+}
+
+/**
+ * Freeze `persona` for this turn: its id, label and allow-list, and its prompt resolved against the
+ * agent's base prompt. A flat prompt stands in for the base; a builder is handed the base as
+ * `ctx.basePrompt`; no prompt → the base, resolved per turn like any agent's.
+ */
+async function freezePersona(
+  deps: AgentLoopDeps,
+  input: AgentRunInput,
+  persona: Persona,
+): Promise<TurnPersona> {
+  const ref: TurnPersona = {
+    id: persona.id,
+    label: persona.label,
+    ...(persona.allowedTools !== undefined ? { allowedTools: [...persona.allowedTools] } : {}),
+  };
+  if (persona.systemPrompt === undefined) {
+    return ref;
   }
-  return resolvePrompt(input.persona.systemPrompt, { ...base, basePrompt });
+  const ctx = promptContext(input, ref);
+  const basePrompt =
+    typeof persona.systemPrompt === 'function'
+      ? await resolvePrompt(deps.systemPrompt, { ...ctx, basePrompt: '' })
+      : '';
+  return { ...ref, prompt: await resolvePrompt(persona.systemPrompt, { ...ctx, basePrompt }) };
+}
+
+/**
+ * The `persona:resolve` checkpoint's body: the persona the run names, looked up in this process's
+ * config and FROZEN ({@link freezePersona}). `null` when the agent no longer declares it, which the
+ * turn runs as no persona at all.
+ *
+ * Reached only for a run whose input names a persona by id, and every such run was started by a
+ * release that has this checkpoint; a run started before it names none (or carries the whole persona
+ * in its input), spends no position here, and replays on the sequence it recorded.
+ */
+async function resolveTurnPersona(
+  deps: AgentLoopDeps,
+  input: AgentRunInput,
+  id: string,
+): Promise<TurnPersona | null> {
+  const persona = deps.personas?.get(id);
+  return persona === undefined ? null : freezePersona(deps, input, persona);
+}
+
+/**
+ * A persona handed over WHOLE in the run's input — by a direct caller, or recorded so by a release
+ * before 0.60. Applied as given, with no checkpoint (its journal has none). Its input went through
+ * JSON on a durable run, which drops a builder prompt, so a prompt the input lost is looked up by id
+ * in this process's config.
+ */
+async function inlineTurnPersona(
+  deps: AgentLoopDeps,
+  input: AgentRunInput,
+  persona: Persona,
+): Promise<TurnPersona> {
+  const prompt = persona.systemPrompt ?? deps.personas?.get(persona.id)?.systemPrompt;
+  return freezePersona(deps, input, {
+    ...persona,
+    ...(prompt !== undefined ? { systemPrompt: prompt } : {}),
+  });
+}
+
+/** `{ persona: id }` for a message the turn writes, when it runs under one. */
+function personaProvenance(input: AgentRunInput): { persona?: string } {
+  const persona = personaOf(input);
+  return persona === undefined ? {} : { persona: persona.id };
+}
+
+/** `{ persona }` for a tool's context, when the turn runs under one. */
+function personaContext(input: AgentRunInput): { persona?: Persona } {
+  const persona = personaOf(input);
+  return persona === undefined ? {} : { persona };
+}
+
+/** The turn's persona as a whole {@link Persona} — what the run input carries once it is resolved. */
+function personaOf(input: AgentRunInput): Persona | undefined {
+  return typeof input.persona === 'object' ? input.persona : undefined;
 }
 
 /** An `agent`-kind tool's input is `{ task }` by convention; fall back to a JSON dump. */
@@ -679,7 +778,7 @@ async function resolveDelegation(
       // resolvable spec must fail closed rather than fall through.
       throw new ToolForbiddenError(call.name);
     }
-    const offeredAllow = intersectAllow(input.persona?.allowedTools, deps.toolAllowList);
+    const offeredAllow = intersectAllow(personaOf(input)?.allowedTools, deps.toolAllowList);
     if (offeredAllow !== undefined && !offeredAllow.includes(call.name)) {
       throw new ToolForbiddenError(call.name);
     }
@@ -1075,7 +1174,7 @@ async function runIntake(args: {
       content: preamble,
       runId: hooks.runId,
       toolCalls: [call],
-      ...(input.persona !== undefined ? { persona: input.persona.id } : {}),
+      ...personaProvenance(input),
     });
     await deps.store.recordToolCall({
       toolCallId: request.id,
@@ -1142,7 +1241,7 @@ function elicitationContext(
     requestId: hooks.runId,
     emitUi: createNoopEmitUi(hooks.runId),
     ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
-    ...(input.persona !== undefined ? { persona: input.persona } : {}),
+    ...personaContext(input),
     ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
     ...(deps.host !== undefined ? { host: deps.host } : {}),
   };
@@ -1236,7 +1335,7 @@ async function claimToolCall(
   call: ToolCallRequest,
 ): Promise<ClaimedToolCall> {
   const { deps, input, hooks, messageId, writer } = turn;
-  const persona = input.persona;
+  const persona = personaOf(input);
   const persisted = (await hooks.step(
     `persist:toolcall:${call.id}`,
     async (): Promise<PersistedToolCall> => {
@@ -1420,6 +1519,13 @@ async function invokeClaimedTool(
 ): Promise<ToolOutcome> {
   const { deps, hooks } = turn;
   const { call, ctx, toolType } = claimed;
+  // Under a persona with an allow-list, the same narrowing the offer had — agent ∩ persona — is what
+  // `invoke` holds the call to. Without one, nothing new is checked.
+  const personaAllow = personaOf(turn.input)?.allowedTools;
+  const invokeOptions =
+    personaAllow === undefined
+      ? {}
+      : { allowedTools: intersectAllowLists(deps.toolAllowList, personaAllow) ?? [] };
   try {
     const raw = await hooks.step(`tool:${call.id}`, async () => {
       // Pushed components stream as they happen and ride this step's RESULT into the journal (see
@@ -1454,7 +1560,13 @@ async function invokeClaimedTool(
           invokeWithTransientRetry(
             () => {
               ui.restart();
-              return deps.registry.invoke(call.name, call.input, toolCtx, deps.rolesPolicy);
+              return deps.registry.invoke(
+                call.name,
+                call.input,
+                toolCtx,
+                deps.rolesPolicy,
+                invokeOptions,
+              );
             },
             deps.toolTransientRetry ?? {},
             {
@@ -2359,9 +2471,30 @@ export interface AgentLoopResult<TOutput = unknown> {
  */
 export async function runAgentLoop<TOutput = unknown>(
   boundDeps: AgentLoopDeps<TOutput>,
-  input: AgentRunInput,
+  requested: AgentRunInput,
   hooks: AgentLoopHooks,
 ): Promise<AgentLoopResult<TOutput>> {
+  // The persona, FIRST and only when the run names one by id: its definition is read from config
+  // once and frozen in this checkpoint, so a run resumed after the persona was edited or removed
+  // keeps the prompt and allow-list it started with. A run that names none spends no position here
+  // — nor does one that carries the whole persona in its input (a direct caller, or a run recorded
+  // by a release before this checkpoint existed), so those replay on the sequence they recorded.
+  const turnPersona: TurnPersona | undefined =
+    typeof requested.persona === 'string'
+      ? ((await hooks.step('persona:resolve', () =>
+          resolveTurnPersona(boundDeps, requested, requested.persona as string),
+        )) ?? undefined)
+      : requested.persona !== undefined
+        ? await inlineTurnPersona(boundDeps, requested, requested.persona)
+        : undefined;
+  // From here on the input carries the persona the turn actually runs under, whole and frozen — none,
+  // when the one it named is no longer declared — so provenance and tool context never claim one
+  // that did not apply.
+  const { persona: _requestedPersona, ...withoutPersona } = requested;
+  const input: AgentRunInput =
+    turnPersona === undefined
+      ? withoutPersona
+      : { ...withoutPersona, persona: personaFromTurn(turnPersona) };
   // A turn with a selected model runs EVERY call it makes on it — the answer and a structured-output
   // pass — and labels its usage with it when the provider reports no model id. The pick rides the
   // run's input, so a durable replay makes the same choice.
@@ -2374,8 +2507,8 @@ export async function runAgentLoop<TOutput = unknown>(
           modelId: input.model,
         };
   const maxSteps = deps.maxSteps ?? 8;
-  const persona = input.persona;
-  let system = await resolveSystemPrompt(deps, input);
+  const persona = turnPersona;
+  let system = await resolveSystemPrompt(deps, input, turnPersona);
   const inputProcessors = deps.inputProcessors ?? [];
   const outputProcessors = deps.outputProcessors ?? [];
   const gateMode = resolveOutputGateMode(outputProcessors);

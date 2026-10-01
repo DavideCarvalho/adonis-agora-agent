@@ -46,7 +46,18 @@ export interface ChatQueueServiceOptions {
   quota?: QuotaProvider;
   /** Re-mints a queued message's attachment urls as it starts (they may have expired waiting). */
   attachments?: AttachmentStagingStore;
-  /** The persona a turn of `agentName` runs with — what a send resolves when it names none. */
+  /**
+   * The agent and persona a queued message that carries NO persona starts as — one queued before
+   * personas were persisted, or by a host that set none: an agent name a persona took over, then the
+   * thread's pin, then the agent's default, exactly as a send resolves them. Never refused: nobody is
+   * waiting on a 400. A message that carries its persona starts under it as queued. Omitted → such a
+   * message starts as it was queued.
+   */
+  resolveTarget?: (message: QueuedMessage) => Promise<{ agentName?: string; persona?: string }>;
+  /**
+   * @deprecated Use {@link resolveTarget}. The persona a turn of `agentName` runs with, consulted
+   * only for a message that carries none when `resolveTarget` is not given.
+   */
   personaFor?: (agentName: string | undefined) => Persona | undefined;
 }
 
@@ -400,18 +411,42 @@ export class ChatQueueService {
    */
   private async inputFor(message: QueuedMessage): Promise<AgentRunInput> {
     const attachments = await this.freshAttachments(message.actor, message.attachments ?? []);
-    const persona = this.options.personaFor?.(message.agentName);
+    const { agentName, persona } = await this.targetFor(message);
     return {
       threadId: message.threadId,
       actor: message.actor,
       userText: message.content,
       day: utcDay(),
-      ...(message.agentName !== undefined ? { agentName: message.agentName } : {}),
+      ...(agentName !== undefined ? { agentName } : {}),
+      // An id, never the definition: the run journals the definition itself (`persona:resolve`).
       ...(persona !== undefined ? { persona } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(message.pageContext !== undefined ? { pageContext: message.pageContext } : {}),
       ...(message.model !== undefined ? { model: message.model } : {}),
     };
+  }
+
+  /** The agent and persona a queued message starts as — see {@link ChatQueueServiceOptions.resolveTarget}. */
+  private async targetFor(
+    message: QueuedMessage,
+  ): Promise<{ agentName?: string; persona?: string }> {
+    const queued = {
+      ...(message.agentName !== undefined ? { agentName: message.agentName } : {}),
+      ...(message.persona !== undefined ? { persona: message.persona } : {}),
+    };
+    if (message.persona !== undefined) {
+      return queued;
+    }
+    if (this.options.resolveTarget !== undefined) {
+      try {
+        return await this.options.resolveTarget(message);
+      } catch {
+        // A pin or a default that no longer resolves is not a reason to drop the message.
+        return queued;
+      }
+    }
+    const legacy = this.options.personaFor?.(message.agentName)?.id;
+    return { ...queued, ...(legacy !== undefined ? { persona: legacy } : {}) };
   }
 
   private async freshAttachments(

@@ -39,6 +39,12 @@ export interface QueuedMessage {
   content: string;
   attachments?: MessageAttachment[];
   agentName?: string;
+  /**
+   * The persona its send resolved — named, the thread's pin, or the agent's default — which the turn
+   * it starts runs under. Absent on a message queued before personas were persisted: it resolves one
+   * as it starts.
+   */
+  persona?: string;
   model?: string;
   pageContext?: PageContext;
   /**
@@ -56,6 +62,7 @@ export interface QueuedMessageView {
   content: string;
   attachments?: MessageAttachment[];
   agentName?: string;
+  persona?: string;
   model?: string;
   interrupt?: boolean;
   createdAt: string;
@@ -78,6 +85,7 @@ export interface EnqueueMessageInput {
   content: string;
   attachments?: MessageAttachment[];
   agentName?: string;
+  persona?: string;
   model?: string;
   pageContext?: PageContext;
   interrupt?: boolean;
@@ -186,6 +194,7 @@ export function queuedMessageView(message: QueuedMessage): QueuedMessageView {
       ? { attachments: message.attachments }
       : {}),
     ...(message.agentName !== undefined ? { agentName: message.agentName } : {}),
+    ...(message.persona !== undefined ? { persona: message.persona } : {}),
     ...(message.model !== undefined ? { model: message.model } : {}),
     ...(message.interrupt === true ? { interrupt: true } : {}),
     createdAt: message.createdAt,

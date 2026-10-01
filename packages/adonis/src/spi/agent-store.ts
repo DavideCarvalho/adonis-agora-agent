@@ -17,7 +17,11 @@ import type { ToolCallApprovalState } from './approval-policy.js';
 
 export interface CreateThreadInput {
   actor: Actor;
-  persona: string;
+  /**
+   * The persona pinned on the thread from its first turn — the one that send named. Omitted (or
+   * empty) → none pinned. See {@link ThreadSummary.persona}.
+   */
+  persona?: string;
   /** A scratch thread: left out of `listThreads` until {@link AgentStore.promoteThread} keeps it. */
   transient?: boolean;
   title?: string;
@@ -37,6 +41,8 @@ export interface UpdateThreadInput {
   model?: string | null;
   /** The agent a send that names none runs as; `null` → the configured default agent. */
   defaultAgent?: string | null;
+  /** The persona a send that names none runs under; `null` clears it (the agent's default applies). */
+  persona?: string | null;
 }
 
 export interface AppendMessageInput {
@@ -210,6 +216,12 @@ export interface AgentStore {
    * than {@link getThread}'s whole transcript; a store without it is read through `getThread`.
    */
   defaultAgentForThread?(threadId: string): Promise<string | null>;
+  /**
+   * OPTIONAL: the thread's pinned persona (`UpdateThreadInput.persona`), or `null` when it has none
+   * or does not exist — one scalar, like {@link defaultAgentForThread}, read on a send that names no
+   * persona to an agent that has some. A store without it is read through `getThread`.
+   */
+  personaForThread?(threadId: string): Promise<string | null>;
   /**
    * OPTIONAL: make a transient thread a regular one, listed by `listThreads` from then on. A thread
    * that is not transient is left as it is. Absent → `POST <path>/threads/:id/promote` answers `501`.

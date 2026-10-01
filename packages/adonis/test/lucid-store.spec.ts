@@ -145,6 +145,37 @@ describe('LucidAgentStore', () => {
     expect(await store.quotaToday(actor.id, '2000-01-01')).toEqual({ usedTokens: 0 });
   });
 
+  it('pins a persona on a thread, reads it back, clears it, and forks it', async () => {
+    const unpinned = await store.createThread({ actor });
+    expect(unpinned.persona).toBeNull();
+    expect((await store.getThread(unpinned.id))?.persona).toBeNull();
+    expect(await store.personaForThread(unpinned.id)).toBeNull();
+
+    const pinned = await store.createThread({ actor, persona: 'sql' });
+    expect(pinned.persona).toBe('sql');
+    expect(await store.personaForThread(pinned.id)).toBe('sql');
+
+    await store.updateThread(unpinned.id, { persona: 'read-only' });
+    expect(await store.personaForThread(unpinned.id)).toBe('read-only');
+    expect((await store.listThreads(actor.id)).find((t) => t.id === unpinned.id)?.persona).toBe(
+      'read-only',
+    );
+    const m1 = await store.appendMessage({
+      threadId: unpinned.id,
+      role: 'user',
+      content: 'one',
+      persona: 'read-only',
+    });
+    const fork = await store.forkThread(unpinned.id, m1.id);
+    expect(fork.persona).toBe('read-only');
+    expect((await store.getThread(fork.id))?.messages[0]?.persona).toBe('read-only');
+
+    await store.updateThread(unpinned.id, { persona: null });
+    expect(await store.personaForThread(unpinned.id)).toBeNull();
+    expect((await store.getThread(unpinned.id))?.persona).toBeNull();
+    expect(await store.personaForThread('missing')).toBeNull();
+  });
+
   it('forks a thread up to a message (in a transaction)', async () => {
     const thread = await store.createThread({ actor, persona: 'default', title: 'Src' });
     const m1 = await store.appendMessage({ threadId: thread.id, role: 'user', content: 'one' });

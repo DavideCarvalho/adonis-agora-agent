@@ -67,6 +67,7 @@ export const CHAT_QUEUE_STORE_CONTRACT: readonly ChatQueueContractCase[] = [
         content: 'with everything',
         attachments: [ATTACHMENT],
         agentName: 'research',
+        persona: 'sql',
         model: 'fast-1',
         pageContext: { kind: 'invoice', id: 42 },
         interrupt: true,
@@ -84,6 +85,7 @@ export const CHAT_QUEUE_STORE_CONTRACT: readonly ChatQueueContractCase[] = [
           message?.attachments,
         );
         check(message?.agentName === 'research', 'agentName', message?.agentName);
+        check(message?.persona === 'sql', 'persona', message?.persona);
         check(message?.model === 'fast-1', 'model', message?.model);
         check(
           JSON.stringify(message?.pageContext) === JSON.stringify({ kind: 'invoice', id: 42 }),
@@ -97,6 +99,7 @@ export const CHAT_QUEUE_STORE_CONTRACT: readonly ChatQueueContractCase[] = [
       const plainRead = await store.getQueuedMessage(plain.id);
       check(plainRead?.attachments === undefined, 'no attachments → absent', plainRead);
       check(plainRead?.interrupt !== true, 'no interrupt → not an interrupt', plainRead);
+      check(plainRead?.persona === undefined, 'no persona → absent', plainRead);
       check((await store.getQueuedMessage('missing')) === null, 'unknown id → null');
     },
   },

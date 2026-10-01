@@ -171,13 +171,15 @@ export class ToolRegistry {
    * Run a tool. Re-checks that the tool is enabled, that the role allows it and that the tool's own
    * `canUse` admits the actor (defense-in-depth — a call can reach here from a replayed durable step
    * or an approval granted before the flag moved, neither of which went through `definitionsFor`
-   * again) and re-parses the input.
+   * again) and re-parses the input. With `options.allowedTools` (the turn's persona allow-list) a
+   * tool off that list is refused last, the same way the offer narrowed it.
    */
   async invoke(
     name: string,
     input: unknown,
     ctx: AiToolCtx,
     policy: RolesPolicy,
+    options: InvokeOptions = {},
   ): Promise<unknown> {
     const entry = this.entries.get(name);
     if (entry === undefined) {
@@ -192,6 +194,11 @@ export class ToolRegistry {
     if (!(await canActorUseTool(ctx.actor, entry.handler))) {
       throw new ToolForbiddenError(name);
     }
+    // Last, like the persona filter on the offer: the same layers in the same order, so a call the
+    // model was never offered under this persona cannot run because the model named it anyway.
+    if (options.allowedTools !== undefined && !options.allowedTools.includes(name)) {
+      throw new ToolForbiddenError(name);
+    }
     const validation = await entry.spec.inputSchema['~standard'].validate(input);
     if (validation.issues !== undefined) {
       throw new ToolInputInvalidError(name, validation.issues);
@@ -202,6 +209,15 @@ export class ToolRegistry {
       typeof ctx.emitUi === 'function' ? ctx : { ...ctx, emitUi: createNoopEmitUi(ctx.requestId) };
     return entry.handler.execute(validation.value, withEmit);
   }
+}
+
+/** Per-call narrowing for {@link ToolRegistry.invoke}. */
+export interface InvokeOptions {
+  /**
+   * Only these tool names may run — the turn's persona allow-list. Checked after `enabled`, the roles
+   * policy and `canUse`. Undefined → no such check (every caller predating personas).
+   */
+  allowedTools?: readonly string[];
 }
 
 /**

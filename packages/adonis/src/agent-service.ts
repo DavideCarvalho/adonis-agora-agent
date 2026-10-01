@@ -3,6 +3,7 @@ import type { AgentDepsFactory } from './agent-deps-factory.js';
 import type { ChatQueueService } from './chat-queue-service.js';
 import { RunNotActiveError, settleDeadRun } from './dead-run.js';
 import { readElicitationQuestions, validateElicitationAnswer } from './elicitation-input.js';
+import { personaCatalogEntry } from './personas.js';
 import type { AgentRunner } from './spi/agent-runner.js';
 import type { AgentStore } from './spi/agent-store.js';
 import {
@@ -25,6 +26,7 @@ import {
 } from './spi/model-catalog.js';
 import { QuotaBlockedError, type QuotaProvider, type QuotaReport } from './spi/quota-provider.js';
 import type { StreamFrame } from './spi/token-stream-sink.js';
+import { threadPersona } from './thread-persona.js';
 import type { ToolCatalogEntry } from './tool-presentation.js';
 import type {
   Actor,
@@ -34,6 +36,7 @@ import type {
   MessageFeedback,
   PageContext,
   Persona,
+  PersonaCatalogEntry,
   ThreadDetail,
   ThreadSummary,
 } from './types.js';
@@ -46,6 +49,12 @@ export interface ChatParams {
   message: string;
   threadId?: string;
   agentName?: string;
+  /**
+   * Run this turn under one of the agent's personas, and pin it on the thread so later sends that
+   * name none keep it. Refused ({@link PersonaNotFoundError}, `400 persona_not_found`) unless the
+   * agent declares it. Omitted → the thread's pinned persona, else the agent's `defaultPersona`, else
+   * none.
+   */
   personaId?: string;
   pageContext?: PageContext;
   /**
@@ -287,9 +296,13 @@ export class AgentService {
   async updateThreadSettings(
     actor: Actor,
     threadId: string,
-    patch: { defaultAgent?: string | null; model?: string | null },
+    patch: { defaultAgent?: string | null; model?: string | null; persona?: string | null },
   ): Promise<boolean> {
-    if (patch.defaultAgent === undefined && patch.model === undefined) {
+    if (
+      patch.defaultAgent === undefined &&
+      patch.model === undefined &&
+      patch.persona === undefined
+    ) {
       return true;
     }
     if (this.store.updateThread === undefined) {
@@ -298,26 +311,61 @@ export class AgentService {
     if (typeof patch.defaultAgent === 'string' && !this.isKnownAgent(patch.defaultAgent)) {
       throw new UnknownAgentError(patch.defaultAgent);
     }
+    // The agent the thread's next turn runs as — the one this patch sets, else the thread's own,
+    // else the configured one; a name a persona took over counts as the agent that owns it.
+    const nextAgent = async () =>
+      this.deps.resolveAgent(
+        patch.defaultAgent ?? (await this.resolveAgentName(undefined, threadId)),
+      ).agentName;
     const model =
       patch.model === undefined || patch.model === null
         ? patch.model
-        : await this.assertModelAllowed(
-            actor,
-            patch.defaultAgent ?? (await this.resolveAgentName(undefined, threadId)),
-            patch.model,
-          );
+        : await this.assertModelAllowed(actor, await nextAgent(), patch.model);
+    // Validated against that same agent, like the model.
+    if (typeof patch.persona === 'string') {
+      this.deps.resolvePersona({ agentName: await nextAgent(), requested: patch.persona });
+    }
     await this.store.updateThread(threadId, {
       ...(patch.defaultAgent !== undefined ? { defaultAgent: patch.defaultAgent } : {}),
       ...(model !== undefined ? { model } : {}),
+      ...(patch.persona !== undefined ? { persona: patch.persona } : {}),
     });
     return true;
   }
 
+  /** A registered agent, or a name one of their personas took over (`Persona.aliases`). */
   private isKnownAgent(name: string): boolean {
-    return (
-      name === this.deps.defaultAgentName() ||
-      this.deps.agentDefinitions().some((definition) => definition.name === name)
-    );
+    return this.deps.isAgent(name) || this.deps.resolveAgent(name).agentName !== name;
+  }
+
+  /**
+   * The persona this send runs under — see {@link AgentDepsFactory.resolvePersona}. The thread's
+   * pinned persona is read only when the send names none AND the agent has personas to pick from.
+   */
+  private async resolveSendPersona(
+    agentName: string,
+    requested: string | undefined,
+    threadId: string | undefined,
+  ): Promise<string | undefined> {
+    const needsThread =
+      requested === undefined &&
+      threadId !== undefined &&
+      this.deps.personaCatalog(agentName).length > 0;
+    return this.deps.resolvePersona({
+      agentName,
+      ...(requested !== undefined ? { requested } : {}),
+      ...(needsThread ? { threadPersona: await threadPersona(this.store, threadId) } : {}),
+    });
+  }
+
+  /** Pin `persona` on the thread when it is not already — a no-op on a store that cannot. */
+  private async pinThreadPersona(threadId: string, persona: string): Promise<void> {
+    if (this.store.updateThread === undefined) {
+      return;
+    }
+    if ((await threadPersona(this.store, threadId)) !== persona) {
+      await this.store.updateThread(threadId, { persona });
+    }
   }
 
   /**
@@ -352,11 +400,17 @@ export class AgentService {
   async listAgents(actor: Actor): Promise<AgentCatalogEntry[]> {
     const defaultName = this.deps.defaultAgentName();
     const listed = this.deps.agentDefinitions();
-    const entries: AgentCatalogEntry[] = listed.map((definition) => ({
-      name: definition.name,
-      description: definition.description ?? '',
-      ...(definition.name === defaultName ? { isDefault: true as const } : {}),
-    }));
+    const entries: AgentCatalogEntry[] = listed.map((definition) => {
+      const personas = this.deps.personaCatalog(definition.name);
+      const defaultPersona = this.deps.defaultPersona(definition.name);
+      return {
+        name: definition.name,
+        description: definition.description ?? '',
+        ...(definition.name === defaultName ? { isDefault: true as const } : {}),
+        ...(personas.length > 0 ? { personas } : {}),
+        ...(defaultPersona !== undefined ? { defaultPersona } : {}),
+      };
+    });
     const all = entries.some((entry) => entry.name === defaultName)
       ? entries
       : [{ name: defaultName, description: '', isDefault: true as const }, ...entries];
@@ -451,23 +505,37 @@ export class AgentService {
       throw new RegenerateNeedsThreadError();
     }
     await this.assertWithinQuota(params.actor);
-    // The send's own agent, else the thread's default agent, else the configured default.
-    const agentName = await this.resolveAgentName(params.agentName, params.threadId);
-    // Before the thread exists, so a refused model or attachment leaves nothing behind.
+    // The send's own agent, else the thread's default agent, else the configured default — and a name
+    // a persona took over (`Persona.aliases`) runs as the agent that owns it, under it.
+    const target = this.deps.resolveAgent(
+      await this.resolveAgentName(params.agentName, params.threadId),
+    );
+    const agentName = target.agentName;
+    // Before the thread exists, so a refused persona, model or attachment leaves nothing behind.
+    // Resolved to an id HERE, so the run's own input names it: a durable replay, or a queued message
+    // started later, runs under the one this send resolved.
+    const persona = await this.resolveSendPersona(
+      agentName,
+      params.personaId ?? target.persona,
+      params.threadId,
+    );
     const model = await this.resolveModel(params.actor, agentName, params.model, params.threadId);
     const attachments = await this.resolveAttachments(params.actor, params.attachments ?? []);
     let threadId = params.threadId;
     if (threadId === undefined) {
       const created = await this.store.createThread({
         actor: params.actor,
-        persona: params.personaId ?? this.deps.forAgent(agentName).defaultPersona,
+        // A persona the send NAMES is the person's pick for this conversation: pinned. One it fell
+        // back to (the agent's default) is not, so a later change of default reaches the thread.
+        ...(params.personaId !== undefined ? { persona: params.personaId } : {}),
         ...(params.transient === true ? { transient: true } : {}),
         ...(params.newThreadId !== undefined ? { id: params.newThreadId } : {}),
       });
       threadId = created.id;
+    } else if (params.personaId !== undefined) {
+      await this.pinThreadPersona(threadId, params.personaId);
     }
 
-    const persona = this.resolvePersona(agentName, params.personaId);
     const input: AgentRunInput = {
       threadId,
       actor: params.actor,
@@ -558,6 +626,7 @@ export class AgentService {
       content: input.userText,
       ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
       ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+      ...(typeof input.persona === 'string' ? { persona: input.persona } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
       ...(interrupting !== undefined ? { interrupt: true, at: 'head' as const } : {}),
@@ -1022,20 +1091,64 @@ export class AgentService {
     return [...entries.values()];
   }
 
+  /**
+   * The persona `id` of `agentName` (default: the default agent), else its default persona — the
+   * definition, for a caller that wants to read it. Unlike a send, an unknown `id` is not refused.
+   */
   resolvePersona(agentName?: string, id?: string): Persona | undefined {
     const deps = this.deps.forAgent(agentName);
-    return deps.personas.get(id ?? deps.defaultPersona);
+    return deps.personas.get(
+      id ?? this.deps.defaultPersona(agentName ?? this.deps.defaultAgentName()) ?? '',
+    );
   }
 
-  personaCatalog(agentName?: string): { id: string; label: string }[] {
-    return [...this.deps.forAgent(agentName).personas.values()].map((persona) => ({
-      id: persona.id,
-      label: persona.label,
-    }));
+  /**
+   * The agent and persona a queued message that carries no persona starts as: an agent name a
+   * persona took over, then the thread's pin, then the agent's default — never refused. What the
+   * provider hands the queue as `resolveTarget`.
+   */
+  async queuedTarget(message: {
+    threadId: string;
+    agentName?: string;
+  }): Promise<{ agentName?: string; persona?: string }> {
+    const target = this.deps.resolveAgent(message.agentName ?? this.deps.defaultAgentName());
+    const persona =
+      target.persona ??
+      (this.deps.personaCatalog(target.agentName).length > 0
+        ? this.deps.resolvePersona({
+            agentName: target.agentName,
+            threadPersona: await threadPersona(this.store, message.threadId),
+          })
+        : undefined);
+    return {
+      ...(message.agentName !== undefined ? { agentName: target.agentName } : {}),
+      ...(persona !== undefined ? { persona } : {}),
+    };
   }
 
-  listThreads(actorRef: string): Promise<ThreadSummary[]> {
-    return this.store.listThreads(actorRef);
+  /** `agentName`'s personas (default: the default agent's) as a picker reads them. */
+  personaCatalog(agentName?: string): PersonaCatalogEntry[] {
+    return [...this.deps.forAgent(agentName).personas.values()].map(personaCatalogEntry);
+  }
+
+  async listThreads(actorRef: string): Promise<ThreadSummary[]> {
+    return (await this.store.listThreads(actorRef)).map((thread) => this.withPinnedPersona(thread));
+  }
+
+  /**
+   * A thread as the routes report it: a persona pin that no registered agent declares — a thread
+   * created before pins existed holds whatever it was created with (`'default'`, most often), or the
+   * persona was removed since — reads as `null`, which is what it resolves to.
+   */
+  private withPinnedPersona<T extends ThreadSummary>(thread: T): T {
+    const pinned = thread.persona ?? null;
+    if (pinned === null) {
+      return thread.persona === null ? thread : { ...thread, persona: null };
+    }
+    const declared = this.deps
+      .agentDefinitions()
+      .some((definition) => this.deps.hasPersona(definition.name, pinned));
+    return declared ? thread : { ...thread, persona: null };
   }
 
   /**
@@ -1045,7 +1158,8 @@ export class AgentService {
    * this actor keeps the url it was stored with.
    */
   async getThread(threadId: string, actor?: Actor): Promise<ThreadDetail | null> {
-    const stored = await this.store.getThread(threadId);
+    const read = await this.store.getThread(threadId);
+    const stored = read === null ? null : this.withPinnedPersona(read);
     const queue = this.queueing();
     // The waiting messages ride along, so a reload shows them without a second request.
     const thread =
