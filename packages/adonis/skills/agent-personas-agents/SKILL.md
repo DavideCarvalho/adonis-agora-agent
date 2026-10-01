@@ -2,14 +2,16 @@
 name: agent-personas-agents
 description: >-
   Shape @adonis-agora/agent behavior per request: personas (Persona { id, label,
-  systemPrompt string | PromptBuilder, allowedTools }, defaultPersona, the
-  /agent/threads/personas/catalog route), named agents (agents: AgentDefinition[] with
+  systemPrompt, allowedTools, aliases }, defaultPersona, send → thread pin → default,
+  PATCH threads/:id { persona }, 400 persona_not_found, GET /agent/agents, the
+  persona:resolve durable checkpoint), named agents (agents: AgentDefinition[] with
   tools/maxSteps/actorResolver overrides), delegatesTo multi-agent delegation via
   synthesized ask_<target> agent-kind tools and DelegateEdge { agent, roles, ability, detached }
   (detached → start_<target>, a background run that posts its answer back into the thread),
   HITL approval flow over POST /agent/tool-call/approve|reject with pending_approval
   status, maxSteps budgeting, and PromptContext/basePrompt composition. Use for
-  "persona picker", "orchestrator delegates to specialists", "ask_researcher denied",
+  "persona picker", "persona not applied after resume", "fold agents into personas",
+  "orchestrator delegates to specialists", "ask_researcher denied",
   "action tool hangs waiting for approval", "prompt builder".
 metadata:
   type: core
@@ -33,7 +35,8 @@ synthesized `ask_<target>` tools.
 ## Setup
 
 Personas on the implicit default agent; the caller selects one via `POST /agent/chat`'s
-`persona` field, and it pins to the thread:
+`persona` field (AG-UI: `forwardedProps.persona`), and a persona a send NAMES is pinned on
+the thread:
 
 ```ts
 // config/agent.ts
@@ -63,10 +66,19 @@ export default defineConfig({
 })
 ```
 
-A persona's `systemPrompt` resolves WITH the agent's base prompt available as
-`basePrompt`, so it can wrap rather than discard; it may be a `PromptBuilder`
-(`(ctx: PromptContext) => string | Promise<string>`) composed from actor/persona/
-pageContext. Render a picker from `GET /agent/threads/personas/catalog`.
+A flat persona `systemPrompt` stands in for the base prompt; a `PromptBuilder`
+(`(ctx: PromptContext) => string | Promise<string>`) gets the base as `ctx.basePrompt` and
+can wrap it; no `systemPrompt` keeps the base. `allowedTools` narrows the offer AND what
+`ToolRegistry.invoke` will run (handoffs included). A send runs under: its own `persona` →
+the thread's pin (if this agent declares it) → `defaultPersona` → none. Unknown id → `400`
+`code: 'persona_not_found'`. `PATCH /agent/threads/:id { persona }` pins (`null` clears).
+Render a picker from `GET /agent/agents` (`personas`, `defaultPersona` per agent).
+
+Durable: the service resolves the persona to an id; the loop freezes the definition (prompt,
+allow-list) in a `persona:resolve` checkpoint, so a parked run resumes on the persona it
+started with even if config changed. Queued messages store their persona. `aliases: ['old-agent']`
+on a persona keeps an old agent name (sends, thread `defaultAgent`, queued messages, in-flight
+runs) resolving to this agent + persona.
 
 Source: `packages/adonis/docs/authoring/personas-and-agents.mdx`.
 
@@ -212,6 +224,22 @@ the `approval` / `elicitation` frame carries `runId` for exactly that reason. A 
 whose approvals nobody answers hangs. Source:
 `packages/adonis/docs/durability/durable-runner.mdx` ("Answering a sub-agent"),
 `packages/adonis/src/spi/token-stream-sink.ts` (`StreamFrame`).
+
+### MEDIUM — expecting an edited persona to reach a run that is already parked
+
+```ts
+// Symptom — you changed `systemPrompt`/`allowedTools`, approved a parked call, and the run
+// still answers with the old prompt and tools.
+```
+
+```ts
+// Correct — that is the contract: `persona:resolve` froze the definition when the run
+// started. New sends (new runs) pick up the edit; a parked run never changes persona mid-run.
+```
+
+Mechanism: the persona is journaled once per run so a durable replay is deterministic.
+Source: `packages/adonis/src/agent-loop.ts` (`resolveTurnPersona`),
+`packages/adonis/docs/authoring/personas-and-agents.mdx` ("Durable").
 
 ### LOW — using wall-clock time or randomness inside a PromptBuilder
 

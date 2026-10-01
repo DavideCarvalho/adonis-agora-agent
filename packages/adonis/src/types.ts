@@ -269,13 +269,57 @@ export interface PromptContext {
  */
 export type PromptBuilder = (ctx: PromptContext) => string | Promise<string>;
 
+/**
+ * A named variant of ONE agent: its own prompt and, optionally, a narrower tool allow-list. The
+ * caller picks one per send (`POST <path>/chat { persona }`); everything else — the agent's model,
+ * its access rules, its handoffs, its history — stays the agent's. A variant that needs any of those
+ * to differ is a different agent, not a persona. The same shape as `@dudousxd/nestjs-agent`'s.
+ */
 export interface Persona {
+  /** Unique within its agent — what a send names and what a message records. */
+  id: string;
+  /** What a picker shows. */
+  label: string;
+  /** One line about what the persona is for, for a picker. */
+  description?: string;
+  /**
+   * The persona's prompt. A flat string STANDS IN FOR the agent's base prompt; a
+   * {@link PromptBuilder} is handed that base as `ctx.basePrompt`, so it can wrap it instead. Omit →
+   * the agent's base prompt, unchanged (which can itself read `ctx.persona`).
+   */
+  systemPrompt?: string | PromptBuilder;
+  /**
+   * Only these tool names are offered — and only these may be invoked, handoffs included — under
+   * this persona. Layered AFTER the agent's own allow-list, `enabled`, the roles policy and `canUse`:
+   * it narrows, never widens. Omit → whatever the agent offers.
+   */
+  allowedTools?: string[];
+  /**
+   * Agent names this persona answers for: a send, a queued message, a thread's `defaultAgent` or an
+   * in-flight run that names one of them runs as THIS agent under THIS persona. For an app that folds
+   * separate agents into personas of one — what recorded the old agent name keeps resolving, with no
+   * data migration. A name that is still a registered agent is never an alias.
+   */
+  aliases?: string[];
+}
+
+/**
+ * A persona as a turn RESOLVED it, journaled in the `persona:resolve` checkpoint — so every replay of
+ * the run uses this, and not whatever the persona's configuration says by the time it resumes.
+ */
+export interface TurnPersona {
   id: string;
   label: string;
-  /** A flat prompt, or a {@link PromptBuilder} composed per request from {@link PromptContext}. */
-  systemPrompt: string | PromptBuilder;
-  /** If set, only these tool names are offered (after role filtering). */
   allowedTools?: string[];
+  /** The persona's prompt, resolved (with the base prompt it wraps). Absent → the base prompt. */
+  prompt?: string;
+}
+
+/** One persona as `GET <path>/agents` lists it — what a persona picker renders. */
+export interface PersonaCatalogEntry {
+  id: string;
+  label: string;
+  description?: string;
 }
 
 /** One agent as `GET <path>/agents` lists it — what an agent picker renders. */
@@ -290,6 +334,10 @@ export interface AgentCatalogEntry {
    * `locked`.
    */
   lockedModel?: string;
+  /** The agent's personas, for a persona picker. Omitted when it declares none. */
+  personas?: PersonaCatalogEntry[];
+  /** The persona a send runs under when it names none. Omitted when the agent has no default. */
+  defaultPersona?: string;
 }
 
 /** Everything needed to run one agent turn. */
@@ -300,7 +348,15 @@ export interface AgentRunInput {
   userText: string;
   /** Files attached to the latest user message (image/PDF). Persisted with it and sent to the model. */
   attachments?: MessageAttachment[];
-  persona?: Persona;
+  /**
+   * The persona of {@link agentName} this turn runs under. An id ({@link Persona.id}) is the durable
+   * form: the service resolves it from the send, the thread's pin and the agent's default BEFORE the
+   * run starts, and the loop looks its definition up once, in the `persona:resolve` checkpoint. A
+   * whole {@link Persona} is applied as given, with no checkpoint — what a caller of `runAgentLoop`
+   * may hand it, and what a run started by a release before 0.60 recorded in its input. Omitted → no
+   * persona, and no checkpoint spent on one.
+   */
+  persona?: string | Persona;
   pageContext?: PageContext;
   /**
    * Answer the thread's last user message again instead of appending {@link userText} (ignored):
@@ -420,7 +476,12 @@ export interface AgentDefinition {
    * carries.
    */
   delegatesTo?: (string | DelegateEdge)[];
+  /** Named variants of this agent — see {@link Persona}. Undefined → none. */
   personas?: Persona[];
+  /**
+   * The persona a send runs under when neither it nor its thread names one. Undefined → the persona
+   * whose id is `'default'`, when the agent declares one; else none.
+   */
   defaultPersona?: string;
   modelId?: string;
   maxSteps?: number;
@@ -461,7 +522,12 @@ export interface AgentDefinition {
 export interface ThreadSummary {
   id: string;
   title: string;
-  persona: string;
+  /**
+   * The persona this thread's turns run under when a send names none — the last one a send on it
+   * named, or `PATCH <path>/threads/:id { persona }`. `null` → none pinned (the agent's default
+   * applies). The routes report a pin the thread's agent no longer declares as `null` too.
+   */
+  persona: string | null;
   pinnedAt?: string;
   transient: boolean;
   createdAt: string;

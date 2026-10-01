@@ -484,6 +484,7 @@ export {
   ClosedRolesPolicy,
   DefaultRolesPolicy,
   type EmptyRoles,
+  type InvokeOptions,
   type RolesPolicyOptions,
   ToolDisabledError,
   ToolForbiddenError,

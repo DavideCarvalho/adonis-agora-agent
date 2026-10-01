@@ -185,7 +185,7 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
       id,
       actorRef: input.actor.id,
       title: input.title ?? 'New chat',
-      persona: input.persona,
+      persona: input.persona !== undefined && input.persona.length > 0 ? input.persona : null,
       transient: input.transient ?? false,
       createdAt: ts,
       updatedAt: ts,
@@ -278,11 +278,18 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
     if (patch.defaultAgent !== undefined) {
       row.defaultAgent = patch.defaultAgent;
     }
+    if (patch.persona !== undefined) {
+      row.persona = patch.persona;
+    }
     row.updatedAt = this.now();
   }
 
   async defaultAgentForThread(threadId: string): Promise<string | null> {
     return this.threads.get(threadId)?.defaultAgent ?? null;
+  }
+
+  async personaForThread(threadId: string): Promise<string | null> {
+    return this.threads.get(threadId)?.persona ?? null;
   }
 
   async clearActiveStream(threadId: string, runId: string): Promise<void> {
@@ -342,6 +349,7 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
         ? { attachments: input.attachments }
         : {}),
       ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+      ...(input.persona !== undefined ? { persona: input.persona } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
       ...(input.interrupt === true ? { interrupt: true } : {}),

@@ -40,7 +40,7 @@ interface ChatParams {
   message: string
   threadId?: string                  // omit to create a new thread
   agentName?: string                 // omit for the default agent
-  personaId?: string
+  personaId?: string                 // pinned on the thread; PersonaNotFoundError if undeclared
   pageContext?: PageContext
   attachments?: MessageAttachment[]  // already staged
 }
@@ -82,8 +82,9 @@ Or set [`durable: true`](/docs/agent/durability/durable-runner), which is the ri
 | `deleteThread(threadId)` | `void` | Soft delete. |
 | `forkThread(threadId, fromMessageId)` | `ThreadSummary` | Branch or regenerate. |
 | `quotaToday(actorRef)` | `{ usedTokens }` | |
-| `resolvePersona(agentName?, id?)` | `Persona \| undefined` | Synchronous. |
-| `personaCatalog(agentName?)` | `{ id, label }[]` | Synchronous. |
+| `resolvePersona(agentName?, id?)` | `Persona \| undefined` | Synchronous. The definition, for reading — a send resolves its own (send → thread pin → default). |
+| `personaCatalog(agentName?)` | `PersonaCatalogEntry[]` | Synchronous. |
+| `updateThreadSettings(actor, threadId, { defaultAgent?, model?, persona? })` | `boolean` | What `PATCH /agent/threads/:id` calls. |
 
 ## What it does not enforce
 
