@@ -738,6 +738,48 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
     });
   }
 
+  /**
+   * Of `mediaIds`, the ones a surviving message in one of this actor's threads still carries.
+   *
+   * The match on the attachment's `mediaId` runs here rather than in SQL: the column is JSON text,
+   * and every dialect this store targets spells "an array element with this field" differently
+   * while none of them could use an index for it. The scan is bounded by ONE actor's
+   * attachment-bearing messages.
+   * Soft-deleted threads are included: their messages survive, so what they point at is still
+   * reachable from stored state.
+   */
+  async referencedMediaIds(actorRef: string, mediaIds: readonly string[]): Promise<string[]> {
+    if (mediaIds.length === 0) {
+      return [];
+    }
+    await this.init();
+    const threads = await this.db
+      .from(AGENT_TABLES.threads)
+      .where('actor_ref', actorRef)
+      .select('id');
+    if (threads.length === 0) {
+      return [];
+    }
+    const rows = await this.db
+      .from(AGENT_TABLES.messages)
+      .whereIn(
+        'thread_id',
+        threads.map((thread) => String(thread.id)),
+      )
+      .where('attachments', 'is not', null)
+      .select('attachments');
+    const wanted = new Set(mediaIds);
+    const found = new Set<string>();
+    for (const row of rows) {
+      for (const attachment of parseJson<MessageAttachment[]>(row.attachments) ?? []) {
+        if (wanted.has(attachment.mediaId)) {
+          found.add(attachment.mediaId);
+        }
+      }
+    }
+    return [...wanted].filter((mediaId) => found.has(mediaId));
+  }
+
   async recordToolCall(input: RecordToolCallInput): Promise<void> {
     await this.init();
     // PK = the model-supplied toolCallId (never a generated id).

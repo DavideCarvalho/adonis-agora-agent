@@ -524,8 +524,14 @@ export const retrievers = {
 
 // ── Attachment-staging factories ─────────────────────────────────────────────
 
-/** Runtime context an {@link AttachmentStagingFactory} thunk receives — the booted application. */
-export type AttachmentStagingContext = StoreContext;
+/**
+ * Runtime context an {@link AttachmentStagingFactory} thunk receives — the booted application, and
+ * the agent store the provider built (what `attachmentStores.media()` asks which media a live
+ * message of the actor carries).
+ */
+export interface AttachmentStagingContext extends StoreContext {
+  agentStore?: AgentStore;
+}
 
 /**
  * A configured attachment-staging store: a lazy thunk the agent provider calls at boot to build the
@@ -557,7 +563,7 @@ export const attachmentStores = {
    * default — so it is never taken from the client. See `MediaAttachmentsOptions`.
    */
   media(options: MediaAttachmentsOptions = {}): AttachmentStagingFactory {
-    return async ({ app }) => {
+    return async ({ app, agentStore }) => {
       // A variable specifier: `@adonis-agora/media` is an optional peer, loaded only when selected.
       const mediaPackage = '@adonis-agora/media';
       const media = (await import(mediaPackage)) as {
@@ -569,7 +575,11 @@ export const attachmentStores = {
       };
       const { MediaAttachmentStaging } = await import('../media/media-attachment-staging.js');
       return new MediaAttachmentStaging(
-        { storage: manager.storage, store: manager.store },
+        {
+          storage: manager.storage,
+          store: manager.store,
+          ...(agentStore !== undefined ? { agentStore } : {}),
+        },
         options,
       );
     };

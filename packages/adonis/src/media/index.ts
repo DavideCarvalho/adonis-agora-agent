@@ -7,9 +7,11 @@ export {
   DEFAULT_AGENT_MEDIA_COLLECTION,
   DEFAULT_AGENT_MEDIA_OWNER_TYPE,
   MediaAttachmentStaging,
+  type MediaAttachmentStagingDeps,
   type MediaAttachmentsOptions,
   type MediaDiskLike,
   type MediaRecordLike,
   type MediaStorageLike,
   type MediaStoreLike,
+  type ReferencedMediaLike,
 } from './media-attachment-staging.js';

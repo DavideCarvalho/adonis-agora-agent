@@ -505,6 +505,32 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
     }
   }
 
+  /**
+   * Of `mediaIds`, the ones a surviving message in one of this actor's threads still carries.
+   * Re-derived from the messages each call, so a media whose message was truncated away reads as
+   * unreferenced again.
+   */
+  async referencedMediaIds(actorRef: string, mediaIds: readonly string[]): Promise<string[]> {
+    if (mediaIds.length === 0) {
+      return [];
+    }
+    const wanted = new Set(mediaIds);
+    const found = new Set<string>();
+    for (const thread of this.threads.values()) {
+      if (thread.actorRef !== actorRef) {
+        continue;
+      }
+      for (const message of thread.messages) {
+        for (const attachment of message.attachments ?? []) {
+          if (wanted.has(attachment.mediaId)) {
+            found.add(attachment.mediaId);
+          }
+        }
+      }
+    }
+    return [...wanted].filter((mediaId) => found.has(mediaId));
+  }
+
   async threadOfMessage(messageId: string): Promise<string | null> {
     return this.threadIdForMessage(messageId) ?? null;
   }
