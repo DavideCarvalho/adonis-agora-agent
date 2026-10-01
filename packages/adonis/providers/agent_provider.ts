@@ -1245,7 +1245,7 @@ export default class AgentProvider {
       const clientConfig: AgentClientConfig = {
         attachments: {
           enabled: attachmentStaging !== undefined,
-          upload: attachmentStaging === undefined ? null : 'multipart',
+          upload: attachmentStaging === undefined ? null : (declared.upload ?? 'multipart'),
           maxBytes: attachmentLimits.maxBytes,
           allowedContentTypes: attachmentLimits.allowedContentTypes,
           maxPerMessage: MAX_ATTACHMENTS_PER_MESSAGE,
@@ -1304,6 +1304,65 @@ export default class AgentProvider {
         });
         return ctx.response.json(attachment);
       });
+    }
+
+    // 12b. Resumable (tus) attachment uploads — mounted only when the store serves them
+    // (`attachmentStores.media()` over a media library with `uploads.resumable`). These routes never
+    // carry a byte: they open an owned, validated tus session, confirm the bytes arrived, and drop an
+    // attachment the user removed. The bytes go to `@adonis-agora/media`'s own tus routes.
+    const resumable = resumableStaging(attachmentStaging);
+    if (resumable !== undefined) {
+      const answer = async (
+        ctx: HttpContext,
+        work: (actor: Actor) => Promise<unknown>,
+      ): Promise<unknown> => {
+        const actor = await this.#resolveActor(ctx, actorResolver);
+        if (actor === null) return;
+        try {
+          return await work(actor);
+        } catch (error) {
+          const status = (error as { status?: unknown }).status;
+          if (typeof status === 'number' && status >= 400 && status < 600) {
+            return ctx.response
+              .status(status)
+              .json({ message: error instanceof Error ? error.message : String(error) });
+          }
+          throw error;
+        }
+      };
+      // `{ filename, contentType, size }` → `{ mediaId, uploadId, location }`.
+      router.post(p('attachments/uploads'), (ctx: HttpContext) =>
+        answer(ctx, async (actor) => {
+          const body = ctx.request.body() as Record<string, unknown>;
+          return ctx.response.json(
+            await resumable.beginUpload({
+              actor,
+              filename: body.filename as string,
+              contentType: body.contentType as string,
+              size: body.size as number,
+            }),
+          );
+        }),
+      );
+      router.post(p('attachments/uploads/:mediaId/complete'), (ctx: HttpContext) =>
+        answer(ctx, async (actor) => {
+          const mediaId = String(ctx.params.mediaId);
+          const attachment = await resumable.completeUpload({ actor, mediaId });
+          if (attachment === null) {
+            return ctx.response.status(404).json({ message: `attachment ${mediaId} not found` });
+          }
+          return ctx.response.json(attachment);
+        }),
+      );
+      router.delete(p('attachments/uploads/:mediaId'), (ctx: HttpContext) =>
+        answer(ctx, async (actor) => {
+          const mediaId = String(ctx.params.mediaId);
+          if (!(await resumable.discard({ actor, mediaId }))) {
+            return ctx.response.status(404).json({ message: `attachment ${mediaId} not found` });
+          }
+          return ctx.response.status(204).send('');
+        }),
+      );
     }
 
     // The governance read-model resolved (often by default, when the main store is Lucid) but no
@@ -1882,4 +1941,36 @@ export default class AgentProvider {
     raw.write(encoder.close());
     raw.end();
   }
+}
+
+/** The resumable half of an attachment store, when it has one — what the tus routes call. */
+interface ResumableAttachmentStaging {
+  beginUpload(input: {
+    actor: Actor;
+    filename: string;
+    contentType: string;
+    size: number;
+  }): Promise<unknown>;
+  completeUpload(input: { actor: Actor; mediaId: string }): Promise<unknown | null>;
+  discard(input: { actor: Actor; mediaId: string }): Promise<boolean>;
+}
+
+/**
+ * The store's resumable methods, only when it has all three AND declares itself resumable — a
+ * `MediaAttachmentStaging` over a media library without `uploads.resumable` has the methods but
+ * would answer every one with a 501.
+ */
+function resumableStaging(
+  staging: AttachmentStagingStore | undefined,
+): ResumableAttachmentStaging | undefined {
+  const candidate = staging as Partial<ResumableAttachmentStaging> | undefined;
+  if (
+    typeof candidate?.beginUpload !== 'function' ||
+    typeof candidate.completeUpload !== 'function' ||
+    typeof candidate.discard !== 'function' ||
+    staging?.describe?.().upload !== 'resumable'
+  ) {
+    return undefined;
+  }
+  return candidate as ResumableAttachmentStaging;
 }

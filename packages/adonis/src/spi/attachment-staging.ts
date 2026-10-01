@@ -24,6 +24,11 @@ export interface ResolveAttachmentInput {
 export interface AttachmentStagingDescription {
   maxBytes?: number;
   allowedContentTypes?: readonly string[];
+  /**
+   * How a client uploads to this store — what `GET <path>/config` reports. `'resumable'` when it also
+   * serves the tus routes (`POST <path>/attachments/uploads`). Absent → `'multipart'`.
+   */
+  upload?: 'multipart' | 'resumable';
 }
 
 /**

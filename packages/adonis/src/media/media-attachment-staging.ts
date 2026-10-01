@@ -50,6 +50,62 @@ export interface MediaDiskLike {
     options?: { expiresIn?: string | number; contentType?: string },
   ): Promise<string>;
   delete(key: string): Promise<void>;
+  /** Needed for resumable uploads only — whether the assembled object has landed. */
+  exists?(key: string): Promise<boolean>;
+  /** Needed for resumable uploads only — the assembled object's size. */
+  getMetaData?(key: string): Promise<{ contentLength: number }>;
+}
+
+/**
+ * `@adonis-agora/media`'s `ResumableUploadManager` (`media.resumable`), the part used here: open a
+ * tus session the bytes then stream to over the media library's own tus routes, or abort one.
+ */
+export interface MediaResumableLike {
+  createUpload(input: {
+    disk: string;
+    key: string;
+    size?: number;
+    contentType?: string;
+    metadata?: Record<string, string>;
+  }): Promise<{ id: string }>;
+  abort(id: string): Promise<void>;
+}
+
+/** What `beginUpload` takes: the file as the client describes it, before any byte moves. */
+export interface BeginMediaUploadInput {
+  actor: Actor;
+  filename: string;
+  contentType: string;
+  /** Exact byte length — tus needs it up front, and completion is checked against it. */
+  size: number;
+}
+
+/** A tus session opened for one attachment. Stream the bytes to `location`, then complete. */
+export interface BeginMediaUploadResult {
+  /** The attachment's id — what the chat turn sends as `{ mediaId }`. */
+  mediaId: string;
+  /** The tus upload id. */
+  uploadId: string;
+  /** The tus resource to `PATCH` the bytes to (relative to the app's origin). */
+  location: string;
+}
+
+/** A refusal of an upload request, carrying the HTTP status the route answers with. */
+export class MediaUploadRefusedError extends Error {
+  constructor(
+    readonly status: 400 | 409 | 413 | 415 | 422 | 501,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'MediaUploadRefusedError';
+  }
+}
+
+/** Where a record's bytes stand. Kept on `customProperties.agentAttachment`. */
+interface AgentAttachmentState {
+  status: 'pending' | 'ready';
+  /** The tus session the bytes are streaming through, while `pending`. */
+  uploadId?: string;
 }
 
 /** The agent store, the part used here — which media a live message of this actor carries. */
@@ -63,6 +119,11 @@ export interface MediaAttachmentStagingDeps {
   store: MediaStoreLike;
   /** Lets media referenced from the actor's own threads resolve (see `canAccess`). */
   agentStore?: ReferencedMediaLike;
+  /**
+   * `media.resumable` — resumable (tus) uploads. Absent or `null` (`config/media.ts` has no
+   * `uploads.resumable`) → uploads are multipart only.
+   */
+  uploads?: MediaResumableLike | null;
 }
 
 /** `@adonis-agora/media`'s `StorageManager`, the part used here. */
@@ -106,6 +167,12 @@ export interface MediaAttachmentsOptions {
     actor: Actor;
     allowed: boolean;
   }) => boolean | Promise<boolean>;
+  /**
+   * Where `@adonis-agora/media` mounts its tus routes (`uploads.resumable.routes.prefix` in
+   * `config/media.ts`). Default `/media/uploads/tus`. The `location` a resumable upload answers is
+   * `<tusBasePath>/<uploadId>`.
+   */
+  tusBasePath?: string;
   /** Clock and id seams, for tests. */
   clock?: () => Date;
   idGenerator?: () => string;
@@ -113,6 +180,7 @@ export interface MediaAttachmentsOptions {
 
 export const DEFAULT_AGENT_MEDIA_COLLECTION = 'agent-attachments';
 export const DEFAULT_AGENT_MEDIA_OWNER_TYPE = 'agent-actor';
+export const DEFAULT_AGENT_MEDIA_TUS_BASE_PATH = '/media/uploads/tus';
 const DEFAULT_URL_TTL_SECONDS = 7 * 24 * 60 * 60;
 const DEFAULT_MAX_BYTES = 20 * 1024 * 1024;
 const DEFAULT_ALLOWED_CONTENT_TYPES: readonly string[] = [
@@ -155,7 +223,83 @@ export class MediaAttachmentStaging implements AttachmentStagingStore {
   }
 
   describe(): AttachmentStagingDescription {
-    return { maxBytes: this.maxBytes, allowedContentTypes: this.allowed };
+    return {
+      maxBytes: this.maxBytes,
+      allowedContentTypes: this.allowed,
+      upload: this.deps.uploads ? 'resumable' : 'multipart',
+    };
+  }
+
+  /**
+   * Open a tus session for one file, owned by `actor`. Everything is validated here, before any
+   * byte moves. The record exists from now on, `pending` until {@link completeUpload} sees the bytes.
+   */
+  async beginUpload(input: BeginMediaUploadInput): Promise<BeginMediaUploadResult> {
+    const uploads = this.deps.uploads;
+    if (!uploads) {
+      throw new MediaUploadRefusedError(
+        501,
+        'Resumable attachment uploads need `uploads.resumable` in config/media.ts.',
+      );
+    }
+    this.validate(input.filename, input.contentType, input.size);
+    const id = this.newId();
+    const fileName = safeFileName(input.filename);
+    const path = this.pathFor(input.actor, id, fileName);
+    const session = await uploads.createUpload({
+      disk: this.diskName,
+      key: path,
+      size: input.size,
+      contentType: input.contentType,
+      metadata: { agentMediaId: id },
+    });
+    await this.saveRecord({
+      id,
+      actor: input.actor,
+      fileName,
+      mimeType: input.contentType,
+      size: input.size,
+      path,
+      state: { status: 'pending', uploadId: session.id },
+    });
+    const base = (this.options.tusBasePath ?? DEFAULT_AGENT_MEDIA_TUS_BASE_PATH).replace(
+      /\/+$/,
+      '',
+    );
+    return { mediaId: id, uploadId: session.id, location: `${base}/${session.id}` };
+  }
+
+  /**
+   * Confirm the bytes of a {@link beginUpload} landed, and whole. `null` for an unknown id or one
+   * that is not `actor`'s; `409` while the bytes are still missing; `422` (and the record dropped)
+   * when what arrived is not the size that was declared. Idempotent on a ready record.
+   */
+  async completeUpload(input: {
+    actor: Actor;
+    mediaId: string;
+  }): Promise<MessageAttachment | null> {
+    const record = await this.ownRecord(input.mediaId, input.actor);
+    if (record === null) return null;
+    const ready = await this.ensureReady(record);
+    if (ready === 'missing') {
+      throw new MediaUploadRefusedError(409, `upload ${input.mediaId} has not finished`);
+    }
+    if (ready === 'mismatch') {
+      await this.remove(record.id);
+      throw new MediaUploadRefusedError(
+        422,
+        `upload ${input.mediaId} does not match its declared size`,
+      );
+    }
+    return this.toAttachment(ready, { forModel: false });
+  }
+
+  /** The actor drops one of their own attachments — aborting its upload if still in flight. */
+  async discard(input: { actor: Actor; mediaId: string }): Promise<boolean> {
+    const record = await this.ownRecord(input.mediaId, input.actor);
+    if (record === null) return false;
+    await this.remove(record.id);
+    return true;
   }
 
   private get diskName(): string {
@@ -165,27 +309,18 @@ export class MediaAttachmentStaging implements AttachmentStagingStore {
   async stage(input: StageAttachmentInput): Promise<MessageAttachment> {
     const id = this.newId();
     const fileName = safeFileName(input.filename);
-    const path = `${this.ownerType}/${encodeURIComponent(input.actor.id)}/${this.collection}/${id}/${fileName}`;
+    const path = this.pathFor(input.actor, id, fileName);
     await this.deps.storage
       .disk(this.diskName)
       .put(path, input.data, { contentType: input.contentType });
-    const timestamp = this.now();
-    const record = await this.deps.store.save({
+    const record = await this.saveRecord({
       id,
-      ownerType: this.ownerType,
-      ownerId: input.actor.id,
-      collection: this.collection,
-      name: stripExtension(fileName),
+      actor: input.actor,
       fileName,
       mimeType: input.contentType,
       size: input.sizeBytes,
-      disk: this.diskName,
       path,
-      order: await this.deps.store.nextOrder(this.ownerType, input.actor.id, this.collection),
-      customProperties: {},
-      conversions: {},
-      createdAt: timestamp,
-      updatedAt: timestamp,
+      state: { status: 'ready' },
     });
     return this.toAttachment(record, { forModel: false });
   }
@@ -199,7 +334,10 @@ export class MediaAttachmentStaging implements AttachmentStagingStore {
     const record = await this.deps.store.find(input.mediaId);
     if (record === null || !this.isOurs(record)) return null;
     if (!(await this.canUse(record, input.actor))) return null;
-    return this.toAttachment(record, { forModel: true });
+    // A resumable upload whose bytes have not (fully) arrived is not attachable yet.
+    const ready = await this.ensureReady(record);
+    if (typeof ready === 'string') return null;
+    return this.toAttachment(ready, { forModel: true });
   }
 
   private async canUse(record: MediaRecordLike, actor: Actor): Promise<boolean> {
@@ -219,11 +357,91 @@ export class MediaAttachmentStaging implements AttachmentStagingStore {
   async remove(mediaId: string): Promise<void> {
     const record = await this.deps.store.find(mediaId);
     if (record === null || !this.isOurs(record)) return;
+    const state = stateOf(record);
+    if (state.status === 'pending' && state.uploadId !== undefined) {
+      await this.deps.uploads?.abort(state.uploadId).catch(() => undefined);
+    }
     await this.deps.storage
       .disk(record.disk)
       .delete(record.path)
       .catch(() => undefined);
     await this.deps.store.delete(record.id);
+  }
+
+  private validate(filename: string, contentType: string, size: number): void {
+    if (typeof filename !== 'string' || filename.trim().length === 0) {
+      throw new MediaUploadRefusedError(400, 'filename is required');
+    }
+    if (typeof contentType !== 'string' || !this.allowed.includes(contentType)) {
+      throw new MediaUploadRefusedError(
+        415,
+        `content type "${String(contentType)}" is not allowed (allowed: ${this.allowed.join(', ')})`,
+      );
+    }
+    if (typeof size !== 'number' || !Number.isInteger(size) || size <= 0) {
+      throw new MediaUploadRefusedError(400, 'size must be a positive integer byte count');
+    }
+    if (size > this.maxBytes) {
+      throw new MediaUploadRefusedError(413, `file exceeds the ${this.maxBytes}-byte limit`);
+    }
+  }
+
+  private pathFor(actor: Actor, id: string, fileName: string): string {
+    return `${this.ownerType}/${encodeURIComponent(actor.id)}/${this.collection}/${id}/${fileName}`;
+  }
+
+  private async saveRecord(input: {
+    id: string;
+    actor: Actor;
+    fileName: string;
+    mimeType: string;
+    size: number;
+    path: string;
+    state: AgentAttachmentState;
+  }): Promise<MediaRecordLike> {
+    const timestamp = this.now();
+    return this.deps.store.save({
+      id: input.id,
+      ownerType: this.ownerType,
+      ownerId: input.actor.id,
+      collection: this.collection,
+      name: stripExtension(input.fileName),
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      size: input.size,
+      disk: this.diskName,
+      path: input.path,
+      order: await this.deps.store.nextOrder(this.ownerType, input.actor.id, this.collection),
+      // A multipart upload is ready the moment it is stored, and carries no state — the same row
+      // shape as before resumable uploads existed.
+      customProperties: input.state.status === 'ready' ? {} : { agentAttachment: input.state },
+      conversions: {},
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+  }
+
+  private async ownRecord(mediaId: string, actor: Actor): Promise<MediaRecordLike | null> {
+    const record = await this.deps.store.find(mediaId);
+    if (record === null || !this.isOurs(record) || record.ownerId !== actor.id) return null;
+    return record;
+  }
+
+  /**
+   * A ready record as-is; a pending one promoted to ready once its bytes are on the disk at exactly
+   * the declared size. `'missing'` while they are not; `'mismatch'` when they arrived at another size.
+   */
+  private async ensureReady(
+    record: MediaRecordLike,
+  ): Promise<MediaRecordLike | 'missing' | 'mismatch'> {
+    if (stateOf(record).status === 'ready') return record;
+    const disk = this.deps.storage.disk(record.disk);
+    if (disk.exists === undefined || disk.getMetaData === undefined) return 'missing';
+    if (!(await disk.exists(record.path))) return 'missing';
+    const { contentLength } = await disk.getMetaData(record.path);
+    if (contentLength !== record.size || contentLength > this.maxBytes) return 'mismatch';
+    const { agentAttachment: _done, ...customProperties } = record.customProperties;
+    return this.deps.store.save({ ...record, customProperties, updatedAt: this.now() });
   }
 
   private isOurs(record: MediaRecordLike): boolean {
@@ -264,6 +482,11 @@ export class MediaAttachmentStaging implements AttachmentStagingStore {
       url: `data:${record.mimeType};base64,${Buffer.from(bytes).toString('base64')}`,
     };
   }
+}
+
+function stateOf(record: MediaRecordLike): AgentAttachmentState {
+  const state = record.customProperties.agentAttachment as AgentAttachmentState | undefined;
+  return state ?? { status: 'ready' };
 }
 
 function safeFileName(filename: string): string {
