@@ -52,6 +52,19 @@ export interface MediaDiskLike {
   delete(key: string): Promise<void>;
 }
 
+/** The agent store, the part used here — which media a live message of this actor carries. */
+export interface ReferencedMediaLike {
+  referencedMediaIds?(actorRef: string, mediaIds: readonly string[]): Promise<string[]>;
+}
+
+/** What {@link MediaAttachmentStaging} is built from. */
+export interface MediaAttachmentStagingDeps {
+  storage: MediaStorageLike;
+  store: MediaStoreLike;
+  /** Lets media referenced from the actor's own threads resolve (see `canAccess`). */
+  agentStore?: ReferencedMediaLike;
+}
+
 /** `@adonis-agora/media`'s `StorageManager`, the part used here. */
 export interface MediaStorageLike {
   readonly defaultDisk: string;
@@ -83,8 +96,10 @@ export interface MediaAttachmentsOptions {
     context: { disk: MediaDiskLike },
   ) => string | Promise<string>;
   /**
-   * Who may attach a file: by default only the actor that uploaded it (`allowed`). Widen or narrow
-   * it here — e.g. let a support agent attach a customer's upload.
+   * Who may attach a file. By default (`allowed`): the actor that uploaded it, or one a message in
+   * one of the actor's OWN threads already carries (a fork, a regenerate) — the latter needs an
+   * agent store with `referencedMediaIds`, which both shipped stores have. Widen or narrow it here —
+   * e.g. let a support agent attach a customer's upload.
    */
   canAccess?: (input: {
     record: MediaRecordLike;
@@ -128,7 +143,7 @@ export class MediaAttachmentStaging implements AttachmentStagingStore {
   private warnedInline = false;
 
   constructor(
-    private readonly deps: { storage: MediaStorageLike; store: MediaStoreLike },
+    private readonly deps: MediaAttachmentStagingDeps,
     private readonly options: MediaAttachmentsOptions = {},
   ) {
     this.collection = options.collection ?? DEFAULT_AGENT_MEDIA_COLLECTION;
@@ -175,17 +190,29 @@ export class MediaAttachmentStaging implements AttachmentStagingStore {
     return this.toAttachment(record, { forModel: false });
   }
 
+  /**
+   * The attachment for `mediaId`, or `null` when it is unknown or this actor may not use it. The
+   * actor may use media they own, and media a message in one of THEIR threads already carries (a
+   * fork, a regenerate) — never anything else, unless `canAccess` says so.
+   */
   async resolve(input: ResolveAttachmentInput): Promise<MessageAttachment | null> {
     const record = await this.deps.store.find(input.mediaId);
     if (record === null || !this.isOurs(record)) return null;
-    const allowed = record.ownerId === input.actor.id;
-    const custom = this.options.canAccess;
-    const may =
-      custom === undefined
-        ? allowed
-        : (await custom({ record, actor: input.actor, allowed })) === true;
-    if (!may) return null;
+    if (!(await this.canUse(record, input.actor))) return null;
     return this.toAttachment(record, { forModel: true });
+  }
+
+  private async canUse(record: MediaRecordLike, actor: Actor): Promise<boolean> {
+    const allowed = await this.defaultAccess(record, actor);
+    const custom = this.options.canAccess;
+    return custom === undefined ? allowed : (await custom({ record, actor, allowed })) === true;
+  }
+
+  private async defaultAccess(record: MediaRecordLike, actor: Actor): Promise<boolean> {
+    if (record.ownerId === actor.id) return true;
+    const referenced = this.deps.agentStore?.referencedMediaIds?.bind(this.deps.agentStore);
+    if (referenced === undefined) return false;
+    return (await referenced(actor.id, [record.id])).includes(record.id);
   }
 
   /** Delete an upload and its row. */

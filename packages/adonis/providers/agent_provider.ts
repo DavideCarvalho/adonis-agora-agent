@@ -305,7 +305,7 @@ export default class AgentProvider {
     // import when the host never wires `agentTelescopeExtension()` into `config/telescope.ts`.
     setTelescopeGovernanceQueries(governance);
     const retriever = await this.#resolveRetriever(config);
-    const attachmentStaging = await this.#resolveAttachmentStaging(config);
+    const attachmentStaging = await this.#resolveAttachmentStaging(config, store);
     const authorizer = this.#resolveAuthorizer(config, defaultRoles);
     // No resolver → the routes are PUBLIC and each browser is its own anonymous actor (an HttpOnly
     // cookie). Said at boot, with the one line that switches to authenticated mode.
@@ -552,10 +552,11 @@ export default class AgentProvider {
    */
   async #resolveAttachmentStaging(
     config: AgentConfig,
+    agentStore: AgentStore,
   ): Promise<AttachmentStagingStore | undefined> {
     const staging = config.attachments;
     if (staging === undefined) return undefined;
-    return typeof staging === 'function' ? staging({ app: this.app }) : staging;
+    return typeof staging === 'function' ? staging({ app: this.app, agentStore }) : staging;
   }
 
   #resolveAuthorizer(config: AgentConfig, defaultRoles: string[]): RolesPolicy {

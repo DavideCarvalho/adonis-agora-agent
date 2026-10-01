@@ -234,6 +234,20 @@ export interface AgentStore {
   setMessageUi?(messageId: string, ui: AgentUiComponent[]): Promise<void>;
   truncateFrom(threadId: string, messageId: string): Promise<void>;
   /**
+   * OPTIONAL: of `mediaIds`, the ones a message that still exists in one of `actorRef`'s threads
+   * carries as an attachment — each id at most once, in the order asked.
+   *
+   * DERIVED, not tracked: {@link truncateFrom} deletes messages (which is what regenerating a turn
+   * does), so a reference can disappear, and a flag set at send time would never be unset. Scoped
+   * to one actor, like every read on this surface: a reference only ANOTHER actor's thread holds is
+   * reported as none, so this can never probe someone else's conversation.
+   *
+   * What lets `attachmentStores.media()` serve a file a message in the actor's own thread already
+   * carries (a fork, a regenerate) even when the actor did not upload it. Absent → only the
+   * uploader (and `canAccess`) may use a file.
+   */
+  referencedMediaIds?(actorRef: string, mediaIds: readonly string[]): Promise<string[]>;
+  /**
    * OPTIONAL: the thread a message belongs to, or `null` when there is no such message. The
    * authorization seam for message-scoped routes (feedback): the route resolves the thread's owner
    * from it. Implement it together with {@link setMessageFeedback}.

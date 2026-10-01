@@ -13,6 +13,7 @@ import {
   type MediaStoreLike,
 } from '../src/media/index.js';
 import { FakeModelProvider } from '../src/testing/fake-model-provider.js';
+import { InMemoryAgentStore } from '../src/testing/index.js';
 import { type BootedApp, bootAgentApp, readSse } from './helpers/boot-agent-app.js';
 
 function fakeMedia(options: { sign?: boolean } = {}) {
@@ -103,6 +104,56 @@ describe('MediaAttachmentStaging', () => {
       resolveUrl: (record) => `/files/${record.id}`,
     });
     expect((await custom.resolve({ mediaId: 'm1', actor: alice }))?.url).toBe('/files/m1');
+  });
+
+  it('resolves media another actor staged when it rides a message in the caller’s own thread', async () => {
+    const media = fakeMedia();
+    const agentStore = new InMemoryAgentStore();
+    const staging = new MediaAttachmentStaging(
+      { ...media, agentStore },
+      { idGenerator: () => 'm1' },
+    );
+    const attachment = await staging.stage({ ...upload, actor: alice });
+    expect(await staging.resolve({ mediaId: 'm1', actor: bob })).toBeNull();
+
+    const thread = await agentStore.createThread({ actor: bob, persona: 'default' });
+    const message = await agentStore.appendMessage({
+      threadId: thread.id,
+      role: 'user',
+      content: 'look',
+      attachments: [attachment],
+    });
+    expect(await staging.resolve({ mediaId: 'm1', actor: bob })).not.toBeNull();
+
+    // Derived, not remembered: once the message is gone, so is the access.
+    await agentStore.truncateFrom(thread.id, message.id);
+    expect(await staging.resolve({ mediaId: 'm1', actor: bob })).toBeNull();
+  });
+
+  it('hands canAccess the referenced verdict as `allowed`, so it can narrow it too', async () => {
+    const media = fakeMedia();
+    const agentStore = new InMemoryAgentStore();
+    const seen: boolean[] = [];
+    const staging = new MediaAttachmentStaging(
+      { ...media, agentStore },
+      {
+        idGenerator: () => 'm1',
+        canAccess: ({ record, actor, allowed }) => {
+          seen.push(allowed);
+          return allowed && record.ownerId === actor.id;
+        },
+      },
+    );
+    const attachment = await staging.stage({ ...upload, actor: alice });
+    const thread = await agentStore.createThread({ actor: bob, persona: 'default' });
+    await agentStore.appendMessage({
+      threadId: thread.id,
+      role: 'user',
+      content: 'look',
+      attachments: [attachment],
+    });
+    expect(await staging.resolve({ mediaId: 'm1', actor: bob })).toBeNull();
+    expect(seen).toEqual([true]);
   });
 
   it('falls back to the bytes inline on a disk that cannot sign — for the model only', async () => {
