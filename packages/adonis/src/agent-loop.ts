@@ -1,6 +1,11 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import { danglingToolCallIds, settleDanglingToolCalls } from './dangling-tool-calls.js';
 import {
+  type DetachedDelegationReceipt,
+  detachedDelivered,
+  detachedStarted,
+} from './delegation.js';
+import {
   publishAgentDelegated,
   publishAgentMessage,
   publishAgentRetrieved,
@@ -409,6 +414,26 @@ export interface AgentLoopHooks {
    */
   runAgent?(agentName: string, task: string): Promise<{ text: string }>;
   /**
+   * Start another named agent and return its run id WITHOUT waiting for it, so the calling turn can
+   * finish while the delegate is still working. The durable runner maps this to `ctx.startChild` (a
+   * `spawn:<id>` position, no suspend — unlike the `ctx.child` behind {@link runAgent}); the inline
+   * runner to a nested loop nobody awaits.
+   *
+   * `toolCallId` is the delegation's own call, which the started run carries as its delivery address
+   * (`AgentRunInput.deliverTo`): it posts its answer back into the calling thread against that row.
+   *
+   * Called from the loop BODY, never from inside a {@link step}: it takes a position of its own.
+   *
+   * Absent → a delegation the journal declares detached is AWAITED instead. The loop writes the same
+   * checkpoint names either way, so a runner that cannot detach still answers the user; only the
+   * runner's own positions differ, and a given runner always makes the same choice for the same call.
+   */
+  startAgent?(args: {
+    agentName: string;
+    task: string;
+    toolCallId: string;
+  }): Promise<{ runId: string }>;
+  /**
    * Checkpoint wrapper. Inline = call fn directly; durable = ctx.step(name, fn).
    * EVERY side-effect and control-flow read goes through this so durable replay returns
    * cached results (stable ids, no double-write, no re-streaming).
@@ -516,8 +541,8 @@ function extractTask(input: unknown): string {
 
 /** Either the delegation target and its task, or why the gates refused the call. */
 type DelegationOutcome =
-  | { targetAgent: string; task: string; error?: undefined }
-  | { targetAgent?: undefined; task?: undefined; error: string };
+  | { targetAgent: string; task: string; detached?: true; error?: undefined }
+  | { targetAgent?: undefined; task?: undefined; detached?: undefined; error: string };
 
 /**
  * What the `persist:toolcall:<callId>` checkpoint returns: the kind this call was resolved to, plus
@@ -670,7 +695,15 @@ async function resolveDelegation(
     if (refusal !== null) {
       return { error: refusal };
     }
-    return { targetAgent, task: extractTask(validation.value) };
+    // Settled HERE, inside the call's `persist:toolcall` checkpoint, so a replay reads the branch
+    // back instead of asking a registry that may have changed while the run was parked. Absent unless
+    // declared: a deployment with no detached edge writes the bytes this checkpoint always held, and
+    // a call journaled before the flag existed replays as the awaited delegation it was.
+    return {
+      targetAgent,
+      task: extractTask(validation.value),
+      ...(spec.detached === true ? { detached: true as const } : {}),
+    };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
@@ -1543,14 +1576,27 @@ async function delegateToolCall(
     return { id: call.id, name: call.name, output: null, error: delegation.error };
   }
   const { targetAgent, task } = delegation;
+  // The journal decides (see `resolveDelegation`); the runner only says whether it CAN detach.
+  const start = delegation.detached === true ? hooks.startAgent : undefined;
   publishAgentDelegated({
     runId: hooks.runId,
     toAgent: targetAgent,
     ...(input.agentName !== undefined ? { fromAgent: input.agentName } : {}),
+    ...(start !== undefined ? { detached: true } : {}),
   });
-  const sub = hooks.runAgent
-    ? await hooks.runAgent(targetAgent, task)
-    : { text: `(no multi-agent support wired; cannot reach "${targetAgent}")` };
+  // Both branches write the same checkpoint, under the same name, at the same position — what differs
+  // is the RUNNER's own position before it (`spawn:` for a started child, `signal:child:` for an
+  // awaited one). Called from the loop body, never inside a step, so the start's position is the
+  // workflow's own and a replay asks for it in the same place.
+  let sub: { text: string } | DetachedDelegationReceipt;
+  if (start !== undefined) {
+    const started = await start({ agentName: targetAgent, task, toolCallId: call.id });
+    sub = detachedStarted({ agent: targetAgent, runId: started.runId });
+  } else if (hooks.runAgent) {
+    sub = await hooks.runAgent(targetAgent, task);
+  } else {
+    sub = { text: `(no multi-agent support wired; cannot reach "${targetAgent}")` };
+  }
   await hooks.step(`persist:toolexec:${call.id}`, () =>
     deps.store.updateToolCall({ toolCallId: call.id, status: 'executed', output: sub }),
   );
@@ -3024,6 +3070,38 @@ export async function runAgentLoop<TOutput = unknown>(
       const title = deriveTitle(input.userText);
       await deps.store.setTitle(input.threadId, title);
       await writer.write({ t: 'event', event: { kind: 'title', title } });
+    });
+  }
+
+  const delivery = input.deliverTo;
+  if (delivery !== undefined) {
+    // A detached run's answer has nowhere to go but a message of its own: the turn that delegated it
+    // ended without it, so there is no tool result left to fill and no live stream to write into.
+    // Stamped with THIS run and agent, which is how a reader tells "the research agent finished" from
+    // the assistant's next reply.
+    //
+    // The position exists only for a run carrying a delivery address, and only a detached
+    // delegation's own child run carries one — so every other run's sequence is untouched, and no
+    // run journaled before detached delegation existed can reach it.
+    await hooks.step('deliver:detached', async () => {
+      if ((await deps.store.getThread(delivery.threadId)) === null) {
+        // The conversation was deleted while this ran. Delivering into it would resurrect nothing a
+        // reader kept, and the tool-call row it would settle went with it.
+        return;
+      }
+      const agent = input.agentName ?? 'default';
+      await deps.store.appendMessage({
+        threadId: delivery.threadId,
+        role: 'assistant',
+        content: lastText,
+        agentName: agent,
+        runId: hooks.runId,
+      });
+      await deps.store.updateToolCall({
+        toolCallId: delivery.toolCallId,
+        status: 'executed',
+        output: detachedDelivered({ agent, runId: hooks.runId, text: lastText }),
+      });
     });
   }
 

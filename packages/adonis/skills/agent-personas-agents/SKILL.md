@@ -5,7 +5,8 @@ description: >-
   systemPrompt string | PromptBuilder, allowedTools }, defaultPersona, the
   /agent/threads/personas/catalog route), named agents (agents: AgentDefinition[] with
   tools/maxSteps/actorResolver overrides), delegatesTo multi-agent delegation via
-  synthesized ask_<target> agent-kind tools and DelegateEdge { agent, roles, ability },
+  synthesized ask_<target> agent-kind tools and DelegateEdge { agent, roles, ability, detached }
+  (detached → start_<target>, a background run that posts its answer back into the thread),
   HITL approval flow over POST /agent/tool-call/approve|reject with pending_approval
   status, maxSteps budgeting, and PromptContext/basePrompt composition. Use for
   "persona picker", "orchestrator delegates to specialists", "ask_researcher denied",
@@ -101,6 +102,15 @@ generated description so the orchestrator's model knows what the specialist is f
 
 Source: `packages/adonis/docs/authoring/personas-and-agents.mdx` ("Multi-agent
 delegation", "How a delegate tool is named").
+
+Background delegation: an edge `{ agent: 'researcher', detached: true, roles: [...] }`
+synthesizes `start_researcher` instead. The call returns a receipt
+(`{ detached: true, status: 'started', agent, runId, note }`), the turn ends, and the
+delegate's answer is posted into the same thread later as its own message stamped
+`runId` / `agentName`; a failure or a Stop (`POST /agent/chat/:runId/cancel` with the
+receipt's `runId`) posts a message too. The client tracks them with
+`useAgentChat({ background: true })` (`chat.background.runs`). Detached is per edge, never
+the model's choice. Source: `personas-and-agents.mdx` ("Background delegation").
 
 ### Pattern 2 — approving a paused `action` tool (HITL)
 

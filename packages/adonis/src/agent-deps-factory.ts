@@ -17,9 +17,10 @@ import type { ToolRegistry } from './tool-registry.js';
 import type { ToolTransientRetrySetting } from './tool-retry.js';
 import type { Actor, AgentDefinition, DelegateEdge, Persona } from './types.js';
 
-/** The synthesized `agent`-kind tool name an orchestrator uses to delegate to `target`. */
-export function delegateToolName(target: string): string {
-  return `ask_${target.replace(/[^a-zA-Z0-9]+/g, '_')}`;
+/** The synthesized `agent`-kind tool name for an edge to `target`: `ask_<target>`, or `start_<target>` for a detached one. */
+export function delegateToolName(target: string, options: { detached?: boolean } = {}): string {
+  const slug = target.replace(/[^a-zA-Z0-9]+/g, '_');
+  return options.detached === true ? `start_${slug}` : `ask_${slug}`;
 }
 
 /**
@@ -100,8 +101,8 @@ export function registerDelegateTools(registry: ToolRegistry, agents: AgentRegis
   let count = 0;
   for (const definition of agents.list()) {
     for (const edge of definition.delegatesTo ?? []) {
-      const { agent: target, roles, ability } = normalizeDelegateEdge(edge);
-      const name = delegateToolName(target);
+      const { agent: target, roles, ability, detached } = normalizeDelegateEdge(edge);
+      const name = delegateToolName(target, { detached: detached === true });
       if (registry.has(name)) continue;
       const targetDefinition = agents.get(target);
       // Only a flat string prompt is worth surfacing; a PromptBuilder is per-request source, so skip it.
@@ -114,7 +115,14 @@ export function registerDelegateTools(registry: ToolRegistry, agents: AgentRegis
           name,
           kind: 'agent',
           targetAgent: target,
-          description: `Delegate a task to the "${target}" agent and get its answer.${blurb}`,
+          // A detached edge's description is the model's only warning that this call hands back a
+          // receipt: a tool advertised as returning an answer, which then returns something else, is
+          // a model that reports an answer it was never given.
+          description:
+            detached === true
+              ? `Start the "${target}" agent working on a task in the BACKGROUND. Returns immediately with a receipt, NOT an answer — the answer is delivered to this conversation as a separate message later. Use it for work the user does not need to sit and wait for.${blurb}`
+              : `Delegate a task to the "${target}" agent and get its answer.${blurb}`,
+          ...(detached === true ? { detached: true } : {}),
           inputSchema: delegateInputSchema,
           ...(roles !== undefined ? { roles } : {}),
           ...(ability !== undefined ? { ability } : {}),
@@ -204,9 +212,10 @@ export class AgentDepsFactory {
     if (definition === undefined) {
       return undefined;
     }
-    const delegated = (definition.delegatesTo ?? []).map((edge) =>
-      delegateToolName(normalizeDelegateEdge(edge).agent),
-    );
+    const delegated = (definition.delegatesTo ?? []).map((edge) => {
+      const { agent, detached } = normalizeDelegateEdge(edge);
+      return delegateToolName(agent, { detached: detached === true });
+    });
     if (definition.tools === undefined && delegated.length === 0) {
       return undefined; // no restriction
     }

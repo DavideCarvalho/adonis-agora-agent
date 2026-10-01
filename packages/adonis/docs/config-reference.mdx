@@ -87,7 +87,7 @@ retrievalFilter: (actor) => ({ tenantRef: actor.tenantRef }),
 
 ### `attachments`
 
-`AttachmentStagingStore | AttachmentStagingFactory`. Where chat attachments live — `attachmentStores.media()` (on `@adonis-agora/media`), `attachmentStores.memory()` (tests), or your own store. When set, `POST /agent/attachments` accepts uploads within the store's limits (`describe()`; default 20 MiB and images/PDF/plain text/CSV) and a send names them as `attachments: [{ mediaId }]`, resolved by the store. **Omit → attachments are off.** Replaces `attachmentStaging` / `attachmentMaxBytes` / `attachmentAllowedContentTypes` (0.46). See [Attachments & multimodal](/docs/agent/authoring/attachments).
+`AttachmentStagingStore | AttachmentStagingFactory`. Where chat attachments live — `attachmentStores.media()` (on `@adonis-agora/media`), `attachmentStores.memory()` (tests), or your own store. When set, `POST /agent/attachments` accepts uploads within the store's limits (`describe()`; default 20 MiB and images/PDF/plain text/CSV) and a send names them as `attachments: [{ mediaId }]`, resolved by the store. **Omit → attachments are off.** Replaces `attachmentStaging` / `attachmentMaxBytes` / `attachmentAllowedContentTypes` (0.46). See [Attachments & multimodal](/docs/agent/authoring/attachments). A store that implements `list` also serves `GET /agent/attachments` (the caller's staged files) and `AgentService.collectableAttachments` (the never-sent ones, for a sweep).
 
 ### `actorDirectory`
 
@@ -137,7 +137,7 @@ A public deployment should set a `quota`: model spend is otherwise unbounded (pe
 
 ### `agents`
 
-`AgentDefinition[]`. Additional named agents an orchestrator can delegate to via `delegatesTo`. See [Personas & agents](/docs/agent/authoring/personas-and-agents).
+`AgentDefinition[]`. Additional named agents an orchestrator can delegate to via `delegatesTo` — awaited (`ask_<target>`), or in the background with `{ agent, detached: true }` (`start_<target>`). See [Personas & agents](/docs/agent/authoring/personas-and-agents).
 
 ### `defaultAgent`
 

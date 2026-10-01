@@ -161,6 +161,22 @@ When the model calls an `action` tool the run parks until a person decides. The 
 
 A question set (an agent's intake, or the model's `ask`) arrives as an `elicitation` block with `questions`, `answer.run()` and `skip.run()`. See [Elicitation](/docs/agent/authoring/elicitation) and [Authorization](/docs/agent/governance/authorization) for the server side.
 
+## Background runs
+
+An agent whose edge is declared `detached` ([Background delegation](/docs/agent/authoring/personas-and-agents#background-delegation--the-chat-stays-free)) ends its turn with a receipt, and the delegate's answer lands in the thread later as a message of its own. Ask the chat to track them:
+
+```tsx
+const chat = useAgentChat({ threadId, background: true })
+
+{chat.background.runs.map((run) => (
+  <div key={run.runId}>
+    {run.agent}: {run.status === 'running' ? 'working…' : run.message?.content}
+  </div>
+))}
+```
+
+The list is derived from the thread itself — the receipt on the delegating message, and the delivered message stamped with the same `runId` — so it survives a reload and a second tab. While any run is still `running` the hook re-reads the thread every `backgroundPollMs` (default 5000; `0` turns the interval off, leaving `chat.background.refresh()`). The pure function behind it, `backgroundRunsFromThread(messages)`, is exported for a list rendered elsewhere. A delegate that failed or was stopped also posts a message, so it reads as delivered rather than running for ever.
+
 ## Attachments
 
 Configure `attachments` in `config/agent.ts` ([Attachments](/docs/agent/authoring/attachments)) and the composer can carry files. It reads the limits from `GET /agent/config`, uploads each file to `POST /agent/attachments`, and attaches the ready ones on `submit()`:

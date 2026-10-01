@@ -208,3 +208,33 @@ A count can only say a chain is LONG. It cannot say it is going in circles, and 
 </Callout>
 
 Under the **inline runner**, delegation runs as a nested in-process loop on a transient sub-thread; under the **durable runner**, it maps to a tracked durable child workflow (`ctx.child`). Either way a sub-agent's `action` tools and question sets **park on a human**, under the sub-agent's own run id, and the frame forwarded into the stream a human is watching carries that id so the wait can be answered. A sub-agent whose approvals nobody will answer therefore hangs — the same trade a top-level agent makes. See [Answering a sub-agent](/docs/agent/durability/durable-runner#answering-a-sub-agent), the [agent loop](/docs/agent/concepts/agent-loop) and [The durable runner](/docs/agent/durability/durable-runner).
+
+### Background delegation — the chat stays free
+
+An awaited delegation holds the turn open until the delegate answers. For work the user does not need to sit and wait for — a long research pass, a report — declare the edge **detached**:
+
+```ts title="config/agent.ts"
+agents: [
+  { name: 'researcher', systemPrompt: 'You dig into incidents.', tools: ['searchLogs', 'purgeCache'] },
+  {
+    name: 'orchestrator',
+    delegatesTo: [{ agent: 'researcher', detached: true, roles: ['ADMIN', 'ANALYST'] }],
+  },
+]
+```
+
+The synthesized tool is then `start_researcher` (not `ask_researcher`), described to the model as returning a receipt rather than an answer. What happens when it is called:
+
+1. The delegate starts as a run of its own, and the call returns at once with a **receipt** — `{ detached: true, status: 'started', agent, runId, note }`. The `note` tells the model, in prose, that the answer is not part of this turn, so it says "I've started that" instead of inventing a result.
+2. The turn ends. The chat is free — the user can keep talking while the delegate works.
+3. The delegate streams into **its own** run (`GET /agent/chat/:runId/stream`, owner-only), not into the finished turn. Its `action` tools and questions park under its own run id, so a decision reaches it through the ordinary `POST /agent/tool-call/approve` and the approvals inbox.
+4. When it finishes, its answer is posted into the same thread as a **message of its own**, stamped `runId` (the delegate's) and `agentName` (`'researcher'`), and the delegating tool call is updated to `status: 'delivered'` with the text.
+5. If it fails, or someone stops it (`POST /agent/chat/:runId/cancel` with the receipt's `runId`), the thread gets a message saying so and the tool call settles `failed` / `cancelled` — a card never says "started" for ever. A thread deleted meanwhile receives nothing.
+
+Detached is declared per **edge**, never chosen by the model: a model that could detach could detach the very thing the user is waiting on. A delegate can itself delegate, detached or not; depth and cycle guards apply to detached hops exactly as to awaited ones. A runner with no way to detach (a custom one without `startAgent`) awaits instead, so the user still gets an answer.
+
+On the client, `useAgentChat({ background: true })` tracks these runs from the thread itself — see [React → Background runs](/docs/agent/react#background-runs).
+
+<Callout type="info" title="Durable runs and upgrades">
+Under the durable runner the start is `ctx.startChild` — one `spawn:<childRunId>` position, no suspend — taken from the workflow body, never from inside a step, and only for a call whose `persist:toolcall` checkpoint recorded `detached`. A run already in flight when you upgrade, or when you flip an edge to `detached`, replays the delegations it already made exactly as they were made (awaited), and detaches only the ones it makes afterwards. Flip an edge only once every process runs a release that has the option: an older process cannot replay a run that detached.
+</Callout>

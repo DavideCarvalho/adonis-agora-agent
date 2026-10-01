@@ -13,6 +13,7 @@ import {
   type QueueSettleOutcome,
 } from '../chat-queue-service.js';
 import { RUN_ENDED_BEFORE_TOOL_CALL } from '../dangling-tool-calls.js';
+import { settleUnsettledDelegation } from '../delegation.js';
 import { spannedAgent } from '../diagnostics.js';
 import {
   type ElicitationRequest,
@@ -24,7 +25,7 @@ import type { AgentRunner, AgentRunStartOptions } from '../spi/agent-runner.js';
 import type { AgentStore } from '../spi/agent-store.js';
 import { releaseThreadRun } from '../spi/chat-queue.js';
 import { childSinkWriter, type SinkWriter } from '../spi/token-stream-sink.js';
-import type { Actor, AgentRunInput, Decision } from '../types.js';
+import type { Actor, AgentRunInput, Decision, DetachedDelivery } from '../types.js';
 
 /**
  * A run held at one wait, and WHICH wait — an `action`'s approve/reject, or a question set's
@@ -60,6 +61,8 @@ export class InlineAgentRunner implements AgentRunner {
   private readonly live = new Map<string, AgentRunInput>();
   /** Runs someone asked to stop; the loop observes it at its next safe point. */
   private readonly cancelled = new Set<string>();
+  /** The detached delegates this process is running, by runId — what a Stop on one settles. */
+  private readonly detached = new Map<string, AgentRunInput>();
 
   constructor(
     private readonly factory: AgentDepsFactory,
@@ -73,7 +76,7 @@ export class InlineAgentRunner implements AgentRunner {
    * that was running it is gone (a restart), and a thread it still holds is a stale claim.
    */
   async isRunActive(runId: string): Promise<boolean> {
-    if (this.live.has(runId)) {
+    if (this.live.has(runId) || this.detached.has(runId)) {
       return true;
     }
     // A delegated run is not in `live` (it holds no thread), but one parked on a person is as alive
@@ -245,12 +248,26 @@ export class InlineAgentRunner implements AgentRunner {
     await this.store.recordRunEnd({ runId, status: 'cancelled' });
     const deps = this.factory.forAgent();
     const writer = await deps.sink.open(runId);
+    const detached = this.detached.get(runId);
+    if (detached?.deliverTo !== undefined) {
+      // Told now rather than when the loop unwinds: a run parked on a person unwinds at once, but one
+      // mid model call only at its next safe point, and the thread should not wait for that.
+      await settleUnsettledDelegation({
+        store: this.store,
+        delivery: detached.deliverTo,
+        agent: detached.agentName ?? 'default',
+        runId,
+        status: 'cancelled',
+      }).catch(() => undefined);
+    }
     const input = this.live.get(runId);
     if (input !== undefined) {
       // An interrupt's message starts now; anything else queued pauses behind the Stop.
       await this.settleQueue(writer, input, runId, 'cancelled');
       await releaseThreadRun(this.store, input.threadId, runId);
-    } else {
+    } else if (detached === undefined) {
+      // Nothing of this process's is running under it; a detached run keeps the flag until it
+      // unwinds (its own `finally` clears it), or a Stop mid model call would be forgotten.
       this.cancelled.delete(runId);
     }
     // The last frame before a normal end: without it a reader cannot tell a truncated answer from
@@ -306,6 +323,17 @@ export class InlineAgentRunner implements AgentRunner {
           // This run owns the stream a human subscribed to, so every delegation below it writes here.
           sinkRunId: runId,
         }),
+      startAgent: ({ agentName, task, toolCallId }) =>
+        this.startDetached({
+          agentName,
+          task,
+          actor,
+          day,
+          depth: depth + 1,
+          path: chainBelow,
+          parentRunId: runId,
+          deliverTo: { threadId: input.threadId, toolCallId },
+        }),
     };
   }
 
@@ -355,6 +383,121 @@ export class InlineAgentRunner implements AgentRunner {
     });
   }
 
+  /**
+   * Delegate WITHOUT waiting: a nested loop nobody awaits, on its own scratch thread and its OWN
+   * stream, which posts its answer back into the delegating thread when it lands (`deliverTo`,
+   * delivered by the loop). The calling turn gets the run id straight back and finishes.
+   *
+   * No `sinkRunId`, unlike {@link runNested}: forwarding into the stream the human is watching would
+   * write into a turn that has already ended. It parks on a human under its own runId, which is what
+   * `tool-call/approve` resolves the pending row to; and it is stoppable on that id (the receipt
+   * carries it), which settles the delegation as `cancelled` in the thread that asked.
+   */
+  private async startDetached(args: {
+    agentName: string;
+    task: string;
+    actor: Actor;
+    day: string;
+    /** How many delegations deep this child is. */
+    depth: number;
+    /** The chain that reached this child, root first — without its own name. */
+    path: readonly string[];
+    parentRunId: string;
+    deliverTo: DetachedDelivery;
+  }): Promise<{ runId: string }> {
+    const { agentName, task, actor, day, depth, path, parentRunId, deliverTo } = args;
+    const subThread = await this.store.createThread({ actor, persona: 'default', transient: true });
+    const runId = crypto.randomUUID();
+    const deps = this.factory.forAgent(agentName);
+    const input: AgentRunInput = {
+      threadId: subThread.id,
+      actor,
+      userText: task,
+      agentName,
+      day,
+      parentRunId,
+      delegationDepth: depth,
+      delegationPath: path,
+      deliverTo,
+    };
+    const hooks: AgentLoopHooks = {
+      runId,
+      durable: false,
+      openSink: () => deps.sink.open(runId),
+      ...this.humanHooks(runId),
+      cancelled: async () => this.cancelled.has(runId),
+      step: (_name, fn) => fn(),
+      parallel: settleAll,
+      runAgent: (childName, childTask) =>
+        this.runNested({
+          agentName: childName,
+          task: childTask,
+          actor,
+          day,
+          depth: depth + 1,
+          path: [...path, agentName],
+          parentRunId: runId,
+          // A detached run owns a stream of its own, so ITS awaited delegates forward into that one.
+          sinkRunId: runId,
+        }),
+      startAgent: ({ agentName: childName, task: childTask, toolCallId }) =>
+        this.startDetached({
+          agentName: childName,
+          task: childTask,
+          actor,
+          day,
+          depth: depth + 1,
+          path: [...path, agentName],
+          parentRunId: runId,
+          deliverTo: { threadId: subThread.id, toolCallId },
+        }),
+    };
+    this.detached.set(runId, input);
+    void spannedAgent(
+      'turn',
+      runId,
+      { runId },
+      () => runAgentLoop({ ...deps, day }, input, hooks),
+      (result) => ({ textLength: result.text.length }),
+    )
+      .catch(async (error: unknown) => {
+        const cancelled = error instanceof RunCancelledError;
+        const message = error instanceof Error ? error.message : String(error);
+        if (!cancelled) {
+          await this.store.recordRunEnd({ runId, status: 'failed', error: message });
+          await this.store
+            .failUnsettledToolCalls?.(runId, RUN_ENDED_BEFORE_TOOL_CALL)
+            .catch(() => 0);
+          const writer = await deps.sink.open(runId);
+          await writer.write(streamErrorFrame(error, runId));
+          await writer.end();
+        }
+        // The loop delivers its own success; a run that never produced an answer settles the
+        // delegation here, or the calling conversation shows "started" for ever. (A Stop already
+        // settled it in `cancel`; this is then a no-op.)
+        await settleUnsettledDelegation({
+          store: this.store,
+          delivery: deliverTo,
+          agent: agentName,
+          runId,
+          status: cancelled ? 'cancelled' : 'failed',
+          ...(cancelled ? {} : { error: message }),
+        });
+      })
+      .catch((error) => {
+        console.error(
+          `[@adonis-agora/agent] detached run ${runId} could not be settled: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      })
+      .finally(() => {
+        this.detached.delete(runId);
+        this.cancelled.delete(runId);
+      });
+    return { runId };
+  }
+
   /** Delegate to another agent as a nested in-process run (a transient sub-thread). */
   private async runNested(args: {
     agentName: string;
@@ -397,6 +540,17 @@ export class InlineAgentRunner implements AgentRunner {
           path: [...path, agentName],
           parentRunId: runId,
           sinkRunId,
+        }),
+      startAgent: ({ agentName: childName, task: childTask, toolCallId }) =>
+        this.startDetached({
+          agentName: childName,
+          task: childTask,
+          actor,
+          day,
+          depth: depth + 1,
+          path: [...path, agentName],
+          parentRunId: runId,
+          deliverTo: { threadId: subThread.id, toolCallId },
         }),
     };
     // A nested sub-agent run is its own trace (its own runId), rooted by the same turn span.

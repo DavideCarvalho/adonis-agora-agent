@@ -472,6 +472,7 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
       ...(input.usage !== undefined ? { usage: input.usage } : {}),
       ...(input.persona !== undefined ? { persona: input.persona } : {}),
       ...(input.runId !== undefined ? { runId: input.runId } : {}),
+      ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
       ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
       ...(input.reasoningMs !== undefined ? { reasoningMs: input.reasoningMs } : {}),
       ...(input.ui !== undefined ? { ui: input.ui } : {}),
@@ -853,8 +854,16 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
   }
 
   /** Test helper: read the recorded tool-call rows. */
-  toolCallRows(): { toolName: string; status: ToolCallStatus; output?: unknown }[] {
+  toolCallRows(): {
+    toolCallId: string;
+    runId?: string;
+    toolName: string;
+    status: ToolCallStatus;
+    output?: unknown;
+  }[] {
     return [...this.toolCalls.values()].map((row) => ({
+      toolCallId: row.toolCallId,
+      ...(row.runId !== undefined ? { runId: row.runId } : {}),
       toolName: row.toolName,
       status: row.status,
       ...(row.output !== undefined ? { output: row.output } : {}),
