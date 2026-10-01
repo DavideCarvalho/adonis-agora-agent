@@ -18,38 +18,16 @@
  * ```
  */
 import {
-  AgentClient,
-  type AgentClientOptions,
   type AgentProviderProps,
   AgentProvider as BaseAgentProvider,
 } from '@dudousxd/nestjs-agent-react';
 import { createElement, type ReactElement, useCallback, useRef } from 'react';
-import { csrfHeaders } from './csrf.js';
+import { type HeaderSource, withCsrf } from './client.js';
 
 export * from '@dudousxd/nestjs-agent-react';
+export { type AgUiBackendOptions, agUiBackend, agUiChatStream } from './ag-ui.js';
+export { createAgentClient } from './client.js';
 export { csrfHeaders, readCookie } from './csrf.js';
-
-type HeaderSource = AgentClientOptions['getHeaders'];
-
-/** The CSRF header first, then the caller's own — so an app can still override it. */
-async function withCsrf(own: HeaderSource): Promise<Record<string, string>> {
-  return { ...csrfHeaders(), ...((await own?.()) ?? {}) };
-}
-
-/**
- * An {@link AgentClient} on this package's routes: the session cookie rides every request
- * (`credentials: 'same-origin'`, or whatever you pass for an API on another origin) and the CSRF
- * header is read from the page per request. For code outside React, or to hand one hook a
- * connection of its own (`useAgentChat({ backend })`). Under React prefer {@link AgentProvider}.
- */
-export function createAgentClient(options: AgentClientOptions = {}): AgentClient {
-  const { getHeaders, ...rest } = options;
-  return new AgentClient({
-    credentials: 'same-origin',
-    ...rest,
-    getHeaders: () => withCsrf(getHeaders),
-  });
-}
 
 /**
  * The agent connection, once, around whatever renders a chat. Every hook below it — `useAgentChat`,

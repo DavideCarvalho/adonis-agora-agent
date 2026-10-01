@@ -189,6 +189,8 @@ A reloaded thread returns them on the user message; `messageFiles(message)` read
 | `useAgentConfig()` | `GET /agent/config` |
 | `useComposerAutocomplete()` + `createSkillsSource()` | `GET /agent/skills` — skills after a `/` |
 
+To run the chat turns over [AG-UI](/docs/agent/ag-ui) instead of the native stream, hand the provider `backend={agUiBackend()}` — see [From React](/docs/agent/ag-ui#from-react--useagentchat-over-ag-ui).
+
 Every route is listed in [Streaming & HTTP](/docs/agent/streaming-and-http). Errors reach you as `AgentHttpError` carrying the server's `status`, `code` and `message` — `chat.error.message` is already the server's words — and `<AgentProvider onHttpError>` sees each one, for an app-wide "401 → sign in again".
 
 ## Subpaths
