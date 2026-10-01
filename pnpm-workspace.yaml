@@ -9,9 +9,11 @@ allowBuilds:
   '@biomejs/biome': true
   '@swc/core': true
   better-sqlite3: true
-  # testcontainers' optional native SSH speedups; it runs without them (as in nestjs-agent).
+  # testcontainers' optional native SSH speedups and a postinstall it does not need; it runs
+  # without them (as in nestjs-agent).
   cpu-features: false
   esbuild: true
+  protobufjs: false
   ssh2: false
 minimumReleaseAgeExclude:
   - '@dudousxd/nestjs-agent-core@0.26.0 || 0.33.0 || 0.34.0 || 0.36.0'
