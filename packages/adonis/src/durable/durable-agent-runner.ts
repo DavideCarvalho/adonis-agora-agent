@@ -1,6 +1,7 @@
 import type { WorkflowEngine } from '@adonis-agora/durable';
 import { utcDay } from '../agent-deps.js';
 import { type ChatQueueService, isThreadTurn } from '../chat-queue-service.js';
+import { settleUnsettledDelegation } from '../delegation.js';
 import type { HumanReply } from '../elicitation.js';
 import type { AgentRunner, AgentRunStartOptions } from '../spi/agent-runner.js';
 import type { AgentStore } from '../spi/agent-store.js';
@@ -91,10 +92,13 @@ export class DurableAgentRunner implements AgentRunner {
 
   async cancel(runId: string): Promise<void> {
     // What the run was started with, read before the cancel lands: which thread it holds.
-    const input = await this.engine
-      .getRun(runId)
-      .then((run) => run?.input as Partial<DurableAgentRunInput> | undefined)
-      .catch(() => undefined);
+    const run = await this.engine.getRun(runId).catch(() => null);
+    const input = run?.input as Partial<DurableAgentRunInput> | undefined;
+    const settled =
+      run?.status === 'completed' ||
+      run?.status === 'failed' ||
+      run?.status === 'cancelled' ||
+      run?.status === 'dead';
     // Best-effort: cascade cancellation to children and broadcast to the owning worker. A run that
     // already settled is a no-op. Errors are swallowed — cancel is advisory, not a guarantee.
     await this.engine.cancel(runId).catch(() => undefined);
@@ -104,6 +108,29 @@ export class DurableAgentRunner implements AgentRunner {
     // thread on here — an interrupt's message starts now, anything else queued pauses behind the
     // Stop — and free it. A sub-agent's run holds no thread of its own.
     const threadId = typeof input?.threadId === 'string' ? input.threadId : undefined;
+    const delivery = input?.deliverTo;
+    if (delivery !== undefined && input?.sinkRunId === undefined) {
+      if (settled || this.store === undefined) {
+        // It already ended — and told the thread how, on its own way out.
+        return;
+      }
+      // A DETACHED delegate, stopped on its own id (the receipt carries it). Its body never runs
+      // again, so the delegating conversation is told here — once: a thread already holding this
+      // run's message is left alone — and the run's own stream is ended for whoever is attached.
+      await settleUnsettledDelegation({
+        store: this.store,
+        delivery,
+        agent: typeof input?.agentName === 'string' ? input.agentName : 'default',
+        runId,
+        status: 'cancelled',
+      }).catch(() => undefined);
+      if (this.sink !== undefined) {
+        const writer = await this.sink.open(runId);
+        await writer.write({ t: 'event', event: { kind: 'cancelled' } });
+        await writer.end();
+      }
+      return;
+    }
     if (this.store === undefined || threadId === undefined || !isThreadTurn(input ?? {})) {
       return;
     }

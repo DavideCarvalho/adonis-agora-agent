@@ -16,6 +16,7 @@ import {
 import type { QueuePlan, QueueSettleOutcome } from '../chat-queue-service.js';
 import { RUN_ENDED_BEFORE_TOOL_CALL } from '../dangling-tool-calls.js';
 import { settleDeadRun } from '../dead-run.js';
+import { settleUnsettledDelegation } from '../delegation.js';
 import type { HumanReply } from '../elicitation.js';
 import { isReplayIntegrityError } from '../replay-integrity.js';
 import { isChatQueueStore, releaseThreadRun } from '../spi/chat-queue.js';
@@ -104,6 +105,9 @@ function outsideWorkflowCtx<T>(fn: () => Promise<T>): Promise<T> {
  *    sub-agent's own HITL wait can be seen, and therefore answered.
  *  - `runAgent(name, task)` → `ctx.child(AgentRunWorkflow, …)` — sub-agent delegation is a tracked,
  *    replay-safe CHILD run (a node in the durable dashboard) that streams into the top-level sink.
+ *  - `startAgent(…)` → `ctx.startChild(AgentRunWorkflow, …)` — a DETACHED delegation: a `spawn:`
+ *    position and no suspend, so the turn ends with a receipt; the child owns its own stream and
+ *    posts its answer into the delegating thread (`deliverTo`).
  *  - `openSink()` → the run's own sink writer (top-level) or a {@link childSinkWriter} (a child).
  *
  * Instantiated by the engine with no arguments; its deps come from {@link getDurableAgentContext}.
@@ -115,7 +119,15 @@ export class AgentRunWorkflow extends BaseWorkflow {
     const { factory, store, queue } = getDurableAgentContext();
     const day = input.day ?? utcDay();
     const deps = factory.forAgent(input.agentName);
+    // Three shapes of run, told apart by their input alone (so every replay and every pod agrees):
+    //   - a thread's own turn: owns its stream, its thread and the thread's queue;
+    //   - an awaited delegate (`sinkRunId`): forwards into its ancestor's stream, owns none of it;
+    //   - a DETACHED delegate (`deliverTo`): owns its stream (nobody is watching the turn that started
+    //     it any more), but no thread turn of anyone's — it runs on a scratch thread and posts its
+    //     answer into the delegating one (`deliver:detached`, in the loop).
     const isChild = input.sinkRunId !== undefined;
+    const detached = !isChild && input.deliverTo !== undefined;
+    const ownsThread = !isChild && !detached;
     const sinkRunId = input.sinkRunId ?? ctx.runId;
     // Every checkpoint this workflow writes. The body runs outside the ambient workflow ctx, so
     // nothing the application does in there — a tool dispatching a workflow of its own, a store, a
@@ -136,7 +148,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
       outcome: QueueSettleOutcome,
       error?: string,
     ): Promise<AgentStreamEvent | undefined> => {
-      if (queue === undefined || !queue.supported || isChild) {
+      if (queue === undefined || !queue.supported || !ownsThread) {
         return undefined;
       }
       if (!(await ctx.patched('agent:chat-queue'))) {
@@ -236,7 +248,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
       // Stop, or an interrupt that already started the next message): it must not write an answer
       // after whatever took its place. Asked live, only where the queue's compare-and-set admission
       // is in force — there a run holds its thread from its claim to its own settle, on every replay.
-      ...(queue?.supported === true && !isChild && isChatQueueStore(store)
+      ...(queue?.supported === true && ownsThread && isChatQueueStore(store)
         ? {
             cancelled: async () => (await store.activeRunForThread(input.threadId)) !== ctx.runId,
           }
@@ -274,12 +286,67 @@ export class AgentRunWorkflow extends BaseWorkflow {
           sinkRunId,
         });
       },
+      // The same delegation, not awaited: `ctx.startChild` records `spawn:<childRunId>` at this
+      // position and returns, so THIS turn ends while the child is still working. It is reached from
+      // the loop BODY (never inside a `step`), only for a call whose `persist:toolcall` journaled
+      // `detached` — which no run recorded before this existed — so a parked run's positions are the
+      // ones it always had. Two things the awaited form does are left off on purpose:
+      //   - no `sinkRunId`: a detached run owns its own stream. Forwarding into the turn that started it
+      //     would write tokens (and an approval card) into a stream whose reader already saw it end.
+      //     Its approvals reach the inbox anyway: the call is persisted `pending_approval` under the
+      //     child's OWN runId, which is what `tool-call/approve` resolves a decision to.
+      //   - `deliverTo` instead: the parent's tool result is a receipt, so the answer needs an address
+      //     of its own, and by the time it exists nobody else is holding one.
+      startAgent: async ({ agentName, task, toolCallId }) => {
+        const subThreadId = await step(`subthread:${agentName}`, async () => {
+          const thread = await store.createThread({
+            actor: input.actor,
+            persona: 'default',
+            transient: true,
+          });
+          return thread.id;
+        });
+        const childRunId = await ctx.startChild(AgentRunWorkflow, {
+          agentName,
+          threadId: subThreadId,
+          actor: input.actor,
+          userText: task,
+          day,
+          delegationDepth: (input.delegationDepth ?? 0) + 1,
+          delegationPath: chainBelow,
+          parentRunId: ctx.runId,
+          deliverTo: { threadId: input.threadId, toolCallId },
+        } satisfies DurableAgentRunInput);
+        return { runId: childRunId };
+      },
+    };
+    /**
+     * Settle the delegation a DETACHED run was started for, when it ends without an answer. The loop
+     * delivers its own success (`deliver:detached`) but cannot catch its own crash; left alone, the
+     * card in the delegating conversation says "started" for ever. A checkpoint of its own, reached
+     * only on a detached run's failure path — a position no other run has.
+     */
+    const settleDetached = async (error: string): Promise<void> => {
+      const delivery = input.deliverTo;
+      if (!detached || delivery === undefined) {
+        return;
+      }
+      await step('deliver:detached:unsettled', () =>
+        settleUnsettledDelegation({
+          store,
+          delivery,
+          agent: input.agentName ?? 'default',
+          runId: ctx.runId,
+          status: 'failed',
+          error,
+        }),
+      );
     };
 
     try {
       const result = await runAgentLoop({ ...deps, day }, input, hooks);
       // The top-level run owns the thread's active-run pointer (a child runs on a scratch thread).
-      if (!isChild) {
+      if (ownsThread) {
         // Conditional: a turn that handed the thread to the next queued message must not clear it.
         await step('deactivate', () => releaseThreadRun(store, input.threadId, ctx.runId));
       }
@@ -307,8 +374,20 @@ export class AgentRunWorkflow extends BaseWorkflow {
         await settleDeadRun(store, {
           runId: ctx.runId,
           error: message,
-          ...(isChild ? {} : { threadId: input.threadId }),
+          ...(ownsThread ? { threadId: input.threadId } : {}),
         });
+        if (detached && input.deliverTo !== undefined) {
+          // Straight to the store, like the rest of this branch: the journal has no room left.
+          // Idempotent by itself (a thread already holding this run's message is left alone).
+          await settleUnsettledDelegation({
+            store,
+            delivery: input.deliverTo,
+            agent: input.agentName ?? 'default',
+            runId: ctx.runId,
+            status: 'failed',
+            error: message,
+          }).catch(() => undefined);
+        }
         if (!isChild) {
           const writer = await deps.sink.open(ctx.runId);
           await writer.write(streamErrorFrame(error, ctx.runId));
@@ -329,7 +408,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
         // checkpoint, so it adds no position to a failing run's journal.
         await store.failUnsettledToolCalls?.(ctx.runId, RUN_ENDED_BEFORE_TOOL_CALL).catch(() => 0);
       });
-      if (!isChild) {
+      if (ownsThread) {
         // The queue behind a failed turn pauses — its next message would likely fail the same way.
         const queueFrame = await advanceQueue('failed', message);
         await step('deactivate', () => releaseThreadRun(store, input.threadId, ctx.runId));
@@ -337,6 +416,12 @@ export class AgentRunWorkflow extends BaseWorkflow {
         if (queueFrame !== undefined) {
           await writer.write({ t: 'event', event: queueFrame });
         }
+        await writer.write(streamErrorFrame(error, ctx.runId));
+        await writer.end();
+      } else if (detached) {
+        // Tell the delegating thread, then end the run's own stream like a thread turn would.
+        await settleDetached(message);
+        const writer = await deps.sink.open(ctx.runId);
         await writer.write(streamErrorFrame(error, ctx.runId));
         await writer.end();
       }

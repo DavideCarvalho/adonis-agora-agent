@@ -89,6 +89,7 @@ export function createTableStatements(): string[] {
       "reasoning_ms" INTEGER NULL,
       "ui" TEXT NULL,
       "feedback" TEXT NULL,
+      "agent_name" VARCHAR(255) NULL,
       "created_at" BIGINT NOT NULL
     )`,
     `CREATE INDEX IF NOT EXISTS "${t.messages}_thread_created_idx" ON "${t.messages}" ("thread_id", "created_at")`,
@@ -213,6 +214,7 @@ const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }
   { table: AGENT_TABLES.messages, column: 'reasoning_ms', type: 'INTEGER NULL' },
   { table: AGENT_TABLES.messages, column: 'ui', type: 'TEXT NULL' },
   { table: AGENT_TABLES.messages, column: 'feedback', type: 'TEXT NULL' },
+  { table: AGENT_TABLES.messages, column: 'agent_name', type: 'VARCHAR(255) NULL' },
   { table: AGENT_TABLES.threads, column: 'model', type: 'VARCHAR(255) NULL' },
   { table: AGENT_TABLES.threads, column: 'queue_pause', type: 'TEXT NULL' },
   { table: AGENT_TABLES.threads, column: 'default_agent', type: 'VARCHAR(255) NULL' },

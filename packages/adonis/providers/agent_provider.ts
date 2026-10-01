@@ -19,6 +19,7 @@ import {
   type AgentStore,
   ALL_AGENTS,
   AnonymousActorResolver,
+  AttachmentInventoryError,
   AttachmentRefusedError,
   type AttachmentStagingStore,
   ChatQueueError,
@@ -139,6 +140,13 @@ function decisionVia(claimed: unknown): string | null {
 
 /** How many attachments one message may name. */
 const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+
+/**
+ * How many entries `GET <path>/attachments` returns. Fixed rather than caller-supplied: the route
+ * exists so a composer can show the files someone uploaded; a host that needs real paging over a
+ * large inventory has `AgentService.listAttachments` and its own store's `list`.
+ */
+const ATTACHMENT_PAGE_SIZE = 50;
 
 /**
  * Reduce a send's `attachments` to `{ mediaId }` refs, or say why not. One shape: a ref names an
@@ -1320,6 +1328,27 @@ export default class AgentProvider {
           actor,
         });
         return ctx.response.json(attachment);
+      });
+
+      // 12a. GET /agent/attachments — the caller's own staged files, newest first, metadata only
+      // (no url: one is minted per request by the store's `resolve`). The one question
+      // `GET threads/:id` cannot answer, since an upload that was never sent belongs to no thread.
+      // `501` when the store keeps no inventory (`list`) — never an empty list in its place.
+      // Collection is NOT a route: a sweep needs a host-chosen age and ends in deleting bytes, so it
+      // stays in-process (`AgentService.collectableAttachments`).
+      router.get(p('attachments'), async (ctx: HttpContext) => {
+        const actor = await this.#resolveActor(ctx, actorResolver);
+        if (actor === null) return;
+        try {
+          return ctx.response.json(
+            await service.listAttachments(actor, { limit: ATTACHMENT_PAGE_SIZE }),
+          );
+        } catch (error) {
+          if (error instanceof AttachmentInventoryError) {
+            return ctx.response.status(error.status).json({ message: error.message });
+          }
+          throw error;
+        }
       });
     }
 

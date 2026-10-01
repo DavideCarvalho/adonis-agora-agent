@@ -52,6 +52,8 @@ export interface AppendMessageInput {
   usage?: MessageUsage;
   /** The run (turn) this message belongs to, for run-detail assembly + trace deep-links. */
   runId?: string;
+  /** The agent that wrote it, when it is not the thread's own turn. See {@link StoredMessage.agentName}. */
+  agentName?: string;
   /** The step's streamed thinking. See {@link StoredMessage.reasoning}. */
   reasoning?: string;
   /** Time spent thinking in this step, in ms. See {@link StoredMessage.reasoningMs}. */

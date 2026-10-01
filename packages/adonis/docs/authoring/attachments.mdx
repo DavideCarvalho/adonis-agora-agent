@@ -96,6 +96,43 @@ The default is an **exact-match list of seven types** — what multimodal provid
 
 There is no wildcard and no prefix rule. A store's `allowedContentTypes` **replaces** the list rather than extending it, so spread what you want to keep. Widen it only to types your model provider actually renders.
 
+## Listing and collecting staged uploads
+
+An upload belongs to no thread until it is sent, so a thread read cannot show it. Two things answer "what has this person uploaded":
+
+- `GET /agent/attachments` — the caller's own staged files, newest first (50), **metadata only**: `{ mediaId, name, contentType, sizeBytes, createdAt }`, no url (one is minted only when a turn or a thread read resolves the file). Mounted with the other attachment routes; `501` when the store keeps no inventory.
+- `AgentService.listAttachments(actor, { limit })` — the same, in process.
+
+Uploads that were staged and never sent pile up. `AgentService.collectableAttachments` is the sweep's **read** half: the actor's staged files that are older than a cutoff you choose and that no message references — neither a message in one of their threads nor one waiting in a thread's queue. It returns them; deleting is yours:
+
+```ts title="commands/sweep_attachments.ts"
+import { AgentService } from '@adonis-agora/agent'
+
+const agent = await app.container.make(AgentService)
+for (const actorId of await actorsWithUploads()) {
+  const stale = await agent.collectableAttachments({ id: actorId }, {
+    olderThan: DateTime.now().minus({ days: 7 }).toJSDate(),
+  })
+  for (const file of stale) {
+    await deleteUpload(file.mediaId) // your storage: the media row and its bytes
+  }
+}
+```
+
+With `attachmentStores.media()` the rows live in the `agent-attachments` collection, one owner per actor (`ownerType` `agent-actor`), so `actorsWithUploads` is a query on the media table and `deleteUpload` is the media library's own delete.
+
+`olderThan` is required and has no default — how long a composer may sit open with a file attached is your app's knowledge, and an upload that is merely not sent *yet* is not garbage. The age cut is passed to the store and applied again on what comes back. Both halves have to be answerable or it refuses (`AttachmentInventoryError`, status `501`) instead of guessing: a store without `list`, or an agent store without `referencedMediaIds`, would otherwise make every file look collectable. A message removed by `truncateFrom` (regenerate, edit-and-resend) stops referencing its files, so they become collectable again.
+
+Both shipped stores implement `list`: `attachmentStores.media()` reads the actor's rows in its collection (`listByOwner`), and `attachmentStores.memory()` keeps them in process. A store of your own adds:
+
+```ts
+async list({ actor, stagedBefore, limit }) {
+  // only `actor`'s files, newest first, createdAt < stagedBefore when given, at most `limit`
+}
+```
+
+Scope it to `actor` without exception — a store that ignores it turns a file list into a way to read someone else's documents.
+
 ## Non-public object stores — the download bypass
 
 When the model provider can consume the attachment `url` natively (most hosted vision models can fetch a public HTTPS URL), the URL passes straight through and nothing downloads it. But when it *can't* — or when your `url` points at a **non-public** object store the provider can't reach (local MinIO in dev, a VPC-only S3 bucket) — the Vercel AI SDK's `experimental_download` step fetches the bytes and inlines them for the model.

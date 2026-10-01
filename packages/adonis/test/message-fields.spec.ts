@@ -27,6 +27,7 @@ const OPTIONAL_FIELDS: Required<Omit<AppendMessageInput, 'threadId' | 'role' | '
   followUps: ['and then?'],
   usage: { inputTokens: 3, outputTokens: 5, costUsd: 0.01 },
   runId: 'run-1',
+  agentName: 'research',
   reasoning: 'The user wants the ship date.',
   reasoningMs: 1840,
   ui: [

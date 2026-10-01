@@ -45,6 +45,7 @@ export type { ChatParams } from './agent-service.js';
 export {
   AgentService,
   type AgentServiceOptions,
+  AttachmentInventoryError,
   AttachmentRefusedError,
   ChatQueueError,
   type ChatSendMode,
@@ -178,6 +179,7 @@ export {
   streamTransports,
   tokenSinks,
 } from './define_config.js';
+export * from './delegation.js';
 export * from './diagnostics.js';
 export {
   type AgentIntake,

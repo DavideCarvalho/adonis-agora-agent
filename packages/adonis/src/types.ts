@@ -50,6 +50,19 @@ export interface ToolSpec {
   /** For `kind: 'agent'` — the name of the agent to delegate to. */
   targetAgent?: string;
   /**
+   * For `kind: 'agent'` — start the delegate and let the calling turn END instead of holding it open
+   * until the delegate answers. The call's result is a receipt (`DetachedDelegationReceipt`), and the
+   * answer arrives later as its own message in the same thread (see {@link AgentRunInput.deliverTo}).
+   *
+   * Authored per EDGE (`delegatesTo: [{ agent, detached: true }]`), never chosen by the model: a model
+   * that can detach can detach the one thing the user is sitting there waiting for, and it cannot know
+   * which that is. The person wiring `A -> B` does.
+   *
+   * Settled into the call's `persist:toolcall` checkpoint, so a replay reads the branch back rather
+   * than re-deciding it against a registry that may have changed while the run was parked.
+   */
+  detached?: boolean;
+  /**
    * A successful call ENDS the turn: its effect is the answer (it pushed the UI the user reads), so
    * no further model call narrates it. A failed call does not end it — the model gets to recover.
    */
@@ -326,6 +339,22 @@ export interface AgentRunInput {
    * when the provider reports none. Omitted → the provider's default.
    */
   model?: string;
+  /**
+   * Set on a DETACHED sub-agent run only: the thread and tool call it answers into when it finishes.
+   * Its presence is also what makes a run detached from the inside — it owns its own stream (no
+   * ancestor sink to forward into), so nothing else tells it apart from a top-level turn.
+   */
+  deliverTo?: DetachedDelivery;
+}
+
+/**
+ * Where a detached sub-agent run posts its answer: the thread that delegated it, and the `agent`-kind
+ * tool call that started it. Carried on the child run's own {@link AgentRunInput}, because by the time
+ * the child finishes the delegating turn is over and nothing else is holding the address.
+ */
+export interface DetachedDelivery {
+  threadId: string;
+  toolCallId: string;
 }
 
 /**
@@ -345,6 +374,13 @@ export interface AgentRunInput {
 export interface DelegateEdge {
   /** Name of the agent to delegate to — the `target` in `ask_<target>`. */
   agent: string;
+  /**
+   * Run the delegate in the BACKGROUND: the synthesized tool is `start_<target>`, the calling turn
+   * ends with a receipt instead of waiting, and the delegate's answer is posted into the same thread
+   * as its own message (stamped with its `runId` / `agentName`) when it is ready. The chat stays free
+   * meanwhile. Default `false` — the awaited `ask_<target>`. See {@link ToolSpec.detached}.
+   */
+  detached?: boolean;
   /**
    * Roles allowed to invoke the synthesized delegate tool. Omitted → the `RolesPolicy` default
    * (`defaultRoles`; unrestricted unless configured, under {@link import('./authorizer.js').DefaultToolAuthorizer}).
@@ -470,6 +506,12 @@ export interface StoredMessage {
    * run the replacement's text. Absent on a row written outside a run.
    */
   runId?: string;
+  /**
+   * The agent that wrote this message, when it is not the turn's own: a detached sub-agent's answer
+   * lands in the delegating thread as a message of its own, and this is how a reader tells "the
+   * research agent finished" from the assistant's next reply. Absent on every other message.
+   */
+  agentName?: string;
   /**
    * The model's thinking for this step, as it streamed (`reasoning` frames), so a reloaded thread
    * shows it where the live one did. Absent when the model produced none, or on a row written

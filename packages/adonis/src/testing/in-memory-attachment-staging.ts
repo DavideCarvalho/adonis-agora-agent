@@ -1,8 +1,10 @@
 import type {
   AttachmentStagingDescription,
   AttachmentStagingStore,
+  ListStagedAttachmentsInput,
   ResolveAttachmentInput,
   StageAttachmentInput,
+  StagedAttachment,
 } from '../spi/attachment-staging.js';
 import type { MessageAttachment } from '../types.js';
 
@@ -14,6 +16,14 @@ export interface StagedRecord {
   sizeBytes: number;
   actorId: string;
   url: string;
+  /** ISO-8601 UTC instant it was staged, off the store's clock. */
+  createdAt: string;
+}
+
+/** Test seams for {@link InMemoryAttachmentStagingStore}. */
+export interface InMemoryAttachmentStagingOptions {
+  /** The clock `stage` stamps `createdAt` with. Default: the wall clock. */
+  now?: () => Date;
 }
 
 /**
@@ -25,8 +35,19 @@ export interface StagedRecord {
  */
 export class InMemoryAttachmentStagingStore implements AttachmentStagingStore {
   readonly staged: StagedRecord[] = [];
+  private now: () => Date;
 
-  constructor(private readonly limits: AttachmentStagingDescription = {}) {}
+  constructor(
+    private readonly limits: AttachmentStagingDescription = {},
+    options: InMemoryAttachmentStagingOptions = {},
+  ) {
+    this.now = options.now ?? (() => new Date());
+  }
+
+  /** Test affordance: move the clock, so media can be staged days apart in one spec. */
+  setClock(now: () => Date): void {
+    this.now = now;
+  }
 
   describe(): AttachmentStagingDescription {
     return this.limits;
@@ -54,6 +75,7 @@ export class InMemoryAttachmentStagingStore implements AttachmentStagingStore {
       sizeBytes: input.sizeBytes,
       actorId: input.actor.id,
       url,
+      createdAt: this.now().toISOString(),
     });
     return {
       mediaId,
@@ -61,5 +83,23 @@ export class InMemoryAttachmentStagingStore implements AttachmentStagingStore {
       contentType: input.contentType,
       name: input.filename,
     };
+  }
+
+  /** The actor's own uploads, newest first — metadata only, never a url. */
+  async list(input: ListStagedAttachmentsInput): Promise<StagedAttachment[]> {
+    const entries = this.staged
+      .filter((record) => record.actorId === input.actor.id)
+      .filter((record) => input.stagedBefore === undefined || record.createdAt < input.stagedBefore)
+      .map((record) => ({
+        mediaId: record.mediaId,
+        name: record.filename,
+        contentType: record.contentType,
+        sizeBytes: record.sizeBytes,
+        createdAt: record.createdAt,
+      }))
+      // Newest first; equal instants keep the later upload first, as a real store's id order would.
+      .reverse()
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return input.limit === undefined ? entries : entries.slice(0, input.limit);
   }
 }

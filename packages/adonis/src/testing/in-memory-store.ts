@@ -472,6 +472,7 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
       ...(input.usage !== undefined ? { usage: input.usage } : {}),
       ...(input.persona !== undefined ? { persona: input.persona } : {}),
       ...(input.runId !== undefined ? { runId: input.runId } : {}),
+      ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
       ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
       ...(input.reasoningMs !== undefined ? { reasoningMs: input.reasoningMs } : {}),
       ...(input.ui !== undefined ? { ui: input.ui } : {}),
@@ -514,8 +515,8 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
   }
 
   /**
-   * Of `mediaIds`, the ones a surviving message in one of this actor's threads still carries.
-   * Re-derived from the messages each call, so a media whose message was truncated away reads as
+   * Of `mediaIds`, the ones a surviving (or queued) message in one of this actor's threads still
+   * carries. Re-derived from the messages each call, so a media whose message was truncated away reads as
    * unreferenced again.
    */
   async referencedMediaIds(actorRef: string, mediaIds: readonly string[]): Promise<string[]> {
@@ -528,7 +529,10 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
       if (thread.actorRef !== actorRef) {
         continue;
       }
-      for (const message of thread.messages) {
+      // A message waiting in the thread's queue carries its attachments too: it has been sent, it
+      // just has not run yet — collecting its media would fail the turn it is waiting to start.
+      const queued = this.queues.get(thread.id) ?? [];
+      for (const message of [...thread.messages, ...queued]) {
         for (const attachment of message.attachments ?? []) {
           if (wanted.has(attachment.mediaId)) {
             found.add(attachment.mediaId);
@@ -850,8 +854,16 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
   }
 
   /** Test helper: read the recorded tool-call rows. */
-  toolCallRows(): { toolName: string; status: ToolCallStatus; output?: unknown }[] {
+  toolCallRows(): {
+    toolCallId: string;
+    runId?: string;
+    toolName: string;
+    status: ToolCallStatus;
+    output?: unknown;
+  }[] {
     return [...this.toolCalls.values()].map((row) => ({
+      toolCallId: row.toolCallId,
+      ...(row.runId !== undefined ? { runId: row.runId } : {}),
       toolName: row.toolName,
       status: row.status,
       ...(row.output !== undefined ? { output: row.output } : {}),

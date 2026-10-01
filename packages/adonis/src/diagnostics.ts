@@ -48,6 +48,8 @@ export interface AgentDelegated {
   runId: string;
   fromAgent?: string;
   toAgent: string;
+  /** The delegate was STARTED, not awaited — this run's turn ended without its answer. */
+  detached?: boolean;
 }
 export interface AgentRetrieved {
   runId: string;

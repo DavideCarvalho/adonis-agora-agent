@@ -431,6 +431,7 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
           reasoning: m.reasoning ?? null,
           reasoning_ms: m.reasoning_ms ?? null,
           ui: m.ui ?? null,
+          ...(typeof m.agent_name === 'string' ? { agent_name: m.agent_name } : {}),
           created_at: toInt(m.created_at),
         });
       }
@@ -683,6 +684,9 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
       usage: safeJson(input.usage),
       persona: input.persona ?? null,
       run_id: input.runId ?? null,
+      // Only when set: a detached sub-agent's answer is the one message that carries it, so a
+      // database whose `agent_name` column has not been added yet keeps every other write working.
+      ...(input.agentName !== undefined ? { agent_name: input.agentName } : {}),
       reasoning: input.reasoning ?? null,
       reasoning_ms: input.reasoningMs ?? null,
       ui: safeJson(input.ui),
@@ -705,6 +709,7 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
       ...(input.usage !== undefined ? { usage: input.usage } : {}),
       ...(input.persona !== undefined ? { persona: input.persona } : {}),
       ...(input.runId !== undefined ? { runId: input.runId } : {}),
+      ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
       ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
       ...(input.reasoningMs !== undefined ? { reasoningMs: input.reasoningMs } : {}),
       ...(input.ui !== undefined ? { ui: input.ui } : {}),
@@ -747,7 +752,8 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
   }
 
   /**
-   * Of `mediaIds`, the ones a surviving message in one of this actor's threads still carries.
+   * Of `mediaIds`, the ones a surviving message — or one waiting in a thread's queue — in one of this
+   * actor's threads still carries.
    *
    * The match on the attachment's `mediaId` runs here rather than in SQL: the column is JSON text,
    * and every dialect this store targets spells "an array element with this field" differently
@@ -776,9 +782,18 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
       )
       .where('attachments', 'is not', null)
       .select('attachments');
+    // A message waiting in a thread's queue has been sent and not yet run: what it carries is in use.
+    const queued = await this.db
+      .from(AGENT_TABLES.queuedMessages)
+      .whereIn(
+        'thread_id',
+        threads.map((thread) => String(thread.id)),
+      )
+      .where('attachments', 'is not', null)
+      .select('attachments');
     const wanted = new Set(mediaIds);
     const found = new Set<string>();
-    for (const row of rows) {
+    for (const row of [...rows, ...queued]) {
       for (const attachment of parseJson<MessageAttachment[]>(row.attachments) ?? []) {
         if (wanted.has(attachment.mediaId)) {
           found.add(attachment.mediaId);
@@ -1098,6 +1113,7 @@ function rowToMessage(row: Record<string, unknown>): StoredMessage {
     ...(usage !== undefined ? { usage } : {}),
     ...(typeof row.persona === 'string' ? { persona: row.persona } : {}),
     ...(typeof row.run_id === 'string' ? { runId: row.run_id } : {}),
+    ...(typeof row.agent_name === 'string' ? { agentName: row.agent_name } : {}),
     ...(typeof row.reasoning === 'string' ? { reasoning: row.reasoning } : {}),
     ...(row.reasoning_ms !== null && row.reasoning_ms !== undefined
       ? { reasoningMs: toInt(row.reasoning_ms) }
