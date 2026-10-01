@@ -16,3 +16,4 @@ minimumReleaseAgeExclude:
   # The release before detached delegation, installed under an alias so a spec can park a run on
   # the code that is in production and replay it on this one (test/detached-upgrade-replay.spec.ts).
   - '@adonis-agora/agent@0.56.0 || 0.58.0'
+  - '@adonis-agora/durable@0.43.1'
