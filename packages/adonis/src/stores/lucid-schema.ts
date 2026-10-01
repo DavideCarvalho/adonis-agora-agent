@@ -349,11 +349,40 @@ async function issue(
   statement: string,
   done: () => Promise<boolean>,
 ): Promise<void> {
-  try {
-    await db.rawQuery(statement);
-  } catch (error) {
-    if (!(await done())) throw error;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await db.rawQuery(statement);
+      return;
+    } catch (error) {
+      if (await done()) return;
+      // MySQL settles two sessions building the same index at once by rolling one back as a deadlock
+      // victim — and the winner's index may not be in the catalog yet when the loser looks. That
+      // statement did nothing and is safe to send again; the next try either lands or finds it done.
+      if (attempt >= DDL_ATTEMPTS || !isTransientLockFailure(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25 * attempt));
+    }
   }
+}
+
+const DDL_ATTEMPTS = 5;
+
+/** A statement the database rolled back to break a lock conflict: MySQL 1213/1205, Postgres 40P01/40001. */
+function isTransientLockFailure(error: unknown): boolean {
+  for (let current = error; current !== null && typeof current === 'object'; ) {
+    const { code, errno } = current as { code?: unknown; errno?: unknown };
+    if (
+      code === 'ER_LOCK_DEADLOCK' ||
+      code === 'ER_LOCK_WAIT_TIMEOUT' ||
+      errno === 1213 ||
+      errno === 1205 ||
+      code === '40P01' ||
+      code === '40001'
+    ) {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 /**

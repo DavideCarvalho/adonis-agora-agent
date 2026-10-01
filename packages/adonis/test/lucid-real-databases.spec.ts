@@ -187,8 +187,12 @@ describeEachBackend('the Lucid stores on a real database', (backend) => {
   it('provisions an empty database from several replicas at once', async () => {
     const empty = await openBackend(backend, { tables: false });
     try {
-      const replicas = [empty.db, empty.replica(), empty.replica(), empty.replica()];
-      await Promise.all(replicas.map((replica) => createAgentTables(replica as never)));
+      // Eight at once, three rounds: the race (a deadlock victim on MySQL) shows up only sometimes.
+      const replicas = [empty.db, ...Array.from({ length: 7 }, () => empty.replica())];
+      for (let round = 0; round < 3; round += 1) {
+        if (round > 0) await dropAgentTables(empty.store);
+        await Promise.all(replicas.map((replica) => createAgentTables(replica as never)));
+      }
       const thread = await new LucidAgentStore(empty.store).createThread({
         actor,
         persona: 'default',
