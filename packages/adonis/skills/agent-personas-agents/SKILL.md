@@ -108,7 +108,7 @@ synthesizes `start_researcher` instead. The call returns a receipt
 (`{ detached: true, status: 'started', agent, runId, note }`), the turn ends, and the
 delegate's answer is posted into the same thread later as its own message stamped
 `runId` / `agentName`; a failure or a Stop (`POST /agent/chat/:runId/cancel` with the
-receipt's `runId`) posts a message too. The client tracks them with
+receipt's `runId`) posts a message too. A Stop on the turn that started it does NOT stop it. The client tracks them with
 `useAgentChat({ background: true })` (`chat.background.runs`). Detached is per edge, never
 the model's choice. Source: `personas-and-agents.mdx` ("Background delegation").
 

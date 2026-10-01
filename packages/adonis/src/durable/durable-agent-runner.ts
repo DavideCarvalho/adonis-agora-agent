@@ -99,9 +99,16 @@ export class DurableAgentRunner implements AgentRunner {
       run?.status === 'failed' ||
       run?.status === 'cancelled' ||
       run?.status === 'dead';
+    // The runs it spawned, read before the cancel cascades to them. A detached delegation is no
+    // longer started that way, but a turn that journaled its `spawn:` before this release still owns
+    // that child in the engine's eyes, and the cascade stops it from outside, where nothing of ours runs.
+    const children = settled ? [] : await this.engine.getRunChildren(runId).catch(() => []);
     // Best-effort: cascade cancellation to children and broadcast to the owning worker. A run that
     // already settled is a no-op. Errors are swallowed — cancel is advisory, not a guarantee.
     await this.engine.cancel(runId).catch(() => undefined);
+    for (const childId of children) {
+      await this.settleCascadedDetached(childId);
+    }
     // Settle the persisted run `cancelled` (first-terminal: a run that already completed stays put).
     await this.store?.recordRunEnd({ runId, status: 'cancelled' }).catch(() => undefined);
     // A thread's own turn, cancelled from outside its body, never reaches its own settle: hand the
@@ -117,18 +124,7 @@ export class DurableAgentRunner implements AgentRunner {
       // A DETACHED delegate, stopped on its own id (the receipt carries it). Its body never runs
       // again, so the delegating conversation is told here — once: a thread already holding this
       // run's message is left alone — and the run's own stream is ended for whoever is attached.
-      await settleUnsettledDelegation({
-        store: this.store,
-        delivery,
-        agent: typeof input?.agentName === 'string' ? input.agentName : 'default',
-        runId,
-        status: 'cancelled',
-      }).catch(() => undefined);
-      if (this.sink !== undefined) {
-        const writer = await this.sink.open(runId);
-        await writer.write({ t: 'event', event: { kind: 'cancelled' } });
-        await writer.end();
-      }
+      await this.settleStoppedDelegation(runId, input ?? {});
       return;
     }
     if (this.store === undefined || threadId === undefined || !isThreadTurn(input ?? {})) {
@@ -158,5 +154,48 @@ export class DurableAgentRunner implements AgentRunner {
       await writer.write({ t: 'event', event: { kind: 'cancelled' } });
       await writer.end();
     }
+  }
+
+  /** Tell the delegating thread a detached run was stopped, and end that run's own stream. */
+  private async settleStoppedDelegation(
+    runId: string,
+    input: Partial<DurableAgentRunInput>,
+  ): Promise<void> {
+    const delivery = input.deliverTo;
+    if (delivery === undefined || this.store === undefined) {
+      return;
+    }
+    await settleUnsettledDelegation({
+      store: this.store,
+      delivery,
+      agent: typeof input.agentName === 'string' ? input.agentName : 'default',
+      runId,
+      status: 'cancelled',
+    }).catch(() => undefined);
+    if (this.sink !== undefined) {
+      const writer = await this.sink.open(runId);
+      await writer.write({ t: 'event', event: { kind: 'cancelled' } });
+      await writer.end();
+    }
+  }
+
+  /**
+   * A detached child the engine cancelled along with its parent (a `spawn:` journaled before detached
+   * runs were started on their own): end it the way a Stop on its own id would have.
+   */
+  private async settleCascadedDetached(childId: string): Promise<void> {
+    const child = await this.engine.getRun(childId).catch(() => null);
+    const input = child?.input as Partial<DurableAgentRunInput> | undefined;
+    if (
+      child === null ||
+      child === undefined ||
+      input?.deliverTo === undefined ||
+      input.sinkRunId !== undefined ||
+      child.status !== 'cancelled'
+    ) {
+      return;
+    }
+    await this.store?.recordRunEnd({ runId: childId, status: 'cancelled' }).catch(() => undefined);
+    await this.settleStoppedDelegation(childId, input);
   }
 }

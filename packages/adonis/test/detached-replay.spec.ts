@@ -33,7 +33,7 @@ import {
  *
  * Each approval resumes a run, and a resume replays its whole journal: every position the first pass
  * took has to be asked for again, in order, under the same name. The parent parks before AND after
- * the `spawn:` it records; the child parks twice, once right after a tool that starts a workflow of
+ * the `detach:` it records (the step that starts the child as a run of its own); the child parks twice, once right after a tool that starts a workflow of
  * the app's own from inside its body (the shape that once failed in production with "non-determinism"
  * when that start landed in the agent run's journal). Decisions arrive interleaved across the two
  * runs, in both orders.
@@ -217,6 +217,14 @@ async function settled(g: Graph, runId: string): Promise<{ status?: string; erro
 const names = async (g: Graph, runId: string) =>
   (await g.engine.listCheckpoints(runId)).map((checkpoint) => checkpoint.name);
 
+/** The run a `detach:` step of `runId` started — read off the journal, where the parent keeps it. */
+async function detachedChildOf(g: Graph, runId: string): Promise<string | undefined> {
+  const detach = (await g.engine.listCheckpoints(runId)).find(
+    (checkpoint) => checkpoint.name.startsWith('detach:') && checkpoint.status === 'completed',
+  );
+  return typeof detach?.output === 'string' ? detach.output : undefined;
+}
+
 async function startAndPark(g: Graph): Promise<{ runId: string; threadId: string; child: string }> {
   const { runId, threadId } = await g.service.chat({ actor, message: 'go' });
   // Signal #1's wait: the parent's first action, BEFORE it reaches the detached delegation.
@@ -225,7 +233,7 @@ async function startAndPark(g: Graph): Promise<{ runId: string; threadId: string
   // The resume replays the claims, runs the action, spawns the child and parks on the next action.
   await parkedOn(g, runId, 'call-1-record_measure');
   const child = await eventually(
-    async () => (await g.engine.getRunChildren(runId))[0],
+    async () => detachedChildOf(g, runId),
     'the detached child to be started',
   );
   await parkedOn(g, child, 'call-0-purge_cache');
@@ -251,11 +259,17 @@ async function expectAllSettledOnce(
   );
   expect(ingested).toEqual(['k1']);
 
-  // One child, started once, recorded at one position of the parent's journal; nothing the child's
-  // tools did took a position in either agent run's journal.
-  expect(await g.engine.getRunChildren(ids.runId)).toEqual([ids.child]);
+  // One child, started once, recorded at one position of the parent's journal — as a run of its
+  // own, not an engine child, so a Stop on the parent cannot reach it. Nothing the child's tools did
+  // took a position in either agent run's journal.
+  expect(await g.engine.getRunChildren(ids.runId)).toEqual([]);
   const parent = await names(g, ids.runId);
-  expect(parent.filter((name) => name.startsWith('spawn:'))).toEqual([`spawn:${ids.child}`]);
+  expect(parent.filter((name) => name.startsWith('spawn:'))).toEqual([]);
+  expect(parent.filter((name) => name.startsWith('detach:'))).toEqual([
+    'detach:call-0-start_research',
+  ]);
+  expect(parent).toContain('patch:agent:detached-unlinked');
+  expect((await g.engine.getRun(ids.child))?.input).toMatchObject({ parentRunId: ids.runId });
   const child = await names(g, ids.child);
   expect(child.filter((name) => name.startsWith('spawn:'))).toEqual([]);
   expect(child.filter((name) => name.startsWith('deliver:'))).toEqual(['deliver:detached']);
@@ -328,5 +342,53 @@ describe('a detached delegation, replayed between every signal (durable runner)'
     await g.service.approve(ids.child, 'call-1-purge_cache');
 
     await expectAllSettledOnce(g, ids);
+  });
+});
+
+describe('stopping the turn that started a detached delegation (durable runner)', () => {
+  it('leaves the detached run working, and its card follows it to delivered', async () => {
+    const g = buildGraph();
+    const ids = await startAndPark(g);
+
+    await g.service.cancel(ids.runId);
+    expect((await settled(g, ids.runId)).status).toBe('cancelled');
+    // The Stop was for the turn the person was watching; the background run was never part of it.
+    expect((await g.engine.getRun(ids.child))?.status).toBe('suspended');
+    expect(
+      g.store.toolCallRows().find((row) => row.toolName === 'start_research')?.output,
+    ).toMatchObject({ detached: true, status: 'started' });
+
+    await g.service.approve(ids.child, 'call-0-purge_cache');
+    await parkedOn(g, ids.child, 'call-1-purge_cache');
+    await g.service.approve(ids.child, 'call-1-purge_cache');
+    expect(await settled(g, ids.child)).toEqual({ status: 'completed' });
+
+    const messages = (await g.store.getThread(ids.threadId))?.messages ?? [];
+    expect(messages.filter((message) => message.content === 'RESEARCH ANSWER')).toHaveLength(1);
+    expect(
+      g.store.toolCallRows().find((row) => row.toolName === 'start_research')?.output,
+    ).toMatchObject({ detached: true, status: 'delivered', runId: ids.child });
+    expect(g.executions).toEqual({
+      'record_measure:m1': 1,
+      'reingest:k1': 1,
+      'purge_cache:c1': 1,
+      'purge_cache:c2': 1,
+    });
+  });
+
+  it('still stops the detached run on its own id, and says so once', async () => {
+    const g = buildGraph();
+    const ids = await startAndPark(g);
+    await g.service.cancel(ids.runId);
+
+    await g.service.cancel(ids.child);
+    expect((await settled(g, ids.child)).status).toBe('cancelled');
+    expect(
+      g.store.toolCallRows().find((row) => row.toolName === 'start_research')?.output,
+    ).toMatchObject({ detached: true, status: 'cancelled', runId: ids.child });
+    const told = ((await g.store.getThread(ids.threadId))?.messages ?? []).filter((message) =>
+      message.content.includes('was stopped before it could answer'),
+    );
+    expect(told).toHaveLength(1);
   });
 });
