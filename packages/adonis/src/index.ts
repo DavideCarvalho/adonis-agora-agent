@@ -179,6 +179,7 @@ export {
   streamTransports,
   tokenSinks,
 } from './define_config.js';
+export * from './delegation.js';
 export * from './diagnostics.js';
 export {
   type AgentIntake,
@@ -369,7 +370,6 @@ export {
   toApprovalPolicy,
   toolCallApprovalFromRow,
 } from './spi/approval-policy.js';
-export * from './delegation.js';
 export * from './spi/attachment-staging.js';
 export * from './spi/chat-queue.js';
 export * from './spi/confirm-token-store.js';
