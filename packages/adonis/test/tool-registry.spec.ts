@@ -441,3 +441,135 @@ describe('defineTool — gates on a functional tool', () => {
     );
   });
 });
+
+describe('action preflight', () => {
+  it('validates before prepare and rechecks domain state on execute', async () => {
+    const registry = new ToolRegistry();
+    const phases: string[] = [];
+    let allowed = true;
+    let effects = 0;
+    registry.register(
+      { name: 'refund', kind: 'action', description: 'refund', inputSchema: upperCityValibotLike },
+      {
+        preflight(input: { city: string }, _ctx, options) {
+          phases.push(`${options.phase}:${input.city}`);
+          return allowed
+            ? { status: 'ready', confirmation: { title: `Refund ${input.city}?`, verb: 'Refund' } }
+            : { status: 'denied', reason: 'Order closed' };
+        },
+        execute() {
+          effects++;
+          return 'done';
+        },
+      },
+    );
+    const ctx = ctxFor({ id: 'u' });
+    const policy = new DefaultRolesPolicy();
+    await expect(registry.prepare('refund', {}, ctx, policy)).rejects.toBeInstanceOf(
+      ToolInputInvalidError,
+    );
+    expect(phases).toEqual([]);
+    expect(await registry.prepare('refund', { city: 'rio' }, ctx, policy)).toMatchObject({
+      status: 'ready',
+      confirmation: { title: 'Refund RIO?' },
+    });
+    allowed = false;
+    await expect(registry.invoke('refund', { city: 'rio' }, ctx, policy)).rejects.toMatchObject({
+      name: 'ToolPreflightDeniedError',
+      reason: 'Order closed',
+    });
+    expect(phases).toEqual(['prepare:RIO', 'execute:RIO']);
+    expect(effects).toBe(0);
+  });
+  it('returns completed output without effects and skips read preflight', async () => {
+    const registry = new ToolRegistry();
+    for (const kind of ['read', 'action'] as const) {
+      registry.register(
+        { name: kind, kind, description: kind, inputSchema: z.object({}) },
+        {
+          preflight: () => ({ status: 'completed', output: 'duplicate' }),
+          execute: () => 'effect',
+        },
+      );
+    }
+    const ctx = ctxFor({ id: 'u' });
+    const policy = new DefaultRolesPolicy();
+    expect(await registry.prepare('action', {}, ctx, policy)).toEqual({
+      status: 'completed',
+      output: 'duplicate',
+    });
+    expect(await registry.invoke('action', {}, ctx, policy)).toBe('duplicate');
+    expect(await registry.prepare('read', {}, ctx, policy)).toEqual({ status: 'ready' });
+    expect(await registry.invoke('read', {}, ctx, policy)).toBe('effect');
+  });
+});
+
+it('defineTool preserves handler instance methods and combines both actor gates', async () => {
+  class Handler implements ToolHandler {
+    private title = 'Resolved Seven';
+    preflight() {
+      return { status: 'ready' as const, confirmation: { title: this.title, verb: 'Refund' } };
+    }
+    canUse(actor: Actor) {
+      return actor.id === 'u';
+    }
+    execute() {
+      return this.title;
+    }
+  }
+  const tool = defineTool(
+    {
+      name: 'refund',
+      kind: 'action',
+      description: 'refund',
+      input: z.object({}),
+      canUse: () => true,
+    },
+    new Handler(),
+  );
+  const registry = new ToolRegistry();
+  registry.register(tool.spec, tool.handler);
+  expect(
+    await registry.prepare('refund', {}, ctxFor({ id: 'u' }), new DefaultRolesPolicy()),
+  ).toMatchObject({ confirmation: { title: 'Resolved Seven' } });
+  await expect(
+    registry.prepare('refund', {}, ctxFor({ id: 'other' }), new DefaultRolesPolicy()),
+  ).rejects.toBeInstanceOf(ToolForbiddenError);
+});
+
+it('prepare applies every invocation gate before the domain hook', async () => {
+  const registry = new ToolRegistry();
+  let enabled = false;
+  let actorAllowed = true;
+  let checked = 0;
+  registry.register(
+    { name: 'refund', kind: 'action', description: 'refund', inputSchema: z.object({}) },
+    {
+      isEnabled: () => enabled,
+      canUse: () => actorAllowed,
+      preflight: () => {
+        checked++;
+        return { status: 'ready' };
+      },
+      execute: () => ({}),
+    },
+  );
+  const ctx = ctxFor({ id: 'u' });
+  const policy = new DefaultRolesPolicy();
+  await expect(registry.prepare('refund', {}, ctx, policy)).rejects.toBeInstanceOf(
+    ToolDisabledError,
+  );
+  enabled = true;
+  await expect(registry.prepare('refund', {}, ctx, { can: () => false })).rejects.toBeInstanceOf(
+    ToolForbiddenError,
+  );
+  actorAllowed = false;
+  await expect(registry.prepare('refund', {}, ctx, policy)).rejects.toBeInstanceOf(
+    ToolForbiddenError,
+  );
+  actorAllowed = true;
+  await expect(
+    registry.prepare('refund', {}, ctx, policy, { allowedTools: [] }),
+  ).rejects.toBeInstanceOf(ToolForbiddenError);
+  expect(checked).toBe(0);
+});

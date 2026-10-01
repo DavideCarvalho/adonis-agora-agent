@@ -1,5 +1,6 @@
 import type { ElicitationRequest } from '../elicitation.js';
 import type { AgentStreamErrorCode, AgentStreamEvent } from '../stream-events.js';
+import type { ToolConfirmation } from '../tool-presentation.js';
 
 /**
  * The "data plane": live token transport, decoupled from the durable control plane.
@@ -61,6 +62,8 @@ export type StreamFrame =
       id: string;
       toolName: string;
       input: unknown;
+      /** Resolved display copy from the action's domain preparation. */
+      confirmation?: ToolConfirmation;
       /** Who may decide (`'requester'` or a role), from the turn's `ApprovalPolicy`. Absent → the requester. */
       approver?: string;
       /** ISO-8601 instant the request lapses. Absent → it never does. */

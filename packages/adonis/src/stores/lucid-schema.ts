@@ -137,6 +137,7 @@ export function createTableStatements(): string[] {
       "created_at" BIGINT NOT NULL,
       "executed_at" BIGINT NULL,
       "approver" VARCHAR(255) NULL,
+      "confirmation" TEXT NULL,
       "expires_at" BIGINT NULL,
       "remember" INTEGER NULL,
       "decided_via" VARCHAR(64) NULL,
@@ -255,6 +256,7 @@ const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }
   { table: AGENT_TABLES.threads, column: 'default_agent', type: 'VARCHAR(255) NULL' },
   // The persona a queued message's send resolved, so it starts under that one.
   { table: AGENT_TABLES.queuedMessages, column: 'persona', type: 'VARCHAR(255) NULL' },
+  { table: AGENT_TABLES.toolCalls, column: 'confirmation', type: 'TEXT NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'approver', type: 'VARCHAR(255) NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'expires_at', type: 'BIGINT NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'remember', type: 'INTEGER NULL' },

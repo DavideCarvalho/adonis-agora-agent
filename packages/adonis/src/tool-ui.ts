@@ -21,7 +21,11 @@ interface ToolStepOutputWithUi {
  * before `emitUi` existed), else an envelope carrying the pushes with it.
  */
 export function wrapToolStepOutput(output: unknown, ui: readonly AgentUiComponent[]): unknown {
-  if (ui.length === 0) {
+  const reservedOutput =
+    typeof output === 'object' &&
+    output !== null &&
+    (TOOL_STEP_UI in output || '@@adonis-agent/tool-preflight-denied' in output);
+  if (ui.length === 0 && !reservedOutput) {
     return output;
   }
   const wrapped: ToolStepOutputWithUi = { [TOOL_STEP_UI]: 1, output, ui: [...ui] };

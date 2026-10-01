@@ -20,7 +20,7 @@ import { createAgentTables, dropAgentTables } from '@adonis-agora/agent'
  * existed purely to ALTER in the \`run_id\` columns this one had been written before.
  *
  * \`createAgentTables\` is idempotent (\`CREATE TABLE IF NOT EXISTS\`) and additive-only: it creates what
- * is missing and ALTERs the \`run_id\` columns into a database that predates run tracking. So it is safe
+ * is missing and ALTERs the \`run_id\` columns into a database that predates run tracking, plus approval metadata including resolved confirmation. So it is safe
  * against an empty database, against one the library already auto-created, and against one left over
  * from an older version — which is exactly the set of states a real app is in.
  *

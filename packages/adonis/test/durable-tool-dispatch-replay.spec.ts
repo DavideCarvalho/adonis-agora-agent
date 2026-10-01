@@ -18,6 +18,7 @@ import {
   AgentRegistry,
   AgentService,
   DefaultToolAuthorizer,
+  type ToolHandler,
   ToolRegistry,
 } from '../src/index.js';
 import {
@@ -76,7 +77,7 @@ interface Graph {
   executions: Record<string, number>;
 }
 
-function buildGraph(script: FakeScript): Graph {
+function buildGraph(script: FakeScript, preflight?: ToolHandler['preflight']): Graph {
   const store = new InMemoryAgentStore();
   const sink = new InMemoryTokenStreamSink();
   const registry = new ToolRegistry();
@@ -110,6 +111,7 @@ function buildGraph(script: FakeScript): Graph {
       roles: ['ADMIN'],
     },
     {
+      ...(preflight !== undefined ? { preflight } : {}),
       execute: async (input: { examId: string }) => {
         executions.save_exam = (executions.save_exam ?? 0) + 1;
         const { runId } = await IngestWorkflow.dispatch(
@@ -269,5 +271,34 @@ describe('a tool that dispatches a workflow, replayed (durable runner)', () => {
     expect(g.executions.reingest).toBe(1);
     expect(g.executions.record_measure).toBe(1);
     expect(ingested).toEqual(['e9']);
+  });
+});
+
+describe('preflight durable journal', () => {
+  it('journals prepare once and execution denial before replay resumes the next approval', async () => {
+    const phases: string[] = [];
+    const g = buildGraph(twoActions, (_input, _ctx, { phase }) => {
+      phases.push(phase);
+      return phase === 'prepare'
+        ? { status: 'ready' }
+        : { status: 'denied', reason: 'Order closed' };
+    });
+    const { runId } = await g.service.chat({ actor, message: 'save it' });
+    await pendingApprovals(g);
+    await waitFor(async () => (await g.engine.getRun(runId))?.status === 'suspended');
+    await g.service.approve(runId, SAVE);
+    await waitFor(() =>
+      g.store.toolCallRows().some((row) => row.toolName === 'save_exam' && row.status === 'failed'),
+    );
+    await waitFor(async () => (await g.engine.getRun(runId))?.status === 'suspended');
+    await g.service.approve(runId, MEASURE);
+    await waitFor(async () => (await g.engine.getRun(runId))?.status === 'completed');
+    expect(phases).toEqual(['prepare', 'execute']);
+    expect(g.executions.save_exam).toBeUndefined();
+    expect(g.executions.record_measure).toBe(1);
+    const checkpoints = await g.engine.listCheckpoints(runId);
+    expect(checkpoints.find((checkpoint) => checkpoint.name === `tool:${SAVE}`)?.status).toBe(
+      'completed',
+    );
   });
 });

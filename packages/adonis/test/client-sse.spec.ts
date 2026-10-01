@@ -141,3 +141,71 @@ describe('readSseStream', () => {
     ]);
   });
 });
+
+it('preserves resolved confirmation on native approval frames and ignores malformed optional values', () => {
+  const base = {
+    kind: 'approval-requested',
+    id: 'call',
+    runId: 'run',
+    toolName: 'refund',
+    input: { id: 7 },
+  };
+  const confirmation = { title: 'Refund Seven?', verb: 'Refund', detail: 'Return $70' };
+  expect(
+    decodeFrame({ event: 'message', data: JSON.stringify({ ...base, confirmation }) }),
+  ).toEqual({
+    type: 'approval',
+    runId: 'run',
+    toolCallId: 'call',
+    toolName: 'refund',
+    input: { id: 7 },
+    confirmation,
+  });
+  for (const confirmation of [
+    null,
+    { title: 7, verb: 'Refund' },
+    { title: 'Refund?', verb: 'Refund', detail: 7 },
+  ]) {
+    expect(
+      decodeFrame({ event: 'message', data: JSON.stringify({ ...base, confirmation }) }),
+    ).toEqual({
+      type: 'approval',
+      runId: 'run',
+      toolCallId: 'call',
+      toolName: 'refund',
+      input: { id: 7 },
+    });
+  }
+});
+
+it('carries approval routing and countdown metadata without adding absent legacy fields', () => {
+  const base = {
+    kind: 'approval-requested',
+    id: 'call',
+    runId: 'run',
+    toolName: 'refund',
+    input: {},
+  };
+  const metadata = {
+    approver: 'FINANCE',
+    expiresAt: '2026-10-01T18:00:00.000Z',
+    reason: 'Review refund',
+  };
+  expect(decodeFrame({ event: 'message', data: JSON.stringify({ ...base, ...metadata }) })).toEqual(
+    {
+      type: 'approval',
+      runId: 'run',
+      toolCallId: 'call',
+      toolName: 'refund',
+      input: {},
+      ...metadata,
+    },
+  );
+  expect(decodeFrame({ event: 'message', data: JSON.stringify(base) })).toEqual({
+    type: 'approval',
+    runId: 'run',
+    toolCallId: 'call',
+    toolName: 'refund',
+    input: {},
+  });
+});

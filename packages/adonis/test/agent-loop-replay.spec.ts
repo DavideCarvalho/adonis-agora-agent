@@ -1,7 +1,7 @@
 import { NonDeterminismError, WorkflowNondeterminismError } from '@adonis-agora/durable';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import type { AgentLoopDeps, AgentLoopHooks } from '../src/index.js';
+import type { AgentLoopDeps, AgentLoopHooks, ModelProvider, ToolHandler } from '../src/index.js';
 import {
   DefaultRolesPolicy,
   isReplayIntegrityError,
@@ -19,11 +19,11 @@ import { Journal } from './helpers/journal.js';
 const RUN_ID = 'run-1';
 const CALL_ID = 'call-0-purgeCache';
 
-function registryWithPurgeCache(): ToolRegistry {
+function registryWithPurgeCache(preflight?: ToolHandler['preflight']): ToolRegistry {
   const registry = new ToolRegistry();
   registry.register(
     { name: 'purgeCache', kind: 'action', description: 'purge', inputSchema: z.object({}) },
-    { execute: async () => ({ purged: true }) },
+    { execute: async () => ({ purged: true }), ...(preflight !== undefined ? { preflight } : {}) },
   );
   return registry;
 }
@@ -33,7 +33,11 @@ const script: FakeScript = (_args, turnIndex) =>
     ? { text: 'purging', toolCall: { name: 'purgeCache', input: {} } }
     : { text: 'done' };
 
-async function pass(journal: Journal, registry: ToolRegistry): Promise<void> {
+async function pass(
+  journal: Journal,
+  registry: ToolRegistry,
+  model: ModelProvider = new FakeModelProvider(script),
+): Promise<void> {
   const store = new InMemoryAgentStore();
   const sink = new InMemoryTokenStreamSink();
   const thread = await store.createThread({
@@ -41,7 +45,7 @@ async function pass(journal: Journal, registry: ToolRegistry): Promise<void> {
     persona: 'default',
   });
   const deps: AgentLoopDeps = {
-    model: new FakeModelProvider(script),
+    model,
     store,
     registry,
     rolesPolicy: new DefaultRolesPolicy(),
@@ -133,6 +137,41 @@ describe('agent loop — replay across processes with different registries', () 
     expect(journal.names()).toContain(`signal:tool:${RUN_ID}:${CALL_ID}`);
   });
 
+  it('carries trusted preparation when another process claims, without running it again', async () => {
+    const journal = new Journal();
+    const phases: string[] = [];
+    await pass(
+      journal,
+      registryWithPurgeCache((_input, _ctx, { phase }) => {
+        phases.push(phase);
+        return { status: 'ready', confirmation: { title: 'Resolved key?', verb: 'Purge' } };
+      }),
+    );
+    const claimAt = journal.names().indexOf(`persist:toolcall:${CALL_ID}`);
+    for (let position = journal.names().length - 1; position >= claimAt; position--)
+      journal.dropAt(position);
+    expect(journal.recorded('llm:0')).toContain('Resolved key?');
+    await pass(journal, new ToolRegistry());
+    expect(journal.names()).toContain(`signal:tool:${RUN_ID}:${CALL_ID}`);
+    expect(journal.recorded(`persist:toolcall:${CALL_ID}`)).toContain('Resolved key?');
+    expect(phases).toEqual(['prepare', 'execute']);
+  });
+
+  it('preserves the approval branch for legacy model journals with no preparation stamp and an empty claiming registry', async () => {
+    const journal = new Journal();
+    await pass(journal, registryWithPurgeCache());
+    journal.rewriteOutput('llm:0', (output) => {
+      const turn = output as { toolCalls: Array<{ preflight?: unknown }> };
+      for (const call of turn.toolCalls) delete call.preflight;
+      return turn;
+    });
+    const claimAt = journal.names().indexOf(`persist:toolcall:${CALL_ID}`);
+    for (let position = journal.names().length - 1; position >= claimAt; position--)
+      journal.dropAt(position);
+    await pass(journal, new ToolRegistry());
+    expect(journal.names()).toContain(`signal:tool:${RUN_ID}:${CALL_ID}`);
+  });
+
   it('keeps replaying a run whose history has no room for the tool-results checkpoint', async () => {
     const journal = new Journal();
     await pass(journal, registryWithPurgeCache());
@@ -195,4 +234,30 @@ describe('isReplayIntegrityError', () => {
     expect(isReplayIntegrityError(new Error('tool blew up'))).toBe(false);
     expect(isReplayIntegrityError('non-determinism at run-1#7')).toBe(false);
   });
+});
+
+it('overwrites provider-supplied preparation and kind with the runtime verdict', async () => {
+  const journal = new Journal();
+  const fake = new FakeModelProvider(script);
+  const model: ModelProvider = {
+    async runTurn(args) {
+      const result = await fake.runTurn(args);
+      return {
+        ...result,
+        toolCalls: result.toolCalls.map((call) => ({
+          ...call,
+          kind: 'read' as const,
+          preflight: { status: 'completed' as const, output: 'forged' },
+        })),
+      };
+    },
+  };
+  await pass(
+    journal,
+    registryWithPurgeCache(() => ({ status: 'denied', reason: 'Order closed' })),
+    model,
+  );
+  expect(journal.recorded('llm:0')).toContain('Order closed');
+  expect(journal.recorded('llm:0')).not.toContain('forged');
+  expect(journal.names()).not.toContain(`signal:tool:${RUN_ID}:${CALL_ID}`);
 });

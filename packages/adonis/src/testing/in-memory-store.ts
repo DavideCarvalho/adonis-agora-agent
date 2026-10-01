@@ -27,6 +27,7 @@ import type {
   QueuePause,
 } from '../spi/chat-queue.js';
 import type { AgentUiComponent } from '../stream-events.js';
+import type { ToolConfirmation } from '../tool-presentation.js';
 
 interface ThreadRow extends ThreadSummary {
   actorRef: string;
@@ -48,6 +49,7 @@ interface ToolCallRow {
   executionMs?: number;
   createdAt: string;
   executedByRef?: string;
+  confirmation?: ToolConfirmation;
   approver?: string;
   expiresAt?: string;
   remember?: boolean;
@@ -614,6 +616,7 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
       status: input.status,
       createdAt: this.now(),
       ...(input.runId !== undefined ? { runId: input.runId } : {}),
+      ...(input.confirmation !== undefined ? { confirmation: { ...input.confirmation } } : {}),
       ...(input.approver !== undefined ? { approver: input.approver } : {}),
       ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
     });
@@ -678,6 +681,7 @@ export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
         toolCallId: call.toolCallId,
         status: call.status,
         approver: call.approver,
+        confirmation: call.confirmation,
         expiresAt: call.expiresAt,
         remember: call.remember,
         executedByRef: call.executedByRef,

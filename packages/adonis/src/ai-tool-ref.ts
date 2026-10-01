@@ -218,7 +218,7 @@ export function isBrandedFunctionalTool(value: unknown): value is BrandedFunctio
  */
 export function defineTool<I = unknown, O = unknown>(
   options: DefineToolOptions,
-  execute: (input: I, ctx: AiToolCtx) => Promise<O> | O,
+  execute: ((input: I, ctx: AiToolCtx) => Promise<O> | O) | ToolHandler<I, O>,
 ): BrandedFunctionalTool {
   const spec: ToolSpec = {
     name: options.name,
@@ -232,12 +232,35 @@ export function defineTool<I = unknown, O = unknown>(
     ...(options.terminal === true ? { terminal: true } : {}),
   };
   const canUse = options.canUse;
+  const implementation = typeof execute === 'function' ? undefined : execute;
   return {
     [AGENT_TOOL_BRAND]: true,
     spec,
     handler: {
-      execute: (input, ctx) => Promise.resolve(execute(input as I, ctx)),
-      ...(canUse !== undefined ? { canUse } : {}),
+      ...(implementation?.preflight !== undefined
+        ? {
+            preflight: (input, ctx, options) => implementation.preflight!(input as I, ctx, options),
+          }
+        : {}),
+      ...(implementation?.isEnabled !== undefined
+        ? { isEnabled: () => implementation.isEnabled!() }
+        : {}),
+      ...(implementation?.describe !== undefined
+        ? { describe: (scope) => implementation.describe!(scope) }
+        : {}),
+      execute: (input, ctx) =>
+        Promise.resolve(
+          typeof execute === 'function'
+            ? execute(input as I, ctx)
+            : execute.execute(input as I, ctx),
+        ),
+      ...(canUse !== undefined || implementation?.canUse !== undefined
+        ? {
+            canUse: async (actor) =>
+              (canUse === undefined || (await canUse(actor))) &&
+              (implementation?.canUse === undefined || (await implementation.canUse(actor))),
+          }
+        : {}),
     },
   };
 }

@@ -106,7 +106,14 @@ describe('the package client reads the agent protocol', () => {
       decode(
         'data: {"kind":"approval-requested","id":"c1","approver":"requester","runId":"r1","toolName":"refund","input":{}}',
       ),
-    ).toEqual({ type: 'approval', runId: 'r1', toolCallId: 'c1', toolName: 'refund', input: {} });
+    ).toEqual({
+      type: 'approval',
+      approver: 'requester',
+      runId: 'r1',
+      toolCallId: 'c1',
+      toolName: 'refund',
+      input: {},
+    });
     expect(decode('event: error\ndata: {"code":"run_failed","message":"boom"}')).toEqual({
       type: 'error',
       code: 'run_failed',

@@ -14,6 +14,7 @@
  */
 import type { ElicitationRequest } from './elicitation.js';
 import type { ChatQueueState } from './spi/chat-queue.js';
+import type { ToolConfirmation } from './tool-presentation.js';
 import type { MessageUsage } from './types.js';
 
 /**
@@ -33,6 +34,7 @@ export interface AgentUiComponent {
 
 /** Who has to settle an action tool call, and until when. Metadata: the call still settles by id. */
 export interface AgentApprovalRequest {
+  confirmation?: ToolConfirmation;
   id: string;
   /** Open vocabulary: `'requester'` (the person chatting), `'admin'`, a role, a team. */
   approver: string;
