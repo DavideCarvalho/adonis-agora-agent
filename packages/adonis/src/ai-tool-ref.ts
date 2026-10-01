@@ -1,7 +1,7 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { AiToolCtx, ToolHandler } from './spi/tool.js';
 import type { ToolPresentation } from './tool-presentation.js';
-import type { ToolSpec } from './types.js';
+import type { Actor, ToolSpec } from './types.js';
 
 /**
  * The symbol the `@AiTool` decorator stamps its options onto (the tool class), read back by
@@ -41,6 +41,17 @@ export interface AiToolOptions {
    * adapter → `bouncer.forUser(actor).allows(ability)`). Ignored by the default role-based policy.
    */
   ability?: string;
+  /**
+   * Whether this tool exists in this deployment. `false` — or a predicate returning `false`, which
+   * is re-evaluated every turn — drops it before the role filter, so the model is never shown it.
+   * Omit → enabled.
+   *
+   * Use this for availability that is knowable without the container (a constant, `env.get(...)`, a
+   * closure over something the app already holds). When the answer lives in an injected service,
+   * implement `isEnabled()` on the tool class instead: this object is built at import time and
+   * cannot reach the container.
+   */
+  enabled?: boolean | (() => boolean | Promise<boolean>);
   /**
    * How a chat surface talks about this tool without naming it — sentence templates over the call's
    * input, an icon key, the approval prompt's wording, and how its output reads. Never shown to the
@@ -157,6 +168,20 @@ export function readAiToolMeta(target: unknown): AiToolMeta | undefined {
   return metaOn(target) ?? metaOn(ctor);
 }
 
+/**
+ * What {@link defineTool} takes: the `@AiTool` options with a required `name`, plus the per-actor
+ * gate a class would implement as a `canUse()` method.
+ */
+export interface DefineToolOptions extends AiToolOptions {
+  name: string;
+  /**
+   * Whether THIS actor may use the tool, decided per turn — after `enabled` and the `RolesPolicy`,
+   * on both the offered list and the invoke. For a decision the app-wide policy cannot express (the
+   * actor's plan, an entitlement row, ownership of the record). Omit → the role gate alone decides.
+   */
+  canUse?: (actor: Actor) => boolean | Promise<boolean>;
+}
+
 /** A tool expressed as data + handler (from {@link defineTool}), not an `@AiTool` class. */
 export interface FunctionalTool {
   spec: ToolSpec;
@@ -192,7 +217,7 @@ export function isBrandedFunctionalTool(value: unknown): value is BrandedFunctio
  * ```
  */
 export function defineTool<I = unknown, O = unknown>(
-  options: AiToolOptions & { name: string },
+  options: DefineToolOptions,
   execute: (input: I, ctx: AiToolCtx) => Promise<O> | O,
 ): BrandedFunctionalTool {
   const spec: ToolSpec = {
@@ -202,12 +227,17 @@ export function defineTool<I = unknown, O = unknown>(
     inputSchema: options.input,
     ...(options.roles !== undefined ? { roles: options.roles } : {}),
     ...(options.ability !== undefined ? { ability: options.ability } : {}),
+    ...(options.enabled !== undefined ? { enabled: options.enabled } : {}),
     ...(options.presentation !== undefined ? { presentation: options.presentation } : {}),
     ...(options.terminal === true ? { terminal: true } : {}),
   };
+  const canUse = options.canUse;
   return {
     [AGENT_TOOL_BRAND]: true,
     spec,
-    handler: { execute: (input, ctx) => Promise.resolve(execute(input as I, ctx)) },
+    handler: {
+      execute: (input, ctx) => Promise.resolve(execute(input as I, ctx)),
+      ...(canUse !== undefined ? { canUse } : {}),
+    },
   };
 }

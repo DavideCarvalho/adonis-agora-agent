@@ -467,6 +467,7 @@ export {
   registerToolExport,
   registerToolsFromBarrel,
 } from './tool-discovery.js';
+export * from './tool-filters.js';
 export type {
   ToolCatalogEntry,
   ToolConfirmation,
@@ -481,6 +482,7 @@ export {
   DefaultRolesPolicy,
   type EmptyRoles,
   type RolesPolicyOptions,
+  ToolDisabledError,
   ToolForbiddenError,
   ToolInputInvalidError,
   ToolNotFoundError,

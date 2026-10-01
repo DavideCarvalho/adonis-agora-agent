@@ -1,6 +1,7 @@
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { jsonSchemaValidator } from '@modelcontextprotocol/sdk/validation';
 import type { ToolTransientRetrySetting } from '../tool-retry.js';
+import type { Actor } from '../types.js';
 import type { McpToolKindPolicy } from './tool-kind.js';
 
 /** A server this process starts and talks to over its stdin/stdout. */
@@ -86,6 +87,17 @@ export interface McpServerConfig {
   roles?: string[];
   /** Ability every tool from this server is checked against by an ability-aware `RolesPolicy`. */
   ability?: string;
+  /**
+   * Per-actor gate applied to every tool from this server, like a tool's own `canUse` — runs after
+   * the `RolesPolicy`, on both the offered list and the call. Omit → the role gate alone decides.
+   */
+  canUse?: (actor: Actor) => boolean | Promise<boolean>;
+  /**
+   * Whether this server's tools exist in this deployment at all — a boolean, or a predicate
+   * re-read every turn (a feature flag). A disabled server's tools are still imported, so turning
+   * it back on needs no refresh; they are just never offered or invocable. Omit → enabled.
+   */
+  enabled?: boolean | (() => boolean | Promise<boolean>);
   /** Cap on the MCP initialize handshake. Default 10s. */
   connectTimeoutMs?: number;
   /** Cap on `tools/list` and on every tool call. Default 30s. */

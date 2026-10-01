@@ -221,10 +221,37 @@ The same field works on `@AiTool({ … })` and `static tool = { … }`. `GET /ag
 
 Two optional governance fields on every tool:
 
-- **`roles: string[]`** — the roles allowed to invoke it. Omit it and the tool inherits the config's `defaultRoles` (`['ADMIN']` unless you change it). Authorization is a plain set intersection of the actor's roles against the tool's. A tool the actor can't reach is never even offered to the model.
+- **`roles: string[]`** — the roles allowed to invoke it. Omit it and the tool inherits the config's `defaultRoles` (`[]` — no restriction — unless you change it). Authorization is a plain set intersection of the actor's roles against the tool's. A tool the actor can't reach is never even offered to the model.
 - **`ability: string`** — an authorization ability name (e.g. `'cache.purge'`) consumed by an *ability-aware* `RolesPolicy` such as a future [`@adonis-agora/authz`](/docs/authz) Bouncer adapter. The default role-based policy ignores it. Both live on the same seam, so neither is required.
 
 See [Authorization](/docs/agent/governance/authorization) for the full governance model.
+
+## Turning a tool off, and gating it per user
+
+`roles`/`ability` answer "may this actor use it?" with one app-wide policy, and an agent's `tools` allow-list is fixed when the agent is declared. Two more gates answer the questions those can't, per turn:
+
+- **`enabled`** / **`isEnabled()`** — does this capability exist in this deployment at all? The feature-flag seam.
+- **`canUse(actor)`** — may THIS actor use it? The per-user seam, next to the tool that knows what to ask (a plan, an entitlement row, ownership of the record in question).
+
+On a class, implement them as methods — the class is resolved through the container, so they can read `@inject`'d services:
+
+```ts title="app/agent_tools/search_docs.ts"
+@inject()
+export default class SearchDocs extends ReadTool<Input> {
+  static tool = { name: 'searchDocs', description: '…', input: schema }
+
+  constructor(private plans: PlanService) { super() }
+
+  isEnabled() { return env.get('DOCS_SEARCH_ENABLED') === true }
+  canUse(actor: Actor) { return this.plans.includesDocSearch(actor.tenantRef) }
+
+  async execute(input: Input, ctx: AiToolCtx) { /* … */ }
+}
+```
+
+For availability that needs no service, declare it on the options — a boolean, or a predicate re-read every turn: `enabled: false`, `enabled: () => env.get('FLAG') === true`. `defineTool` and `defineConfirmedTool` take both `enabled` and a `canUse(actor)` option.
+
+All of them run when the turn's tool list is built, so a tool that fails one is **never shown to the model** — no wasted step, no refusal that tells the user a capability exists — and the same list is what `GET <path>/tools` and the MCP server's `tools/list` answer. They run again on invoke, which is what stops a HITL action approved before the flag moved from executing after it. Every gate can only remove tools: the agent's allow-list, then `enabled`/`isEnabled`, then the roles policy, then `canUse`. A disabled tool raises `ToolDisabledError`, distinct from `ToolForbiddenError` (wrong actor, or `canUse` said no) and `ToolNotFoundError` (no such tool) — three different things to go fix.
 
 ## The tool context
 

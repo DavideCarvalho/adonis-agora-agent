@@ -11,6 +11,7 @@ import { z } from 'zod';
 import type { Actor, AiToolCtx, RolesPolicy } from '../src/index.js';
 import {
   DefaultRolesPolicy,
+  ToolDisabledError,
   ToolForbiddenError,
   ToolNotFoundError,
   ToolRegistry,
@@ -585,6 +586,26 @@ describe('refreshing after a server changed what it exports', () => {
     await h.importer.close();
   });
 
+  it('retires everything a server owned when it answers with an empty list — a real answer', async () => {
+    const tools = { current: [listInvoices, voidInvoice] };
+    const h = harness([
+      {
+        name: 'billing',
+        transport: { type: 'custom', create: mutableServer(tools) },
+        kind: 'read',
+      },
+    ]);
+    await h.importer.start();
+    expect(await h.names(ADMIN)).toHaveLength(2);
+
+    tools.current = [];
+    expect(await h.importer.refresh('billing')).toBe(0);
+
+    expect(await h.names(ADMIN)).toEqual([]);
+    expect(h.importer.importedTools()).toEqual([]);
+    await h.importer.close();
+  });
+
   it('says so when a scoped refresh names no open server, instead of reporting 0', async () => {
     const h = harness([
       { name: 'billing', transport: { type: 'custom', create: weatherServer('w') } },
@@ -595,6 +616,47 @@ describe('refreshing after a server changed what it exports', () => {
 
     expect(h.warnings.join('\n')).toContain('refresh("biling")');
     expect(h.warnings.join('\n')).toContain('billing');
+    await h.importer.close();
+  });
+});
+
+describe('a server whose tools are behind a flag, or a per-actor gate', () => {
+  it('offers none of its tools while `enabled` says no, and offers them again without a refresh', async () => {
+    let on = false;
+    const h = harness([
+      {
+        name: 'weather',
+        transport: { type: 'custom', create: weatherServer('weather') },
+        kind: 'read',
+        enabled: () => on,
+      },
+    ]);
+    await h.importer.start();
+    expect(await h.names(ADMIN)).toEqual([]);
+    await expect(
+      h.registry.invoke('weather_get_weather', { city: 'Lisbon' }, ctx(ADMIN), h.policy),
+    ).rejects.toBeInstanceOf(ToolDisabledError);
+
+    on = true;
+    expect(await h.names(ADMIN)).toEqual(['weather_get_weather']);
+    await h.importer.close();
+  });
+
+  it('applies `canUse` per actor, on the offered list and on the call', async () => {
+    const h = harness([
+      {
+        name: 'weather',
+        transport: { type: 'custom', create: weatherServer('weather') },
+        kind: 'read',
+        canUse: (actor) => actor.id === ADMIN.id,
+      },
+    ]);
+    await h.importer.start();
+    expect(await h.names(ADMIN)).toEqual(['weather_get_weather']);
+    expect(await h.names(OPS)).toEqual([]);
+    await expect(
+      h.registry.invoke('weather_get_weather', { city: 'Lisbon' }, ctx(OPS), h.policy),
+    ).rejects.toBeInstanceOf(ToolForbiddenError);
     await h.importer.close();
   });
 });

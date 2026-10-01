@@ -175,9 +175,11 @@ export class McpToolSource {
       inputSchema,
       ...(this.config.roles !== undefined ? { roles: this.config.roles } : {}),
       ...(this.config.ability !== undefined ? { ability: this.config.ability } : {}),
+      ...(this.config.enabled !== undefined ? { enabled: this.config.enabled } : {}),
     };
     const handler: ToolHandler = {
       execute: (input) => this.callTool(tool.name, input, spec.kind),
+      ...(this.config.canUse !== undefined ? { canUse: this.config.canUse } : {}),
     };
     return { spec, handler, remoteName: tool.name, serverName: this.config.name };
   }

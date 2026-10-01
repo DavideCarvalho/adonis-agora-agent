@@ -10,10 +10,13 @@ import {
   DefaultToolAuthorizer,
   defineTool,
   registerFunctionalTool,
+  ToolDisabledError,
   ToolForbiddenError,
+  type ToolHandler,
   ToolInputInvalidError,
   ToolNotFoundError,
   ToolRegistry,
+  type ToolSpec,
 } from '../src/index.js';
 import { createNoopEmitUi } from '../src/testing/index.js';
 
@@ -234,6 +237,207 @@ describe('an empty roles list', () => {
     expect(await reg.definitionsFor(staff, closed)).toEqual([]);
     await expect(reg.invoke('listInvoices', {}, ctxFor(staff), closed)).rejects.toBeInstanceOf(
       ToolForbiddenError,
+    );
+  });
+});
+
+describe('ToolRegistry — disabled tools', () => {
+  const policy = new DefaultRolesPolicy();
+  const admin: Actor = { id: 'u1', roles: ['ADMIN'] };
+
+  function withEnabled(
+    enabled: ToolSpec['enabled'],
+    handler: ToolHandler = { execute: async () => ({ ok: true }) },
+  ): ToolRegistry {
+    const reg = new ToolRegistry();
+    reg.register(
+      {
+        name: 'searchDocs',
+        kind: 'read',
+        description: 'search',
+        inputSchema: z.object({ q: z.string() }),
+        ...(enabled !== undefined ? { enabled } : {}),
+      },
+      handler,
+    );
+    return reg;
+  }
+
+  it('does not offer a tool disabled by its spec', async () => {
+    expect(await withEnabled(false).definitionsFor(admin, policy)).toEqual([]);
+  });
+
+  it('offers a tool whose spec says nothing about being enabled', async () => {
+    const defs = await withEnabled(undefined).definitionsFor(admin, policy);
+    expect(defs.map((d) => d.name)).toEqual(['searchDocs']);
+  });
+
+  it('re-reads a predicate every turn, so flipping the flag needs no re-registration', async () => {
+    let on = false;
+    const reg = withEnabled(() => on);
+    expect(await reg.definitionsFor(admin, policy)).toEqual([]);
+    on = true;
+    expect((await reg.definitionsFor(admin, policy)).map((d) => d.name)).toEqual(['searchDocs']);
+  });
+
+  it("honours the handler's isEnabled() — the seam for a flag that lives in an injected service", async () => {
+    const reg = withEnabled(undefined, {
+      execute: async () => ({ ok: true }),
+      isEnabled: () => false,
+    });
+    expect(await reg.definitionsFor(admin, policy)).toEqual([]);
+  });
+
+  it('needs BOTH the spec and the handler to agree before offering the tool', async () => {
+    const reg = withEnabled(true, {
+      execute: async () => ({ ok: true }),
+      isEnabled: async () => false,
+    });
+    expect(await reg.definitionsFor(admin, policy)).toEqual([]);
+  });
+
+  it('keeps a disabled tool out of the catalog a person is shown, too (visibleSpecs)', async () => {
+    expect(await withEnabled(false).visibleSpecs(admin, policy)).toEqual([]);
+  });
+
+  it('refuses to invoke a disabled tool — an approval granted before the flag moved must not run it', async () => {
+    await expect(
+      withEnabled(false).invoke('searchDocs', { q: 'x' }, ctxFor(admin), policy),
+    ).rejects.toBeInstanceOf(ToolDisabledError);
+  });
+
+  it('reports a disabled tool as disabled, not as unregistered or forbidden', async () => {
+    // The three failures are operationally different: flip the flag / add the role / fix the name.
+    await expect(
+      withEnabled(false).invoke('searchDocs', { q: 'x' }, ctxFor(admin), policy),
+    ).rejects.not.toBeInstanceOf(ToolNotFoundError);
+    await expect(
+      withEnabled(false).invoke('searchDocs', { q: 'x' }, ctxFor(admin), policy),
+    ).rejects.not.toBeInstanceOf(ToolForbiddenError);
+  });
+
+  it('checks enabled BEFORE the role, so a disabled tool never leaks its existence via a role error', async () => {
+    await expect(
+      withEnabled(false).invoke(
+        'searchDocs',
+        { q: 'x' },
+        ctxFor({ id: 'u2', roles: ['GUEST'] }),
+        new DefaultRolesPolicy(['ADMIN']),
+      ),
+    ).rejects.toBeInstanceOf(ToolDisabledError);
+  });
+});
+
+describe('ToolRegistry — a tool that gates its own actors', () => {
+  const policy = new DefaultRolesPolicy();
+  const admin: Actor = { id: 'u1', roles: ['ADMIN'] };
+  const otherAdmin: Actor = { id: 'u2', roles: ['ADMIN'] };
+
+  function withCanUse(canUse: NonNullable<ToolHandler['canUse']>): ToolRegistry {
+    const reg = new ToolRegistry();
+    reg.register(
+      {
+        name: 'searchDocs',
+        kind: 'read',
+        description: 'search',
+        inputSchema: z.object({ q: z.string() }),
+      },
+      { execute: async () => ({ ok: true }), canUse },
+    );
+    return reg;
+  }
+
+  const onlyU1: NonNullable<ToolHandler['canUse']> = (actor) => actor.id === 'u1';
+
+  it('offers the tool to the actor it allows', async () => {
+    const defs = await withCanUse(onlyU1).definitionsFor(admin, policy);
+    expect(defs.map((d) => d.name)).toEqual(['searchDocs']);
+  });
+
+  it('hides it from an actor it refuses, even though the ROLE would allow it', async () => {
+    // The role gate passes for both — this is the per-user layer the role gate can't express.
+    expect(await withCanUse(onlyU1).definitionsFor(otherAdmin, policy)).toEqual([]);
+  });
+
+  it('re-decides per turn, so an entitlement granted mid-thread appears without a restart', async () => {
+    const entitled = new Set<string>();
+    const reg = withCanUse((actor) => entitled.has(actor.id));
+    expect(await reg.definitionsFor(admin, policy)).toEqual([]);
+    entitled.add('u1');
+    expect((await reg.definitionsFor(admin, policy)).map((d) => d.name)).toEqual(['searchDocs']);
+  });
+
+  it('rejects invocation by a refused actor (defense in depth)', async () => {
+    await expect(
+      withCanUse(onlyU1).invoke('searchDocs', { q: 'x' }, ctxFor(otherAdmin), policy),
+    ).rejects.toBeInstanceOf(ToolForbiddenError);
+  });
+
+  it('supports an async decision (a DB or entitlement lookup)', async () => {
+    const reg = withCanUse(async (actor) => Promise.resolve(actor.tenantRef === 'base-1'));
+    expect(await reg.definitionsFor({ ...admin, tenantRef: 'base-2' }, policy)).toEqual([]);
+    expect(
+      (await reg.definitionsFor({ ...admin, tenantRef: 'base-1' }, policy)).map((d) => d.name),
+    ).toEqual(['searchDocs']);
+  });
+
+  it('cannot widen: a `canUse` that says yes does not survive a role gate that says no', async () => {
+    const adminOnly = new DefaultRolesPolicy(['ADMIN']);
+    await expect(
+      withCanUse(() => true).invoke(
+        'searchDocs',
+        { q: 'x' },
+        ctxFor({ id: 'u3', roles: ['GUEST'] }),
+        adminOnly,
+      ),
+    ).rejects.toBeInstanceOf(ToolForbiddenError);
+    expect(
+      await withCanUse(() => true).definitionsFor({ id: 'u3', roles: ['GUEST'] }, adminOnly),
+    ).toEqual([]);
+  });
+
+  it('never asks a gate about a tool the agent did not pin', async () => {
+    let asked = 0;
+    const reg = withCanUse(() => {
+      asked += 1;
+      return true;
+    });
+    expect(await reg.definitionsFor(admin, policy, ['somethingElse'])).toEqual([]);
+    expect(asked).toBe(0);
+  });
+});
+
+describe('defineTool — gates on a functional tool', () => {
+  const policy = new DefaultRolesPolicy();
+
+  it('carries `enabled` onto the spec and `canUse` onto the handler', async () => {
+    let on = true;
+    const reg = new ToolRegistry();
+    registerFunctionalTool(
+      reg,
+      defineTool(
+        {
+          name: 'planOnly',
+          description: 'paid plans only',
+          input: z.object({}),
+          enabled: () => on,
+          canUse: (actor) => actor.tenantRef === 'paid',
+        },
+        async () => 'ok',
+      ),
+      [],
+    );
+    const paid: Actor = { id: 'u1', tenantRef: 'paid' };
+    const free: Actor = { id: 'u2', tenantRef: 'free' };
+    expect((await reg.definitionsFor(paid, policy)).map((d) => d.name)).toEqual(['planOnly']);
+    expect(await reg.definitionsFor(free, policy)).toEqual([]);
+    await expect(reg.invoke('planOnly', {}, ctxFor(free), policy)).rejects.toBeInstanceOf(
+      ToolForbiddenError,
+    );
+    on = false;
+    expect(await reg.definitionsFor(paid, policy)).toEqual([]);
+    await expect(reg.invoke('planOnly', {}, ctxFor(paid), policy)).rejects.toBeInstanceOf(
+      ToolDisabledError,
     );
   });
 });

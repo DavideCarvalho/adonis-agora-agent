@@ -65,6 +65,30 @@ export interface AiToolCtx {
 export interface ToolHandler<I = unknown, O = unknown> {
   execute(input: I, ctx: AiToolCtx): Promise<O> | O;
   /**
+   * Whether this tool exists in this deployment at all — evaluated per turn, BEFORE the roles
+   * policy, so a `false` here means the model is never shown the tool rather than being shown one
+   * it will be refused. Omit → always enabled.
+   *
+   * This is the seam for a feature flag or a licensing tier: a tool class is resolved through the
+   * container, so it can read an `@inject`'d config service that a `static tool` object, evaluated
+   * at import time, cannot. It answers "does this capability exist here?"; `roles`/`RolesPolicy`
+   * answers the separate question "may THIS actor use it?", and both still run.
+   */
+  isEnabled?(): boolean | Promise<boolean>;
+  /**
+   * Whether THIS actor may use the tool, decided per turn. Omit → the role gate alone decides.
+   *
+   * The other gates all answer the question somewhere else: `roles` is static data, the
+   * `RolesPolicy` is one app-wide rule for every tool, and an agent's `tools` allow-list is fixed
+   * when the agent is declared. This one lives on the tool, so it can ask the questions only the
+   * tool knows to ask — is this user's org on the plan that includes it, does this actor own the
+   * record being queried, is the per-user override set today.
+   *
+   * Runs AFTER {@link isEnabled} and the `RolesPolicy`, and all of them must pass. Applied both when
+   * the turn's tool list is built (a refused actor is never shown it) and again on invoke.
+   */
+  canUse?(actor: Actor): boolean | Promise<boolean>;
+  /**
    * What the model is told about this tool for THIS turn — a description and/or input schema that
    * depend on who is asking (a per-tenant component catalog, a per-plan list of options). Called
    * when the turn's tool list is built, after every gate has passed; whatever it returns replaces

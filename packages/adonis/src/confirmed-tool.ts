@@ -1,5 +1,5 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
-import { type AiToolOptions, type BrandedFunctionalTool, defineTool } from './ai-tool-ref.js';
+import { type BrandedFunctionalTool, type DefineToolOptions, defineTool } from './ai-tool-ref.js';
 import {
   confirmTokenExpiry,
   DEFAULT_CONFIRM_TTL_MS,
@@ -49,7 +49,7 @@ export class ConfirmTokenError extends Error {
 }
 
 /** What {@link defineConfirmedTool} takes besides the usual tool options. */
-export interface ConfirmedToolOptions extends Omit<AiToolOptions, 'kind'> {
+export interface ConfirmedToolOptions extends Omit<DefineToolOptions, 'kind'> {
   name: string;
   /**
    * The HMAC key the tokens are signed with — the app key, or a secret of its own. A function is

@@ -15,7 +15,7 @@ import type {
   ProcessedPrompt,
   ProcessorContext,
 } from '../spi/processors.js';
-import type { AiToolCtx, ToolHandler } from '../spi/tool.js';
+import type { AiToolCtx, ToolDescribeScope, ToolHandler } from '../spi/tool.js';
 import type { Actor, ModelMessage, ToolResult } from '../types.js';
 import { scoreToolText, type ToolDefinitionText, toolText } from './detectors/tool-poisoning.js';
 import { type GuardHit, type ScanOptions, type ScanResult, scan } from './engine.js';
@@ -424,6 +424,17 @@ export class Guardrails {
         writeBack(restoredSlots, result);
         return handler.execute(box.value as I, ctx);
       },
+      // The registry holds this wrapper rather than the handler, so a gate or a per-turn
+      // description left behind here would silently never apply.
+      ...(handler.isEnabled !== undefined
+        ? { isEnabled: () => handler.isEnabled?.call(handler) ?? true }
+        : {}),
+      ...(handler.canUse !== undefined
+        ? { canUse: (actor: Actor) => handler.canUse?.call(handler, actor) ?? true }
+        : {}),
+      ...(handler.describe !== undefined
+        ? { describe: (scope: ToolDescribeScope) => handler.describe?.call(handler, scope) }
+        : {}),
     };
   }
 
