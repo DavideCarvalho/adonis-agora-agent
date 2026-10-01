@@ -13,7 +13,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # The schema-provisioning tests need real Postgres locks (test/schema-provisioning-postgres.spec.ts).
+    # The schema-provisioning tests need real Postgres locks (test/schema-provisioning-postgres.spec.ts),
+    # and the Lucid store suites run on it too.
     services:
       postgres:
         image: postgres:16-alpine
@@ -44,6 +45,9 @@ jobs:
 
       - run: pnpm typecheck
 
+      # Under CI the Lucid store suites run on SQLite, this job's Postgres service and a MySQL 8.4
+      # container testcontainers starts (packages/adonis/test/global-setup-real-db.ts). Required:
+      # without Docker the run fails rather than skipping MySQL.
       - run: pnpm test
 
       - run: pnpm build
