@@ -580,4 +580,160 @@ export const ACTION_PROPOSAL_STORE_CONTRACT: readonly ActionProposalContractCase
       }
     },
   },
+  {
+    name: 'snapshots raw preparation and approved normalized input with immutable execution context',
+    async run({ store, setNow }) {
+      setNow(1000);
+      const prepared = () => ({
+        ...input('prepared'),
+        preparationInput: { amount: '7', label: 'refund' },
+        input: { amount: 7, label: 'refund!' },
+        confirmation: { title: 'Refund 7?', verb: 'Refund' },
+        executionContext: {
+          agentName: 'billing',
+          pageContext: { kind: 'order', selection: { id: 7 } },
+          persona: 'careful',
+          requestId: 'request',
+        },
+      });
+      const data = prepared();
+      check(
+        (await store.createActionProposal(data)).status === 'created',
+        'prepared proposal created',
+      );
+      data.preparationInput.amount = '99';
+      data.input.amount = 99;
+      data.confirmation.title = 'forged';
+      data.executionContext.pageContext.selection.id = 99;
+      const row = await store.getActionProposal(scope, 'prepared');
+      check(row, 'prepared proposal exists');
+      check(
+        JSON.stringify(row.preparationInput) === JSON.stringify(prepared().preparationInput),
+        'raw snapshot preserved',
+      );
+      check(
+        JSON.stringify(row.input) === JSON.stringify(prepared().input),
+        'normalized transform preserved without reparse',
+      );
+      check(row.confirmation.title === 'Refund 7?', 'checked card snapshot preserved');
+      check(
+        JSON.stringify(row.executionContext) === JSON.stringify(prepared().executionContext),
+        'context snapshot preserved',
+      );
+      check(
+        (await store.createActionProposal(prepared())).status === 'unchanged',
+        'prepared replay unchanged',
+      );
+      for (const patch of [
+        { agentName: 'other' },
+        { persona: 'other' },
+        { requestId: 'other' },
+        { pageContext: { kind: 'other' } },
+      ]) {
+        const replay = prepared();
+        check(
+          (
+            await store.createActionProposal({
+              ...replay,
+              executionContext: { ...replay.executionContext, ...patch },
+            })
+          ).status === 'conflict',
+          'changed execution context conflicts',
+        );
+      }
+      check(
+        (
+          await store.createActionProposal({
+            ...prepared(),
+            preparationInput: { amount: '8', label: 'refund' },
+          })
+        ).status === 'conflict',
+        'changed raw preparation conflicts',
+      );
+      const rawRead = row.preparationInput as { amount: string };
+      rawRead.amount = 'changed';
+      if (row.executionContext?.pageContext) row.executionContext.pageContext.kind = 'changed';
+      const fresh = await store.getActionProposal(scope, 'prepared');
+      check(
+        JSON.stringify(fresh?.preparationInput) === JSON.stringify(prepared().preparationInput),
+        'returned raw snapshot isolated',
+      );
+      check(
+        fresh?.executionContext?.pageContext?.kind === 'order',
+        'returned context snapshot isolated',
+      );
+      const legacy = await store.createActionProposal(input('legacy'));
+      check(
+        legacy.proposal &&
+          !Object.hasOwn(legacy.proposal, 'preparationInput') &&
+          !Object.hasOwn(legacy.proposal, 'executionContext'),
+        'legacy optional fields stay absent',
+      );
+      check(
+        (await store.createActionProposal({ ...input('raw-null'), preparationInput: null }))
+          .status === 'created',
+        'raw null accepted',
+      );
+      const nullRow = await store.getActionProposal(scope, 'raw-null');
+      check(
+        nullRow && Object.hasOwn(nullRow, 'preparationInput') && nullRow.preparationInput === null,
+        'raw null remains present',
+      );
+    },
+  },
+  {
+    name: 'rejects invalid execution context descriptors and explicit undefined raw snapshots',
+    async run({ store, setNow }) {
+      setNow(1000);
+      for (const executionContext of [
+        undefined,
+        null,
+        [],
+        {},
+        { requestId: '' },
+        { requestId: 7 },
+        { requestId: 'r', actor: { id: 'forged' } },
+        { requestId: 'r', tenantRef: 'forged' },
+        { requestId: 'r', roles: ['ADMIN'] },
+        { requestId: 'r', host: {} },
+        { requestId: 'r', agentName: '' },
+        { requestId: 'r', persona: '' },
+        { requestId: 'r', agentName: undefined },
+        { requestId: 'r', persona: 7 },
+        { requestId: 'r', pageContext: null },
+        { requestId: 'r', pageContext: [] },
+        { requestId: 'r', pageContext: { kind: 7 } },
+        { requestId: 'r', pageContext: { kind: 'order', handler: () => true } },
+      ]) {
+        let rejected = false;
+        try {
+          await store.createActionProposal({
+            ...input('invalid-context'),
+            executionContext,
+          } as unknown as CreateActionProposal);
+        } catch {
+          rejected = true;
+        }
+        check(rejected, 'invalid context rejected');
+      }
+      let rejected = false;
+      try {
+        await store.createActionProposal({
+          ...input('undefined-raw'),
+          preparationInput: undefined,
+        });
+      } catch {
+        rejected = true;
+      }
+      check(rejected, 'explicit undefined raw input rejected');
+      check(
+        (await store.getActionProposal(scope, 'invalid-context')) === null,
+        'invalid context did not persist',
+      );
+      check(
+        (await store.getActionProposal(scope, 'undefined-raw')) === null,
+        'undefined raw did not persist',
+      );
+    },
+  },
 ];

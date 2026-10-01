@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import {
+  validateActionProposalExpiryBatch,
+  validateActionProposalWorkerClaim,
+} from '../action-proposal-discovery.js';
+import {
   actionProposalCreationMatches,
   actionProposalScopeMatches,
   initialActionProposal,
@@ -25,9 +29,10 @@ import type {
   ListActionProposals,
   SettleActionProposal,
 } from '../spi/action-proposal-store.js';
+import type { ActionProposalWorkerStore } from '../spi/action-proposal-worker-store.js';
 
 /** Reference single-process implementation; durable adapters use the same transitions under CAS. */
-export class InMemoryActionProposalStore implements ActionProposalStore {
+export class InMemoryActionProposalStore implements ActionProposalStore, ActionProposalWorkerStore {
   private readonly rows = new Map<string, ActionProposal>();
   private readonly clock: () => number;
   constructor(options: ActionProposalStoreOptions = {}) {
@@ -110,5 +115,45 @@ export class InMemoryActionProposalStore implements ActionProposalStore {
     return this.mutate(scope, id, (row, now) =>
       transitionActionProposalSettlement(row, command, now),
     );
+  }
+
+  async claimNextActionProposal(command: ClaimActionProposal): Promise<ActionProposal | null> {
+    const now = this.clock();
+    validateActionProposalWorkerClaim(command, now);
+    const candidates = [...this.rows.values()]
+      .filter(
+        (row) =>
+          row.decision === 'approved' &&
+          (row.execution?.status === 'queued' ||
+            (row.execution?.status === 'executing' &&
+              row.execution.lease !== null &&
+              now >= row.execution.lease.expiresAt)),
+      )
+      .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .slice(0, 32);
+    for (const candidate of candidates) {
+      const claimed = await this.claimActionProposal(candidate, candidate.id, command);
+      if (claimed.status === 'applied' && claimed.proposal) return claimed.proposal;
+    }
+    return null;
+  }
+
+  async expireActionProposals(command: { limit: number }): Promise<number> {
+    const now = this.clock();
+    validateActionProposalExpiryBatch(command, now);
+    const candidates = [...this.rows.values()]
+      .filter((row) => row.decision === 'pending' && row.expiresAt !== null && now >= row.expiresAt)
+      .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .slice(0, command.limit);
+    let expired = 0;
+    for (const candidate of candidates) {
+      const result = await this.decideActionProposal(candidate, candidate.id, {
+        decision: 'expired',
+        actorRef: 'system',
+        via: 'expiry',
+      });
+      if (result.status === 'applied') expired++;
+    }
+    return expired;
   }
 }

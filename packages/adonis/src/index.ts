@@ -4,6 +4,8 @@ export const VERSION = '0.60.0';
 // AdonisJS imports the package MAIN and reads `configure` off the module namespace —
 // the `./configure` subpath alone is never consulted.
 export { configure } from '../configure.js';
+export * from './action-proposal-discovery.js';
+export { prepareActionProposal } from './action-proposal-preparation.js';
 export * from './action-proposal-transitions.js';
 export * from './actor-labels.js';
 export type { AuthActorResolverOptions } from './actor-resolver.js';
@@ -351,6 +353,7 @@ export {
   tenantScope,
 } from './skills.js';
 export * from './spi/action-proposal-store.js';
+export * from './spi/action-proposal-worker-store.js';
 export * from './spi/actor-directory.js';
 export * from './spi/actor-resolver.js';
 export * from './spi/agent-runner.js';
@@ -487,12 +490,15 @@ export {
   DefaultRolesPolicy,
   type EmptyRoles,
   type InvokeOptions,
+  type PrepareOptions,
   type RolesPolicyOptions,
   ToolDisabledError,
   ToolForbiddenError,
+  ToolInputDriftError,
   ToolInputInvalidError,
   ToolNotFoundError,
   ToolPreflightDeniedError,
+  type ToolPreparationResult,
   ToolRegistry,
 } from './tool-registry.js';
 export type {
