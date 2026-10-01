@@ -38,6 +38,7 @@ describe('the agent migration stub runs (built artifact, real migrator)', () => 
       'provisioned',
       'is a no-op against a database `autoCreateTables` already provisioned (the bug that started this)',
     ],
+    ['discovery', 'backfills old proposals with the forward-only discovery migration'],
     ['legacy', 'repairs the `run_id` columns into a database that predates run tracking'],
   ];
 

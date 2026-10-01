@@ -10,7 +10,7 @@
 
 ## Delivery checkpoint
 
-The trusted preparation, immutable raw/normalized execution descriptor and memory worker-discovery reference form a smaller paired foundation PR. They do not enable independent mode. SQL discovery, journal/loop integration, authenticated routes, scheduler, atomic outcome admission and client reconciliation follow the ordered tasks below.
+The trusted preparation, immutable raw/normalized execution descriptor and memory worker-discovery reference form a smaller paired foundation PR. They do not enable independent mode. A following paired foundation implements SQL discovery and explicit bounded upgrade/backfill across all supported stores. Journal/loop integration, authenticated routes, scheduler, atomic outcome admission and client reconciliation follow the ordered tasks below.
 
 ## Fixed behavior
 

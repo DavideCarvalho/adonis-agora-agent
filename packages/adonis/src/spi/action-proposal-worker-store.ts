@@ -7,3 +7,8 @@ export interface ActionProposalWorkerStore {
   /** Expire at most limit (1..1000) due pending proposals using the store's trusted clock. */
   expireActionProposals(command: { limit: number }): Promise<number>;
 }
+
+/** SQL upgrade capability. Run bounded batches after additive DDL and before starting workers. */
+export interface ActionProposalDiscoveryIndexStore {
+  backfillActionProposalDiscoveryIndex(command: { limit: number }): Promise<number>;
+}

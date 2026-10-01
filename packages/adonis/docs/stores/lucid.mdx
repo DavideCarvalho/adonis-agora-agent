@@ -215,3 +215,25 @@ import { InMemoryAgentStore } from '@adonis-agora/agent/testing'
 
 const store = new InMemoryAgentStore()
 ```
+
+## Independent work discovery upgrade
+
+`LucidAgentStore` implements the privileged worker discovery capability:
+`claimNextActionProposal({ workerId, leaseMs })` claims queued work or recovers an expired lease,
+and `expireActionProposals({ limit })` expires a bounded batch of due pending proposals. These
+methods search across scopes and must stay behind worker infrastructure, away from public routes.
+The store uses its trusted clock and the same version-fenced proposal update for snapshots and
+indexed discovery metadata. Recovered work keeps its idempotency key; handlers must tolerate
+at-least-once delivery.
+
+For an existing deployment, stop old writers, run the forward-only
+`add_action_proposal_discovery` migration, then start the new writers and discovery workers.
+The migration calls `createAgentTables` to add the nullable discovery columns and indexes,
+then calls `backfillActionProposalDiscoveryIndex({ limit: 500 })` until no legacy rows remain.
+Backfill preserves proposal payloads, timestamps and decision audits and fences updates against
+concurrent changes. Repeating an interrupted migration is safe. Mixed old and new writers during
+this upgrade are unsupported because old code cannot maintain the new indexes.
+
+If provisioning outside migrations, explicitly call `createAgentTables(db)` and run the same
+bounded backfill loop. `autoCreateTables: false` continues to leave provisioning to the caller.
+Discovery never scans unindexed legacy payloads or secretly backfills them.

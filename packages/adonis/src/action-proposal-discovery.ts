@@ -14,6 +14,10 @@ export function validateActionProposalWorkerClaim(command: ClaimActionProposal, 
 
 export function validateActionProposalExpiryBatch(command: { limit: number }, now: number): void {
   if (!Number.isSafeInteger(now)) throw new RangeError('Invalid action proposal clock');
+  validateActionProposalDiscoveryIndexBatch(command);
+}
+
+export function validateActionProposalDiscoveryIndexBatch(command: { limit: number }): void {
   if (!Number.isInteger(command.limit) || command.limit < 1 || command.limit > 1000)
     throw new RangeError('limit must be an integer from 1 to 1000');
 }

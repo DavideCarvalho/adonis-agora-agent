@@ -33,7 +33,10 @@ import { MigrationRunner } from '@adonisjs/lucid/migration';
 import { renderStub } from '../../helpers/render-stub.mjs';
 
 const pkgRoot = fileURLToPath(new URL('../../../', import.meta.url));
-const STUB = 'database/migrations/create_agent_tables.stub';
+const STUB =
+  process.argv[2] === 'discovery'
+    ? 'database/migrations/add_action_proposal_discovery.stub'
+    : 'database/migrations/create_agent_tables.stub';
 
 /**
  * `pool.max = 1` on purpose. It is the tightest pool an app can configure (and what Adonis's own
@@ -335,7 +338,92 @@ async function preRunTrackingDatabase() {
   }
 }
 
+async function proposalDiscoveryUpgrade() {
+  const { appRoot } = await makeScratchApp();
+  const db = makeDatabase(join(appRoot, 'discovery.sqlite'));
+  try {
+    const bootedApp = await bootApp(appRoot, db);
+    const { createAgentTables, createTableStatements, LucidAgentStore } = await import(
+      '@adonis-agora/agent'
+    );
+    await createAgentTables(db.connection('primary'));
+    const store = new LucidAgentStore(db.connection('primary'), {
+      autoCreateTables: false,
+      clock: () => 1000,
+    });
+    const input = {
+      id: 'legacy-work',
+      tenantRef: null,
+      actorRef: 'owner',
+      threadId: 'thread',
+      originRunId: 'run',
+      originMessageId: 'message',
+      originToolCallId: 'call',
+      toolName: 'refund',
+      input: null,
+      confirmation: { title: 'Refund?', verb: 'Refund' },
+      approver: 'requester',
+      expiresAt: null,
+      idempotencyKey: 'stable',
+    };
+    await store.createActionProposal(input);
+    await store.decideActionProposal(input, input.id, {
+      decision: 'approved',
+      actorRef: 'owner',
+      via: 'web',
+    });
+    const saved = await db.from('agent_action_proposal').first();
+    await db.rawQuery('DROP TABLE "agent_action_proposal"');
+    const ddl = createTableStatements()[0]
+      .split('\n')
+      .filter(
+        (line) =>
+          !/execution_status|lease_expires_at|proposal_expires_at|discovery_index_version/.test(
+            line,
+          ),
+      )
+      .join('\n');
+    await db.rawQuery(ddl);
+    for (const field of [
+      'execution_status',
+      'lease_expires_at',
+      'proposal_expires_at',
+      'discovery_index_version',
+    ])
+      delete saved[field];
+    await db.table('agent_action_proposal').insert(saved);
+    const up = new MigrationRunner(db, bootedApp, { direction: 'up' });
+    await up.run();
+    if (up.error) throw up.error;
+    const indexed = await db.from('agent_action_proposal').first();
+    check(
+      indexed.payload === saved.payload,
+      '[discovery] migration changed immutable snapshot/audit',
+    );
+    check(
+      Number(indexed.discovery_index_version) === 1,
+      '[discovery] migration did not backfill legacy work',
+    );
+    const claimed = await store.claimNextActionProposal({ workerId: 'worker', leaseMs: 100 });
+    check(claimed?.id === input.id, '[discovery] upgraded work not discoverable');
+    const down = new MigrationRunner(db, bootedApp, { direction: 'down' });
+    await down.run();
+    check(
+      String(down.error).includes('Forward-only'),
+      '[discovery] destructive rollback was not refused',
+    );
+    check(
+      await db.from('agent_action_proposal').first(),
+      '[discovery] rollback erased proposal history',
+    );
+  } finally {
+    await db.manager.closeAll();
+    rmSync(appRoot, { recursive: true, force: true });
+  }
+}
+
 const SCENARIOS = {
+  discovery: proposalDiscoveryUpgrade,
   empty: emptyDatabase,
   provisioned: alreadyProvisionedDatabase,
   legacy: preRunTrackingDatabase,

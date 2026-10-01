@@ -88,11 +88,18 @@ export function createTableStatements(): string[] {
       "logical_sort" VARCHAR(1020) NOT NULL,
       "insert_token" VARCHAR(64) NOT NULL,
       "decision" VARCHAR(32) NOT NULL,
+      "execution_status" VARCHAR(32) NULL,
+      "lease_expires_at" BIGINT NULL,
+      "proposal_expires_at" BIGINT NULL,
+      "discovery_index_version" INTEGER NOT NULL DEFAULT 0,
       "payload" TEXT NOT NULL,
       "version" BIGINT NOT NULL DEFAULT 0,
       "created_at" BIGINT NOT NULL,
       "updated_at" BIGINT NOT NULL
     )`,
+    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_work_idx" ON "${t.actionProposals}" ("discovery_index_version", "decision", "execution_status", "lease_expires_at", "created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_expiry_idx" ON "${t.actionProposals}" ("discovery_index_version", "decision", "proposal_expires_at", "created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_backfill_idx" ON "${t.actionProposals}" ("discovery_index_version", "created_at")`,
     `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_scope_idx" ON "${t.actionProposals}" ("scope_key", "created_at")`,
     `CREATE TABLE IF NOT EXISTS "${t.threads}" (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
@@ -257,6 +264,14 @@ const RUN_ID_COLUMNS: readonly string[] = [
  * reason: the store writes them on every turn.
  */
 const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }[] = [
+  { table: AGENT_TABLES.actionProposals, column: 'execution_status', type: 'VARCHAR(32) NULL' },
+  { table: AGENT_TABLES.actionProposals, column: 'lease_expires_at', type: 'BIGINT NULL' },
+  { table: AGENT_TABLES.actionProposals, column: 'proposal_expires_at', type: 'BIGINT NULL' },
+  {
+    table: AGENT_TABLES.actionProposals,
+    column: 'discovery_index_version',
+    type: 'INTEGER NOT NULL DEFAULT 0',
+  },
   { table: AGENT_TABLES.runs, column: 'parent_run_id', type: 'VARCHAR(255) NULL' },
   { table: AGENT_TABLES.messages, column: 'reasoning', type: 'TEXT NULL' },
   { table: AGENT_TABLES.messages, column: 'reasoning_ms', type: 'INTEGER NULL' },
