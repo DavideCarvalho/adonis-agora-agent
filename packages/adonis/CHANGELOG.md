@@ -1,5 +1,54 @@
 # @adonis-agora/agent
 
+## 0.56.0
+
+### Minor Changes
+
+- [#255](https://github.com/DavideCarvalho/adonis-agora-agent/pull/255) [`4a1d508`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/4a1d508f7fa9a54f083317b807ed90da12fbfa63) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `useAgentChat` over AG-UI from `@adonis-agora/agent/react` — `agUiBackend()`, and a CSRF-aware `agUiChatStream`
+  
+  `@dudousxd/nestjs-agent-react`'s AG-UI 1.0 consumer (`agUiChatStream`, `reframeAgUiStream`) was already reachable through the re-export, but sent only the headers it was handed once — so behind an Adonis session shield refused the first `POST`. Now:
+  
+  - `agUiBackend()` — `<AgentProvider backend={agUiBackend()}>` runs every chat turn over `POST <path>/ag-ui` (the `agUiAdapter()` route) and keeps threads, the queue, approvals and uploads on the REST routes, with the session cookie and the CSRF token read per request. `url` points it at any other AG-UI producer.
+  - `agUiChatStream` from `@adonis-agora/agent/react` adds the CSRF header on every call.
+  
+  The `@dudousxd/nestjs-agent-react` peer floor moves to `>=0.30.0` (the release that has the consumer).
+
+- [#256](https://github.com/DavideCarvalho/adonis-agora-agent/pull/256) [`38ea2f9`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/38ea2f93303eae4a3c7e30b3e10bff0913ee8236) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - A file a message in your own thread already carries is yours to attach — `AgentStore.referencedMediaIds`
+  
+  `attachmentStores.media()` let only the uploader attach a file (unless `canAccess` widened it). Now the default also admits an actor whose OWN thread holds a surviving message carrying that file — a fork, a regenerate — matching `@dudousxd/nestjs-agent`. The verdict is handed to `canAccess` as `allowed`, so it can still be narrowed.
+  
+  It is derived on every send, not remembered: the new optional `AgentStore.referencedMediaIds(actorRef, mediaIds)` answers from the messages that still exist (so `truncateFrom` takes the access away again), scoped to one actor so it cannot probe anyone else's conversation. `LucidAgentStore` and `InMemoryAgentStore` implement it; a store without it keeps the uploader-only rule. The attachment-store factory context now carries the provider's `agentStore`.
+
+- [#257](https://github.com/DavideCarvalho/adonis-agora-agent/pull/257) [`236c139`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/236c1396e1483e4bdca7cf4f7e717e4ad4914b8a) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Resumable (tus) chat attachment uploads on `@adonis-agora/media` — and `@adonis-agora/agent/react/media`
+  
+  With `attachmentStores.media()` over a media library that has `uploads.resumable` in `config/media.ts`, the provider now mounts `POST <path>/attachments/uploads` (validate + open an owned tus session → `{ mediaId, uploadId, location }`), `POST <path>/attachments/uploads/:mediaId/complete` (`409` while bytes are missing, `422` and dropped on a size mismatch, `404` for another actor's id) and `DELETE <path>/attachments/uploads/:mediaId`. The bytes go to the media library's own tus routes (`tusBasePath`, default `/media/uploads/tus`). `GET <path>/config` reports `upload: 'resumable'`; the multipart route stays. A pending upload is not attachable until it completes.
+  
+  On the client: `<AgentProvider attachments={{ upload: mediaAttachments() }}>` from the new `@adonis-agora/agent/react/media` subpath (a re-export of `@dudousxd/nestjs-agent-react/media`; optional peer `@dudousxd/nestjs-media-client`).
+  
+  `MediaAttachmentStaging` gains `beginUpload` / `completeUpload` / `discard` (and `MediaUploadRefusedError`), and `remove` aborts an upload still in flight. `AttachmentStagingDescription.upload` is new. Matches `@dudousxd/nestjs-agent`'s `AgentMediaAttachmentsModule` routes.
+
+- [#258](https://github.com/DavideCarvalho/adonis-agora-agent/pull/258) [`c8e8017`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/c8e8017cc2a203e2aa6c20e1cab54eb61ead8ba5) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - A thread can have its own default agent — `PATCH <path>/threads/:id { defaultAgent }`
+  
+  A send that names no `agent` now runs as the thread's `defaultAgent` when it has one, else the configured default (a send's own `agent` still wins). `null` clears it; a name no agent is registered under is a `400` (`UnknownAgentError`). Patching `model` in the same request checks the model against the agent the thread's next turn runs as. Thread summaries carry `defaultAgent`.
+  
+  Before, the key was silently ignored. Matches `@dudousxd/nestjs-agent`, whose React client already sends it.
+  
+  Stores: `UpdateThreadInput.defaultAgent`, and an optional `AgentStore.defaultAgentForThread(threadId)` (one scalar instead of the whole transcript on every send). `LucidAgentStore` stores it in a new nullable `agent_thread.default_agent` column — created by `createAgentTables` and added to an existing table by the same additive repair as earlier columns (no new migration to run). `InMemoryAgentStore` implements both. `AgentService.updateThreadSettings(actor, threadId, { defaultAgent?, model? })` is the service entry; `setThreadModel` delegates to it.
+
+- [#254](https://github.com/DavideCarvalho/adonis-agora-agent/pull/254) [`942ba27`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/942ba273fcc21e25fa5b3d758f9a8d8dd528f1b8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - A tool can say whether it exists here, and who may use it — `enabled`, `isEnabled()`, `canUse(actor)`
+  
+  `roles`/`ability` are checked by one app-wide `RolesPolicy`, and an agent's `tools` allow-list is fixed when the agent is declared. Neither could say "this capability is off in this deployment" or "only accounts on the paid plan get it", so the per-actor decision had to live inside `execute` — where a refusal has already cost the model a turn and told the user the capability exists.
+  
+  - **`enabled`** on `@AiTool({ … })`, `static tool = { … }`, `defineTool` and `defineConfirmedTool` — a boolean, or a predicate re-read every turn — and **`isEnabled()`** on a tool class (container-resolved, so it can read an `@inject`'d service).
+  - **`canUse(actor)`** as a method on a tool class, or an option on `defineTool` / `defineConfirmedTool`.
+  - **`mcpServers[].enabled` / `mcpServers[].canUse`** — the same two gates for every tool an MCP server exports.
+  
+  Both run when the turn's tool list is built (so `GET <path>/tools` and the MCP server's `tools/list` agree with it) and again on invoke, which is what stops a HITL action approved before a flag moved from running after it. Order: allow-list → `enabled` → `RolesPolicy` → `canUse`; every layer only removes tools. A disabled tool raises the new `ToolDisabledError`, distinct from `ToolForbiddenError` and `ToolNotFoundError`. `isToolEnabled`, `canActorUseTool`, `filterToolsByEnabled` and `filterToolsByCanUse` are exported.
+  
+  Also fixed on the way: a tool class's `describe()` was not forwarded by discovery, and `Guardrails.wrapTool` dropped `describe` — both now reach the registry.
+  
+  Matches `@dudousxd/nestjs-agent`'s `ToolSpec.enabled` / `ToolHandler.isEnabled` / `ToolHandler.canUse`. Purely additive: a tool that declares none of this behaves exactly as before.
+
 ## 0.55.0
 
 ### Minor Changes
