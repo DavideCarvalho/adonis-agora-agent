@@ -11,5 +11,5 @@ allowBuilds:
   better-sqlite3: true
   esbuild: true
 minimumReleaseAgeExclude:
-  - '@dudousxd/nestjs-agent-core@0.26.0 || 0.33.0 || 0.34.0'
+  - '@dudousxd/nestjs-agent-core@0.26.0 || 0.33.0 || 0.34.0 || 0.36.0'
   - '@dudousxd/nestjs-agent-react@0.28.0 || 0.31.0'
