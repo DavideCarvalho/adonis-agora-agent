@@ -9,6 +9,7 @@ import { defineConfig } from 'vitest/config';
  * starts the servers with testcontainers.
  */
 const LUCID_STORE_SPECS = [
+  'test/action-proposal-store.spec.ts',
   'test/attachment-inventory.spec.ts',
   'test/attachment-references.spec.ts',
   'test/chat-queue-store.spec.ts',

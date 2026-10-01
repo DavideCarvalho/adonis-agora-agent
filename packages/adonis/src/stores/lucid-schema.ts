@@ -2,10 +2,12 @@ import type { LucidRawRunner } from './lucid.js';
 import { isMySql, portableSql } from './sql-dialect.js';
 
 /**
- * The nine agent table names. They match the cross-adapter snake_case contract the reference Drizzle
+ * The ten agent table names. They match the cross-adapter snake_case contract the reference Drizzle
  * store uses, so a dashboard or migration can point at any adapter and see the same physical schema.
  */
 export const AGENT_TABLES = {
+  /** Independent action proposals, including durable execution work and its lease. */
+  actionProposals: 'agent_action_proposal',
   threads: 'agent_thread',
   messages: 'agent_message',
   toolCalls: 'agent_tool_call',
@@ -62,7 +64,7 @@ export function streamFrameTableStatement(table: string = AGENT_TABLES.streamFra
 }
 
 /**
- * `CREATE TABLE IF NOT EXISTS` DDL for the nine agent tables plus their indexes, one statement per
+ * `CREATE TABLE IF NOT EXISTS` DDL for the ten agent tables plus their indexes, one statement per
  * array element so each can be issued through Lucid's `rawQuery`. Portable across SQLite / Postgres /
  * MySQL: quoted identifiers, epoch-ms `BIGINT` timestamps, `INTEGER` booleans (0/1) and `TEXT` JSON
  * columns — no dialect-only types. A real deployment should prefer the bundled migration stub so the
@@ -80,6 +82,18 @@ export function streamFrameTableStatement(table: string = AGENT_TABLES.streamFra
 export function createTableStatements(): string[] {
   const t = AGENT_TABLES;
   return [
+    `CREATE TABLE IF NOT EXISTS "${t.actionProposals}" (
+      "id" VARCHAR(64) PRIMARY KEY NOT NULL,
+      "scope_key" VARCHAR(64) NOT NULL,
+      "logical_sort" VARCHAR(1020) NOT NULL,
+      "insert_token" VARCHAR(64) NOT NULL,
+      "decision" VARCHAR(32) NOT NULL,
+      "payload" TEXT NOT NULL,
+      "version" BIGINT NOT NULL DEFAULT 0,
+      "created_at" BIGINT NOT NULL,
+      "updated_at" BIGINT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_scope_idx" ON "${t.actionProposals}" ("scope_key", "created_at")`,
     `CREATE TABLE IF NOT EXISTS "${t.threads}" (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "actor_ref" VARCHAR(255) NOT NULL,
@@ -391,7 +405,7 @@ function isTransientLockFailure(error: unknown): boolean {
 }
 
 /**
- * Idempotently provision the nine agent tables through Lucid's async raw runner (`CREATE TABLE IF
+ * Idempotently provision the ten agent tables through Lucid's async raw runner (`CREATE TABLE IF
  * NOT EXISTS`), then additively repair a database that predates run tracking by ALTERing in the
  * `run_id` columns its three older tables are missing.
  *
@@ -458,13 +472,14 @@ export async function createAgentTables(db: LucidRawRunner): Promise<string[]> {
 }
 
 /**
- * `DROP TABLE IF EXISTS` for the nine agent tables, in reverse dependency order so a dialect that
+ * `DROP TABLE IF EXISTS` for the ten agent tables, in reverse dependency order so a dialect that
  * enforces the `REFERENCES` clauses never refuses a drop for a child that still exists. The mirror of
  * {@link createAgentTables}, and what the published migration's `down()` calls.
  */
 export function dropTableStatements(): string[] {
   const t = AGENT_TABLES;
   return [
+    t.actionProposals,
     t.confirmTokens,
     t.streamFrames,
     t.queuedMessages,
@@ -477,7 +492,7 @@ export function dropTableStatements(): string[] {
   ].map((table) => `DROP TABLE IF EXISTS "${table}"`);
 }
 
-/** Drop the nine agent tables. Destructive and irreversible — this erases every thread and every ledger row. */
+/** Drop the ten agent tables. Destructive and irreversible — this erases every thread and every ledger row. */
 export async function dropAgentTables(db: LucidRawRunner): Promise<void> {
   for (const stmt of dropTableStatements()) {
     await db.rawQuery(portableSql(db, stmt));
@@ -550,7 +565,7 @@ export function schemaRunner(db: LucidRawRunner): LucidRawRunner {
 const provisioned = new WeakMap<object, Promise<void>>();
 
 /**
- * Idempotently ensure the nine agent tables exist, memoized per db client. This is what the stores
+ * Idempotently ensure the ten agent tables exist, memoized per db client. This is what the stores
  * run when `autoCreateTables` is on (the default): the agent provider calls each store's
  * `ensureSchema()` once as the app starts, and a store used without the provider (a script, a test
  * that builds one by hand) falls back to it on first use — whichever store touches the connection

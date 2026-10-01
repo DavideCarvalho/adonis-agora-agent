@@ -1,6 +1,6 @@
 ---
 title: Lucid
-description: Persist threads, messages, tool calls, and token usage to Postgres, MySQL, or SQLite through @adonisjs/lucid — the nine agent tables, the published migration, and the in-memory twin for tests.
+description: Persist threads, messages, tool calls, and token usage to Postgres, MySQL, or SQLite through @adonisjs/lucid — the ten agent tables, the published migration, and the in-memory twin for tests.
 icon: HardDrive
 ---
 
@@ -18,7 +18,7 @@ The `lucid` store persists an agent's durable state — threads, messages, tool 
 node ace configure @adonis-agora/agent
 ```
 
-`configure` (run by `add`) registers the provider, publishes `config/agent.ts`, and publishes the migration that creates the nine agent tables.
+`configure` (run by `add`) registers the provider, publishes `config/agent.ts`, and publishes the migration that creates the ten agent tables.
 
 </Step>
 <Step>
@@ -57,13 +57,26 @@ stores.lucid({ connection: 'agent' })
 </Step>
 </Steps>
 
+## Independent proposal storage
+
+`LucidAgentStore` and the testing `InMemoryAgentStore` also implement the optional `ActionProposalStore` capability. It stores proposals separately from runs, with an immutable input/card snapshot, scoped reads, decision audit and recoverable execution leases. Approval and queued work are written atomically in the same row. The capability is the persistence foundation; it does not yet change how the agent loop waits for approval.
+
+Create proposals with deterministic ids and stable idempotency keys. Every read/decision/claim requires the full `tenantRef` (explicitly `null` when absent), `actorRef` and `threadId` scope. Identity fields are limited to 255 UTF-16 units. `listActionProposals` accepts a decision filter and a limit from 1 to 1000 (default 100). The application must authorize the deciding actor before calling the store; possession of a proposal id is never authorization.
+
+`decideActionProposal` returns `applied`, `unchanged`, `conflict`, `not_found` or `expired`; matching decisions do not replace the original audit. `claimActionProposal` issues a token and generation. Renewing or settling requires both and an unexpired lease. Crash recovery advances the generation while preserving the idempotency key; the domain must honor that key because delivery is at least once.
+
+The additive `agent_action_proposal` table is provisioned with the rest of the schema. With `autoCreateTables: false`, run the library-delegating migration before using this capability. Repeated provision preserves existing history and proposals. The clock can be injected through `LucidAgentStoreOptions.clock` for server-side coordination/testing; never accept a decision timestamp from the client.
+
+For an existing installation whose old migration is already recorded, create a **new additive migration**: its `up` calls `createAgentTables(db.connection(this.db.connectionName))`, with `static disableTransactions = true` as in the published stub. Running `migration:run` alone will not rerun the old migration. Its `down` must not call `dropAgentTables`, because that would erase the existing conversations; keep the additive upgrade forward-only.
+
 ## What the migration creates
 
-Nine tables (names from the `AGENT_TABLES` constant; `agent_run`, the run lifecycle, is described under [Run tracking](/docs/agent/governance/quota-and-cost)):
+Ten tables (names from the `AGENT_TABLES` constant; `agent_run`, the run lifecycle, is described under [Run tracking](/docs/agent/governance/quota-and-cost)):
 
 | Table | Purpose |
 | --- | --- |
 | `agent_thread` | one row per conversation: actor/tenant refs, title, persona, transient flag, `active_stream_id`, soft-delete (`deleted_at`), timestamps |
+| `agent_action_proposal` | independent proposal snapshot, exact identity hashes, decision, version fence and embedded execution work/lease |
 | `agent_message` | one row per message: role, content, and JSON columns for `tool_calls` / `tool_results` / `follow_ups` / `usage` / `ui`, plus the step's streamed `reasoning` and `reasoning_ms` |
 | `agent_tool_call` | one row per tool call — **PK is the model-supplied `toolCallId`**, not a generated id — with tool name/type, input/output, status, timing, and `executed_by_ref` |
 | `agent_token_usage` | the usage ledger: input/output tokens, cache breakdown, `model_id`, `purpose`, and `cost_usd` |

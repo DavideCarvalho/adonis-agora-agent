@@ -1,4 +1,5 @@
 import type { ToolCallOutcome } from '../dangling-tool-calls.js';
+import type { ActionProposalStoreOptions } from '../spi/action-proposal-store.js';
 import type {
   AgentStore,
   AppendMessageInput,
@@ -42,6 +43,7 @@ import type {
   ToolCallStatus,
   ToolResult,
 } from '../types.js';
+import { LucidActionProposalStore } from './lucid-action-proposal-store.js';
 import { AGENT_TABLES, ensureAgentTables } from './lucid-schema.js';
 
 // ── Structural Lucid typing (copied from telescope) ──────────────────────────
@@ -122,7 +124,7 @@ export function inAppendOrder<Q extends LucidQueryBuilderLike>(
   return query.orderBy('seq', direction).orderBy('created_at', direction).orderBy('id', direction);
 }
 
-export interface LucidAgentStoreOptions {
+export interface LucidAgentStoreOptions extends ActionProposalStoreOptions {
   /**
    * Provision the agent tables (via {@link ensureAgentTables}) — as the app starts when the agent
    * provider built the store, else on first use — so the lib manages its own schema, the ecosystem
@@ -229,7 +231,10 @@ const TURN_MESSAGE_COLUMNS = [
  * Usually you don't construct this directly: `config/agent.ts` selects it via `stores.lucid({ ... })`
  * and the provider builds it, lazily importing `@adonisjs/lucid` only when the `lucid` store is chosen.
  */
-export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueStore {
+export class LucidAgentStore
+  extends LucidActionProposalStore
+  implements AgentStore, ThreadTurnReader, ChatQueueStore
+{
   private readonly autoCreateTables: boolean;
   private ready: Promise<void> | null = null;
 
@@ -237,6 +242,7 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
     private readonly db: LucidDatabaseLike,
     options: LucidAgentStoreOptions = {},
   ) {
+    super(db, options, () => this.init());
     this.autoCreateTables = options.autoCreateTables ?? true;
   }
 

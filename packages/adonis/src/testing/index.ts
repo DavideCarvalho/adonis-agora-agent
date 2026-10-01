@@ -23,6 +23,7 @@ export {
   type FakeToolCall,
   type FakeTurn,
 } from './fake-model-provider.js';
+export { InMemoryActionProposalStore } from './in-memory-action-proposal-store.js';
 export { InMemoryActorDirectory } from './in-memory-actor-directory.js';
 export {
   type InMemoryAttachmentStagingOptions,

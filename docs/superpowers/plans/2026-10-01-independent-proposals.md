@@ -1,8 +1,8 @@
 # Independent action proposals implementation plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. This document is a review proposal; it does not authorize implementation. Track each step with its checkbox and use failing tests before behavior changes.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. The user approved continuation on 2026-10-01; implement the paired stages in order. Track each step with its checkbox and use failing tests before behavior changes.
 
-**Goal:** Permitir continuar a conversa enquanto uma ação aguarda decisão, com propostas persistentes, execução recuperável e sem efeito duplicado nos servidores Aviary/Nest e Agora/Adonis.
+**Goal:** Permitir continuar a conversa enquanto uma ação aguarda decisão, com propostas persistentes, execução recuperável e sem enfileirar trabalho duplicado por decisão nos servidores Aviary/Nest e Agora/Adonis.
 
 **Architecture:** A proposta é um recurso persistente separado do run que a apresentou. Decisão e execução possuem estados distintos; a decisão aceita e seu trabalho persistente de execução são gravados atomicamente. Um worker revalida a ação e admite o resultado na conversa de forma serializada, sem criar mensagens de ferramenta órfãs.
 
@@ -70,17 +70,17 @@ interface ActionProposal {
 
 Definir módulos pequenos de proposta, claim de trabalho e admissão de resultado. Reusar autorização, preflight, gates e serialização existentes; não duplicar o loop inteiro nem introduzir uma segunda UI React no Agora.
 
-## PR pareado 1 — Contratos e persistência transacional
+## PR pareado 1 — Contratos e persistência transacional (implementado e validado)
 
 Pode ser entregue antes de habilitar comportamento novo. Cada par de PRs inclui a mesma API e os mesmos testes de contrato em todos os stores.
 
-- [ ] Escrever testes de contrato que falham para criação escopada, snapshot da confirmação, decisão CAS, trabalho único e listagem/leitura isoladas.
-- [ ] Implementar tabelas/entidades de propostas e trabalho/outbox, índices e migrações aditivas. Reusar identificador determinístico para replay de criação; reexecutar criação não duplica proposta/cartão.
-- [ ] Implementar aprovação + enqueue persistente na mesma transação e confirmar rollback completo com falha injetada entre as escritas.
-- [ ] Implementar rejeição, expiração e leitura da decisão existente; aprovar contra relógio expirado não cria execução.
-- [ ] Implementar claim/lease com fencing ou CAS, recuperação de lease e transições de execução sem mudar decisão.
-- [ ] Rodar os mesmos contratos em memória, Lucid, Drizzle e MikroORM. Testar instalação vazia, schema antigo e provisionamento repetido.
-- [ ] Documentar limitações transacionais e idempotência; adicionar changesets e revisar paridade de tipos/erros. Abrir PRs pareados somente após validação.
+- [x] Escrever testes de contrato que falham para criação escopada, snapshot da confirmação, decisão CAS, trabalho único e listagem/leitura isoladas.
+- [x] Implementar tabelas/entidades de propostas e trabalho/outbox, índices e migrações aditivas. Reusar identificador determinístico para replay de criação; reexecutar criação não duplica proposta/cartão.
+- [x] Implementar aprovação + enqueue persistente na mesma transação e confirmar rollback completo com falha injetada entre as escritas.
+- [x] Implementar rejeição, expiração e leitura da decisão existente; aprovar contra relógio expirado não cria execução.
+- [x] Implementar claim/lease com fencing ou CAS, recuperação de lease e transições de execução sem mudar decisão.
+- [x] Rodar os mesmos contratos em memória, Lucid, Drizzle e MikroORM. Testar instalação vazia, schema antigo e provisionamento repetido.
+- [x] Documentar limitações transacionais e idempotência; adicionar changesets e revisar paridade de tipos/erros. Abrir PRs pareados somente após validação.
 
 ## PR pareado 2 — Worker e caminho independente opt-in
 
