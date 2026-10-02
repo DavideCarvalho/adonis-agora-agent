@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.60.1
+
+### Patch Changes
+
+- fix(deps): update dependency @modelcontextprotocol/sdk to v1.31.0 ([#277](https://github.com/DavideCarvalho/adonis-agora-agent/issues/277))
+
 ## 0.60.0
 
 ### Minor Changes
