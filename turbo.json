@@ -1,5 +1,6 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": [".aviary-preview.json"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

@@ -92,3 +92,20 @@ Capabilities travel through native HTTP, queued messages, proposal execution con
 Apply the additive runtime schema before enabling independent mode. Existing deployments need proposal discovery/delivery/replacement indexes and metadata, outcome storage on messages, proposal pointers on tool calls, and capabilities on queued messages. Agora ships a forward migration through its configure workflow; Drizzle and MikroORM consumers should generate/apply their database migrations from the updated schemas/entities.
 
 Stop older writers, apply schema changes, run the bounded proposal-discovery backfill from the earlier foundation layer, then deploy the new writers/workers. Do not run the backfill implicitly on every worker tick. Older terminal rows without runtime outcome metadata do not gain retroactive assistant messages. Existing durable checkpoints without the new mode remain blocking; changing configuration does not rewrite an in-flight run's journal.
+
+## Paired development preview
+
+The independent runtime and capability negotiation require the matching Aviary core/React preview until those peer releases are published. Published older peers retain legacy UI behavior when capabilities are omitted; explicit capability negotiation requires the updated peer.
+
+After a frozen install, prepare the exact upstream commit recorded in `.aviary-preview.json`:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm prepare:aviary-peers
+pnpm typecheck
+pnpm test
+```
+
+The script clones the pinned source into ignored `.aviary-preview/source`, verifies its exact commit and clean working tree, installs its frozen dependencies and builds core/React. To reuse an existing clean checkout at that exact commit, run `pnpm prepare:aviary-peers --source /path/to/nestjs-agent`. Remove the preview cache when changing the pin. CI checks out the same manifest commit and runs the same preparation before validation.
+
+Preparation replaces only the installed peer `dist` directories inside this checkout's `node_modules`; it removes old directories first to avoid modifying pnpm store hardlinks. Dependency versions, lockfiles and published production dependencies remain unchanged. Re-run preparation after reinstalling dependencies. Once matching peers are published, replace this development-only preview step with released version pins and a frozen lockfile update.
