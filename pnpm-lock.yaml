@@ -197,8 +197,8 @@ importers:
         specifier: '>=0.18.0 <1.0.0'
         version: 0.18.1(@adonis-agora/telescope@0.21.1(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.4(@types/node@26.6.3))(pg@8.23.0)(supports-color@10.2.2)))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/drive@4.0.0(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1)))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.4(@types/node@26.6.3))(pg@8.23.0)(supports-color@10.2.2))
       '@modelcontextprotocol/sdk':
-        specifier: 1.30.1
-        version: 1.30.1(supports-color@10.2.2)(zod@4.6.5)
+        specifier: 1.31.0
+        version: 1.31.0(supports-color@10.2.2)(zod@4.6.5)
       '@standard-schema/spec':
         specifier: 1.1.0
         version: 1.1.0
@@ -252,11 +252,11 @@ importers:
         specifier: 0.4.0
         version: 0.4.0
       '@testcontainers/mysql':
-        specifier: 12.1.0
-        version: 12.1.0(supports-color@10.2.2)
+        specifier: 12.2.0
+        version: 12.2.0(supports-color@10.2.2)
       '@testcontainers/postgresql':
-        specifier: 12.1.0
-        version: 12.1.0(supports-color@10.2.2)
+        specifier: 12.2.0
+        version: 12.2.0(supports-color@10.2.2)
       '@testing-library/dom':
         specifier: 10.4.2
         version: 10.4.2
@@ -318,8 +318,8 @@ importers:
         specifier: ^7.8.1
         version: 7.8.2
       testcontainers:
-        specifier: 12.1.0
-        version: 12.1.0(supports-color@10.2.2)
+        specifier: 12.2.0
+        version: 12.2.0(supports-color@10.2.2)
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -1547,6 +1547,16 @@ packages:
       '@cfworker/json-schema':
         optional: true
 
+  '@modelcontextprotocol/sdk@1.31.0':
+    resolution: {integrity: sha512-UvTMgnNlnIBO/22ob2RcVGDlcvOslQs8T59+FTGdA0L27a39fdGF/EDETNtDVK4DZGpwomlsYpRdA8UXcVL/pw==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@cfworker/json-schema': ^4.1.1
+      zod: ^3.25 || ^4.0
+    peerDependenciesMeta:
+      '@cfworker/json-schema':
+        optional: true
+
   '@nodelib/fs.scandir@2.1.5':
     resolution: {integrity: sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g==}
     engines: {node: '>= 8'}
@@ -2135,11 +2145,11 @@ packages:
     engines: {node: '>=20.12.0'}
     hasBin: true
 
-  '@testcontainers/mysql@12.1.0':
-    resolution: {integrity: sha512-fNuN+Fs2N0EQBSk6HVplSl7qxFGUX9gzNw0ljr903PbBhvy2BM3Wl4kVAa1lFpizb8cY8mKYAs0C8cDL5JRIAg==}
+  '@testcontainers/mysql@12.2.0':
+    resolution: {integrity: sha512-Pni1nHgh01s/w0od+BL4ostBByfN7M9i20bm4iFT5xr4eAb6rBw2YT6wz6kfYNsx95Tj2TkCiRwkSG085VlNLQ==}
 
-  '@testcontainers/postgresql@12.1.0':
-    resolution: {integrity: sha512-Pjf2VSVNirEPfz36nidyrVAnZvc2YhajOznY4VgyEsvfTd5qiMNOuPq96drREvxAUtXl5SFLX7vXj7sSq4aTcA==}
+  '@testcontainers/postgresql@12.2.0':
+    resolution: {integrity: sha512-14oNBbKdqIkWTiw8XwP6YqWnuBebiij8m4fF03WTSHvNt5FfvQpGTLwIV3p07UpDnqWRFvY50YFzbiYdB+SWuA==}
 
   '@testing-library/dom@10.4.2':
     resolution: {integrity: sha512-yzr2S9HyAIdhz2/6qHgbs665Q7PKVcDF05vsOlHPxG1mo36gKVesdYVeDLnXgfjJ03CrKRk08knc6+E/9m8v2Q==}
@@ -4140,8 +4150,8 @@ packages:
     resolution: {integrity: sha512-avMLDQpUI9I5XFrklECw1ZEUPJhqzcwSWsyyI8blhRLT+8N1jLJWLWWYQpB2q2xthq8xDvjZPISVh53T/+CLYQ==}
     engines: {node: '>=18'}
 
-  testcontainers@12.1.0:
-    resolution: {integrity: sha512-YjDLqIITuhGLMnM10yhg3oV6lIG5IMpz1R1DPBZoOOks83q7i7IVpeSWRTiyl7roozjiyLmwIoLK/KY8OnZmIA==}
+  testcontainers@12.2.0:
+    resolution: {integrity: sha512-Pd0c2eU0DdIuK+Pb3c+vmBUdKjDLgxZmPecQGESFAKyn5LTqSaSw8l7htfMlLwabb/QsUILe6XkxMJw8Ly/ThA==}
     engines: {node: '>= 22.22'}
 
   text-decoder@1.2.7:
@@ -5603,6 +5613,28 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  '@modelcontextprotocol/sdk@1.31.0(supports-color@10.2.2)(zod@4.6.5)':
+    dependencies:
+      '@hono/node-server': 2.1.1(hono@4.13.7)
+      ajv: 8.20.0
+      ajv-formats: 3.0.1(ajv@8.20.0)
+      content-type: 1.0.5
+      cors: 2.8.6
+      cross-spawn: 7.0.6
+      eventsource: 3.0.7
+      eventsource-parser: 3.1.1
+      express: 5.2.1(supports-color@10.2.2)
+      express-rate-limit: 8.7.0(express@5.2.1(supports-color@10.2.2))(supports-color@10.2.2)
+      hono: 4.13.7
+      jose: 6.2.12
+      json-schema-typed: 8.0.2
+      pkce-challenge: 5.0.1
+      raw-body: 3.0.2
+      zod: 4.6.5
+      zod-to-json-schema: 3.25.2(zod@4.6.5)
+    transitivePeerDependencies:
+      - supports-color
+
   '@nodelib/fs.scandir@2.1.5':
     dependencies:
       '@nodelib/fs.stat': 2.0.5
@@ -5991,18 +6023,18 @@ snapshots:
       std-env: 4.2.0
       yaml: 2.9.0
 
-  '@testcontainers/mysql@12.1.0(supports-color@10.2.2)':
+  '@testcontainers/mysql@12.2.0(supports-color@10.2.2)':
     dependencies:
-      testcontainers: 12.1.0(supports-color@10.2.2)
+      testcontainers: 12.2.0(supports-color@10.2.2)
     transitivePeerDependencies:
       - bare-abort-controller
       - bare-buffer
       - react-native-b4a
       - supports-color
 
-  '@testcontainers/postgresql@12.1.0(supports-color@10.2.2)':
+  '@testcontainers/postgresql@12.2.0(supports-color@10.2.2)':
     dependencies:
-      testcontainers: 12.1.0(supports-color@10.2.2)
+      testcontainers: 12.2.0(supports-color@10.2.2)
     transitivePeerDependencies:
       - bare-abort-controller
       - bare-buffer
@@ -7971,7 +8003,7 @@ snapshots:
 
   terminal-size@4.0.1: {}
 
-  testcontainers@12.1.0(supports-color@10.2.2):
+  testcontainers@12.2.0(supports-color@10.2.2):
     dependencies:
       '@balena/dockerignore': 1.0.2
       '@types/dockerode': 4.0.1
