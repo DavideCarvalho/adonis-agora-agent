@@ -1,3 +1,4 @@
+import type { ToolConfirmation } from '../tool-presentation.js';
 import type {
   Actor,
   ToolCallApproval,
@@ -146,6 +147,7 @@ export async function mayDecideApproval(
 
 /** The columns a store keeps for one call's approval, however it names them. */
 export interface ToolCallApprovalColumns {
+  confirmation?: ToolConfirmation | undefined;
   toolCallId: string;
   status: ToolCallStatus;
   approver: string | null | undefined;
@@ -190,6 +192,7 @@ export function toolCallApprovalFromRow(row: ToolCallApprovalColumns): ToolCallA
   const decided = status === 'approved' || status === 'rejected';
   return {
     toolCallId: row.toolCallId,
+    ...(row.confirmation !== undefined ? { confirmation: row.confirmation } : {}),
     approver: row.approver,
     status,
     ...(expiresAt !== undefined ? { expiresAt } : {}),

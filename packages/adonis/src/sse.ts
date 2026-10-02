@@ -66,6 +66,7 @@ export function frameToEvents(frame: StreamFrame, position: number): AgentStream
             kind: 'approval-requested',
             id: frame.id,
             approver: frame.approver ?? 'requester',
+            ...(frame.confirmation !== undefined ? { confirmation: frame.confirmation } : {}),
             ...(frame.expiresAt !== undefined ? { expiresAt: frame.expiresAt } : {}),
           },
           { runId: frame.runId, toolName: frame.toolName, input: frame.input },

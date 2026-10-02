@@ -59,6 +59,13 @@ export class Journal {
     this.entries.splice(position, 1);
   }
 
+  /** Rewrite a persisted payload to model a journal created by an older runtime. */
+  rewriteOutput(name: string, transform: (output: unknown) => unknown): void {
+    const entry = this.entries.find((candidate) => candidate.name === name);
+    if (entry?.output === undefined) throw new Error(`no output recorded for "${name}"`);
+    entry.output = JSON.stringify(transform(JSON.parse(entry.output)));
+  }
+
   /** Drop one recorded output, as a checkpoint written before the step returned a value would. */
   forgetOutputAt(position: number): void {
     const entry = this.entries[position];

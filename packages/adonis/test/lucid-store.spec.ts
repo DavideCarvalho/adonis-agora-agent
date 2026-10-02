@@ -123,6 +123,34 @@ describe('LucidAgentStore', () => {
     expect(JSON.parse(String(row?.output))).toEqual({ ok: true });
   });
 
+  it('round trips resolved approval confirmation through persisted history', async () => {
+    const thread = await store.createThread({ actor, persona: 'default' });
+    const msg = await store.appendMessage({ threadId: thread.id, role: 'assistant', content: '' });
+    const confirmation = { title: 'Refund Seven?', verb: 'Refund', detail: 'Return $70' };
+    await store.recordToolCall({
+      toolCallId: 'confirmed',
+      messageId: msg.id,
+      toolName: 'refund',
+      toolType: 'action',
+      input: {},
+      status: 'pending_approval',
+      approver: 'requester',
+      confirmation,
+    });
+    expect((await store.getThread(thread.id))?.messages[0]?.approvals).toEqual([
+      expect.objectContaining({ confirmation, status: 'pending' }),
+    ]);
+    await store.updateToolCall({
+      toolCallId: 'confirmed',
+      status: 'failed',
+      error: 'Order closed',
+      executedByRef: actor.id,
+    });
+    expect((await store.getThread(thread.id))?.messages[0]?.approvals).toEqual([
+      expect.objectContaining({ confirmation, status: 'approved' }),
+    ]);
+  });
+
   it('sums input+output tokens for the day in quotaToday (cache tokens never re-added)', async () => {
     const thread = await store.createThread({ actor, persona: 'default' });
     await store.recordUsage({

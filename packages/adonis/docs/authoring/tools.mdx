@@ -385,3 +385,48 @@ export const tools = {
 ```
 
 Changing `source` or `output` means the provider must still be able to find the result — it imports the compiled barrel from `.adonisjs/agent/tools.js`. Point `output` elsewhere and the provider silently falls back to the runtime scan of `app/agent_tools`, which is the behaviour you were probably trying to replace. Change `source` and `importAlias` together; leave `output` alone.
+
+## Action preflight
+
+Actions may implement `preflight(input, ctx, { phase })` to inspect current domain state without effects. The registry validates input and checks availability, roles, and `canUse` before this hook. Read tools do not run preflight.
+
+```ts
+import { ActionTool, type AiToolCtx, type ToolPreflightOptions, type ToolPreflightResult } from '@adonis-agora/agent'
+
+class RefundTool extends ActionTool<{ orderId: string }, { refunded: boolean }> {
+  static tool = {
+    name: 'refund', description: 'Refund an order',
+    input: z.object({ orderId: z.string() }),
+  }
+
+  async preflight(input: { orderId: string }, ctx: AiToolCtx, { phase }: ToolPreflightOptions): Promise<ToolPreflightResult<{ refunded: boolean }>> {
+    const order = await orders.findForActor(input.orderId, ctx.actor.id)
+    if (order.refunded) return { status: 'completed', output: { refunded: true } }
+    if (!order.refundable) return { status: 'denied', reason: 'This order cannot be refunded.' }
+    return {
+      status: 'ready',
+      confirmation: { title: `Refund ${order.label}?`, verb: 'Refund', detail: `Return ${order.total}` },
+    }
+  }
+
+  async execute(input: { orderId: string }, ctx: AiToolCtx) {
+    await orders.refund(input.orderId, { idempotencyKey: ctx.idempotencyKey })
+    return { refunded: true }
+  }
+}
+```
+
+`prepare` runs before requesting approval, including when the approval policy is automatic or a decision was remembered. `denied`, `completed`, and failed preparation produce a tool result without an approval card. Ready confirmation strings are already resolved for display and travel on `approval-requested.confirmation` and persisted `ToolCallApproval.confirmation`.
+
+`execute` runs immediately before the handler, after approval, with fresh authorization and validation. A domain refusal then emits `tool-output-denied` while preserving the person's approved decision in history. Completed output bypasses `execute` in either phase. Preparation and settled execution refusals are journaled in the existing checkpoints; replay does not repeat settled checks.
+
+The functional API accepts a handler object as well as an execution function:
+
+```ts
+export const refund = defineTool(options, {
+  preflight: async (input, ctx, { phase }) => ({ status: 'ready' }),
+  execute: async (input, ctx) => refundOrder(input, ctx),
+})
+```
+
+Preflight must remain free of effects. The check and the eventual write are separate operations: enforce atomic constraints or transactions in `execute`, and use `ctx.idempotencyKey` for replay-safe effects. Do not rely on a preflight check alone to prevent concurrent writes.

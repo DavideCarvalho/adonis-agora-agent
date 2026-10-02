@@ -1,7 +1,7 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import { filterToolsByRole, personaFilterTools } from './personas.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
-import type { AiToolCtx, ToolDescribeScope, ToolHandler } from './spi/tool.js';
+import type { AiToolCtx, ToolDescribeScope, ToolHandler, ToolPreflightResult } from './spi/tool.js';
 import {
   canActorUseTool,
   filterToolsByCanUse,
@@ -53,6 +53,16 @@ export class ToolInputInvalidError extends Error {
       `Invalid input for tool "${toolName}": ${issues.map((issue) => issue.message).join('; ')}`,
     );
     this.name = 'ToolInputInvalidError';
+  }
+}
+
+export class ToolPreflightDeniedError extends Error {
+  constructor(
+    public readonly toolName: string,
+    public readonly reason: string,
+  ) {
+    super(reason);
+    this.name = 'ToolPreflightDeniedError';
   }
 }
 
@@ -174,13 +184,13 @@ export class ToolRegistry {
    * again) and re-parses the input. With `options.allowedTools` (the turn's persona allow-list) a
    * tool off that list is refused last, the same way the offer narrowed it.
    */
-  async invoke(
+  private async validated(
     name: string,
     input: unknown,
     ctx: AiToolCtx,
     policy: RolesPolicy,
     options: InvokeOptions = {},
-  ): Promise<unknown> {
+  ): Promise<{ entry: Entry; value: unknown; ctx: AiToolCtx }> {
     const entry = this.entries.get(name);
     if (entry === undefined) {
       throw new ToolNotFoundError(name);
@@ -207,7 +217,38 @@ export class ToolRegistry {
     // a JavaScript host) gets the no-op rather than a tool that crashes calling it.
     const withEmit: AiToolCtx =
       typeof ctx.emitUi === 'function' ? ctx : { ...ctx, emitUi: createNoopEmitUi(ctx.requestId) };
-    return entry.handler.execute(validation.value, withEmit);
+    return { entry, value: validation.value, ctx: withEmit };
+  }
+
+  async prepare(
+    name: string,
+    input: unknown,
+    ctx: AiToolCtx,
+    policy: RolesPolicy,
+    options: InvokeOptions = {},
+  ): Promise<ToolPreflightResult> {
+    const validated = await this.validated(name, input, ctx, policy, options);
+    return validated.entry.spec.kind === 'action' && validated.entry.handler.preflight !== undefined
+      ? validated.entry.handler.preflight(validated.value, validated.ctx, { phase: 'prepare' })
+      : { status: 'ready' };
+  }
+
+  async invoke(
+    name: string,
+    input: unknown,
+    ctx: AiToolCtx,
+    policy: RolesPolicy,
+    options: InvokeOptions = {},
+  ): Promise<unknown> {
+    const validated = await this.validated(name, input, ctx, policy, options);
+    if (validated.entry.spec.kind === 'action' && validated.entry.handler.preflight !== undefined) {
+      const result = await validated.entry.handler.preflight(validated.value, validated.ctx, {
+        phase: 'execute',
+      });
+      if (result.status === 'denied') throw new ToolPreflightDeniedError(name, result.reason);
+      if (result.status === 'completed') return result.output;
+    }
+    return validated.entry.handler.execute(validated.value, validated.ctx);
   }
 }
 

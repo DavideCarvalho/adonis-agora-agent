@@ -1,4 +1,5 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
+import type { ToolConfirmation } from '../tool-presentation.js';
 import type { Actor, PageContext, Persona } from '../types.js';
 
 /**
@@ -64,6 +65,12 @@ export interface AiToolCtx {
  */
 export interface ToolHandler<I = unknown, O = unknown> {
   execute(input: I, ctx: AiToolCtx): Promise<O> | O;
+  /** Side-effect-free domain check, before approval and again immediately before execution. Action tools only. */
+  preflight?(
+    input: I,
+    ctx: AiToolCtx,
+    options: ToolPreflightOptions,
+  ): ToolPreflightResult<O> | Promise<ToolPreflightResult<O>>;
   /**
    * Whether this tool exists in this deployment at all — evaluated per turn, BEFORE the roles
    * policy, so a `false` here means the model is never shown the tool rather than being shown one
@@ -117,3 +124,12 @@ export interface ToolDescription {
   description?: string;
   inputSchema?: StandardSchemaV1;
 }
+
+export interface ToolPreflightOptions {
+  phase: 'prepare' | 'execute';
+}
+
+export type ToolPreflightResult<O = unknown> =
+  | { status: 'ready'; confirmation?: ToolConfirmation }
+  | { status: 'denied'; reason: string }
+  | { status: 'completed'; output: O };

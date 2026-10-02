@@ -20,6 +20,7 @@ it('encodes a parked action as approval-requested, carrying the run to answer', 
   expect(event).not.toBeNull();
   expect(event && decodeFrame(event)).toEqual({
     type: 'approval',
+    approver: 'requester',
     runId: 'child-1',
     toolCallId: 'call-0-voidInvoice',
     toolName: 'voidInvoice',

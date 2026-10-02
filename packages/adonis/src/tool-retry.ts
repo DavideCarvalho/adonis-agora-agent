@@ -1,3 +1,5 @@
+import { ToolPreflightDeniedError } from './tool-registry.js';
+
 /**
  * Transient tool-error classification + the retry loop that wraps a tool's own invocation. A
  * classified-transient error (a DB deadlock, a lock-wait timeout, a serialization failure) means the
@@ -43,6 +45,7 @@ function hasTransientShape(error: unknown): boolean {
  * with none of these markers — any other business failure — is `false`.
  */
 export function isTransientToolError(error: unknown): boolean {
+  if (error instanceof ToolPreflightDeniedError) return false;
   if (hasTransientShape(error)) {
     return true;
   }
@@ -118,7 +121,10 @@ export async function invokeWithTransientRetry<T>(
     try {
       return await fn();
     } catch (error) {
-      if (options?.isControlFlowError?.(error) === true) {
+      if (
+        error instanceof ToolPreflightDeniedError ||
+        options?.isControlFlowError?.(error) === true
+      ) {
         throw error;
       }
       const attemptsRemain = attempt < attempts;

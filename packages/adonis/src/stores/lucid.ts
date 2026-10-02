@@ -26,6 +26,7 @@ import type {
   QueuePause,
 } from '../spi/chat-queue.js';
 import type { AgentUiComponent } from '../stream-events.js';
+import type { ToolConfirmation } from '../tool-presentation.js';
 import type {
   Actor,
   MessageAttachment,
@@ -864,6 +865,7 @@ export class LucidAgentStore implements AgentStore, ThreadTurnReader, ChatQueueS
       created_at: Date.now(),
       executed_at: null,
       approver: input.approver ?? null,
+      confirmation: input.confirmation !== undefined ? JSON.stringify(input.confirmation) : null,
       expires_at: input.expiresAt !== undefined ? Date.parse(input.expiresAt) : null,
       remember: null,
       decided_via: null,
@@ -1132,6 +1134,9 @@ function threadRowToSummary(row: Record<string, unknown>, lastPreview?: string):
 function approvalColumns(row: Record<string, unknown>): ToolCallApprovalColumns {
   return {
     toolCallId: String(row.id),
+    ...(row.confirmation != null
+      ? { confirmation: parseJson<ToolConfirmation>(row.confirmation) }
+      : {}),
     status: String(row.status) as ToolCallStatus,
     approver: typeof row.approver === 'string' ? row.approver : null,
     expiresAt:

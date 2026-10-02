@@ -39,7 +39,7 @@ import {
   rememberToolDefinition,
   writeMemory,
 } from './memory.js';
-import { intersectAllowLists, personaFromTurn } from './personas.js';
+import { personaFromTurn } from './personas.js';
 import {
   createFrameBuffer,
   createIncrementalGate,
@@ -85,7 +85,7 @@ import type { QuotaStore } from './spi/quota-store.js';
 import type { Passage, RetrievalResult, RetrieveOptions, Retriever } from './spi/retriever.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
 import type { SinkWriter, StreamFrame } from './spi/token-stream-sink.js';
-import type { AiToolCtx } from './spi/tool.js';
+import type { AiToolCtx, ToolPreflightResult } from './spi/tool.js';
 import type { AgentStreamErrorCode, AgentStreamEvent, AgentUiComponent } from './stream-events.js';
 import {
   DEFAULT_STRUCTURED_OUTPUT_INSTRUCTION,
@@ -93,7 +93,12 @@ import {
   StructuredOutputError,
   validateStructured,
 } from './structured-output.js';
-import { ToolForbiddenError, ToolInputInvalidError, type ToolRegistry } from './tool-registry.js';
+import {
+  ToolForbiddenError,
+  ToolInputInvalidError,
+  ToolPreflightDeniedError,
+  type ToolRegistry,
+} from './tool-registry.js';
 import { invokeWithTransientRetry, type ToolTransientRetrySetting } from './tool-retry.js';
 import {
   createNoopEmitUi,
@@ -649,6 +654,7 @@ type DelegationOutcome =
  * stay JSON-round-trippable.
  */
 interface PersistedToolCall {
+  preflight?: ToolPreflightResult | { status: 'failed'; error: string };
   kind: ToolKind;
   /** `agent` kind only. */
   delegation?: DelegationOutcome;
@@ -1291,6 +1297,7 @@ interface ToolTurnContext {
 
 /** A tool call whose kind has been settled by its `persist:toolcall` checkpoint. */
 interface ClaimedToolCall {
+  preflight?: ToolPreflightResult | { status: 'failed'; error: string };
   call: ToolCallRequest;
   toolType: ToolKind;
   /** `agent` kind only: the verdict the same checkpoint decided. */
@@ -1315,7 +1322,9 @@ interface SyntheticToolCall {
 }
 
 /** One invocation's result, already reduced to what the persist checkpoint writes. */
-type ToolOutcome = { status: 'executed'; output: unknown } | { status: 'failed'; error: string };
+type ToolOutcome =
+  | { status: 'executed'; output: unknown }
+  | { status: 'failed'; error: string; denied?: true };
 
 /**
  * Record the call and settle its KIND, which decides this call's control flow: an `action` suspends
@@ -1336,6 +1345,19 @@ async function claimToolCall(
 ): Promise<ClaimedToolCall> {
   const { deps, input, hooks, messageId, writer } = turn;
   const persona = personaOf(input);
+  const ctx: AiToolCtx = {
+    actor: input.actor,
+    threadId: input.threadId,
+    runId: hooks.runId,
+    requestId: hooks.runId,
+    // Replaced by the call's own collector inside its `tool:` step (see invokeClaimedTool); a
+    // kind that never reaches a handler keeps this no-op.
+    emitUi: createNoopEmitUi(call.id),
+    ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+    ...(persona !== undefined ? { persona } : {}),
+    ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
+    ...(deps.host !== undefined ? { host: deps.host } : {}),
+  };
   const persisted = (await hooks.step(
     `persist:toolcall:${call.id}`,
     async (): Promise<PersistedToolCall> => {
@@ -1372,7 +1394,33 @@ async function claimToolCall(
       // set can both change while a run is parked, and the branch below (park or run) has to be the
       // one the journal recorded. A run claimed before this existed reads `approval` back as
       // undefined and waits on the requester, exactly as it did.
-      const approval = kind === 'action' ? await claimApproval(turn, call) : undefined;
+      let preflight: PersistedToolCall['preflight'] = call.preflight;
+      if (kind === 'action' && preflight === undefined && deps.registry.has(call.name)) {
+        try {
+          const allowedTools = intersectAllow(persona?.allowedTools, deps.toolAllowList);
+          preflight = await deps.registry.prepare(
+            call.name,
+            call.input,
+            {
+              ...ctx,
+              toolCallId: call.id,
+              idempotencyKey: `${hooks.runId}:${call.id}`,
+            },
+            deps.rolesPolicy,
+            allowedTools === undefined ? {} : { allowedTools },
+          );
+        } catch (error) {
+          if (isReplayIntegrityError(error) || hooks.isControlFlowError?.(error) === true)
+            throw error;
+          preflight = {
+            status: 'failed',
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+      const early = preflight !== undefined && preflight.status !== 'ready';
+      const confirmation = preflight?.status === 'ready' ? preflight.confirmation : undefined;
+      const approval = kind === 'action' && !early ? await claimApproval(turn, call) : undefined;
       const parks = kind === 'ask' || approval?.mode === 'ask';
       await deps.store.recordToolCall({
         toolCallId: call.id,
@@ -1380,7 +1428,16 @@ async function claimToolCall(
         toolName: call.name,
         toolType: awaitsHuman ? 'action' : 'read',
         input: call.input,
-        status: parks ? 'pending_approval' : 'auto_executed',
+        status: early
+          ? preflight?.status === 'denied'
+            ? 'rejected'
+            : preflight?.status === 'failed'
+              ? 'failed'
+              : 'executed'
+          : parks
+            ? 'pending_approval'
+            : 'auto_executed',
+        ...(confirmation !== undefined ? { confirmation } : {}),
         runId: hooks.runId,
         ...(approval !== undefined && approval.mode !== 'auto'
           ? { approver: approval.approver }
@@ -1389,6 +1446,20 @@ async function claimToolCall(
           ? { expiresAt: approval.expiresAt }
           : {}),
       });
+      if (early) {
+        await deps.store.updateToolCall({
+          toolCallId: call.id,
+          status:
+            preflight?.status === 'denied'
+              ? 'rejected'
+              : preflight?.status === 'failed'
+                ? 'failed'
+                : 'executed',
+          ...(preflight?.status === 'completed' ? { output: preflight.output } : {}),
+          ...(preflight?.status === 'denied' ? { error: preflight.reason } : {}),
+          ...(preflight?.status === 'failed' ? { error: preflight.error } : {}),
+        });
+      }
       // Written from INSIDE this checkpoint, so the frame is streamed once and a replay — which
       // returns the memoized result without re-running the body — never re-posts a form for a
       // decision already made. That is also why it spends no position of its own.
@@ -1403,6 +1474,7 @@ async function claimToolCall(
           toolName: call.name,
           input: call.input,
           approver: approval.approver,
+          ...(confirmation !== undefined ? { confirmation } : {}),
           ...(approval.expiresAt !== undefined ? { expiresAt: approval.expiresAt } : {}),
         });
       }
@@ -1411,6 +1483,7 @@ async function claimToolCall(
       const terminal = deps.registry.spec(call.name)?.terminal === true;
       return {
         kind,
+        ...(preflight !== undefined ? { preflight } : {}),
         ...(approval !== undefined ? { approval } : {}),
         ...(terminal ? { terminal: true as const } : {}),
       };
@@ -1423,24 +1496,13 @@ async function claimToolCall(
   return {
     call,
     toolType,
+    ...(persisted?.preflight !== undefined ? { preflight: persisted.preflight } : {}),
     ...(persisted?.terminal === true ? { terminal: true } : {}),
     ...(persisted?.delegation !== undefined ? { delegation: persisted.delegation } : {}),
     ...(toolType === 'action' && persisted?.approval !== undefined
       ? { approval: persisted.approval }
       : {}),
-    ctx: {
-      actor: input.actor,
-      threadId: input.threadId,
-      runId: hooks.runId,
-      requestId: hooks.runId,
-      // Replaced by the call's own collector inside its `tool:` step (see invokeClaimedTool); a
-      // kind that never reaches a handler keeps this no-op.
-      emitUi: createNoopEmitUi(call.id),
-      ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
-      ...(persona !== undefined ? { persona } : {}),
-      ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
-      ...(deps.host !== undefined ? { host: deps.host } : {}),
-    },
+    ctx,
   };
 }
 
@@ -1519,13 +1581,9 @@ async function invokeClaimedTool(
 ): Promise<ToolOutcome> {
   const { deps, hooks } = turn;
   const { call, ctx, toolType } = claimed;
-  // Under a persona with an allow-list, the same narrowing the offer had — agent ∩ persona — is what
-  // `invoke` holds the call to. Without one, nothing new is checked.
-  const personaAllow = personaOf(turn.input)?.allowedTools;
-  const invokeOptions =
-    personaAllow === undefined
-      ? {}
-      : { allowedTools: intersectAllowLists(deps.toolAllowList, personaAllow) ?? [] };
+  // Execution retains every narrowing the offer and preparation had, including an agent-only list.
+  const allowedTools = intersectAllow(personaOf(turn.input)?.allowedTools, deps.toolAllowList);
+  const invokeOptions = allowedTools === undefined ? {} : { allowedTools };
   try {
     const raw = await hooks.step(`tool:${call.id}`, async () => {
       // Pushed components stream as they happen and ride this step's RESULT into the journal (see
@@ -1547,47 +1605,64 @@ async function invokeClaimedTool(
           );
         },
       };
-      const output = await spannedAgent(
-        'tool.execution',
-        hooks.runId,
-        {
-          runId: hooks.runId,
-          toolCallId: call.id,
-          toolName: call.name,
-          toolType: spanToolType(toolType),
-        },
-        () =>
-          invokeWithTransientRetry(
-            () => {
-              ui.restart();
-              return deps.registry.invoke(
-                call.name,
-                call.input,
-                toolCtx,
-                deps.rolesPolicy,
-                invokeOptions,
-              );
-            },
-            deps.toolTransientRetry ?? {},
-            {
-              ...(hooks.isControlFlowError !== undefined
-                ? { isControlFlowError: hooks.isControlFlowError }
-                : {}),
-              onRetry: (attempt, retryError) => {
-                publishAgentToolRetry({
-                  runId: hooks.runId,
-                  toolName: call.name,
-                  toolCallId: call.id,
-                  attempt,
-                  message: retryError instanceof Error ? retryError.message : String(retryError),
-                });
+      let output: unknown;
+      try {
+        output = await spannedAgent(
+          'tool.execution',
+          hooks.runId,
+          {
+            runId: hooks.runId,
+            toolCallId: call.id,
+            toolName: call.name,
+            toolType: spanToolType(toolType),
+          },
+          () =>
+            invokeWithTransientRetry(
+              () => {
+                ui.restart();
+                return deps.registry.invoke(
+                  call.name,
+                  call.input,
+                  toolCtx,
+                  deps.rolesPolicy,
+                  invokeOptions,
+                );
               },
-            },
-          ),
-        () => ({}),
-      );
+              deps.toolTransientRetry ?? {},
+              {
+                ...(hooks.isControlFlowError !== undefined
+                  ? { isControlFlowError: hooks.isControlFlowError }
+                  : {}),
+                onRetry: (attempt, retryError) => {
+                  publishAgentToolRetry({
+                    runId: hooks.runId,
+                    toolName: call.name,
+                    toolCallId: call.id,
+                    attempt,
+                    message: retryError instanceof Error ? retryError.message : String(retryError),
+                  });
+                },
+              },
+            ),
+          () => ({}),
+        );
+      } catch (error) {
+        // A domain refusal is a settled result, so a durable replay must not re-run the check.
+        if (!(error instanceof ToolPreflightDeniedError)) throw error;
+        return { '@@adonis-agent/tool-preflight-denied': 1, reason: error.reason };
+      }
       return wrapToolStepOutput(output, ui.components());
     });
+    if (
+      typeof raw === 'object' &&
+      raw !== null &&
+      '@@adonis-agent/tool-preflight-denied' in raw &&
+      raw['@@adonis-agent/tool-preflight-denied'] === 1 &&
+      'reason' in raw &&
+      typeof raw.reason === 'string'
+    ) {
+      return { status: 'failed', error: raw.reason, denied: true };
+    }
     const { output, ui } = unwrapToolStepOutput(raw);
     if (ui.length > 0) {
       turn.toolUi.set(call.id, ui);
@@ -1600,7 +1675,11 @@ async function invokeClaimedTool(
     if (isReplayIntegrityError(error) || hooks.isControlFlowError?.(error) === true) {
       throw error;
     }
-    return { status: 'failed', error: error instanceof Error ? error.message : String(error) };
+    return {
+      status: 'failed',
+      error: error instanceof Error ? error.message : String(error),
+      ...(error instanceof ToolPreflightDeniedError ? { denied: true as const } : {}),
+    };
   }
 }
 
@@ -1655,7 +1734,13 @@ async function recordToolOutcome(
       await settle();
     });
     publishAgentToolCall({ runId: hooks.runId, toolName: call.name, toolType, status: 'failed' });
-    return { id: call.id, name: call.name, output: null, error: outcome.error };
+    return {
+      id: call.id,
+      name: call.name,
+      output: outcome.denied ? { reason: outcome.error } : null,
+      error: outcome.error,
+      ...(outcome.denied ? { denied: true } : {}),
+    };
   }
   await hooks.step(`persist:toolexec:${call.id}`, async () => {
     await deps.store.updateToolCall({
@@ -1725,19 +1810,56 @@ async function delegateToolCall(
  * what puts the kind in the journal — so the branch a call takes is a fact about the turn rather
  * than about whichever process happened to replay it (see {@link claimToolCall}).
  *
- * Only unstamped calls are touched: a kind already on a call was settled upstream, and a process
- * further down never second-guesses it.
+ * Provider-supplied preparation is discarded. The trusted result rides this same model checkpoint
+ * so a process that first claims the call without its handler still follows the offering process's verdict.
  */
-function stampToolKinds<T extends { toolCalls: ToolCallRequest[] }>(
+async function stampToolKinds<T extends { toolCalls: ToolCallRequest[] }>(
   result: T,
   deps: AgentLoopDeps,
-): T {
-  return {
-    ...result,
-    toolCalls: result.toolCalls.map((call) =>
-      call.kind === undefined ? { ...call, kind: declaredKind(deps, call.name) } : call,
-    ),
-  };
+  input: AgentRunInput,
+  hooks: AgentLoopHooks,
+): Promise<T> {
+  const persona = personaOf(input);
+  const allowedTools = intersectAllow(persona?.allowedTools, deps.toolAllowList);
+  const toolCalls: ToolCallRequest[] = [];
+  for (const incoming of result.toolCalls) {
+    // The provider cannot supply trusted preparation. Resolve it only where the tool was offered.
+    const { preflight: _untrusted, ...call } = incoming;
+    const kind = declaredKind(deps, call.name);
+    let preflight: ToolCallRequest['preflight'];
+    if (kind === 'action') {
+      try {
+        preflight = await deps.registry.prepare(
+          call.name,
+          call.input,
+          {
+            actor: input.actor,
+            threadId: input.threadId,
+            runId: hooks.runId,
+            requestId: hooks.runId,
+            toolCallId: call.id,
+            idempotencyKey: `${hooks.runId}:${call.id}`,
+            emitUi: createNoopEmitUi(call.id),
+            ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+            ...(persona !== undefined ? { persona } : {}),
+            ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
+            ...(deps.host !== undefined ? { host: deps.host } : {}),
+          },
+          deps.rolesPolicy,
+          allowedTools === undefined ? {} : { allowedTools },
+        );
+      } catch (error) {
+        if (isReplayIntegrityError(error) || hooks.isControlFlowError?.(error) === true)
+          throw error;
+        preflight = {
+          status: 'failed',
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+    toolCalls.push({ ...call, kind, ...(preflight !== undefined ? { preflight } : {}) });
+  }
+  return { ...result, toolCalls };
 }
 
 /**
@@ -1988,6 +2110,21 @@ async function runClaimedToolCall(
 ): Promise<ToolResult> {
   const { deps, hooks } = turn;
   const { call, toolType, ctx } = claimed;
+  if (claimed.preflight !== undefined && claimed.preflight.status !== 'ready') {
+    const result = claimed.preflight;
+    if (result.status === 'completed') {
+      if (claimed.terminal === true) turn.halt.terminal = true;
+      return { id: call.id, name: call.name, output: result.output };
+    }
+    const reason = result.status === 'denied' ? result.reason : result.error;
+    return {
+      id: call.id,
+      name: call.name,
+      output: result.status === 'denied' ? { reason } : null,
+      error: reason,
+      ...(result.status === 'denied' ? { denied: true } : {}),
+    };
+  }
   if (toolType === 'agent') {
     return delegateToolCall(turn, claimed);
   }
@@ -2868,6 +3005,8 @@ export async function runAgentLoop<TOutput = unknown>(
           }),
         ),
         deps,
+        input,
+        hooks,
       ),
     );
 

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { Actor, AiToolCtx, ToolHandler } from '../src/index.js';
 import {
+  ActionTool,
   AgentDepsFactory,
   AgentRegistry,
   AiTool,
@@ -449,3 +450,47 @@ describe('delegate edge authorization', () => {
     expect(factory.forAgent('orchestrator').toolAllowList).toContain('ask_researcher');
   });
 });
+
+it.each([false, true])(
+  'forwards ActionTool preflight through discovery (DI: %s) with instance binding',
+  async (withDi) => {
+    const phases: string[] = [];
+    class Refund extends ActionTool<Record<string, never>, string> {
+      static override tool = { name: 'refund', description: 'refund', input: z.object({}) };
+      constructor(private confirmation = 'Refund Seven?') {
+        super();
+      }
+      preflight(
+        _input: Record<string, never>,
+        _ctx: AiToolCtx,
+        { phase }: { phase: 'prepare' | 'execute' },
+      ) {
+        phases.push(phase);
+        return {
+          status: 'ready' as const,
+          confirmation: { title: this.confirmation, verb: 'Refund' },
+        };
+      }
+      execute() {
+        return this.confirmation;
+      }
+    }
+    const registry = new ToolRegistry();
+    let resolutions = 0;
+    const fakeApp = {
+      container: {
+        make: async () => {
+          resolutions++;
+          return new Refund('Refund Seven?');
+        },
+      },
+    };
+    registerToolExport(registry, Refund, [], withDi ? (fakeApp as never) : undefined);
+    expect(await registry.prepare('refund', {}, anyCtx, allowAll)).toMatchObject({
+      confirmation: { title: 'Refund Seven?' },
+    });
+    expect(await registry.invoke('refund', {}, anyCtx, allowAll)).toBe('Refund Seven?');
+    expect(phases).toEqual(['prepare', 'execute']);
+    expect(resolutions).toBe(withDi ? 1 : 0);
+  },
+);

@@ -28,6 +28,7 @@ export function toAgUiFrame(frame: StreamFrame): AgUiSourceFrame {
         toolName: frame.toolName,
         input: frame.input ?? null,
         approver: frame.approver ?? 'requester',
+        ...(frame.confirmation !== undefined ? { confirmation: frame.confirmation } : {}),
         ...(frame.expiresAt !== undefined ? { expiresAt: frame.expiresAt } : {}),
       };
     case 'elicitation':

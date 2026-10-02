@@ -13,6 +13,7 @@
  */
 
 import type { ElicitationRequest } from '../elicitation.js';
+import type { ToolConfirmation } from '../tool-presentation.js';
 
 /** A rendered part of an assistant message: streamed text, or a named component with its props. */
 export type ChatPart =
@@ -42,7 +43,17 @@ export type ChatFrame =
    * the body `POST /agent/tool-call/approve` (or `/reject`) takes — and `runId` is the parked run,
    * which for a delegated sub-agent is not the run this stream was opened for.
    */
-  | { type: 'approval'; runId: string; toolCallId: string; toolName: string; input: unknown }
+  | {
+      type: 'approval';
+      runId: string;
+      toolCallId: string;
+      toolName: string;
+      input: unknown;
+      confirmation?: ToolConfirmation;
+      approver?: string;
+      expiresAt?: string;
+      reason?: string;
+    }
   | { type: 'done' };
 
 /** One raw SSE event: the `event:` name (default `message`) and the joined `data:` payload. */
@@ -158,12 +169,17 @@ function decodeAgentEvent(event: Record<string, unknown> & { kind: string }): Ch
     typeof event.runId === 'string' &&
     typeof event.toolName === 'string'
   ) {
+    const confirmation = decodeConfirmation(event.confirmation);
     return {
       type: 'approval',
       runId: event.runId,
       toolCallId: event.id,
       toolName: event.toolName,
       input: event.input,
+      ...(confirmation !== undefined ? { confirmation } : {}),
+      ...(typeof event.approver === 'string' ? { approver: event.approver } : {}),
+      ...(typeof event.expiresAt === 'string' ? { expiresAt: event.expiresAt } : {}),
+      ...(typeof event.reason === 'string' ? { reason: event.reason } : {}),
     };
   }
   return { type: 'event', event };
@@ -251,4 +267,23 @@ export async function* readSseStream(body: ReadableStream<Uint8Array>): AsyncGen
   } finally {
     reader.releaseLock();
   }
+}
+
+/** Optional presentation metadata is accepted only when every supplied field has its declared type. */
+function decodeConfirmation(value: unknown): ToolConfirmation | undefined {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('title' in value) ||
+    typeof value.title !== 'string' ||
+    !('verb' in value) ||
+    typeof value.verb !== 'string'
+  )
+    return undefined;
+  if ('detail' in value && typeof value.detail !== 'string') return undefined;
+  return {
+    title: value.title,
+    verb: value.verb,
+    ...('detail' in value && typeof value.detail === 'string' ? { detail: value.detail } : {}),
+  };
 }

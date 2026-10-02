@@ -1,5 +1,6 @@
 import type { ToolCallOutcome } from '../dangling-tool-calls.js';
 import type { AgentUiComponent } from '../stream-events.js';
+import type { ToolConfirmation } from '../tool-presentation.js';
 import type {
   Actor,
   MessageAttachment,
@@ -69,6 +70,7 @@ export interface AppendMessageInput {
 }
 
 export interface RecordToolCallInput {
+  confirmation?: ToolConfirmation;
   toolCallId: string;
   messageId: string;
   toolName: string;

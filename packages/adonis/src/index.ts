@@ -490,6 +490,7 @@ export {
   ToolForbiddenError,
   ToolInputInvalidError,
   ToolNotFoundError,
+  ToolPreflightDeniedError,
   ToolRegistry,
 } from './tool-registry.js';
 export type {

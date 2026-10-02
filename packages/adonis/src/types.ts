@@ -2,8 +2,9 @@ import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { AgentIntake } from './elicitation.js';
 import type { ActorResolver } from './spi/actor-resolver.js';
 import type { ChatQueueState } from './spi/chat-queue.js';
+import type { ToolPreflightResult } from './spi/tool.js';
 import type { AgentUiComponent } from './stream-events.js';
-import type { ToolPresentation } from './tool-presentation.js';
+import type { ToolConfirmation, ToolPresentation } from './tool-presentation.js';
 
 /** Who is driving the turn. Roles + tenant come from the host app (nestjs-context/authz). */
 export interface Actor {
@@ -98,6 +99,8 @@ export interface ToolDefinition {
 
 /** A tool call the model asked for during a turn. */
 export interface ToolCallRequest {
+  /** Trusted domain preparation stamped by the runtime into the model checkpoint, never supplied by the model. */
+  preflight?: ToolPreflightResult | { status: 'failed'; error: string };
   id: string;
   name: string;
   input: unknown;
@@ -624,6 +627,7 @@ export type ToolCallApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expi
 
 /** The persisted approval metadata of one action tool call. See {@link StoredMessage.approvals}. */
 export interface ToolCallApproval {
+  confirmation?: ToolConfirmation;
   toolCallId: string;
   /** Who may decide: `'requester'` (the thread's own actor) or a role name. */
   approver: string;

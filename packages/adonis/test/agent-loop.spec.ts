@@ -84,6 +84,7 @@ async function drainFrames(sink: InMemoryTokenStreamSink, runId: string): Promis
 }
 
 interface RunOverrides {
+  toolAllowList?: string[];
   systemPrompt?: string | PromptBuilder;
   persona?: Persona;
   model?: ModelProvider;
@@ -106,6 +107,7 @@ async function run(
 
   const deps: AgentLoopDeps = {
     model: overrides.model ?? new FakeModelProvider(script),
+    ...(overrides.toolAllowList !== undefined ? { toolAllowList: overrides.toolAllowList } : {}),
     store,
     registry: buildRegistry(),
     rolesPolicy: new DefaultRolesPolicy(),
@@ -417,4 +419,25 @@ describe('runAgentLoop', () => {
     const comp = frames.find((f) => f.t === 'component');
     expect(comp).toMatchObject({ t: 'component', name: 'Card', data: { hello: 'world' } });
   });
+});
+
+it('rechecks the agent allow-list at execution even without a persona allow-list', async () => {
+  const allowedTools = ['purgeCache'];
+  const { store, detail } = await run(
+    (_args, index) =>
+      index === 0
+        ? { text: '', toolCall: { name: 'purgeCache', input: { key: 'seven' } } }
+        : { text: 'done' },
+    () => {
+      allowedTools.length = 0;
+      return { approved: true };
+    },
+    undefined,
+    undefined,
+    { toolAllowList: allowedTools },
+  );
+  expect(store.toolCallRows()).toEqual([expect.objectContaining({ status: 'failed' })]);
+  expect(detail?.messages.flatMap((message) => message.toolResults ?? [])).toContainEqual(
+    expect.objectContaining({ error: 'Tool "purgeCache" is not allowed for this role' }),
+  );
 });

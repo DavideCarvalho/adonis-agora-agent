@@ -7,6 +7,7 @@ import {
   invokeWithTransientRetry,
   isTransientToolError,
   runAgentLoop,
+  ToolPreflightDeniedError,
   ToolRegistry,
 } from '../src/index.js';
 import {
@@ -250,4 +251,29 @@ describe('runAgentLoop tool transient retry', () => {
     expect(attempts).toBe(2);
     expect(sideEffects).toBe(1);
   });
+});
+
+it('never retries a preflight denial, including transient words and custom classifiers', async () => {
+  for (const classify of [undefined, () => true]) {
+    let attempts = 0;
+    let effects = 0;
+    const denial = new ToolPreflightDeniedError(
+      'refund',
+      'Previous deadlock requires manual review',
+    );
+    expect(isTransientToolError(denial)).toBe(false);
+    await expect(
+      invokeWithTransientRetry(
+        async () => {
+          attempts++;
+          if (attempts === 1) throw denial;
+          effects++;
+          return 'effect';
+        },
+        { attempts: 2, backoffMs: 0, ...(classify !== undefined ? { classify } : {}) },
+      ),
+    ).rejects.toBe(denial);
+    expect(attempts).toBe(1);
+    expect(effects).toBe(0);
+  }
 });

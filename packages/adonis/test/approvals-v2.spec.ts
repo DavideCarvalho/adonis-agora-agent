@@ -14,6 +14,7 @@ import {
   InlineAgentRunner,
   InProcessTokenStreamSink,
   type StreamFrame,
+  type ToolHandler,
   ToolRegistry,
 } from '../src/index.js';
 import { FakeModelProvider, type FakeScript, InMemoryAgentStore } from '../src/testing/index.js';
@@ -29,7 +30,10 @@ const refundOnce: FakeScript = (args) => {
     : { text: 'Done.' };
 };
 
-function build(approvalPolicy?: ApprovalPolicy) {
+function build(
+  approvalPolicy?: ApprovalPolicy,
+  handler: ToolHandler = { execute: async () => ({ refunded: true }) },
+) {
   const store = new InMemoryAgentStore();
   const sink = new InProcessTokenStreamSink();
   const registry = new ToolRegistry();
@@ -41,7 +45,7 @@ function build(approvalPolicy?: ApprovalPolicy) {
       inputSchema: z.object({ id: z.number() }),
       roles: ['ADMIN'],
     },
-    { execute: async () => ({ refunded: true }) },
+    handler,
   );
   const factory = new AgentDepsFactory({
     model: new FakeModelProvider(refundOnce),
@@ -264,4 +268,137 @@ describe('approvals v2 over HTTP', () => {
     });
     expect(late.status).toBe(410);
   });
+});
+
+describe('action domain preflight in approval loop', () => {
+  it.each(['denied', 'completed', 'failed'] as const)(
+    'never requests approval for initial %s',
+    async (status) => {
+      let effects = 0;
+      const g = build(undefined, {
+        preflight() {
+          if (status === 'failed') throw new Error('lookup unavailable');
+          return status === 'denied'
+            ? { status, reason: 'Order closed' }
+            : { status, output: { refunded: true, duplicate: true } };
+        },
+        execute() {
+          effects++;
+          return {};
+        },
+      });
+      const { events, threadId } = await turn(g, 'refund 7');
+      expect(events.some((event) => event.kind === 'approval-requested')).toBe(false);
+      expect(effects).toBe(0);
+      expect(
+        (await g.store.getThread(threadId))?.messages.flatMap((message) => message.approvals ?? []),
+      ).toEqual([]);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          kind:
+            status === 'denied'
+              ? 'tool-output-denied'
+              : status === 'failed'
+                ? 'tool-output-error'
+                : 'tool-output',
+        }),
+      );
+    },
+  );
+  it('streams and persists resolved confirmation, then refuses stale state without changing approval', async () => {
+    let ready = true;
+    let effects = 0;
+    const confirmation = { title: 'Refund order Seven?', verb: 'Refund', detail: 'Return $70' };
+    const g = build(undefined, {
+      preflight: () =>
+        ready ? { status: 'ready', confirmation } : { status: 'denied', reason: 'Already settled' },
+      execute() {
+        effects++;
+        return {};
+      },
+    });
+    const { events, threadId } = await turn(g, 'refund 7', async (frame, runId) => {
+      ready = false;
+      await g.service.approve(runId, frame.id, { executedByRef: 'u1' });
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({ kind: 'approval-requested', confirmation }),
+    );
+    expect(events).toContainEqual({
+      kind: 'tool-output-denied',
+      id: 'call-0-refund',
+      reason: 'Already settled',
+    });
+    expect(effects).toBe(0);
+    expect(
+      (await g.store.getThread(threadId))?.messages.flatMap((message) => message.approvals ?? []),
+    ).toEqual([expect.objectContaining({ status: 'approved', confirmation })]);
+  });
+});
+
+it('checks domain state even for auto and remembered approvals', async () => {
+  for (const auto of [false, true]) {
+    let ready = true;
+    let effects = 0;
+    const phases: string[] = [];
+    const g = build(auto ? approvalRules({ tools: { refund: { required: false } } }) : undefined, {
+      preflight(_input, _ctx, { phase }) {
+        phases.push(phase);
+        return ready ? { status: 'ready' } : { status: 'denied', reason: 'Order closed' };
+      },
+      execute() {
+        effects++;
+        return {};
+      },
+    });
+    const first = await turn(
+      g,
+      'refund 7',
+      auto
+        ? undefined
+        : (frame, runId) =>
+            g.service.approve(runId, frame.id, { executedByRef: 'u1', remember: true }),
+    );
+    ready = false;
+    const second = await turn(g, 'refund again', undefined, first.threadId);
+    expect(phases).toEqual(['prepare', 'execute', 'prepare']);
+    expect(effects).toBe(1);
+    expect(second.events.some((event) => event.kind === 'approval-requested')).toBe(false);
+    expect(second.events).toContainEqual(
+      expect.objectContaining({ kind: 'tool-output-denied', reason: 'Order closed' }),
+    );
+  }
+});
+
+it.each(['execute', 'completed'] as const)(
+  'keeps a reserved-marker-shaped %s output as an ordinary success',
+  async (mode) => {
+    const output = { '@@adonis-agent/tool-preflight-denied': 1, reason: 'User output, not denial' };
+    const g = build(approvalRules({ tools: { refund: { required: false } } }), {
+      preflight: (_input, _ctx, { phase }) =>
+        mode === 'completed' && phase === 'execute'
+          ? { status: 'completed', output }
+          : { status: 'ready' },
+      execute: () => output,
+    });
+    const { events } = await turn(g, 'refund');
+    expect(events).toContainEqual({ kind: 'tool-output', id: 'call-0-refund', output });
+    expect(events.some((event) => event.kind === 'tool-output-denied')).toBe(false);
+  },
+);
+
+it('snapshots confirmation before a handler later mutates its own object', async () => {
+  const confirmation = { title: 'Refund Seven?', verb: 'Refund' };
+  const g = build(undefined, {
+    preflight: () => ({ status: 'ready', confirmation }),
+    execute: () => ({}),
+  });
+  const { threadId } = await turn(g, 'refund', async (frame, runId) => {
+    confirmation.title = 'Mutated later';
+    await g.service.approve(runId, frame.id);
+  });
+  expect(
+    (await g.store.getThread(threadId))?.messages.flatMap((message) => message.approvals ?? [])[0]
+      ?.confirmation?.title,
+  ).toBe('Refund Seven?');
 });
