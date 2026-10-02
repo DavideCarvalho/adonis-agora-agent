@@ -93,19 +93,8 @@ Apply the additive runtime schema before enabling independent mode. Existing dep
 
 Stop older writers, apply schema changes, run the bounded proposal-discovery backfill from the earlier foundation layer, then deploy the new writers/workers. Do not run the backfill implicitly on every worker tick. Older terminal rows without runtime outcome metadata do not gain retroactive assistant messages. Existing durable checkpoints without the new mode remain blocking; changing configuration does not rewrite an in-flight run's journal.
 
-## Paired development preview
+## Paired released packages
 
-The independent runtime and capability negotiation require the matching Aviary core/React preview until those peer releases are published. Published older peers retain legacy UI behavior when capabilities are omitted; explicit capability negotiation requires the updated peer.
+Independent approvals and capability negotiation use the paired released packages: `@dudousxd/nestjs-agent-core@0.40.0` and `@dudousxd/nestjs-agent-react@0.33.0`. Install these optional peers when using the shared catalog or React client. Agora's development dependencies pin the same versions, so a frozen install validates the published packages directly in CI and release workflows.
 
-After a frozen install, prepare the exact upstream commit recorded in `.aviary-preview.json`:
-
-```sh
-pnpm install --frozen-lockfile
-pnpm prepare:aviary-peers
-pnpm typecheck
-pnpm test
-```
-
-The script clones the pinned source into ignored `.aviary-preview/source`, verifies its exact commit and clean working tree, installs its frozen dependencies and builds core/React. To reuse an existing clean checkout at that exact commit, run `pnpm prepare:aviary-peers --source /path/to/nestjs-agent`. Remove the preview cache when changing the pin. CI checks out the same manifest commit and runs the same preparation before validation.
-
-Preparation replaces only the installed peer `dist` directories inside this checkout's `node_modules`; it removes old directories first to avoid modifying pnpm store hardlinks. Dependency versions, lockfiles and published production dependencies remain unchanged. Re-run preparation after reinstalling dependencies. Once matching peers are published, replace this development-only preview step with released version pins and a frozen lockfile update.
+Older optional peers retain legacy UI behavior when capabilities are omitted. Explicit capability negotiation requires the updated peers. The temporary source-preview preparation is no longer needed.

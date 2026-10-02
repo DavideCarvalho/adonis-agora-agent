@@ -237,11 +237,11 @@ importers:
         specifier: ^4.0.125
         version: 4.0.125(react@19.3.0)(zod@4.6.5)
       '@dudousxd/nestjs-agent-core':
-        specifier: 0.36.0
-        version: 0.36.0
+        specifier: 0.40.0
+        version: 0.40.0
       '@dudousxd/nestjs-agent-react':
-        specifier: 0.31.0
-        version: 0.31.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(ai@7.0.102(zod@4.6.5))(react@19.3.0)
+        specifier: 0.33.0
+        version: 0.33.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(ai@7.0.102(zod@4.6.5))(react@19.3.0)
       '@dudousxd/nestjs-media-client':
         specifier: 0.3.0
         version: 0.3.0
@@ -277,13 +277,13 @@ importers:
         version: 19.3.0(@types/react@19.3.0)
       agent-0-56:
         specifier: npm:@adonis-agora/agent@0.56.0
-        version: '@adonis-agora/agent@0.56.0(a3a307e56bed7fd753792228e84ab871)'
+        version: '@adonis-agora/agent@0.56.0(c51a8e354b3895b113b7d159ab9e380d)'
       agent-0-58:
         specifier: npm:@adonis-agora/agent@0.58.0
-        version: '@adonis-agora/agent@0.58.0(a3a307e56bed7fd753792228e84ab871)'
+        version: '@adonis-agora/agent@0.58.0(c51a8e354b3895b113b7d159ab9e380d)'
       agent-0-59:
         specifier: npm:@adonis-agora/agent@0.59.0
-        version: '@adonis-agora/agent@0.59.0(a3a307e56bed7fd753792228e84ab871)'
+        version: '@adonis-agora/agent@0.59.0(c51a8e354b3895b113b7d159ab9e380d)'
       ai:
         specifier: 7.0.102
         version: 7.0.102(zod@4.6.5)
@@ -1228,14 +1228,11 @@ packages:
     resolution: {integrity: sha512-QxULHAm7cNu72w97JUNCBFODFaXpbDg+dP8b/oWFAZ2MTRppA3U00Y2L1HqaS4J6yBqxwa/Y3nMBaxVKbB/NsA==}
     engines: {node: '>=20.19.0'}
 
-  '@dudousxd/nestjs-agent-core@0.34.0':
-    resolution: {integrity: sha512-b2xK7pWoxQq/NjbTqzoiysd4FBtXJ67gmE/nIcemCDObY4+GTSmcAPXieXpJZH+9S+8YPGWwW+Zjm2Rt438RYw==}
+  '@dudousxd/nestjs-agent-core@0.40.0':
+    resolution: {integrity: sha512-hprmEXKngkdv0AuuW0FuyvNvvIBDPH3SnwM6dcMuh2wXMy/QmIKuhQO9C/SDcKqyjA2RuQOX9w1U9UTYee/wVA==}
 
-  '@dudousxd/nestjs-agent-core@0.36.0':
-    resolution: {integrity: sha512-q6vykpTOlE2iUYmy/tD1XRLuc5O+KJQ4+Raw7GzBxGhNxUsnrq2uwBkpHZW60OCQWQ/NkMEh5w9WxMgpv794ig==}
-
-  '@dudousxd/nestjs-agent-react@0.31.0':
-    resolution: {integrity: sha512-hl1rK+AHMeNiiGfO4i+hlhvWPTOyfASrjr8lPLq+IhuFr7CeDpn4QoTDP0ju4TtoGkaA2tVjylXOMa5lrOSbiw==}
+  '@dudousxd/nestjs-agent-react@0.33.0':
+    resolution: {integrity: sha512-aCKQwgnb+uIUDSEwZLZlc9gmog8yro9xq4nc3sYrDAVPOnl2N7dwlUEqVlS1PfwuISMtA0VcqhIbIogFdQw2gg==}
     peerDependencies:
       '@ai-sdk/react': ^4.0.0
       '@dudousxd/nestjs-media-client': '>=0.3.0'
@@ -4524,7 +4521,7 @@ packages:
 
 snapshots:
 
-  '@adonis-agora/agent@0.56.0(a3a307e56bed7fd753792228e84ab871)':
+  '@adonis-agora/agent@0.56.0(c51a8e354b3895b113b7d159ab9e380d)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.30.1(supports-color@10.2.2)(zod@4.6.5)
       '@standard-schema/spec': 1.1.0
@@ -4538,8 +4535,8 @@ snapshots:
       '@adonisjs/core': 7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1)
       '@adonisjs/lucid': 22.4.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.4(@types/node@26.6.3))(pg@8.23.0)(supports-color@10.2.2)
       '@adonisjs/redis': 11.0.0(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2)
-      '@dudousxd/nestjs-agent-core': 0.36.0
-      '@dudousxd/nestjs-agent-react': 0.31.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(ai@7.0.102(zod@4.6.5))(react@19.3.0)
+      '@dudousxd/nestjs-agent-core': 0.40.0
+      '@dudousxd/nestjs-agent-react': 0.33.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(ai@7.0.102(zod@4.6.5))(react@19.3.0)
       '@dudousxd/nestjs-media-client': 0.3.0
       '@qdrant/js-client-rest': 1.19.0(typescript@7.0.2)
       ai: 7.0.102(zod@4.6.5)
@@ -4550,7 +4547,7 @@ snapshots:
       - '@cfworker/json-schema'
       - supports-color
 
-  '@adonis-agora/agent@0.58.0(a3a307e56bed7fd753792228e84ab871)':
+  '@adonis-agora/agent@0.58.0(c51a8e354b3895b113b7d159ab9e380d)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.30.1(supports-color@10.2.2)(zod@4.6.5)
       '@standard-schema/spec': 1.1.0
@@ -4564,8 +4561,8 @@ snapshots:
       '@adonisjs/core': 7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1)
       '@adonisjs/lucid': 22.4.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.4(@types/node@26.6.3))(pg@8.23.0)(supports-color@10.2.2)
       '@adonisjs/redis': 11.0.0(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2)
-      '@dudousxd/nestjs-agent-core': 0.36.0
-      '@dudousxd/nestjs-agent-react': 0.31.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(ai@7.0.102(zod@4.6.5))(react@19.3.0)
+      '@dudousxd/nestjs-agent-core': 0.40.0
+      '@dudousxd/nestjs-agent-react': 0.33.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(ai@7.0.102(zod@4.6.5))(react@19.3.0)
       '@dudousxd/nestjs-media-client': 0.3.0
       '@qdrant/js-client-rest': 1.19.0(typescript@7.0.2)
       ai: 7.0.102(zod@4.6.5)
@@ -4576,7 +4573,7 @@ snapshots:
       - '@cfworker/json-schema'
       - supports-color
 
-  '@adonis-agora/agent@0.59.0(a3a307e56bed7fd753792228e84ab871)':
+  '@adonis-agora/agent@0.59.0(c51a8e354b3895b113b7d159ab9e380d)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.30.1(supports-color@10.2.2)(zod@4.6.5)
       '@standard-schema/spec': 1.1.0
@@ -4590,8 +4587,8 @@ snapshots:
       '@adonisjs/core': 7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1)
       '@adonisjs/lucid': 22.4.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.4(@types/node@26.6.3))(pg@8.23.0)(supports-color@10.2.2)
       '@adonisjs/redis': 11.0.0(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2)
-      '@dudousxd/nestjs-agent-core': 0.36.0
-      '@dudousxd/nestjs-agent-react': 0.31.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(ai@7.0.102(zod@4.6.5))(react@19.3.0)
+      '@dudousxd/nestjs-agent-core': 0.40.0
+      '@dudousxd/nestjs-agent-react': 0.33.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(ai@7.0.102(zod@4.6.5))(react@19.3.0)
       '@dudousxd/nestjs-media-client': 0.3.0
       '@qdrant/js-client-rest': 1.19.0(typescript@7.0.2)
       ai: 7.0.102(zod@4.6.5)
@@ -5395,7 +5392,7 @@ snapshots:
 
   '@csstools/css-tokenizer@4.0.0': {}
 
-  '@dudousxd/nestjs-agent-core@0.34.0':
+  '@dudousxd/nestjs-agent-core@0.40.0':
     dependencies:
       '@dudousxd/nestjs-diagnostics': 0.7.2
       '@standard-schema/spec': 1.1.0
@@ -5404,19 +5401,10 @@ snapshots:
       - '@nestjs/core'
       - reflect-metadata
 
-  '@dudousxd/nestjs-agent-core@0.36.0':
-    dependencies:
-      '@dudousxd/nestjs-diagnostics': 0.7.2
-      '@standard-schema/spec': 1.1.0
-    transitivePeerDependencies:
-      - '@nestjs/common'
-      - '@nestjs/core'
-      - reflect-metadata
-
-  '@dudousxd/nestjs-agent-react@0.31.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(ai@7.0.102(zod@4.6.5))(react@19.3.0)':
+  '@dudousxd/nestjs-agent-react@0.33.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(ai@7.0.102(zod@4.6.5))(react@19.3.0)':
     dependencies:
       '@ai-sdk/react': 4.0.125(react@19.3.0)(zod@4.6.5)
-      '@dudousxd/nestjs-agent-core': 0.34.0
+      '@dudousxd/nestjs-agent-core': 0.40.0
       ai: 7.0.102(zod@4.6.5)
       react: 19.3.0
     optionalDependencies:
