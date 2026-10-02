@@ -1,5 +1,39 @@
 # @adonis-agora/agent
 
+## 0.61.0
+
+### Minor Changes
+
+- [#274](https://github.com/DavideCarvalho/adonis-agora-agent/pull/274) [`7e8c6b7`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/7e8c6b78db25e455be3d654e6784ae7938833122) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Add optional action preflight before approval and execution, with denied and completed outcomes, resolved approval confirmation, durable replay persistence, and functional/class authoring support.
+
+- [#275](https://github.com/DavideCarvalho/adonis-agora-agent/pull/275) [`c1fdeb6`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/c1fdeb65dd6210a8e8244f09bcbd4cf7bcd3990d) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Add the optional ActionProposalStore capability with scoped replay-safe snapshots, atomic decisions and queued execution work, and fenced recoverable leases in memory and Lucid. This is the persistence foundation; independent conversation execution is not enabled yet.
+  
+  Existing hosts using `autoCreateTables: false` must add a new migration that invokes `createAgentTables` on the chosen connection before using proposals. An already-recorded older migration will not run again.
+
+- [#278](https://github.com/DavideCarvalho/adonis-agora-agent/pull/278) [`7f2ba63`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/7f2ba6306e742627084193042e0d6be52c37fab6) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Add indexed worker-only proposal discovery to Lucid: claim queued or expired-lease work across
+  scopes and expire due pending cards in bounded batches. Every proposal mutation keeps discovery
+  metadata in the same fenced write. Mirror the shared worker-store conformance contract and add
+  bounded, version-fenced backfill for existing proposals after additive schema migration.
+  
+  Stop old writers before applying the forward migration and repeating backfill batches, then start
+  the new workers. This capability does not itself enable the independent conversation runtime.
+
+- [#279](https://github.com/DavideCarvalho/adonis-agora-agent/pull/279) [`0f5a1c1`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/0f5a1c10a830e7de10b16ec0d31b461ce8b1aa10) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Match Aviary's opt-in independent approval runtime: pending cards release the chat turn, scoped
+  channel/text decisions queue actions under fresh requester authorization, atomic replacement
+  supersedes pending proposals, and fenced workers admit terminal facts/UI into history.
+  Remembered grants derive from terminal proposal state; existing blocking journals retain their
+  behavior. Include native SDK polling/decisions, component capability negotiation and text fallback.
+  
+  Ship additive Lucid runtime migration and configure inventory. Apply it and the proposal discovery
+  backfill before enabling workers. External effects remain at least once and require the stable
+  tool-context idempotency key. See docs/independent-approvals.md for setup and rollout.
+
+- [#276](https://github.com/DavideCarvalho/adonis-agora-agent/pull/276) [`92450af`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/92450af57e8339e15630d7a70fccfee9b1e64b61) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Add opt-in trusted preparation for independent action proposals. Preserve original JSON separately
+  from the approved normalized input and immutable execution context, and reject schema or hook
+  input drift before effects. Existing blocking preparation and invocation retain their behavior.
+  Expose privileged worker discovery with a reference implementation in memory; SQL discovery and
+  the independent conversation runtime are separate follow-up work.
+
 ## 0.60.1
 
 ### Patch Changes
