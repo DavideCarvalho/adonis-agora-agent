@@ -1,6 +1,7 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { ToolConfirmation } from '../tool-presentation.js';
 import type { Actor, PageContext, Persona } from '../types.js';
+import type { UiCapabilities } from '../ui-capabilities.js';
 
 /**
  * Per-invocation context handed to a tool handler. Host-supplied bits are optional. Identity lives
@@ -37,6 +38,7 @@ export interface AiToolCtx {
   /** The agent running the turn, when it has a name. */
   agentName?: string;
   pageContext?: PageContext;
+  uiCapabilities?: UiCapabilities;
   /** Optional host handle (e.g. an ORM EntityManager) the app threads through options. */
   host?: unknown;
   /**
@@ -54,7 +56,12 @@ export interface AiToolCtx {
   emitUi(
     component: string,
     props: Record<string, unknown>,
-    options?: { id?: string; version?: number },
+    options?: {
+      id?: string;
+      version?: number;
+      fallbackText?: string;
+      componentVersions?: Record<string, number>;
+    },
   ): Promise<{ id: string }>;
 }
 
@@ -113,6 +120,7 @@ export interface ToolHandler<I = unknown, O = unknown> {
 
 /** Who a turn's tool list is being built for — what {@link ToolHandler.describe} can vary on. */
 export interface ToolDescribeScope {
+  uiCapabilities?: UiCapabilities;
   actor: Actor;
   /** Absent where the list is built outside a conversation (the MCP server's `tools/list`). */
   threadId?: string;
@@ -121,6 +129,7 @@ export interface ToolDescribeScope {
 
 /** A per-turn override of a tool's model-facing definition ({@link ToolHandler.describe}). */
 export interface ToolDescription {
+  available?: boolean;
   description?: string;
   inputSchema?: StandardSchemaV1;
 }

@@ -1,9 +1,12 @@
+import { assertIndependentActionRuntime } from './action-proposal-runtime.js';
+import { ActionProposalService, ActionProposalServiceError } from './action-proposal-service.js';
 import { utcDay } from './agent-deps.js';
 import type { AgentDepsFactory } from './agent-deps-factory.js';
 import type { ChatQueueService } from './chat-queue-service.js';
 import { RunNotActiveError, settleDeadRun } from './dead-run.js';
 import { readElicitationQuestions, validateElicitationAnswer } from './elicitation-input.js';
 import { personaCatalogEntry } from './personas.js';
+import type { ActionProposalMutationResult } from './spi/action-proposal-store.js';
 import type { AgentRunner } from './spi/agent-runner.js';
 import type { AgentStore } from './spi/agent-store.js';
 import {
@@ -17,6 +20,7 @@ import type {
   ListStagedAttachmentsInput,
   StagedAttachment,
 } from './spi/attachment-staging.js';
+import type { BackgroundActorResolver } from './spi/background-actor-resolver.js';
 import type { ChatQueueState } from './spi/chat-queue.js';
 import {
   findCatalogModel,
@@ -40,6 +44,8 @@ import type {
   ThreadDetail,
   ThreadSummary,
 } from './types.js';
+import type { UiCapabilities } from './ui-capabilities.js';
+import { validateUiCapabilities } from './ui-capabilities.js';
 
 /** A feedback comment is stored with the message — bounded like any other stored text. */
 const MAX_FEEDBACK_COMMENT_LENGTH = 2000;
@@ -57,6 +63,7 @@ export interface ChatParams {
    */
   personaId?: string;
   pageContext?: PageContext;
+  uiCapabilities?: UiCapabilities;
   /**
    * Uploads to attach to this message, named by id (`POST <path>/attachments` answered it). The
    * configured attachment store resolves each — the url the model fetches is never taken from here.
@@ -114,7 +121,17 @@ export interface QueuedSend {
 }
 
 /** What {@link AgentService.send} did: started a turn, or queued the message. */
-export type ChatSendResult = { runId: string; threadId: string; queued?: undefined } | QueuedSend;
+export interface ProposalDecisionSend {
+  threadId: string;
+  proposalDecision: ActionProposalMutationResult | { status: 'ambiguous'; proposalIds: string[] };
+  text: string;
+  queued?: undefined;
+  runId?: never;
+}
+export type ChatSendResult =
+  | ProposalDecisionSend
+  | { runId: string; threadId: string; queued?: undefined }
+  | QueuedSend;
 
 /**
  * A queue request the service refuses — `status` and `code` are what the routes answer:
@@ -163,6 +180,8 @@ export interface AgentServiceOptions {
    * before the queue existed.
    */
   queue?: ChatQueueService;
+  actionProposals?: ActionProposalService;
+  backgroundActorResolver?: BackgroundActorResolver;
 }
 
 /** A send's attachments were refused — `status` is what the chat route answers (`403`, `501`). */
@@ -204,7 +223,18 @@ export class AgentService {
     private readonly store: AgentStore,
     private readonly deps: AgentDepsFactory,
     private readonly options: AgentServiceOptions = {},
-  ) {}
+  ) {
+    const mode =
+      typeof deps.actionApprovalMode === 'function' ? deps.actionApprovalMode() : 'blocking';
+    assertIndependentActionRuntime(
+      mode,
+      store,
+      options.backgroundActorResolver,
+      options.queue?.supported === true,
+    );
+    if (mode === 'independent' && !options.actionProposals)
+      throw new Error('Independent action decision service is required');
+  }
 
   /**
    * The models `actor` may pick for `agent` (`GET <path>/models`). An empty catalog when none is
@@ -475,7 +505,9 @@ export class AgentService {
    * {@link ChatQueueError} instead; {@link send} is the form that queues it.
    */
   async chat(params: ChatParams): Promise<{ runId: string; threadId: string }> {
-    const result = await this.send({ ...params, mode: 'auto' });
+    const result = await this.sendInternal({ ...params, mode: 'auto' }, false);
+    if ('proposalDecision' in result)
+      throw new ChatQueueError(409, result.text, 'proposal_decision');
     if (result.queued !== true) {
       return result;
     }
@@ -501,6 +533,28 @@ export class AgentService {
    * to run after it (see {@link ChatSendMode}). What `POST <path>/chat` calls.
    */
   async send(params: ChatParams): Promise<ChatSendResult> {
+    return this.sendInternal(params, true);
+  }
+
+  private async sendInternal(
+    params: ChatParams,
+    resolveTextDecision: boolean,
+  ): Promise<ChatSendResult> {
+    if (params.uiCapabilities !== undefined)
+      params = { ...params, uiCapabilities: validateUiCapabilities(params.uiCapabilities) };
+    if (
+      resolveTextDecision &&
+      params.threadId !== undefined &&
+      params.regenerate !== true &&
+      this.options.actionProposals
+    ) {
+      const decision = await this.options.actionProposals.handleTextDecision(
+        params.actor,
+        params.threadId,
+        params.message,
+      );
+      if ('proposalDecision' in decision) return decision;
+    }
     if (params.regenerate === true && params.threadId === undefined) {
       throw new RegenerateNeedsThreadError();
     }
@@ -544,6 +598,7 @@ export class AgentService {
       agentName,
       ...(persona !== undefined ? { persona } : {}),
       ...(params.pageContext !== undefined ? { pageContext: params.pageContext } : {}),
+      ...(params.uiCapabilities !== undefined ? { uiCapabilities: params.uiCapabilities } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(model !== undefined ? { model } : {}),
       ...(params.regenerate === true ? { regenerate: true } : {}),
@@ -629,6 +684,7 @@ export class AgentService {
       ...(typeof input.persona === 'string' ? { persona: input.persona } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
+      ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
       ...(interrupting !== undefined ? { interrupt: true, at: 'head' as const } : {}),
     });
     let runId: string | undefined;
@@ -936,6 +992,37 @@ export class AgentService {
     throw new RunNotActiveError(runId);
   }
 
+  listActionProposals(actor: Actor, threadId: string) {
+    if (!this.options.actionProposals)
+      throw new ActionProposalServiceError(501, 'Independent proposals are unavailable');
+    return this.options.actionProposals.list(actor, threadId);
+  }
+  listActionProposalsPage(
+    actor: Actor,
+    threadId: string,
+    after?: import('./spi/action-proposal-store.js').ListActionProposals['after'],
+  ) {
+    if (!this.options.actionProposals)
+      throw new ActionProposalServiceError(501, 'Independent proposals are unavailable');
+    return this.options.actionProposals.listPage(actor, threadId, after);
+  }
+  decideActionProposal(
+    actor: Actor,
+    threadId: string,
+    proposalId: string,
+    decision: 'approved' | 'rejected',
+    body: unknown,
+    via = 'web',
+  ) {
+    if (!this.options.actionProposals)
+      throw new ActionProposalServiceError(501, 'Independent proposals are unavailable');
+    return this.options.actionProposals.decide(actor, threadId, proposalId, decision, body, via);
+  }
+  handleTextDecision(actor: Actor, threadId: string, text: string) {
+    if (!this.options.actionProposals) return Promise.resolve({ status: 'unmatched' as const });
+    return this.options.actionProposals.handleTextDecision(actor, threadId, text);
+  }
+
   /**
    * Approve a parked action call. `executedByRef` is who decided (the routes stamp the caller);
    * `remember` approves later calls of the same tool in the same thread; `via` names the surface the
@@ -946,6 +1033,11 @@ export class AgentService {
     toolCallId: string,
     opts: { executedByRef?: string; remember?: boolean; via?: string } = {},
   ): Promise<void> {
+    if ((await this.toolCallApproval(toolCallId))?.status === 'proposed')
+      throw new ActionProposalServiceError(
+        400,
+        'Action proposals require a scoped proposal decision',
+      );
     await this.assertRunWaiting(runId);
     return this.runner.signal(runId, toolCallId, {
       approved: true,
@@ -961,6 +1053,11 @@ export class AgentService {
     reason?: string,
     opts: { executedByRef?: string; via?: string } = {},
   ): Promise<void> {
+    if ((await this.toolCallApproval(toolCallId))?.status === 'proposed')
+      throw new ActionProposalServiceError(
+        400,
+        'Action proposals require a scoped proposal decision',
+      );
     await this.assertRunWaiting(runId);
     return this.runner.signal(runId, toolCallId, {
       approved: false,

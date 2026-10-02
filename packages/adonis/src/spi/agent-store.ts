@@ -14,6 +14,7 @@ import type {
   ToolResult,
   UsagePurpose,
 } from '../types.js';
+import type { ActionProposalOutcome } from './action-proposal-outcome-store.js';
 import type { ToolCallApprovalState } from './approval-policy.js';
 
 export interface CreateThreadInput {
@@ -47,6 +48,7 @@ export interface UpdateThreadInput {
 }
 
 export interface AppendMessageInput {
+  actionProposalOutcome?: ActionProposalOutcome;
   threadId: string;
   role: StoredMessage['role'];
   content: string;
@@ -70,6 +72,7 @@ export interface AppendMessageInput {
 }
 
 export interface RecordToolCallInput {
+  proposalId?: string;
   confirmation?: ToolConfirmation;
   toolCallId: string;
   messageId: string;

@@ -148,11 +148,12 @@ export class ToolRegistry {
     scope: Omit<ToolDescribeScope, 'actor'> = {},
   ): Promise<ToolDefinition[]> {
     const visible = await this.visibleEntries(actor, policy, allowedTools);
-    return Promise.all(
+    const definitions = await Promise.all(
       visible.map(async ({ spec, handler }) => {
         // After every gate: a tool this actor cannot reach is never asked to describe itself.
         const override =
           handler.describe === undefined ? undefined : await handler.describe({ actor, ...scope });
+        if (override?.available === false) return null;
         return {
           name: spec.name,
           kind: spec.kind,
@@ -161,6 +162,7 @@ export class ToolRegistry {
         };
       }),
     );
+    return definitions.filter((definition): definition is ToolDefinition => definition !== null);
   }
 
   /**

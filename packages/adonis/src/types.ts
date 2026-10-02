@@ -1,10 +1,13 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
+import type { ClaimedActionApproval } from './action-proposal-approval.js';
 import type { AgentIntake } from './elicitation.js';
+import type { ActionProposalOutcome } from './spi/action-proposal-outcome-store.js';
 import type { ActorResolver } from './spi/actor-resolver.js';
 import type { ChatQueueState } from './spi/chat-queue.js';
 import type { ToolPreflightResult } from './spi/tool.js';
 import type { AgentUiComponent } from './stream-events.js';
 import type { ToolConfirmation, ToolPresentation } from './tool-presentation.js';
+import type { UiCapabilities } from './ui-capabilities.js';
 
 /** Who is driving the turn. Roles + tenant come from the host app (nestjs-context/authz). */
 export interface Actor {
@@ -42,6 +45,12 @@ export interface ToolSpec {
    * to the model; served to clients by `GET <path>/tools`.
    */
   presentation?: ToolPresentation;
+  replacementKey?:
+    | string
+    | ((
+        input: unknown,
+        ctx: import('./spi/tool.js').AiToolCtx,
+      ) => string | undefined | Promise<string | undefined>);
   /**
    * Input schema as a [Standard Schema](https://standardschema.dev) — validation-agnostic, so
    * Zod, Valibot, or ArkType all work. The loop validates input via `~standard.validate` before
@@ -99,6 +108,13 @@ export interface ToolDefinition {
 
 /** A tool call the model asked for during a turn. */
 export interface ToolCallRequest {
+  actionApproval?: ClaimedActionApproval;
+  prepared?: {
+    preparationInput: unknown;
+    input: unknown;
+    preflight: ToolPreflightResult;
+    replacementKey?: string;
+  };
   /** Trusted domain preparation stamped by the runtime into the model checkpoint, never supplied by the model. */
   preflight?: ToolPreflightResult | { status: 'failed'; error: string };
   id: string;
@@ -262,6 +278,7 @@ export interface PromptContext {
   actor: Actor;
   persona?: Persona;
   pageContext?: PageContext;
+  uiCapabilities?: UiCapabilities;
   basePrompt: string;
 }
 
@@ -361,6 +378,7 @@ export interface AgentRunInput {
    */
   persona?: string | Persona;
   pageContext?: PageContext;
+  uiCapabilities?: UiCapabilities;
   /**
    * Answer the thread's last user message again instead of appending {@link userText} (ignored):
    * the loop drops every message after that user message — the answer being replaced — and runs
@@ -556,6 +574,7 @@ export interface ThreadSummary {
 }
 
 export interface StoredMessage {
+  actionProposalOutcome?: ActionProposalOutcome;
   id: string;
   role: MessageRole;
   content: string;
@@ -627,6 +646,8 @@ export type ToolCallApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expi
 
 /** The persisted approval metadata of one action tool call. See {@link StoredMessage.approvals}. */
 export interface ToolCallApproval {
+  proposalId?: string;
+  target?: { kind: 'proposal'; proposalId: string };
   confirmation?: ToolConfirmation;
   toolCallId: string;
   /** Who may decide: `'requester'` (the thread's own actor) or a role name. */
@@ -654,6 +675,7 @@ export interface ThreadDetail extends ThreadSummary {
 }
 
 export type ToolCallStatus =
+  | 'proposed'
   | 'auto_executed'
   | 'pending_approval'
   | 'executed'

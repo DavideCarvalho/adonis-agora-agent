@@ -25,6 +25,8 @@ export type StreamFrame =
       toolCallId?: string;
       /** Schema version of `data` (`ctx.emitUi`'s `version`). */
       version?: number;
+      fallbackText?: string;
+      componentVersions?: Record<string, number>;
     }
   /**
    * One frame of the agent stream protocol (`AgentStreamEvent`, shared with `@dudousxd/nestjs-agent`)
@@ -58,6 +60,7 @@ export type StreamFrame =
    */
   | {
       t: 'approval';
+      target?: { kind: 'proposal'; proposalId: string };
       runId: string;
       id: string;
       toolName: string;

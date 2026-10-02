@@ -1,4 +1,9 @@
+import {
+  canonicalActionProposalJson,
+  snapshotActionProposal,
+} from '../action-proposal-transitions.js';
 import type { ToolCallOutcome } from '../dangling-tool-calls.js';
+import type { ActionProposalOutcome } from '../spi/action-proposal-outcome-store.js';
 import type { ActionProposalStoreOptions } from '../spi/action-proposal-store.js';
 import type {
   AgentStore,
@@ -43,8 +48,10 @@ import type {
   ToolCallStatus,
   ToolResult,
 } from '../types.js';
+import type { UiCapabilities } from '../ui-capabilities.js';
 import { LucidActionProposalStore } from './lucid-action-proposal-store.js';
 import { AGENT_TABLES, ensureAgentTables } from './lucid-schema.js';
+import { withStoreTransaction } from './sqlite-transactions.js';
 
 // ── Structural Lucid typing (copied from telescope) ──────────────────────────
 // The store touches only this slice of an AdonisJS Lucid `Database`, typed structurally so
@@ -178,6 +185,7 @@ function affectedRows(result: unknown): number {
 function queuedMessageFromRow(row: Record<string, unknown>): QueuedMessage {
   const attachments = parseJson<MessageAttachment[]>(row.attachments);
   const pageContext = parseJson<PageContext>(row.page_context);
+  const uiCapabilities = parseJson<UiCapabilities>(row.ui_capabilities);
   return {
     id: String(row.id),
     threadId: String(row.thread_id),
@@ -188,6 +196,7 @@ function queuedMessageFromRow(row: Record<string, unknown>): QueuedMessage {
     ...(typeof row.persona === 'string' && row.persona.length > 0 ? { persona: row.persona } : {}),
     ...(typeof row.model === 'string' ? { model: row.model } : {}),
     ...(pageContext !== undefined ? { pageContext } : {}),
+    ...(uiCapabilities !== undefined ? { uiCapabilities } : {}),
     ...(toInt(row.interrupt) === 1 ? { interrupt: true } : {}),
     createdAt: msToIso(row.created_at),
     updatedAt: msToIso(row.updated_at),
@@ -215,6 +224,7 @@ const TURN_MESSAGE_COLUMNS = [
   'tool_calls',
   'tool_results',
   'attachments',
+  'action_proposal_outcome',
   'created_at',
 ] as const;
 
@@ -401,7 +411,7 @@ export class LucidAgentStore
 
   async forkThread(threadId: string, fromMessageId: string): Promise<ThreadSummary> {
     await this.init();
-    return this.db.transaction(async (trx) => {
+    return withStoreTransaction(this.db, async (trx) => {
       const source = await trx.from(AGENT_TABLES.threads).where('id', threadId).first();
       if (source === null || source === undefined) {
         throw new Error(`thread ${threadId} not found`);
@@ -452,6 +462,7 @@ export class LucidAgentStore
           reasoning: m.reasoning ?? null,
           reasoning_ms: m.reasoning_ms ?? null,
           ui: m.ui ?? null,
+          action_proposal_outcome: m.action_proposal_outcome ?? null,
           ...(typeof m.agent_name === 'string' ? { agent_name: m.agent_name } : {}),
           created_at: toInt(m.created_at),
         });
@@ -581,7 +592,7 @@ export class LucidAgentStore
     await this.init();
     const id = crypto.randomUUID();
     const now = Date.now();
-    await this.db.transaction(async (trx) => {
+    await withStoreTransaction(this.db, async (trx) => {
       const rows = await trx
         .from(AGENT_TABLES.queuedMessages)
         .where('thread_id', input.threadId)
@@ -607,6 +618,7 @@ export class LucidAgentStore
         persona: input.persona ?? null,
         model: input.model ?? null,
         page_context: input.pageContext !== undefined ? safeJson(input.pageContext) : null,
+        ui_capabilities: input.uiCapabilities !== undefined ? safeJson(input.uiCapabilities) : null,
         interrupt: input.interrupt === true ? 1 : 0,
         position,
         created_at: now,
@@ -653,7 +665,7 @@ export class LucidAgentStore
 
   async moveQueuedMessage(id: string, index: number): Promise<boolean> {
     await this.init();
-    return this.db.transaction(async (trx) => {
+    return withStoreTransaction(this.db, async (trx) => {
       const target = await trx.from(AGENT_TABLES.queuedMessages).where('id', id).first();
       if (target === null || target === undefined) {
         return false;
@@ -727,6 +739,10 @@ export class LucidAgentStore
       reasoning: input.reasoning ?? null,
       reasoning_ms: input.reasoningMs ?? null,
       ui: safeJson(input.ui),
+      action_proposal_outcome:
+        input.actionProposalOutcome !== undefined
+          ? canonicalActionProposalJson(input.actionProposalOutcome)
+          : null,
       created_at: now,
     });
     // Keep the thread's `updated_at` in step so list ordering reflects the latest activity.
@@ -750,6 +766,9 @@ export class LucidAgentStore
       ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
       ...(input.reasoningMs !== undefined ? { reasoningMs: input.reasoningMs } : {}),
       ...(input.ui !== undefined ? { ui: input.ui } : {}),
+      ...(input.actionProposalOutcome !== undefined
+        ? { actionProposalOutcome: snapshotActionProposal(input.actionProposalOutcome) }
+        : {}),
     };
   }
 
@@ -785,7 +804,7 @@ export class LucidAgentStore
 
   async truncateFrom(threadId: string, messageId: string): Promise<void> {
     await this.init();
-    await this.db.transaction(async (trx) => {
+    await withStoreTransaction(this.db, async (trx) => {
       const rows = await inAppendOrder(
         trx.from(AGENT_TABLES.messages).where('thread_id', threadId),
         'asc',
@@ -859,6 +878,7 @@ export class LucidAgentStore
     await this.db.table(AGENT_TABLES.toolCalls).insert({
       id: input.toolCallId,
       message_id: input.messageId,
+      proposal_id: input.proposalId ?? null,
       tool_name: input.toolName,
       tool_type: input.toolType,
       input: safeJson(input.input),
@@ -919,16 +939,21 @@ export class LucidAgentStore
 
   async rememberedApprovals(threadId: string): Promise<string[]> {
     await this.init();
+    const scope = await this.getThreadActionProposalScope(threadId);
+    if (!scope) return [];
+    const names = new Set(await this.rememberedActionProposalTools(scope));
     const messageIds = (
       await this.db.from(AGENT_TABLES.messages).where('thread_id', threadId).select('id')
     ).map((row) => String(row.id));
-    if (messageIds.length === 0) return [];
-    const rows = await this.db
-      .from(AGENT_TABLES.toolCalls)
-      .whereIn('message_id', messageIds)
-      .where('remember', 1)
-      .select('tool_name');
-    return [...new Set(rows.map((row) => String(row.tool_name)))];
+    if (messageIds.length) {
+      const rows = await this.db
+        .from(AGENT_TABLES.toolCalls)
+        .whereIn('message_id', messageIds)
+        .where('remember', 1)
+        .select('tool_name');
+      for (const row of rows) names.add(String(row.tool_name));
+    }
+    return [...names];
   }
 
   async toolCallApproval(toolCallId: string): Promise<ToolCallApprovalState | null> {
@@ -1139,6 +1164,7 @@ function threadRowToSummary(row: Record<string, unknown>, lastPreview?: string):
 /** A tool-call row's approval columns, in the shape the shared mapping reads. */
 function approvalColumns(row: Record<string, unknown>): ToolCallApprovalColumns {
   return {
+    ...(typeof row.proposal_id === 'string' ? { proposalId: row.proposal_id } : {}),
     toolCallId: String(row.id),
     ...(row.confirmation != null
       ? { confirmation: parseJson<ToolConfirmation>(row.confirmation) }
@@ -1163,7 +1189,8 @@ function rowToMessage(row: Record<string, unknown>): StoredMessage {
   const attachments = parseJson<MessageAttachment[]>(row.attachments);
   const followUps = parseJson<string[]>(row.follow_ups);
   const usage = parseJson<MessageUsage>(row.usage);
-  const ui = parseJson<AgentUiComponent[]>(row.ui);
+  const outcome = parseJson<ActionProposalOutcome>(row.action_proposal_outcome);
+  const ui = outcome?.ui ?? parseJson<AgentUiComponent[]>(row.ui);
   const feedback = parseJson<MessageFeedback>(row.feedback);
   return {
     id: String(row.id),
@@ -1183,6 +1210,7 @@ function rowToMessage(row: Record<string, unknown>): StoredMessage {
       ? { reasoningMs: toInt(row.reasoning_ms) }
       : {}),
     ...(ui !== undefined ? { ui } : {}),
+    ...(outcome !== undefined ? { actionProposalOutcome: outcome } : {}),
     ...(feedback !== undefined && feedback !== null ? { feedback } : {}),
   };
 }

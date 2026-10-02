@@ -1,4 +1,5 @@
 import type { Actor, MessageAttachment, PageContext } from '../types.js';
+import type { UiCapabilities } from '../ui-capabilities.js';
 import { type AgentStore, clearActiveRun } from './agent-store.js';
 
 // The SPI is `@dudousxd/nestjs-agent-core`'s `spi/chat-queue.ts`, copied (neither repo depends on the
@@ -47,6 +48,7 @@ export interface QueuedMessage {
   persona?: string;
   model?: string;
   pageContext?: PageContext;
+  uiCapabilities?: UiCapabilities;
   /**
    * Queued by an interrupt (`POST chat { mode: 'interrupt' }`): the running turn was cancelled to
    * make room for it, so the cancel starts it instead of pausing the queue.
@@ -88,6 +90,7 @@ export interface EnqueueMessageInput {
   persona?: string;
   model?: string;
   pageContext?: PageContext;
+  uiCapabilities?: UiCapabilities;
   interrupt?: boolean;
   /** `'tail'` (default) runs it after everything already waiting; `'head'` runs it next. */
   at?: 'tail' | 'head';

@@ -20,7 +20,7 @@ import {
 import type { FunctionalTool } from '../ai-tool-ref.js';
 import type { ToolHandler } from '../spi/tool.js';
 import type { ToolSpec } from '../types.js';
-import { AgentGenui, type GenuiFactory, type GenuiFactoryContext } from './factory.js';
+import { type GenuiFactory, type GenuiFactoryContext } from './factory.js';
 
 export * from '@dudousxd/nestjs-agent-core/genui';
 export {
@@ -105,6 +105,7 @@ export function genui(options: GenuiOptions = {}): GenuiFactory {
     });
     return {
       catalog,
+      ...(resolveCatalog === undefined ? {} : { resolveCatalog }),
       // The core's tools are typed against the NestJS core's SPI; the shapes are the same contract
       // (a spec, and a handler whose ctx carries `emitUi`), so they register here as they are.
       tools: tools.map(

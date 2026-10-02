@@ -4,6 +4,7 @@
  * types) never needs that optional peer; only `@adonis-agora/agent/genui` does.
  */
 import type { FunctionalTool } from '../ai-tool-ref.js';
+import type { Actor } from '../types.js';
 
 /** What the provider hands a {@link GenuiFactory} at boot. */
 export interface GenuiFactoryContext {
@@ -16,6 +17,11 @@ export interface GenuiFactoryContext {
 
 /** What a {@link GenuiFactory} produces: the tools to register, and the boot-time catalog. */
 export interface GenuiSetup {
+  resolveCatalog?: (scope: {
+    actor: Actor;
+    threadId?: string;
+    agentName?: string;
+  }) => unknown | Promise<unknown>;
   tools: FunctionalTool[];
   /** The boot-time catalog, bound in the container as `AgentGenui`. */
   catalog: unknown;
@@ -32,5 +38,8 @@ export type GenuiFactory = (ctx: GenuiFactoryContext) => Promise<GenuiSetup>;
  * genui: AgentGenui)` → `this.genui.catalog` (the same object a browser build imports).
  */
 export class AgentGenui {
-  constructor(readonly catalog: unknown) {}
+  constructor(
+    readonly catalog: unknown,
+    readonly resolveCatalog?: GenuiSetup['resolveCatalog'],
+  ) {}
 }

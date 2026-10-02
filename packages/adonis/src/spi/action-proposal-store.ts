@@ -1,5 +1,11 @@
+import type { AgentUiComponent } from '../stream-events.js';
 import type { ToolConfirmation } from '../tool-presentation.js';
 import type { PageContext } from '../types.js';
+import type { UiCapabilities } from '../ui-capabilities.js';
+import type {
+  ActionProposalOutcome,
+  ActionProposalOutcomeDelivery,
+} from './action-proposal-outcome-store.js';
 
 export interface ActionProposalScope {
   /** Explicit null or string; scope strings have at most 255 UTF-16 code units. */
@@ -13,6 +19,7 @@ export interface ActionProposalExecutionContext {
   agentName?: string;
   persona?: string;
   requestId: string;
+  uiCapabilities?: UiCapabilities;
   pageContext?: PageContext;
 }
 
@@ -35,6 +42,8 @@ export interface CreateActionProposal extends ActionProposalScope {
   expiresAt: number | null;
   /** Stable across claims and crash recovery; tools must honor this key. */
   idempotencyKey: string;
+  /** Explicit tool-authored replacement identity; never inferred from model text. */
+  replacementKey?: string;
 }
 
 export type ActionProposalDecision = 'pending' | 'approved' | 'rejected' | 'expired' | 'superseded';
@@ -48,6 +57,7 @@ export interface ActionProposalDecisionCommand {
 export interface ActionProposalDecisionAudit
   extends Omit<ActionProposalDecisionCommand, 'decision'> {
   at: number;
+  replacementProposalId?: string;
 }
 export interface ActionProposalLease {
   token: string;
@@ -67,6 +77,9 @@ export interface ActionProposal extends CreateActionProposal {
   decisionAudit: ActionProposalDecisionAudit | null;
   /** Embedded durable execution work: created atomically with approval, absent before it. */
   execution: ActionProposalExecution | null;
+  supersededBy?: string;
+  outcome?: ActionProposalOutcome;
+  outcomeDelivery?: ActionProposalOutcomeDelivery;
   createdAt: number;
   updatedAt: number;
 }
@@ -88,7 +101,12 @@ export interface ExtendActionProposalLease {
   generation: number;
   leaseMs: number;
 }
-export type SettleActionProposal = { token: string; generation: number } & (
+export type SettleActionProposal = {
+  token: string;
+  generation: number;
+  ui?: AgentUiComponent[];
+  text?: string;
+} & (
   | { status: 'succeeded'; result?: unknown; error?: never }
   | { status: 'failed'; error: string; result?: never }
 );
@@ -96,6 +114,8 @@ export interface ListActionProposals {
   /** Default 100; integer 1..1000. Ties order by UTF-16 lexical logical id. */
   limit?: number;
   decision?: ActionProposalDecision;
+  /** Exclusive cursor in the same creation-time / exact logical-id order. */
+  after?: { createdAt: number; id: string };
 }
 export interface ActionProposalStoreOptions {
   /** Server-configured trusted clock, never a timestamp from a request. */
@@ -139,5 +159,14 @@ export interface ActionProposalStore {
     scope: ActionProposalScope,
     id: string,
     command: SettleActionProposal,
+  ): Promise<ActionProposalMutationResult>;
+}
+
+export interface ActionProposalSupersessionStore {
+  createReplacingActionProposal(input: CreateActionProposal): Promise<CreateActionProposalResult>;
+  supersedeActionProposal(
+    scope: ActionProposalScope,
+    id: string,
+    command: { replacementProposalId: string; actorRef: string; via: string },
   ): Promise<ActionProposalMutationResult>;
 }

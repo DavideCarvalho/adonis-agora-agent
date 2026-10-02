@@ -1,7 +1,9 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
+import type { ActionApprovalMode } from './action-proposal-receipt.js';
 import type { AgentDeps } from './agent-deps.js';
 import type { AgentRegistry } from './agent-registry.js';
 import type { MemoryConfig } from './memory.js';
+import type { ResolveToolUiCatalog } from './negotiated-tool-ui.js';
 import {
   defaultPersonaOf,
   findPersona,
@@ -154,6 +156,8 @@ export function registerDelegateTools(registry: ToolRegistry, agents: AgentRegis
 
 /** The shared infrastructure the factory hands to every per-agent deps bundle. */
 export interface AgentDepsFactoryConfig {
+  actionApprovalMode?: ActionApprovalMode;
+  resolveUiCatalog?: ResolveToolUiCatalog;
   model: ModelProvider;
   store: AgentStore;
   sink: TokenStreamSink;
@@ -218,6 +222,10 @@ export class AgentDepsFactory {
   /** Every registered agent definition, in registration order. */
   agentDefinitions(): AgentDefinition[] {
     return this.config.agents.list();
+  }
+
+  actionApprovalMode(): ActionApprovalMode {
+    return this.config.actionApprovalMode ?? 'blocking';
   }
 
   defaultAgentName(): string {
@@ -317,11 +325,17 @@ export class AgentDepsFactory {
     }
     const toolAllowList = this.effectiveTools(definition);
     return {
+      ...(this.config.resolveUiCatalog !== undefined
+        ? { resolveUiCatalog: this.config.resolveUiCatalog }
+        : {}),
       model: this.config.model,
       store: this.config.store,
       sink: this.config.sink,
       rolesPolicy: this.config.rolesPolicy,
       registry: this.config.registry,
+      ...(this.config.actionApprovalMode !== undefined
+        ? { actionApprovalMode: this.config.actionApprovalMode }
+        : {}),
       systemPrompt: definition?.systemPrompt ?? 'You are a helpful assistant.',
       maxSteps: definition?.maxSteps ?? 8,
       personas,

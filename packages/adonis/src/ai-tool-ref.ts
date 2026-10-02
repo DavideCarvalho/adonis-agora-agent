@@ -65,6 +65,7 @@ export interface AiToolOptions {
    * ```
    */
   presentation?: ToolPresentation;
+  replacementKey?: ToolSpec['replacementKey'];
   /** A successful call ends the turn — no model call narrates what it already showed. */
   terminal?: boolean;
 }
@@ -229,6 +230,7 @@ export function defineTool<I = unknown, O = unknown>(
     ...(options.ability !== undefined ? { ability: options.ability } : {}),
     ...(options.enabled !== undefined ? { enabled: options.enabled } : {}),
     ...(options.presentation !== undefined ? { presentation: options.presentation } : {}),
+    ...(options.replacementKey !== undefined ? { replacementKey: options.replacementKey } : {}),
     ...(options.terminal === true ? { terminal: true } : {}),
   };
   const canUse = options.canUse;

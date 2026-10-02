@@ -1,3 +1,12 @@
+export * from './action-proposal-approval.js';
+export * from './action-proposal-executor.js';
+export * from './action-proposal-outcome.js';
+export * from './action-proposal-receipt.js';
+export * from './action-proposal-service.js';
+export * from './action-proposal-text.js';
+export * from './action-proposal-worker.js';
+export * from './spi/action-proposal-outcome-store.js';
+export * from './spi/background-actor-resolver.js';
 export const VERSION = '0.60.1';
 
 // Re-export the configure hook from the package root so `node ace configure` finds it.
@@ -268,6 +277,7 @@ export {
   type WriteMemoryInput,
   writeMemory,
 } from './memory.js';
+export * from './negotiated-tool-ui.js';
 export type { OwnershipVerdict } from './ownership.js';
 export { evaluateOwnership } from './ownership.js';
 // The ecosystem-wide cursor pagination vocabulary — structurally identical to
@@ -528,3 +538,4 @@ export {
   withTurnFrames,
 } from './turn-frames.js';
 export * from './types.js';
+export * from './ui-capabilities.js';

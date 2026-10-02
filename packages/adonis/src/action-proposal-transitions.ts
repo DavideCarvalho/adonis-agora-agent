@@ -1,3 +1,4 @@
+import { attachActionProposalOutcome } from './action-proposal-outcome.js';
 import type {
   ActionProposal,
   ActionProposalDecisionCommand,
@@ -9,6 +10,7 @@ import type {
   ListActionProposals,
   SettleActionProposal,
 } from './spi/action-proposal-store.js';
+import { validateUiCapabilities } from './ui-capabilities.js';
 
 function checkTime(value: number): void {
   if (!Number.isSafeInteger(value))
@@ -35,6 +37,7 @@ export function validateActionProposalCreation(input: CreateActionProposal): voi
     'approver',
     'expiresAt',
     'idempotencyKey',
+    'replacementKey',
   ];
   if (Object.keys(input).some((key) => !allowed.includes(key)))
     throw new TypeError('Unknown action proposal creation field');
@@ -56,14 +59,20 @@ export function validateActionProposalCreation(input: CreateActionProposal): voi
     if (value !== null && value.length > 255)
       throw new RangeError('Action proposal id and scope must fit 255 UTF-16 code units');
   }
+  if (input.replacementKey !== undefined) {
+    checkString(input.replacementKey);
+    if (input.replacementKey.length > 255)
+      throw new RangeError('replacementKey must fit 255 UTF-16 code units');
+  }
   if (Object.hasOwn(input, 'executionContext')) {
     const context = input.executionContext;
     if (context === null || typeof context !== 'object' || Array.isArray(context))
       throw new TypeError('executionContext must be a JSON object');
-    const allowedContext = ['agentName', 'persona', 'requestId', 'pageContext'];
+    const allowedContext = ['agentName', 'persona', 'requestId', 'pageContext', 'uiCapabilities'];
     if (Object.keys(context).some((key) => !allowedContext.includes(key)))
       throw new TypeError('Unknown execution context field');
     checkString(context.requestId);
+    if (Object.hasOwn(context, 'uiCapabilities')) validateUiCapabilities(context.uiCapabilities);
     if (Object.hasOwn(context, 'agentName')) checkString(context.agentName);
     if (Object.hasOwn(context, 'persona')) checkString(context.persona);
     if (Object.hasOwn(context, 'pageContext')) {
@@ -89,6 +98,19 @@ export function validateActionProposalListQuery(query: ListActionProposals = {})
     !['pending', 'approved', 'rejected', 'expired', 'superseded'].includes(query.decision)
   )
     throw new TypeError('Unsupported action proposal list decision');
+  if (query.after !== undefined) {
+    const after = query.after;
+    if (
+      typeof after !== 'object' ||
+      after === null ||
+      Array.isArray(after) ||
+      Object.keys(after).some((key) => key !== 'createdAt' && key !== 'id')
+    )
+      throw new TypeError('Invalid action proposal cursor');
+    checkTime(after.createdAt);
+    checkString(after.id);
+    if (after.id.length > 255) throw new TypeError('Action proposal cursor id is too long');
+  }
   return limit;
 }
 
@@ -152,6 +174,9 @@ export function actionProposalCreationMatches(
     execution: _execution,
     createdAt: _created,
     updatedAt: _updated,
+    supersededBy: _supersededBy,
+    outcome: _outcome,
+    outcomeDelivery: _delivery,
     ...original
   } = row;
   return canonicalActionProposalJson(original) === canonicalActionProposalJson(input);
@@ -191,7 +216,10 @@ export function transitionActionProposalDecision(
     next.decision = 'expired';
     next.decisionAudit = { actorRef: 'system', via: 'expiry', at: now };
     next.updatedAt = now;
-    return result(command.decision === 'expired' ? 'applied' : 'expired', next);
+    return result(
+      command.decision === 'expired' ? 'applied' : 'expired',
+      attachActionProposalOutcome(next, now),
+    );
   }
   if (command.decision === 'expired') return result('conflict', row);
   const { decision, ...audit } = command;
@@ -205,7 +233,7 @@ export function transitionActionProposalDecision(
   };
   next.updatedAt = now;
   if (decision === 'approved') next.execution = { status: 'queued', generation: 0, lease: null };
-  return result('applied', next);
+  return result('applied', decision === 'approved' ? next : attachActionProposalOutcome(next, now));
 }
 function checkLeaseMs(leaseMs: number, now: number): void {
   checkTime(now);
@@ -303,6 +331,56 @@ export function transitionActionProposalSettlement(
           ...(command.result === undefined ? {} : { result: command.result }),
         }
       : { status: 'failed', generation: command.generation, lease: null, error: command.error };
+  if (command.ui !== undefined) canonicalActionProposalJson(command.ui);
+  if (command.text !== undefined && typeof command.text !== 'string')
+    throw new TypeError('Outcome text must be a string');
   next.updatedAt = now;
-  return result('applied', next);
+  return result('applied', attachActionProposalOutcome(next, now, command.ui, command.text));
+}
+
+/** Caller must obtain the replacement through the same full scope and persistence authority. */
+export function transitionActionProposalSupersession(
+  row: ActionProposal,
+  replacement: ActionProposal,
+  command: { replacementProposalId: string; actorRef: string; via: string },
+  now: number,
+): ActionProposalMutationResult {
+  checkTime(now);
+  checkString(command.replacementProposalId);
+  checkString(command.actorRef);
+  checkString(command.via);
+  if (
+    replacement.id !== command.replacementProposalId ||
+    row.id === replacement.id ||
+    !actionProposalScopeMatches(row, replacement) ||
+    row.toolName !== replacement.toolName ||
+    !row.replacementKey ||
+    row.replacementKey !== replacement.replacementKey
+  )
+    return result('conflict', row);
+  if (row.decision === 'superseded')
+    return result(row.supersededBy === replacement.id ? 'unchanged' : 'conflict', row);
+  if (row.decision !== 'pending') return result('conflict', row);
+  if (row.expiresAt !== null && now >= row.expiresAt)
+    return {
+      ...transitionActionProposalDecision(
+        row,
+        { decision: 'expired', actorRef: 'system', via: 'expiry' },
+        now,
+      ),
+      status: 'expired',
+    };
+  const next = snapshotActionProposal({
+    ...row,
+    decision: 'superseded' as const,
+    supersededBy: replacement.id,
+    decisionAudit: {
+      actorRef: command.actorRef,
+      via: command.via,
+      replacementProposalId: replacement.id,
+      at: now,
+    },
+    updatedAt: now,
+  });
+  return result('applied', attachActionProposalOutcome(next, now));
 }

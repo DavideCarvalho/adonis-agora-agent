@@ -167,6 +167,7 @@ describe('agent loop — reading the thread through the store’s window', () =>
     // added to what `load:thread` records changes the payload for BOTH, so only naming the keys
     // catches it.
     expect(Object.keys(JSON.parse(windowed.recorded('load:thread'))).sort()).toEqual([
+      'actionApprovalMode',
       'hasAssistantMessage',
       'messages',
       'title',

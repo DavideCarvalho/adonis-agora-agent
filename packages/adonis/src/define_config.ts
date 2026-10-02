@@ -1,3 +1,4 @@
+import type { ActionApprovalMode } from './action-proposal-receipt.js';
 import type { BrandedFunctionalTool } from './ai-tool-ref.js';
 import type { AgentDashboardConfig } from './dashboard/define_config.js';
 import type { GenuiFactory } from './genui/factory.js';
@@ -9,6 +10,7 @@ import type { ActorDirectory } from './spi/actor-directory.js';
 import type { ActorResolver } from './spi/actor-resolver.js';
 import type { ApprovalPolicy, ApprovalRules } from './spi/approval-policy.js';
 import type { AttachmentStagingStore } from './spi/attachment-staging.js';
+import type { BackgroundActorResolver } from './spi/background-actor-resolver.js';
 import type { AgentGovernanceQueries } from './spi/governance-queries.js';
 import type { HistoryWindow } from './spi/history-window.js';
 import type { ModelCatalog, ModelCatalogView } from './spi/model-catalog.js';
@@ -86,6 +88,9 @@ export type DefaultAgentOptions = Omit<AgentDefinition, 'name'> & { name?: strin
  * ```
  */
 export interface AgentConfig {
+  actionApprovalMode?: ActionApprovalMode;
+  backgroundActorResolver?: BackgroundActorResolver;
+  actionProposalWorker?: { pollIntervalMs?: number; leaseMs?: number; maxConcurrency?: number };
   /** The LLM provider, or a lazy factory thunk so the provider SDK peer loads lazily. Required. */
   model: ModelProvider | ModelFactory;
   /** Name of the store (a key of `stores`). Omit for the in-memory store (single-process). */

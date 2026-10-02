@@ -78,7 +78,9 @@ describe('genui in config/agent.ts', () => {
       kind: 'ui',
       id: 'call-0-ui__show_order_card:ui:0',
       component: 'OrderCard',
+      version: 1,
       props: { id: 7 },
+      fallbackText: '```\n{\n  "id": 7\n}\n```',
       toolCallId: 'call-0-ui__show_order_card',
     });
   });

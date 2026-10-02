@@ -147,6 +147,7 @@ export async function mayDecideApproval(
 
 /** The columns a store keeps for one call's approval, however it names them. */
 export interface ToolCallApprovalColumns {
+  proposalId?: string | undefined;
   confirmation?: ToolConfirmation | undefined;
   toolCallId: string;
   status: ToolCallStatus;
@@ -176,7 +177,7 @@ export function toolCallApprovalFromRow(row: ToolCallApprovalColumns): ToolCallA
     return null;
   }
   const status: ToolCallApprovalStatus =
-    row.status === 'pending_approval'
+    row.status === 'pending_approval' || row.status === 'proposed'
       ? 'pending'
       : row.status === 'rejected'
         ? 'rejected'
@@ -192,6 +193,12 @@ export function toolCallApprovalFromRow(row: ToolCallApprovalColumns): ToolCallA
   const decided = status === 'approved' || status === 'rejected';
   return {
     toolCallId: row.toolCallId,
+    ...(row.proposalId !== undefined
+      ? {
+          proposalId: row.proposalId,
+          target: { kind: 'proposal' as const, proposalId: row.proposalId },
+        }
+      : {}),
     ...(row.confirmation !== undefined ? { confirmation: row.confirmation } : {}),
     approver: row.approver,
     status,
