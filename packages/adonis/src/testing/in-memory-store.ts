@@ -28,6 +28,7 @@ import type {
 } from '../spi/chat-queue.js';
 import type { AgentUiComponent } from '../stream-events.js';
 import type { ToolConfirmation } from '../tool-presentation.js';
+import { InMemoryActionProposalStore } from './in-memory-action-proposal-store.js';
 
 interface ThreadRow extends ThreadSummary {
   actorRef: string;
@@ -164,7 +165,10 @@ export interface GovernanceThreadRow {
 }
 
 /** A fully in-memory `AgentStore` for tests and the offline demo. */
-export class InMemoryAgentStore implements AgentStore, ChatQueueStore {
+export class InMemoryAgentStore
+  extends InMemoryActionProposalStore
+  implements AgentStore, ChatQueueStore
+{
   private readonly threads = new Map<string, ThreadRow>();
   /** Each thread's waiting messages, in run order. */
   private readonly queues = new Map<string, QueuedMessage[]>();

@@ -95,6 +95,7 @@ export function lucidOver(
 
 /** The agent tables, each before the tables it references. */
 const RESET_ORDER = [
+  AGENT_TABLES.actionProposals,
   AGENT_TABLES.confirmTokens,
   AGENT_TABLES.streamFrames,
   AGENT_TABLES.queuedMessages,
@@ -131,14 +132,14 @@ export interface BackendDb {
  */
 export async function openBackend(
   backend: Backend,
-  options: { tables?: boolean; mysqlFlags?: string[] } = {},
+  options: { tables?: boolean; mysqlFlags?: string[]; sqliteFile?: string } = {},
 ): Promise<BackendDb> {
   const opened: Database[] = [];
   let drop: (() => Promise<void>) | undefined;
   let open: () => Database;
   if (backend === 'sqlite') {
     const db = makeMemoryDb();
-    open = () => db;
+    open = options.sqliteFile === undefined ? () => db : () => makeMemoryDb(options.sqliteFile);
   } else {
     const name = `agent_${crypto.randomUUID().replaceAll('-', '').slice(0, 20)}`;
     await admin(
@@ -177,7 +178,7 @@ export async function openBackend(
       for (const table of RESET_ORDER) await db.from(table).delete();
     },
     replica: () => {
-      if (backend === 'sqlite') return db;
+      if (backend === 'sqlite' && options.sqliteFile === undefined) return db;
       const second = open();
       opened.push(second);
       originalCloseAll.set(second.manager, second.manager.closeAll.bind(second.manager));

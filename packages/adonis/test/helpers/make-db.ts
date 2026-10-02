@@ -8,7 +8,7 @@ import { createAgentTables, type LucidDatabaseLike } from '../../src/index.js';
  * an app" pattern (same three args Lucid's provider passes). The `:memory:` db is per-connection, so
  * the pool is pinned to 1 so every query hits the same database.
  */
-export function makeMemoryDb(): Database {
+export function makeMemoryDb(filename = ':memory:'): Database {
   const logger = new Logger({ enabled: false });
   const emitter = new Emitter(undefined as never);
   return new Database(
@@ -17,7 +17,7 @@ export function makeMemoryDb(): Database {
       connections: {
         sqlite: {
           client: 'better-sqlite3',
-          connection: { filename: ':memory:' },
+          connection: { filename },
           useNullAsDefault: true,
           pool: { min: 1, max: 1 },
         },
