@@ -16,10 +16,8 @@ allowBuilds:
   protobufjs: false
   ssh2: false
 minimumReleaseAgeExclude:
-  - '@dudousxd/nestjs-agent-core@0.26.0 || 0.33.0 || 0.34.0 || 0.36.0'
-  - '@dudousxd/nestjs-agent-react@0.28.0 || 0.31.0'
-  # Earlier releases, installed under aliases so a spec can park a run on the code that is in
-  # production and replay it on this one (test/detached-upgrade-replay.spec.ts,
-  # test/personas-upgrade-replay.spec.ts).
+  - '@dudousxd/nestjs-agent-core@0.26.0 || 0.33.0 || 0.34.0 || 0.36.0 || 0.40.0'
+  - '@dudousxd/nestjs-agent-react@0.28.0 || 0.31.0 || 0.33.0'
+  # Earlier releases are installed under aliases to test replay across upgrades.
   - '@adonis-agora/agent@0.56.0 || 0.58.0 || 0.59.0'
   - '@adonis-agora/durable@0.43.1'

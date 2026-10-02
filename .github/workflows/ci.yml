@@ -41,24 +41,6 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Verify preview preparation script
-        run: node --test scripts/prepare-aviary-peers.test.mjs
-
-      - name: Read pinned Aviary preview
-        id: aviary
-        run: node scripts/prepare-aviary-peers.mjs --print-pin >> "$GITHUB_OUTPUT"
-
-      - name: Check out pinned Aviary preview
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: ${{ steps.aviary.outputs.repository }}
-          ref: ${{ steps.aviary.outputs.commit }}
-          path: .aviary-preview/source
-          persist-credentials: false
-
-      - name: Build local paired peers
-        run: node scripts/prepare-aviary-peers.mjs --source .aviary-preview/source
-
       - run: pnpm lint
 
       - run: pnpm typecheck
