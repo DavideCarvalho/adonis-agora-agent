@@ -1,7 +1,16 @@
 import { pathToFileURL } from 'node:url';
 import type { HttpContext } from '@adonisjs/core/http';
 import type { ApplicationService } from '@adonisjs/core/types';
+import { assertIndependentActionRuntime } from '../src/action-proposal-runtime.js';
 import {
+  ActionProposalService,
+  ActionProposalServiceError,
+} from '../src/action-proposal-service.js';
+import { validateActionProposalListQuery } from '../src/action-proposal-transitions.js';
+import type { Catalog } from '../src/genui/index.js';
+import {
+  ActionProposalExecutor,
+  ActionProposalWorker,
   type Actor,
   type ActorDirectory,
   type ActorResolver,
@@ -38,7 +47,6 @@ import {
   LedgerQuotaProvider,
   lucidStoreConnection,
   type MemoryConfig,
-  type MessageAttachment,
   type ModelCatalog,
   ModelNotAllowedError,
   type ModelProvider,
@@ -50,8 +58,6 @@ import {
   parseStreamCursor,
   pricingStores,
   QuotaBlockedError,
-  type QuotaProvider,
-  type QuotaStore,
   REQUESTER_APPROVER,
   RegenerateNeedsThreadError,
   type Retriever,
@@ -72,7 +78,11 @@ import {
   withActorLabels,
 } from '../src/index.js';
 import { McpToolImporter } from '../src/mcp-client/index.js';
+import type { ResolveToolUiCatalog } from '../src/negotiated-tool-ui.js';
+import type { ListActionProposals } from '../src/spi/action-proposal-store.js';
 import { setTelescopeGovernanceQueries } from '../src/telescope/governance-registry.js';
+import type { UiCapabilities } from '../src/ui-capabilities.js';
+import { validateUiCapabilities } from '../src/ui-capabilities.js';
 
 interface ChatBody {
   message: string;
@@ -80,6 +90,7 @@ interface ChatBody {
   agent?: string;
   persona?: string;
   pageContext?: PageContext;
+  uiCapabilities?: UiCapabilities;
   /** Uploads to attach, by id alone: `[{ mediaId }]` (anything else is refused with `400`). */
   attachments?: unknown;
   /**
@@ -218,6 +229,7 @@ const DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES: readonly string[] = [
  */
 export default class AgentProvider {
   #store: AgentStore | null = null;
+  #actionProposalWorker: ActionProposalWorker | null = null;
   #sink: TokenStreamSink | null = null;
   #actorDirectory: ActorDirectory | null = null;
   #mcpTools: McpToolImporter | null = null;
@@ -279,14 +291,22 @@ export default class AgentProvider {
     registerDelegateTools(registry, agents);
     // Generative UI: the catalog's tools, registered like config-level functional tools, and the
     // boot-time catalog bound for injection.
+    let resolveUiCatalog: ResolveToolUiCatalog | undefined;
     if (config.genui !== undefined) {
       const setup = await config.genui({
         make: (klass) => this.app.container.make(klass as never),
       });
+      resolveUiCatalog = async (scope) => {
+        const serverScope = {
+          ...scope,
+          ...(scope.actor.tenantRef !== undefined ? { tenant: scope.actor.tenantRef } : {}),
+        };
+        return (await (setup.resolveCatalog?.(serverScope) ?? setup.catalog)) as Catalog;
+      };
       for (const tool of setup.tools) {
         registerFunctionalTool(registry, tool, defaultRoles);
       }
-      this.app.container.bindValue(AgentGenui, new AgentGenui(setup.catalog));
+      this.app.container.bindValue(AgentGenui, new AgentGenui(setup.catalog, setup.resolveCatalog));
     }
 
     // ── Runtime graph ──
@@ -341,6 +361,10 @@ export default class AgentProvider {
       rolesPolicy: authorizer,
       registry,
       agents,
+      ...(resolveUiCatalog !== undefined ? { resolveUiCatalog } : {}),
+      ...(config.actionApprovalMode !== undefined
+        ? { actionApprovalMode: config.actionApprovalMode }
+        : {}),
       defaultAgentName: config.defaultAgent?.name ?? 'default',
       ...(config.approvalPolicy !== undefined
         ? { approvalPolicy: toApprovalPolicy(config.approvalPolicy) }
@@ -370,6 +394,51 @@ export default class AgentProvider {
       ...(attachmentStaging !== undefined ? { attachments: attachmentStaging } : {}),
       resolveTarget: (message) => service.queuedTarget(message),
     });
+    assertIndependentActionRuntime(
+      config.actionApprovalMode,
+      store,
+      config.backgroundActorResolver,
+      queue.supported,
+    );
+    if (config.actionApprovalMode === 'independent') {
+      const executionStore = store;
+      const executor = new ActionProposalExecutor({
+        resolver: config.backgroundActorResolver!,
+        resolveExecution: async (proposal) => {
+          const name = proposal.executionContext?.agentName ?? factory.defaultAgentName();
+          if (!factory.isAgent(name))
+            throw new Error(`Action proposal agent no longer exists: ${name}`);
+          const deps = factory.forAgent(name);
+          const personaId = proposal.executionContext?.persona;
+          if (personaId !== undefined && !deps.personas.has(personaId))
+            throw new Error(`Action proposal persona no longer exists: ${personaId}`);
+          const persona = personaId === undefined ? undefined : deps.personas.get(personaId);
+          const allowedTools =
+            persona?.allowedTools === undefined
+              ? deps.toolAllowList
+              : deps.toolAllowList === undefined
+                ? persona.allowedTools
+                : deps.toolAllowList.filter((tool) => persona.allowedTools!.includes(tool));
+          return {
+            registry: deps.registry,
+            rolesPolicy: deps.rolesPolicy,
+            ...(resolveUiCatalog !== undefined ? { resolveUiCatalog } : {}),
+            ...(persona !== undefined ? { persona } : {}),
+            ...(allowedTools !== undefined ? { allowedTools } : {}),
+          };
+        },
+      });
+      this.#actionProposalWorker = new ActionProposalWorker({
+        store: executionStore,
+        executor,
+        workerId: `agora-${crypto.randomUUID()}`,
+        ...config.actionProposalWorker,
+        onError: (error) =>
+          console.error('[@adonis-agora/agent] Action proposal worker failed', error),
+      });
+    }
+    if (this.#actionProposalWorker)
+      this.app.container.bindValue(ActionProposalWorker, this.#actionProposalWorker);
     const runner =
       config.durable === true
         ? ((await this.#resolveDurableRunner(factory, store, queue, sink)) ??
@@ -377,6 +446,12 @@ export default class AgentProvider {
         : new InlineAgentRunner(factory, store, queue);
     const service: AgentService = new AgentService(runner, store, factory, {
       queue,
+      ...(config.backgroundActorResolver !== undefined
+        ? { backgroundActorResolver: config.backgroundActorResolver }
+        : {}),
+      ...(config.actionApprovalMode === 'independent'
+        ? { actionProposals: new ActionProposalService(store, factory.forAgent().approvalPolicy) }
+        : {}),
       // No `models` → the catalog the model provider carries (`aiSdkModels`), else none.
       ...(config.models !== undefined
         ? { models: toModelCatalog(config.models) }
@@ -435,9 +510,12 @@ export default class AgentProvider {
         );
       }
     }
+    this.#actionProposalWorker?.start();
   }
 
   async shutdown() {
+    await this.#actionProposalWorker?.stop();
+    this.#actionProposalWorker = null;
     // The Lucid store shares the app's `db` (it owns no connection to close); the in-process sink
     // holds only per-run buffers that GC with the provider. Drop refs so a hot reload starts clean.
     // An MCP client DOES own a connection — a spawned stdio child or an HTTP session — so it closes.
@@ -701,9 +779,14 @@ export default class AgentProvider {
             ? { personaId: body.persona }
             : {}),
           ...(body.pageContext !== undefined ? { pageContext: body.pageContext } : {}),
+          ...(body.uiCapabilities !== undefined
+            ? { uiCapabilities: validateUiCapabilities(body.uiCapabilities) }
+            : {}),
           ...(refs.length > 0 ? { attachments: refs } : {}),
         });
       } catch (error) {
+        if (error instanceof ActionProposalServiceError)
+          return ctx.response.status(error.status).json({ message: error.message });
         if (error instanceof AttachmentRefusedError) {
           return ctx.response.status(error.status).json({ message: error.message });
         }
@@ -728,6 +811,7 @@ export default class AgentProvider {
         }
         throw error;
       }
+      if ('proposalDecision' in started) return ctx.response.json(started);
       if (started.queued === true) {
         // The thread already has a turn running: the message waits in its queue (`202`, JSON — no
         // stream). `runId` is there when it started straight away; attach to it with `GET …/stream`.
@@ -1025,6 +1109,62 @@ export default class AgentProvider {
       if (actor === null) return;
       return ctx.response.json(service.personaCatalog());
     });
+
+    const proposalResponse = async (ctx: HttpContext, action: () => Promise<unknown>) => {
+      try {
+        return ctx.response.json(await action());
+      } catch (error) {
+        if (error instanceof ActionProposalServiceError)
+          return ctx.response.status(error.status).json({ message: error.message });
+        throw error;
+      }
+    };
+    router.get(p('threads/:id/action-proposals'), async (ctx: HttpContext) => {
+      const actor = await this.#resolveActor(ctx, actorResolver);
+      if (!actor) return;
+      return proposalResponse(ctx, async () => {
+        let after: ListActionProposals['after'];
+        const cursor = ctx.request.input('after');
+        if (cursor !== undefined) {
+          try {
+            if (typeof cursor !== 'string') throw new Error('cursor');
+            after = JSON.parse(cursor) as NonNullable<ListActionProposals['after']>;
+            validateActionProposalListQuery({ after });
+          } catch {
+            throw new ActionProposalServiceError(400, 'Invalid action proposal cursor');
+          }
+        }
+        const page = await service.listActionProposalsPage(actor, ctx.params.id, after);
+        if (page.next)
+          ctx.response.header(
+            'X-Action-Proposals-Next',
+            encodeURIComponent(JSON.stringify(page.next)),
+          );
+        ctx.response.header('Access-Control-Expose-Headers', 'X-Action-Proposals-Next');
+        return page.items;
+      });
+    });
+    for (const [route, decision] of [
+      ['approve', 'approved'],
+      ['reject', 'rejected'],
+    ] as const) {
+      router.post(
+        p(`threads/:id/action-proposals/:proposalId/${route}`),
+        async (ctx: HttpContext) => {
+          const actor = await this.#resolveActor(ctx, actorResolver);
+          if (!actor) return;
+          return proposalResponse(ctx, () =>
+            service.decideActionProposal(
+              actor,
+              ctx.params.id,
+              ctx.params.proposalId,
+              decision,
+              ctx.request.body() ?? {},
+            ),
+          );
+        },
+      );
+    }
 
     // 8. GET /agent/threads/:id — detail or null. Authenticated + owner-scoped (a caller reads only its
     // own threads, unless governance-privileged).

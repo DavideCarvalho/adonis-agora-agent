@@ -17,7 +17,7 @@ The trusted preparation, immutable raw/normalized execution descriptor and memor
 - Blocking remains the default. `actionApprovalMode: 'blocking' | 'independent'` is fixed per run in the existing load checkpoint. An old checkpoint without this field means blocking. Configuration changes do not switch a replayed run.
 - Only an action whose journaled approval mode is `ask` creates an independent proposal. Auto and remembered calls retain normal invocation, authorization and execute-phase preflight. Built-in elicitation `ask` still waits for human answers.
 - Finish the remaining calls in the existing batch. Return a matching pending tool receipt for each independent call; finish the step and end before another model request. Pending does not set successful terminal-tool state or emit execution success.
-- A worker executes as the freshly resolved requester, never as the reviewer. Missing actor, agent or persona fails execution explicitly. Stop on the origin or a later turn does not cancel a proposal. Pending rejection remains supported; approved cancellation and supersession are outside PR2.
+- A worker executes as the freshly resolved requester, never as the reviewer. Missing actor, agent or persona fails execution explicitly. Stop on the origin or a later turn does not cancel a proposal. Pending rejection remains supported. The completion scope includes pending-only supersession; approved cancellation remains outside this change.
 - Deliver a plain outcome fact and persisted `emitUi` components. Do not start an automatic LLM continuation. Poll scoped proposal state after the originating SSE ends.
 - Preserve remembered approval's tenant/requester/thread/tool scope and current preflight checks. Record the remembered grant once when approved execution settles, preserving the current timing, including approved execution failures; queued approval alone does not grant it.
 
@@ -81,51 +81,68 @@ Worker configuration is opt-in with `pollIntervalMs: 1000`, `leaseMs: 30000`, `m
 
 ### 1. Trusted preparation and producer stamp
 
-- [ ] Add failing registry tests for schema defaults/transforms: preparation runs schema and the prepare hook once; the card and stored input use the same normalized value. A model-supplied stamp cannot bypass preparation.
-- [ ] Add internal `prepareValidated(name, input, ctx, policy, options)` returning `{ preparationInput: unknown, input: unknown, preflight: ToolPreflightResult }` from one call to the existing validated pipeline. Keep public `prepare()` returning only the preflight result by delegating to it. Snapshot both original raw JSON as `preparationInput` and normalized JSON as proposal `input` before returning them for proposal creation. Capture raw JSON before calling a schema that may mutate its argument.
-- [ ] Carry that result in a **server-produced** model-step/claimed-call stamp for dispatched execution. Strip model-provided internal stamp fields before enrichment. Resolve stamps through the worker's actual prepared output, never a Boolean asserted by the model. Preserve preflight `completed`/`denied` short-circuits and existing public contracts.
-- [ ] Add trusted internal `InvokeOptions.approvedInput` to the existing validation/invocation pipeline. Public invocation behavior remains unchanged when it is absent. Parse `preparationInput` once with the current schema and compare canonical parsed input with approved `approvedInput` before execute preflight or the handler. Never accept this option from provider/model/client payloads.
-- [ ] Run focused registry/preflight specs RED, then GREEN in both repositories. Cover transformed confirmation, mutable nested input, raw null, dispatched processes without local handlers, unchanged nonidempotent transforms and changed defaults/transforms rejected before execute preflight. No duplicate schema or prepare-hook invocation.
+- [x] Add failing registry tests for schema defaults/transforms: preparation runs schema and the prepare hook once; the card and stored input use the same normalized value. A model-supplied stamp cannot bypass preparation.
+- [x] Add internal `prepareValidated(name, input, ctx, policy, options)` returning `{ preparationInput: unknown, input: unknown, preflight: ToolPreflightResult }` from one call to the existing validated pipeline. Keep public `prepare()` returning only the preflight result by delegating to it. Snapshot both original raw JSON as `preparationInput` and normalized JSON as proposal `input` before returning them for proposal creation. Capture raw JSON before calling a schema that may mutate its argument.
+- [x] Carry that result in a **server-produced** model-step/claimed-call stamp for dispatched execution. Strip model-provided internal stamp fields before enrichment. Resolve stamps through the worker's actual prepared output, never a Boolean asserted by the model. Preserve preflight `completed`/`denied` short-circuits and existing public contracts.
+- [x] Add trusted internal `InvokeOptions.approvedInput` to the existing validation/invocation pipeline. Public invocation behavior remains unchanged when it is absent. Parse `preparationInput` once with the current schema and compare canonical parsed input with approved `approvedInput` before execute preflight or the handler. Never accept this option from provider/model/client payloads.
+- [x] Run focused registry/preflight specs RED, then GREEN in both repositories. Cover transformed confirmation, mutable nested input, raw null, dispatched processes without local handlers, unchanged nonidempotent transforms and changed defaults/transforms rejected before execute preflight. No duplicate schema or prepare-hook invocation.
 
 ### 2. Persistence and worker discovery
 
-- [ ] Write shared fail-first contracts for discovery across scopes, two-replica claim, expired execution recovery, expiry-vs-approval, settlement/outbox rollback, terminal-decision/outbox rollback and exact JSON identity.
-- [ ] Add execution-context payload and indexed `execution_status`, `lease_expires_at`, `proposal_expires_at` where absent; add embedded terminal outcome/delivery state with indexed delivery status and lease expiry; avoid a separate outbox table. Mirror all dialects and additive schema/migration tests.
-- [ ] Implement bounded candidate discovery plus existing scoped CAS. Reuse the 32-attempt contention policy; preserve caller transactions, own winning lease responses, server clock checks and canonical escaped TEXT/LONGTEXT snapshots.
-- [ ] Add shared fail-first admission tests: failure after fact insertion rolls both writes back; delivery races a user-send and another delivery; duplicate admission returns one fact; wrong scope/stale lease/deleted thread cannot admit.
+- [x] Write shared fail-first contracts for discovery across scopes, two-replica claim, expired execution recovery, expiry-vs-approval, settlement/outbox rollback, terminal-decision/outbox rollback and exact JSON identity.
+- [x] Add execution-context payload and indexed `execution_status`, `lease_expires_at`, `proposal_expires_at` where absent; add embedded terminal outcome/delivery state with indexed delivery status and lease expiry; avoid a separate outbox table. Mirror all dialects and additive schema/migration tests.
+- [x] Implement bounded candidate discovery plus existing scoped CAS. Reuse the 32-attempt contention policy; preserve caller transactions, own winning lease responses, server clock checks and canonical escaped TEXT/LONGTEXT snapshots.
+- [x] Add shared fail-first admission tests: failure after fact insertion rolls both writes back; delivery races a user-send and another delivery; duplicate admission returns one fact; wrong scope/stale lease/deleted thread cannot admit.
 
 ### 3. Run mode and pending receipt
 
-- [ ] Write an old-journal replay test and a configuration-change-mid-run test before touching the loop.
-- [ ] Extend the existing load checkpoint's new journal payload with fixed mode; normalize old shapes to blocking without inserting checkpoints before old `awaitDecision`/signal positions. Mirror inline and durable hooks.
-- [ ] Create the deterministic proposal within the existing trusted claim checkpoint using both original preparation input and normalized approved input plus execution context. Store a proposal link and `proposed` call status; exclude it from dead-run pending-call cleanup and legacy approval signaling.
-- [ ] Add `recordProposalReceipt` and truthful wire metadata `{ proposalId, status: 'pending', executed: false }`. Persist its matched tool result through the existing step-output path, finish remaining batch calls, then end normally. Distinguish `hasIndependentProposal` from successful `terminal` state.
-- [ ] Prove a second message starts before decision, batch ordering remains intact, pending terminal tools never claim success, auto/remembered/elicitation keep their previous behavior, and replay creates one proposal/card.
+- [x] Write an old-journal replay test and a configuration-change-mid-run test before touching the loop.
+- [x] Extend the existing load checkpoint's new journal payload with fixed mode; normalize old shapes to blocking without inserting checkpoints before old `awaitDecision`/signal positions. Mirror inline and durable hooks.
+- [x] Create the deterministic proposal within the existing trusted claim checkpoint using both original preparation input and normalized approved input plus execution context. Store a proposal link and `proposed` call status; exclude it from dead-run pending-call cleanup and legacy approval signaling.
+- [x] Add `recordProposalReceipt` and truthful wire metadata `{ proposalId, status: 'pending', executed: false }`. Persist its matched tool result through the existing step-output path, finish remaining batch calls, then end normally. Distinguish `hasIndependentProposal` from successful `terminal` state.
+- [x] Prove a second message starts before decision, batch ordering remains intact, pending terminal tools never claim success, auto/remembered/elicitation keep their previous behavior, and replay creates one proposal/card.
 
 ### 4. Authorized decision and read routes
 
-- [ ] Add separate routes: `GET /threads/:threadId/action-proposals`, `POST /threads/:threadId/action-proposals/:proposalId/approve`, and `/reject`. Internal route names follow each library's convention.
-- [ ] Resolve actor from the authenticated request; derive stored thread scope server-side, then apply existing policy `canDecide` to the immutable requester/approver. Body accepts only `remember?` or `reason?`; never input, card, tenant, requester or decision time.
-- [ ] Keep legacy tool-call/run routes unchanged. Add a discriminated proposal target to shared transport/console integration; do not try legacy signaling merely because a proposal ID resembles a call ID. Preserve trust boundaries for operator ports rather than treating opaque `executedByRef` as authorization.
-- [ ] Test unauthorized tenant/requester/role, forged body fields, duplicate decision, expiry boundary and proposal approval after origin run completion. Return serialized proposal state and explicit CAS outcome; do not return a false execution-success acknowledgement.
+- [x] Add separate routes: `GET /threads/:threadId/action-proposals`, `POST /threads/:threadId/action-proposals/:proposalId/approve`, and `/reject`. Internal route names follow each library's convention.
+- [x] Resolve actor from the authenticated request; derive stored thread scope server-side, then apply existing policy `canDecide` to the immutable requester/approver. Body accepts only `remember?` or `reason?`; never input, card, tenant, requester or decision time.
+- [x] Keep legacy tool-call/run routes unchanged. Add a discriminated proposal target to shared transport/console integration; do not try legacy signaling merely because a proposal ID resembles a call ID. Preserve trust boundaries for operator ports rather than treating opaque `executedByRef` as authorization.
+- [x] Test unauthorized tenant/requester/role, forged body fields, duplicate decision, expiry boundary and proposal approval after origin run completion. Return serialized proposal state and explicit CAS outcome; do not return a false execution-success acknowledgement.
 
 ### 5. Current-authority executor and scheduler
 
-- [ ] Fail configuration early unless the store has proposal/worker/outcome/admission capabilities and `BackgroundActorResolver` is configured. Do this only when independent mode is enabled.
-- [ ] Build `ActionProposalExecutor.execute(claimed)` from exact recorded agent/persona, current requester and fresh deps. Verify identity/tenant match; reapply current allow-list and registry authorization. Invoke the current schema on `preparationInput` (falling back only when absent) with trusted `approvedInput: proposal.input`; canonical mismatch fails work before execute preflight or the handler. Reuse `registry.invoke` rather than calling prepare a second time. This preserves unchanged nonidempotent transforms and rejects schema/default drift from the approved action.
-- [ ] Use recorded origin identifiers and the unchanged proposal idempotency key in tool context. Recreate server host dependencies through the deps factory. Collect `emitUi` into outcome UI without writing to the completed origin sink.
-- [ ] Implement lifecycle polling of expirations, execution claims and delivery claims; use persisted recovery as the authority, not an in-memory promise map or wake-up notification. Admission never starts an LLM run.
-- [ ] Test revoked roles/flag/allow-list/`canUse`, invalid transformed input under changed schema, deleted requester, missing named agent/persona, denied/completed preflight, crash after effect, same key after recovery, stale settlement and lease renewal/shutdown.
+- [x] Fail configuration early unless the store has proposal/worker/outcome/admission capabilities and `BackgroundActorResolver` is configured. Do this only when independent mode is enabled.
+- [x] Build `ActionProposalExecutor.execute(claimed)` from exact recorded agent/persona, current requester and fresh deps. Verify identity/tenant match; reapply current allow-list and registry authorization. Invoke the current schema on `preparationInput` (falling back only when absent) with trusted `approvedInput: proposal.input`; canonical mismatch fails work before execute preflight or the handler. Reuse `registry.invoke` rather than calling prepare a second time. This preserves unchanged nonidempotent transforms and rejects schema/default drift from the approved action.
+- [x] Use recorded origin identifiers and the unchanged proposal idempotency key in tool context. Recreate server host dependencies through the deps factory. Collect `emitUi` into outcome UI without writing to the completed origin sink.
+- [x] Implement lifecycle polling of expirations, execution claims and delivery claims; use persisted recovery as the authority, not an in-memory promise map or wake-up notification. Admission never starts an LLM run.
+- [x] Test revoked roles/flag/allow-list/`canUse`, invalid transformed input under changed schema, deleted requester, missing named agent/persona, denied/completed preflight, crash after effect, same key after recovery, stale settlement and lease renewal/shutdown.
 
 ### 6. History, React and late updates
 
-- [ ] Add provider-contract tests proving the original call retains its matching pending receipt and later facts never become unmatched tool results, including history window selection and a conversation that has advanced.
-- [ ] Add scoped polling to the shared React client while proposals are pending/queued/executing, and refetch on focus/reconnect. Merge state by proposal ID; reconcile terminal fact/UI by outcome ID. Invalidate transcript reads when an outcome becomes admitted. Client reads cannot overwrite local active-run messages with an older snapshot.
-- [ ] Render existing approval controls using the explicit proposal target; status distinguishes pending, queued, executing, succeeded and failed. Do not reuse finished SSE, mark pending as executed, or auto-retry failed work. Agora maps its native wire shapes into the same published React implementation.
-- [ ] Test origin SSE ended, decision in another tab, completion during a different active turn, reconnect after admission, duplicate polling payload and late UI persistence after reload. Premium UI redesign and supersession remain the next stage.
+- [x] Add provider-contract tests proving the original call retains its matching pending receipt and later facts never become unmatched tool results, including history window selection and a conversation that has advanced.
+- [x] Add scoped polling to the shared React client while proposals are pending/queued/executing, and refetch on focus/reconnect. Merge state by proposal ID; reconcile terminal fact/UI by outcome ID. Invalidate transcript reads when an outcome becomes admitted. Client reads cannot overwrite local active-run messages with an older snapshot.
+- [x] Render existing approval controls using the explicit proposal target; status distinguishes pending, queued, executing, succeeded and failed. Do not reuse finished SSE, mark pending as executed, or auto-retry failed work. Agora maps its native wire shapes into the same published React implementation.
+- [x] Test origin SSE ended, decision in another tab, completion during a different active turn, reconnect after admission, duplicate polling payload and late UI persistence after reload. The completion scope also covers pending-only supersession, text/channel decisions and negotiated component catalogs. Premium UI redesign remains outside this change.
 
 ## Verification and review checkpoints
 
 Every task begins with its stated failing test. Run targeted RED/GREEN commands using existing package Vitest configurations; SQL contracts run on SQLite, PostgreSQL and MySQL. Before paired PR2 publication run `pnpm test`, `pnpm test:db`, build, production/spec typechecks, Biome and diff checks in Nest; run the existing package test/build/typecheck/lint commands plus its real-DB matrix in Agora. Review normalized preparation and old-journal compatibility before the loop integration, then review settlement/admission transactions before worker lifecycle wiring.
 
 Acceptance is one truthful pending receipt, a normally ended/free conversation, one authorized recoverable execution, one durable terminal fact/UI delivery, and valid provider history after subsequent messages. The user sees this plan before runtime changes begin.
+
+
+## Completion evidence, 2026-10-01
+
+The four paired foundation layers precede this runtime layer. Independent SPEC and QUALITY reviews cover the backend, SQL admission/replacement and shared React/catalog changes. Their findings produced regression coverage for exact MySQL thread IDs, supported transaction drivers, caller rollback, current requester authorization, truncated approval lists, origin-call collisions, historical component versions and optional-peer compatibility.
+
+| Acceptance | Evidence in the repositories |
+| --- | --- |
+| Origin turn finishes and a second send starts before approval | Nest `proposals/action-proposal.e2e.spec.ts`; Agora independent runtime route/loop tests |
+| Fresh authorization and unchanged approved input | Both `action-proposal-executor` and registry/preparation specs |
+| One fact after races, failures and caller rollback | Drizzle `action-proposal-outcome.db.spec.ts`, `action-proposal-transaction-races.db.spec.ts`; MikroORM and Lucid equivalent admission tests |
+| Safe text/channel decisions after origin completion | Both scoped proposal services, native/AG-UI HTTP tests and text-command tests |
+| Pending-only replacement and remembered terminal grants | SQL and memory proposal tests on each adapter |
+| Long histories retain new proposals | Exclusive UTF-16 cursor tests, filtered raw-page route tests and SDK traversal tests |
+| Negotiated UI and readable history | Shared `genui/capabilities` and React fallback/version tests; native catalog/HTTP tests |
+
+The user-facing configuration, channel behavior, shared catalog and additive database rollout are documented in [the implementation guide](../../independent-approvals.md). Execution remains at least once, with a stable idempotency key; result admission is atomic and deduplicated. Blocking remains the default and legacy journals retain their checkpoint ordering.

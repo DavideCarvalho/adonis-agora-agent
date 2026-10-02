@@ -61,6 +61,14 @@ the checkpoints on either side stay sequential in call order.
 `historyWindow` bounds how much of a thread rides into a turn — a message count, a token budget, or
 both, optionally folding what it left out into a leading summary.
 
+## Independent approvals
+
+Pending actions can release the chat turn, accept authenticated decisions by button, text or
+operator channel, and deliver their durable results into history. Approval policy, per-call
+preflight, expiration, remembered approval and pending replacement share the same runtime.
+The component catalog negotiates client renderer support and preserves text fallbacks.
+See [setup, behavior and database rollout](docs/independent-approvals.md).
+
 ## Testing against real databases
 
 `pnpm test` runs everything on in-memory SQLite. `pnpm test:db` runs it again with the Lucid store

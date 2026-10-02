@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { type AgUiEvent, agUiAdapter, decodeInterruptId } from '../src/ag-ui/index.js';
 import { type AgentConfig, AgentService, attachmentStores, defineTool } from '../src/index.js';
 import { FakeModelProvider, type FakeScript } from '../src/testing/fake-model-provider.js';
+import { InMemoryAgentStore } from '../src/testing/in-memory-store.js';
 import { assertConforms, assertInputSchema } from './helpers/ag-ui.js';
 import { type BootedApp, bootAgentApp, readSse } from './helpers/boot-agent-app.js';
 
@@ -40,7 +41,7 @@ const refund = defineTool(
   () => ({ refunded: true }),
 );
 
-function agent(url: string, actor = 'u1', threadId = crypto.randomUUID()): HttpAgent {
+function agent(url: string, actor = 'u1', threadId: string = crypto.randomUUID()): HttpAgent {
   return new HttpAgent({ url: `${url}/agent/ag-ui`, headers: { 'x-actor-id': actor }, threadId });
 }
 
@@ -336,4 +337,57 @@ describe('POST /agent/ag-ui', () => {
       toolCallId: 'call-0-refund',
     });
   });
+});
+
+it('acknowledges an independent text decision over AG-UI without starting a model run', async () => {
+  const store = new InMemoryAgentStore();
+  const actor = { id: 'u1', roles: ['ADMIN'] };
+  const thread = await store.createThread({ id: 'proposal-thread', actor });
+  await store.createActionProposal({
+    id: 'proposal-control',
+    threadId: thread.id,
+    actorRef: actor.id,
+    tenantRef: null,
+    originRunId: 'completed-origin',
+    originMessageId: 'origin-message',
+    originToolCallId: 'origin-call',
+    toolName: 'refund',
+    input: { id: 11 },
+    confirmation: { title: 'Refund?', verb: 'Refund' },
+    approver: 'requester',
+    expiresAt: null,
+    idempotencyKey: 'control',
+  });
+  let modelCalls = 0;
+  booted = await bootApp(
+    () => {
+      modelCalls++;
+      return { text: 'Unexpected model run' };
+    },
+    {
+      store: 'test',
+      stores: { test: async () => store },
+      actionApprovalMode: 'independent',
+      backgroundActorResolver: { resolve: async () => actor },
+      tools: [refund],
+    },
+  );
+  const client = agent(booted.url, actor.id, thread.id);
+  const result = await run(client, 'confirmar #proposal-control');
+  expect(modelCalls).toBe(0);
+  expect(result.events.map((event) => event.type)).toContain('RUN_FINISHED');
+  expect(
+    result.events.some(
+      (event) => event.type === 'CUSTOM' && event.name === 'aviary.action-proposal-decision',
+    ),
+  ).toBe(true);
+  expect(
+    (
+      await store.getActionProposal(
+        { threadId: thread.id, actorRef: actor.id, tenantRef: null },
+        'proposal-control',
+      )
+    )?.decisionAudit?.via,
+  ).toBe('text');
+  assertConforms(result.events);
 });

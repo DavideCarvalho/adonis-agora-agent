@@ -14,6 +14,7 @@ import {
 import type { AgentService } from '../agent-service.js';
 import type { ProtocolAdapter, ProtocolAdapterHost } from '../spi/protocol-adapter.js';
 import type { Actor, PageContext } from '../types.js';
+import { actionProposalDecisionEvents } from './proposal-decision.js';
 import { type AgUiStreamOptions, agUiEvents, agUiSse } from './stream.js';
 
 export interface AgUiAdapterOptions {
@@ -126,6 +127,33 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
         if (owner !== null) {
           if (!(await host.assertOwner(ctx, actor, owner, 'thread'))) return;
         }
+        if (owner !== null && turn.media.length === 0) {
+          try {
+            const decision = await service.handleTextDecision(actor, input.threadId, turn.text);
+            if ('proposalDecision' in decision) {
+              const raw = ctx.response.response;
+              raw.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache, no-transform',
+              });
+              for (const event of [
+                ...warningEvents(warnings),
+                ...actionProposalDecisionEvents({
+                  threadId: input.threadId,
+                  runId: input.runId,
+                  text: decision.text,
+                  proposalDecision: decision.proposalDecision,
+                }),
+              ])
+                raw.write(agUiSse(event));
+              raw.end();
+              return;
+            }
+          } catch (error) {
+            if (host.refuseSend(ctx, error)) return;
+            throw error;
+          }
+        }
         const refs: { mediaId: string }[] = [];
         for (const media of turn.media) {
           const label = `The ${media.kind} "${media.filename}" was not used`;
@@ -176,6 +204,9 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
             ...(owner !== null ? { threadId: input.threadId } : { newThreadId: input.threadId }),
             ...(forwarded.agent !== undefined ? { agentName: forwarded.agent } : {}),
             ...(forwarded.model !== undefined ? { model: forwarded.model } : {}),
+            ...(forwarded.uiCapabilities !== undefined
+              ? { uiCapabilities: forwarded.uiCapabilities }
+              : {}),
             ...(forwarded.persona !== undefined ? { personaId: forwarded.persona } : {}),
             ...(pageContext !== undefined ? { pageContext } : {}),
             ...(refs.length > 0 ? { attachments: refs } : {}),

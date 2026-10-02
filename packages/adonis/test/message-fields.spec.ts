@@ -13,6 +13,30 @@ const ACTOR: Actor = { id: 'u1', roles: ['ADMIN'] };
  * round-trip assertion below can never fall behind the input shape it is meant to cover.
  */
 const OPTIONAL_FIELDS: Required<Omit<AppendMessageInput, 'threadId' | 'role' | 'content'>> = {
+  actionProposalOutcome: {
+    id: 'proposal:outcome:1',
+    proposalId: 'proposal',
+    outcomeVersion: 1,
+    actorRef: 'u1',
+    tenantRef: null,
+    threadId: 'origin',
+    originRunId: 'run',
+    originToolCallId: 'call',
+    toolName: 'search',
+    decision: 'approved',
+    executionStatus: 'succeeded',
+    result: { hits: 2 },
+    createdAt: 1000,
+    ui: [
+      {
+        id: 'call-1:ui:0',
+        component: 'ShipCard',
+        props: { eta: '2026-10-01' },
+        version: 2,
+        toolCallId: 'call-1',
+      },
+    ],
+  },
   persona: 'analyst',
   toolCalls: [{ id: 'call-1', name: 'search', input: { q: 'ship' } }],
   toolResults: [{ id: 'call-1', name: 'search', output: { hits: 2 } }],

@@ -14,33 +14,51 @@ interface ToolStepOutputWithUi {
   [TOOL_STEP_UI]: 1;
   output: unknown;
   ui: AgentUiComponent[];
+  text?: string;
 }
 
 /**
  * What a tool step returns: the output alone when the tool pushed nothing (the bytes a run journaled
  * before `emitUi` existed), else an envelope carrying the pushes with it.
  */
-export function wrapToolStepOutput(output: unknown, ui: readonly AgentUiComponent[]): unknown {
+export function wrapToolStepOutput(
+  output: unknown,
+  ui: readonly AgentUiComponent[],
+  text?: string,
+): unknown {
   const reservedOutput =
     typeof output === 'object' &&
     output !== null &&
     (TOOL_STEP_UI in output || '@@adonis-agent/tool-preflight-denied' in output);
-  if (ui.length === 0 && !reservedOutput) {
+  if (ui.length === 0 && !text && !reservedOutput) {
     return output;
   }
-  const wrapped: ToolStepOutputWithUi = { [TOOL_STEP_UI]: 1, output, ui: [...ui] };
+  const wrapped: ToolStepOutputWithUi = {
+    [TOOL_STEP_UI]: 1,
+    output,
+    ui: [...ui],
+    ...(text ? { text } : {}),
+  };
   return wrapped;
 }
 
 /** Read a tool step's result back — an envelope, or a bare output recorded without one. */
-export function unwrapToolStepOutput(raw: unknown): { output: unknown; ui: AgentUiComponent[] } {
+export function unwrapToolStepOutput(raw: unknown): {
+  output: unknown;
+  ui: AgentUiComponent[];
+  text?: string;
+} {
   if (
     typeof raw === 'object' &&
     raw !== null &&
     (raw as Partial<ToolStepOutputWithUi>)[TOOL_STEP_UI] === 1
   ) {
     const wrapped = raw as ToolStepOutputWithUi;
-    return { output: wrapped.output, ui: Array.isArray(wrapped.ui) ? wrapped.ui : [] };
+    return {
+      output: wrapped.output,
+      ui: Array.isArray(wrapped.ui) ? wrapped.ui : [],
+      ...(wrapped.text ? { text: wrapped.text } : {}),
+    };
   }
   return { output: raw, ui: [] };
 }
@@ -98,6 +116,15 @@ export function createUiCollector(toolCallId: string, writer?: SinkWriter): UiCo
       props: JSON.parse(JSON.stringify(props)) as Record<string, unknown>,
       ...(options.version !== undefined ? { version: options.version } : {}),
       toolCallId,
+      ...(options.fallbackText !== undefined ? { fallbackText: options.fallbackText } : {}),
+      ...(options.componentVersions !== undefined
+        ? {
+            componentVersions: JSON.parse(JSON.stringify(options.componentVersions)) as Record<
+              string,
+              number
+            >,
+          }
+        : {}),
     };
     pushed.set(id, entry);
     await writer?.write({
@@ -107,6 +134,10 @@ export function createUiCollector(toolCallId: string, writer?: SinkWriter): UiCo
       id,
       toolCallId,
       ...(entry.version !== undefined ? { version: entry.version } : {}),
+      ...(entry.fallbackText !== undefined ? { fallbackText: entry.fallbackText } : {}),
+      ...(entry.componentVersions !== undefined
+        ? { componentVersions: entry.componentVersions }
+        : {}),
     });
     return { id };
   };
@@ -130,4 +161,14 @@ export function mergeUi(
     }
   }
   return [...merged.values()];
+}
+
+/** Preserve JSON snapshots, but make unsafe UTF-16 safe for human-text SQL columns. */
+export function escapeUnsafeToolUiText(text: string): string {
+  return text
+    .replaceAll('\u0000', '\\u0000')
+    .replace(
+      /[\uD800-\uDFFF]/gu,
+      (unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, '0')}`,
+    );
 }

@@ -3,6 +3,7 @@ import {
   validateActionProposalExpiryBatch,
   validateActionProposalWorkerClaim,
 } from '../action-proposal-discovery.js';
+import { claimActionProposalOutcome } from '../action-proposal-outcome.js';
 import {
   actionProposalCreationMatches,
   actionProposalScopeMatches,
@@ -12,9 +13,14 @@ import {
   transitionActionProposalDecision,
   transitionActionProposalLease,
   transitionActionProposalSettlement,
+  transitionActionProposalSupersession,
   validateActionProposalCreation,
   validateActionProposalListQuery,
 } from '../action-proposal-transitions.js';
+import type {
+  ActionProposalOutcome,
+  ActionProposalOutcomeLease,
+} from '../spi/action-proposal-outcome-store.js';
 import type {
   ActionProposal,
   ActionProposalDecisionCommand,
@@ -33,8 +39,8 @@ import type { ActionProposalWorkerStore } from '../spi/action-proposal-worker-st
 
 /** Reference single-process implementation; durable adapters use the same transitions under CAS. */
 export class InMemoryActionProposalStore implements ActionProposalStore, ActionProposalWorkerStore {
-  private readonly rows = new Map<string, ActionProposal>();
-  private readonly clock: () => number;
+  protected readonly rows = new Map<string, ActionProposal>();
+  protected readonly clock: () => number;
   constructor(options: ActionProposalStoreOptions = {}) {
     this.clock = options.clock ?? Date.now;
   }
@@ -66,6 +72,12 @@ export class InMemoryActionProposalStore implements ActionProposalStore, ActionP
         (row) =>
           actionProposalScopeMatches(row, scope) &&
           (query.decision === undefined || row.decision === query.decision),
+      )
+      .filter(
+        (row) =>
+          query.after === undefined ||
+          row.createdAt > query.after.createdAt ||
+          (row.createdAt === query.after.createdAt && row.id > query.after.id),
       )
       .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
       .slice(0, limit)
@@ -155,5 +167,78 @@ export class InMemoryActionProposalStore implements ActionProposalStore, ActionP
       if (result.status === 'applied') expired++;
     }
     return expired;
+  }
+  async claimNextActionProposalOutcome(
+    command: ClaimActionProposal,
+  ): Promise<{ outcome: ActionProposalOutcome; lease: ActionProposalOutcomeLease } | null> {
+    const now = this.clock();
+    validateActionProposalWorkerClaim(command, now);
+    const candidates = [...this.rows.values()]
+      .filter(
+        (row) =>
+          row.outcomeDelivery?.status === 'pending' &&
+          (!row.outcomeDelivery.lease || now >= row.outcomeDelivery.lease.expiresAt),
+      )
+      .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .slice(0, 32);
+    for (const candidate of candidates) {
+      const row = this.rows.get(candidate.id);
+      if (!row) continue;
+      const next = claimActionProposalOutcome(row, command, this.clock(), randomUUID());
+      if (!next?.outcome || !next.outcomeDelivery?.lease) continue;
+      this.rows.set(next.id, next);
+      return {
+        outcome: snapshotActionProposal(next.outcome),
+        lease: {
+          outcomeId: next.outcome.id,
+          token: next.outcomeDelivery.lease.token,
+          generation: next.outcomeDelivery.generation,
+        },
+      };
+    }
+    return null;
+  }
+
+  async createReplacingActionProposal(
+    input: CreateActionProposal,
+  ): Promise<CreateActionProposalResult> {
+    validateActionProposalCreation(input);
+    const existing = this.rows.get(input.id);
+    if (existing) return this.createActionProposal(input);
+    const proposal = initialActionProposal(input, this.clock());
+    // Build every replacement snapshot before changing any row; no await exposes partial state.
+    const replacements: ActionProposal[] = [];
+    if (input.replacementKey)
+      for (const row of this.rows.values()) {
+        if (
+          row.decision !== 'pending' ||
+          !actionProposalScopeMatches(row, input) ||
+          row.toolName !== input.toolName ||
+          row.replacementKey !== input.replacementKey
+        )
+          continue;
+        const result = transitionActionProposalSupersession(
+          row,
+          proposal,
+          { replacementProposalId: proposal.id, actorRef: input.actorRef, via: 'supersession' },
+          this.clock(),
+        );
+        if (result.proposal) replacements.push(result.proposal);
+      }
+    this.rows.set(proposal.id, proposal);
+    for (const row of replacements) this.rows.set(row.id, row);
+    return { status: 'created', proposal: snapshotActionProposal(proposal) };
+  }
+  async supersedeActionProposal(
+    scope: ActionProposalScope,
+    id: string,
+    command: { replacementProposalId: string; actorRef: string; via: string },
+  ): Promise<ActionProposalMutationResult> {
+    const replacement = this.rows.get(command.replacementProposalId);
+    if (!replacement || !actionProposalScopeMatches(replacement, scope))
+      return { status: 'not_found' };
+    return this.mutate(scope, id, (row, now) =>
+      transitionActionProposalSupersession(row, replacement, command, now),
+    );
   }
 }

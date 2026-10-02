@@ -1,5 +1,7 @@
+import type { ActionApprovalMode } from './action-proposal-receipt.js';
 import type { AgentIntake } from './elicitation.js';
 import type { MemoryConfig } from './memory.js';
+import type { ResolveToolUiCatalog } from './negotiated-tool-ui.js';
 import type { SkillsConfig } from './skills.js';
 import type { AgentStore } from './spi/agent-store.js';
 import type { ApprovalPolicy } from './spi/approval-policy.js';
@@ -17,6 +19,8 @@ import type { Actor, Persona, PromptBuilder } from './types.js';
 
 /** Everything `runAgentLoop` needs, minus the per-run `day` the runner stamps. */
 export interface AgentDeps {
+  actionApprovalMode?: ActionApprovalMode;
+  resolveUiCatalog?: ResolveToolUiCatalog;
   model: ModelProvider;
   store: AgentStore;
   registry: ToolRegistry;

@@ -100,6 +100,7 @@ async function buildApp() {
 }
 
 function started(result: ChatSendResult): string {
+  if ('proposalDecision' in result) throw new Error('expected a run, not a proposal decision');
   if (result.queued === true) throw new Error('expected the send to start a run');
   return result.runId;
 }

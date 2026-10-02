@@ -1,4 +1,8 @@
+import { createHash } from 'node:crypto';
 import type { StandardSchemaV1 } from '@standard-schema/spec';
+import { resolveActionProposalApproval } from './action-proposal-approval.js';
+import { prepareActionProposal } from './action-proposal-preparation.js';
+import { type ActionApprovalMode, actionProposalReceipt } from './action-proposal-receipt.js';
 import { danglingToolCallIds, settleDanglingToolCalls } from './dangling-tool-calls.js';
 import {
   type DetachedDelegationReceipt,
@@ -39,6 +43,8 @@ import {
   rememberToolDefinition,
   writeMemory,
 } from './memory.js';
+import type { ResolveToolUiCatalog } from './negotiated-tool-ui.js';
+import { createNegotiatedUiCollector } from './negotiated-tool-ui.js';
 import { personaFromTurn } from './personas.js';
 import {
   createFrameBuffer,
@@ -63,6 +69,10 @@ import {
   skillInputSchema,
   skillToolDefinition,
 } from './skills.js';
+import type {
+  ActionProposalStore,
+  ActionProposalSupersessionStore,
+} from './spi/action-proposal-store.js';
 import type { AgentStore, ThreadTurnReader } from './spi/agent-store.js';
 import { type ApprovalPolicy, DefaultApprovalPolicy } from './spi/approval-policy.js';
 import type { HistoryWindow, HistoryWindowContext } from './spi/history-window.js';
@@ -102,7 +112,7 @@ import {
 import { invokeWithTransientRetry, type ToolTransientRetrySetting } from './tool-retry.js';
 import {
   createNoopEmitUi,
-  createUiCollector,
+  escapeUnsafeToolUiText,
   mergeUi,
   unwrapToolStepOutput,
   wrapToolStepOutput,
@@ -127,6 +137,8 @@ import type {
 } from './types.js';
 
 export interface AgentLoopDeps<TOutput = unknown> {
+  actionApprovalMode?: ActionApprovalMode;
+  resolveUiCatalog?: ResolveToolUiCatalog;
   model: ModelProvider;
   store: AgentStore;
   registry: ToolRegistry;
@@ -550,6 +562,7 @@ function promptContext(
     actor: input.actor,
     ...(persona !== undefined ? { persona: personaFromTurn(persona) } : {}),
     ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
+    ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
   };
 }
 
@@ -654,6 +667,7 @@ type DelegationOutcome =
  * stay JSON-round-trippable.
  */
 interface PersistedToolCall {
+  proposalId?: string;
   preflight?: ToolPreflightResult | { status: 'failed'; error: string };
   kind: ToolKind;
   /** `agent` kind only. */
@@ -850,6 +864,8 @@ const HISTORY_SELECT_PATCH = 'agent:history-select';
 
 /** The three things a turn reads off its thread, however the store was able to answer them. */
 interface ThreadForTurn {
+  actionApprovalMode?: ActionApprovalMode;
+  resolveUiCatalog?: ResolveToolUiCatalog;
   /** Oldest-first, and at most what the ceiling was going to keep. */
   messages: ModelMessage[];
   title: string | null;
@@ -863,6 +879,8 @@ interface ThreadForTurn {
  * have.
  */
 interface RecordedThreadLoad {
+  actionApprovalMode?: ActionApprovalMode;
+  resolveUiCatalog?: ResolveToolUiCatalog;
   messages: (ModelMessage | StoredMessage)[];
   title?: string | null;
   hasAssistantMessage?: boolean;
@@ -876,6 +894,7 @@ function threadForTurn(recorded: RecordedThreadLoad | null): ThreadForTurn {
   const messages = settleDanglingToolCalls((recorded?.messages ?? []).map(toModelMessage));
   return {
     messages,
+    actionApprovalMode: recorded?.actionApprovalMode ?? 'blocking',
     title: recorded?.title ?? null,
     hasAssistantMessage:
       recorded?.hasAssistantMessage ?? messages.some((message) => message.role === 'assistant'),
@@ -1249,6 +1268,7 @@ function elicitationContext(
     ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
     ...personaContext(input),
     ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
+    ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
     ...(deps.host !== undefined ? { host: deps.host } : {}),
   };
 }
@@ -1281,8 +1301,11 @@ interface ToolTurnContext {
    * turn persists them onto the message in call order once every tool has settled.
    */
   toolUi: Map<string, AgentUiComponent[]>;
+  toolText: Map<string, string>;
   /** Set when a `terminal` tool succeeded: the turn ends after this step. */
-  halt: { terminal: boolean };
+  halt: { terminal: boolean; independentProposal?: boolean };
+  actionApprovalMode?: ActionApprovalMode;
+  resolveUiCatalog?: ResolveToolUiCatalog;
   /**
    * What `skills:catalog` recorded this turn, absent where skills are not configured. A `skill` call
    * is served against THIS, never against a fresh provider read — see {@link loadSkill}.
@@ -1297,6 +1320,7 @@ interface ToolTurnContext {
 
 /** A tool call whose kind has been settled by its `persist:toolcall` checkpoint. */
 interface ClaimedToolCall {
+  proposalId?: string;
   preflight?: ToolPreflightResult | { status: 'failed'; error: string };
   call: ToolCallRequest;
   toolType: ToolKind;
@@ -1356,6 +1380,7 @@ async function claimToolCall(
     ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
     ...(persona !== undefined ? { persona } : {}),
     ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
+    ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
     ...(deps.host !== undefined ? { host: deps.host } : {}),
   };
   const persisted = (await hooks.step(
@@ -1394,21 +1419,56 @@ async function claimToolCall(
       // set can both change while a run is parked, and the branch below (park or run) has to be the
       // one the journal recorded. A run claimed before this existed reads `approval` back as
       // undefined and waits on the requester, exactly as it did.
+      let actionApproval = call.actionApproval;
+      if (
+        kind === 'action' &&
+        turn.actionApprovalMode === 'independent' &&
+        actionApproval === undefined
+      )
+        actionApproval = await resolveActionProposalApproval({
+          actor: input.actor,
+          thread: {
+            threadId: input.threadId,
+            runId: hooks.runId,
+            ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+          },
+          tool: {
+            name: call.name,
+            kind: 'action',
+            ...(deps.registry.spec(call.name) !== undefined
+              ? { spec: deps.registry.spec(call.name)! }
+              : {}),
+          },
+          store: deps.store,
+          ...(deps.approvalPolicy !== undefined ? { policy: deps.approvalPolicy } : {}),
+        });
       let preflight: PersistedToolCall['preflight'] = call.preflight;
+      let prepared = call.prepared;
       if (kind === 'action' && preflight === undefined && deps.registry.has(call.name)) {
         try {
           const allowedTools = intersectAllow(persona?.allowedTools, deps.toolAllowList);
-          preflight = await deps.registry.prepare(
-            call.name,
-            call.input,
-            {
-              ...ctx,
-              toolCallId: call.id,
-              idempotencyKey: `${hooks.runId}:${call.id}`,
-            },
-            deps.rolesPolicy,
-            allowedTools === undefined ? {} : { allowedTools },
-          );
+          if (turn.actionApprovalMode === 'independent' && actionApproval?.mode === 'ask') {
+            prepared = await prepareActionProposal(
+              deps.registry,
+              call.name,
+              call.input,
+              { ...ctx, toolCallId: call.id, idempotencyKey: `${hooks.runId}:${call.id}` },
+              deps.rolesPolicy,
+              allowedTools === undefined ? {} : { allowedTools },
+            );
+            preflight = prepared.preflight;
+          } else
+            preflight = await deps.registry.prepare(
+              call.name,
+              call.input,
+              {
+                ...ctx,
+                toolCallId: call.id,
+                idempotencyKey: `${hooks.runId}:${call.id}`,
+              },
+              deps.rolesPolicy,
+              allowedTools === undefined ? {} : { allowedTools },
+            );
         } catch (error) {
           if (isReplayIntegrityError(error) || hooks.isControlFlowError?.(error) === true)
             throw error;
@@ -1419,24 +1479,95 @@ async function claimToolCall(
         }
       }
       const early = preflight !== undefined && preflight.status !== 'ready';
-      const confirmation = preflight?.status === 'ready' ? preflight.confirmation : undefined;
-      const approval = kind === 'action' && !early ? await claimApproval(turn, call) : undefined;
-      const parks = kind === 'ask' || approval?.mode === 'ask';
+      let confirmation = preflight?.status === 'ready' ? preflight.confirmation : undefined;
+      const approval =
+        kind === 'action' && !early
+          ? (actionApproval ?? (await claimApproval(turn, call)))
+          : undefined;
+      let proposalId: string | undefined;
+      if (turn.actionApprovalMode === 'independent' && approval?.mode === 'ask') {
+        if (!prepared) throw new Error('Independent action lacks trusted prepared input');
+        const store = deps.store as AgentStore & ActionProposalStore;
+        if (typeof store.createActionProposal !== 'function')
+          throw new Error('Independent proposal store unavailable');
+        proposalId = `proposal-${createHash('sha256')
+          .update(JSON.stringify([hooks.runId, call.id]))
+          .digest('hex')}`;
+        const display = confirmation ??
+          deps.registry.spec(call.name)?.presentation?.confirm ?? {
+            title: `Allow ${call.name}?`,
+            verb: 'Approve',
+          };
+        const fill = (value: string) =>
+          value.replace(/\{([^}]+)\}/g, (_match, path: string) => {
+            let current: unknown = prepared!.input;
+            for (const part of path.split('.'))
+              current =
+                current !== null && typeof current === 'object'
+                  ? (current as Record<string, unknown>)[part]
+                  : undefined;
+            return current === undefined ? '' : String(current);
+          });
+        const create =
+          prepared.replacementKey === undefined
+            ? store.createActionProposal.bind(store)
+            : (
+                store as AgentStore & ActionProposalStore & ActionProposalSupersessionStore
+              ).createReplacingActionProposal.bind(store);
+        const created = await create({
+          ...(prepared.replacementKey !== undefined
+            ? { replacementKey: prepared.replacementKey }
+            : {}),
+          id: proposalId,
+          tenantRef: input.actor.tenantRef ?? null,
+          actorRef: input.actor.id,
+          threadId: input.threadId,
+          originRunId: hooks.runId,
+          originMessageId: messageId,
+          originToolCallId: call.id,
+          toolName: call.name,
+          input: prepared.input,
+          preparationInput: prepared.preparationInput,
+          executionContext: {
+            requestId: hooks.runId,
+            ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+            ...(persona !== undefined ? { persona: persona.id } : {}),
+            ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
+            ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
+          },
+          confirmation: confirmation ?? {
+            title: fill(display.title),
+            verb: fill(display.verb),
+            ...(display.detail !== undefined ? { detail: fill(display.detail) } : {}),
+          },
+          approver: approval.approver,
+          expiresAt: approval.expiresAt === undefined ? null : Date.parse(approval.expiresAt),
+          idempotencyKey: `${hooks.runId}:${call.id}`,
+        });
+        if (created.status === 'conflict')
+          throw new Error('Action proposal replay payload conflict');
+        confirmation = created.proposal?.confirmation ?? confirmation;
+      }
+      const parks = kind === 'ask' || (approval?.mode === 'ask' && proposalId === undefined);
       await deps.store.recordToolCall({
         toolCallId: call.id,
         messageId,
         toolName: call.name,
         toolType: awaitsHuman ? 'action' : 'read',
         input: call.input,
-        status: early
-          ? preflight?.status === 'denied'
-            ? 'rejected'
-            : preflight?.status === 'failed'
-              ? 'failed'
-              : 'executed'
-          : parks
-            ? 'pending_approval'
-            : 'auto_executed',
+        ...(proposalId !== undefined ? { proposalId } : {}),
+        status:
+          proposalId !== undefined
+            ? 'proposed'
+            : early
+              ? preflight?.status === 'denied'
+                ? 'rejected'
+                : preflight?.status === 'failed'
+                  ? 'failed'
+                  : 'executed'
+              : parks
+                ? 'pending_approval'
+                : 'auto_executed',
         ...(confirmation !== undefined ? { confirmation } : {}),
         runId: hooks.runId,
         ...(approval !== undefined && approval.mode !== 'auto'
@@ -1469,6 +1600,9 @@ async function claimToolCall(
       if (approval?.mode === 'ask') {
         await writer.write({
           t: 'approval',
+          ...(proposalId !== undefined
+            ? { target: { kind: 'proposal' as const, proposalId } }
+            : {}),
           runId: hooks.runId,
           id: call.id,
           toolName: call.name,
@@ -1483,6 +1617,7 @@ async function claimToolCall(
       const terminal = deps.registry.spec(call.name)?.terminal === true;
       return {
         kind,
+        ...(proposalId !== undefined ? { proposalId } : {}),
         ...(preflight !== undefined ? { preflight } : {}),
         ...(approval !== undefined ? { approval } : {}),
         ...(terminal ? { terminal: true as const } : {}),
@@ -1498,6 +1633,7 @@ async function claimToolCall(
     toolType,
     ...(persisted?.preflight !== undefined ? { preflight: persisted.preflight } : {}),
     ...(persisted?.terminal === true ? { terminal: true } : {}),
+    ...(persisted?.proposalId !== undefined ? { proposalId: persisted.proposalId } : {}),
     ...(persisted?.delegation !== undefined ? { delegation: persisted.delegation } : {}),
     ...(toolType === 'action' && persisted?.approval !== undefined
       ? { approval: persisted.approval }
@@ -1588,7 +1724,17 @@ async function invokeClaimedTool(
     const raw = await hooks.step(`tool:${call.id}`, async () => {
       // Pushed components stream as they happen and ride this step's RESULT into the journal (see
       // `wrapToolStepOutput`), so a replay neither re-streams nor re-persists them.
-      const ui = createUiCollector(call.id, turn.writer);
+      const ui = createNegotiatedUiCollector(
+        call.id,
+        {
+          actor: ctx.actor,
+          threadId: ctx.threadId,
+          ...(ctx.agentName !== undefined ? { agentName: ctx.agentName } : {}),
+          ...(ctx.uiCapabilities !== undefined ? { uiCapabilities: ctx.uiCapabilities } : {}),
+        },
+        deps.resolveUiCatalog,
+        turn.writer,
+      );
       const toolCtx: AiToolCtx = {
         ...ctx,
         // The same for every execution of THIS call (a replay after a crash, a transient retry).
@@ -1651,7 +1797,7 @@ async function invokeClaimedTool(
         if (!(error instanceof ToolPreflightDeniedError)) throw error;
         return { '@@adonis-agent/tool-preflight-denied': 1, reason: error.reason };
       }
-      return wrapToolStepOutput(output, ui.components());
+      return wrapToolStepOutput(output, ui.components(), ui.text());
     });
     if (
       typeof raw === 'object' &&
@@ -1663,7 +1809,8 @@ async function invokeClaimedTool(
     ) {
       return { status: 'failed', error: raw.reason, denied: true };
     }
-    const { output, ui } = unwrapToolStepOutput(raw);
+    const { output, ui, text } = unwrapToolStepOutput(raw);
+    if (text) turn.toolText.set(call.id, text);
     if (ui.length > 0) {
       turn.toolUi.set(call.id, ui);
     }
@@ -1824,30 +1971,84 @@ async function stampToolKinds<T extends { toolCalls: ToolCallRequest[] }>(
   const toolCalls: ToolCallRequest[] = [];
   for (const incoming of result.toolCalls) {
     // The provider cannot supply trusted preparation. Resolve it only where the tool was offered.
-    const { preflight: _untrusted, ...call } = incoming;
+    const {
+      preflight: _untrusted,
+      prepared: _untrustedPrepared,
+      actionApproval: _untrustedApproval,
+      ...call
+    } = incoming;
     const kind = declaredKind(deps, call.name);
     let preflight: ToolCallRequest['preflight'];
+    let prepared: ToolCallRequest['prepared'];
+    let actionApproval: ToolCallRequest['actionApproval'];
     if (kind === 'action') {
       try {
-        preflight = await deps.registry.prepare(
-          call.name,
-          call.input,
-          {
+        if (deps.actionApprovalMode === 'independent')
+          actionApproval = await resolveActionProposalApproval({
             actor: input.actor,
-            threadId: input.threadId,
-            runId: hooks.runId,
-            requestId: hooks.runId,
-            toolCallId: call.id,
-            idempotencyKey: `${hooks.runId}:${call.id}`,
-            emitUi: createNoopEmitUi(call.id),
-            ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
-            ...(persona !== undefined ? { persona } : {}),
-            ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
-            ...(deps.host !== undefined ? { host: deps.host } : {}),
-          },
-          deps.rolesPolicy,
-          allowedTools === undefined ? {} : { allowedTools },
-        );
+            thread: {
+              threadId: input.threadId,
+              runId: hooks.runId,
+              ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+            },
+            tool: {
+              name: call.name,
+              kind: 'action',
+              ...(deps.registry.spec(call.name) !== undefined
+                ? { spec: deps.registry.spec(call.name)! }
+                : {}),
+            },
+            store: deps.store,
+            ...(deps.approvalPolicy !== undefined ? { policy: deps.approvalPolicy } : {}),
+          });
+        if (deps.actionApprovalMode === 'independent' && actionApproval?.mode === 'ask') {
+          prepared = await prepareActionProposal(
+            deps.registry,
+            call.name,
+            call.input,
+            {
+              actor: input.actor,
+              threadId: input.threadId,
+              runId: hooks.runId,
+              requestId: hooks.runId,
+              toolCallId: call.id,
+              idempotencyKey: `${hooks.runId}:${call.id}`,
+              emitUi: createNoopEmitUi(call.id),
+              ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+              ...(persona !== undefined ? { persona } : {}),
+              ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
+              ...(input.uiCapabilities !== undefined
+                ? { uiCapabilities: input.uiCapabilities }
+                : {}),
+              ...(deps.host !== undefined ? { host: deps.host } : {}),
+            },
+            deps.rolesPolicy,
+            allowedTools === undefined ? {} : { allowedTools },
+          );
+          preflight = prepared.preflight;
+        } else
+          preflight = await deps.registry.prepare(
+            call.name,
+            call.input,
+            {
+              actor: input.actor,
+              threadId: input.threadId,
+              runId: hooks.runId,
+              requestId: hooks.runId,
+              toolCallId: call.id,
+              idempotencyKey: `${hooks.runId}:${call.id}`,
+              emitUi: createNoopEmitUi(call.id),
+              ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+              ...(persona !== undefined ? { persona } : {}),
+              ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
+              ...(input.uiCapabilities !== undefined
+                ? { uiCapabilities: input.uiCapabilities }
+                : {}),
+              ...(deps.host !== undefined ? { host: deps.host } : {}),
+            },
+            deps.rolesPolicy,
+            allowedTools === undefined ? {} : { allowedTools },
+          );
       } catch (error) {
         if (isReplayIntegrityError(error) || hooks.isControlFlowError?.(error) === true)
           throw error;
@@ -1857,7 +2058,13 @@ async function stampToolKinds<T extends { toolCalls: ToolCallRequest[] }>(
         };
       }
     }
-    toolCalls.push({ ...call, kind, ...(preflight !== undefined ? { preflight } : {}) });
+    toolCalls.push({
+      ...call,
+      ...(actionApproval !== undefined ? { actionApproval } : {}),
+      kind,
+      ...(prepared !== undefined ? { prepared } : {}),
+      ...(preflight !== undefined ? { preflight } : {}),
+    });
   }
   return { ...result, toolCalls };
 }
@@ -1959,6 +2166,7 @@ function skillContext(input: AgentRunInput): SkillContext {
     threadId: input.threadId,
     ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
     ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
+    ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
   };
 }
 
@@ -2110,6 +2318,10 @@ async function runClaimedToolCall(
 ): Promise<ToolResult> {
   const { deps, hooks } = turn;
   const { call, toolType, ctx } = claimed;
+  if (claimed.proposalId !== undefined) {
+    turn.halt.independentProposal = true;
+    return { id: call.id, name: call.name, output: actionProposalReceipt(claimed.proposalId) };
+  }
   if (claimed.preflight !== undefined && claimed.preflight.status !== 'ready') {
     const result = claimed.preflight;
     if (result.status === 'completed') {
@@ -2717,7 +2929,12 @@ export async function runAgentLoop<TOutput = unknown>(
 
   const thread = threadForTurn(
     await hooks.step<RecordedThreadLoad | null>('load:thread', () =>
-      readThreadForTurn(deps, input.threadId, turnMessageLimit(deps.historyWindow)),
+      readThreadForTurn(deps, input.threadId, turnMessageLimit(deps.historyWindow)).then(
+        (loaded) =>
+          loaded === null
+            ? { messages: [], actionApprovalMode: deps.actionApprovalMode ?? 'blocking' }
+            : { ...loaded, actionApprovalMode: deps.actionApprovalMode ?? 'blocking' },
+      ),
     ),
   );
   // With no window configured this whole block is skipped, so an existing deployment sends the
@@ -2925,6 +3142,7 @@ export async function runAgentLoop<TOutput = unknown>(
         intersectAllow(persona?.allowedTools, deps.toolAllowList),
         {
           threadId: input.threadId,
+          ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
           ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
         },
       ),
@@ -3004,7 +3222,7 @@ export async function runAgentLoop<TOutput = unknown>(
             toolCalls: result.toolCalls.length,
           }),
         ),
-        deps,
+        { ...deps, actionApprovalMode: thread.actionApprovalMode ?? 'blocking' },
         input,
         hooks,
       ),
@@ -3252,7 +3470,9 @@ export async function runAgentLoop<TOutput = unknown>(
       messageId: assistant.id,
       writer,
       toolUi: new Map(),
+      toolText: new Map(),
       halt: { terminal: false },
+      actionApprovalMode: thread.actionApprovalMode ?? 'blocking',
       ...(skillOffer !== undefined ? { skills: skillOffer } : {}),
       ...(memoryDigest !== undefined ? { memory: memoryDigest } : {}),
     };
@@ -3317,6 +3537,18 @@ export async function runAgentLoop<TOutput = unknown>(
         await deps.store.setMessageToolResults(assistant.id, [...results, ...syntheticResults]);
         // What the tools pushed joins what the model turn streamed, on the same message, in call
         // order. Every list here was read off a checkpoint above, so a replay writes the same value.
+        const fallbackText = escapeUnsafeToolUiText(
+          turn.toolCalls
+            .map((call) => turnCalls.toolText.get(call.id))
+            .filter(Boolean)
+            .join('\n'),
+        );
+        if (fallbackText)
+          await deps.store.appendMessage({
+            threadId: input.threadId,
+            role: 'assistant',
+            content: fallbackText,
+          });
         const toolUi = turn.toolCalls.flatMap((call) => turnCalls.toolUi.get(call.id) ?? []);
         if (toolUi.length > 0) {
           await deps.store.setMessageUi?.(assistant.id, mergeUi(turn.ui, toolUi));
@@ -3330,9 +3562,19 @@ export async function runAgentLoop<TOutput = unknown>(
       });
     }
     modelMessages.push({ role: 'user', content: '', toolResults: results });
+    const toolText = escapeUnsafeToolUiText(
+      turn.toolCalls
+        .map((call) => turnCalls.toolText.get(call.id))
+        .filter(Boolean)
+        .join('\n'),
+    );
+    if (toolText) {
+      modelMessages.push({ role: 'assistant', content: toolText });
+      lastText += `\n${toolText}`;
+    }
     // A `terminal` tool succeeded: its effect is the answer, so no model call narrates it. Read off
     // the calls' `persist:toolcall` checkpoints and their outcomes, so a replay ends here too.
-    if (turnCalls.halt.terminal) {
+    if (turnCalls.halt.terminal || turnCalls.halt.independentProposal) {
       break;
     }
   }

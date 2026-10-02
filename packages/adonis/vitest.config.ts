@@ -10,6 +10,7 @@ import { defineConfig } from 'vitest/config';
  */
 const LUCID_STORE_SPECS = [
   'test/action-proposal-store.spec.ts',
+  'test/action-proposal-outcome-lucid.spec.ts',
   'test/action-proposal-worker-store.spec.ts',
   'test/attachment-inventory.spec.ts',
   'test/attachment-references.spec.ts',

@@ -34,9 +34,11 @@ import { renderStub } from '../../helpers/render-stub.mjs';
 
 const pkgRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const STUB =
-  process.argv[2] === 'discovery'
-    ? 'database/migrations/add_action_proposal_discovery.stub'
-    : 'database/migrations/create_agent_tables.stub';
+  process.argv[2] === 'runtime'
+    ? 'database/migrations/add_action_proposal_runtime.stub'
+    : process.argv[2] === 'discovery'
+      ? 'database/migrations/add_action_proposal_discovery.stub'
+      : 'database/migrations/create_agent_tables.stub';
 
 /**
  * `pool.max = 1` on purpose. It is the tightest pool an app can configure (and what Adonis's own
@@ -378,17 +380,27 @@ async function proposalDiscoveryUpgrade() {
       .split('\n')
       .filter(
         (line) =>
-          !/execution_status|lease_expires_at|proposal_expires_at|discovery_index_version/.test(
-            line,
-          ),
+          !(
+            process.argv[2] === 'runtime'
+              ? /replacement_group_key|outcome_key|delivery_status|delivery_lease_expires_at/
+              : /execution_status|lease_expires_at|proposal_expires_at|discovery_index_version|replacement_group_key|outcome_key|delivery_status/
+          ).test(line),
       )
       .join('\n');
     await db.rawQuery(ddl);
     for (const field of [
-      'execution_status',
-      'lease_expires_at',
-      'proposal_expires_at',
-      'discovery_index_version',
+      'replacement_group_key',
+      'outcome_key',
+      'delivery_status',
+      'delivery_lease_expires_at',
+      ...(process.argv[2] === 'runtime'
+        ? []
+        : [
+            'execution_status',
+            'lease_expires_at',
+            'proposal_expires_at',
+            'discovery_index_version',
+          ]),
     ])
       delete saved[field];
     await db.table('agent_action_proposal').insert(saved);
@@ -424,6 +436,7 @@ async function proposalDiscoveryUpgrade() {
 
 const SCENARIOS = {
   discovery: proposalDiscoveryUpgrade,
+  runtime: proposalDiscoveryUpgrade,
   empty: emptyDatabase,
   provisioned: alreadyProvisionedDatabase,
   legacy: preRunTrackingDatabase,

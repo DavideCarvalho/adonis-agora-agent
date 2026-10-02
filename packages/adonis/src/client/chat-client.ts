@@ -1,3 +1,5 @@
+import type { ActionProposal, ActionProposalMutationResult } from '../spi/action-proposal-store.js';
+import type { UiCapabilities } from '../ui-capabilities.js';
 import { type ChatFrame, type ChatPart, decodeFrame, foldPart, readSseStream } from './sse.js';
 
 /**
@@ -11,6 +13,7 @@ export interface AgentChatRequestBody {
   agent?: string;
   persona?: string;
   pageContext?: { kind?: string; [key: string]: unknown };
+  uiCapabilities?: UiCapabilities;
   /** Uploads named by id alone (`POST <base>/attachments` answered them). */
   attachments?: unknown[];
   /** Run THIS turn on a catalog model (`GET <base>/models`). Never pins it on the thread. */
@@ -97,6 +100,7 @@ export interface AgentChatResult {
   parts: ChatPart[];
   /** Present when the server queued the message instead of streaming a reply (`202`). */
   queued?: AgentChatQueued;
+  proposalDecision?: ActionProposalMutationResult | { status: 'ambiguous'; proposalIds: string[] };
 }
 
 /**
@@ -214,6 +218,14 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
  */
 export interface AgentChatClient {
   send(options: AgentChatSendOptions): Promise<AgentChatResult>;
+  listActionProposals(threadId: string, signal?: AbortSignal): Promise<ActionProposal[]>;
+  decideActionProposal(
+    threadId: string,
+    proposalId: string,
+    decision: 'approved' | 'rejected',
+    command?: { remember?: boolean; reason?: string },
+    signal?: AbortSignal,
+  ): Promise<ActionProposalMutationResult>;
   /** Re-attach to an already-started run (e.g. after a fresh page load) and stream it to completion. */
   resume(
     runId: string,
@@ -351,6 +363,23 @@ export function createAgentChatClient(options: AgentChatClientOptions = {}): Age
         ...(typeof queued.runId === 'string' ? { runId: queued.runId } : {}),
       };
     }
+    if (response.headers.get('Content-Type')?.includes('application/json')) {
+      const receipt = (await response.json()) as {
+        threadId?: unknown;
+        text?: unknown;
+        proposalDecision?: AgentChatResult['proposalDecision'];
+      };
+      if (
+        typeof receipt.threadId !== 'string' ||
+        typeof receipt.text !== 'string' ||
+        !receipt.proposalDecision
+      )
+        throw new Error('Invalid proposal decision receipt');
+      handlers.onThreadId?.(receipt.threadId);
+      const parts: ChatPart[] = receipt.text ? [{ type: 'text', text: receipt.text }] : [];
+      onParts(parts);
+      return { threadId: receipt.threadId, proposalDecision: receipt.proposalDecision, parts };
+    }
     if (!response.body) {
       throw new Error(`Failed to start agent chat (HTTP ${response.status}): no response body.`);
     }
@@ -418,5 +447,65 @@ export function createAgentChatClient(options: AgentChatClientOptions = {}): Age
     };
   }
 
-  return { send, resume };
+  async function proposalRequest<T>(path: string, init: RequestInit): Promise<T> {
+    const response = await fetchImpl(`${basePath}/threads/${path}`, {
+      ...init,
+      credentials: 'include',
+      headers: headers({ 'Content-Type': 'application/json' }),
+    });
+    if (!response.ok) throw await httpError(response);
+    return (await response.json()) as T;
+  }
+  return {
+    send,
+    resume,
+    listActionProposals: async (threadId, signal) => {
+      const items: ActionProposal[] = [];
+      const seen = new Set<string>();
+      let cursor: string | undefined;
+      for (let page = 0; page < 1000; page++) {
+        const response = await fetchImpl(
+          `${basePath}/threads/${encodeURIComponent(threadId)}/action-proposals${cursor ? `?after=${encodeURIComponent(cursor)}` : ''}`,
+          {
+            method: 'GET',
+            credentials: 'include',
+            headers: headers({}),
+            ...(signal ? { signal } : {}),
+          },
+        );
+        if (!response.ok) throw await httpError(response);
+        const rows: unknown = await response.json();
+        if (!Array.isArray(rows)) throw new Error('Invalid action proposal list');
+        items.push(...(rows as ActionProposal[]));
+        const next = response.headers.get('X-Action-Proposals-Next');
+        if (!next) return items;
+        let parsed: { createdAt: number; id: string };
+        try {
+          cursor = decodeURIComponent(next);
+          parsed = JSON.parse(cursor);
+          if (
+            !parsed ||
+            typeof parsed !== 'object' ||
+            Object.keys(parsed).some((key) => key !== 'createdAt' && key !== 'id') ||
+            !Number.isSafeInteger(parsed.createdAt) ||
+            typeof parsed.id !== 'string' ||
+            !parsed.id ||
+            parsed.id.length > 255
+          )
+            throw new Error('cursor');
+        } catch {
+          throw new Error('Invalid action proposal cursor');
+        }
+        const fingerprint = JSON.stringify([parsed.createdAt, parsed.id]);
+        if (seen.has(fingerprint)) throw new Error('Repeated action proposal cursor');
+        seen.add(fingerprint);
+      }
+      throw new Error('Action proposal pagination limit exceeded');
+    },
+    decideActionProposal: (threadId, proposalId, decision, command = {}, signal) =>
+      proposalRequest<ActionProposalMutationResult>(
+        `${encodeURIComponent(threadId)}/action-proposals/${encodeURIComponent(proposalId)}/${decision === 'approved' ? 'approve' : 'reject'}`,
+        { method: 'POST', body: JSON.stringify(command), ...(signal ? { signal } : {}) },
+      ),
+  };
 }

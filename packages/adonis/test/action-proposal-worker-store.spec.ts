@@ -133,13 +133,17 @@ describe('Lucid worker discovery contract', () => {
       .split('\n')
       .filter(
         (line) =>
-          !/execution_status|lease_expires_at|proposal_expires_at|discovery_index_version/.test(
+          !/execution_status|lease_expires_at|proposal_expires_at|discovery_index_version|replacement_group_key|outcome_key|delivery_status/.test(
             line,
           ),
       )
       .join('\n');
     await db.rawQuery(forDialect(oldDdl, mysql));
     for (const field of [
+      'replacement_group_key',
+      'outcome_key',
+      'delivery_status',
+      'delivery_lease_expires_at',
       'execution_status',
       'lease_expires_at',
       'proposal_expires_at',
@@ -150,7 +154,7 @@ describe('Lucid worker discovery contract', () => {
     const repairs = await createAgentTables(asStoreDb(db));
     expect(
       repairs.filter((repair) => repair.startsWith(AGENT_TABLES.actionProposals)),
-    ).toHaveLength(4);
+    ).toHaveLength(8);
     expect(await createAgentTables(asStoreDb(db))).toEqual([]);
     expect(await store.claimNextActionProposal({ workerId: 'worker', leaseMs: 100 })).toBeNull();
     expect(await store.backfillActionProposalDiscoveryIndex({ limit: 1 })).toBe(1);

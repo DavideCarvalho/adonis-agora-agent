@@ -45,6 +45,10 @@ export function frameToEvents(frame: StreamFrame, position: number): AgentStream
           component: frame.name,
           props: isRecord(frame.data) ? frame.data : { value: frame.data },
           ...(frame.version !== undefined ? { version: frame.version } : {}),
+          ...(frame.fallbackText !== undefined ? { fallbackText: frame.fallbackText } : {}),
+          ...(frame.componentVersions !== undefined
+            ? { componentVersions: frame.componentVersions }
+            : {}),
           ...(frame.toolCallId !== undefined ? { toolCallId: frame.toolCallId } : {}),
         },
       ];
@@ -65,6 +69,7 @@ export function frameToEvents(frame: StreamFrame, position: number): AgentStream
           {
             kind: 'approval-requested',
             id: frame.id,
+            ...(frame.target !== undefined ? { target: frame.target } : {}),
             approver: frame.approver ?? 'requester',
             ...(frame.confirmation !== undefined ? { confirmation: frame.confirmation } : {}),
             ...(frame.expiresAt !== undefined ? { expiresAt: frame.expiresAt } : {}),

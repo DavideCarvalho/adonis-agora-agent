@@ -18,12 +18,28 @@ import type { ToolConfirmation } from '../tool-presentation.js';
 /** A rendered part of an assistant message: streamed text, or a named component with its props. */
 export type ChatPart =
   | { type: 'text'; text: string }
-  | { type: 'component'; name: string; data: unknown; id?: string };
+  | {
+      type: 'component';
+      name: string;
+      data: unknown;
+      id?: string;
+      version?: number;
+      fallbackText?: string;
+      componentVersions?: Record<string, number>;
+    };
 
 /** A decoded stream frame — the typed form of one SSE event. */
 export type ChatFrame =
   | { type: 'text'; delta: string }
-  | { type: 'component'; name: string; data: unknown; id?: string }
+  | {
+      type: 'component';
+      name: string;
+      data: unknown;
+      id?: string;
+      version?: number;
+      fallbackText?: string;
+      componentVersions?: Record<string, number>;
+    }
   | { type: 'meta'; runId?: string; threadId?: string }
   /** A failed run (`event: error` under the agent protocol). Terminal, like `done`. */
   | { type: 'error'; code: string; message: string }
@@ -45,6 +61,7 @@ export type ChatFrame =
    */
   | {
       type: 'approval';
+      target?: { kind: 'proposal'; proposalId: string };
       runId: string;
       toolCallId: string;
       toolName: string;
@@ -152,6 +169,13 @@ function decodeAgentEvent(event: Record<string, unknown> & { kind: string }): Ch
       name: event.component,
       data: event.props,
       ...(typeof event.id === 'string' ? { id: event.id } : {}),
+      ...(typeof event.version === 'number' ? { version: event.version } : {}),
+      ...(typeof event.fallbackText === 'string' ? { fallbackText: event.fallbackText } : {}),
+      ...(event.componentVersions !== null &&
+      typeof event.componentVersions === 'object' &&
+      !Array.isArray(event.componentVersions)
+        ? { componentVersions: event.componentVersions as Record<string, number> }
+        : {}),
     };
   }
   if (event.kind === 'elicitation' && typeof event.id === 'string') {
@@ -172,6 +196,17 @@ function decodeAgentEvent(event: Record<string, unknown> & { kind: string }): Ch
     const confirmation = decodeConfirmation(event.confirmation);
     return {
       type: 'approval',
+      ...(event.target &&
+      typeof event.target === 'object' &&
+      Reflect.get(event.target, 'kind') === 'proposal' &&
+      typeof Reflect.get(event.target, 'proposalId') === 'string'
+        ? {
+            target: {
+              kind: 'proposal' as const,
+              proposalId: Reflect.get(event.target, 'proposalId') as string,
+            },
+          }
+        : {}),
       runId: event.runId,
       toolCallId: event.id,
       toolName: event.toolName,
@@ -200,6 +235,11 @@ export function foldPart(parts: ChatPart[], frame: ChatFrame): ChatPart[] {
       name: frame.name,
       data: frame.data,
       ...(frame.id !== undefined ? { id: frame.id } : {}),
+      ...(frame.version !== undefined ? { version: frame.version } : {}),
+      ...(frame.fallbackText !== undefined ? { fallbackText: frame.fallbackText } : {}),
+      ...(frame.componentVersions !== undefined
+        ? { componentVersions: frame.componentVersions }
+        : {}),
     };
     // A repeat id (agent protocol `ui`) replaces the component in place, never adds a second one.
     const at =

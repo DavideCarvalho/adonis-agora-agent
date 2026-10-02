@@ -28,6 +28,8 @@ export interface AgentUiComponent {
   props: Record<string, unknown>;
   /** Schema version of `props`, so a client can keep rendering components an older server persisted. */
   version?: number;
+  fallbackText?: string;
+  componentVersions?: Record<string, number>;
   /** The tool call that pushed the component, when one did. */
   toolCallId?: string;
 }

@@ -133,6 +133,7 @@ describe('one stub, one schema', () => {
     const stubs = readdirSync(migrationsDir).filter((entry) => entry.endsWith('.stub'));
     expect(stubs.sort()).toEqual([
       'add_action_proposal_discovery.stub',
+      'add_action_proposal_runtime.stub',
       'create_agent_rag_chunks.stub',
       'create_agent_rag_trees.stub',
       'create_agent_tables.stub',
@@ -170,6 +171,16 @@ describe('worker discovery upgrade is forward only', () => {
     expect(code).toContain('createAgentTables');
     expect(code).toContain('autoCreateTables: false');
     expect(code).toContain('backfillActionProposalDiscoveryIndex({ limit: 500 })');
+    expect(code).toContain('Forward-only');
+    expect(code).not.toContain('dropAgentTables');
+  });
+});
+
+describe('independent runtime upgrade is forward only', () => {
+  it('publishes additive provisioning preserving proposals and transcript', async () => {
+    const code = await renderStub('add_action_proposal_runtime');
+    expect(code).toContain('static disableTransactions = true');
+    expect(code).toContain('createAgentTables');
     expect(code).toContain('Forward-only');
     expect(code).not.toContain('dropAgentTables');
   });
