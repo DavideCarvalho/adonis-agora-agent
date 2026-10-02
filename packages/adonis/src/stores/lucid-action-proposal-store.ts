@@ -1,5 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  validateActionProposalDiscoveryIndexBatch,
+  validateActionProposalExpiryBatch,
+  validateActionProposalWorkerClaim,
+} from '../action-proposal-discovery.js';
+import {
   actionProposalCreationMatches,
   actionProposalScopeMatches,
   canonicalActionProposalJson,
@@ -24,8 +29,12 @@ import type {
   ListActionProposals,
   SettleActionProposal,
 } from '../spi/action-proposal-store.js';
+import type {
+  ActionProposalDiscoveryIndexStore,
+  ActionProposalWorkerStore,
+} from '../spi/action-proposal-worker-store.js';
 import type { LucidDatabaseLike } from './lucid.js';
-import { AGENT_TABLES, forDialect } from './lucid-schema.js';
+import { AGENT_TABLES, forDialect, rowsOf } from './lucid-schema.js';
 import { isMySql } from './sql-dialect.js';
 
 function key(value: unknown): string {
@@ -58,12 +67,24 @@ function read(row: Record<string, unknown>): ActionProposal {
   return JSON.parse(String(row.payload)) as ActionProposal;
 }
 
+function discoveryMetadata(proposal: ActionProposal) {
+  return {
+    decision: proposal.decision,
+    execution_status: proposal.execution?.status ?? null,
+    lease_expires_at: proposal.execution?.lease?.expiresAt ?? null,
+    proposal_expires_at: proposal.expiresAt,
+    discovery_index_version: 1,
+  };
+}
+
 /**
  * Durable work is embedded in the proposal snapshot. One version-fenced UPDATE commits both
  * approval and queued work, so there is no dispatch gap requiring a second transactional table.
  * Physical keys hash exact JSON identities to avoid MySQL PAD SPACE/collation equivalence.
  */
-export class LucidActionProposalStore implements ActionProposalStore {
+export class LucidActionProposalStore
+  implements ActionProposalStore, ActionProposalWorkerStore, ActionProposalDiscoveryIndexStore
+{
   private readonly proposalClock: () => number;
   constructor(
     private readonly proposalDb: LucidDatabaseLike,
@@ -84,6 +105,10 @@ export class LucidActionProposalStore implements ActionProposalStore {
       'logical_sort',
       'insert_token',
       'decision',
+      'execution_status',
+      'lease_expires_at',
+      'proposal_expires_at',
+      'discovery_index_version',
       'payload',
       'version',
       'created_at',
@@ -101,6 +126,10 @@ export class LucidActionProposalStore implements ActionProposalStore {
       logicalSort(input.id),
       token,
       'pending',
+      null,
+      null,
+      proposal.expiresAt,
+      1,
       canonicalActionProposalJson(proposal),
       0,
       proposal.createdAt,
@@ -181,7 +210,7 @@ export class LucidActionProposalStore implements ActionProposalStore {
         .where('version', row.version)
         .update({
           payload: canonicalActionProposalJson(result.proposal),
-          decision: result.proposal.decision,
+          ...discoveryMetadata(result.proposal),
           version: Number(row.version) + 1,
           updated_at: result.proposal.updatedAt,
         });
@@ -189,6 +218,78 @@ export class LucidActionProposalStore implements ActionProposalStore {
     }
     const proposal = await this.getActionProposal(scope, id);
     return proposal ? { status: 'conflict', proposal } : { status: 'not_found' };
+  }
+
+  async claimNextActionProposal(command: ClaimActionProposal): Promise<ActionProposal | null> {
+    const now = this.proposalClock();
+    validateActionProposalWorkerClaim(command, now);
+    await this.ensureProposalSchema();
+    const rows = rowsOf(
+      await this.proposalDb.rawQuery(
+        forDialect(
+          `SELECT * FROM "${AGENT_TABLES.actionProposals}" WHERE "discovery_index_version" = 1 AND "decision" = 'approved' AND ("execution_status" = 'queued' OR ("execution_status" = 'executing' AND "lease_expires_at" <= ?)) ORDER BY "created_at" ASC, "logical_sort" ASC LIMIT 32`,
+          isMySql(this.proposalDb),
+        ),
+        [now],
+      ),
+    );
+    for (const row of rows) {
+      const proposal = read(row);
+      const result = await this.claimActionProposal(proposal, proposal.id, command);
+      if (result.status === 'applied') return result.proposal ?? null;
+    }
+    return null;
+  }
+
+  async expireActionProposals(command: { limit: number }): Promise<number> {
+    const now = this.proposalClock();
+    validateActionProposalExpiryBatch(command, now);
+    await this.ensureProposalSchema();
+    const rows = rowsOf(
+      await this.proposalDb.rawQuery(
+        forDialect(
+          `SELECT * FROM "${AGENT_TABLES.actionProposals}" WHERE "discovery_index_version" = 1 AND "decision" = 'pending' AND "proposal_expires_at" <= ? ORDER BY "created_at" ASC, "logical_sort" ASC LIMIT ?`,
+          isMySql(this.proposalDb),
+        ),
+        [now, command.limit],
+      ),
+    );
+    let changed = 0;
+    for (const row of rows) {
+      const proposal = read(row);
+      const result = await this.decideActionProposal(proposal, proposal.id, {
+        decision: 'expired',
+        actorRef: 'system',
+        via: 'expiry',
+      });
+      if (result.status === 'applied') changed++;
+    }
+    return changed;
+  }
+
+  async backfillActionProposalDiscoveryIndex(command: { limit: number }): Promise<number> {
+    validateActionProposalDiscoveryIndexBatch(command);
+    await this.ensureProposalSchema();
+    const rows = await this.proposalDb
+      .from(AGENT_TABLES.actionProposals)
+      .where('discovery_index_version', 0)
+      .orderBy('created_at', 'asc')
+      .orderBy('logical_sort', 'asc')
+      .limit(command.limit)
+      .select('*');
+    let changed = 0;
+    for (const row of rows) {
+      const proposal = read(row);
+      const result = await this.proposalDb
+        .from(AGENT_TABLES.actionProposals)
+        .where('id', row.id)
+        .where('scope_key', row.scope_key)
+        .where('version', row.version)
+        .where('discovery_index_version', 0)
+        .update({ ...discoveryMetadata(proposal), version: Number(row.version) + 1 });
+      if (affected(result) > 0) changed++;
+    }
+    return changed;
   }
 
   decideActionProposal(

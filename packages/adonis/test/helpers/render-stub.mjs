@@ -31,6 +31,7 @@ export const PUBLISHED_STUBS = [
   'config/agent.stub',
   'config/mcp.stub',
   'database/migrations/create_agent_tables.stub',
+  'database/migrations/add_action_proposal_discovery.stub',
   'database/migrations/create_agent_rag_chunks.stub',
   'database/migrations/create_agent_rag_trees.stub',
 ];

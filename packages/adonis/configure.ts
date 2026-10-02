@@ -34,6 +34,11 @@ export async function configure(command: Configure) {
   await codemods.makeUsingStub(stubsRoot, 'config/agent.stub', {});
   await codemods.makeUsingStub(stubsRoot, 'config/mcp.stub', {});
   await codemods.makeUsingStub(stubsRoot, 'database/migrations/create_agent_tables.stub', {});
+  await codemods.makeUsingStub(
+    stubsRoot,
+    'database/migrations/add_action_proposal_discovery.stub',
+    {},
+  );
   await codemods.makeUsingStub(stubsRoot, 'database/migrations/create_agent_rag_chunks.stub', {});
   await codemods.makeUsingStub(stubsRoot, 'database/migrations/create_agent_rag_trees.stub', {});
 }

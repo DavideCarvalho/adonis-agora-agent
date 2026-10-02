@@ -31,7 +31,12 @@ const pkgRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../../../../../', import.meta.url));
 
 /** The migration stubs a consumer receives from `node ace configure`. */
-const STUBS = ['create_agent_tables', 'create_agent_rag_chunks', 'create_agent_rag_trees'];
+const STUBS = [
+  'add_action_proposal_discovery',
+  'create_agent_tables',
+  'create_agent_rag_chunks',
+  'create_agent_rag_trees',
+];
 
 const appRoot = mkdtempSync(join(tmpdir(), 'agent-stub-typecheck-'));
 try {

@@ -1,0 +1,24 @@
+{{{
+  exports({ to: app.migrationsPath(`${new Date().getTime() + 1}_add_action_proposal_discovery.ts`) })
+}}}
+import { BaseSchema } from '@adonisjs/lucid/schema'
+import db from '@adonisjs/lucid/services/db'
+import { createAgentTables, LucidAgentStore } from '@adonis-agora/agent'
+
+/** Quiesce old writers before this upgrade; start discovery workers after it finishes. */
+export default class extends BaseSchema {
+  static disableTransactions = true
+
+  async up() {
+    const connection = db.connection(this.db.connectionName)
+    await createAgentTables(connection)
+    const store = new LucidAgentStore(connection, { autoCreateTables: false })
+    while (await store.backfillActionProposalDiscoveryIndex({ limit: 500 })) {
+      // Each batch preserves snapshots and audits; an interrupted upgrade can be resumed.
+    }
+  }
+
+  async down() {
+    throw new Error('Forward-only discovery upgrade: proposal history and work must be preserved')
+  }
+}
