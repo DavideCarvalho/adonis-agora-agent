@@ -1,4 +1,8 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
+import {
+  canonicalActionProposalJson,
+  snapshotActionProposal,
+} from './action-proposal-transitions.js';
 import { filterToolsByRole, personaFilterTools } from './personas.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
 import type { AiToolCtx, ToolDescribeScope, ToolHandler, ToolPreflightResult } from './spi/tool.js';
@@ -64,6 +68,24 @@ export class ToolPreflightDeniedError extends Error {
     super(reason);
     this.name = 'ToolPreflightDeniedError';
   }
+}
+
+/** Trusted preparation or a fresh schema parse changed the approved JSON input. */
+export class ToolInputDriftError extends Error {
+  constructor(public readonly toolName: string) {
+    super(`Tool "${toolName}" input differs from its trusted snapshot`);
+    this.name = 'ToolInputDriftError';
+  }
+}
+
+function assertTrustedInput(name: string, value: unknown, approved: unknown): void {
+  try {
+    if (canonicalActionProposalJson(value) === canonicalActionProposalJson(approved)) return;
+  } catch {
+    // A non-JSON value cannot match a trusted JSON snapshot, including an explicitly undefined
+    // approvedInput. Ordinary invocations never serialize the schema's parsed value.
+  }
+  throw new ToolInputDriftError(name);
 }
 
 interface Entry {
@@ -225,12 +247,29 @@ export class ToolRegistry {
     input: unknown,
     ctx: AiToolCtx,
     policy: RolesPolicy,
-    options: InvokeOptions = {},
+    options: PrepareOptions = {},
   ): Promise<ToolPreflightResult> {
-    const validated = await this.validated(name, input, ctx, policy, options);
-    return validated.entry.spec.kind === 'action' && validated.entry.handler.preflight !== undefined
-      ? validated.entry.handler.preflight(validated.value, validated.ctx, { phase: 'prepare' })
-      : { status: 'ready' };
+    return (await this.prepareValidated(name, input, ctx, policy, options)).preflight;
+  }
+
+  /** Expose the single schema parse; snapshotInput opts proposal callers into immutable JSON. */
+  async prepareValidated(
+    name: string,
+    input: unknown,
+    ctx: AiToolCtx,
+    policy: RolesPolicy,
+    options: PrepareOptions = {},
+  ): Promise<ToolPreparationResult> {
+    const { entry, value, ctx: withEmit } = await this.validated(name, input, ctx, policy, options);
+    const normalized = options.snapshotInput === true ? snapshotActionProposal(value) : value;
+    const hookInput = options.snapshotInput === true ? snapshotActionProposal(normalized) : value;
+    const preflight: ToolPreflightResult = (entry.spec.kind === 'action'
+      ? await entry.handler.preflight?.(hookInput, withEmit, { phase: 'prepare' })
+      : undefined) ?? { status: 'ready' };
+    // A hook can retain its input or mutate nested values after an await. Only the isolated
+    // normalized snapshot can be approved; reject mutation before exposing its confirmation.
+    if (options.snapshotInput === true) assertTrustedInput(name, hookInput, normalized);
+    return { input: normalized, preflight };
   }
 
   async invoke(
@@ -240,15 +279,20 @@ export class ToolRegistry {
     policy: RolesPolicy,
     options: InvokeOptions = {},
   ): Promise<unknown> {
-    const validated = await this.validated(name, input, ctx, policy, options);
-    if (validated.entry.spec.kind === 'action' && validated.entry.handler.preflight !== undefined) {
-      const result = await validated.entry.handler.preflight(validated.value, validated.ctx, {
-        phase: 'execute',
-      });
-      if (result.status === 'denied') throw new ToolPreflightDeniedError(name, result.reason);
-      if (result.status === 'completed') return result.output;
-    }
-    return validated.entry.handler.execute(validated.value, validated.ctx);
+    const { entry, value, ctx: withEmit } = await this.validated(name, input, ctx, policy, options);
+    const trusted = Object.hasOwn(options, 'approvedInput');
+    if (trusted) assertTrustedInput(name, value, options.approvedInput);
+    const executionInput = trusted ? snapshotActionProposal(value) : value;
+    const hookInput = trusted ? snapshotActionProposal(executionInput) : value;
+    const result =
+      entry.spec.kind === 'action'
+        ? await entry.handler.preflight?.(hookInput, withEmit, { phase: 'execute' })
+        : undefined;
+    // The hook receives its own snapshot, so retained references cannot alter later execution.
+    if (trusted) assertTrustedInput(name, hookInput, executionInput);
+    if (result?.status === 'denied') throw new ToolPreflightDeniedError(name, result.reason);
+    if (result?.status === 'completed') return result.output;
+    return entry.handler.execute(executionInput, withEmit);
   }
 }
 
@@ -259,6 +303,18 @@ export interface InvokeOptions {
    * policy and `canUse`. Undefined → no such check (every caller predating personas).
    */
   allowedTools?: readonly string[];
+  /** Trusted normalized JSON input. Own-property presence requires comparison even if undefined. */
+  approvedInput?: unknown;
+}
+
+export interface PrepareOptions extends InvokeOptions {
+  /** Preserve a detached normalized JSON snapshot and refuse mutation by the prepare hook. */
+  snapshotInput?: boolean;
+}
+
+export interface ToolPreparationResult {
+  input: unknown;
+  preflight: ToolPreflightResult;
 }
 
 /**

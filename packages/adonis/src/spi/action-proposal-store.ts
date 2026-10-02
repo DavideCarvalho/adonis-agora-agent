@@ -1,10 +1,19 @@
 import type { ToolConfirmation } from '../tool-presentation.js';
+import type { PageContext } from '../types.js';
 
 export interface ActionProposalScope {
   /** Explicit null or string; scope strings have at most 255 UTF-16 code units. */
   tenantRef: string | null;
   actorRef: string;
   threadId: string;
+}
+
+/** Persisted JSON execution descriptor; identity is resolved fresh from proposal scope. */
+export interface ActionProposalExecutionContext {
+  agentName?: string;
+  persona?: string;
+  requestId: string;
+  pageContext?: PageContext;
 }
 
 export interface CreateActionProposal extends ActionProposalScope {
@@ -16,6 +25,10 @@ export interface CreateActionProposal extends ActionProposalScope {
   toolName: string;
   /** JSON-serializable immutable snapshot. */
   input: unknown;
+  /** Original JSON before schema parsing; absence on legacy rows falls back to input. Null is present. */
+  preparationInput?: unknown;
+  /** Original execution address, never requester roles or transport/host handles. */
+  executionContext?: ActionProposalExecutionContext;
   confirmation: ToolConfirmation;
   approver: string;
   /** Milliseconds since epoch; null means no expiry. */

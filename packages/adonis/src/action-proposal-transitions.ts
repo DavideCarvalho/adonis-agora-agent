@@ -29,6 +29,8 @@ export function validateActionProposalCreation(input: CreateActionProposal): voi
     'originToolCallId',
     'toolName',
     'input',
+    'preparationInput',
+    'executionContext',
     'confirmation',
     'approver',
     'expiresAt',
@@ -53,6 +55,24 @@ export function validateActionProposalCreation(input: CreateActionProposal): voi
   for (const value of [input.id, input.actorRef, input.threadId, input.tenantRef]) {
     if (value !== null && value.length > 255)
       throw new RangeError('Action proposal id and scope must fit 255 UTF-16 code units');
+  }
+  if (Object.hasOwn(input, 'executionContext')) {
+    const context = input.executionContext;
+    if (context === null || typeof context !== 'object' || Array.isArray(context))
+      throw new TypeError('executionContext must be a JSON object');
+    const allowedContext = ['agentName', 'persona', 'requestId', 'pageContext'];
+    if (Object.keys(context).some((key) => !allowedContext.includes(key)))
+      throw new TypeError('Unknown execution context field');
+    checkString(context.requestId);
+    if (Object.hasOwn(context, 'agentName')) checkString(context.agentName);
+    if (Object.hasOwn(context, 'persona')) checkString(context.persona);
+    if (Object.hasOwn(context, 'pageContext')) {
+      const page = context.pageContext;
+      if (page === null || typeof page !== 'object' || Array.isArray(page))
+        throw new TypeError('pageContext must be a JSON object');
+      if (Object.hasOwn(page, 'kind') && typeof page.kind !== 'string')
+        throw new TypeError('pageContext.kind must be a string');
+    }
   }
   if (input.expiresAt !== null) checkTime(input.expiresAt);
   checkString(input.confirmation?.title);
