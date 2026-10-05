@@ -9,6 +9,8 @@ import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
 Tools are what turn a chatbot into an agent. A tool is a named capability with a typed input schema and a handler; the model decides *when* to call it, and the agent loop decides *whether* it may (role gate) and *how* (auto-execute vs. human approval). There are two ways to author one, and both register the same way.
 
+For result-driven UI, use the tool’s optional `present` hook. See [Component registries and server rendering](/docs/agent/authoring/component-rendering) for functional/class tools, custom components, shared React renderers, and WhatsApp image/PDF delivery.
+
 ## `@AiTool` classes
 
 Decorate a class that implements `execute(input, ctx)`:

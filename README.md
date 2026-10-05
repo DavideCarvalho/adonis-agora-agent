@@ -8,6 +8,13 @@ Governed, durable-backed AI agent (chat + tool-calling + governance) for AdonisJ
 > governance), the tool registry, personas/agent registries, the Vercel AI SDK adapter, and
 > in-memory testing doubles. The AdonisJS provider, HTTP routes, and Lucid store land in Wave 2.
 
+## Component registries and server rendering
+
+Tools support a `present` hook in both functional and decorated class forms. Register custom components per app, share React renderers between web screens and static exports, and generate paginated PNG/PDF tables and charts for your own delivery adapters.
+
+See the [component rendering guide](packages/adonis/docs/authoring/component-rendering.mdx) for complete examples, schemas, text fallbacks, and capture configuration.
+
+
 ## Install
 
 ```sh

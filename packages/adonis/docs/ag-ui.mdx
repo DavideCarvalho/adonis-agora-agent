@@ -99,7 +99,7 @@ The next `RunAgentInput` answers each interrupt in `resume`:
 | Interrupt `reason` | `status: 'resolved'` with `payload` | `status: 'cancelled'` |
 | --- | --- | --- |
 | `tool_approval` | `{ approved: true, remember? }` runs the tool; `{ approved: false, reason? }` rejects it (a bare boolean works too) | rejects it |
-| `input_required` (a [question set](/docs/agent/concepts)) | `{ answers: { <questionId>: string[] } }` | skips it — the agent proceeds on its defaults |
+| `input_required` (a [question set](/docs/agent/authoring/elicitation)) | `{ answers: { <questionId>: string[] } }` | skips it — the agent proceeds on its defaults |
 
 The rules the native decision routes enforce apply unchanged: only the run's owner (or the approver the [approval policy](/docs/agent/streaming-and-http#approval-policy) names) may answer, an answer a question refuses is a `400`, a request that lapsed is a `410`, and an interrupt that was already answered is a `409`. Every entry is checked before the first one is delivered. An entry naming an interrupt this agent never raised is skipped with a warning; an interrupt the list leaves out stays open, and the resumed run ends with the interrupt outcome again.
 
