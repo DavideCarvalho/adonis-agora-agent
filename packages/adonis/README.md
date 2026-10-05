@@ -17,6 +17,13 @@ The package is two things layered on top of each other:
 `read` tools auto-execute, `action` tools gate on human approval (HITL), and `agent` tools delegate
 to another named agent.
 
+## Component registries and server rendering
+
+Tools support a `present` hook in both functional and decorated class forms. Register custom components per app, share React renderers between web screens and static exports, and generate paginated PNG/PDF tables and charts for your own delivery adapters.
+
+See the [component rendering guide](./docs/authoring/component-rendering.mdx) for complete examples, schemas, text fallbacks, and capture configuration.
+
+
 ## Install
 
 ```sh

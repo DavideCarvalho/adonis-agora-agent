@@ -1,103 +1,233 @@
 ---
 title: Component registries and server rendering
-description: Share component contracts between tool results, app UI, and static exports.
+description: Tool presentations, custom components, and shared web/WhatsApp table and chart exports.
 ---
 
-Tools return domain data. Their optional `present` hook emits validated component props through the same durable UI stream as `ctx.emitUi`; the tool's ordinary JSON output is preserved for the model and REST/MCP consumers. Use one shared contract with app-specific renderers.
+A tool returns domain data. Its optional `present` hook describes how to show that result using a validated component contract. Each application registers its own renderers for that contract. React web UI and server exports can share the same component and stylesheet; a WhatsApp transport sends the exported PNG or PDF as an attachment.
 
-## Define a contract
+The libraries provide contracts and rendering adapters. They do not impose a table UI, a charting library, a theme, or a WhatsApp client. Agora and Aviary implement these APIs independently; neither ecosystem needs packages from the other.
 
-The existing `defineComponent` and `defineCatalog` remain supported. `createComponent` adds a callable factory that validates props, generates fallback text and snapshots JSON data; it accepts Standard Schema or JSON Schema via `props`.
+## What each layer owns
 
-```ts
-import { createComponent } from '@adonis-agora/agent/genui'
-import { z } from 'zod'
+| Layer | Responsibility |
+| --- | --- |
+| Tool `execute` | Read or change domain data, subject to the existing authorization and approval gates. |
+| Tool `present` | Turn a successful result into one component presentation, an array, or `undefined`. |
+| Component definition | Name, version, props schema, description, and trusted text fallback. |
+| Application registry | Associate trusted component definitions with app-owned renderers. |
+| React server renderer | Validate and render static HTML, or capture paginated PNG/PDF output. |
+| Transport adapter in your app | Upload attachments and send messages through WhatsApp, another chat channel, or HTTP. |
 
-export const history = createComponent<{ label: string }>({
-  name: 'History',
-  title: 'History',
-  description: 'A history summary',
-  version: 1,
-  props: z.object({ label: z.string() }),
-  fallbackText: ({ label }) => label,
-})
-```
+`present` is different from the existing tool `presentation` metadata. `presentation` supplies labels, progress copy, and approval/result chrome; `present` creates component content from the execution result. Ordinary JSON tool output remains available to the model and REST/MCP consumers. An HTTP caller does not automatically receive HTML or an image: the application explicitly invokes a renderer when it wants that representation.
 
-## Functional and class tools
-
-The object form infers input from the schema and presentation output from execution. The existing two-argument `defineTool(options, executeOrHandler)` still works.
+## Tables and charts from a functional tool
 
 ```ts
 import { defineTool } from '@adonis-agora/agent'
+import { table, chart } from '@adonis-agora/agent/genui'
+import { z } from 'zod'
 
-export const historyTool = defineTool({
-  name: 'history',
-  description: 'Read the history',
-  input: z.object({ label: z.string() }),
-  execute: ({ label }) => ({ label }),
-  present: (result) => history(result),
+const sampleRows = [
+  { time: '22:08', side: 'Left', minutes: 10 },
+  { time: '20:46', side: 'Right', minutes: 8 },
+]
+
+export const feedingHistory = defineTool({
+  name: 'feedingHistory',
+  description: 'List recent feeding records',
+  input: z.object({ limit: z.number().int().min(1).max(100) }),
+  execute: async ({ limit }) => sampleRows.slice(0, limit),
+  present: (rows) => table({
+    title: 'Recent feedings',
+    columns: [
+      { key: 'time', label: 'Time' },
+      { key: 'side', label: 'Side' },
+      { key: 'minutes', label: 'Minutes', align: 'right' },
+    ],
+    rows,
+  }),
+})
+
+// The chart factory describes data, not a particular charting library.
+const durationChart = await chart({
+  title: 'Feeding duration',
+  type: 'bar',
+  xKey: 'time',
+  series: [{ key: 'minutes', label: 'Minutes' }],
+  data: sampleRows,
+  unit: 'min',
 })
 ```
 
+Replace `sampleRows` with your repository or service. `table` uses the built-in `DataTable` contract: keyed columns and object rows with JSON scalar cells. `chart` uses `Chart`: `type` (`bar` or `line`), `xKey`, `series`, and `data`. Register their definitions in the server catalog and their renderers in your app. A factory returns plain JSON: `{ component, props, version, fallbackText }`. React elements, functions, dates, and attachment bytes do not belong in these persisted props.
+
+Register functional tools through `defineConfig({ tools: [feedingHistory] })` or the existing tool-file discovery. See [Tools](/docs/agent/authoring/tools).
+
+## The same API in a decorated class
+
 ```ts
 import { AiTool } from '@adonis-agora/agent'
+import { table } from '@adonis-agora/agent/genui'
+import { z } from 'zod'
 
-@AiTool({ name: 'history', description: 'Read the history', input: z.object({ label: z.string() }) })
-export default class HistoryTool {
-  execute(input: { label: string }) { return input }
-  present(result: { label: string }) { return history(result) }
+@AiTool({
+  name: 'feedingHistory',
+  description: 'List recent feeding records',
+  input: z.object({ limit: z.number().int().min(1).max(100) }),
+})
+export class FeedingHistoryTool {
+  async execute({ limit }: { limit: number }) {
+    return [{ time: '22:08', side: 'Left', minutes: 10 }].slice(0, limit)
+  }
+
+  present(rows: { time: string; side: string; minutes: number }[]) {
+    return table({
+      columns: [
+        { key: 'time', label: 'Time' },
+        { key: 'side', label: 'Side' },
+        { key: 'minutes', label: 'Minutes' },
+      ],
+      rows,
+    })
+  }
 }
 ```
 
-Register `history.definition` in the configured GenUI catalog so the existing server-owned schema and client capability checks apply. A hook can return one component, an array, or `undefined`. Tool permission gates run before execution. A failed presentation does not change a successful domain result or trigger action retries; `AiToolCtx.onPresentationError(error, { toolName })` lets custom hosts report it, otherwise a metadata-only warning is emitted.
+Register either the function or the class under this name. The class methods retain their receiver, so `execute` and `present` can use injected dependencies. Both forms accept async execution and presentation. The existing two-argument `defineTool(options, executeOrHandler)` API remains supported.
 
-## One app registry for web and server
+## Custom components and renderers per channel
 
-Each app owns its registry. Components are not downloaded or executed from client-supplied names; the server chooses trusted definitions and renderers. Manifests expose names, versions and available schemas, not renderer code.
+```ts
+import { createComponent, createComponentRegistry } from '@adonis-agora/agent/genui'
+import { z } from 'zod'
+
+export const feedingSummary = createComponent({
+  name: 'FeedingSummary',
+  title: 'Feeding summary',
+  description: 'Count and duration for a recorded period',
+  version: 1,
+  props: z.object({ count: z.number().int(), minutes: z.number() }),
+  fallbackText: ({ count, minutes }) => `${count} feedings · ${minutes} min`,
+})
+
+export const channels = createComponentRegistry().register(feedingSummary.definition, {
+  text: ({ count, minutes }) => `${count} feedings · ${minutes} min`,
+  whatsapp: ({ count, minutes }) => `*${count} feedings*\nRecorded duration: ${minutes} min`,
+})
+
+const summary = await feedingSummary({ count: 2, minutes: 18 })
+const message = await channels.render(summary, 'whatsapp')
+```
+
+Channel names are application-defined. `render` validates the authoritative definition and version before invoking a renderer. A missing channel uses its registered `text` renderer or the definition's text fallback. A renderer error rejects; your delivery layer chooses whether to retry or use a fallback. The core registry also accepts a context argument for application-specific rendering needs.
+
+Create a registry per app or tenant, rather than mutating a process-wide registry. Duplicate component names reject. `registry.catalog` feeds the existing GenUI catalog; `registry.manifest` exposes names, versions, and available portable schemas, without renderer code. Client-supplied names never install or execute components.
+
+## Share the web component with server rendering
 
 ```tsx
+import type { TableProps } from '@adonis-agora/agent/genui'
+import { table } from '@adonis-agora/agent/genui'
 import { createReactComponentRegistry, GenuiProvider } from '@adonis-agora/agent/react/genui'
+import type { ReactNode } from 'react'
+
+export function FeedingTable({ title, columns, rows }: TableProps) {
+  return (
+    <section className="feeding-report">
+      {title && <h2>{title}</h2>}
+      <table>
+        <thead><tr>{columns.map((column) => (
+          <th key={column.key}>{column.label}</th>
+        ))}</tr></thead>
+        <tbody>{rows.map((row, index) => (
+          <tr key={index}>{columns.map((column) => (
+            <td key={column.key}>{String(row[column.key] ?? '')}</td>
+          ))}</tr>
+        ))}</tbody>
+      </table>
+    </section>
+  )
+}
 
 export const components = createReactComponentRegistry()
-  .register(history.definition, {
-    react: ({ label }) => <section className="history">{label}</section>,
-    text: ({ label }) => label,
-  })
+  .register(table.definition, { react: FeedingTable })
 
-export function ChatSurface({ children }: { children: React.ReactNode }) {
-  return <GenuiProvider registry={components.components} catalog={components.catalog}>{children}</GenuiProvider>
+export function ChatSurface({ children }: { children: ReactNode }) {
+  return (
+    <GenuiProvider registry={components.components} catalog={components.catalog}>
+      {children}
+    </GenuiProvider>
+  )
 }
 ```
 
-React components used for export must accept their data through props and work without browser APIs or interaction. Provide a static component when the web component requires those APIs. Registry definitions are shared; CSS, themes and appearance belong to your app.
+Use `FeedingTable` in your normal platform screens as well. Load the same application CSS in the web bundle and in the server renderer. To reuse charts, register `chart.definition` with your application's chart component in the same way. Export components must render without browser APIs, effects, or user interaction. SVG or other statically rendered charts work; a chart that draws only into canvas after mounting needs an export component. CSS dimensions and pagination can differ for a narrow attachment while retaining the same visual design.
 
-## Static HTML, PNG and PDF
+Configure the authoritative server catalog with the same definitions:
 
-Install matching React/ReactDOM versions. Agora owns its GenUI, React adapters, and server renderer; no Aviary package or release is required. The SSR entry is optional and does not load the browser chat hook. Playwright is only needed for image/PDF capture; provide your browser and retain ownership of it.
+```ts
+import { defineConfig } from '@adonis-agora/agent'
+import { genui } from '@adonis-agora/agent/genui'
+import { components } from './components.js'
+import { model } from './model.js' // Your configured ModelProvider or ModelFactory.
+
+export default defineConfig({ model, genui: genui({ catalog: components.catalog }) })
+```
+
+Keep shared contracts and React component modules browser-safe. Import the Node-only server renderer only in server modules.
+
+## Render HTML, PNG, or PDF
+
+Install matching React and ReactDOM versions (18 or newer). HTML requires no browser. PNG/PDF require a capture adapter; the optional Playwright adapter uses `playwright-core` and an explicitly installed Chromium. Browser installation is your deployment's responsibility.
 
 ```ts
 import { createReactServerRenderer } from '@adonis-agora/agent/react/genui/server'
 import { createPlaywrightCaptureAdapter } from '@adonis-agora/agent/react/genui/server/playwright'
+import { table } from '@adonis-agora/agent/genui'
 import { chromium } from 'playwright-core'
 import { components } from './components.js'
-import { history } from './contracts.js'
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH })
+const browser = await chromium.launch({ executablePath: '/usr/bin/chromium' })
 try {
   const renderer = createReactServerRenderer({
     registry: components,
-    stylesheet: { path: './dist/agent-components.css' },
+    stylesheet: { path: './dist/feeding-report.css' },
     theme: 'light',
     capture: createPlaywrightCaptureAdapter({ browser }),
   })
-  const item = await history({ label: 'Three entries' })
+  const item = await table({
+    title: 'Recent feedings',
+    columns: [{ key: 'time', label: 'Time' }, { key: 'minutes', label: 'Minutes' }],
+    rows: [{ time: '22:08', minutes: 10 }, { time: '20:46', minutes: 8 }],
+  })
   const html = await renderer.html(item)
-  const images = await renderer.images(item, { width: 960, rowsPerPage: 20 })
-  const pdf = await renderer.pdf(item)
-  // Your transport uploads images/PDF and sends them. No transport is invoked by the renderer.
+  const images = await renderer.images(item, { width: 960, height: 1600, rowsPerPage: 20 })
+  const pdf = await renderer.pdf(item, { rowsPerPage: 20 })
+  // html is a string; images is Uint8Array[]; pdf is Uint8Array.
+  // Your application uploads/sends these bytes through its own transport.
 } finally {
   await browser.close()
 }
 ```
 
-The built-in `table` factory uses `DataTable` with keyed columns and object rows. Table pagination preserves all records; custom definitions can register a `paginate` function returning each page's complete props. Each page is validated before rendering. Stylesheets are trusted application files, never user-provided paths/CSS. Capture disables scripts and unapproved network traffic and enforces size/page/timeout limits.
+For WhatsApp, send each PNG as a normal image attachment; the table remains readable without Markdown table support. A long history produces multiple images, preserving every row. A PDF is an alternative downloadable attachment. Receiving a `present` frame alone does not send a WhatsApp attachment: your host must route the presentation through the renderer and its delivery adapter. The built-in text table fallback shows at most 15 rows and marks omissions; use image/PDF export when every row must be visible.
+
+`images` returns one PNG per logical page. `pdf` combines those pages. `DataTable` pagination preserves columns and slices rows before React rendering. A custom React registration can supply `paginate(props, rowsPerPage)`, returning complete props for each page; every page is validated. HTML export renders the complete component without this pagination.
+
+| Capture setting | Default | Allowed range |
+| --- | --- | --- |
+| `width` | 1200 px | 320–4096 px |
+| `height` | 1600 px | 200–16384 px |
+| `rowsPerPage` | 30 | 1–500 |
+| `timeoutMs` | 15000 ms | 100–60000 ms |
+| Logical pages | Derived from data | 1–100 |
+
+Overflow rejects instead of silently clipping content. Reduce rows per page, increase height, or add a custom paginator. Fonts and images are awaited. The adapter closes its own pages and contexts on success and failure; a supplied browser remains caller-owned. The server entry does not import browser chat hooks.
+
+## Validation, replay, and capture boundaries
+
+Props can use Standard Schema (for example Zod) or JSON Schema. `createComponent` snapshots JSON-safe props and creates trusted fallback text. If an input transform changes the shape, declare an `outputProps` schema that accepts the normalized portable props; renderers, catalog validation, and manifests use `outputProps ?? props`. This avoids repeatedly applying an input transformation during rendering or replay.
+
+Presentations use the existing `ctx.emitUi` path, so UI frames follow the normal streaming and durable message flow. Denied or failed tools do not present. Presentation/delivery failures retain the successful domain result and do not retry the action. Hosts can report those failures through `ctx.onPresentationError(error, { toolName })`. Completed-action shortcuts journal their presentation decision so changing a hook does not move replay checkpoints; historical claims without that decision retain their original checkpoint sequence.
+
+Stylesheets, React renderers, and filesystem paths are trusted application inputs. Capture disables page scripts and service workers and denies network traffic by default, including iframe requests. If your app needs remote fonts or images, pass an explicit `allowAsset(url)` predicate to the Playwright adapter. Even allowlisted requests cannot follow HTTP redirects; use a direct trusted asset URL. Binary attachments stay outside persisted component frames.

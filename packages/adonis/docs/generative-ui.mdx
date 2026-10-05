@@ -9,6 +9,8 @@ import { Steps, Step } from 'fumadocs-ui/components/steps';
 
 A tool does not have to answer only in prose. It can push a **typed UI component frame** into the run's live stream — a weather card, a chart, a confirmation form — and the frontend renders your real React component in the transcript, right where the text would have gone. Text-only clients are untouched: the wire stays byte-for-byte backward compatible.
 
+For result-driven UI, use the tool’s optional `present` hook. See [Component registries and server rendering](/docs/agent/authoring/component-rendering) for functional/class tools, custom components, shared React renderers, and WhatsApp image/PDF delivery.
+
 ## What it is (and when to reach for it)
 
 The model streams text. Sometimes text is the wrong medium: "your glucose is trending up" is far weaker than an actual line chart, and "here's the weather" begs for a card with an icon and a temperature. **Generative UI** lets a tool emit a *structured component reference* — a `name` plus a JSON `data` payload — that the client maps to a component in its own registry and paints inline.

@@ -203,7 +203,9 @@ editing an applied migration is safe, Lucid tracks it by file name.
 runs it for you: after upgrading, add a migration whose `up()` calls `createAgentTables` again (a
 copy of the published `create_agent_tables` migration under a new timestamp does exactly that) —
 it only adds what is missing.
-</Callout> `AGENT_TABLES` is the name map, useful for a migration that
+</Callout>
+
+`AGENT_TABLES` is the name map, useful for a migration that
 needs to reference a table it did not write.
 
 ## The in-memory store for tests
