@@ -10,15 +10,15 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 It is **headless**. It hands you state and actions; every pixel is yours, so the chat looks like your app and not like a widget.
 
-The hooks are [`@dudousxd/nestjs-agent-react`](https://www.npmjs.com/package/@dudousxd/nestjs-agent-react), re-exported unchanged. This package's routes speak the same wire contract as `@dudousxd/nestjs-agent`, so one React client serves both backends — and a second copy of it here could only drift. What this entry adds is the AdonisJS connection: the session cookie and `@adonisjs/shield`'s CSRF token, with no configuration.
+Agora owns the hooks and transport implementation in this package. Its stream protocol remains compatible with Aviary, while installation and releases are independent. The AdonisJS connection sends the session cookie and `@adonisjs/shield`'s CSRF token, with no configuration.
 
 ## Install
 
 ```bash
-npm i @dudousxd/nestjs-agent-react @ai-sdk/react ai
+npm i @ai-sdk/react ai
 ```
 
-`@dudousxd/nestjs-agent-react` is an optional peer of `@adonis-agora/agent`: an app that never imports `@adonis-agora/agent/react` never installs it. `react` (`^18 || ^19`) you already have.
+The React implementation ships inside `@adonis-agora/agent`. Install its optional React and AI SDK peers when using the React entry; an app that only uses the server does not need them. An existing React app already provides `react` (`^18 || ^19`).
 
 ## Hello chat — Adonis + Inertia
 
@@ -192,7 +192,7 @@ const { files } = chat.composer
 
 A reloaded thread returns them on the user message; `messageFiles(message)` reads them back.
 
-For large files over a resumable media library (`uploads.resumable` in `config/media.ts`), upload in chunks over tus instead — same composer, one prop; it needs the optional peer `@dudousxd/nestjs-media-client`:
+For large files over a resumable media library (`uploads.resumable` in `config/media.ts`), upload in chunks over tus instead — same composer, one prop. The upload client ships with Agora:
 
 ```tsx
 import { mediaAttachments } from '@adonis-agora/agent/react/media'
@@ -224,7 +224,7 @@ Every route is listed in [Streaming & HTTP](/docs/agent/streaming-and-http). Err
 | `@adonis-agora/agent/react` | the provider, the hooks, the transcript model, `AgentClient` |
 | `@adonis-agora/agent/react/genui` | `GenuiProvider`, `GenerativeUI` — draw the components an agent pushes ([Generative UI](/docs/agent/generative-ui)) |
 | `@adonis-agora/agent/react/genui/json-render` | composed trees through `@json-render/react` |
-| `@adonis-agora/agent/react/markdown` | `AgentMarkdown`, a streaming markdown renderer (`streamdown` and friends are optional peers of the React package) |
+| `@adonis-agora/agent/react/markdown` | `AgentMarkdown`, a streaming markdown renderer (`streamdown` and friends are optional peers of this package) |
 | `@adonis-agora/agent/react/media` | `mediaAttachments()` — resumable (tus) attachment uploads ([Resumable uploads](/docs/agent/authoring/attachments#resumable-uploads-tus)) |
 
 <Callout type="info" title="Not using React?">

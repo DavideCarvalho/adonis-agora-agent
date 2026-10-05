@@ -1,5 +1,5 @@
 // `@adonis-agora/agent/react` driving this package's own AG-UI producer (`agUiAdapter()`) over real
-// HTTP: the REAL `@dudousxd/nestjs-agent-react` consumer (`agUiChatStream` → `useAgentChat`) against
+// HTTP: the REAL local Adonis React consumer (`agUiChatStream` → `useAgentChat`) against
 // the REAL `POST /agent/ag-ui`, so a drift between the AG-UI this package writes and the AG-UI that
 // client reads fails here rather than in an app.
 

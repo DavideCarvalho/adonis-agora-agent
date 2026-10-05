@@ -73,7 +73,7 @@ const handler = {
 - [x] Repetir os cenários de falha antes da implementação.
 - [x] Adaptar o mesmo contrato às gates e checkpoints do Agora, preservando variantes de persona e retry. Preparar na origem do resultado journaled de modelo para preservar a retomada por um processo sem ferramenta registrada antes do primeiro claim; não adicionar transporte remoto onde o runner não o tem.
 - [x] Acrescentar confirmation ao wire e histórico, com coluna nullable e provisionamento/migração consistente.
-- [x] Usar a camada React compartilhada; verificar com build local da Aviary sem gravar paths locais nas dependências publicadas.
+- [x] Na entrega original, verificar a integração React com build local da Aviary. Essa arquitetura foi substituída: O Agora mantém React e catálogo localmente, sem peers Aviary ou paths locais nas dependências publicadas.
 - [x] O cliente nativo sem React preserva confirmação, aprovador, validade e motivo. Ferramentas sem hook e frames antigos mantêm campos opcionais ausentes quando não fornecidos.
 - [x] Documentar, adicionar changeset e passar checks focais, typecheck e lint dos arquivos alterados.
 

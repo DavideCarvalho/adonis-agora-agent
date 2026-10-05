@@ -554,5 +554,7 @@ function toFiniteNumber(value: JSONValue | undefined): number | undefined {
 function asJsonObject(
   value: JSONValue | undefined,
 ): { [key: string]: JSONValue | undefined } | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined;
+  // AI SDK JSON arrays may be readonly; Array.isArray only narrows mutable arrays in TS.
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  return value as { readonly [key: string]: JSONValue | undefined };
 }

@@ -10,7 +10,7 @@ The default setup is a single agent. Two features let you go further: **personas
 
 ## Personas
 
-A persona is a named variant of ONE agent: its own system prompt and, optionally, a narrower tool allow-list. Everything else — the agent's model, its access rules, its handoffs, its history — stays the agent's. A variant that needs any of those to differ is its own agent, not a persona. Personas speak the same wire as `@dudousxd/nestjs-agent` (`POST /agent/chat { persona }`, `forwardedProps.persona`, `persona` on messages and threads), so the shared React package drives them as-is.
+A persona is a named variant of ONE agent: its own system prompt and, optionally, a narrower tool allow-list. Everything else — the agent's model, its access rules, its handoffs, its history — stays the agent's. A variant that needs any of those to differ is its own agent, not a persona. Personas retain a wire contract compatible with Aviary (`POST /agent/chat { persona }`, `forwardedProps.persona`, `persona` on messages and threads). Agora's local React client supports these fields.
 
 ```ts title="config/agent.ts"
 export default defineConfig({

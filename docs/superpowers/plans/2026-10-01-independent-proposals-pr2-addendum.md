@@ -6,7 +6,7 @@
 
 **Architecture:** Reuse PR1's scoped proposal row and fenced execution lease. Small modules handle trusted preparation, decisions, worker discovery/execution, outcome admission and client reconciliation. Existing blocking journals and automatic/remembered execution retain their behavior.
 
-**Tech Stack:** TypeScript, Standard Schema, Vitest, inline/durable runners, Lucid/Drizzle/MikroORM, existing conversation queue and shared React client.
+**Tech Stack:** TypeScript, Standard Schema, Vitest, inline/durable runners, Lucid/Drizzle/MikroORM, existing conversation queue and each project's local React client.
 
 ## Delivery checkpoint
 
@@ -33,7 +33,7 @@ Paths under `core/src/` below mean `packages/core/src/` in Nest and `packages/ad
 | Decision and polling services | Nest `packages/nestjs/src/proposals/action-proposal.service.ts`; Agora `packages/adonis/src/action-proposal-service.ts` | Nest `agent.service.ts`, `approval-port.adapter.ts`, controller routes; Agora `agent-service.ts`, `providers/agent_provider.ts`, protocol adapter |
 | Scheduler and admission | Nest `packages/nestjs/src/proposals/action-proposal-worker.service.ts`; Agora `packages/adonis/src/action-proposal-worker.ts`; both `core/src/action-proposal-admission.ts` | Existing module/provider lifecycle and chat queue |
 | Persistence | Existing Drizzle/MikroORM proposal helpers/entities; Agora Lucid proposal helper/schema | Shared store contracts, additive migrations/provisioning, memory stores |
-| Client reconciliation | Nest `packages/react/src/approvals/use-action-proposals.ts` | Shared transport, `use-agent-chat.ts`, transcript model; Agora native client/protocol mapping uses the published shared React client |
+| Client reconciliation | Nest `packages/react/src/approvals/use-action-proposals.ts` | Agora local transport, `use-agent-chat.ts`, transcript model and native client/protocol mapping; no Aviary runtime dependency |
 
 ## Contract additions to review and freeze
 
@@ -120,7 +120,7 @@ Worker configuration is opt-in with `pollIntervalMs: 1000`, `leaseMs: 30000`, `m
 ### 6. History, React and late updates
 
 - [x] Add provider-contract tests proving the original call retains its matching pending receipt and later facts never become unmatched tool results, including history window selection and a conversation that has advanced.
-- [x] Add scoped polling to the shared React client while proposals are pending/queued/executing, and refetch on focus/reconnect. Merge state by proposal ID; reconcile terminal fact/UI by outcome ID. Invalidate transcript reads when an outcome becomes admitted. Client reads cannot overwrite local active-run messages with an older snapshot.
+- [x] Add scoped polling to each project's React client while proposals are pending/queued/executing, and refetch on focus/reconnect. Merge state by proposal ID; reconcile terminal fact/UI by outcome ID. Invalidate transcript reads when an outcome becomes admitted. Client reads cannot overwrite local active-run messages with an older snapshot.
 - [x] Render existing approval controls using the explicit proposal target; status distinguishes pending, queued, executing, succeeded and failed. Do not reuse finished SSE, mark pending as executed, or auto-retry failed work. Agora maps its native wire shapes into the same published React implementation.
 - [x] Test origin SSE ended, decision in another tab, completion during a different active turn, reconnect after admission, duplicate polling payload and late UI persistence after reload. The completion scope also covers pending-only supersession, text/channel decisions and negotiated component catalogs. Premium UI redesign remains outside this change.
 
@@ -133,7 +133,7 @@ Acceptance is one truthful pending receipt, a normally ended/free conversation, 
 
 ## Completion evidence, 2026-10-01
 
-The four paired foundation layers precede this runtime layer. Independent SPEC and QUALITY reviews cover the backend, SQL admission/replacement and shared React/catalog changes. Their findings produced regression coverage for exact MySQL thread IDs, supported transaction drivers, caller rollback, current requester authorization, truncated approval lists, origin-call collisions, historical component versions and optional-peer compatibility.
+The four paired foundation layers precede this runtime layer. Independent SPEC and QUALITY reviews cover the backend, SQL admission/replacement and React/catalog changes in both projects. Their findings produced regression coverage for exact MySQL thread IDs, supported transaction drivers, caller rollback, current requester authorization, truncated approval lists, origin-call collisions, historical component versions and optional-peer compatibility. Those validation results describe the original delivery; Agora now owns the React/catalog implementation and releases independently.
 
 | Acceptance | Evidence in the repositories |
 | --- | --- |

@@ -12,6 +12,7 @@ import {
   filterToolsByEnabled,
   isToolEnabled,
 } from './tool-filters.js';
+import { presentToolResult } from './tool-result-presentation.js';
 import { createNoopEmitUi } from './tool-ui.js';
 import type { Actor, ToolDefinition, ToolSpec } from './types.js';
 
@@ -121,6 +122,16 @@ export class ToolRegistry {
 
   has(name: string): boolean {
     return this.entries.has(name);
+  }
+
+  hasPresentation(name: string): boolean {
+    return this.entries.get(name)?.handler.present !== undefined;
+  }
+
+  /** Used by a journaled already-completed preflight; never executes the domain handler. */
+  async presentResult(name: string, output: unknown, ctx: AiToolCtx): Promise<void> {
+    const entry = this.entries.get(name);
+    if (entry !== undefined) await presentToolResult(name, entry.handler, output, ctx);
   }
 
   spec(name: string): ToolSpec | undefined {
@@ -293,8 +304,12 @@ export class ToolRegistry {
     // The hook receives its own snapshot, so retained references cannot alter later execution.
     if (trusted) assertTrustedInput(name, hookInput, executionInput);
     if (result?.status === 'denied') throw new ToolPreflightDeniedError(name, result.reason);
-    if (result?.status === 'completed') return result.output;
-    return entry.handler.execute(executionInput, withEmit);
+    const output =
+      result?.status === 'completed'
+        ? result.output
+        : await entry.handler.execute(executionInput, withEmit);
+    await presentToolResult(name, entry.handler, output, withEmit);
+    return output;
   }
 }
 

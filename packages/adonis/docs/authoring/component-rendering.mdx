@@ -1,0 +1,103 @@
+---
+title: Component registries and server rendering
+description: Share component contracts between tool results, app UI, and static exports.
+---
+
+Tools return domain data. Their optional `present` hook emits validated component props through the same durable UI stream as `ctx.emitUi`; the tool's ordinary JSON output is preserved for the model and REST/MCP consumers. Use one shared contract with app-specific renderers.
+
+## Define a contract
+
+The existing `defineComponent` and `defineCatalog` remain supported. `createComponent` adds a callable factory that validates props, generates fallback text and snapshots JSON data; it accepts Standard Schema or JSON Schema via `props`.
+
+```ts
+import { createComponent } from '@adonis-agora/agent/genui'
+import { z } from 'zod'
+
+export const history = createComponent<{ label: string }>({
+  name: 'History',
+  title: 'History',
+  description: 'A history summary',
+  version: 1,
+  props: z.object({ label: z.string() }),
+  fallbackText: ({ label }) => label,
+})
+```
+
+## Functional and class tools
+
+The object form infers input from the schema and presentation output from execution. The existing two-argument `defineTool(options, executeOrHandler)` still works.
+
+```ts
+import { defineTool } from '@adonis-agora/agent'
+
+export const historyTool = defineTool({
+  name: 'history',
+  description: 'Read the history',
+  input: z.object({ label: z.string() }),
+  execute: ({ label }) => ({ label }),
+  present: (result) => history(result),
+})
+```
+
+```ts
+import { AiTool } from '@adonis-agora/agent'
+
+@AiTool({ name: 'history', description: 'Read the history', input: z.object({ label: z.string() }) })
+export default class HistoryTool {
+  execute(input: { label: string }) { return input }
+  present(result: { label: string }) { return history(result) }
+}
+```
+
+Register `history.definition` in the configured GenUI catalog so the existing server-owned schema and client capability checks apply. A hook can return one component, an array, or `undefined`. Tool permission gates run before execution. A failed presentation does not change a successful domain result or trigger action retries; `AiToolCtx.onPresentationError(error, { toolName })` lets custom hosts report it, otherwise a metadata-only warning is emitted.
+
+## One app registry for web and server
+
+Each app owns its registry. Components are not downloaded or executed from client-supplied names; the server chooses trusted definitions and renderers. Manifests expose names, versions and available schemas, not renderer code.
+
+```tsx
+import { createReactComponentRegistry, GenuiProvider } from '@adonis-agora/agent/react/genui'
+
+export const components = createReactComponentRegistry()
+  .register(history.definition, {
+    react: ({ label }) => <section className="history">{label}</section>,
+    text: ({ label }) => label,
+  })
+
+export function ChatSurface({ children }: { children: React.ReactNode }) {
+  return <GenuiProvider registry={components.components} catalog={components.catalog}>{children}</GenuiProvider>
+}
+```
+
+React components used for export must accept their data through props and work without browser APIs or interaction. Provide a static component when the web component requires those APIs. Registry definitions are shared; CSS, themes and appearance belong to your app.
+
+## Static HTML, PNG and PDF
+
+Install matching React/ReactDOM versions. Agora owns its GenUI, React adapters, and server renderer; no Aviary package or release is required. The SSR entry is optional and does not load the browser chat hook. Playwright is only needed for image/PDF capture; provide your browser and retain ownership of it.
+
+```ts
+import { createReactServerRenderer } from '@adonis-agora/agent/react/genui/server'
+import { createPlaywrightCaptureAdapter } from '@adonis-agora/agent/react/genui/server/playwright'
+import { chromium } from 'playwright-core'
+import { components } from './components.js'
+import { history } from './contracts.js'
+
+const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH })
+try {
+  const renderer = createReactServerRenderer({
+    registry: components,
+    stylesheet: { path: './dist/agent-components.css' },
+    theme: 'light',
+    capture: createPlaywrightCaptureAdapter({ browser }),
+  })
+  const item = await history({ label: 'Three entries' })
+  const html = await renderer.html(item)
+  const images = await renderer.images(item, { width: 960, rowsPerPage: 20 })
+  const pdf = await renderer.pdf(item)
+  // Your transport uploads images/PDF and sends them. No transport is invoked by the renderer.
+} finally {
+  await browser.close()
+}
+```
+
+The built-in `table` factory uses `DataTable` with keyed columns and object rows. Table pagination preserves all records; custom definitions can register a `paginate` function returning each page's complete props. Each page is validated before rendering. Stylesheets are trusted application files, never user-provided paths/CSS. Capture disables scripts and unapproved network traffic and enforces size/page/timeout limits.

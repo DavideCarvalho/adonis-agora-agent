@@ -261,3 +261,70 @@ it('overwrites provider-supplied preparation and kind with the runtime verdict',
   expect(journal.recorded('llm:0')).not.toContain('forged');
   expect(journal.names()).not.toContain(`signal:tool:${RUN_ID}:${CALL_ID}`);
 });
+
+describe('completed-preflight presentation stays stable across registry changes', () => {
+  function completed(present?: ToolHandler['present']) {
+    const registry = new ToolRegistry();
+    registry.register(
+      { name: 'purgeCache', kind: 'action', description: 'purge', inputSchema: z.object({}) },
+      {
+        execute: async () => {
+          throw new Error('completed action must not execute');
+        },
+        preflight: () => ({ status: 'completed', output: { purged: true } }),
+        ...(present ? { present } : {}),
+      },
+    );
+    return registry;
+  }
+  const show: NonNullable<ToolHandler['present']> = () => ({
+    component: 'Card',
+    props: { label: 'Saved' },
+    version: 1,
+    fallbackText: 'Saved',
+  });
+
+  it('does not add a checkpoint when a hook is added after the claim was recorded', async () => {
+    const journal = new Journal();
+    await pass(journal, completed());
+    const recorded = journal.names();
+    await expect(pass(journal, completed(show))).resolves.toBeUndefined();
+    expect(journal.names()).toEqual(recorded);
+  });
+
+  it('does not remove a checkpoint when a recorded hook disappears', async () => {
+    const journal = new Journal();
+    await pass(journal, completed(show));
+    const recorded = journal.names();
+    await expect(pass(journal, completed())).resolves.toBeUndefined();
+    expect(journal.names()).toEqual(recorded);
+  });
+
+  it('treats older claims without the opt-in flag as no presentation', async () => {
+    const journal = new Journal();
+    await pass(journal, completed());
+    journal.rewriteOutput(`persist:toolcall:${CALL_ID}`, (output) => {
+      const claim = output as Record<string, unknown>;
+      delete claim.presentCompletedPreflight;
+      return claim;
+    });
+    const recorded = journal.names();
+    await expect(pass(journal, completed(show))).resolves.toBeUndefined();
+    expect(journal.names()).toEqual(recorded);
+  });
+
+  for (const initiallyPresent of [false, true]) {
+    it(`keeps the claim branch after interruption (initial hook: ${initiallyPresent})`, async () => {
+      const journal = new Journal();
+      await pass(journal, completed(initiallyPresent ? show : undefined));
+      const recorded = journal.names();
+      const claimed = recorded.indexOf(`persist:toolcall:${CALL_ID}`);
+      // A process died immediately after the claim; there are no completed later steps to replay.
+      while (journal.names().length > claimed + 1) journal.dropAt(claimed + 1);
+      await expect(
+        pass(journal, completed(initiallyPresent ? undefined : show)),
+      ).resolves.toBeUndefined();
+      expect(journal.names()).toEqual(recorded);
+    });
+  }
+});

@@ -1,13 +1,9 @@
-# Capability parity with `@dudousxd/nestjs-agent`
+# Capability parity with Aviary
 
-This library and [`nestjs-agent`](https://github.com/DavideCarvalho/nestjs-agent) are the same
-product on two frameworks, and the goal is parity of **capability** — not of signature.
+Agora and [Aviary](https://github.com/DavideCarvalho/nestjs-agent) are independent products on different frameworks. Each owns its source, dependencies, tests, documentation and releases. Agora does not install or re-export Aviary packages.
 
-The ledger is kept in ONE place so the two copies cannot disagree about who has what:
-[`nestjs-agent/PARITY.md`](https://github.com/DavideCarvalho/nestjs-agent/blob/master/PARITY.md).
+Capability parity compares observable behavior and compatible protocols, rather than requiring identical signatures or shared implementation. Agora owns its GenUI catalog, React client, AG-UI adapters and media upload client. Existing stream events, component frames, approvals, capabilities and persisted history retain their wire contracts.
 
-Adding a capability to either repo means adding its row there, with a status for the other side.
-New capabilities and shared fixes are one delivery across Aviary and Agora: paired PRs,
-equivalent behaviour tests, and explicit shared-package release dependencies. A re-export alone
-does not establish parity. `not ported` means work remains, not that the delivery is complete;
-`not applicable` must explain a framework-specific reason. Silence is not a status.
+The cross-project comparison ledger lives in [Aviary/PARITY.md](https://github.com/DavideCarvalho/nestjs-agent/blob/master/PARITY.md). Update the relevant status when a capability changes, and validate Agora's behavior locally. A compatible protocol does not imply a package dependency, coordinated publication or release-order requirement.
+
+Use `not ported` when an implementation remains incomplete. Use `not applicable` only with a framework-specific explanation. A matching export alone does not establish behavioral parity.

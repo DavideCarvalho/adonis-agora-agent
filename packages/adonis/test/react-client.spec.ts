@@ -1,5 +1,5 @@
 // The React layer an Adonis app imports (`@adonis-agora/agent/react`) against the routes this
-// package mounts, over real HTTP: the REAL `@dudousxd/nestjs-agent-react` client, transport and
+// package mounts, over real HTTP: the REAL local Adonis React client, transport and
 // `useAgentChat` — nothing on either side is stubbed, so a drift between the wire this package
 // writes and the wire that client reads fails here rather than in an app.
 

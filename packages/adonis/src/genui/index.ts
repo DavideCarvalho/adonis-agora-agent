@@ -1,34 +1,24 @@
 /**
- * `@adonis-agora/agent/genui` — generative UI for the Adonis agent.
- *
- * The catalog itself (component definitions, validation, model-facing text, the tools that push `ui`
- * frames) is `@dudousxd/nestjs-agent-core/genui`, re-exported here unchanged: it is isomorphic and
- * framework-free, so ONE catalog file serves this server, a NestJS one, and the browser
- * (`@dudousxd/nestjs-agent-react`'s `GenuiProvider`) — duplicating it would let the three drift.
- * Install `@dudousxd/nestjs-agent-core` (an optional peer) to use this entry.
- *
- * What is Adonis's own is {@link genui}: the `config/agent.ts` factory that turns a catalog into
- * registered tools, with an optional per-request catalog resolver built through the container.
+ * Framework-independent GenUI owned by the Adonis agent: schemas, catalogs, presentations,
+ * renderers and UI tools. The same local definitions can be imported by browser code.
  */
+
+import { type GenuiFactory, type GenuiFactoryContext } from './factory.js';
 import {
   type Catalog,
   defineCatalog,
   type GenuiCatalogScope,
   type GenuiToolsOptions,
   genuiTools,
-} from '@dudousxd/nestjs-agent-core/genui';
-import type { FunctionalTool } from '../ai-tool-ref.js';
-import type { ToolHandler } from '../spi/tool.js';
-import type { ToolSpec } from '../types.js';
-import { type GenuiFactory, type GenuiFactoryContext } from './factory.js';
+} from './public.js';
 
-export * from '@dudousxd/nestjs-agent-core/genui';
 export {
   AgentGenui,
   type GenuiFactory,
   type GenuiFactoryContext,
   type GenuiSetup,
 } from './factory.js';
+export * from './public.js';
 
 /**
  * Picks the catalog for ONE request — a tenant's own components, a plan's versions. Extend it and
@@ -106,14 +96,7 @@ export function genui(options: GenuiOptions = {}): GenuiFactory {
     return {
       catalog,
       ...(resolveCatalog === undefined ? {} : { resolveCatalog }),
-      // The core's tools are typed against the NestJS core's SPI; the shapes are the same contract
-      // (a spec, and a handler whose ctx carries `emitUi`), so they register here as they are.
-      tools: tools.map(
-        (tool): FunctionalTool => ({
-          spec: tool.spec as unknown as ToolSpec,
-          handler: tool.handler as unknown as ToolHandler,
-        }),
-      ),
+      tools,
     };
   };
 }

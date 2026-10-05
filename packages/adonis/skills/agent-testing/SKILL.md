@@ -167,6 +167,28 @@ for await (const frame of sink.subscribe(runId)) {
 Source: `packages/adonis/docs/testing.mdx` ("Because the fakes are behavioral twins"
 note), `packages/adonis/src/in-process-sink.ts`.
 
+### Pattern 4 — verify presentation, replay and optional rendering locally
+
+Use Agora's own entries in tests; do not install or alias Aviary packages. Exercise
+class presentation through discovery, and functional presentation through `defineTool`
+and `ToolRegistry.invoke`. Verify unchanged domain output, authorization and denied
+preflight, completed preflight without execution, ordered emissions, and a throwing
+`present`/sink/reporter without repeating the domain write. A loop test should replay
+its journaled tool result and assert that presentation is not emitted or persisted twice.
+
+Test custom schema transformations with distinct `props` and `outputProps` through
+static and request-resolved component/show/tree tools; normalized props must remain
+unchanged in rendering and persisted history. For SSR, import
+`@adonis-agora/agent/react/genui/server`, provide trusted CSS/theme, and use a fake capture
+adapter to inspect every paginated row and escaped HTML without a browser. Real
+PNG/PDF tests can use the optional Playwright entry and a host Chromium executable;
+assert byte signatures and page/context cleanup while retaining the supplied browser.
+Keep binary captures out of persisted component frames.
+
+Source: `packages/adonis/test/tool-present.spec.ts`,
+`packages/adonis/test/emit-ui.spec.ts`, `packages/adonis/test/react-server.spec.ts`,
+`packages/adonis/test/react-playwright.browser.spec.ts`.
+
 ## Common mistakes
 
 ### MEDIUM — keeping mutable state in a FakeModelProvider script

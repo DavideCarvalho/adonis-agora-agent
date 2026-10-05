@@ -1,10 +1,7 @@
-/**
- * The framework-free half of the genui wiring: the types `config/agent.ts` holds and the provider
- * calls. Imports nothing from `@dudousxd/nestjs-agent-core`, so the main entry (and `defineConfig`'s
- * types) never needs that optional peer; only `@adonis-agora/agent/genui` does.
- */
+/** Framework-independent wiring for the local Adonis GenUI catalog and provider. */
 import type { FunctionalTool } from '../ai-tool-ref.js';
-import type { Actor } from '../types.js';
+import type { Catalog } from './catalog.js';
+import type { GenuiCatalogScope } from './tools.js';
 
 /** What the provider hands a {@link GenuiFactory} at boot. */
 export interface GenuiFactoryContext {
@@ -17,14 +14,10 @@ export interface GenuiFactoryContext {
 
 /** What a {@link GenuiFactory} produces: the tools to register, and the boot-time catalog. */
 export interface GenuiSetup {
-  resolveCatalog?: (scope: {
-    actor: Actor;
-    threadId?: string;
-    agentName?: string;
-  }) => unknown | Promise<unknown>;
+  resolveCatalog?: (scope: GenuiCatalogScope) => Catalog | Promise<Catalog>;
   tools: FunctionalTool[];
   /** The boot-time catalog, bound in the container as `AgentGenui`. */
-  catalog: unknown;
+  catalog: Catalog;
 }
 
 /**
@@ -39,7 +32,7 @@ export type GenuiFactory = (ctx: GenuiFactoryContext) => Promise<GenuiSetup>;
  */
 export class AgentGenui {
   constructor(
-    readonly catalog: unknown,
+    readonly catalog: Catalog,
     readonly resolveCatalog?: GenuiSetup['resolveCatalog'],
   ) {}
 }

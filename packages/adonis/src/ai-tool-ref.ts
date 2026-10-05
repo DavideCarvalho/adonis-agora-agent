@@ -217,10 +217,26 @@ export function isBrandedFunctionalTool(value: unknown): value is BrandedFunctio
  * )
  * ```
  */
+export type DefineToolObjectOptions<S extends StandardSchemaV1, O> = Omit<
+  DefineToolOptions,
+  'input'
+> & { input: S } & ToolHandler<StandardSchemaV1.InferOutput<S>, O>;
+
+export function defineTool<S extends StandardSchemaV1, O>(
+  options: DefineToolObjectOptions<S, O>,
+): BrandedFunctionalTool;
 export function defineTool<I = unknown, O = unknown>(
   options: DefineToolOptions,
   execute: ((input: I, ctx: AiToolCtx) => Promise<O> | O) | ToolHandler<I, O>,
+): BrandedFunctionalTool;
+export function defineTool<I = unknown, O = unknown>(
+  options: DefineToolOptions,
+  given?: ((input: I, ctx: AiToolCtx) => Promise<O> | O) | ToolHandler<I, O>,
 ): BrandedFunctionalTool {
+  const execute = given ?? (options as DefineToolOptions & ToolHandler<I, O>);
+  if (typeof execute !== 'function' && typeof execute.execute !== 'function') {
+    throw new TypeError('defineTool requires an execute function');
+  }
   const spec: ToolSpec = {
     name: options.name,
     kind: options.kind ?? 'read',
@@ -233,12 +249,16 @@ export function defineTool<I = unknown, O = unknown>(
     ...(options.replacementKey !== undefined ? { replacementKey: options.replacementKey } : {}),
     ...(options.terminal === true ? { terminal: true } : {}),
   };
-  const canUse = options.canUse;
+  // In the single-object form this is the handler method, not a second options gate.
+  const canUse = given === undefined ? undefined : options.canUse?.bind(options);
   const implementation = typeof execute === 'function' ? undefined : execute;
   return {
     [AGENT_TOOL_BRAND]: true,
     spec,
     handler: {
+      ...(implementation?.present !== undefined
+        ? { present: (output, ctx) => implementation.present!(output as O, ctx) }
+        : {}),
       ...(implementation?.preflight !== undefined
         ? {
             preflight: (input, ctx, options) => implementation.preflight!(input as I, ctx, options),

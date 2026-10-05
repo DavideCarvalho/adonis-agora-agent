@@ -53,8 +53,9 @@ export function registerToolExport(
   // `isEnabled()` / `canUse()` / `describe()` live on the tool CLASS, while the registry holds the
   // wrapper built here. Each is forwarded only when the class declares it — a gate left behind on
   // the class would be one an app declares, sees no error for, and that never runs.
-  const declares = (method: 'isEnabled' | 'canUse' | 'describe' | 'preflight'): boolean =>
-    typeof (proto as Record<string, unknown> | undefined)?.[method] === 'function';
+  const declares = (
+    method: 'isEnabled' | 'canUse' | 'describe' | 'preflight' | 'present',
+  ): boolean => typeof (proto as Record<string, unknown> | undefined)?.[method] === 'function';
 
   let resolveInstance: () => Promise<ToolHandler>;
   if (app === undefined) {
@@ -77,6 +78,9 @@ export function registerToolExport(
   }
   const handler: ToolHandler = {
     execute: async (input, ctx) => (await resolveInstance()).execute(input, ctx),
+    ...(declares('present')
+      ? { present: async (output, ctx) => (await resolveInstance()).present?.(output, ctx) }
+      : {}),
     ...(declares('preflight')
       ? {
           preflight: async (input, ctx, options) =>

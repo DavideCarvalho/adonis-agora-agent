@@ -93,7 +93,7 @@ against the questions it answers and refuses what it cannot settle with a `400` 
 (`answers["seats"] must be at most 8`) — including a `required` question left without an answer or a
 default. The loop applies the same rules to whatever reaches it, dropping what they refuse. The rules
 are the NestJS library's (`validateElicitationValue` / `validateElicitationAnswer`, exported here), so
-`@dudousxd/nestjs-agent-react`'s `coerceAnswer` / `validateAnswer` agree with the server before a reply
+`@adonis-agora/agent/react`'s `coerceAnswer` / `validateAnswer` agree with the server before a reply
 is sent. A custom `AgentStore` opts into the route check with `toolCallInput` (optional).
 
 ## One shape, one resume path

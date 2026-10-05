@@ -6,7 +6,7 @@
 
 **Architecture:** A proposta é um recurso persistente separado do run que a apresentou. Decisão e execução possuem estados distintos; a decisão aceita e seu trabalho persistente de execução são gravados atomicamente. Um worker revalida a ação e admite o resultado na conversa de forma serializada, sem criar mensagens de ferramenta órfãs.
 
-**Tech Stack:** TypeScript, Standard Schema, Vitest, runners inline/durable, Lucid, Drizzle, MikroORM, React compartilhado e testes de contratos em bancos reais.
+**Tech Stack:** TypeScript, Standard Schema, Vitest, runners inline/durable, Lucid, Drizzle, MikroORM, React local em cada projeto e testes de contratos em bancos reais.
 
 ## Limites e comportamento aprovado para revisão
 
@@ -66,9 +66,9 @@ interface ActionProposal {
 | Persistência e migração | `packages/store-drizzle/src/`, `packages/store-mikro-orm/src/entities/`, provisionamento existente; novos testes de contrato | `packages/adonis/src/stores/lucid.ts`, `lucid-schema.ts`, stub delegado e testes reais de schema/store |
 | Memória para testes | `packages/core/src/in-memory-store.ts` | `packages/adonis/src/testing/in-memory-store.ts` |
 | Decisão, workers e filas | `packages/nestjs/src/`, runners inline/durable e rotas existentes; novo serviço de propostas | `packages/adonis/src/agent-service.ts`, runners inline/durable e rotas existentes; novo serviço de propostas |
-| Wire e apresentação | eventos core, `packages/react/src/approvals/` e transcript compartilhado | eventos/SSE/client nativo e uso do mesmo React publicado |
+| Wire e apresentação | eventos core, `packages/react/src/approvals/` e transcript local | eventos/SSE/client nativo e React local do Agora |
 
-Definir módulos pequenos de proposta, claim de trabalho e admissão de resultado. Reusar autorização, preflight, gates e serialização existentes; não duplicar o loop inteiro nem introduzir uma segunda UI React no Agora.
+Definir módulos pequenos de proposta, claim de trabalho e admissão de resultado. Reusar autorização, preflight, gates e serialização existentes; não duplicar o loop inteiro; manter a UI React local do Agora.
 
 ## PR pareado 1 — Contratos e persistência transacional (implementado e validado)
 
@@ -106,7 +106,7 @@ Depende dos PRs 1/2. Chave de substituição é declarada pela aplicação, nunc
 - [ ] Escrever testes de criação concorrente com mesma chave, clique no cartão antigo durante substituição, aprovação versus expiração e aprovação versus supersession.
 - [ ] Implementar criação + supersession do pending anterior atomicamente. Registrar `supersededBy`, motivo e ordem autoritativa; cartão velho não pode voltar a pending.
 - [ ] Definir regra de corrida: se aprovação venceu CAS, a proposta aprovada não é silenciosamente substituída/cancelada; se supersession venceu, aprovação do antigo falha e não enfileira trabalho. Execução iniciada exige cancelamento explícito separado, quando suportado.
-- [ ] Expor estados de decisão e execução, validade e nova proposta no wire e histórico. Consumir no React compartilhado e cliente nativo com campos opcionais compatíveis.
+- [ ] Expor estados de decisão e execução, validade e nova proposta no wire e histórico. Consumir no React local de cada projeto e cliente nativo com campos opcionais compatíveis.
 - [ ] Renderizar pending com ação clara, approved/queued e executing sem prometer sucesso, rejected/expired/superseded sem botão ativo, failed com motivo e succeeded com resultado confirmado. Nunca executar novo retry automaticamente pela UI.
 - [ ] Testar reload, múltiplas abas, stream reconectado, cliques duplicados e atualização de cartão durante outra mensagem. Validar acessibilidade e countdown pelo horário persistido.
 - [ ] Documentar API de chave, erros de conflito e regras de cancelamento; adicionar changesets e abrir o terceiro par de PRs após validação.

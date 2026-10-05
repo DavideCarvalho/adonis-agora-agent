@@ -3,6 +3,7 @@
   "icon": "PencilRuler",
   "pages": [
     "tools",
+    "component-rendering",
     "personas-and-agents",
     "attachments",
     "data-satellite",

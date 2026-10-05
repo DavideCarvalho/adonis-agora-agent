@@ -14,8 +14,10 @@
     "outDir": "dist",
     "tsBuildInfoFile": ".typecheck.tsbuildinfo",
     "types": ["node"],
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "experimentalDecorators": true
   },
-  "include": ["src/**/*.ts", "providers/**/*.ts", "configure.ts", "stubs/main.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "providers/**/*.ts", "configure.ts", "stubs/main.ts"],
   "exclude": ["**/*.spec.ts", "**/*.test.ts", "test/**", "dist/**"]
 }

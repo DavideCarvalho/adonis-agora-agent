@@ -1,4 +1,4 @@
-import { AG_UI_PROTOCOL_VERSION, type AgUiEvent } from '@dudousxd/nestjs-agent-core/ag-ui';
+import { AG_UI_PROTOCOL_VERSION, type AgUiEvent } from './core/index.js';
 
 /** A decision-only protocol invocation: no model run, stream holder or tool execution is created. */
 export function actionProposalDecisionEvents(input: {

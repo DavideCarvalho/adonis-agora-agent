@@ -1,16 +1,14 @@
+import { createAgentClient } from './client.js';
 import {
-  type AgentBackend,
-  type AgentClientOptions,
   type AgUiChatStreamOptions,
   agUiChatStream as baseAgUiChatStream,
-  type ChatStreamRequest,
-  type ChatStreamResponse,
-} from '@dudousxd/nestjs-agent-react';
-import { createAgentClient } from './client.js';
+} from './core/ag-ui-backend.js';
+import type { AgentBackend, ChatStreamRequest, ChatStreamResponse } from './core/backend.js';
+import type { AgentClientOptions } from './core/client.js';
 import { csrfHeaders } from './csrf.js';
 
 /**
- * `@dudousxd/nestjs-agent-react`'s `agUiChatStream`, with `@adonisjs/shield`'s CSRF header read
+ * the local React adapter's `agUiChatStream`, with `@adonisjs/shield`'s CSRF header read
  * from the page on every call (yours, in `options.headers`, win over it).
  *
  * The re-exported original sends only the headers it is handed, captured once — and shield refuses

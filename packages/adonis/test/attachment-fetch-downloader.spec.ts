@@ -3,7 +3,7 @@ import { attachmentFetchDownloader } from '../src/ai-sdk/attachment-fetch-downlo
 
 function fetchResponding(status: number, body: Uint8Array, contentType?: string): typeof fetch {
   return vi.fn(async () => {
-    return new Response(status >= 200 && status < 300 ? body : null, {
+    return new Response(status >= 200 && status < 300 ? new Uint8Array(body).buffer : null, {
       status,
       ...(contentType !== undefined ? { headers: { 'content-type': contentType } } : {}),
     });

@@ -206,9 +206,9 @@ Source: `packages/adonis/src/stores/factory.ts` (`tokenSinks`),
 
 ### Pattern 4 — a React chat with `@adonis-agora/agent/react`
 
-The React layer is `@dudousxd/nestjs-agent-react` re-exported (an optional peer — install it with
-`@ai-sdk/react` and `ai`), plus an `AgentProvider` that already sends the session cookie and
-shield's CSRF token. No controller, no fetch code:
+Agora owns the React layer inside `@adonis-agora/agent/react`. Install the optional
+`react`, `@ai-sdk/react` and `ai` peers for this entry. `AgentProvider` already sends the
+session cookie and shield's CSRF token. No Aviary package or release is required:
 
 ```tsx
 import { AgentProvider, useAgentChat } from '@adonis-agora/agent/react'
@@ -259,6 +259,24 @@ answer it in the next request's `resume` (`{ approved: boolean }` for `tool_appr
 token sink any replica serves the resume. The native stream is unchanged.
 
 Source: `packages/adonis/docs/ag-ui.mdx`, `packages/adonis/src/ag-ui/`.
+
+## Component rendering entries
+
+Agora owns its catalog (`@adonis-agora/agent/genui`), browser rendering
+(`@adonis-agora/agent/react/genui`), AG-UI adapters and resumable upload client
+(`@adonis-agora/agent/react/media`). Protocol compatibility does not require installing
+Aviary packages.
+
+For static HTML, use `createReactComponentRegistry` and `createReactServerRenderer` from
+`@adonis-agora/agent/react/genui/server`; install matching `react` and `react-dom` peers.
+Keep this server entry out of browser bundles: it reads trusted filesystem stylesheets
+and imports ReactDOM's server renderer. HTML does not require a browser or AI SDK.
+PNG/PDF output takes a capture adapter; the optional Playwright implementation lives at
+`@adonis-agora/agent/react/genui/server/playwright` and needs `playwright-core`. A supplied
+browser remains caller-owned. Binary captures are attachments, not durable UI-frame props.
+
+Source: `packages/adonis/docs/authoring/component-rendering.mdx`,
+`packages/adonis/docs/react.mdx`.
 
 ## Common mistakes
 
