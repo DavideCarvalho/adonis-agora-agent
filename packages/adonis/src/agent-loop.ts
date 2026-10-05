@@ -671,6 +671,8 @@ type DelegationOutcome =
  * stay JSON-round-trippable.
  */
 interface PersistedToolCall {
+  /** Journaled opt-in for completed-preflight UI; older claims keep their original positions. */
+  presentCompletedPreflight?: true;
   proposalId?: string;
   preflight?: ToolPreflightResult | { status: 'failed'; error: string };
   kind: ToolKind;
@@ -1324,6 +1326,8 @@ interface ToolTurnContext {
 
 /** A tool call whose kind has been settled by its `persist:toolcall` checkpoint. */
 interface ClaimedToolCall {
+  /** Read from the claim checkpoint, never from the current registry during replay. */
+  presentCompletedPreflight?: true;
   proposalId?: string;
   preflight?: ToolPreflightResult | { status: 'failed'; error: string };
   call: ToolCallRequest;
@@ -1625,6 +1629,9 @@ async function claimToolCall(
         ...(preflight !== undefined ? { preflight } : {}),
         ...(approval !== undefined ? { approval } : {}),
         ...(terminal ? { terminal: true as const } : {}),
+        ...(preflight?.status === 'completed' && deps.registry.hasPresentation(call.name)
+          ? { presentCompletedPreflight: true as const }
+          : {}),
       };
     },
   )) as PersistedToolCall | undefined;
@@ -1637,6 +1644,7 @@ async function claimToolCall(
     toolType,
     ...(persisted?.preflight !== undefined ? { preflight: persisted.preflight } : {}),
     ...(persisted?.terminal === true ? { terminal: true } : {}),
+    ...(persisted?.presentCompletedPreflight === true ? { presentCompletedPreflight: true } : {}),
     ...(persisted?.proposalId !== undefined ? { proposalId: persisted.proposalId } : {}),
     ...(persisted?.delegation !== undefined ? { delegation: persisted.delegation } : {}),
     ...(toolType === 'action' && persisted?.approval !== undefined
@@ -2336,9 +2344,9 @@ async function runClaimedToolCall(
   if (claimed.preflight !== undefined && claimed.preflight.status !== 'ready') {
     const result = claimed.preflight;
     if (result.status === 'completed') {
-      // Old tools keep their exact checkpoint positions. New presentation hooks journal UI
-      // through the ordinary tool step without re-running an already completed domain action.
-      if (deps.registry.hasPresentation(call.name)) {
+      // The claim freezes this branch: adding/removing a hook in a rolling deployment must
+      // not change existing checkpoint positions. Old claims have no opt-in and skip UI.
+      if (claimed.presentCompletedPreflight === true) {
         await invokeClaimedTool(turn, claimed, { output: result.output });
       }
       if (claimed.terminal === true) turn.halt.terminal = true;
