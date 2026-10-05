@@ -70,6 +70,8 @@ export type {
   AiToolMeta,
   AiToolOptions,
   BrandedFunctionalTool,
+  DefineToolObjectOptions,
+  DefineToolOptions,
   FunctionalTool,
   ToolClass,
 } from './ai-tool-ref.js';
@@ -511,6 +513,7 @@ export {
   type ToolPreparationResult,
   ToolRegistry,
 } from './tool-registry.js';
+export type { ComponentPresentation, ToolResultPresentation } from './tool-result-presentation.js';
 export type {
   InvokeWithTransientRetryOptions,
   ToolTransientRetryOptions,

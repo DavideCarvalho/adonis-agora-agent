@@ -1714,6 +1714,7 @@ function spanToolType(kind: ToolKind): 'read' | 'action' | 'agent' {
 async function invokeClaimedTool(
   turn: ToolTurnContext,
   claimed: ClaimedToolCall,
+  presentationOnly?: { output: unknown },
 ): Promise<ToolOutcome> {
   const { deps, hooks } = turn;
   const { call, ctx, toolType } = claimed;
@@ -1753,45 +1754,51 @@ async function invokeClaimedTool(
       };
       let output: unknown;
       try {
-        output = await spannedAgent(
-          'tool.execution',
-          hooks.runId,
-          {
-            runId: hooks.runId,
-            toolCallId: call.id,
-            toolName: call.name,
-            toolType: spanToolType(toolType),
-          },
-          () =>
-            invokeWithTransientRetry(
-              () => {
-                ui.restart();
-                return deps.registry.invoke(
-                  call.name,
-                  call.input,
-                  toolCtx,
-                  deps.rolesPolicy,
-                  invokeOptions,
-                );
-              },
-              deps.toolTransientRetry ?? {},
-              {
-                ...(hooks.isControlFlowError !== undefined
-                  ? { isControlFlowError: hooks.isControlFlowError }
-                  : {}),
-                onRetry: (attempt, retryError) => {
-                  publishAgentToolRetry({
-                    runId: hooks.runId,
-                    toolName: call.name,
-                    toolCallId: call.id,
-                    attempt,
-                    message: retryError instanceof Error ? retryError.message : String(retryError),
-                  });
+        if (presentationOnly !== undefined) {
+          output = presentationOnly.output;
+          await deps.registry.presentResult(call.name, output, toolCtx);
+        } else {
+          output = await spannedAgent(
+            'tool.execution',
+            hooks.runId,
+            {
+              runId: hooks.runId,
+              toolCallId: call.id,
+              toolName: call.name,
+              toolType: spanToolType(toolType),
+            },
+            () =>
+              invokeWithTransientRetry(
+                () => {
+                  ui.restart();
+                  return deps.registry.invoke(
+                    call.name,
+                    call.input,
+                    toolCtx,
+                    deps.rolesPolicy,
+                    invokeOptions,
+                  );
                 },
-              },
-            ),
-          () => ({}),
-        );
+                deps.toolTransientRetry ?? {},
+                {
+                  ...(hooks.isControlFlowError !== undefined
+                    ? { isControlFlowError: hooks.isControlFlowError }
+                    : {}),
+                  onRetry: (attempt, retryError) => {
+                    publishAgentToolRetry({
+                      runId: hooks.runId,
+                      toolName: call.name,
+                      toolCallId: call.id,
+                      attempt,
+                      message:
+                        retryError instanceof Error ? retryError.message : String(retryError),
+                    });
+                  },
+                },
+              ),
+            () => ({}),
+          );
+        }
       } catch (error) {
         // A domain refusal is a settled result, so a durable replay must not re-run the check.
         if (!(error instanceof ToolPreflightDeniedError)) throw error;
@@ -2325,6 +2332,11 @@ async function runClaimedToolCall(
   if (claimed.preflight !== undefined && claimed.preflight.status !== 'ready') {
     const result = claimed.preflight;
     if (result.status === 'completed') {
+      // Old tools keep their exact checkpoint positions. New presentation hooks journal UI
+      // through the ordinary tool step without re-running an already completed domain action.
+      if (deps.registry.hasPresentation(call.name)) {
+        await invokeClaimedTool(turn, claimed, { output: result.output });
+      }
       if (claimed.terminal === true) turn.halt.terminal = true;
       return { id: call.id, name: call.name, output: result.output };
     }

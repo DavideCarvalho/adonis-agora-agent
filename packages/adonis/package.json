@@ -1,7 +1,7 @@
 {
   "name": "@adonis-agora/agent",
   "version": "0.61.0",
-  "description": "Governed, durable-backed AI agent (chat + tool-calling + governance) for AdonisJS — part of the Agora ecosystem.",
+  "description": "Governed, durable-backed AI agent (chat + tool-calling + governance) for AdonisJS \u2014 part of the Agora ecosystem.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -180,6 +180,16 @@
       "types": "./dist/src/media/index.d.ts",
       "import": "./dist/src/media/index.js",
       "default": "./dist/src/media/index.js"
+    },
+    "./react/genui/server": {
+      "types": "./dist/src/react/genui/server.d.ts",
+      "import": "./dist/src/react/genui/server.js",
+      "default": "./dist/src/react/genui/server.js"
+    },
+    "./react/genui/server/playwright": {
+      "types": "./dist/src/react/genui/server_playwright.d.ts",
+      "import": "./dist/src/react/genui/server_playwright.js",
+      "default": "./dist/src/react/genui/server_playwright.js"
     }
   },
   "files": [

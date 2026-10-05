@@ -1,5 +1,6 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { ToolConfirmation } from '../tool-presentation.js';
+import type { ToolResultPresentation } from '../tool-result-presentation.js';
 import type { Actor, PageContext, Persona } from '../types.js';
 import type { UiCapabilities } from '../ui-capabilities.js';
 
@@ -41,6 +42,8 @@ export interface AiToolCtx {
   uiCapabilities?: UiCapabilities;
   /** Optional host handle (e.g. an ORM EntityManager) the app threads through options. */
   host?: unknown;
+  /** Reports presentation failures separately from successful domain execution. */
+  onPresentationError?(error: unknown, details: { toolName: string }): void | Promise<void>;
   /**
    * Pushes a UI component into the run's stream at the current position (between the text
    * tokens already emitted and the ones still to come). Optional: only the agent-loop's own
@@ -72,6 +75,8 @@ export interface AiToolCtx {
  */
 export interface ToolHandler<I = unknown, O = unknown> {
   execute(input: I, ctx: AiToolCtx): Promise<O> | O;
+  /** Optional presentation of successful results, emitted through the journaled UI stream. */
+  present?(output: O, ctx: AiToolCtx): ToolResultPresentation | Promise<ToolResultPresentation>;
   /** Side-effect-free domain check, before approval and again immediately before execution. Action tools only. */
   preflight?(
     input: I,

@@ -50,6 +50,85 @@ async function run(g: ReturnType<typeof build>) {
 }
 
 describe('ctx.emitUi', () => {
+  it('presents a completed prepare preflight in the actual agent loop', async () => {
+    const g = build((_args, turn) =>
+      turn === 0
+        ? { text: '', toolCall: { name: 'orders', input: {} } }
+        : { text: 'Already saved.' },
+    );
+    g.registry.register(
+      {
+        name: 'orders',
+        kind: 'action',
+        description: 'orders',
+        inputSchema: z.object({}),
+        roles: ['ADMIN'],
+      },
+      {
+        execute: () => {
+          throw new Error('must not execute');
+        },
+        preflight: () => ({ status: 'completed', output: { saved: true } }),
+        present: () => ({
+          component: 'History',
+          props: { label: 'Saved' },
+          version: 1,
+          fallbackText: 'Saved',
+        }),
+      },
+    );
+    const { events, thread } = await run(g);
+    expect(events.filter((event) => event.kind === 'ui')).toHaveLength(1);
+    expect(thread?.messages.flatMap((message) => message.ui ?? [])).toMatchObject([
+      { component: 'History', props: { label: 'Saved' } },
+    ]);
+  });
+  it('streams and persists present() output while retaining the domain tool result', async () => {
+    const g = build((_args, turn) =>
+      turn === 0
+        ? { text: '', toolCall: { name: 'orders', input: {} } }
+        : { text: 'Here they are.' },
+    );
+    g.registry.register(
+      {
+        name: 'orders',
+        kind: 'read',
+        description: 'orders',
+        inputSchema: z.object({}),
+        roles: ['ADMIN'],
+      },
+      {
+        execute: () => ({ count: 2 }),
+        present: () => ({
+          component: 'DataTable',
+          props: { rows: [1, 2] },
+          version: 1,
+          fallbackText: 'Two orders',
+        }),
+      },
+    );
+    const { events, thread } = await run(g);
+    expect(events.filter((event) => event.kind === 'ui')).toEqual([
+      {
+        kind: 'ui',
+        id: 'call-0-orders:ui:0',
+        component: 'DataTable',
+        props: { rows: [1, 2] },
+        version: 1,
+        fallbackText: 'Two orders',
+        toolCallId: 'call-0-orders',
+      },
+    ]);
+    expect(events.find((event) => event.kind === 'tool-output')).toMatchObject({
+      output: { count: 2 },
+    });
+    expect(
+      thread?.messages.find((message) => message.toolCalls?.[0]?.name === 'orders')?.ui,
+    ).toMatchObject([
+      { component: 'DataTable', props: { rows: [1, 2] }, version: 1, fallbackText: 'Two orders' },
+    ]);
+  });
+
   it('streams each push, replaces a repeat id, and persists them on the message that called', async () => {
     const g = build((_args, turn) =>
       turn === 0
