@@ -1,4 +1,4 @@
-import { AgentClient, type AgentClientOptions } from '@dudousxd/nestjs-agent-react';
+import { AgentClient, type AgentClientOptions } from './core/client.js';
 import { csrfHeaders } from './csrf.js';
 
 export type HeaderSource = AgentClientOptions['getHeaders'];
