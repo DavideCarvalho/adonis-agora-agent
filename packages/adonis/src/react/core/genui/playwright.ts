@@ -6,7 +6,7 @@ export interface PlaywrightCaptureOptions {
   browser?: Browser;
   /** Used only without a supplied browser. Install playwright-core and supply executablePath. */
   launchOptions?: LaunchOptions;
-  /** Explicit allowlist for trusted app images/fonts/styles. All requests otherwise abort. */
+  /** Explicit allowlist for trusted app images/fonts/styles. Redirects and other requests abort. */
   allowAsset?: (url: string) => boolean;
 }
 export function createPlaywrightCaptureAdapter(
@@ -30,9 +30,28 @@ export function createPlaywrightCaptureAdapter(
         const page = await context.newPage();
         try {
           page.setDefaultTimeout(limits.timeoutMs);
-          await page.route('**/*', (route) =>
-            options.allowAsset?.(route.request().url()) ? route.continue() : route.abort(),
-          );
+          await context.route('**/*', async (route) => {
+            try {
+              if (!options.allowAsset?.(route.request().url())) {
+                await route.abort();
+                return;
+              }
+              // Browser redirects bypass route handlers. Fetch one approved URL only,
+              // then fulfill its response; never let an asset redirect escape the allowlist.
+              const response = await route.fetch({ maxRedirects: 0, timeout: limits.timeoutMs });
+              try {
+                if (response.status() >= 300 && response.status() < 400) {
+                  await route.abort();
+                } else {
+                  await route.fulfill({ response });
+                }
+              } finally {
+                await response.dispose();
+              }
+            } catch {
+              await route.abort();
+            }
+          });
           let timer: ReturnType<typeof setTimeout> | undefined;
           try {
             return await Promise.race([
@@ -113,9 +132,11 @@ export function createPlaywrightCaptureAdapter(
       checkPages(html);
       return withPage(settings, async (page, limits) => {
         // Separate full HTML pages via srcdoc to preserve per-page CSS and theme.
+        // Keep frames in the intercepted origin; opaque sandbox frames can bypass Chromium
+        // request routing. Scripts remain disabled by both the context and the sandbox.
         const escapeAttribute = (value: string) =>
           value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-        const pdfDocument = `<!doctype html><html><head><style>@page { size: ${limits.width}px ${limits.height}px; margin: 0 } body { margin: 0 } iframe { display:block; border:0; width:${limits.width}px; height:${limits.height}px; break-after:page } iframe:last-child { break-after:auto }</style></head><body>${html.map((content) => `<iframe sandbox srcdoc="${escapeAttribute(content)}"></iframe>`).join('')}</body></html>`;
+        const pdfDocument = `<!doctype html><html><head><style>@page { size: ${limits.width}px ${limits.height}px; margin: 0 } body { margin: 0 } iframe { display:block; border:0; width:${limits.width}px; height:${limits.height}px; break-after:page } iframe:last-child { break-after:auto }</style></head><body>${html.map((content) => `<iframe sandbox="allow-same-origin" srcdoc="${escapeAttribute(content)}"></iframe>`).join('')}</body></html>`;
         await page.setContent(pdfDocument, { waitUntil: 'load', timeout: limits.timeoutMs });
         for (const frame of page.frames().slice(1)) {
           await frame.evaluate(async () => {

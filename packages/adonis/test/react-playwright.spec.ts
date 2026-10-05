@@ -6,8 +6,8 @@ describe('Playwright capture lifecycle', () => {
     let closed = 0;
     const browser = {
       newContext: async () => ({
+        route: async () => {},
         newPage: async () => ({
-          route: async () => {},
           setDefaultTimeout: () => {},
           setContent: async () => {
             throw new Error('capture failed');
