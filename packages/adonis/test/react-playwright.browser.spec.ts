@@ -1,6 +1,6 @@
-import { createServer, type Server } from 'node:http';
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
+import { createServer, type Server } from 'node:http';
 import { chromium } from 'playwright-core';
 import { createElement } from 'react';
 import { expect, it } from 'vitest';
@@ -86,7 +86,8 @@ it.skipIf(!executablePath || !existsSync(executablePath))(
     let privateRequests = 0;
     let redirectRequests = 0;
     let imageRequests = 0;
-    const image = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="red"/></svg>';
+    const image =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="red"/></svg>';
     const privateServer = createServer((_request, response) => {
       privateRequests++;
       response.writeHead(200, { 'content-type': 'image/svg+xml' });
@@ -95,13 +96,15 @@ it.skipIf(!executablePath || !existsSync(executablePath))(
     const listen = async (server: Server) => {
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
       const address = server.address();
-      if (address === null || typeof address === 'string') throw new Error('Missing server address');
+      if (address === null || typeof address === 'string')
+        throw new Error('Missing server address');
       return `http://127.0.0.1:${address.port}`;
     };
-    const close = (server: Server) => new Promise<void>((resolve, reject) => {
-      server.close((error) => error ? reject(error) : resolve());
-      server.closeAllConnections();
-    });
+    const close = (server: Server) =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+        server.closeAllConnections();
+      });
     const privateOrigin = await listen(privateServer);
     const assetServer = createServer((request, response) => {
       if (request.url === '/redirect') {
@@ -115,7 +118,11 @@ it.skipIf(!executablePath || !existsSync(executablePath))(
       }
     });
     const assetOrigin = await listen(assetServer);
-    const browser = await chromium.launch({ executablePath, headless: true, args: ['--no-sandbox'] });
+    const browser = await chromium.launch({
+      executablePath,
+      headless: true,
+      args: ['--no-sandbox'],
+    });
     try {
       const capture = createPlaywrightCaptureAdapter({
         browser,
@@ -128,7 +135,11 @@ it.skipIf(!executablePath || !existsSync(executablePath))(
       expect(redirectRequests).toBe(1);
       expect(imageRequests).toBe(1);
       const denied = await createPlaywrightCaptureAdapter({ browser }).images([html], settings);
-      expect(Buffer.from(allowed[0]!)).not.toEqual(Buffer.from(denied[0]!));
+      const allowedImage = allowed[0];
+      const deniedImage = denied[0];
+      if (allowedImage === undefined || deniedImage === undefined)
+        throw new Error('Expected captured PNG images');
+      expect(Buffer.from(allowedImage)).not.toEqual(Buffer.from(deniedImage));
       expect(redirectRequests).toBe(1);
       expect(imageRequests).toBe(1);
       const pdf = await capture.pdf([html], settings);
