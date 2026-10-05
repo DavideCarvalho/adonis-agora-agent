@@ -1,4 +1,7 @@
 import type { HttpContext } from '@adonisjs/core/http';
+import type { AgentService } from '../agent-service.js';
+import type { ProtocolAdapter, ProtocolAdapterHost } from '../spi/protocol-adapter.js';
+import type { Actor, PageContext } from '../types.js';
 import {
   AG_UI_CUSTOM,
   type AgUiEvent,
@@ -10,10 +13,7 @@ import {
   readContext,
   readForwardedProps,
   readUserTurn,
-} from '@dudousxd/nestjs-agent-core/ag-ui';
-import type { AgentService } from '../agent-service.js';
-import type { ProtocolAdapter, ProtocolAdapterHost } from '../spi/protocol-adapter.js';
-import type { Actor, PageContext } from '../types.js';
+} from './core/index.js';
 import { actionProposalDecisionEvents } from './proposal-decision.js';
 import { type AgUiStreamOptions, agUiEvents, agUiSse } from './stream.js';
 

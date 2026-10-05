@@ -1,3 +1,7 @@
+import { DEFAULT_REFUSAL_REASON } from './refusal.js';
+
+export { DEFAULT_REFUSAL_REASON } from './refusal.js';
+
 import { createHash } from 'node:crypto';
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import { resolveActionProposalApproval } from './action-proposal-approval.js';
@@ -2489,9 +2493,6 @@ function expiryNarrative(): string {
     'approved in time and ask whether they still want it.'
   );
 }
-
-/** Stored as the reason when someone declines without giving one — a placeholder, not a quote. */
-export const DEFAULT_REFUSAL_REASON = 'rejected by user';
 
 /**
  * How a refusal is put to the model. Written as instructions rather than as a status because the

@@ -1,10 +1,9 @@
-import type { AgUiSourceFrame } from '@dudousxd/nestjs-agent-core/ag-ui';
 import type { StreamFrame } from '../spi/token-stream-sink.js';
+import type { AgUiSourceFrame } from './core/index.js';
 
 /**
- * One frame of this package's sink as the frame the shared AG-UI encoder reads
- * (`@dudousxd/nestjs-agent-core/ag-ui`). The typed `approval` / `elicitation` frames carry what the
- * shared vocabulary leaves optional — the PARKED run, the tool and its arguments — so an interrupt
+ * One frame of this package's sink as the frame the local AG-UI encoder reads. The typed `approval` / `elicitation` frames carry what the
+ * stream vocabulary leaves optional — the PARKED run, the tool and its arguments — so an interrupt
  * addresses a delegated sub-agent's own run.
  */
 export function toAgUiFrame(frame: StreamFrame): AgUiSourceFrame {
@@ -47,7 +46,7 @@ export function toAgUiFrame(frame: StreamFrame): AgUiSourceFrame {
 }
 
 /**
- * A library run's stream as the shared encoder's frames. A hand-rolled iterator rather than a
+ * A library run's stream as the local encoder's frames. A hand-rolled iterator rather than a
  * generator: the AG-UI driver lets go of a parked stream while a read is still pending, and a
  * generator would queue that `return()` behind the read that never comes — the sink's subscription
  * has to be released at once.

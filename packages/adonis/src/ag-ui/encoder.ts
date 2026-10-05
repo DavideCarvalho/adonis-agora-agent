@@ -1,49 +1,48 @@
+import type { StreamFrame } from '../spi/token-stream-sink.js';
 import {
   type AgUiEncoderOptions,
   type AgUiEvent,
-  AgUiEncoder as SharedEncoder,
-} from '@dudousxd/nestjs-agent-core/ag-ui';
-import type { StreamFrame } from '../spi/token-stream-sink.js';
+  AgUiEncoder as CoreEncoder,
+} from './core/index.js';
 import { toAgUiFrame } from './frames.js';
 
 export type { AgUiEncoderOptions };
 
 /**
- * The shared AG-UI encoder (`@dudousxd/nestjs-agent-core/ag-ui`, one implementation for both
- * servers), reading this package's {@link StreamFrame}s. A pure state machine: the same frames
+ * The local AG-UI encoder, reading this package's {@link StreamFrame}s. A pure state machine: the same frames
  * always give the same events.
  */
 export class AgUiEncoder {
-  private readonly shared: SharedEncoder;
+  private readonly core: CoreEncoder;
 
   constructor(options: AgUiEncoderOptions) {
-    this.shared = new SharedEncoder(options);
+    this.core = new CoreEncoder(options);
   }
 
   /** How many frames of the library stream this encoder has consumed. */
   get consumed(): number {
-    return this.shared.consumed;
+    return this.core.consumed;
   }
 
   /** The run is waiting on at least one approval or question set nobody has settled yet. */
   get waiting(): boolean {
-    return this.shared.waiting;
+    return this.core.waiting;
   }
 
   /** A tool call is announced and neither answered nor parked: more frames are coming. */
   get busy(): boolean {
-    return this.shared.busy;
+    return this.core.busy;
   }
 
   start(): AgUiEvent[] {
-    return this.shared.start();
+    return this.core.start();
   }
 
   encode(frame: StreamFrame): AgUiEvent[] {
-    return this.shared.encode(toAgUiFrame(frame));
+    return this.core.encode(toAgUiFrame(frame));
   }
 
   finish(ended = false): AgUiEvent[] {
-    return this.shared.finish(ended);
+    return this.core.finish(ended);
   }
 }

@@ -34,11 +34,6 @@ export function createNegotiatedUiCollector(
       props = snapshotActionProposal(props);
       options = { ...options };
       const { prepareUiEmission } = await import('./genui/index.js');
-      if (typeof prepareUiEmission !== 'function') {
-        if (scope.uiCapabilities !== undefined)
-          throw new Error('UI capabilities require an upgraded @dudousxd/nestjs-agent-core peer');
-        return collector.emit(component, props, options);
-      }
       const catalog = await resolveCatalog(scope);
       const prepared = await prepareUiEmission(
         catalog,

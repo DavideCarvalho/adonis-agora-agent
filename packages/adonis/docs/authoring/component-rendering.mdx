@@ -73,7 +73,7 @@ React components used for export must accept their data through props and work w
 
 ## Static HTML, PNG and PDF
 
-Install matching React/ReactDOM versions and the Aviary React peer that exports `genui/server`. The SSR entry is optional and does not load the browser chat hook. Playwright is only needed for image/PDF capture; provide your browser and retain ownership of it.
+Install matching React/ReactDOM versions. Agora owns its GenUI, React adapters, and server renderer; no Aviary package or release is required. The SSR entry is optional and does not load the browser chat hook. Playwright is only needed for image/PDF capture; provide your browser and retain ownership of it.
 
 ```ts
 import { createReactServerRenderer } from '@adonis-agora/agent/react/genui/server'

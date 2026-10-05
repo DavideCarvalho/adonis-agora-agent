@@ -55,7 +55,7 @@ export default defineConfig({
     projects: [
       // `include` per project, not at the root: a project that `extends` the root ADDS to its
       // include list rather than replacing it.
-      { extends: true, test: { name: 'sqlite', include: ['test/**/*.{spec,test}.ts'] } },
+      { extends: true, test: { name: 'sqlite', include: ['test/**/*.{spec,test}.{ts,tsx}'] } },
       ...(realDatabases ? [backendProject('postgres'), backendProject('mysql')] : []),
     ],
   },

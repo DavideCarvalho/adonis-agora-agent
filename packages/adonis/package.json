@@ -1,7 +1,7 @@
 {
   "name": "@adonis-agora/agent",
   "version": "0.61.0",
-  "description": "Governed, durable-backed AI agent (chat + tool-calling + governance) for AdonisJS \u2014 part of the Agora ecosystem.",
+  "description": "Governed, durable-backed AI agent (chat + tool-calling + governance) for AdonisJS — part of the Agora ecosystem.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -225,14 +225,27 @@
     "@adonisjs/core": "^7.3.0",
     "@adonisjs/lucid": "^22.4.0",
     "@adonisjs/redis": "^9.2.0 || ^10.0.0 || ^11.0.0",
-    "@dudousxd/nestjs-agent-core": ">=0.35.0 <1.0.0",
-    "@dudousxd/nestjs-agent-react": ">=0.30.0 <1.0.0",
-    "@dudousxd/nestjs-media-client": ">=0.3.0 <1.0.0",
     "@qdrant/js-client-rest": "^1.11.0",
     "ai": "^7.0.0",
     "node-sql-parser": "^5.3.0",
     "react": "^18.0.0 || ^19.0.0",
-    "zod": "^4.0.0"
+    "zod": "^4.0.0",
+    "@ai-sdk/react": "^4.0.0",
+    "@json-render/react": ">=0.21.0 <1.0.0",
+    "@streamdown/code": "^1.1.1",
+    "@streamdown/math": "^1.0.2",
+    "@streamdown/mermaid": "^1.0.2",
+    "katex": "^0.16.45",
+    "prism-react-renderer": "^2.4.1",
+    "react-dom": ">=18",
+    "react-markdown": "^10.1.0",
+    "rehype-katex": "^7.0.1",
+    "rehype-sanitize": "^6.0.0",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
+    "streamdown": "^2.5.0",
+    "unist-util-visit": "^5.1.0",
+    "playwright-core": ">=1.48 <2"
   },
   "peerDependenciesMeta": {
     "react": {
@@ -274,16 +287,55 @@
     "zod": {
       "optional": true
     },
-    "@dudousxd/nestjs-agent-core": {
-      "optional": true
-    },
-    "@dudousxd/nestjs-agent-react": {
-      "optional": true
-    },
-    "@dudousxd/nestjs-media-client": {
-      "optional": true
-    },
     "@adonis-agora/media": {
+      "optional": true
+    },
+    "@ai-sdk/react": {
+      "optional": true
+    },
+    "@json-render/react": {
+      "optional": true
+    },
+    "@streamdown/code": {
+      "optional": true
+    },
+    "@streamdown/math": {
+      "optional": true
+    },
+    "@streamdown/mermaid": {
+      "optional": true
+    },
+    "katex": {
+      "optional": true
+    },
+    "prism-react-renderer": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    },
+    "react-markdown": {
+      "optional": true
+    },
+    "rehype-katex": {
+      "optional": true
+    },
+    "rehype-sanitize": {
+      "optional": true
+    },
+    "remark-gfm": {
+      "optional": true
+    },
+    "remark-math": {
+      "optional": true
+    },
+    "streamdown": {
+      "optional": true
+    },
+    "unist-util-visit": {
+      "optional": true
+    },
+    "playwright-core": {
       "optional": true
     }
   },
@@ -299,9 +351,6 @@
     "@ag-ui/client": "1.0.1",
     "@ag-ui/core": "1.0.1",
     "@ai-sdk/react": "^4.0.125",
-    "@dudousxd/nestjs-agent-core": "0.40.0",
-    "@dudousxd/nestjs-agent-react": "0.33.0",
-    "@dudousxd/nestjs-media-client": "0.3.0",
     "@qdrant/js-client-rest": "1.19.0",
     "@tanstack/intent": "0.5.0",
     "@testcontainers/mysql": "12.2.0",
@@ -315,7 +364,7 @@
     "agent-0-56": "npm:@adonis-agora/agent@0.56.0",
     "agent-0-58": "npm:@adonis-agora/agent@0.58.0",
     "agent-0-59": "npm:@adonis-agora/agent@0.59.0",
-    "ai": "7.0.102",
+    "ai": "7.0.122",
     "ajv": "^8.20.0",
     "better-sqlite3": "13.0.3",
     "jsdom": "30.1.1",
@@ -329,7 +378,22 @@
     "testcontainers": "12.2.0",
     "typescript": "7.0.2",
     "vitest": "5.0.3",
-    "zod": "4.6.5"
+    "zod": "4.6.5",
+    "@json-render/core": "0.21.0",
+    "@json-render/react": "0.21.0",
+    "@streamdown/code": "1.1.1",
+    "@streamdown/math": "1.0.3",
+    "@streamdown/mermaid": "1.0.3",
+    "katex": "0.16.45",
+    "playwright-core": "^1.63.0",
+    "prism-react-renderer": "2.4.1",
+    "react-markdown": "10.1.0",
+    "rehype-katex": "7.0.1",
+    "rehype-sanitize": "6.0.0",
+    "remark-gfm": "4.0.1",
+    "remark-math": "6.0.0",
+    "streamdown": "2.6.0",
+    "unist-util-visit": "5.1.0"
   },
   "engines": {
     "node": ">=20.6.0"
