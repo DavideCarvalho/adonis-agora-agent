@@ -68,9 +68,9 @@ A terminal decision or execution records its outcome durably. Admission writes o
 
 Clients reconcile proposals after SSE ends and refresh on focus/reconnect. Late facts merge into history without overwriting an active local turn. Status distinguishes pending, queued, executing, succeeded, failed, rejected, expired and superseded.
 
-## Shared component catalog
+## Component catalog
 
-Use the matching updated shared core and React packages to enable capability negotiation and persisted fallback metadata. Older optional core peers retain their legacy behavior when capabilities are omitted.
+The catalog and React implementation ship inside Agora. Capability negotiation and persisted fallback metadata require no Aviary core or React package. Omitting capabilities preserves the existing catalog behavior.
 
 The server catalog owns each component's name, props schema, version and text representation. Apps advertise renderer support through:
 
@@ -85,7 +85,7 @@ uiCapabilities: {
 
 Use the names and versions actually defined in your catalog. `components: []` requests text only. Omitting capabilities preserves the legacy catalog behavior. The server intersects capabilities with the authorized catalog; client declarations never create components or grant permissions. Only supported components are offered to the model. Unsupported validated emissions and trees become their complete text representation.
 
-Capabilities travel through native HTTP, queued messages, proposal execution context and AG-UI forwarded properties. Shared React can derive capabilities from its renderer registration or accept `uiCapabilities` explicitly. Drawable emissions retain `fallbackText` so stored history remains readable when a component renderer is removed, its version changes or rendering fails. A custom renderer fallback can override the default text display.
+Capabilities travel through native HTTP, queued messages, proposal execution context and AG-UI forwarded properties. Agora React can derive capabilities from its renderer registration or accept `uiCapabilities` explicitly. Drawable emissions retain `fallbackText` so stored history remains readable when a component renderer is removed, its version changes or rendering fails. A custom renderer fallback can override the default text display.
 
 ## Database rollout
 
@@ -93,8 +93,6 @@ Apply the additive runtime schema before enabling independent mode. Existing dep
 
 Stop older writers, apply schema changes, run the bounded proposal-discovery backfill from the earlier foundation layer, then deploy the new writers/workers. Do not run the backfill implicitly on every worker tick. Older terminal rows without runtime outcome metadata do not gain retroactive assistant messages. Existing durable checkpoints without the new mode remain blocking; changing configuration does not rewrite an in-flight run's journal.
 
-## Paired released packages
+## Independent releases
 
-Independent approvals and capability negotiation use the paired released packages: `@dudousxd/nestjs-agent-core@0.40.0` and `@dudousxd/nestjs-agent-react@0.33.0`. Install these optional peers when using the shared catalog or React client. Agora's development dependencies pin the same versions, so a frozen install validates the published packages directly in CI and release workflows.
-
-Older optional peers retain legacy UI behavior when capabilities are omitted. Explicit capability negotiation requires the updated peers. The temporary source-preview preparation is no longer needed.
+Independent approvals, capability negotiation, the catalog and the React client are implemented and released within Agora. Install `@adonis-agora/agent` and the optional peers needed by the entries your app imports; no Aviary package or release order is required. Protocol compatibility is checked independently of dependency sharing.

@@ -59,7 +59,8 @@ export default class GetWeather extends ReadTool<Input, { tempC: number }> {
 }
 ```
 
-Prefer a function? `defineTool(options, execute)` returns a branded `{ spec, handler }`
+Prefer a function? `defineTool({ name, input, execute, present, ... })` or the existing
+`defineTool(options, execute)` returns a branded `{ spec, handler }`
 discovery picks up identically — or pass it straight to `defineConfig({ tools: [...] })`.
 
 ## Core patterns
@@ -208,6 +209,42 @@ arguments and expires (`ttlMs`, default 15 min).
 
 Source: `packages/adonis/docs/mcp.mdx` ("Writes with a human gate"),
 `packages/adonis/src/confirmed-tool.ts`.
+
+### Pattern 5 — present a domain result through the component catalog
+
+Keep `execute` returning domain data. An optional `present(output, ctx)` on a class or
+functional handler returns one component presentation, an array, or `undefined`. The
+registry emits presentations through `ctx.emitUi` and preserves the domain result for
+REST/MCP callers. Denied or failed execution does not present; presentation errors do
+not retry a successful write. Methods keep their receiver, including injected services.
+
+```ts
+import { defineTool } from '@adonis-agora/agent'
+import { table } from '@adonis-agora/agent/genui'
+import { z } from 'zod'
+
+export const listRecords = defineTool({
+  name: 'list_records',
+  description: 'List records visible to the current actor.',
+  input: z.object({ limit: z.number().int().min(1).max(100) }),
+  execute: async ({ limit }, ctx) => recordsFor(ctx.actor, limit),
+  present: async (records) => table({
+    columns: [{ key: 'name', label: 'Name' }],
+    rows: records,
+  }),
+})
+```
+
+Use `createComponent` for custom definitions and one `createComponentRegistry` per app
+or tenant. Input `props` may transform; if the transform changes shape or is not
+idempotent, declare `outputProps` to validate the normalized JSON persisted in frames.
+Do not send renderer functions or image/PDF bytes as props. Applications can report
+presentation failures through `ctx.onPresentationError(error, { toolName })`; otherwise
+the library logs a distinct warning. SSR and capture use optional server entries,
+separate from tool execution and browser chat hooks.
+
+Source: `packages/adonis/docs/authoring/component-rendering.mdx`,
+`packages/adonis/src/spi/tool.ts`, `packages/adonis/src/tool-result-presentation.ts`.
 
 ## Feature flags and per-user gates — `enabled`, `isEnabled()`, `canUse(actor)`
 

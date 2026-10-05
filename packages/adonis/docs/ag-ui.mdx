@@ -34,7 +34,7 @@ import { AgentProvider, agUiBackend, useAgentChat } from '@adonis-agora/agent/re
 <AgentProvider backend={agUiBackend()}><Chat /></AgentProvider>
 ```
 
-`agUiBackend({ path })` follows a non-default `path`; `url` points it at another producer; `agUi` takes the consumer's own options (`forwardedProps`, `content` for sending a file as AG-UI content parts). The consumer itself — `agUiChatStream`, `reframeAgUiStream`, the `AgUiActivity` / `AgUiInterrupt` ui parts — is `@dudousxd/nestjs-agent-react`'s, re-exported; the Adonis `agUiChatStream` only adds the CSRF header, read per call. Requires `@dudousxd/nestjs-agent-react` 0.30 or later.
+`agUiBackend({ path })` follows a non-default `path`; `url` points it at another producer; `agUi` takes the consumer's own options (`forwardedProps`, `content` for sending a file as AG-UI content parts). Agora owns the consumer — `agUiChatStream`, `reframeAgUiStream`, and the `AgUiActivity` / `AgUiInterrupt` UI parts — inside this package. `agUiChatStream` adds the Adonis CSRF header, read per call. No Aviary package is required.
 
 ## What the input means here
 
@@ -129,4 +129,4 @@ for await (const event of agUiEvents(service.subscribe(runId), {
 }
 ```
 
-The projection is shared with `@dudousxd/nestjs-agent`: it lives once, framework-free, in `@dudousxd/nestjs-agent-core/ag-ui` (an optional peer — install 0.35 or later to use this entry), and `@adonis-agora/agent/ag-ui` re-exports it, with `AgUiEncoder` and `agUiEvents` reading this package's `StreamFrame`s (`toAgUiFrame` / `agUiFrames` are the mapping). `AgUiEncoder` is the pure projection underneath (frame in, events out); `planResume`, `readApprovalPayload` and `readAnswersPayload` read a resume list; `encodeInterruptId` / `decodeInterruptId` are the address codec.
+The framework-free projection lives inside Agora and is exported from `@adonis-agora/agent/ag-ui`. It preserves the AG-UI wire contract without depending on Aviary. `AgUiEncoder` and `agUiEvents` read this package's `StreamFrame`s (`toAgUiFrame` / `agUiFrames` are the mapping). `AgUiEncoder` is the pure projection underneath (frame in, events out); `planResume`, `readApprovalPayload` and `readAnswersPayload` read a resume list; `encodeInterruptId` / `decodeInterruptId` are the address codec.

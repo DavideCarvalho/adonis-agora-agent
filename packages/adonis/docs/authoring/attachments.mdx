@@ -54,7 +54,7 @@ Omit `attachments` and they are off: no upload route, and a send naming one answ
 
 ## The upload route and the send
 
-With a store configured, **`POST /agent/attachments`** takes a multipart `file`, checks it against the store's limits — `413` over the size cap, `415` for a type not on the list — and answers the `MessageAttachment` (`{ mediaId, url, contentType, name }`). `GET /agent/config` reports the same limits (`attachments: { enabled, upload, maxBytes, allowedContentTypes, maxPerMessage }` — `upload` is `'resumable'` when the routes below are mounted, else `'multipart'`), which is where `@dudousxd/nestjs-agent-react`'s `useAttachments` takes its defaults from.
+With a store configured, **`POST /agent/attachments`** takes a multipart `file`, checks it against the store's limits — `413` over the size cap, `415` for a type not on the list — and answers the `MessageAttachment` (`{ mediaId, url, contentType, name }`). `GET /agent/config` reports the same limits (`attachments: { enabled, upload, maxBytes, allowedContentTypes, maxPerMessage }` — `upload` is `'resumable'` when the routes below are mounted, else `'multipart'`), which is where `@adonis-agora/agent/react`'s `useAttachments` takes its defaults from.
 
 ### Resumable uploads (tus)
 

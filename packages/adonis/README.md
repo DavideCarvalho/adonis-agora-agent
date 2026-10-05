@@ -43,7 +43,7 @@ else is an **optional peer**, imported lazily only when configured:
 | `@adonis-agora/telescope` (`^0.4.0`) | the Telescope watcher extension (`@adonis-agora/agent/telescope`) |
 | `@qdrant/js-client-rest` (`^1.11.0`) | `retrievers.qdrant({...})` |
 | `node-sql-parser` (`^5.3.0`) | the governed `dataTool` (`@adonis-agora/agent/data`) |
-| `react` (`^18` / `^19`) + `@dudousxd/nestjs-agent-react` (`>=0.28`, with `@ai-sdk/react` and `ai`) | `AgentProvider` / `useAgentChat` (`@adonis-agora/agent/react`) |
+| `react` (`^18` / `^19`), `@ai-sdk/react` and `ai` | `AgentProvider` / `useAgentChat` (`@adonis-agora/agent/react`) |
 
 ## Configure
 
@@ -83,7 +83,7 @@ message queue, approvals, attachments, threads), with the session cookie and shi
 already wired:
 
 ```tsx
-// npm i @dudousxd/nestjs-agent-react @ai-sdk/react ai
+// npm i @ai-sdk/react ai
 import { AgentProvider, useAgentChat } from '@adonis-agora/agent/react'
 
 export default function ChatPage() {
@@ -109,9 +109,8 @@ function Chat() {
 }
 ```
 
-The hooks are [`@dudousxd/nestjs-agent-react`](https://www.npmjs.com/package/@dudousxd/nestjs-agent-react)
-re-exported (an optional peer): this package speaks the same wire contract as `@dudousxd/nestjs-agent`,
-so one React client serves both. Without React, the framework-free stream client:
+The hooks ship inside Agora. Its protocol remains compatible with Aviary, but installation and
+releases are independent. Without React, use the framework-free stream client:
 
 ```ts
 import { createAgentChatClient } from '@adonis-agora/agent/client'
@@ -204,8 +203,7 @@ blocked tool result is withheld and the turn goes on; a blocked answer or tool c
 `OutputRejectedError`. `guardrails.wrapTool(name, handler)` restores placeholders into a tool's
 arguments and runs the `tool_args` rules on them. The output processor declares `incremental`, so the
 answer keeps streaming. The detectors (`detectPii` with Luhn/CPF/CNPJ/IBAN checks, `detectSecrets`,
-`scoreInjection`, `scoreToolText`) and `scan` work on their own. Same code as
-`@dudousxd/nestjs-agent-core/guardrails`, which also carries the raw OpenAI/Anthropic stream guard.
+`scoreInjection`, `scoreToolText`) and `scan` work on their own. The guardrail implementation ships locally in Agora; it does not require an Aviary core package.
 
 ### Framework-agnostic core (no AdonisJS)
 

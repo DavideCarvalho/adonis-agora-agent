@@ -19,7 +19,7 @@ export default defineConfig({
 })
 ```
 
-`GET /agent/quota` reports every window — `{ windows: [{ period, usedTokens?, limitTokens?, usedUsd, limitUsd?, resetsAt, warnAt? }], blocked?: { period, reason }, warning?: { period, ratio, reason? } }` — and while one is exhausted `POST /agent/chat` answers `429` `{ code: 'quota_exceeded', period, message }` before the turn starts, so no tokens are spent. That is the shape `@dudousxd/nestjs-agent-react`'s `useQuota` renders, and `GET /agent/config` says `quota.enforced: true`.
+`GET /agent/quota` reports every window — `{ windows: [{ period, usedTokens?, limitTokens?, usedUsd, limitUsd?, resetsAt, warnAt? }], blocked?: { period, reason }, warning?: { period, ratio, reason? } }` — and while one is exhausted `POST /agent/chat` answers `429` `{ code: 'quota_exceeded', period, message }` before the turn starts, so no tokens are spent. That is the shape `@adonis-agora/agent/react`'s `useQuota` renders, and `GET /agent/config` says `quota.enforced: true`.
 
 Without `quota`, `GET /agent/quota` still reports the day and month windows off the ledger — no ceilings, never blocked. For a public (anonymous) deployment that means unbounded model spend, so set limits there; they apply per actor, which is per browser in anonymous mode.
 

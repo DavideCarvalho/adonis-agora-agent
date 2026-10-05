@@ -51,7 +51,7 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 | 12 | `GET /agent/approvals/mine` <span data-opt>optional</span> | The **calling actor's own** pending HITL approvals, oldest first. Query: `limit?` (default `50`, clamped to `200`). Mounts with `governanceQueries` but is **not** behind `governanceAuthorize` — it is always scoped to `actor.id`, so a non-admin surface (e.g. a coordinator's chat) can poll its own suspended tool calls even when the cross-actor read-model is ADMIN-only. |
 
 <Callout type="info" title="Refusals answer { message, code? }">
-Every refused request answers its HTTP status with a JSON body `{ message, code? }` — `message` in words a person can read, `code` a machine-readable reason where there is one (`unauthorized`, `model_not_allowed`, `thread_required`, `quota_exceeded`, …). `@adonis-agora/agent/client` throws it as `AgentChatHttpError` (`status`, `code`, `body`, and the server's `message` as its own); `@dudousxd/nestjs-agent-react` reads the same body.
+Every refused request answers its HTTP status with a JSON body `{ message, code? }` — `message` in words a person can read, `code` a machine-readable reason where there is one (`unauthorized`, `model_not_allowed`, `thread_required`, `quota_exceeded`, …). `@adonis-agora/agent/client` throws it as `AgentChatHttpError` (`status`, `code`, `body`, and the server's `message` as its own); `@adonis-agora/agent/react` reads the same body.
 </Callout>
 
 <Callout type="info" title="Every route resolves the actor first">
@@ -68,7 +68,7 @@ The persona catalog route is registered *before* `threads/:id` so it isn't captu
 
 ## The SSE envelope
 
-`POST /agent/chat` and `GET /agent/chat/:runId/stream` reply with `Content-Type: text/event-stream`, written in the chat stream protocol shared with `@dudousxd/nestjs-agent`: one `AgentStreamEvent` JSON object per `data:` frame. `@dudousxd/nestjs-agent-react` (transport, `useAgentChat`, transcript model) reads it unchanged, and so does `@adonis-agora/agent/client`.
+`POST /agent/chat` and `GET /agent/chat/:runId/stream` reply with `Content-Type: text/event-stream`, written in the chat stream protocol compatible with Aviary: one `AgentStreamEvent` JSON object per `data:` frame. Agora's local React transport, `useAgentChat`, transcript model and `@adonis-agora/agent/client` read it unchanged.
 
 <Callout type="warn" title="The legacy delta envelope is gone">
 Before 0.48 the default was a `'legacy'` envelope — `data: {"delta":"…"}` per text chunk plus named `event: component` / `event: elicitation` / `event: approval` frames — selected by a `streamProtocol` option. Both the envelope and the option are removed: every server speaks the protocol below. A hand-written reader of `{"delta"}` reads `{"kind":"text","text":…}` instead (and `ui` / `elicitation` / `approval-requested` events in place of the named frames), or moves to one of the clients above.
@@ -100,7 +100,7 @@ event: done
 data: {}
 ```
 
-The vocabulary, field for field, is the NestJS library's [stream protocol](https://github.com/DavideCarvalho/nestjs-agent/blob/master/docs/stream-protocol.md) (`AgentStreamEvent`, exported from this package too). What this package writes:
+The vocabulary remains compatible with Aviary's [stream protocol](https://github.com/DavideCarvalho/nestjs-agent/blob/master/docs/stream-protocol.md) (`AgentStreamEvent`, exported from this package too). What this package writes:
 
 | `kind` | When |
 | --- | --- |
@@ -114,7 +114,7 @@ The vocabulary, field for field, is the NestJS library's [stream protocol](https
 | `title` | the thread was titled from its first message |
 | `cancelled` | the run was stopped — the last frame before `done`, so a truncated answer reads as one |
 
-Every event frame carries an SSE `id:` — its 1-based position in the run (`id: 7` above `data: {"kind":"text",…}`). The number belongs to the frame, not the connection: the same frame has the same id on the `POST` that started the run and on every later `GET …/stream`. `GET /agent/chat/:runId/stream?after=<n>` (or the standard `Last-Event-ID` header; `after` wins) sends only the frames numbered above `n`, still preceded by `meta` — which is how the shared React client resumes a dropped stream without re-rendering what it has. `meta`, `done` and `error` carry no id. When nothing is buffered under the run any more (it ended while the client was away, or its buffer went with a restarted process), the route answers `404`, read as "nothing to resume"; a sink reports that through the optional `TokenStreamSink.has` (the in-process, in-memory and Redis sinks implement it).
+Every event frame carries an SSE `id:` — its 1-based position in the run (`id: 7` above `data: {"kind":"text",…}`). The number belongs to the frame, not the connection: the same frame has the same id on the `POST` that started the run and on every later `GET …/stream`. `GET /agent/chat/:runId/stream?after=<n>` (or the standard `Last-Event-ID` header; `after` wins) sends only the frames numbered above `n`, still preceded by `meta` — which is how the Agora React client resumes a dropped stream without re-rendering what it has. `meta`, `done` and `error` carry no id. When nothing is buffered under the run any more (it ended while the client was away, or its buffer went with a restarted process), the route answers `404`, read as "nothing to resume"; a sink reports that through the optional `TokenStreamSink.has` (the in-process, in-memory and Redis sinks implement it).
 
 A failed run ends with `event: error` + `data: {"code","message"}` instead of `done`; the codes are `quota_exceeded`, `output_rejected`, `structured_output_invalid` and `run_failed`.
 
@@ -132,7 +132,7 @@ The response also sets `X-Agent-Run-Id` and `X-Agent-Thread-Id` headers (plus `C
 | `reasoningMs?: number` | how long it thought — the sum of each burst of consecutive `reasoning` frames; the same number `step-finish` carries live |
 | `ui?: { id, component, props, version?, toolCallId? }[]` | components the model turn pushed (`ui` frames), first-seen order, last props per `id` |
 
-They are read off the frames inside the model call's own checkpoint, so a durable replay persists the same values rather than re-measuring a turn that is not happening. A provider may also report them itself on `ModelTurnResult` (`reasoning`, `reasoningMs`, `ui`); its values win. `@dudousxd/nestjs-agent-react`'s `storedThreadToUiMessages` replays them as `reasoning` and `data-ui` parts.
+They are read off the frames inside the model call's own checkpoint, so a durable replay persists the same values rather than re-measuring a turn that is not happening. A provider may also report them itself on `ModelTurnResult` (`reasoning`, `reasoningMs`, `ui`); its values win. `@adonis-agora/agent/react`'s `storedThreadToUiMessages` replays them as `reasoning` and `data-ui` parts.
 
 ## Models
 
@@ -168,7 +168,7 @@ To decide per caller (plan, budget, provider health), set `models` to a `ModelCa
 
 ## Message queue
 
-A person can keep typing while a turn is running. A message sent then is **queued on the thread, server-side** — it survives a reload, a closed tab, another device — and runs as soon as the turn ahead of it settles, exactly as if it had been sent then. It is not part of the transcript until it runs: the turn it starts appends it as its user message. The contract is `@dudousxd/nestjs-agent`'s (its `docs/stream-protocol.md`, *Message queue*), so `chat.queue` in `@dudousxd/nestjs-agent-react` works against this server unchanged.
+A person can keep typing while a turn is running. A message sent then is **queued on the thread, server-side** — it survives a reload, a closed tab, another device — and runs as soon as the turn ahead of it settles, exactly as if it had been sent then. It is not part of the transcript until it runs: the turn it starts appends it as its user message. The queue contract remains compatible with Aviary; Agora's local React client exposes it through `chat.queue`.
 
 `POST /agent/chat` takes `mode`:
 
@@ -215,7 +215,7 @@ curl http://localhost:3333/agent/tool-call/reject \
   -d '{"runId":"<runId>","toolCallId":"<toolCallId>","reason":"not this account"}'
 ```
 
-On approve, the loop runs the tool and continues, recording who approved it. On reject, it records the rejection and feeds a rejection result back to the model, which continues the turn. A decision is always scoped to one `(runId, toolCallId)` pair, so one run can never approve another's call. `runId` may be omitted — a tool call id is unique, so the route reads the run off the call's own row (`AgentStore.getToolCallRunId`) and answers `404` for a call it does not know. That is the body `@dudousxd/nestjs-agent-react` sends; the same holds for `tool-call/answer` and `tool-call/skip`.
+On approve, the loop runs the tool and continues, recording who approved it. On reject, it records the rejection and feeds a rejection result back to the model, which continues the turn. A decision is always scoped to one `(runId, toolCallId)` pair, so one run can never approve another's call. `runId` may be omitted — a tool call id is unique, so the route reads the run off the call's own row (`AgentStore.getToolCallRunId`) and answers `404` for a call it does not know. That is the body `@adonis-agora/agent/react` sends; the same holds for `tool-call/answer` and `tool-call/skip`.
 
 Both decision routes take two optional fields: `via` names the surface the decision came through (`'web'` when omitted, 1–64 characters) and `remember: true` (approve only) approves later calls of the same tool in the same thread without asking again. A malformed one is a `400`.
 

@@ -80,7 +80,7 @@ defineTool(
 
 ### A component catalog — `@adonis-agora/agent/genui`
 
-Instead of writing a tool per component, declare the components once and let the model push them. The catalog is `@dudousxd/nestjs-agent-core/genui`'s — isomorphic and framework-free, so the SAME file serves this server and the browser (`@dudousxd/nestjs-agent-react`'s `GenuiProvider`). Install that optional peer, then:
+Instead of writing a tool per component, declare the components once and let the model push them. Agora owns the isomorphic, framework-free catalog in `@adonis-agora/agent/genui`, so the same definition file serves the server and the browser's `GenuiProvider` from `@adonis-agora/agent/react/genui`. No Aviary package is required:
 
 ```ts title="app/genui/catalog.ts"
 import { defineCatalog, defineComponent } from '@adonis-agora/agent/genui'

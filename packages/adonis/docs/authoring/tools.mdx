@@ -215,7 +215,7 @@ defineTool(
 )
 ```
 
-The same field works on `@AiTool({ … })` and `static tool = { … }`. `GET /agent/tools?agent=` serves `{ name, kind, presentation? }[]` for the tools the caller can reach — the exact list the model is offered for that actor and agent (an unknown `agent` is a `404`) — which `@dudousxd/nestjs-agent-react`'s `useToolCatalog` reads to narrate calls. A tool with no `presentation` is narrated generically. The shape (`ToolPresentation`, `ToolResultView`, …) is the NestJS library's, exported from this package.
+The same field works on `@AiTool({ … })` and `static tool = { … }`. `GET /agent/tools?agent=` serves `{ name, kind, presentation? }[]` for the tools the caller can reach — the exact list the model is offered for that actor and agent (an unknown `agent` is a `404`) — which `@adonis-agora/agent/react`'s `useToolCatalog` reads to narrate calls. A tool with no `presentation` is narrated generically. Agora exports the shape (`ToolPresentation`, `ToolResultView`, …) locally, retaining protocol compatibility.
 
 ## Roles & ability
 
