@@ -46,11 +46,13 @@ import { AgentProvider, agUiBackend, useAgentChat } from '@adonis-agora/agent/re
 | content parts | `text` parts are the message's text. A media part carried **inline** (`data`) is staged through the configured [attachment store](/docs/agent/config-reference) and sent to the model. A part by `url` or provider `file` handle is dropped, and an `agora.warning` says so — the model is only handed bytes the server staged itself. |
 | `resume` | Answers to the interrupts of the previous run — see below. |
 | `context` | Rides in the turn's page context as `agUiContext`, where a `PromptBuilder` and the tools read it. |
-| `forwardedProps` | `agent`, `model`, `persona` and `pageContext` are read as the matching fields of a native send. |
+| `forwardedProps` | `agent`, `model`, `persona`, `pageContext` and `uiCapabilities` are read as the matching fields of a native send. A malformed `uiCapabilities` is a `400`; see [UI capabilities](/docs/agent/surfaces#ui-capabilities). |
 | `tools` | Frontend tools are not supported: the list is ignored, with a warning. |
 | `state` | Ignored; this producer emits no state events. |
 
 Input that is malformed — no `threadId`, no user message, a resume entry without a status — is an HTTP `400` and no stream. A failure after the stream opened is a `RUN_ERROR` event.
+
+With [independent approvals](/docs/agent/independent-approvals#text-decisions), a user message on an existing thread that is exactly a decision command (and carries no media) decides the proposal instead of starting a turn. The answer is a short run: `RUN_STARTED`, a `CUSTOM` event `aviary.action-proposal-decision` with `{ threadId, proposalDecision }`, the confirmation as one assistant text message, and `RUN_FINISHED`. The AG-UI projection does not carry a proposal's id (`agora.approval-requested` has no `target`), so an AG-UI client decides proposals by such a message or through the [proposal routes](/docs/agent/independent-approvals#over-http), not through `resume`.
 
 ## What the stream carries
 
@@ -72,7 +74,7 @@ What AG-UI has no event for travels as `CUSTOM` events, which a client that does
 | `name` | `value` |
 | --- | --- |
 | `agora.run` | `{ runId, threadId }` — the library's ids, e.g. for `POST <path>/chat/:runId/cancel` |
-| `agora.ui` | a [generative-UI](/docs/agent/generative-ui) component `{ id, component, props, … }`; a repeat `id` replaces |
+| `agora.ui` | a [generative-UI](/docs/agent/generative-ui) component `{ id, component, props, version?, toolCallId? }`; a repeat `id` replaces. A component left out of `forwardedProps.uiCapabilities` is not sent here: its text arrives in the `TEXT_MESSAGE_*` events |
 | `agora.title` | `{ title }` |
 | `agora.step-usage` | `{ usage, costUsd, reasoningMs }` of one model step |
 | `agora.approval-requested`, `agora.approval-settled`, `agora.elicitation` | the native frames, for a client that renders them live |

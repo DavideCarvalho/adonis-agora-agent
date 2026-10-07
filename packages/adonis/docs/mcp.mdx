@@ -72,7 +72,7 @@ Point an MCP client at `http://localhost:3333/mcp`. It will discover the OAuth f
 | `authorizer` | `RolesPolicy` | `DefaultToolAuthorizer(defaultRoles)` | The tool gate. Pass the authz Bouncer adapter here to run MCP under abilities. |
 | `defaultRoles` | `string[]` | `['ADMIN']` | Roles a tool requires when it declares none. Only consulted by the default authorizer. |
 | `emptyRoles` | `'allow' \| 'deny'` | `'allow'` | What an empty roles list means to the default authorizer. Since 0.46 it is open; `'deny'` makes `defaultRoles: []` or a tool's `roles: []` reach nobody. |
-| `allowedTools` | `string[]` | — | Restrict which tools are *listed*. |
+| `allowedTools` | `string[]` | — | Restrict which tools are listed and callable. |
 
 <Callout type="warn" title="Fail-closed: no auth and no actor means 401">
 With neither `auth` nor `actor` configured, **every** request to `/mcp` is rejected with `401 {"error":"unauthorized: no auth configured and no fallback actor"}`. That is the default an empty `config/mcp.ts` produces, and it is deliberate: an MCP endpoint is a remote tool-execution surface, so it never opens itself.
@@ -257,8 +257,8 @@ Authentication is re-verified on **every** request, not only at `initialize` —
 
 The token is verified, the resulting `McpAuthInfo` carries `extra.actor`, and that actor reaches the tool layer through the transport. From there it is the same two gates the agent loop applies:
 
-- **`tools/list`** returns `registry.definitionsFor(actor, policy, allowedTools)` — the role/ability filter first, then the `allowedTools` allow-list. An actor sees only the tools it may call.
-- **`tools/call`** goes through `registry.invoke`, which **re-checks** `policy.can(actor, spec)` before validating the input against the tool's Standard Schema and running the handler.
+- **`tools/list`** returns `registry.definitionsFor(actor, policy, allowedTools)` — the `allowedTools` allow-list, then `enabled`, the role/ability policy and `canUse` — minus `action` tools and the kinds only the agent loop serves (delegation, `ask`, skills, memory). An actor sees only the tools it may call.
+- **`tools/call`** refuses a name that is off the list or not exposable (`action` and loop-served kinds) as an unknown tool, then goes through `registry.invoke`, which **re-checks** `enabled`, `policy.can(actor, spec)` and `canUse` before validating the input against the tool's Standard Schema and running the handler.
 
 To run MCP under abilities instead of roles, hand it the same Bouncer adapter you gave the agent:
 
@@ -276,15 +276,15 @@ export default defineMcpConfig({
 
 See [Bouncer-backed authorization](/docs/agent/governance/authz-bouncer). The same fail-closed rule applies here: a tool that declares no `ability` is never reachable under that adapter.
 
-<Callout type="warn" title="`allowedTools` is a visibility control, not a boundary">
-`allowedTools` filters `tools/list` only. `tools/call` does not consult it, so a client that already knows a name outside the list can still call it if its **roles** permit. Use it to keep an assistant's tool menu focused; use `roles`/`ability` to keep a tool unreachable.
+<Callout type="info" title="`allowedTools` applies to both">
+`allowedTools` narrows `tools/list` and is checked again on `tools/call`, so a client that guesses a name outside the list gets the same "unknown tool" error as for a name that does not exist. It is still a narrowing of what `roles`/`ability` allow, never a widening.
 </Callout>
 
 ### Two things MCP does not carry over
 
-**`action` tools are not gated by HITL over MCP.** `tools/call` runs the handler directly — there is no approval suspend, because MCP has no channel to route an approval decision through. If a tool must never run without a human in the loop, either keep it out of `allowedTools` **and** out of the actor's roles, or move the approval inside the tool's own handler — [`defineConfirmedTool`](#writes-with-a-human-gate-defineconfirmedtool) does that.
+**`action` tools are not served over MCP.** MCP has no channel to route an approval decision through, so an `action` tool is neither listed nor callable — `tools/call` answers it as an unknown tool. A write that should be reachable from an MCP client puts the approval inside the tool's own handler — [`defineConfirmedTool`](#writes-with-a-human-gate-defineconfirmedtool) does that.
 
-**The tool context is thinner.** MCP calls get `{ actor, threadId, runId, requestId }` derived from the session id (`mcp:<sessionId>`), and nothing else: no `persona`, no `pageContext`, no `host`, and no `emitComponent`. A tool that reads any of those must tolerate their absence — they are optional on `AiToolCtx` precisely for this reason. `emitUi` is present but does nothing: there is no conversation to push into.
+**The tool context is thinner.** MCP calls get `{ actor, threadId, runId, requestId }` derived from the session id (`mcp:<sessionId>`), and nothing else: no `toolCallId`/`idempotencyKey`, no `persona`, no `pageContext`, no `uiCapabilities`, no `host`, and no `emitComponent`. A tool that reads any of those must tolerate their absence — they are optional on `AiToolCtx` precisely for this reason. `emitUi` is present but discards what it is given, and a tool's `present` hook runs against it: no component and no fallback text reaches the client. The answer is the tool's return value, as one text content block (a string as is, anything else as JSON). See [One output, many surfaces](/docs/agent/surfaces#mcp).
 
 ## Writes with a human gate: `defineConfirmedTool`
 

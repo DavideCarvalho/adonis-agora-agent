@@ -161,6 +161,21 @@ When the model calls an `action` tool the run parks until a person decides. The 
 
 A question set (an agent's intake, or the model's `ask`) arrives as an `elicitation` block with `questions`, `answer.run()` and `skip.run()`. See [Elicitation](/docs/agent/authoring/elicitation) and [Authorization](/docs/agent/governance/authorization) for the server side.
 
+With [independent approvals](/docs/agent/independent-approvals) the same call is a proposal: the turn has already ended, and the same buttons decide it through the proposal routes (`call.approve.run()`, or `chat.approve` / `chat.reject` with the call's `target`). The hook reads the thread's proposals whenever the chat or connection status changes and when the window regains focus, polls every `proposalPollMs` (default 1000) while one is pending, queued, executing or not yet delivered, and merges each outcome message into the transcript without disturbing a turn in progress. `chat.proposals` is `{ items, error, refresh() }`; `useAgentChat({ proposals: false })` turns the reads off.
+
+## What the chat can draw
+
+Generative UI is set up on the provider — `<AgentProvider genui={{ registry, catalog }}>` — and every `ui` block renders through `<GenerativeUI>` ([Generative UI](/docs/agent/generative-ui#in-react)). To tell the server what that registry can draw, pass `uiCapabilities`; it is sent with every turn, and components left out arrive as text:
+
+```tsx
+<AgentProvider
+  genui={{ registry, catalog }}
+  uiCapabilities={{ components: [{ name: 'DataTable', version: 1 }, { name: 'OrderSummary', version: 1 }] }}
+>
+```
+
+`useAgentChat({ uiCapabilities })` overrides it for one chat. The provider does not derive capabilities from the registry; omit them and the server treats every catalog component as drawable. See [One output, many surfaces](/docs/agent/surfaces).
+
 ## Background runs
 
 An agent whose edge is declared `detached` ([Background delegation](/docs/agent/authoring/personas-and-agents#background-delegation--the-chat-stays-free)) ends its turn with a receipt, and the delegate's answer lands in the thread later as a message of its own. Ask the chat to track them:
@@ -224,6 +239,8 @@ Every route is listed in [Streaming & HTTP](/docs/agent/streaming-and-http). Err
 | `@adonis-agora/agent/react` | the provider, the hooks, the transcript model, `AgentClient` |
 | `@adonis-agora/agent/react/genui` | `GenuiProvider`, `GenerativeUI` — draw the components an agent pushes ([Generative UI](/docs/agent/generative-ui)) |
 | `@adonis-agora/agent/react/genui/json-render` | composed trees through `@json-render/react` |
+| `@adonis-agora/agent/react/genui/server` | `createReactServerRenderer` — static HTML, paginated PNG and PDF from the same React components, on the server ([Render HTML, PNG, or PDF](/docs/agent/authoring/component-rendering#render-html-png-or-pdf)) |
+| `@adonis-agora/agent/react/genui/server/playwright` | `createPlaywrightCaptureAdapter` — the PNG/PDF capture over `playwright-core` (optional peer) |
 | `@adonis-agora/agent/react/markdown` | `AgentMarkdown`, a streaming markdown renderer (`streamdown` and friends are optional peers of this package) |
 | `@adonis-agora/agent/react/media` | `mediaAttachments()` — resumable (tus) attachment uploads ([Resumable uploads](/docs/agent/authoring/attachments#resumable-uploads-tus)) |
 
