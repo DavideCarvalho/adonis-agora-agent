@@ -35,6 +35,7 @@ import type { AgentUiComponent } from '../stream-events.js';
 import type { ToolConfirmation } from '../tool-presentation.js';
 import type {
   Actor,
+  AgentHostContext,
   MessageAttachment,
   MessageFeedback,
   MessageRole,
@@ -186,6 +187,7 @@ function queuedMessageFromRow(row: Record<string, unknown>): QueuedMessage {
   const attachments = parseJson<MessageAttachment[]>(row.attachments);
   const pageContext = parseJson<PageContext>(row.page_context);
   const uiCapabilities = parseJson<UiCapabilities>(row.ui_capabilities);
+  const hostContext = parseJson<AgentHostContext>(row.host_context);
   return {
     id: String(row.id),
     threadId: String(row.thread_id),
@@ -197,6 +199,7 @@ function queuedMessageFromRow(row: Record<string, unknown>): QueuedMessage {
     ...(typeof row.model === 'string' ? { model: row.model } : {}),
     ...(pageContext !== undefined ? { pageContext } : {}),
     ...(uiCapabilities !== undefined ? { uiCapabilities } : {}),
+    ...(hostContext !== undefined ? { hostContext } : {}),
     ...(toInt(row.interrupt) === 1 ? { interrupt: true } : {}),
     createdAt: msToIso(row.created_at),
     updatedAt: msToIso(row.updated_at),
@@ -619,6 +622,7 @@ export class LucidAgentStore
         model: input.model ?? null,
         page_context: input.pageContext !== undefined ? safeJson(input.pageContext) : null,
         ui_capabilities: input.uiCapabilities !== undefined ? safeJson(input.uiCapabilities) : null,
+        host_context: input.hostContext !== undefined ? safeJson(input.hostContext) : null,
         interrupt: input.interrupt === true ? 1 : 0,
         position,
         created_at: now,

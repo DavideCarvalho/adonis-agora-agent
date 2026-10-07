@@ -377,6 +377,7 @@ export class InMemoryAgentStore
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
       ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
+      ...(input.hostContext !== undefined ? { hostContext: input.hostContext } : {}),
       ...(input.interrupt === true ? { interrupt: true } : {}),
       createdAt: ts,
       updatedAt: ts,

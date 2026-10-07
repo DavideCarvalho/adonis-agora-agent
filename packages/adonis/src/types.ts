@@ -128,6 +128,11 @@ export interface ToolCallRequest {
    * (defensively treated as `read` wherever a definite value is required).
    */
   kind?: ToolKind;
+  /**
+   * The call this one ran inside — an inner call of a code-mode tool an engine reported (see
+   * `AgentEngine`). Absent for a call the model made itself, which is every call the loop records.
+   */
+  parentId?: string;
 }
 
 /** Result of running a tool. */
@@ -360,6 +365,12 @@ export interface AgentCatalogEntry {
   defaultPersona?: string;
 }
 
+/**
+ * What the HOST knows about a send that the library does not model — see
+ * {@link AgentRunInput.hostContext}. Plain JSON.
+ */
+export type AgentHostContext = { readonly [key: string]: unknown };
+
 /** Everything needed to run one agent turn. */
 export interface AgentRunInput {
   threadId: string;
@@ -422,6 +433,14 @@ export interface AgentRunInput {
    * ancestor sink to forward into), so nothing else tells it apart from a top-level turn.
    */
   deliverTo?: DetachedDelivery;
+  /**
+   * What the HOST knows about this turn that the library does not model — where it came from, where
+   * its answer goes, on whose behalf (e.g. `{ source: 'slack', delivery: { channel, ts } }`). Plain
+   * JSON: it travels through the queue and the durable journal untouched, and reaches the runner's
+   * hooks (an engine's host callbacks) as it was sent. Never shown to the model or to clients, and
+   * never inherited by a delegated run.
+   */
+  hostContext?: AgentHostContext;
 }
 
 /**
