@@ -44,7 +44,10 @@ interface BootedApp {
   close(): Promise<void>;
 }
 
-async function bootApp(mcp: Partial<McpConfig>): Promise<BootedApp> {
+async function bootApp(
+  mcp: Partial<McpConfig>,
+  options: { bodyParser?: boolean; registry?: import('../src/tool-registry.js').ToolRegistry } = {},
+): Promise<BootedApp> {
   const ignitor = new IgnitorFactory()
     .withCoreProviders()
     .withCoreConfig()
@@ -56,9 +59,15 @@ async function bootApp(mcp: Partial<McpConfig>): Promise<BootedApp> {
 
   const app = ignitor.createApp('web');
   await app.init();
+  if (options.registry) {
+    const { ToolRegistry } = await import('../src/tool-registry.js');
+    const registry = options.registry;
+    app.container.singleton(ToolRegistry, () => registry);
+  }
   await app.boot();
 
   const server = await app.container.make('server');
+  if (options.bodyParser) server.use([() => import('@adonisjs/core/bodyparser_middleware')]);
   await server.boot();
   const node: Server = createServer(server.handle.bind(server));
   await new Promise<void>((resolve) => node.listen(0, '127.0.0.1', resolve));
@@ -280,5 +289,74 @@ describe('mcp_provider: route middleware', () => {
     await expectAuthenticated(await post(booted, 'good'));
     await fetch(`${booted.url}/.well-known/oauth-protected-resource/mcp`).then((r) => r.json());
     expect(hits).toEqual(['/mcp']);
+  });
+});
+
+describe('mcp_provider: stateless mode', () => {
+  const rpc = (booted: BootedApp, body: unknown, method = 'POST') =>
+    fetch(`${booted.url}/mcp`, {
+      method,
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: 'Bearer good',
+      },
+      ...(method === 'POST' ? { body: JSON.stringify(body) } : {}),
+    });
+
+  it('answers every POST on its own — no session id issued or needed — and 405s GET/DELETE', async () => {
+    booted = await bootApp({ auth: oauthAuth, stateless: true }, { bodyParser: true });
+    const init = await rpc(booted, initialize);
+    expect(init.status).toBe(200);
+    expect(init.headers.get('mcp-session-id')).toBeNull();
+    await init.text();
+
+    // a later request, with no session, is served too (as if it landed on another instance)
+    const list = await rpc(booted, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    expect(list.status).toBe(200);
+    expect(await list.text()).toContain('"tools"');
+
+    expect((await rpc(booted, null, 'GET')).status).toBe(405);
+    expect((await rpc(booted, null, 'DELETE')).status).toBe(405);
+  });
+});
+
+describe('mcp_provider: actions', () => {
+  const listTools = async (booted: BootedApp) => {
+    const res = await fetch(`${booted.url}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: 'Bearer good',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    return res.text();
+  };
+  const withAction = async () => {
+    const { ToolRegistry } = await import('../src/tool-registry.js');
+    const { z } = await import('zod');
+    const registry = new ToolRegistry();
+    registry.register(
+      { name: 'log_dose', kind: 'action', description: 'x', inputSchema: z.object({}) } as never,
+      { execute: async () => ({ ok: true }) },
+    );
+    return registry;
+  };
+
+  it("config/mcp.ts actions: 'execute' reaches the server; the default still refuses", async () => {
+    booted = await bootApp(
+      { auth: oauthAuth, stateless: true, actions: 'execute' },
+      { bodyParser: true, registry: await withAction() },
+    );
+    expect(await listTools(booted)).toContain('log_dose');
+    await booted.close();
+
+    booted = await bootApp(
+      { auth: oauthAuth, stateless: true },
+      { bodyParser: true, registry: await withAction() },
+    );
+    expect(await listTools(booted)).not.toContain('log_dose');
   });
 });

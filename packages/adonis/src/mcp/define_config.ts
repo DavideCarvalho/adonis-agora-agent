@@ -74,6 +74,20 @@ export interface McpConfig {
    * route is public and gets none.
    */
   middleware?: McpRouteMiddleware[];
+  /**
+   * What MCP callers may do with `action` tools. `'refuse'` (default): neither listed nor callable —
+   * an action has a human approval gate in the loop that MCP cannot honour. `'execute'`: the
+   * deployment accepts that the MCP client's own confirmation (most clients ask before each call)
+   * stands in for it, and actions run when called.
+   */
+  actions?: 'refuse' | 'execute';
+  /**
+   * Serve without sessions: every `POST` is answered by a fresh transport and server, and `GET`
+   * (the SSE stream) / `DELETE` are `405`. Use it behind a load balancer with more than one
+   * instance — in-memory sessions would not survive a request landing on another one. Tool calls
+   * lose nothing: each carries its own token, and tools are stateless here. Default: `false`.
+   */
+  stateless?: boolean;
 }
 
 /** Anything Adonis accepts in `route.use()`: a function, or a named/lazy middleware reference. */

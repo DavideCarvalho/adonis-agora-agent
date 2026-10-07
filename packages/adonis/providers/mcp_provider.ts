@@ -77,8 +77,16 @@ export default class McpProvider {
       router.post(route, (ctx: HttpContext) =>
         this.#handlePost(ctx, config, registry, authorizer, auth, openActor),
       ),
-      router.get(route, (ctx: HttpContext) => this.#handleGet(ctx, auth, openActor)),
-      router.delete(route, (ctx: HttpContext) => this.#handleDelete(ctx, auth, openActor)),
+      router.get(route, (ctx: HttpContext) =>
+        config.stateless === true
+          ? this.#methodNotAllowed(ctx)
+          : this.#handleGet(ctx, auth, openActor),
+      ),
+      router.delete(route, (ctx: HttpContext) =>
+        config.stateless === true
+          ? this.#methodNotAllowed(ctx)
+          : this.#handleDelete(ctx, auth, openActor),
+      ),
     ];
     if (middleware.length > 0) for (const r of routes) r.use(middleware);
 
@@ -201,9 +209,30 @@ export default class McpProvider {
     if (authInfo === null) return;
     req.auth = authInfo;
 
+    const newServer = () =>
+      createMcpServer({
+        name: config.name,
+        version: config.version,
+        registry,
+        policy: authorizer,
+        ...(config.allowedTools !== undefined ? { allowedTools: config.allowedTools } : {}),
+        ...(config.actions !== undefined ? { actions: config.actions } : {}),
+        actorFromAuth: actorFromAuthInfo,
+      });
+
     try {
       let transport: StreamableHTTPServerTransport | undefined;
-      if (sessionId && this.#transports.has(sessionId)) {
+      if (config.stateless === true) {
+        // No session: this request gets its own transport and server, closed once answered.
+        const stateless = new StreamableHTTPServerTransport({});
+        const server = newServer();
+        res.on('close', () => {
+          void stateless.close();
+          void server.close();
+        });
+        await server.connect(stateless as Transport);
+        await stateless.handleRequest(req, res, body);
+      } else if (sessionId && this.#transports.has(sessionId)) {
         // Session resume — reuse the existing transport (already connected to its own server).
         transport = this.#transports.get(sessionId)!;
         await transport.handleRequest(req, res, body);
@@ -221,14 +250,7 @@ export default class McpProvider {
             this.#transports.delete(sid);
           }
         };
-        const server = createMcpServer({
-          name: config.name,
-          version: config.version,
-          registry,
-          policy: authorizer,
-          ...(config.allowedTools !== undefined ? { allowedTools: config.allowedTools } : {}),
-          actorFromAuth: actorFromAuthInfo,
-        });
+        const server = newServer();
         await server.connect(transport as Transport);
         await transport.handleRequest(req, res, body);
       } else {
@@ -307,6 +329,16 @@ export default class McpProvider {
     }
     await transport.handleRequest(req, res);
     await this.#awaitFinish(res);
+  }
+
+  /** Stateless mode has no SSE stream to open and no session to close (MCP Streamable HTTP §2.2). */
+  #methodNotAllowed(ctx: HttpContext) {
+    ctx.response.header('allow', 'POST');
+    return ctx.response.status(405).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Method not allowed: this MCP server is stateless.' },
+      id: null,
+    });
   }
 
   /** Resolve only when the raw response is finished so Adonis doesn't try to handle the response again. */
