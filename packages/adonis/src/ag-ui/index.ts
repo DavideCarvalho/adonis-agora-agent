@@ -13,6 +13,7 @@ export {
   AG_UI_STAGED_MEDIA_PROVIDER,
   type AgUiContentPart,
   type AgUiContext,
+  type AgUiCursor,
   type AgUiEvent,
   type AgUiInterrupt,
   type AgUiMessage,

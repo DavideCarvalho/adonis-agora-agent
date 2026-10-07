@@ -675,7 +675,12 @@ export class AgentChatTransport implements ChatTransport<UIMessage> {
               // A kind this version does not know (a newer server, a runner that is not this
               // library's loop). Forwarded rather than dropped, so a host can render it from
               // `message.parts` / `onData` without waiting for a release that maps it.
-              forwardAsData(event as { kind: string }, false);
+              // `proposal-decision` (an AG-UI text decision, re-framed) is the same transient
+              // `data-proposal-decision` part a native decision answers with.
+              forwardAsData(
+                event as { kind: string },
+                (event as { kind: string }).kind === 'proposal-decision',
+              );
               break;
           }
         }

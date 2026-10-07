@@ -27,13 +27,21 @@ import type { AgentStreamEvent } from './client-wire.js';
  *    `activity:<messageId>`, props `{ activityType, content }` — the whole content each time (the
  *    delta's JSON Patch applied here), so a repeat replaces the widget in place;
  *  - `RUN_ERROR` → the stream's `event: error`; `RUN_FINISHED` → `event: done` (a cancelled
- *    outcome writes `cancelled` first; an interrupt outcome whose interrupts the stream did not
- *    already carry as an approval or a question set writes a `ui` part named `AgUiInterrupt` with
- *    those, for the app to render);
+ *    outcome writes `cancelled` first). An interrupt outcome whose every interrupt the stream
+ *    already carried as an approval card or a question set ends the stream WITHOUT `done`: the run
+ *    is parked, not over, so the transport re-attaches to it on the native route
+ *    (`chat/:runId/stream?after=`) and the rest of the run — after the person decides through the
+ *    native `tool-call` routes — streams into the same message. Interrupts nothing showed (another
+ *    producer's) become a `ui` part named `AgUiInterrupt` carrying them, for the app to render;
+ *  - the producer's SSE `id:` (the run's own sequence number, which `agUiAdapter()` writes) is
+ *    passed on as the cursor the transport re-attaches with; a producer that numbers nothing gets
+ *    no cursor, and the transport then does not try to re-attach;
  *  - `CUSTOM` events a producer of this family writes (`agora.ui`, `agora.title`, `agora.queue`,
  *    `agora.approval-requested` / `-settled`, `agora.elicitation`, `agora.step-usage`,
- *    `agora.run`) → the frames they stand for. Any other `CUSTOM` is ignored, as the protocol
- *    requires of a consumer that does not know it.
+ *    `agora.run`) → the frames they stand for; `agora.action-proposal-decision` → the transient
+ *    `data-proposal-decision` part a native text decision answers with (`{ threadId,
+ *    proposalDecision, text }`). Any other `CUSTOM` is ignored, as the protocol requires of a
+ *    consumer that does not know it.
  *
  * The send's staged uploads (`attachments` refs) travel as media parts of the user message, by
  * `file` handle: `{ type: 'image' | …, source: { type: 'file', provider: 'agora', value: <mediaId> } }`
@@ -202,8 +210,8 @@ export async function agUiChatStream(
 type AgUiEvent = { type: string; [key: string]: unknown };
 
 interface Reframer {
-  /** The frames (already SSE-encoded) one AG-UI event stands for. */
-  push(event: AgUiEvent): string;
+  /** The frames (already SSE-encoded) one AG-UI event stands for; `id` is its SSE `id:`, if any. */
+  push(event: AgUiEvent, id?: number): string;
   /** What is still held back when the stream stops without a terminal event. */
   end(): string;
   /** Set when the run ended; nothing is written after it. */
@@ -212,8 +220,11 @@ interface Reframer {
 
 /**
  * Re-frame an AG-UI event stream (SSE, one event per `data:`) in this library's stream protocol:
- * `event: meta`, numbered `data:` frames of {@link AgentStreamEvent}, then `event: done` or
- * `event: error`. Exported for a backend that fetches the stream itself.
+ * `event: meta`, `data:` frames of {@link AgentStreamEvent}, then `event: done` or `event: error`.
+ * When the producer numbers its events with the run's own sequence (SSE `id:`, as `agUiAdapter()`
+ * does), that number is passed on as `id:`-only blocks — the cursor the transport re-attaches to
+ * the native stream with (`chat/:runId/stream?after=`). Exported for a backend that fetches the
+ * stream itself.
  */
 export function reframeAgUiStream(
   source: ReadableStream<Uint8Array>,
@@ -243,8 +254,10 @@ export function reframeAgUiStream(
           const block = buffer.slice(0, separator);
           buffer = buffer.slice(separator + 2);
           separator = buffer.indexOf('\n\n');
-          const data = block
-            .split('\n')
+          const lines = block.split('\n');
+          const idLine = lines.find((line) => line.startsWith('id:'));
+          const id = idLine === undefined ? Number.NaN : Number(idLine.slice(3).trim());
+          const data = lines
             .filter((line) => line.startsWith('data:'))
             .map((line) => line.slice(5).trimStart())
             .join('\n');
@@ -256,7 +269,10 @@ export function reframeAgUiStream(
             continue;
           }
           if (isRecord(event) && typeof event.type === 'string') {
-            out += reframer.push(event as AgUiEvent);
+            out += reframer.push(
+              event as AgUiEvent,
+              Number.isSafeInteger(id) && id > 0 ? id : undefined,
+            );
           }
           if (reframer.closed) break;
         }
@@ -277,7 +293,6 @@ export function reframeAgUiStream(
 
 function createReframer(threadId: string): Reframer {
   const activities = new Map<string, { activityType: string; content: Record<string, unknown> }>();
-  let seq = 0;
   let metaSent = false;
   const tools = new Map<string, { name: string; args: string; toolKind: 'read' | 'action' }>();
   // `STEP_FINISHED` is held until the next event: the producer's `agora.step-usage` right after it
@@ -287,20 +302,44 @@ function createReframer(threadId: string): Reframer {
   // the question sets themselves for one that belongs to no call).
   const carried = new Set<string>();
   const carriedRequests = new Set<string>();
+  /** A text decision on an action proposal (no run): written at the run's end, with its text. */
+  let decision: { threadId: unknown; proposalDecision: unknown; text: string } | undefined;
+  const encodeFrame = (streamEvent: AgentStreamEvent | Record<string, unknown>) =>
+    `data: ${JSON.stringify(streamEvent)}\n\n`;
+  const takeStep = (extra: Record<string, unknown> = {}): string => {
+    if (!stepFinished) return '';
+    stepFinished = false;
+    return encodeFrame({ kind: 'step-finish', ...extra });
+  };
+  /**
+   * The run's sequence number of the events being read, and the last one written out as a cursor.
+   * Several AG-UI events stand for one event of the run, so the cursor (an `id:`-only SSE block the
+   * transport records) moves only once every event of it was re-framed — re-attaching `?after=` it
+   * then neither skips nor repeats anything. Frames carry no `id:` of their own: a count of
+   * re-framed frames is not the run's sequence.
+   */
+  let current: number | undefined;
+  let written: number | undefined;
+  const cursor = (): string => {
+    if (current === undefined || current === written) return '';
+    written = current;
+    return `${takeStep()}id: ${current}\n\n`;
+  };
   const state: Reframer = {
     closed: false,
     end() {
-      if (state.closed || !stepFinished) return '';
-      stepFinished = false;
-      seq += 1;
-      return `id: ${seq}\ndata: ${JSON.stringify({ kind: 'step-finish' })}\n\n`;
+      if (state.closed) return '';
+      return `${takeStep()}${cursor()}`;
     },
-    push(event) {
+    push(event, id) {
       if (state.closed) return '';
       let out = '';
+      if (id !== undefined) {
+        if (current !== undefined && id > current) out += cursor();
+        current = id;
+      }
       const frame = (streamEvent: AgentStreamEvent | Record<string, unknown>) => {
-        seq += 1;
-        out += `id: ${seq}\ndata: ${JSON.stringify(streamEvent)}\n\n`;
+        out += encodeFrame(streamEvent);
       };
       const meta = (runId: unknown, thread: unknown) => {
         if (metaSent) return;
@@ -311,9 +350,7 @@ function createReframer(threadId: string): Reframer {
         })}\n\n`;
       };
       const flushStep = (extra: Record<string, unknown> = {}) => {
-        if (!stepFinished) return;
-        stepFinished = false;
-        frame({ kind: 'step-finish', ...extra });
+        out += takeStep(extra);
       };
       if (
         stepFinished &&
@@ -365,6 +402,12 @@ function createReframer(threadId: string): Reframer {
             }
           } else if (event.name === 'agora.approval-settled') {
             frame({ ...value, kind: 'approval-settled' });
+          } else if (event.name === 'agora.action-proposal-decision') {
+            decision = {
+              threadId: value.threadId,
+              proposalDecision: value.proposalDecision,
+              text: '',
+            };
           }
           return out;
         }
@@ -374,6 +417,9 @@ function createReframer(threadId: string): Reframer {
       switch (event.type) {
         case 'TEXT_MESSAGE_CONTENT':
         case 'TEXT_MESSAGE_CHUNK':
+          if (decision !== undefined && typeof event.delta === 'string') {
+            decision.text += event.delta;
+          }
           if (typeof event.delta === 'string' && event.delta.length > 0) {
             frame({ kind: 'text', text: event.delta });
           }
@@ -476,20 +522,32 @@ function createReframer(threadId: string): Reframer {
           break;
         case 'RUN_FINISHED': {
           const outcome = isRecord(event.outcome) ? event.outcome : undefined;
+          if (decision !== undefined) {
+            // What a native text decision answers with: a `data-proposal-decision` part.
+            frame({ kind: 'proposal-decision', ...decision });
+            decision = undefined;
+          }
           if (outcome?.type === 'cancelled') frame({ kind: 'cancelled' });
           if (outcome?.type === 'interrupt' && Array.isArray(outcome.interrupts)) {
             // What the stream already showed as an approval card or a question block is answered
             // there; the rest is the app's to render.
             const interrupts = outcome.interrupts.filter((interrupt) => !isCarried(interrupt));
-            if (interrupts.length > 0) {
-              frame({
-                kind: 'ui',
-                id: `ag-ui:interrupt:${String(event.runId ?? '')}`,
-                component: 'AgUiInterrupt',
-                props: { interrupts },
-              });
+            if (interrupts.length === 0) {
+              // Parked on what the chat shows: the run is not over. End without `done`, at the
+              // cursor, so the transport re-attaches on the native route and the rest of the run
+              // (after a decision over the `tool-call` routes) streams into the same message.
+              out += cursor();
+              state.closed = true;
+              break;
             }
+            frame({
+              kind: 'ui',
+              id: `ag-ui:interrupt:${String(event.runId ?? '')}`,
+              component: 'AgUiInterrupt',
+              props: { interrupts },
+            });
           }
+          out += cursor();
           state.closed = true;
           out += 'event: done\ndata: {}\n\n';
           break;

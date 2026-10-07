@@ -461,10 +461,13 @@ async function pipe(
   }
   raw.writeHead(200, headers);
   let terminal = false;
+  // Every event goes out with the run's own sequence number as its SSE `id:`, so a consumer can
+  // follow the rest of the run on `chat/:runId/stream?after=<id>` once this AG-UI run ends.
+  const cursor = { seq: 0 };
   try {
-    for await (const event of agUiEvents(service.subscribe(runId), options)) {
+    for await (const event of agUiEvents(service.subscribe(runId), { ...options, cursor })) {
       if (event.type === 'RUN_FINISHED' || event.type === 'RUN_ERROR') terminal = true;
-      raw.write(agUiSse(event));
+      raw.write(agUiSse(event, cursor.seq));
     }
   } catch {
     // The stream under the run broke. The status line is long gone, so the failure travels

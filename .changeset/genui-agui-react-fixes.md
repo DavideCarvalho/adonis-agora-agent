@@ -14,9 +14,13 @@ Fixes to generative UI, the React AG-UI client and `AuthActorResolver`:
   - Per-step usage, cost and model (`agora.step-usage`) reach `step-finish`.
   - A tool call keeps its kind (`read`/`action`).
   - An interrupt the stream already carried as an approval or a question set no longer also renders as `AgUiInterrupt`.
+  - After an approval or a question set the chat shows, the rest of the run streams into the same message. The AG-UI run ends on the interrupt, but the stream now ends without `done`, and the transport re-attaches to the parked run on `GET <path>/chat/:runId/stream?after=`. Before, a decision made through the native `tool-call` routes ran the rest of the run with nothing listening.
+  - The re-attach cursor is the run's own sequence number (from the producer's SSE `id:`). The re-framed frames no longer carry an `id:` that counts them, which matched nothing on the native route. A producer that writes no `id:` is not re-attached to.
+  - A text decision on a proposal (`agora.action-proposal-decision`) produces the same transient `data-proposal-decision` part as a native text decision.
   - `ChatStreamRequest.files` describes the send's staged uploads, and `content(body, files)` receives them.
 - **AG-UI producer (`agUiAdapter()`):**
   - Accepts a `file` handle with `provider: 'agora'` that names an upload it staged. The upload is resolved for the caller, as the native `attachments` refs are (`403` when it is not theirs).
   - Reads `forwardedProps.regenerate`.
   - `TOOL_CALL_START` carries `metadata['agora.toolKind']`, `agora.elicitation` carries the call `id`, and `agora.step-usage` carries the step's `model`.
+  - Each event of the run carries an SSE `id:`: the run's own sequence number, as on the native stream, so `chat/:runId/stream?after=<id>` continues where the AG-UI run ended. `agUiSse(event, id?)` writes it, and `agUiEvents` keeps it in a new `cursor` option.
 - **`AuthActorResolver`:** the agent routes run no auth middleware, so `ctx.auth.user` was never set and every request was refused with `401`. When no guard has tried the request yet, the resolver now calls `ctx.auth.check()` itself; with the new `guards` option it calls `checkUsing(guards)` instead. Neither throws for an anonymous request, and the resolver still answers `401` when there is no user. `resolve()` is now async.
