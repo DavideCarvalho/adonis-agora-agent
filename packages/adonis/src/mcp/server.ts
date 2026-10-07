@@ -10,6 +10,7 @@ import type { AiToolCtx } from '../spi/tool.js';
 import { ToolNotFoundError, ToolRegistry } from '../tool-registry.js';
 import { createNoopEmitUi } from '../tool-ui.js';
 import type { Actor } from '../types.js';
+import type { McpToolDescriber } from './define_config.js';
 
 /**
  * Runtime context a MCP handler synthesizes for {@link ToolRegistry.invoke}: the acting {@link Actor}
@@ -38,6 +39,8 @@ export interface CreateMcpServerOptions extends McpToolContextOptions {
   version: string;
   /** Instructions for the client's model, sent in the initialize result. */
   instructions?: string;
+  /** Title and MCP annotations per tool; default `readOnlyHint` from the tool's kind. */
+  describeTool?: McpToolDescriber;
   /** The agent tool registry to expose. */
   registry: ToolRegistry;
   /** Tool authorization gate (role re-check happens per call, defense-in-depth). */
@@ -173,11 +176,23 @@ export function createMcpServer(options: CreateMcpServerOptions): Server {
       isExposable(definition.kind, actions),
     );
     return {
-      tools: defs.map((definition) => ({
-        name: definition.name,
-        description: definition.description,
-        inputSchema: toJsonSchema(definition.inputSchema),
-      })),
+      tools: defs.map((definition) => {
+        const described = options.describeTool?.({
+          name: definition.name,
+          kind: definition.kind,
+          description: definition.description,
+        });
+        return {
+          name: definition.name,
+          ...(described?.title !== undefined ? { title: described.title } : {}),
+          description: definition.description,
+          inputSchema: toJsonSchema(definition.inputSchema),
+          // Clients run a read without asking and confirm a write: say which is which.
+          annotations: described?.annotations ?? {
+            readOnlyHint: definition.kind === 'read',
+          },
+        };
+      }),
     };
   });
 

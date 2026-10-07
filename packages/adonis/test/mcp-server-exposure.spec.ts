@@ -241,3 +241,45 @@ describe('server instructions', () => {
     expect(client.getInstructions()).toBe('Start with list_profiles.');
   });
 });
+
+describe('tool annotations in tools/list', () => {
+  async function list(describeTool?: Parameters<typeof createMcpServer>[0]['describeTool']) {
+    const server = createMcpServer({
+      name: 'test',
+      version: '0.0.0',
+      registry: buildRegistry(),
+      policy: new DefaultRolesPolicy(),
+      actorFromAuth: () => ACTOR,
+      actions: 'execute',
+      ...(describeTool ? { describeTool } : {}),
+    });
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+    return (await client.listTools()).tools;
+  }
+
+  it('says a read is read-only and an action is not, by default', async () => {
+    const tools = await list();
+    expect(tools.find((t) => t.name === 'search_docs')?.annotations).toEqual({
+      readOnlyHint: true,
+    });
+    expect(tools.find((t) => t.name === 'purge_cache')?.annotations).toEqual({
+      readOnlyHint: false,
+    });
+  });
+
+  it('describeTool sets the title and the annotations', async () => {
+    const tools = await list((tool) =>
+      tool.name === 'purge_cache'
+        ? { title: 'Purge the cache', annotations: { readOnlyHint: false, destructiveHint: true } }
+        : undefined,
+    );
+    const purge = tools.find((t) => t.name === 'purge_cache');
+    expect(purge?.title).toBe('Purge the cache');
+    expect(purge?.annotations).toEqual({ readOnlyHint: false, destructiveHint: true });
+    expect(tools.find((t) => t.name === 'search_docs')?.annotations).toEqual({
+      readOnlyHint: true,
+    });
+  });
+});

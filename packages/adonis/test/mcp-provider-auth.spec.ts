@@ -361,3 +361,97 @@ describe('mcp_provider: actions', () => {
     expect(await listTools(booted)).not.toContain('log_dose');
   });
 });
+
+describe('mcp_provider: more than one endpoint', () => {
+  const REGISTRY = Symbol.for('@adonis-agora/oauth:resources');
+  const registered = () => (globalThis as Record<symbol, unknown>)[REGISTRY] as unknown[];
+  const rpc = (url: string, token: string, body: unknown) =>
+    fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+  const toolsOf = async (url: string, token: string) =>
+    (
+      await (
+        await rpc(url, token, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} })
+      ).json()
+    ).result.tools.map((tool: { name: string }) => tool.name);
+
+  it('each serves its own registry and auth, has its own metadata, and registers its own URL', async () => {
+    const { ToolRegistry } = await import('../src/tool-registry.js');
+    const { z } = await import('zod');
+    const team = new ToolRegistry();
+    team.register(
+      { name: 'team_report', kind: 'read', description: 't', inputSchema: z.object({}) } as never,
+      { execute: async () => ({}) },
+    );
+    const family = new ToolRegistry();
+    family.register(
+      {
+        name: 'family_spending',
+        kind: 'read',
+        description: 'f',
+        inputSchema: z.object({}),
+      } as never,
+      { execute: async () => ({}) },
+    );
+    const familyAuth: McpAuth = {
+      oauth: async () => oauthMeta,
+      async verify(token) {
+        if (token !== 'family') throw new McpAuthError('not a family token');
+        return {
+          token,
+          clientId: 'c',
+          scopes: [],
+          extra: { actor: { id: 'u2', roles: ['ADMIN'] } },
+        };
+      },
+    };
+    booted = await bootApp(
+      {
+        auth: oauthAuth,
+        stateless: true,
+        publicUrl: 'https://acme.example.com',
+        endpoints: [
+          {
+            path: 'mcp/family',
+            name: 'Acme (family)',
+            auth: familyAuth,
+            registry: () => family,
+            metadataRouteName: 'mcp.family.oauth_protected_resource',
+          },
+        ],
+      },
+      { bodyParser: true, registry: team },
+    );
+
+    expect(await toolsOf(`${booted.url}/mcp`, 'good')).toEqual(['team_report']);
+    expect(await toolsOf(`${booted.url}/mcp/family`, 'family')).toEqual(['family_spending']);
+    // a token for one is not a token for the other
+    expect((await rpc(`${booted.url}/mcp/family`, 'good', {})).status).toBe(401);
+
+    const meta = await (
+      await fetch(`${booted.url}/.well-known/oauth-protected-resource/mcp/family`)
+    ).json();
+    expect(meta.resource).toBe('https://acme.example.com/mcp/family');
+    expect(registered()).toContainEqual({ url: 'https://acme.example.com/mcp' });
+    expect(registered()).toContainEqual({ url: 'https://acme.example.com/mcp/family' });
+  });
+
+  it('stateless GET/DELETE ask for the login first (401), then say 405', async () => {
+    booted = await bootApp({ auth: oauthAuth, stateless: true }, { bodyParser: true });
+    const anonymous = await fetch(`${booted.url}/mcp`, { method: 'GET' });
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.headers.get('www-authenticate')).toContain('resource_metadata');
+    const authed = await fetch(`${booted.url}/mcp`, {
+      method: 'GET',
+      headers: { authorization: 'Bearer good' },
+    });
+    expect(authed.status).toBe(405);
+  });
+});

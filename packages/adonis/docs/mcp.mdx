@@ -59,7 +59,7 @@ Point an MCP client at `http://localhost:3333/mcp`. It will discover the OAuth f
 
 ## Configuration
 
-`McpConfig` has fourteen keys — two required, twelve optional.
+`McpConfig` has sixteen keys — two required, fourteen optional.
 
 | Key | Type | Default | Purpose |
 | --- | --- | --- | --- |
@@ -76,11 +76,47 @@ Point an MCP client at `http://localhost:3333/mcp`. It will discover the OAuth f
 | `allowedTools` | `string[]` | — | Restrict which tools are listed and callable. |
 | `actions` | `'refuse' \| 'execute'` | `'refuse'` | `action` tools over MCP. `'refuse'`: neither listed nor callable (the loop's approval gate cannot be honoured). `'execute'`: they run when called — the MCP client's own confirmation stands in for it. |
 | `stateless` | `boolean` | `false` | No sessions: every `POST` is answered by its own transport; `GET`/`DELETE` are `405`. Use it with more than one instance behind a load balancer. |
+| `describeTool` | `(tool) => { title?, annotations? }` | `readOnlyHint` from the kind | Title and MCP annotations per tool in `tools/list` — clients run a read without asking and confirm a write. |
+| `endpoints` | `McpEndpointConfig[]` | — | More MCP servers in the same app (see [More than one endpoint](#more-than-one-endpoint)). |
 | `middleware` | route middleware | — | Applied to the MCP endpoint (not the metadata route), before the bearer check — e.g. a rate limiter keyed on the `Authorization` header. |
 
 <Callout type="warn" title="Fail-closed: no auth and no actor means 401">
 With neither `auth` nor `actor` configured, **every** request to `/mcp` is rejected with `401 {"error":"unauthorized: no auth configured and no fallback actor"}`. That is the default an empty `config/mcp.ts` produces, and it is deliberate: an MCP endpoint is a remote tool-execution surface, so it never opens itself.
 </Callout>
+
+## More than one endpoint
+
+Each entry of `endpoints` is an MCP server of its own — its path, tools, auth, sessions and RFC 9728
+metadata — and a protected resource of its own: a token issued for one is refused by the other. It
+inherits the top-level settings and overrides what it declares.
+
+```ts title="config/mcp.ts"
+export default defineMcpConfig({
+  name: 'Acme',
+  version: '1.0.0',
+  path: 'mcp',
+  auth: teamAuth(),
+  stateless: true,
+  endpoints: [
+    {
+      path: 'mcp/family',
+      name: 'Acme (family)',
+      instructions: 'The family of the signed-in person only.',
+      auth: familyAuth(),
+      registry: ({ app }) => app.container.make(FamilyToolRegistry),
+    },
+  ],
+})
+```
+
+| Key | Default | |
+| --- | --- | --- |
+| `path` | — | Route prefix. |
+| `name`, `instructions` | top-level | Handshake. |
+| `auth` | top-level | A different audience usually means a different auth. |
+| `registry` | the agent's `ToolRegistry` | `(ctx) => ToolRegistry` — e.g. a registry bound in the container. |
+| `allowedTools`, `actions`, `describeTool` | top-level | |
+| `metadataRouteName` | `mcp.<segments>.oauth_protected_resource` | Name of its metadata route (the top-level one is `mcp.oauth_protected_resource`). |
 
 ## Authentication
 
