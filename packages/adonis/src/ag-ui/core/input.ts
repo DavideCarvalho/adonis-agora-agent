@@ -67,10 +67,22 @@ export interface InlineMedia {
   filename: string;
 }
 
+/**
+ * The `provider` of a `file` source naming an upload this agent already staged
+ * (`POST <path>/attachments`): `{ type: 'file', provider: 'agora', value: <mediaId> }`.
+ */
+export const AG_UI_STAGED_MEDIA_PROVIDER = 'agora';
+
 export interface UserTurn {
   /** The text of the message the run answers. */
   text: string;
   media: InlineMedia[];
+  /**
+   * Uploads this agent staged itself, named by `mediaId` (a `file` source whose `provider` is
+   * {@link AG_UI_STAGED_MEDIA_PROVIDER}). Resolved for the caller like the native `attachments`
+   * refs: one that is not the caller's refuses the send.
+   */
+  staged: { mediaId: string }[];
   /** Why a part was not used, one sentence each — reported, never fatal. */
   dropped: string[];
 }
@@ -102,8 +114,10 @@ function filenameOf(part: AgUiContentPart, index: number, contentType: string): 
  * agent resumes from is what it stored.
  *
  * Multimodal parts: text parts are the message's text; a media part carried inline (`data`) becomes
- * an attachment. A part by `url` or by provider `file` handle is dropped and said so — this producer
- * hands the model only bytes it staged itself, never an address a caller supplied.
+ * an attachment, and so does a `file` handle naming an upload this agent staged
+ * ({@link AG_UI_STAGED_MEDIA_PROVIDER}). A part by `url` or by any other provider's `file` handle
+ * is dropped and said so — this producer hands the model only bytes it staged itself, never an
+ * address a caller supplied.
  */
 export function readUserTurn(messages: readonly AgUiMessage[]): UserTurn | null {
   let last: AgUiMessage | undefined;
@@ -114,11 +128,14 @@ export function readUserTurn(messages: readonly AgUiMessage[]): UserTurn | null 
     }
   }
   if (last === undefined) return null;
-  if (typeof last.content === 'string') return { text: last.content, media: [], dropped: [] };
-  if (!Array.isArray(last.content)) return { text: '', media: [], dropped: [] };
+  if (typeof last.content === 'string') {
+    return { text: last.content, media: [], staged: [], dropped: [] };
+  }
+  if (!Array.isArray(last.content)) return { text: '', media: [], staged: [], dropped: [] };
 
   const texts: string[] = [];
   const media: InlineMedia[] = [];
+  const staged: { mediaId: string }[] = [];
   const dropped: string[] = [];
   last.content.forEach((part, index) => {
     if (!isRecord(part)) return;
@@ -135,6 +152,16 @@ export function readUserTurn(messages: readonly AgUiMessage[]): UserTurn | null 
       return;
     }
     const source = part.source;
+    if (
+      isRecord(source) &&
+      source.type === 'file' &&
+      source.provider === AG_UI_STAGED_MEDIA_PROVIDER &&
+      typeof source.value === 'string' &&
+      source.value.length > 0
+    ) {
+      staged.push({ mediaId: source.value });
+      return;
+    }
     if (!isRecord(source) || source.type !== 'data') {
       const how = isRecord(source) && typeof source.type === 'string' ? source.type : 'unknown';
       dropped.push(
@@ -161,7 +188,7 @@ export function readUserTurn(messages: readonly AgUiMessage[]): UserTurn | null 
       filename: filenameOf(part as AgUiContentPart, index, contentType),
     });
   });
-  return { text: texts.join('\n'), media, dropped };
+  return { text: texts.join('\n'), media, staged, dropped };
 }
 
 /** `context` entries as the library's page context carries them, or `undefined` for none. */
@@ -178,10 +205,13 @@ export function readContext(
 
 /**
  * What the library reads from `forwardedProps` — the consumer's channel for what AG-UI does not
- * model: which agent, which model, which persona, and the page context the tools see.
+ * model: which agent, which model, which persona, the page context the tools see, and whether the
+ * run regenerates the last answer.
  */
 export interface ForwardedOptions {
   uiCapabilities?: UiCapabilities;
+  /** Re-answer the thread's last user message instead of appending this one (`regenerate: true`). */
+  regenerate?: boolean;
   agent?: string;
   model?: string;
   persona?: string;
@@ -204,6 +234,7 @@ export function readForwardedProps(forwarded: unknown): ForwardedOptions {
     ...(agent !== undefined ? { agent } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(persona !== undefined ? { persona } : {}),
+    ...(forwarded.regenerate === true ? { regenerate: true } : {}),
     ...(isRecord(forwarded.pageContext) ? { pageContext: forwarded.pageContext } : {}),
   };
 }

@@ -88,6 +88,24 @@ describe('genuiTools per-component', () => {
     });
   });
 
+  it('makes no tool for a layout component (one that takes children): it could only push an empty box', () => {
+    const names = tools.map((tool) => tool.spec.name);
+    expect(names).not.toContain('ui__show_stack');
+    expect(names).not.toContain('ui__show_card');
+    expect(names).toContain('ui__show_heading');
+  });
+
+  it('leaves layout components out of the generic show tool too', async () => {
+    const [show] = genuiTools(catalog, { mode: 'tree', showTool: true }).slice(1);
+    expect(show?.spec.description).not.toContain('- Stack:');
+    expect(show?.spec.description).toContain('- Heading:');
+    const result = await show?.spec.inputSchema['~standard'].validate({
+      component: 'Stack',
+      props: {},
+    });
+    expect(result?.issues?.[0]?.message).toMatch(/unknown component "Stack"/);
+  });
+
   it('stamps terminal and honours a custom prefix', () => {
     const [first] = genuiTools(catalog, { terminal: true, namePrefix: 'show_' });
     expect(first?.spec).toMatchObject({ name: 'show_data_table', terminal: true });

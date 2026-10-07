@@ -147,7 +147,16 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
         if (owner !== null) {
           if (!(await host.assertOwner(ctx, actor, owner, 'thread'))) return;
         }
-        if (owner !== null && turn.media.length === 0) {
+        // A regenerate re-answers the thread's last user message: the message restated here (and
+        // anything attached to it) is not a new turn.
+        const regenerate = forwarded.regenerate === true;
+        if (regenerate && owner === null) {
+          return ctx.response.badRequest({
+            message: 'regenerate requires an existing thread',
+            code: 'thread_required',
+          });
+        }
+        if (owner !== null && !regenerate && turn.media.length === 0 && turn.staged.length === 0) {
           try {
             const decision = await service.handleTextDecision(actor, input.threadId, turn.text);
             if ('proposalDecision' in decision) {
@@ -168,7 +177,20 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
           }
         }
         const refs: { mediaId: string }[] = [];
-        for (const media of turn.media) {
+        // Uploads this agent already staged: resolved for this actor by the send itself, which
+        // refuses one that is not theirs (as `chat` refuses its `attachments` refs).
+        for (const ref of regenerate ? [] : turn.staged) {
+          if (staging === undefined) {
+            warnings.push(
+              `The upload ${ref.mediaId} was not used: attachments are not enabled on this agent.`,
+            );
+          } else if (refs.length >= staging.maxPerMessage) {
+            warnings.push(
+              `The upload ${ref.mediaId} was not used: a message carries at most ${staging.maxPerMessage} attachments.`,
+            );
+          } else refs.push(ref);
+        }
+        for (const media of regenerate ? [] : turn.media) {
           const label = `The ${media.kind} "${media.filename}" was not used`;
           if (staging === undefined) {
             warnings.push(`${label}: attachments are not enabled on this agent.`);
@@ -195,7 +217,7 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
             }
           }
         }
-        if (turn.text.trim().length === 0 && refs.length === 0) {
+        if (!regenerate && turn.text.trim().length === 0 && refs.length === 0) {
           return ctx.response.badRequest({
             message: 'the user message to answer is empty',
             code: 'no_user_message',
@@ -213,7 +235,9 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
         try {
           started = await service.chat({
             actor,
-            message: turn.text,
+            // A regenerate answers the stored user message; whatever this one says is ignored.
+            message: regenerate ? '' : turn.text,
+            ...(regenerate ? { regenerate: true } : {}),
             ...(owner !== null ? { threadId: input.threadId } : { newThreadId: input.threadId }),
             ...(forwarded.agent !== undefined ? { agentName: forwarded.agent } : {}),
             ...(forwarded.model !== undefined ? { model: forwarded.model } : {}),
@@ -437,10 +461,13 @@ async function pipe(
   }
   raw.writeHead(200, headers);
   let terminal = false;
+  // Every event goes out with the run's own sequence number as its SSE `id:`, so a consumer can
+  // follow the rest of the run on `chat/:runId/stream?after=<id>` once this AG-UI run ends.
+  const cursor = { seq: 0 };
   try {
-    for await (const event of agUiEvents(service.subscribe(runId), options)) {
+    for await (const event of agUiEvents(service.subscribe(runId), { ...options, cursor })) {
       if (event.type === 'RUN_FINISHED' || event.type === 'RUN_ERROR') terminal = true;
-      raw.write(agUiSse(event));
+      raw.write(agUiSse(event, cursor.seq));
     }
   } catch {
     // The stream under the run broke. The status line is long gone, so the failure travels

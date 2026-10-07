@@ -178,6 +178,47 @@ describe('POST /agent/ag-ui', () => {
     expect(usage).toHaveLength(1);
   });
 
+  it("numbers events with the run's own sequence, so the native stream continues where it ended", async () => {
+    booted = await bootApp(
+      (_args, turn) =>
+        turn === 0
+          ? { text: '', toolCall: { name: 'refund', input: { id: 7 } } }
+          : { text: 'Done.' },
+      { tools: [refund] },
+    );
+    const response = await post(
+      booted.url,
+      input({ messages: [{ id: 'm1', role: 'user', content: 'refund 7' }] }),
+    );
+    const runId = response.headers.get('x-agent-run-id') as string;
+    const raw = await response.text();
+    const ids = [...raw.matchAll(/^id: (\d+)$/gm)].map((match) => Number(match[1]));
+    expect(ids.length).toBeGreaterThan(0);
+    // Non-decreasing: several AG-UI events can stand for one event of the run.
+    expect(ids).toEqual([...ids].sort((a, b) => a - b));
+    const last = ids.at(-1) as number;
+
+    // Re-attached natively from the AG-UI run's last id (the run is still parked), then decided
+    // over the native route: the rest of the run streams on the re-attached connection.
+    const rest = await fetch(`${booted.url}/agent/chat/${runId}/stream?after=${last}`, {
+      headers: { 'x-actor-id': 'u1' },
+    });
+    expect(rest.status).toBe(200);
+    const approved = await fetch(`${booted.url}/agent/tool-call/approve`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-actor-id': 'u1' },
+      body: JSON.stringify({ toolCallId: 'call-0-refund' }),
+    });
+    expect(approved.status).toBeLessThan(300);
+    const text = await rest.text();
+    const restIds = [...text.matchAll(/^id: (\d+)$/gm)].map((match) => Number(match[1]));
+    expect(restIds[0]).toBe(last + 1);
+    // Nothing the AG-UI run delivered comes again; what the run did after the decision does.
+    expect(text).not.toContain('"kind":"approval-requested"');
+    expect(text).toContain('"kind":"tool-output"');
+    expect(text).toContain('Done.');
+  });
+
   it('a resume that declines feeds the refusal back to the model', async () => {
     const outputs: unknown[] = [];
     booted = await bootApp(
@@ -298,6 +339,53 @@ describe('POST /agent/ag-ui', () => {
     );
     expect(warnings).toHaveLength(1);
     expect(JSON.stringify(warnings[0])).toContain('url source');
+  });
+
+  it("attaches an upload it staged, named by file handle, and refuses one that is not the caller's", async () => {
+    const attachments: unknown[] = [];
+    booted = await bootApp(
+      (args) => {
+        attachments.push(args.messages.at(-1)?.attachments);
+        return { text: 'A cat.' };
+      },
+      { attachments: attachmentStores.memory() },
+    );
+    const form = new FormData();
+    form.append('file', new File(['png-bytes'], 'cat.png', { type: 'image/png' }));
+    const upload = await fetch(`${booted.url}/agent/attachments`, {
+      method: 'POST',
+      headers: { 'x-actor-id': 'u1' },
+      body: form,
+    });
+    const { mediaId } = (await upload.json()) as { mediaId: string };
+    const body = (threadId: string) =>
+      input({
+        threadId,
+        messages: [
+          {
+            id: 'm1',
+            role: 'user',
+            content: [
+              { type: 'text', text: 'What is this?' },
+              {
+                type: 'image',
+                source: { type: 'file', provider: 'agora', value: mediaId, mimeType: 'image/png' },
+              },
+            ],
+          },
+        ],
+      });
+    assertInputSchema(body('t-1'));
+    const response = await post(booted.url, body('t-1'));
+    expect(response.status).toBe(200);
+    const events = (await readSse(response)).map((frame) => frame.data) as unknown as AgUiEvent[];
+    await assertConforms(events);
+    expect(events.some((event) => event.type === 'CUSTOM' && event.name === 'agora.warning')).toBe(
+      false,
+    );
+    expect(attachments[0]).toMatchObject([{ mediaId, contentType: 'image/png', name: 'cat.png' }]);
+
+    expect((await post(booted.url, body('t-2'), 'u2')).status).toBe(403);
   });
 
   it('refuses malformed input before any run starts', async () => {

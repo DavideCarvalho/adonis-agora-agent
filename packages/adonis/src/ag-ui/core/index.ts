@@ -6,6 +6,7 @@
 
 export { AgUiEncoder, type AgUiEncoderOptions } from './encoder.js';
 export {
+  AG_UI_STAGED_MEDIA_PROVIDER,
   type ForwardedOptions,
   type InlineMedia,
   parseRunInput,
@@ -21,5 +22,12 @@ export {
 } from './input.js';
 export { decodeInterruptId, encodeInterruptId, type InterruptAddress } from './interrupt-id.js';
 export { actionProposalDecisionEvents } from './proposal-decision.js';
-export { type AgUiStreamOptions, agUiEvents, agUiSse } from './stream.js';
+export {
+  type AgUiCursor,
+  type AgUiStreamOptions,
+  agUiEvents,
+  agUiSse,
+  frameSeq,
+  withFrameSeq,
+} from './stream.js';
 export * from './types.js';

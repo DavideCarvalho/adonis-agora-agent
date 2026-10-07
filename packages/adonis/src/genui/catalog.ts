@@ -28,12 +28,15 @@ export interface ComponentDefinition<P = Record<string, unknown>> {
   outputProps?: PropsSchema;
   /**
    * The component takes nested elements (a layout: `Stack`, `Card`). Only meaningful in tree mode,
-   * where a node's `children` are validated against the catalog too.
+   * where a node's `children` are validated against the catalog too. Outside tree mode such a
+   * component has nothing to hold, so it gets no `ui__show_*` tool and the generic show tool does
+   * not offer it.
    */
   children?: boolean;
   /**
    * Plain text / Slack mrkdwn rendering of these props, for a channel that cannot draw the
-   * component. Absent → {@link componentToText} prints the props as JSON.
+   * component. Absent → {@link componentToText} prints the props as JSON. An empty string renders
+   * nothing (a layout with nothing of its own to say); in a tree its children still render.
    */
   fallbackText?(props: P): string;
   /**
@@ -171,6 +174,15 @@ function buildCatalog(
       return buildCatalog(next, validator);
     },
   };
+}
+
+/**
+ * The model components that stand on their own: every one but a layout (`children: true`). Outside
+ * tree mode nothing can be nested, so a layout could only be pushed empty — it gets no
+ * `ui__show_*` tool and is not offered by the generic show tool.
+ */
+export function standaloneComponents(catalog: Catalog): ComponentDefinition<unknown>[] {
+  return catalog.modelComponents().filter((component) => component.children !== true);
 }
 
 /** `DataTable` → `data_table`, `KPICards` → `kpi_cards`. */

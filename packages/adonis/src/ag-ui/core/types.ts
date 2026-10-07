@@ -153,9 +153,9 @@ export const AG_UI_CUSTOM = {
   /** The approval request as the native protocol carries it, for a consumer that renders it live. */
   approvalRequested: 'agora.approval-requested',
   approvalSettled: 'agora.approval-settled',
-  /** The whole question set of an elicitation (`ElicitationRequest`). */
+  /** `{ id, runId, request }` — the whole question set of an elicitation (`ElicitationRequest`). */
   elicitation: 'agora.elicitation',
-  /** `{ usage, costUsd, reasoningMs }` of one model step. */
+  /** `{ usage, costUsd, reasoningMs, model }` of one model step, right after its `STEP_FINISHED`. */
   stepUsage: 'agora.step-usage',
   /** `{ message }` — input material this producer could not use and dropped. */
   warning: 'agora.warning',

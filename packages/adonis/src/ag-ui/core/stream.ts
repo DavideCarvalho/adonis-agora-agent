@@ -12,6 +12,35 @@ export interface AgUiStreamOptions extends AgUiEncoderOptions {
   quietMs?: number;
   /** Events to write right after `RUN_STARTED` (warnings about input that was dropped). */
   preamble?: AgUiEvent[];
+  /**
+   * Kept at the run's own sequence number (the native stream's SSE `id:`) of the library frame
+   * whose events are being yielded — `0` before the first. Write it as each event's SSE `id:`
+   * ({@link agUiSse}) and a consumer can re-attach to the native stream with `?after=` exactly where
+   * this AG-UI run left off. Read from {@link withFrameSeq}; a frame not tagged leaves it as it is.
+   */
+  cursor?: AgUiCursor;
+}
+
+/** See {@link AgUiStreamOptions.cursor}. */
+export interface AgUiCursor {
+  seq: number;
+}
+
+/** The run's own sequence number of each source frame tagged by {@link withFrameSeq}. */
+const frameSeqs = new WeakMap<object, number>();
+
+/**
+ * Tag a source frame with the run's own sequence number through it — the SSE `id:` of the last
+ * event the native stream writes for it — for {@link AgUiStreamOptions.cursor}.
+ */
+export function withFrameSeq<T extends AgUiSourceFrame>(frame: T, seq: number): T {
+  frameSeqs.set(frame, seq);
+  return frame;
+}
+
+/** The run's own sequence number of a frame tagged by {@link withFrameSeq}, if any. */
+export function frameSeq(frame: AgUiSourceFrame): number | undefined {
+  return frameSeqs.get(frame);
 }
 
 const DEFAULT_QUIET_MS = 750;
@@ -59,6 +88,9 @@ export async function* agUiEvents(
         ended = true;
         break;
       }
+      if (options.cursor !== undefined) {
+        options.cursor.seq = frameSeq(next.value) ?? options.cursor.seq;
+      }
       yield* encoder.encode(next.value);
     }
   } finally {
@@ -84,7 +116,12 @@ function raceQuiet(upcoming: Promise<IteratorResult<AgUiSourceFrame>>, ms: numbe
   });
 }
 
-/** One AG-UI event as an SSE frame: a single `data:` line, LF-terminated, as the binding pins. */
-export function agUiSse(event: AgUiEvent): string {
-  return `data: ${JSON.stringify(event)}\n\n`;
+/**
+ * One AG-UI event as an SSE frame: a single `data:` line, LF-terminated, as the binding pins. With a
+ * positive `id`, an SSE `id:` line first — the run's sequence number ({@link AgUiStreamOptions.cursor}),
+ * which AG-UI clients ignore and this package's React client re-attaches with.
+ */
+export function agUiSse(event: AgUiEvent, id?: number): string {
+  const head = id !== undefined && id > 0 ? `id: ${id}\n` : '';
+  return `${head}data: ${JSON.stringify(event)}\n\n`;
 }

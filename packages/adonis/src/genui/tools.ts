@@ -3,7 +3,12 @@ import type { AiToolCtx, ToolDescribeScope, ToolDescription, ToolHandler } from 
 import type { ToolPresentation } from '../tool-presentation.js';
 import type { Actor, ToolSpec } from '../types.js';
 import { negotiateCatalog } from './capabilities.js';
-import { type Catalog, type ComponentDefinition, toolNameFor } from './catalog.js';
+import {
+  type Catalog,
+  type ComponentDefinition,
+  standaloneComponents,
+  toolNameFor,
+} from './catalog.js';
 import {
   formatIssues,
   type GenuiIssue,
@@ -50,7 +55,8 @@ export type ResolveGenuiCatalog = (scope: GenuiCatalogScope) => Catalog | Promis
 export interface GenuiToolsOptions {
   /**
    * `per-component` (default): one tool per model-facing component, `ui__show_<snake>`, whose input
-   * IS the component's props. `tree`: a single tool whose input is a nested
+   * IS the component's props. Layouts (`children: true`) get none: they can only be composed in a
+   * tree. `tree`: a single tool whose input is a nested
    * `{ type, props, children }` tree composed from the catalog (json-render's nested shape).
    */
   mode?: 'per-component' | 'tree';
@@ -101,7 +107,9 @@ export function genuiTools(catalog: Catalog, options: GenuiToolsOptions = {}): G
   const tools =
     options.mode === 'tree'
       ? [treeTool(catalog, options)]
-      : catalog.modelComponents().map((component) => componentTool(catalog, component, options));
+      : standaloneComponents(catalog).map((component) =>
+          componentTool(catalog, component, options),
+        );
   if (options.showTool !== undefined && options.showTool !== false) {
     tools.push(showTool(catalog, options));
   }
@@ -280,7 +288,7 @@ export function showToolJsonSchema(catalog: Catalog): JsonSchema {
     properties: {
       component: {
         type: 'string',
-        enum: catalog.modelComponents().map((component) => component.name),
+        enum: standaloneComponents(catalog).map((component) => component.name),
         description: 'Component name from the catalog',
       },
       props: {
@@ -308,9 +316,8 @@ async function validateShow(
     return { ok: false, issues: [{ path: ['component'], message: 'must be a component name' }] };
   }
   const definition = modelComponent(catalog, component);
-  if (definition === undefined) {
-    const allowed = catalog
-      .modelComponents()
+  if (definition === undefined || definition.children === true) {
+    const allowed = standaloneComponents(catalog)
       .map((each) => each.name)
       .join(', ');
     return {
@@ -364,7 +371,7 @@ function showTool(catalog: Catalog, options: GenuiToolsOptions): GenuiTool {
       scope.uiCapabilities,
     );
     return {
-      available: resolved.modelComponents().length > 0,
+      available: standaloneComponents(resolved).length > 0,
       description: describeFor(resolved),
       inputSchema: permissiveSchema(showToolJsonSchema(resolved)),
     };

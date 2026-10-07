@@ -14,7 +14,9 @@ export default defineConfig({
 })
 ```
 
-That mounts `POST <path>/ag-ui`. The body is a `RunAgentInput`; the answer is `text/event-stream`, one AG-UI event per `data:` line, from `RUN_STARTED` to `RUN_FINISHED` or `RUN_ERROR`. The route resolves the actor and checks ownership exactly as `chat` does.
+That mounts `POST <path>/ag-ui`. The body is a `RunAgentInput`; the answer is `text/event-stream`, one AG-UI event per `data:` line, from `RUN_STARTED` to `RUN_FINISHED` or `RUN_ERROR`. The route resolves the actor and checks ownership exactly as `chat` does. A send on a thread whose turn is still running is refused with `409 { code: 'run_active' }` — this route does not queue.
+
+Each event that stands for something the run did also carries an SSE `id:` line: the run's own sequence number, the same one the [native stream](/docs/agent/streaming-and-http#re-attaching-to-a-run) numbers its events with (several AG-UI events can share one). AG-UI clients ignore it; a client that wants the rest of a run this AG-UI run left parked re-attaches with `GET <path>/chat/:runId/stream?after=<last id>` (the run id is in `agora.run`) and misses nothing, repeats nothing.
 
 ```ts
 import { HttpAgent } from '@ag-ui/client'
@@ -33,6 +35,8 @@ import { AgentProvider, agUiBackend, useAgentChat } from '@adonis-agora/agent/re
 
 <AgentProvider backend={agUiBackend()}><Chat /></AgentProvider>
 ```
+
+When the run stops on an approval or a question set the chat already shows, the AG-UI run ends (see [Interrupts and resume](#interrupts-and-resume)) but the chat does not: the message stays open, the client re-attaches to the parked run on the native stream route at the last `id:` it got, and once the person decides — the approval card and the question block answer through the native `tool-call` routes — the rest of the run streams into the same message. An interrupt nothing showed (another producer's) still becomes a `ui` part named `AgUiInterrupt` for the app to render, and a producer that writes no `id:` lines is not re-attached to. A [text decision](/docs/agent/independent-approvals#text-decisions) on a proposal (`agora.action-proposal-decision`) yields the same transient `data-proposal-decision` part a native one does.
 
 `agUiBackend({ path })` follows a non-default `path`; `url` points it at another producer; `agUi` takes the consumer's own options (`forwardedProps`, `content` for sending a file as AG-UI content parts). Agora owns the consumer — `agUiChatStream`, `reframeAgUiStream`, and the `AgUiActivity` / `AgUiInterrupt` UI parts — inside this package. `agUiChatStream` adds the Adonis CSRF header, read per call. No Aviary package is required.
 

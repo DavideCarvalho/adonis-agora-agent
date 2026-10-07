@@ -1,5 +1,6 @@
 import type { StreamFrame } from '../spi/token-stream-sink.js';
-import type { AgUiSourceFrame } from './core/index.js';
+import { frameToEvents } from '../sse.js';
+import { type AgUiSourceFrame, withFrameSeq } from './core/index.js';
 
 /**
  * One frame of this package's sink as the frame the local AG-UI encoder reads. The typed `approval` / `elicitation` frames carry what the
@@ -55,17 +56,24 @@ export function toAgUiFrame(frame: StreamFrame): AgUiSourceFrame {
  * generator: the AG-UI driver lets go of a parked stream while a read is still pending, and a
  * generator would queue that `return()` behind the read that never comes — the sink's subscription
  * has to be released at once.
+ *
+ * Each frame is tagged ({@link withFrameSeq}) with the run's own sequence number through it — the
+ * SSE `id:` the native stream (`chat/:runId/stream`) gives its last event — so the AG-UI route can
+ * number its events the way a native re-attach (`?after=`) counts.
  */
 export function agUiFrames(frames: AsyncIterable<StreamFrame>): AsyncIterable<AgUiSourceFrame> {
   return {
     [Symbol.asyncIterator]() {
       const inner = frames[Symbol.asyncIterator]();
+      let position = 0;
+      let seq = 0;
       return {
         next: async () => {
           const result = await inner.next();
-          return result.done === true
-            ? { done: true as const, value: undefined }
-            : { done: false as const, value: toAgUiFrame(result.value) };
+          if (result.done === true) return { done: true as const, value: undefined };
+          seq += frameToEvents(result.value, position).length;
+          position += 1;
+          return { done: false as const, value: withFrameSeq(toAgUiFrame(result.value), seq) };
         },
         return: async () => {
           await inner.return?.();

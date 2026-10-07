@@ -6,7 +6,6 @@ import {
   AgentDepsFactory,
   AgentRegistry,
   AgentService,
-  AuthActorResolver,
   DefaultToolAuthorizer,
   HeaderActorResolver,
   InlineAgentRunner,
@@ -349,14 +348,5 @@ describe('actor resolvers', () => {
     };
     expect(resolver.resolve(ctx)).toEqual({ id: 'u9', roles: ['ADMIN', 'EDITOR'] });
     expect(() => resolver.resolve({ request: { header: () => undefined } })).toThrow(/x-actor-id/);
-  });
-
-  it('AuthActorResolver reads ctx.auth.user and fail-closes when unauthenticated', () => {
-    const resolver = new AuthActorResolver();
-    expect(resolver.resolve({ auth: { user: { id: 42, roles: ['ADMIN'] } } })).toEqual({
-      id: '42',
-      roles: ['ADMIN'],
-    });
-    expect(() => resolver.resolve({ auth: { user: undefined } })).toThrow(/no authenticated user/);
   });
 });

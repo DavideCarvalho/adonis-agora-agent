@@ -79,27 +79,61 @@ interface AuthUserLike {
   tenantRef?: unknown;
 }
 
+/** What {@link AuthActorResolver} reads of `ctx.auth` — `@adonisjs/auth`'s authenticator, structurally. */
+interface AuthenticatorLike {
+  user?: unknown;
+  /** Set once a guard tried this request (an auth middleware, or a check). */
+  authenticationAttempted?: boolean;
+  /** Silently try the default guard: `false` for an anonymous request, never a throw. */
+  check?(): Promise<boolean>;
+  /** Silently try these guards in order. */
+  checkUsing?(guards: string[]): Promise<boolean>;
+}
+
 /** Options for {@link AuthActorResolver}. */
 export interface AuthActorResolverOptions {
   /** Map the authenticated user to an {@link Actor}. Defaults to reading `id`/`roles`/`tenantRef`. */
   toActor?: (user: unknown) => Actor;
+  /**
+   * The `@adonisjs/auth` guards to check the request with, in order (`['web', 'api']`). Default:
+   * the default guard.
+   */
+  guards?: string[];
 }
 
 /**
- * Reads Adonis's authenticated principal (`ctx.auth.user`, populated by `@adonisjs/auth`) into an
- * {@link Actor}. Fail-closed: throws when no user is authenticated rather than fabricating one. Pass
- * a `toActor` mapper when your user model doesn't expose `id`/`roles`/`tenantRef` directly (e.g. to
+ * Reads Adonis's authenticated principal (`ctx.auth.user`, from `@adonisjs/auth`) into an
+ * {@link Actor}. The agent routes run no auth middleware, so when no guard has tried the request
+ * yet the resolver checks it itself — `ctx.auth.check()` (or `checkUsing(guards)`), which reads a
+ * session cookie or a bearer token and never throws for an anonymous request. Fail-closed: throws
+ * (the routes answer `401`) when no user is authenticated rather than fabricating one. Pass a
+ * `toActor` mapper when your user model doesn't expose `id`/`roles`/`tenantRef` directly (e.g. to
  * pull roles from a relation). This is the resolver most apps wire in `config/agent.ts`.
  */
 export class AuthActorResolver implements ActorResolver {
   constructor(private readonly options: AuthActorResolverOptions = {}) {}
 
-  resolve(ctx: unknown): Actor {
-    const user = (ctx as { auth?: { user?: unknown } }).auth?.user;
+  async resolve(ctx: unknown): Promise<Actor> {
+    const auth = (ctx as { auth?: AuthenticatorLike } | null | undefined)?.auth;
+    let user = auth?.user;
+    if (
+      (user === undefined || user === null) &&
+      auth !== undefined &&
+      !auth.authenticationAttempted
+    ) {
+      const guards = this.options.guards;
+      if (guards !== undefined && guards.length > 0 && typeof auth.checkUsing === 'function') {
+        await auth.checkUsing(guards);
+      } else if (typeof auth.check === 'function') {
+        await auth.check();
+      }
+      user = auth.user;
+    }
     if (user === undefined || user === null) {
       throw new Error(
-        'AuthActorResolver: no authenticated user on ctx.auth.user. Authenticate the request ' +
-          '(e.g. an auth middleware) before it reaches the agent routes; no identity is fabricated.',
+        'AuthActorResolver: no authenticated user on ctx.auth.user. Install @adonisjs/auth (its ' +
+          'guard is checked on each request), or authenticate the request in a middleware before ' +
+          'it reaches the agent routes; no identity is fabricated.',
       );
     }
     if (this.options.toActor !== undefined) {
