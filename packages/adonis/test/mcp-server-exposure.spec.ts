@@ -270,7 +270,8 @@ describe('tool annotations in tools/list', () => {
   });
 
   it('describeTool sets the title and the annotations', async () => {
-    const tools = await list((tool) =>
+    // async: a describer may load its metadata lazily
+    const tools = await list(async (tool) =>
       tool.name === 'purge_cache'
         ? { title: 'Purge the cache', annotations: { readOnlyHint: false, destructiveHint: true } }
         : undefined,

@@ -176,23 +176,25 @@ export function createMcpServer(options: CreateMcpServerOptions): Server {
       isExposable(definition.kind, actions),
     );
     return {
-      tools: defs.map((definition) => {
-        const described = options.describeTool?.({
-          name: definition.name,
-          kind: definition.kind,
-          description: definition.description,
-        });
-        return {
-          name: definition.name,
-          ...(described?.title !== undefined ? { title: described.title } : {}),
-          description: definition.description,
-          inputSchema: toJsonSchema(definition.inputSchema),
-          // Clients run a read without asking and confirm a write: say which is which.
-          annotations: described?.annotations ?? {
-            readOnlyHint: definition.kind === 'read',
-          },
-        };
-      }),
+      tools: await Promise.all(
+        defs.map(async (definition) => {
+          const described = await options.describeTool?.({
+            name: definition.name,
+            kind: definition.kind,
+            description: definition.description,
+          });
+          return {
+            name: definition.name,
+            ...(described?.title !== undefined ? { title: described.title } : {}),
+            description: definition.description,
+            inputSchema: toJsonSchema(definition.inputSchema),
+            // Clients run a read without asking and confirm a write: say which is which.
+            annotations: described?.annotations ?? {
+              readOnlyHint: definition.kind === 'read',
+            },
+          };
+        }),
+      ),
     };
   });
 

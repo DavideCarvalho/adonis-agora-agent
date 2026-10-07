@@ -147,7 +147,7 @@ export type McpToolDescriber = (tool: {
   name: string;
   kind: string;
   description: string;
-}) => McpToolDescription | undefined;
+}) => McpToolDescription | undefined | Promise<McpToolDescription | undefined>;
 
 /** Anything Adonis accepts in `route.use()`: a function, or a named/lazy middleware reference. */
 // biome-ignore lint/suspicious/noExplicitAny: mirrors the router's own `use()` parameter
