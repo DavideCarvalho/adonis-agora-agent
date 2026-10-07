@@ -38,6 +38,18 @@ export interface ChatStreamRequest {
   headers?: Record<string, string>;
   /** Aborted when the user stops the turn. */
   signal?: AbortSignal;
+  /**
+   * What the message's staged uploads are, as it shows them: the body's `attachments` refs carry
+   * only ids. For a backend that describes a file on its own wire (AG-UI's media parts).
+   */
+  files?: ChatStreamFile[];
+}
+
+/** One staged upload of the message being sent. */
+export interface ChatStreamFile {
+  mediaId: string;
+  contentType?: string;
+  name?: string;
 }
 
 /** Attaching to a run that is already streaming: `GET <base>/chat/:runId/stream?after=<seq>`. */

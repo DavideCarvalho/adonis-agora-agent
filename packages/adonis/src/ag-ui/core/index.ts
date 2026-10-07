@@ -6,6 +6,7 @@
 
 export { AgUiEncoder, type AgUiEncoderOptions } from './encoder.js';
 export {
+  AG_UI_STAGED_MEDIA_PROVIDER,
   type ForwardedOptions,
   type InlineMedia,
   parseRunInput,

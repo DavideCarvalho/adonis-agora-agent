@@ -105,7 +105,8 @@ function text(value: unknown): string {
  *  - `reasoning` → a reasoning span with one reasoning message;
  *  - `step-start`/`step-finish` → `STEP_STARTED`/`STEP_FINISHED`, the step's usage folded into the
  *    run's `usage`;
- *  - `tool-input-*` → `TOOL_CALL_START`/`ARGS`/`END`; `tool-output*` → `TOOL_CALL_RESULT`;
+ *  - `tool-input-*` → `TOOL_CALL_START`/`ARGS`/`END` (the call's kind as `metadata['agora.toolKind']`);
+ *    `tool-output*` → `TOOL_CALL_RESULT`;
  *  - an approval or a question set the run parks on → an `Interrupt` on the closing `RUN_FINISHED`;
  *  - `cancelled` → the cancelled outcome; an error frame → `RUN_ERROR`;
  *  - generative UI, title, queue and the native approval/elicitation frames → `CUSTOM` events named
@@ -302,7 +303,13 @@ export class AgUiEncoder {
             metadata: { 'agora.request': event.request },
           },
         });
-        return [this.custom(AG_UI_CUSTOM.elicitation, { runId: parked, request: event.request })];
+        return [
+          this.custom(AG_UI_CUSTOM.elicitation, {
+            id: event.id,
+            runId: parked,
+            request: event.request,
+          }),
+        ];
       }
       case 'text':
         return event.text.length > 0 ? this.textDelta(event.text) : [];
@@ -326,6 +333,7 @@ export class AgUiEncoder {
               ...(event.usage !== undefined ? { usage: event.usage } : {}),
               ...(event.costUsd !== undefined ? { costUsd: event.costUsd } : {}),
               ...(event.reasoningMs !== undefined ? { reasoningMs: event.reasoningMs } : {}),
+              ...(typeof event.model === 'string' ? { model: event.model } : {}),
             }),
           );
         }
@@ -341,7 +349,7 @@ export class AgUiEncoder {
           sawDelta: false,
           answered: false,
         });
-        out.push(this.callStart(event.id, event.name));
+        out.push(this.callStart(event.id, event.name, event.toolKind));
         return out;
       }
       case 'tool-input-delta': {
@@ -363,7 +371,7 @@ export class AgUiEncoder {
         };
         if (!call.started) {
           call.started = true;
-          out.push(this.callStart(event.id, event.name));
+          out.push(this.callStart(event.id, event.name, event.toolKind));
         }
         if (!call.sawDelta) {
           out.push({
@@ -519,12 +527,15 @@ export class AgUiEncoder {
     return [...this.closeReasoning(), ...this.closeText()];
   }
 
-  private callStart(id: string, name: string): AgUiEvent {
+  private callStart(id: string, name: string, kind: 'read' | 'action' | undefined): AgUiEvent {
     return {
       type: 'TOOL_CALL_START',
       toolCallId: id,
       toolCallName: name,
       ...(this.stepMessage !== undefined ? { parentMessageId: this.stepMessage } : {}),
+      // Whether the call reads or acts — AG-UI has no field for it; a consumer of this family
+      // renders an action differently (and may be asked to approve it).
+      ...(kind !== undefined ? { metadata: { 'agora.toolKind': kind } } : {}),
     };
   }
 

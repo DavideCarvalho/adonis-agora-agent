@@ -10,6 +10,7 @@ export { type AgUiAdapterOptions, agUiAdapter } from './adapter.js';
 export {
   AG_UI_CUSTOM,
   AG_UI_PROTOCOL_VERSION,
+  AG_UI_STAGED_MEDIA_PROVIDER,
   type AgUiContentPart,
   type AgUiContext,
   type AgUiEvent,

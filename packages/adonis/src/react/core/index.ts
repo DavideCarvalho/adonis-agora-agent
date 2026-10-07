@@ -56,6 +56,7 @@ export {
   AgentBackendUnsupportedError,
   type AgentConnection,
   type AttachmentUploadStrategy,
+  type ChatStreamFile,
   type ChatStreamRequest,
   type ChatStreamResponse,
   type MessageFeedbackInput,

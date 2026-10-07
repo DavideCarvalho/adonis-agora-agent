@@ -1,5 +1,10 @@
 import type { ChatTransport, UIMessage, UIMessageChunk } from 'ai';
-import type { AgentBackend, ChatStreamResponse, QueuedSendResult } from './backend.js';
+import type {
+  AgentBackend,
+  ChatStreamFile,
+  ChatStreamResponse,
+  QueuedSendResult,
+} from './backend.js';
 import { AgentClient } from './client.js';
 import type { AgentStreamEvent } from './client-wire.js';
 import { reasoningDurationMetadata } from './reasoning/timing.js';
@@ -217,8 +222,10 @@ export class AgentChatTransport implements ChatTransport<UIMessage> {
         message,
       };
       const headers = headerRecord(options.headers);
+      const files = lastMessage ? stagedFiles(lastMessage) : [];
       const response = await this.backend.openChatStream({
         body,
+        ...(files.length > 0 ? { files } : {}),
         ...(headers !== undefined ? { headers } : {}),
         ...(options.abortSignal ? { signal: options.abortSignal } : {}),
       });
@@ -870,6 +877,22 @@ function extractText(message: UIMessage): string {
     if (part.type === 'text') text += part.text;
   }
   return text;
+}
+
+/** The message's file parts that name a staged upload (`providerMetadata.agent.mediaId`). */
+function stagedFiles(message: UIMessage): ChatStreamFile[] {
+  const files: ChatStreamFile[] = [];
+  for (const part of message.parts ?? []) {
+    if (part.type !== 'file') continue;
+    const mediaId = (part.providerMetadata?.agent as { mediaId?: unknown } | undefined)?.mediaId;
+    if (typeof mediaId !== 'string' || mediaId.length === 0) continue;
+    files.push({
+      mediaId,
+      ...(part.mediaType ? { contentType: part.mediaType } : {}),
+      ...(part.filename ? { name: part.filename } : {}),
+    });
+  }
+  return files;
 }
 
 /** Per-request headers as the AI SDK hands them over, as a plain record (or nothing). */

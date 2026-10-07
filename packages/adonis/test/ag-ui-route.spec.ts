@@ -300,6 +300,53 @@ describe('POST /agent/ag-ui', () => {
     expect(JSON.stringify(warnings[0])).toContain('url source');
   });
 
+  it("attaches an upload it staged, named by file handle, and refuses one that is not the caller's", async () => {
+    const attachments: unknown[] = [];
+    booted = await bootApp(
+      (args) => {
+        attachments.push(args.messages.at(-1)?.attachments);
+        return { text: 'A cat.' };
+      },
+      { attachments: attachmentStores.memory() },
+    );
+    const form = new FormData();
+    form.append('file', new File(['png-bytes'], 'cat.png', { type: 'image/png' }));
+    const upload = await fetch(`${booted.url}/agent/attachments`, {
+      method: 'POST',
+      headers: { 'x-actor-id': 'u1' },
+      body: form,
+    });
+    const { mediaId } = (await upload.json()) as { mediaId: string };
+    const body = (threadId: string) =>
+      input({
+        threadId,
+        messages: [
+          {
+            id: 'm1',
+            role: 'user',
+            content: [
+              { type: 'text', text: 'What is this?' },
+              {
+                type: 'image',
+                source: { type: 'file', provider: 'agora', value: mediaId, mimeType: 'image/png' },
+              },
+            ],
+          },
+        ],
+      });
+    assertInputSchema(body('t-1'));
+    const response = await post(booted.url, body('t-1'));
+    expect(response.status).toBe(200);
+    const events = (await readSse(response)).map((frame) => frame.data) as unknown as AgUiEvent[];
+    await assertConforms(events);
+    expect(events.some((event) => event.type === 'CUSTOM' && event.name === 'agora.warning')).toBe(
+      false,
+    );
+    expect(attachments[0]).toMatchObject([{ mediaId, contentType: 'image/png', name: 'cat.png' }]);
+
+    expect((await post(booted.url, body('t-2'), 'u2')).status).toBe(403);
+  });
+
   it('refuses malformed input before any run starts', async () => {
     booted = await bootApp(() => ({ text: 'hi' }));
     expect((await post(booted.url, { runId: 'r', messages: [] })).status).toBe(400);

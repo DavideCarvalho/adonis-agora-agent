@@ -168,6 +168,7 @@ describe('AgUiEncoder', () => {
       toolCallId: 'c1',
       toolCallName: 'search',
       parentMessageId: 'run-1:m1',
+      metadata: { 'agora.toolKind': 'read' },
     });
     const args = events.filter((event) => event.type === 'TOOL_CALL_ARGS');
     expect(args.map((event) => (event as { delta: string }).delta).join('')).toBe('{"q":"x"}');
@@ -353,6 +354,50 @@ describe('AgUiEncoder', () => {
     await assertConforms(events);
     expect(events.at(-1)).toMatchObject({ type: 'RUN_FINISHED', outcome: { type: 'cancelled' } });
     expect(types(events)).toContain('STEP_FINISHED');
+  });
+});
+
+describe('what AG-UI does not model, for a consumer of this family', () => {
+  it("says a call's kind, a question set's id, and the model a step's usage is for", async () => {
+    const events = await collect(
+      parked([
+        ev({ kind: 'step-start' }),
+        ev({ kind: 'tool-input-start', id: 'c1', name: 'refund', toolKind: 'action' }),
+        ev({
+          kind: 'tool-input-available',
+          id: 'c2',
+          name: 'lookup',
+          input: {},
+          toolKind: 'read',
+        }),
+        ev({ kind: 'step-finish', usage: { inputTokens: 3, outputTokens: 1 }, model: 'm' }),
+        ev({ kind: 'tool-output', id: 'c2', output: 'ok' }),
+        {
+          t: 'elicitation',
+          runId: 'lib-run-1',
+          id: 'ask-1',
+          request: { id: 'ask-1', source: 'tool', questions: [{ id: 'q', prompt: 'Which?' }] },
+        },
+      ]),
+    );
+    await assertConforms(events);
+    const starts = events.filter((event) => event.type === 'TOOL_CALL_START');
+    expect(starts.map((event) => event.metadata)).toEqual([
+      { 'agora.toolKind': 'action' },
+      { 'agora.toolKind': 'read' },
+    ]);
+    expect(events).toContainEqual({
+      type: 'CUSTOM',
+      name: AG_UI_CUSTOM.stepUsage,
+      value: { usage: { inputTokens: 3, outputTokens: 1 }, model: 'm' },
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'CUSTOM',
+        name: AG_UI_CUSTOM.elicitation,
+        value: expect.objectContaining({ id: 'ask-1', runId: 'lib-run-1' }),
+      }),
+    );
   });
 });
 
