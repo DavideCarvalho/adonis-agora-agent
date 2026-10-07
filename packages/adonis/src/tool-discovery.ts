@@ -131,6 +131,7 @@ function specFromMeta(meta: AiToolMeta, defaultRoles: string[]): ToolSpec {
     ...(meta.ability !== undefined ? { ability: meta.ability } : {}),
     ...(meta.enabled !== undefined ? { enabled: meta.enabled } : {}),
     ...(meta.presentation !== undefined ? { presentation: meta.presentation } : {}),
+    ...(meta.replacementKey !== undefined ? { replacementKey: meta.replacementKey } : {}),
     ...(meta.terminal === true ? { terminal: true } : {}),
   };
 }

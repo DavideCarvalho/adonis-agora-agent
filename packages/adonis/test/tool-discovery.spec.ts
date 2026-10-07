@@ -112,6 +112,39 @@ describe('tool discovery', () => {
     expect(registry.spec('getTime')?.ability).toBe('clock.read');
   });
 
+  it('carries a class tool`s replacementKey onto the registered spec', () => {
+    const keyFn = (input: unknown) => (input as { id: string }).id;
+    @AiTool({
+      name: 'replaceable',
+      kind: 'action',
+      description: 'A replaceable proposal',
+      input: z.object({ id: z.string() }),
+      replacementKey: keyFn,
+    })
+    class ReplaceableTool implements ToolHandler<{ id: string }> {
+      async execute() {
+        return {};
+      }
+    }
+    class StaticReplaceableTool implements ToolHandler<Record<string, never>> {
+      static tool = {
+        name: 'staticReplaceable',
+        kind: 'action',
+        description: 'A replaceable proposal',
+        input: z.object({}),
+        replacementKey: 'fixed',
+      } as const;
+      async execute() {
+        return {};
+      }
+    }
+    const registry = new ToolRegistry();
+    registerToolExport(registry, ReplaceableTool, ['ADMIN']);
+    registerToolExport(registry, StaticReplaceableTool, ['ADMIN']);
+    expect(registry.spec('replaceable')?.replacementKey).toBe(keyFn);
+    expect(registry.spec('staticReplaceable')?.replacementKey).toBe('fixed');
+  });
+
   it('registers a defineTool functional tool', () => {
     const registry = new ToolRegistry();
     const result = registerToolExport(registry, purgeCache, ['ADMIN']);
