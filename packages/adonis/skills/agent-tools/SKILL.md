@@ -238,9 +238,11 @@ export const listRecords = defineTool({
 Use `createComponent` for custom definitions and one `createComponentRegistry` per app
 or tenant. Input `props` may transform; if the transform changes shape or is not
 idempotent, declare `outputProps` to validate the normalized JSON persisted in frames.
-Do not send renderer functions or image/PDF bytes as props. Applications can report
-presentation failures through `ctx.onPresentationError(error, { toolName })`; otherwise
-the library logs a distinct warning. SSR and capture use optional server entries,
+Do not send renderer functions or image/PDF bytes as props. Set `onPresentationError(error,
+{ toolName, toolCallId, runId, threadId })` in `defineConfig` — it is wired for turns
+and proposal executions (the loop/executor fill in the call, run and thread); omit it
+and the provider logs a warning on the app logger. Inside a tool,
+`ctx.onPresentationError` carries the same details. SSR and capture use optional server entries,
 separate from tool execution and browser chat hooks.
 
 Source: `packages/adonis/docs/authoring/component-rendering.mdx`,
