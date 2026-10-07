@@ -53,7 +53,16 @@ export interface McpAuth {
    * {@link McpAuthError} for a deliberate refusal (its `status` and message reach the client), any
    * other `Error` for a token this strategy does not recognize (→ `401`).
    */
-  verify(token: string): Promise<McpAuthInfo>;
+  verify(token: string, context?: McpVerifyContext): Promise<McpAuthInfo>;
+}
+
+/** What the provider knows about the request a token is verified for. */
+export interface McpVerifyContext {
+  /**
+   * The protected resource (RFC 9728 `resource`) being called, e.g. `https://app.example.com/mcp` —
+   * what a token's audience must name (MCP Authorization spec, RFC 8707).
+   */
+  resource: string;
 }
 
 /**
@@ -126,6 +135,8 @@ interface AuthKitServiceLike {
 /** Shape of an oidc-provider access token instance as returned by `AccessToken.find`. */
 interface AuthKitAccessTokenLike {
   accountId: string;
+  /** The resource the token was issued for (RFC 8707), when the client named one. */
+  aud?: string | string[];
   clientId?: string;
   grantId?: string;
   scope?: string;
@@ -188,6 +199,14 @@ export interface AuthKitMcpAuthOptions {
   toActor?: AuthKitActorResolver;
   /** Human label for the protected resource. Defaults to `'Agent MCP Server'`. */
   resourceName?: string;
+  /**
+   * Which tokens this endpoint accepts, by audience:
+   *  - `'resource'` (default) — only a token issued for THIS server: its `aud` (RFC 8707) must be
+   *    the MCP URL. A token for another resource, or one with no audience (a web login's), is
+   *    refused — the MCP Authorization spec forbids accepting tokens not meant for the server.
+   *  - `'any'` — skip the check (tokens from clients that do not send `resource`).
+   */
+  audience?: 'resource' | 'any';
 }
 
 /**
@@ -226,7 +245,7 @@ export function authKitAuth(options: AuthKitMcpAuthOptions = {}): McpAuthFactory
 
     return {
       oauth,
-      async verify(token) {
+      async verify(token, context) {
         const service = await getService();
         const at = await service.provider.AccessToken.find(token);
         if (!at) {
@@ -235,6 +254,13 @@ export function authKitAuth(options: AuthKitMcpAuthOptions = {}): McpAuthFactory
         }
         if (at.isExpired) {
           throw new McpAuthError('invalid or expired access token');
+        }
+        if (
+          (options.audience ?? 'resource') === 'resource' &&
+          context !== undefined &&
+          !audienceNames(at.aud, context.resource)
+        ) {
+          throw new McpAuthError('token was not issued for this MCP server');
         }
         let grant: AuthKitGrant | undefined;
         if (at.grantId !== undefined && service.provider.Grant !== undefined) {
@@ -264,6 +290,13 @@ export function authKitAuth(options: AuthKitMcpAuthOptions = {}): McpAuthFactory
       },
     };
   };
+}
+
+/** Whether a token's `aud` names `resource` (a trailing slash on either side is tolerated). */
+function audienceNames(aud: string | string[] | undefined, resource: string): boolean {
+  const trim = (value: string) => value.replace(/\/+$/, '');
+  const audiences = aud === undefined ? [] : Array.isArray(aud) ? aud : [aud];
+  return audiences.some((value) => trim(value) === trim(resource));
 }
 
 /** Narrow the grant's stored `activeOrg` to {@link AuthKitActiveOrg}; anything without an `orgId` string is no org. */
@@ -367,11 +400,11 @@ export function anyOf(...strategies: Array<McpAuth | McpAuthFactory>): McpAuthFa
     const oauth = resolved.find((strategy) => strategy.oauth !== undefined)?.oauth;
     return {
       ...(oauth !== undefined ? { oauth } : {}),
-      async verify(token) {
+      async verify(token, context) {
         let lastError: unknown;
         for (const strategy of resolved) {
           try {
-            return await strategy.verify(token);
+            return await strategy.verify(token, context);
           } catch (error) {
             if (error instanceof McpAuthError) throw error;
             lastError = error;

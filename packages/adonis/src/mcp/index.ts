@@ -14,7 +14,12 @@ export type {
   McpOAuthMetadata,
 } from './auth.js';
 export { anyOf, apiKeyAuth, authKitAuth, McpAuthError, resolveMcpAuth } from './auth.js';
-export type { McpConfig } from './define_config.js';
+export type {
+  McpConfig,
+  McpEndpointConfig,
+  McpToolDescriber,
+  McpToolDescription,
+} from './define_config.js';
 export { defineMcpConfig } from './define_config.js';
 export type { ProtectedResourceMetadata, WwwAuthenticateOptions } from './discovery.js';
 export {

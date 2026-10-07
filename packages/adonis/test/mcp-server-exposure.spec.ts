@@ -189,3 +189,127 @@ describe('a confirmed write over MCP', () => {
     expect(written).toEqual([{ orderId: 'o-1' }]);
   });
 });
+
+describe('the context a tool gets over MCP', () => {
+  it('a fresh call id and idempotency key per call, and the mcp channel', async () => {
+    const seen: Record<string, unknown>[] = [];
+    const registry = new ToolRegistry();
+    registry.register(
+      { name: 'log_dose', kind: 'action', description: 'x', inputSchema: z.object({}) } as never,
+      {
+        execute: async (_input: unknown, ctx: Record<string, unknown>) => {
+          seen.push(ctx);
+          return { ok: true };
+        },
+      } as never,
+    );
+    const server = createMcpServer({
+      name: 'test',
+      version: '0.0.0',
+      registry,
+      policy: new DefaultRolesPolicy(),
+      actorFromAuth: () => ACTOR,
+      actions: 'execute',
+    });
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+
+    await client.callTool({ name: 'log_dose', arguments: {} });
+    await client.callTool({ name: 'log_dose', arguments: {} });
+    const [first, second] = seen;
+    expect(first?.pageContext).toEqual({ channel: 'mcp' });
+    expect(first?.idempotencyKey).toBe(`${first?.runId}:${first?.toolCallId}`);
+    expect(first?.toolCallId).not.toBe(second?.toolCallId);
+    expect(first?.idempotencyKey).not.toBe(second?.idempotencyKey);
+  });
+});
+
+describe('server instructions', () => {
+  it('reaches the client in the initialize result', async () => {
+    const server = createMcpServer({
+      name: 'test',
+      version: '0.0.0',
+      instructions: 'Start with list_profiles.',
+      registry: new ToolRegistry(),
+      policy: new DefaultRolesPolicy(),
+      actorFromAuth: () => ACTOR,
+    });
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+    expect(client.getInstructions()).toBe('Start with list_profiles.');
+  });
+});
+
+describe('tool annotations in tools/list', () => {
+  async function list(describeTool?: Parameters<typeof createMcpServer>[0]['describeTool']) {
+    const server = createMcpServer({
+      name: 'test',
+      version: '0.0.0',
+      registry: buildRegistry(),
+      policy: new DefaultRolesPolicy(),
+      actorFromAuth: () => ACTOR,
+      actions: 'execute',
+      ...(describeTool ? { describeTool } : {}),
+    });
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+    return (await client.listTools()).tools;
+  }
+
+  it('says a read is read-only and an action is not, by default', async () => {
+    const tools = await list();
+    expect(tools.find((t) => t.name === 'search_docs')?.annotations).toEqual({
+      readOnlyHint: true,
+    });
+    expect(tools.find((t) => t.name === 'purge_cache')?.annotations).toEqual({
+      readOnlyHint: false,
+    });
+  });
+
+  it('describeTool sets the title and the annotations', async () => {
+    // async: a describer may load its metadata lazily
+    const tools = await list(async (tool) =>
+      tool.name === 'purge_cache'
+        ? { title: 'Purge the cache', annotations: { readOnlyHint: false, destructiveHint: true } }
+        : undefined,
+    );
+    const purge = tools.find((t) => t.name === 'purge_cache');
+    expect(purge?.title).toBe('Purge the cache');
+    expect(purge?.annotations).toEqual({ readOnlyHint: false, destructiveHint: true });
+    expect(tools.find((t) => t.name === 'search_docs')?.annotations).toEqual({
+      readOnlyHint: true,
+    });
+  });
+});
+
+describe('generative-UI tools over MCP', () => {
+  it('a tool whose result is shown elsewhere (a UI push) is neither listed nor callable', async () => {
+    const registry = buildRegistry();
+    registry.register(
+      {
+        name: 'ui__show_chart',
+        kind: 'read',
+        description: 'Show a chart',
+        inputSchema: z.object({}),
+        presentation: { result: { kind: 'elsewhere' } },
+      } as never,
+      { execute: async () => ({}) },
+    );
+    const server = createMcpServer({
+      name: 'test',
+      version: '0.0.0',
+      registry,
+      policy: new DefaultRolesPolicy(),
+      actorFromAuth: () => ACTOR,
+    });
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+    expect((await client.listTools()).tools.map((t) => t.name)).not.toContain('ui__show_chart');
+    const called = await client.callTool({ name: 'ui__show_chart', arguments: {} });
+    expect(called.isError).toBe(true);
+  });
+});

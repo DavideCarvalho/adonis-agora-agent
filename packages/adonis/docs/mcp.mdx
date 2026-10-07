@@ -59,12 +59,13 @@ Point an MCP client at `http://localhost:3333/mcp`. It will discover the OAuth f
 
 ## Configuration
 
-`McpConfig` has ten keys — two required, eight optional.
+`McpConfig` has sixteen keys — two required, fourteen optional.
 
 | Key | Type | Default | Purpose |
 | --- | --- | --- | --- |
 | `name` | `string` | — | Server name reported in the MCP `initialize` handshake. |
 | `version` | `string` | — | Server version reported in the handshake. |
+| `instructions` | `string` | — | Sent in the `initialize` result: how the client's model should use these tools. |
 | `path` | `string` | `'mcp'` | Route prefix. Leading/trailing slashes are stripped, so `'/mcp/'` and `'mcp'` are the same. |
 | `publicUrl` | `string` | — | The public origin clients reach the app at (e.g. `'https://app.example.com'`). Base of the RFC 9728 `resource` and of the `WWW-Authenticate` challenge. Omit → built from the request. |
 | `auth` | `McpAuth \| McpAuthFactory` | — | How clients authenticate. Omit for open mode (see below). |
@@ -73,10 +74,49 @@ Point an MCP client at `http://localhost:3333/mcp`. It will discover the OAuth f
 | `defaultRoles` | `string[]` | `['ADMIN']` | Roles a tool requires when it declares none. Only consulted by the default authorizer. |
 | `emptyRoles` | `'allow' \| 'deny'` | `'allow'` | What an empty roles list means to the default authorizer. Since 0.46 it is open; `'deny'` makes `defaultRoles: []` or a tool's `roles: []` reach nobody. |
 | `allowedTools` | `string[]` | — | Restrict which tools are listed and callable. |
+| `actions` | `'refuse' \| 'execute'` | `'refuse'` | `action` tools over MCP. `'refuse'`: neither listed nor callable (the loop's approval gate cannot be honoured). `'execute'`: they run when called — the MCP client's own confirmation stands in for it. |
+| `stateless` | `boolean` | `false` | No sessions: every `POST` is answered by its own transport; `GET`/`DELETE` are `405`. Use it with more than one instance behind a load balancer. |
+| `describeTool` | `(tool) => { title?, annotations? }` | `readOnlyHint` from the kind | Title and MCP annotations per tool in `tools/list` — clients run a read without asking and confirm a write. |
+| `endpoints` | `McpEndpointConfig[]` | — | More MCP servers in the same app (see [More than one endpoint](#more-than-one-endpoint)). |
+| `middleware` | route middleware | — | Applied to the MCP endpoint (not the metadata route), before the bearer check — e.g. a rate limiter keyed on the `Authorization` header. |
 
 <Callout type="warn" title="Fail-closed: no auth and no actor means 401">
 With neither `auth` nor `actor` configured, **every** request to `/mcp` is rejected with `401 {"error":"unauthorized: no auth configured and no fallback actor"}`. That is the default an empty `config/mcp.ts` produces, and it is deliberate: an MCP endpoint is a remote tool-execution surface, so it never opens itself.
 </Callout>
+
+## More than one endpoint
+
+Each entry of `endpoints` is an MCP server of its own — its path, tools, auth, sessions and RFC 9728
+metadata — and a protected resource of its own: a token issued for one is refused by the other. It
+inherits the top-level settings and overrides what it declares.
+
+```ts title="config/mcp.ts"
+export default defineMcpConfig({
+  name: 'Acme',
+  version: '1.0.0',
+  path: 'mcp',
+  auth: teamAuth(),
+  stateless: true,
+  endpoints: [
+    {
+      path: 'mcp/family',
+      name: 'Acme (family)',
+      instructions: 'The family of the signed-in person only.',
+      auth: familyAuth(),
+      registry: ({ app }) => app.container.make(FamilyToolRegistry),
+    },
+  ],
+})
+```
+
+| Key | Default | |
+| --- | --- | --- |
+| `path` | — | Route prefix. |
+| `name`, `instructions` | top-level | Handshake. |
+| `auth` | top-level | A different audience usually means a different auth. |
+| `registry` | the agent's `ToolRegistry` | `(ctx) => ToolRegistry` — e.g. a registry bound in the container. |
+| `allowedTools`, `actions`, `describeTool` | top-level | |
+| `metadataRouteName` | `mcp.<segments>.oauth_protected_resource` | Name of its metadata route (the top-level one is `mcp.oauth_protected_resource`). |
 
 ## Authentication
 
@@ -96,7 +136,9 @@ auth: authKitAuth({
 }),
 ```
 
-The token must resolve through the authkit provider and must not be expired; anything else is a `401` carrying the reason. When the token belongs to a grant, the grant is loaded on every request too — a grant the user revoked stops its tokens immediately (`401 authorization revoked`). The authkit service is resolved lazily from the container on first use (`'authkit.server'`), so the peer only has to be bootable by the time the first MCP request arrives — not at provider boot.
+Turn on `mcp: true` in AuthKit's config and that is the whole login: `claude mcp add --transport http acme https://acme.com/mcp` opens the browser, the user signs in to your app and consents, and Claude Code is connected — see [AuthKit → MCP clients](https://davidecarvalho.github.io/agora/docs/authkit/mcp-clients). This server registers its URL with AuthKit at boot (`publicUrl` + `path`, or just the path on the issuer's origin when `publicUrl` is unset), so tokens are bound to it without the URL appearing in AuthKit's config.
+
+The token must resolve through the authkit provider, must not be expired, and must have been issued **for this server**: its audience (RFC 8707 `aud`) must be this endpoint's URL. A token for another resource, or one with no audience (a web login's), is a `401 token was not issued for this MCP server` — the MCP authorization spec forbids accepting tokens meant for someone else. `audience: 'any'` turns the check off, for clients that do not send `resource`. Anything else is a `401` carrying the reason. When the token belongs to a grant, the grant is loaded on every request too — a grant the user revoked stops its tokens immediately (`401 authorization revoked`). The authkit service is resolved lazily from the container on first use (`'authkit.server'`), so the peer only has to be bootable by the time the first MCP request arrives — not at provider boot.
 
 <Callout type="warn" title="Always supply `toActor`">
 The default `toActor` returns `{ id: accountId }` — an actor with **no roles**. Against the default ADMIN-only authorizer that actor sees an empty tool list and cannot call anything. `toActor` is where your authorization model meets MCP; treat it as required in any real deployment.
@@ -284,7 +326,7 @@ See [Bouncer-backed authorization](/docs/agent/governance/authz-bouncer). The sa
 
 **`action` tools are not served over MCP.** MCP has no channel to route an approval decision through, so an `action` tool is neither listed nor callable — `tools/call` answers it as an unknown tool. A write that should be reachable from an MCP client puts the approval inside the tool's own handler — [`defineConfirmedTool`](#writes-with-a-human-gate-defineconfirmedtool) does that.
 
-**The tool context is thinner.** MCP calls get `{ actor, threadId, runId, requestId }` derived from the session id (`mcp:<sessionId>`), and nothing else: no `toolCallId`/`idempotencyKey`, no `persona`, no `pageContext`, no `uiCapabilities`, no `host`, and no `emitComponent`. A tool that reads any of those must tolerate their absence — they are optional on `AiToolCtx` precisely for this reason. `emitUi` is present but discards what it is given, and a tool's `present` hook runs against it: no component and no fallback text reaches the client. The answer is the tool's return value, as one text content block (a string as is, anything else as JSON). See [One output, many surfaces](/docs/agent/surfaces#mcp).
+**The tool context is thinner.** MCP calls get `{ actor, threadId, runId, requestId }` derived from the session id (`mcp:<sessionId>`), a `toolCallId` and an `idempotencyKey` minted per `tools/call` (each call is its own; nothing replays it), and `pageContext: { channel: 'mcp' }`, so a tool can tell it is answering an MCP client. Nothing else: no `persona`, no `uiCapabilities`, no `host`, and no `emitComponent`. A tool that reads any of those must tolerate their absence — they are optional on `AiToolCtx` precisely for this reason. `emitUi` is present but discards what it is given, and a tool's `present` hook runs against it: no component and no fallback text reaches the client. The answer is the tool's return value, as one text content block (a string as is, anything else as JSON). See [One output, many surfaces](/docs/agent/surfaces#mcp).
 
 ## Writes with a human gate: `defineConfirmedTool`
 

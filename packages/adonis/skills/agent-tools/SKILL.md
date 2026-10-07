@@ -110,8 +110,9 @@ An action's write and the checkpoint that records it are two writes: a worker th
 them re-runs the tool on recovery. Pass `ctx.idempotencyKey` (`<runId>:<toolCallId>`, the same for
 every execution of one call) on as the downstream idempotency key — a provider's
 `Idempotency-Key`, a unique column on the inserted row, the `id` of a workflow the tool starts — so
-the second attempt lands on the first. It is absent outside a turn (MCP, a direct
-`registry.invoke`), so fall back to a key of your own there.
+the second attempt lands on the first. Over MCP the server mints one per `tools/call`
+(alongside `toolCallId` and `pageContext: { channel: 'mcp' }`). It is absent on a direct
+`registry.invoke`, so fall back to a key of your own there.
 
 Source: `packages/adonis/src/spi/tool.ts` (`AiToolCtx.idempotencyKey`).
 
@@ -178,10 +179,12 @@ Source: `packages/adonis/docs/authoring/tools.mdx` ("Configuring the generator")
 
 ### Pattern 4 — a write reachable over MCP: `defineConfirmedTool`
 
-An `action` never reaches an MCP client (no approval channel, and Claude.ai/Desktop have no
+An `action` is off the MCP surface by default (`actions: 'refuse'` in `config/mcp.ts` —
+neither listed nor callable, since there is no approval channel, and Claude.ai/Desktop have no
 elicitation). For a write that must be callable there, put the gate inside the tool: the
 first call previews and returns a signed `confirmToken`; the same arguments plus
-`confirm: true` and the token commit.
+`confirm: true` and the token commit. (`actions: 'execute'` opts out and runs actions when
+called — the MCP client's own confirmation stands in for the loop's approval gate.)
 
 ```ts
 import { defineConfirmedTool, LucidConfirmTokenStore } from '@adonis-agora/agent'

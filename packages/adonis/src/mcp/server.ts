@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import type { AnyObjectSchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
@@ -8,7 +9,8 @@ import type { RolesPolicy } from '../spi/roles-policy.js';
 import type { AiToolCtx } from '../spi/tool.js';
 import { ToolNotFoundError, ToolRegistry } from '../tool-registry.js';
 import { createNoopEmitUi } from '../tool-ui.js';
-import type { Actor } from '../types.js';
+import type { Actor, ToolSpec } from '../types.js';
+import type { McpToolDescriber } from './define_config.js';
 
 /**
  * Runtime context a MCP handler synthesizes for {@link ToolRegistry.invoke}: the acting {@link Actor}
@@ -35,6 +37,10 @@ export interface CreateMcpServerOptions extends McpToolContextOptions {
   name: string;
   /** Server version reported in the initialize handshake. */
   version: string;
+  /** Instructions for the client's model, sent in the initialize result. */
+  instructions?: string;
+  /** Title and MCP annotations per tool; default `readOnlyHint` from the tool's kind. */
+  describeTool?: McpToolDescriber;
   /** The agent tool registry to expose. */
   registry: ToolRegistry;
   /** Tool authorization gate (role re-check happens per call, defense-in-depth). */
@@ -59,11 +65,19 @@ export interface CreateMcpServerOptions extends McpToolContextOptions {
 const LOOP_SERVED_KINDS = new Set(['agent', 'ask', 'skill', 'memory']);
 
 /** Whether this tool may be reached over MCP at all — the same answer for listing and for calling. */
-function isExposable(kind: string, actions: 'refuse' | 'execute'): boolean {
-  if (LOOP_SERVED_KINDS.has(kind)) {
+function isExposable(
+  spec: { kind: string; presentation?: ToolSpec['presentation'] } | undefined,
+  actions: 'refuse' | 'execute',
+): boolean {
+  if (spec === undefined || LOOP_SERVED_KINDS.has(spec.kind)) {
     return false;
   }
-  return kind !== 'action' || actions === 'execute';
+  // A tool whose result is shown elsewhere (a generative-UI `ui__show_*` / `ui__render`) only
+  // pushes a component; over MCP there is no screen, and the model would get nothing back.
+  if (spec.presentation?.result?.kind === 'elsewhere') {
+    return false;
+  }
+  return spec.kind !== 'action' || actions === 'execute';
 }
 
 /**
@@ -129,39 +143,71 @@ export function createMcpServer(options: CreateMcpServerOptions): Server {
   const actions = options.actions ?? 'refuse';
   const server = new Server(
     { name: options.name, version: options.version },
-    { capabilities: { tools: {} } },
+    {
+      capabilities: { tools: {} },
+      ...(options.instructions !== undefined ? { instructions: options.instructions } : {}),
+    },
   );
 
-  const buildCtx = (authInfo: AuthInfo | undefined, sessionId: string | undefined): AiToolCtx => {
+  const buildCtx = (
+    authInfo: AuthInfo | undefined,
+    sessionId: string | undefined,
+    requestId: string | number | undefined,
+  ): AiToolCtx => {
     const actor = actorFromAuth(authInfo);
     const ids = idsFromRequest
-      ? idsFromRequest(sessionId, undefined)
+      ? idsFromRequest(sessionId, requestId)
       : {
           threadId: `mcp:${sessionId ?? actor.id}`,
           runId: `mcp:${sessionId ?? 'run'}`,
           requestId: `mcp:${sessionId ?? 'req'}`,
         };
-    // No conversation to push into: `emitUi` accepts the push and does nothing, so a tool that
-    // shows UI in a chat still runs over MCP.
-    return { actor, ...ids, emitUi: createNoopEmitUi(ids.requestId) };
+    // Each `tools/call` is one call of its own: no runtime replays it, so its id — and the
+    // idempotency key a tool writes with — is fresh per call.
+    const toolCallId = `mcp-call:${randomUUID()}`;
+    return {
+      actor,
+      ...ids,
+      toolCallId,
+      idempotencyKey: `${ids.runId}:${toolCallId}`,
+      // A tool can tell it is answering an MCP client, not the person in the app.
+      pageContext: { channel: 'mcp' },
+      // No conversation to push into: `emitUi` accepts the push and does nothing, so a tool that
+      // shows UI in a chat still runs over MCP.
+      emitUi: createNoopEmitUi(ids.requestId),
+    };
   };
 
   server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
     const actor = actorFromAuth(extra.authInfo);
     const defs = (await registry.definitionsFor(actor, policy, allowedTools)).filter((definition) =>
-      isExposable(definition.kind, actions),
+      isExposable(registry.spec(definition.name), actions),
     );
     return {
-      tools: defs.map((definition) => ({
-        name: definition.name,
-        description: definition.description,
-        inputSchema: toJsonSchema(definition.inputSchema),
-      })),
+      tools: await Promise.all(
+        defs.map(async (definition) => {
+          const described = await options.describeTool?.({
+            name: definition.name,
+            kind: definition.kind,
+            description: definition.description,
+          });
+          return {
+            name: definition.name,
+            ...(described?.title !== undefined ? { title: described.title } : {}),
+            description: definition.description,
+            inputSchema: toJsonSchema(definition.inputSchema),
+            // Clients run a read without asking and confirm a write: say which is which.
+            annotations: described?.annotations ?? {
+              readOnlyHint: definition.kind === 'read',
+            },
+          };
+        }),
+      ),
     };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-    const ctx = buildCtx(extra.authInfo, extra.sessionId);
+    const ctx = buildCtx(extra.authInfo, extra.sessionId, extra.requestId);
     const { name, arguments: args } = request.params;
     try {
       // Re-decided on the CALL, not inherited from the listing. `registry.invoke` re-checks roles
@@ -169,7 +215,7 @@ export function createMcpServer(options: CreateMcpServerOptions): Server {
       // stance — so a caller who guesses a name would otherwise reach a tool deliberately left off
       // the surface.
       const spec = registry.spec(name);
-      if (spec === undefined || !isExposable(spec.kind, actions)) {
+      if (!isExposable(spec, actions)) {
         throw new ToolNotFoundError(name);
       }
       if (allowedTools !== undefined && !allowedTools.includes(name)) {

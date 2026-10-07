@@ -1,6 +1,6 @@
 import type { RolesPolicy } from '../spi/roles-policy.js';
-import type { EmptyRoles } from '../tool-registry.js';
-import type { McpAuth, McpAuthFactory } from './auth.js';
+import type { EmptyRoles, ToolRegistry } from '../tool-registry.js';
+import type { McpAuth, McpAuthContext, McpAuthFactory } from './auth.js';
 import { anyOf, apiKeyAuth, authKitAuth, McpAuthError } from './auth.js';
 
 /**
@@ -24,6 +24,11 @@ export interface McpConfig {
   name: string;
   /** Server version reported to MCP clients. */
   version: string;
+  /**
+   * Instructions sent in the `initialize` result — how the client's model should use these tools
+   * (where to start, units and time zone, what not to do).
+   */
+  instructions?: string;
   /**
    * Route prefix the MCP Streamable HTTP endpoint mounts under. Defaults to `'mcp'` (→ `/mcp`).
    * OAuth metadata (when `auth.oauth` is set) is served at `/.well-known/oauth-protected-resource{path}`.
@@ -67,7 +72,86 @@ export interface McpConfig {
    * permit are exposed.
    */
   allowedTools?: string[];
+  /**
+   * Route middleware for the MCP endpoint (`POST|GET|DELETE {path}`) — e.g. a rate limiter. They
+   * run BEFORE the bearer check (authentication happens in the handler), so key a limiter on the
+   * `Authorization` header or the IP, not on the authenticated account. The RFC 9728 metadata
+   * route is public and gets none.
+   */
+  middleware?: McpRouteMiddleware[];
+  /**
+   * What MCP callers may do with `action` tools. `'refuse'` (default): neither listed nor callable —
+   * an action has a human approval gate in the loop that MCP cannot honour. `'execute'`: the
+   * deployment accepts that the MCP client's own confirmation (most clients ask before each call)
+   * stands in for it, and actions run when called.
+   */
+  actions?: 'refuse' | 'execute';
+  /**
+   * Serve without sessions: every `POST` is answered by a fresh transport and server, and `GET`
+   * (the SSE stream) / `DELETE` are `405`. Use it behind a load balancer with more than one
+   * instance — in-memory sessions would not survive a request landing on another one. Tool calls
+   * lose nothing: each carries its own token, and tools are stateless here. Default: `false`.
+   */
+  stateless?: boolean;
+  /**
+   * How each tool reads in `tools/list`: its `title` and its MCP `annotations` (`readOnlyHint`,
+   * `destructiveHint`…), which clients use to run reads without asking and confirm writes. Default:
+   * `readOnlyHint: true` for a `read` tool and `false` for an `action`. Return `undefined` to keep it.
+   */
+  describeTool?: McpToolDescriber;
+  /**
+   * More MCP servers in the same app, each a protected resource of its own (RFC 9728/8707) — e.g. a
+   * team endpoint and a family one, with different tools and audiences. Each inherits the settings
+   * above and overrides what it declares; its tokens are bound to ITS URL.
+   */
+  endpoints?: McpEndpointConfig[];
 }
+
+/** An extra MCP server — see {@link McpConfig.endpoints}. */
+export interface McpEndpointConfig {
+  /** Route prefix, e.g. `'mcp/family'`. */
+  path: string;
+  /** Server name in the handshake. Default: the top-level `name`. */
+  name?: string;
+  instructions?: string;
+  /** Its own auth (a different audience). Default: the top-level `auth`. */
+  auth?: McpAuth | McpAuthFactory;
+  /**
+   * The tools it serves. Default: the agent's `ToolRegistry`. A thunk, so a registry bound in the
+   * container (`app.container.make(FamilyToolRegistry)`) is resolved at boot.
+   */
+  registry?: (ctx: McpAuthContext) => ToolRegistry | Promise<ToolRegistry>;
+  allowedTools?: string[];
+  actions?: 'refuse' | 'execute';
+  describeTool?: McpToolDescriber;
+  /**
+   * Name of its RFC 9728 metadata route. Default: `mcp.<path segments>.oauth_protected_resource`
+   * (the top-level endpoint's is `mcp.oauth_protected_resource`).
+   */
+  metadataRouteName?: string;
+}
+
+/** What a tool shows in `tools/list` beyond its name, description and schema. */
+export interface McpToolDescription {
+  title?: string;
+  annotations?: {
+    title?: string;
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+  };
+}
+
+export type McpToolDescriber = (tool: {
+  name: string;
+  kind: string;
+  description: string;
+}) => McpToolDescription | undefined | Promise<McpToolDescription | undefined>;
+
+/** Anything Adonis accepts in `route.use()`: a function, or a named/lazy middleware reference. */
+// biome-ignore lint/suspicious/noExplicitAny: mirrors the router's own `use()` parameter
+export type McpRouteMiddleware = any;
 
 /** Identity helper giving `config/mcp.ts` full type-checking. */
 export function defineMcpConfig(config: McpConfig): McpConfig {
