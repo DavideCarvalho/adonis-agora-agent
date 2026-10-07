@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ActionProposalService } from '../src/action-proposal-service.js';
+import { ptBrActionProposalText } from '../src/action-proposal-text.js';
 import { InMemoryAgentStore } from '../src/testing/in-memory-store.js';
 
 describe('scoped proposal decisions', () => {
@@ -77,7 +78,7 @@ describe('scoped proposal decisions', () => {
       expiresAt: null,
       idempotencyKey: 'text',
     });
-    expect(await service.handleTextDecision(reviewer, thread.id, 'confirmar #text')).toMatchObject({
+    expect(await service.handleTextDecision(reviewer, thread.id, 'confirm #text')).toMatchObject({
       proposalDecision: { status: 'applied' },
     });
     expect((await service.list(owner, thread.id)).map((proposal) => proposal.id).sort()).toEqual([
@@ -115,7 +116,7 @@ it('pages beyond a filtered full page and authorizes explicit text IDs beyond th
   expect(
     (await service.listPage(reviewer, thread.id, first.next)).items.map((row) => row.id),
   ).toEqual(['p1000']);
-  expect(await service.handleTextDecision(reviewer, thread.id, 'confirmar #p1000')).toMatchObject({
+  expect(await service.handleTextDecision(reviewer, thread.id, 'confirm #p1000')).toMatchObject({
     proposalDecision: { status: 'applied' },
   });
 });
@@ -147,16 +148,28 @@ describe('text decisions', () => {
   it('lets an unknown #ID fall through as an ordinary message', async () => {
     const { store, actor, thread } = await seeded(['known']);
     const service = new ActionProposalService(store);
-    expect(await service.handleTextDecision(actor, thread.id, 'sim #abc')).toEqual({
+    expect(await service.handleTextDecision(actor, thread.id, 'yes #abc')).toEqual({
       status: 'unmatched',
     });
     expect((await service.list(actor, thread.id))[0]?.decision).toBe('pending');
   });
 
-  it('accepts English commands by default and answers in Portuguese', async () => {
+  it('decides and answers in English by default', async () => {
     const { store, actor, thread } = await seeded(['p']);
     const service = new ActionProposalService(store);
+    expect(await service.handleTextDecision(actor, thread.id, 'sim')).toEqual({
+      status: 'unmatched',
+    });
     expect(await service.handleTextDecision(actor, thread.id, 'Yes!')).toMatchObject({
+      proposalDecision: { status: 'applied' },
+      text: 'Proposal approved and queued to run.',
+    });
+  });
+
+  it('decides and answers in Portuguese with ptBrActionProposalText', async () => {
+    const { store, actor, thread } = await seeded(['p']);
+    const service = new ActionProposalService(store, undefined, ptBrActionProposalText);
+    expect(await service.handleTextDecision(actor, thread.id, 'Sim!')).toMatchObject({
       proposalDecision: { status: 'applied' },
       text: 'Proposta aprovada e enfileirada para execução.',
     });
@@ -171,7 +184,7 @@ describe('text decisions', () => {
         ambiguous: (ids) => `Which one? ${ids.join(' ')}`,
       },
     });
-    expect(await service.handleTextDecision(actor, thread.id, 'sim')).toEqual({
+    expect(await service.handleTextDecision(actor, thread.id, 'yes')).toEqual({
       status: 'unmatched',
     });
     expect(await service.handleTextDecision(actor, thread.id, 'ok')).toMatchObject({

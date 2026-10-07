@@ -4,7 +4,7 @@
 
 Proposal and presentation hooks, and AG-UI fidelity:
 
-- **Text decisions**: English commands work alongside Portuguese (`yes`, `confirm`, `approve`, `no`, `cancel`, `reject`, `deny`, `always in this conversation`). The new `actionProposalText: { vocabulary, replies }` config replaces the word lists and the reply texts; replies stay Portuguese by default. A command naming an `#ID` that is not a proposal of the thread (`sim #abc`) is now an ordinary message for the model instead of a `404`.
+- **Text decisions are English by default** (`yes`, `confirm`, `approve`, `ok`, `no`, `cancel`, `reject`, `deny`, `always in this conversation`), and so are the replies. **Behavior change:** Portuguese commands (`sim`, `confirmar`, `cancelar`, …) and replies were the default; pass `actionProposalText: ptBrActionProposalText` to keep them. The new `actionProposalText: { vocabulary, replies }` config replaces the word lists and the reply texts for any other language. A command naming an `#ID` that is not a proposal of the thread (`sim #abc`) is now an ordinary message for the model instead of a `404`.
 - **`actionProposalWorker.onSettled(proposal)`**: called when a proposal's execution settles, so another channel (a WhatsApp bridge) gets the outcome pushed instead of polling. A throwing listener is logged and does not fail the worker.
 - **`onPresentationError(error, { toolName, toolCallId?, runId?, threadId? })`**: now wired for turns and proposal executions. Default: a warning on the app logger (was `console.warn`).
 - **No genui catalog + `uiCapabilities`**: `ctx.emitUi` no longer throws. A component the client declares is drawn; any other one degrades to its `fallbackText` (or is left out when it has none).
