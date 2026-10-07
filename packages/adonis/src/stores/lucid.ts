@@ -259,6 +259,11 @@ export class LucidAgentStore
     this.autoCreateTables = options.autoCreateTables ?? true;
   }
 
+  /** The database this store writes to — what other Lucid-backed state (a channel store) shares. */
+  get database(): LucidDatabaseLike {
+    return this.db;
+  }
+
   private init(): Promise<void> {
     if (this.ready === null) {
       const ready = this.autoCreateTables ? ensureAgentTables(this.db) : Promise.resolve();

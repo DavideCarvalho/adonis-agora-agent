@@ -88,6 +88,11 @@ export {
   type AnonymousActorOptions,
   AnonymousActorResolver,
 } from './anonymous-actor-resolver.js';
+export {
+  type AttachmentLimits,
+  DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES,
+  DEFAULT_MAX_ATTACHMENT_BYTES,
+} from './attachment-limits.js';
 export { ClosedToolAuthorizer, DefaultToolAuthorizer } from './authorizer.js';
 export * from './base-tool.js';
 export {
@@ -462,11 +467,13 @@ export { LucidGovernanceQueries } from './stores/lucid-governance-queries.js';
 export { LucidPricingStore } from './stores/lucid-pricing.js';
 export {
   AGENT_TABLES,
+  channelStateTableStatements,
   createAgentTables,
   createTableStatements,
   dropAgentTables,
   dropTableStatements,
   ensureAgentTables,
+  ensureChannelStateTable,
   ensureStreamFrameTable,
   schemaRunner,
   streamFrameTableStatement,

@@ -1,8 +1,18 @@
+import type { ActionApprovalMode } from './action-proposal-receipt.js';
 import { assertIndependentActionRuntime } from './action-proposal-runtime.js';
 import { ActionProposalService, ActionProposalServiceError } from './action-proposal-service.js';
-import { textActionProposalReply } from './action-proposal-text.js';
+import {
+  DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY,
+  type TextActionProposalVocabulary,
+  textActionProposalReply,
+} from './action-proposal-text.js';
 import { utcDay } from './agent-deps.js';
 import type { AgentDepsFactory } from './agent-deps-factory.js';
+import {
+  type AttachmentLimits,
+  DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES,
+  DEFAULT_MAX_ATTACHMENT_BYTES,
+} from './attachment-limits.js';
 import type { ChatQueueService } from './chat-queue-service.js';
 import { RunNotActiveError, settleDeadRun } from './dead-run.js';
 import { readElicitationQuestions, validateElicitationAnswer } from './elicitation-input.js';
@@ -31,6 +41,7 @@ import {
 } from './spi/model-catalog.js';
 import { QuotaBlockedError, type QuotaProvider, type QuotaReport } from './spi/quota-provider.js';
 import type { StreamFrame } from './spi/token-stream-sink.js';
+import { LucidAgentStore, type LucidDatabaseLike } from './stores/lucid.js';
 import { threadPersona } from './thread-persona.js';
 import type { ToolCatalogEntry } from './tool-presentation.js';
 import type {
@@ -203,7 +214,7 @@ export class UnknownAgentError extends Error {
 
 export class AttachmentRefusedError extends Error {
   constructor(
-    readonly status: 400 | 403 | 501,
+    readonly status: 400 | 403 | 413 | 415 | 501,
     message: string,
   ) {
     super(message);
@@ -1024,6 +1035,19 @@ export class AgentService {
       throw new ActionProposalServiceError(501, 'Independent proposals are unavailable');
     return this.options.actionProposals.decide(actor, threadId, proposalId, decision, body, via);
   }
+  /** `actionApprovalMode` in `config/agent.ts` — `'blocking'` unless it says `'independent'`. */
+  actionApprovalMode(): ActionApprovalMode {
+    return typeof this.deps.actionApprovalMode === 'function'
+      ? this.deps.actionApprovalMode()
+      : 'blocking';
+  }
+  /**
+   * The words a text decision is made of (`actionProposalText.vocabulary` over the English
+   * defaults) — what a surface tells a person to reply, or what it maps a button to.
+   */
+  actionProposalVocabulary(): TextActionProposalVocabulary {
+    return this.options.actionProposals?.vocabulary ?? DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY;
+  }
   /** The configured chat reply to a proposal decision (see `actionProposalText.replies`). */
   actionProposalReply(
     result: import('./spi/action-proposal-store.js').ActionProposalMutationResult,
@@ -1297,6 +1321,63 @@ export class AgentService {
       }),
     );
     return { ...thread, messages };
+  }
+
+  /**
+   * The size cap and content types an attachment is held to — what the attachment store declares,
+   * else the defaults (20 MiB; images, PDF, plain text, CSV). `null` when no attachment store is
+   * configured, so nothing can be attached.
+   */
+  attachmentLimits(): AttachmentLimits | null {
+    const staging = this.options.attachments;
+    if (staging === undefined) return null;
+    const declared = staging.describe?.() ?? {};
+    return {
+      maxBytes: declared.maxBytes ?? DEFAULT_MAX_ATTACHMENT_BYTES,
+      allowedContentTypes: declared.allowedContentTypes ?? DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES,
+    };
+  }
+
+  /**
+   * Stage a file the server received itself (a channel's media message) for `actor`, held to the same
+   * limits as `POST <path>/attachments` — then name it in a send as `{ mediaId }`. Refused
+   * ({@link AttachmentRefusedError}) with `501` when no attachment store is configured, `415` for a
+   * content type outside the allowlist, `413` past the size cap.
+   */
+  async stageAttachment(
+    actor: Actor,
+    file: { data: Buffer; filename: string; contentType: string },
+  ): Promise<MessageAttachment> {
+    const limits = this.attachmentLimits();
+    const staging = this.options.attachments;
+    if (limits === null || staging === undefined) {
+      throw new AttachmentRefusedError(
+        501,
+        'Attachments are off: set `attachments` in config/agent.ts (e.g. attachmentStores.media()).',
+      );
+    }
+    const contentType = file.contentType.split(';')[0]?.trim().toLowerCase() ?? '';
+    if (!limits.allowedContentTypes.includes(contentType)) {
+      throw new AttachmentRefusedError(415, `content type "${contentType}" is not allowed`);
+    }
+    if (file.data.byteLength > limits.maxBytes) {
+      throw new AttachmentRefusedError(413, `file exceeds the ${limits.maxBytes}-byte limit`);
+    }
+    return staging.stage({
+      data: file.data,
+      filename: file.filename,
+      contentType,
+      sizeBytes: file.data.byteLength,
+      actor,
+    });
+  }
+
+  /**
+   * The Lucid database the agent's store writes to, or `null` when the store is not Lucid — what
+   * shared state that should live next to the threads (a text channel's store) is built on.
+   */
+  lucidDatabase(): LucidDatabaseLike | null {
+    return this.store instanceof LucidAgentStore ? this.store.database : null;
   }
 
   /**

@@ -1,0 +1,375 @@
+---
+title: Text channels
+description: Put the agent on WhatsApp (Evolution API or the Cloud API) and Telegram — one webhook route per channel that verifies, deduplicates, answers in the background, converts markdown, splits long replies, attaches media, asks questions as text, turns proposals into Confirm/Cancel buttons and relays their outcomes.
+icon: MessageCircle
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+`@adonis-agora/agent/channels` connects the agent to messaging apps. You give it an **adapter** (how one provider's webhooks and API look) and two functions — who the sender is, and which thread the conversation continues — and get back a route handler:
+
+```ts
+router.post('/webhooks/whatsapp', channels.handle(evolutionApi({ … }), { actor, thread }))
+```
+
+For every webhook the handler:
+
+1. **Verifies** it is the provider's (a shared token, a signature) — `401` otherwise.
+2. **Parses** the person's message; delivery receipts, the bot's own messages and groups are ignored.
+3. **Deduplicates** by the provider's message id, so a retried webhook starts one turn.
+4. **Answers `200` at once.** The turn runs after the response, so a slow model never makes the provider time out and retry.
+5. **Attaches media** — an image, a voice note, a document — after downloading it and staging it in the [attachment store](/docs/agent/authoring/attachments), or answers why it cannot.
+6. Sends the message to the agent with **text-only capabilities**: every component arrives as its `fallbackText` ([Surfaces](/docs/agent/surfaces#ui-capabilities)). A [text decision](/docs/agent/independent-approvals#text-decisions) ("yes", "confirm #ID") is answered with its reply instead of starting a turn.
+7. Collects the reply, **converts its markdown** to the channel's dialect, **splits** it at the channel's length limit (on paragraph, line or sentence boundaries) and sends it.
+8. Sends a **question** the turn asks (the `ask` tool, an intake) as text with numbered options, and reads the person's next messages as the answers.
+9. Puts any **proposal** the turn left pending to the person — with Confirm/Cancel **buttons** where the channel has them, else with a text instruction in the configured vocabulary — and, once one is approved and executed, relays its outcome.
+
+<Callout type="warn" title="Use independent approvals">
+A text channel wants [`actionApprovalMode: 'independent'`](/docs/agent/independent-approvals). In the default blocking mode an `action` call holds its turn open until someone decides it, which a text channel cannot do: the handler sends the text produced so far plus `texts.blockingApproval` ("This action needs an approval that can only be given in the app.") and stops reading the run, which stays parked until it is decided in the app or expires. Buttons and text decisions work only on independent proposals.
+</Callout>
+
+## WhatsApp with Evolution API
+
+[Evolution API](https://doc.evolution-api.com) v2 connects a WhatsApp number through WhatsApp Web. The adapter also works with hosts that serve the same routes under a prefix (Whatsmiau: `url: 'https://api.whatsmiau.dev/v2'`).
+
+### Environment
+
+```ts title="start/env.ts"
+export default await Env.create(new URL('../', import.meta.url), {
+  // …
+  EVOLUTION_URL: Env.schema.string(),
+  EVOLUTION_INSTANCE: Env.schema.string(),
+  EVOLUTION_API_KEY: Env.schema.string(),
+  // a long random string — the only proof a webhook came from your Evolution server
+  EVOLUTION_WEBHOOK_TOKEN: Env.schema.string(),
+})
+```
+
+```bash title=".env"
+EVOLUTION_URL=https://evolution.example.com
+EVOLUTION_INSTANCE=support
+EVOLUTION_API_KEY=…
+EVOLUTION_WEBHOOK_TOKEN=…
+```
+
+### Agent configuration
+
+```ts title="config/agent.ts"
+import { defineConfig, ptBrActionProposalText } from '@adonis-agora/agent'
+
+export default defineConfig({
+  // …
+  actionApprovalMode: 'independent',
+  backgroundActorResolver: {
+    resolve: async ({ actorRef }) => findCurrentActor(actorRef),
+  },
+  // optional: "sim" / "não" and Portuguese replies for text decisions
+  actionProposalText: ptBrActionProposalText,
+})
+```
+
+### Who is writing, and which thread
+
+The sender is a phone number. Map it to one of your accounts — only numbers someone verified (a code sent to that number, say) — and keep one thread per conversation:
+
+```ts title="app/channels/whatsapp.ts"
+import { channels, evolutionApi } from '@adonis-agora/agent/channels'
+import env from '#start/env'
+import User from '#models/user'
+import ChannelThread from '#models/channel_thread'
+
+export const whatsapp = evolutionApi({
+  url: env.get('EVOLUTION_URL'),
+  instance: env.get('EVOLUTION_INSTANCE'),
+  apiKey: env.get('EVOLUTION_API_KEY'),
+  webhookToken: env.get('EVOLUTION_WEBHOOK_TOKEN'),
+})
+
+export const whatsappWebhook = channels.handle(whatsapp, {
+  // `from` is the sender's number in international format, digits only: 5511999990000
+  async actor(message) {
+    const user = await User.query().where('whatsapp_phone', message.from).whereNotNull('whatsapp_verified_at').first()
+    return user ? { id: String(user.id), roles: user.roles } : null
+  },
+  async thread(actor, message) {
+    const row = await ChannelThread.query()
+      .where({ channel: 'whatsapp', conversation: message.conversation, actorRef: actor.id })
+      .first()
+    return row?.threadId ?? null // null → a new thread, reported below
+  },
+  async onThreadCreated(threadId, actor, message) {
+    await ChannelThread.create({ channel: 'whatsapp', conversation: message.conversation, actorRef: actor.id, threadId })
+  },
+  texts: {
+    approve: 'Confirmar',
+    reject: 'Cancelar',
+    instruction: ({ approve, reject }) => `Responda *${approve}* para confirmar ou *${reject}* para cancelar.`,
+    unknownSender: 'Vincule seu WhatsApp na sua conta para conversar comigo.',
+  },
+})
+```
+
+```ts title="start/routes.ts"
+import router from '@adonisjs/core/services/router'
+import { whatsappWebhook } from '#channels/whatsapp'
+
+router.post('/webhooks/whatsapp', whatsappWebhook)
+```
+
+(`#channels/*` is an import alias — add `"#channels/*": "./app/channels/*.js"` to `package.json`'s `imports`, or import the file by path.)
+
+Webhooks carry no CSRF token: exclude the route from Shield's CSRF check.
+
+```ts title="config/shield.ts"
+csrf: {
+  enabled: true,
+  exceptRoutes: (ctx) => ctx.request.url().startsWith('/webhooks/'),
+  // …
+},
+```
+
+### Pointing Evolution at the route
+
+Set the instance's webhook (in the manager, or `POST {EVOLUTION_URL}/webhook/set/{instance}`) to
+
+```
+https://app.example.com/webhooks/whatsapp?token=<EVOLUTION_WEBHOOK_TOKEN>
+```
+
+with the event `MESSAGES_UPSERT` and "webhook by events" **off** (with it on, Evolution appends the event name to the path). Evolution signs nothing, so the token is what keeps anyone else from posting messages "from" any number. The adapter also reads it from a `:token` route param, an `Authorization: Bearer` header or an `x-webhook-token` header if your setup sends one. `webhookToken: false` turns the check off — only for a server nothing outside can reach.
+
+What the adapter reads: `messages.upsert` with `data.key.fromMe === false` (a missing `fromMe` is never taken as incoming), text from `message.conversation` or `message.extendedTextMessage.text`, button and list replies (`buttonsResponseMessage`, `templateButtonReplyMessage`, `listResponseMessage`, `interactiveResponseMessage`), and media (`imageMessage`, `audioMessage`, `videoMessage`, `documentMessage` — also inside `documentWithCaptionMessage` — and `stickerMessage`, with the caption as the text). Media is downloaded from the webhook's inline `base64` when Evolution's "webhook base64" setting is on, else from `mediaUrl` when the server stores media (S3/MinIO; the `apikey` is only sent when that url is on the Evolution server itself), else with `POST /chat/getBase64FromMediaMessage/{instance}`. It ignores the instance's own messages, other instances, broadcasts and newsletters, and groups unless `groups: true` (the sender is then the participant). A `@lid` chat answers to the jid; `from` is the phone number when Evolution sends it alongside (`remoteJidAlt` / `senderPn`), else the `@lid` jid.
+
+### Buttons on Evolution
+
+Evolution has a buttons endpoint (`POST /message/sendButtons/{instance}`), but WhatsApp does not reliably render buttons sent from a WhatsApp Web session: depending on the WhatsApp version, the phone and Evolution's own version they show, show without working, or do not arrive. So the adapter sends **no buttons by default** — a proposal arrives as its summary and a text instruction ("Reply *yes* to confirm or *no* to cancel."), which always works. `evolutionApi({ …, buttons: true })` opts in; a definite refusal (`400`, `403`, `404`, `422`) from the buttons endpoint falls back to that same text, a timeout or `5xx` does not (the buttons may have been delivered). Test on your own instance before turning it on.
+
+## WhatsApp Cloud API
+
+Meta's [Cloud API](https://developers.facebook.com/docs/whatsapp/cloud-api) signs every webhook and renders reply buttons (up to 3).
+
+```ts title="app/channels/whatsapp_cloud.ts"
+import { channels, whatsappCloud } from '@adonis-agora/agent/channels'
+import env from '#start/env'
+
+export const whatsappCloudWebhook = channels.handle(
+  whatsappCloud({
+    phoneNumberId: env.get('WHATSAPP_PHONE_NUMBER_ID'),
+    accessToken: env.get('WHATSAPP_ACCESS_TOKEN'),
+    appSecret: env.get('WHATSAPP_APP_SECRET'), // X-Hub-Signature-256 is an HMAC under it
+    verifyToken: env.get('WHATSAPP_VERIFY_TOKEN'), // what you type as "Verify token" in the app
+  }),
+  { actor, thread, onThreadCreated }, // as above
+)
+```
+
+```ts title="start/routes.ts"
+router.get('/webhooks/whatsapp-cloud', whatsappCloudWebhook) // the hub.challenge subscription check
+router.post('/webhooks/whatsapp-cloud', whatsappCloudWebhook)
+```
+
+Subscribe the app to the `messages` field. The signature is computed over the raw body, which Adonis's body parser keeps for JSON requests (`request.raw()`); a request without it is refused. Messages for another `phone_number_id` and status updates are ignored. Media (`image`, `audio`, `video`, `document`, `sticker`) is downloaded in two steps with the access token: `GET /{media-id}` for a short-lived url, then that url. Remember the [24-hour window](https://developers.facebook.com/docs/whatsapp/cloud-api/guides/send-messages#customer-service-windows): the handler only answers people who just wrote, so it stays inside it, but an outcome relayed much later may need a template.
+
+## Telegram
+
+```ts title="app/channels/telegram.ts"
+import { channels, telegram } from '@adonis-agora/agent/channels'
+import env from '#start/env'
+
+export const telegramWebhook = channels.handle(
+  telegram({
+    botToken: env.get('TELEGRAM_BOT_TOKEN'),
+    secretToken: env.get('TELEGRAM_WEBHOOK_SECRET'), // [A-Za-z0-9_-], 1–256 characters
+  }),
+  {
+    actor: async (message) => findTelegramUser(message.from), // from = the Telegram user id
+    thread,
+    onThreadCreated,
+  },
+)
+```
+
+```ts title="start/routes.ts"
+router.post('/webhooks/telegram', telegramWebhook)
+```
+
+Register the webhook once:
+
+```bash
+curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://app.example.com/webhooks/telegram","secret_token":"'"$TELEGRAM_WEBHOOK_SECRET"'","allowed_updates":["message","callback_query"]}'
+```
+
+Telegram sends the secret back as `X-Telegram-Bot-Api-Secret-Token`. The adapter reads private-chat text messages, media (the largest `photo` size, `document`, `voice`, `audio`, `video`, `video_note`, `sticker`, with the caption as the text — downloaded through `getFile`, which serves files up to 20 MB) and inline-keyboard presses (`groups: true` for groups), answers each press with `answerCallbackQuery` and removes the keyboard so it cannot be pressed twice. Replies are MarkdownV2 with every reserved character escaped; when Telegram still refuses the formatting, the same text is sent again unformatted. `markdown: false` sends plain text throughout. The update id is the dedupe key.
+
+## What each channel can do
+
+| | `evolutionApi` | `whatsappCloud` | `telegram` |
+| --- | --- | --- | --- |
+| Verification | shared token (query, route param or header) | `X-Hub-Signature-256` HMAC of the raw body; `GET` `hub.challenge` | `X-Telegram-Bot-Api-Secret-Token` |
+| Markdown | WhatsApp (`*bold*`, `_italic_`, `~strike~`, `` ``` ``) | WhatsApp | MarkdownV2, or none |
+| Message length | 4096 (`maxLength`) | 4096 | 4096 |
+| Proposal buttons | off by default (`buttons: true`, up to 3, text fallback) | reply buttons, up to 3 (20-character labels) | inline keyboard |
+| Inbound | text, extended text, button and list replies, media | text, interactive button/list replies, template quick replies, media | text, `callback_query`, media |
+| Media download | inline base64, `mediaUrl`, or `getBase64FromMediaMessage` | Graph API media id → url | `getFile` (≤ 20 MB) |
+| Ignored | own messages, broadcasts, groups (unless `groups`) | other numbers, statuses | bots, edits, groups (unless `groups`) |
+
+Markdown conversion reads the model's markdown and the components' Slack-style fallback text together: `**bold**` and `*bold*` both become the channel's bold, `[label](url)` becomes `label (url)` where the channel has no link syntax, headings become bold lines and `*`/`+` bullets become `-` (WhatsApp) or `•` (Telegram). Code is left alone. `toChannelMarkdown(text, 'whatsapp' | 'telegram' | 'none')` and `splitMessage(text, maxLength)` are exported.
+
+## Proposals: buttons and text
+
+When a turn leaves a proposal pending, the handler sends its confirmation (the tool's `presentation.confirm` title and detail) after the reply:
+
+- **With buttons** — `Confirm` and `Cancel` (`texts.approve` / `texts.reject`), whose ids are `agora:approve:<ref>` / `agora:reject:<ref>` (`ref` is the proposal id's last 32 characters, so it fits Telegram's 64-byte `callback_data`). A press is matched against the thread's proposals and decided through `AgentService.decideActionProposal` — the same scoped, policy-checked decision a [text decision](/docs/agent/independent-approvals#text-decisions) makes — recorded with `via` set to the adapter's name (`'whatsapp'`, `'telegram'`). The reply is the configured `actionProposalText.replies` text.
+- **Without buttons** — the confirmation plus `texts.instruction({ approve, reject })`, where `approve`/`reject` are the first words of the configured vocabulary (`yes`/`no`, or `sim`/`não` with `ptBrActionProposalText`), with `#<proposalId>` appended when the turn left more than one. The person's reply goes through `AgentService.send` like any message and is recognized as a text decision there.
+
+After an approval (by button or text) the handler waits up to `outcomeTimeoutMs` (default 60 s; `0` turns it off) for the [worker](/docs/agent/independent-approvals#execution) to execute it, then sends what the tool's presentation said, else `texts.actionSucceeded` ("Done."), or `texts.actionFailed`.
+
+### Outcomes that settle later
+
+An action that runs after that wait — approved in the web app, retried by the worker, slow — is relayed by `channels.onSettled`, the worker's [settle hook](/docs/agent/independent-approvals#delivering-outcomes-to-other-channels):
+
+```ts title="config/agent.ts"
+import { channels } from '@adonis-agora/agent/channels'
+
+export default defineConfig({
+  // …
+  actionApprovalMode: 'independent',
+  actionProposalWorker: { onSettled: channels.onSettled },
+})
+```
+
+Every turn the handler starts carries `pageContext.channel = { name, conversation }` (merged into your `pageContext`), and a proposal records its turn's page context. `channels.onSettled(proposal)` reads it, finds the adapter `channels.handle()` registered under that name, and sends the outcome text there. Proposals from other surfaces (no `channel`) and channels this process never registered are ignored, so the hook is safe next to a web chat. The handler's own wait and the hook claim the same key in the channel's store, so an outcome is sent once even when both see it — across replicas too, with a shared store.
+
+Adapter names must be unique per process (two WhatsApp adapters need `name: 'whatsapp-sales'` and `name: 'whatsapp-support'`). The adapters are registered when `channels.handle()` runs — in `start/routes.ts`, which the web process that runs the worker loads. `channels.deliverOutcome(proposal)` sends one by hand (`true` when it sent), `channels.adapter(name)` returns a registered adapter.
+
+## Media
+
+A message with an image, a voice note, a video or a document is attached to the turn the way an upload in the web chat is: the handler checks the file's type and declared size against the [attachment store's limits](/docs/agent/authoring/attachments) (its `describe()`, else 20 MB and images, PDF, plain text, CSV), downloads it through the adapter — never past the size limit — stages it with `AgentService.stageAttachment(actor, file)` and sends the message (the caption, or nothing) with `attachments: [{ mediaId }]`. Configure an attachment store for this:
+
+```ts title="config/agent.ts"
+import { defineConfig, attachmentStores } from '@adonis-agora/agent'
+
+export default defineConfig({
+  // …
+  attachments: attachmentStores.media(), // any Drive disk, through @adonis-agora/media
+})
+```
+
+What cannot be attached gets a short answer instead (`texts.mediaRefused(reason, media, limits)`): no attachment store (`'disabled'`), a type outside the allowlist (`'type'` — a WhatsApp voice note is `audio/ogg`, which the default allowlist does not take, so the person is asked to type), a file past the size limit (`'size'`), or a failed download (`'failed'`). A caption still reaches the agent without its file; a file with no caption that could not be attached starts no turn.
+
+## Questions
+
+When a turn asks a question set — the [`ask` tool](/docs/agent/authoring/elicitation) or an intake — the handler sends the text produced so far, then the questions **one at a time**: the prompt in bold, numbered options, and how to answer.
+
+```
+Two quick questions.
+
+*(1/2) Which size?*
+
+1. Small
+2. Large
+
+Reply with the number of your choice.
+Reply *skip* to keep: Small.
+```
+
+The person's next message is the answer, not a new turn: a number or an option's label (several, separated by commas, for a multiple choice), a typed value for a typed question or one that allows free text, or `skip` to keep the pre-picked answers. An answer that does not fit is refused with the reason and the question is asked again. After the last one the handler resumes the run with `AgentService.answer` (`answeredVia` = the adapter's name), and the turn's reply arrives as usual. A question nobody answers within `questionTimeoutMs` (default 30 minutes) is skipped, and the agent proceeds on its own assumptions. The question in progress lives in the channel's store, so the answer may land on another replica. Wording: `texts.questions` (`pickOne`, `pickMany`, `orWrite`, `skipWord`, `keep`, `invalid`, `counter`).
+
+## Options
+
+`channels.handle(adapter, options)`:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `actor(message)` | — | The sender's `Actor`, or `null` to not answer. This is the authentication of every message. |
+| `thread(actor, message)` | — | The thread to continue, or `null`/`undefined` for a new one. |
+| `onThreadCreated(threadId, actor, message)` | — | A new thread was created for the conversation. |
+| `pageContext` | `{ kind: adapter.name }` | An object, or a function of the message. `channel: { name, conversation }` is added to it. |
+| `agentName` | the thread's, else the default | The agent that answers. |
+| `service` | `AgentService` from the container | Anything with the same `send`/`subscribe`/… methods (`ChannelTurnService`). |
+| `store` | `lucidChannelStore()` when the agent store is Lucid, else in-process memory | Where message ids, questions in progress and relayed outcomes are kept (`ChannelStore`). |
+| `dedupeTtlMs` | 24 h | How long a message id is remembered. |
+| `timeoutMs` | 5 min | Stop waiting for a turn, cancel it and send what it produced. |
+| `outcomeTimeoutMs` | 60 s | How long to wait for an approved proposal to execute. |
+| `questionTimeoutMs` | 30 min | How long a question waits for its answer. |
+| `texts` | English | `approve`, `reject`, `proposal(p)`, `instruction(commands)`, `blockingApproval`, `failed`, `actionSucceeded`, `actionFailed`, `mediaRefused(reason, media, limits)`, `questions`, `unknownSender`. |
+| `onError(error, message)` | `console.error` | A message whose handling threw (after the `200`). |
+
+A run that fails sends what it produced and `texts.failed`. A message that arrives while the conversation's previous turn is still running is [queued](/docs/agent/streaming-and-http#message-queue) and answered when its turn runs.
+
+### The channel store and several replicas
+
+The handler keeps three short-lived things: the provider message ids it took (a retried webhook starts one turn), the question a conversation is answering, and the outcomes it relayed. Each entry expires.
+
+- **Lucid store (the default with `stores.lucid()`).** When the agent's own store is Lucid, the handler uses `lucidChannelStore()` over the same database: one row per key in `agent_channel_state` (`key` primary key, `value`, `expires_at`). A claim is a single `INSERT … ON CONFLICT DO NOTHING` (`INSERT IGNORE` on MySQL), so the primary key is the lock across replicas; expired rows are deleted as claims come in. The table is created on first use and by `createAgentTables` / the published migration, like the other agent tables. Chosen because an app on the Lucid store already has a database every replica shares, and needs nothing else.
+- **In memory** otherwise — one process only.
+- **Redis**, or another connection:
+
+```ts
+import redis from '@adonisjs/redis/services/main'
+import db from '@adonisjs/lucid/services/db'
+import { channels, lucidChannelStore, redisChannelStore } from '@adonis-agora/agent/channels'
+
+channels.handle(adapter, { …, store: redisChannelStore(redis) }) // SET … PX … NX, GET, DEL
+channels.handle(adapter, { …, store: lucidChannelStore(db, { connection: 'pg', table: 'wa_state' }) })
+```
+
+`lucidChannelStore(db, { connection?, table?, autoCreateTables?, purgeEveryMs? })`; anything implementing `ChannelStore` (`claim`, `get`, `set`, `delete`, with TTLs) works. The turn itself runs on the replica that took the webhook; its frames reach it through whatever [token sink](/docs/agent/redis-streaming) is configured.
+
+<Callout type="info" title="Background work and deploys">
+The handler answers `200` before the turn runs, so a process that stops mid-turn loses that answer (the provider will not retry an acknowledged webhook). `await handler.drain()` waits for every turn the handler started — call it from a shutdown hook, and in tests.
+</Callout>
+
+## Writing an adapter
+
+Any object of the `ChannelAdapter` shape works:
+
+```ts title="app/channels/my_sms.ts"
+import type { ChannelAdapter } from '@adonis-agora/agent/channels'
+
+export const sms: ChannelAdapter = {
+  name: 'sms', // the dedupe prefix and the decision's `via`
+  capabilities: { markdown: 'none', maxLength: 1600 }, // `buttons: n` when it has reply buttons
+  verify: (request) => checkSignature(request.header('x-signature'), request.rawBody),
+  parse(body) {
+    const { MessageSid, From, Body } = body as Record<string, string>
+    if (!MessageSid || !Body) return null
+    return { id: MessageSid, from: From, conversation: From, text: Body, raw: body }
+  },
+  async send(conversation, message) {
+    // `message.buttons` only arrives when `capabilities.buttons` is 2 or more;
+    // `message.fallbackText` is the same message as text, for when the buttons are refused.
+    await smsApi.send(conversation, message.buttons ? message.fallbackText : message.text)
+  },
+}
+```
+
+- `verify(request)` sees `method`, `url` (with the query string), `header(name)`, `params`, the parsed `body` and the `rawBody` string. Compare secrets in constant time.
+- `parse(body)` returns one `InboundMessage`, an array, or `null`. `id` must be the provider's id for the message — retries carry the same one. A button press sets `buttonId` to the pressed button's id.
+- `challenge(request)` (optional) answers a request that is not a message, such as a subscription check, before `verify`.
+- `acknowledge(message)` (optional) runs in the background before the turn — Telegram's `answerCallbackQuery`.
+- `parse` may put files on `message.media` (`{ kind, contentType?, filename?, sizeBytes?, ref }`); `download(media, { maxBytes })` (optional) fetches one and throws `ChannelMediaTooLargeError` past `maxBytes` without reading the rest. Without `download`, media is answered with `texts.mediaRefused('disabled', …)`.
+- `send(conversation, message)` throws when the provider refused. `ChannelDeliveryError` (exported) carries the status, and `definite` is true for a `400`/`403`/`404`/`422`, when sending something else instead cannot duplicate the message.
+
+## Testing
+
+`handler.drain()` resolves once every turn the handler started has finished, so a test can post a webhook, drain, and look at what was sent. Every built-in adapter takes a `fetch` option for a fake:
+
+```ts title="tests/functional/telegram_webhook.spec.ts"
+const sent: unknown[] = []
+const adapter = telegram({
+  botToken: 'test',
+  secretToken: 'secret',
+  fetch: async (_url, init) => {
+    sent.push(JSON.parse(String(init?.body)))
+    return new Response('{"ok":true}')
+  },
+})
+const webhook = channels.handle(adapter, { actor, thread, onThreadCreated })
+// … route it, post an update with the secret header, then:
+await webhook.drain()
+```
+
+With a [`FakeModelProvider`](/docs/agent/testing) the whole flow runs without a model.

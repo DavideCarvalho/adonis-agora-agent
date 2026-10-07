@@ -1,6 +1,6 @@
 ---
 title: Lucid
-description: Persist threads, messages, tool calls, and token usage to Postgres, MySQL, or SQLite through @adonisjs/lucid — the ten agent tables, the published migration, and the in-memory twin for tests.
+description: Persist threads, messages, tool calls, and token usage to Postgres, MySQL, or SQLite through @adonisjs/lucid — the eleven agent tables, the published migration, and the in-memory twin for tests.
 icon: HardDrive
 ---
 
@@ -18,7 +18,7 @@ The `lucid` store persists an agent's durable state — threads, messages, tool 
 node ace configure @adonis-agora/agent
 ```
 
-`configure` (run by `add`) registers the provider, publishes `config/agent.ts`, and publishes the migration that creates the ten agent tables.
+`configure` (run by `add`) registers the provider, publishes `config/agent.ts`, and publishes the migration that creates the eleven agent tables.
 
 </Step>
 <Step>
@@ -73,7 +73,7 @@ For an existing installation whose old migration is already recorded, create a *
 
 ## What the migration creates
 
-Ten tables (names from the `AGENT_TABLES` constant; `agent_run`, the run lifecycle, is described under [Run tracking](/docs/agent/governance/quota-and-cost)):
+Eleven tables (names from the `AGENT_TABLES` constant; `agent_run`, the run lifecycle, is described under [Run tracking](/docs/agent/governance/quota-and-cost)):
 
 | Table | Purpose |
 | --- | --- |
@@ -86,6 +86,7 @@ Ten tables (names from the `AGENT_TABLES` constant; `agent_run`, the run lifecyc
 | `agent_queued_message` | the [message queue](/docs/agent/streaming-and-http#message-queue): messages sent while a turn was running, per thread, in run order (`position`), with everything the send carried (actor, attachments, agent, model, page context, `interrupt`). The thread's pause lives in `agent_thread.queue_pause` |
 | `agent_confirm_token` | confirm tokens already spent, for single-use [confirmed writes](/docs/agent/mcp#writes-with-a-human-gate-defineconfirmedtool) (`LucidConfirmTokenStore`): the token's SHA-256 (PK), actor, tool, `expires_at` |
 | `agent_stream_frame` | the frame buffer of the [Lucid token sink](/docs/agent/sql-streaming) (`tokenSinks.lucid()`): one row per stream frame of a run, numbered per run (`seq`), purged after a TTL. Empty unless that sink is selected |
+| `agent_channel_state` | [text channels'](/docs/agent/channels#the-channel-store-and-several-replicas) short-lived state (`lucidChannelStore`): provider message ids already taken, questions in progress, outcomes relayed — `key` (PK), `value`, `expires_at`. Empty unless a channel uses it |
 
 `configure` also publishes `create_agent_rag_chunks` — the [pgvector](/docs/agent/retrieval/pgvector) RAG chunk table, Postgres-only. Delete it if you don't use pgvector RAG.
 
@@ -201,7 +202,7 @@ editing an applied migration is safe, Lucid tracks it by file name.
 `createAgentTables` also ALTERs in the columns a newer release added to an existing table (the
 `agent_message` columns `reasoning`, `reasoning_ms` and `ui`, `agent_run.parent_run_id`, the
 `run_id` columns, `agent_thread.queue_pause`) and creates the tables one added
-(`agent_queued_message`, `agent_confirm_token`, `agent_stream_frame`). With `autoCreateTables: true` that happens as the app starts. With it off, nothing
+(`agent_queued_message`, `agent_confirm_token`, `agent_stream_frame`, `agent_channel_state`). With `autoCreateTables: true` that happens as the app starts. With it off, nothing
 runs it for you: after upgrading, add a migration whose `up()` calls `createAgentTables` again (a
 copy of the published `create_agent_tables` migration under a new timestamp does exactly that) —
 it only adds what is missing.

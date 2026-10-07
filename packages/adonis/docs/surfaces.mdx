@@ -319,42 +319,32 @@ Choose AG-UI when the client is someone else's (CopilotKit, `@ag-ui/client`, a P
 
 ### Text-only channels — WhatsApp and similar
 
-**Backend only.** There is no frontend of yours: the channel's app is the client. A webhook resolves the sender to an actor and the conversation to a thread, sends the message with text-only capabilities, and relays the text frames:
+**Backend only.** There is no frontend of yours: the channel's app is the client. `@adonis-agora/agent/channels` turns a provider's webhook into a turn: it resolves the sender to an actor and the conversation to a thread, sends the message with text-only capabilities (`uiCapabilities: { components: [] }`), and relays the reply — the model's prose and, where `present` pushed `OrderSummary`, its `fallbackText`, in the order they were produced — converted to the channel's markdown and split at its length limit:
 
-```ts title="app/controllers/whatsapp_webhook_controller.ts (backend)"
-import { inject } from '@adonisjs/core'
-import type { HttpContext } from '@adonisjs/core/http'
-import { AgentService } from '@adonis-agora/agent'
+```ts title="start/routes.ts (backend)"
+import router from '@adonisjs/core/services/router'
+import { channels, evolutionApi } from '@adonis-agora/agent/channels'
+import env from '#start/env'
 
-@inject()
-export default class WhatsappWebhookController {
-  constructor(private readonly agent: AgentService) {}
-
-  async handle({ request }: HttpContext) {
-    const { from, text } = request.body()
-    const actor = await whatsappActor(from)         // your identity mapping
-    const threadId = await whatsappThread(actor)    // your thread per conversation
-
-    const sent = await this.agent.send({
-      actor,
-      threadId,
-      message: text,
-      uiCapabilities: { components: [] },          // nothing is drawn: components arrive as text
-      pageContext: { kind: 'whatsapp' },
-    })
-    if ('proposalDecision' in sent) return whatsapp.reply(from, sent.text)
-    if (sent.queued === true) return                 // runs after the turn in progress
-
-    let reply = ''
-    for await (const frame of this.agent.subscribe(sent.runId)) {
-      if (frame.t === 'text') reply += frame.v
-    }
-    await whatsapp.reply(from, reply)
-  }
-}
+router.post(
+  '/webhooks/whatsapp',
+  channels.handle(
+    evolutionApi({
+      url: env.get('EVOLUTION_URL'),
+      instance: env.get('EVOLUTION_INSTANCE'),
+      apiKey: env.get('EVOLUTION_API_KEY'),
+      webhookToken: env.get('EVOLUTION_WEBHOOK_TOKEN'),
+    }),
+    {
+      actor: (message) => whatsappActor(message.from), // your identity mapping
+      thread: (actor, message) => whatsappThread(actor, message.conversation), // null → new thread
+      onThreadCreated: (threadId, actor, message) => saveWhatsappThread(threadId, actor, message),
+    },
+  ),
+)
 ```
 
-`reply` holds the model's prose and, where `present` pushed `OrderSummary`, its `fallbackText` — in the order they were produced. `pageContext` is free-form: tools and prompt builders read `ctx.pageContext.kind` to tailor wording; nothing in the library interprets it.
+It verifies the webhook, deduplicates provider retries, answers `200` before the turn runs, and puts pending proposals to the person as Confirm/Cancel buttons where the channel has them. WhatsApp Cloud API and Telegram adapters, the capability table and custom adapters are on [Text channels](/docs/agent/channels). `pageContext` (default `{ kind: '<channel>' }`) is free-form: tools and prompt builders read `ctx.pageContext.kind` to tailor wording; nothing in the library interprets it.
 
 To send a table or chart as an image instead, keep `uiCapabilities` listing it, collect the `t: 'component'` frames as well, and route them through the [server renderer](/docs/agent/authoring/component-rendering#render-html-png-or-pdf) and your WhatsApp media upload. The library never sends attachments itself.
 
@@ -368,4 +358,4 @@ In the default blocking mode an `action` call keeps that stream open until someo
 
 This happens on the **backend** (a worker), after the turn; each surface picks the result up from the thread.
 
-With [independent approvals](/docs/agent/independent-approvals), an approved action runs after its turn has ended. The worker executes it with the capabilities and page context recorded when the proposal was made, so its `present` output is negotiated for the channel that asked. The outcome is admitted into the thread as an assistant message — the result summary followed by the text of any component the client could not draw — with the drawable components on its `ui` list. A text channel delivers it by reading the thread (or `GET <path>/threads/:id/action-proposals`) and relaying the new message; nothing pushes it to the channel.
+With [independent approvals](/docs/agent/independent-approvals), an approved action runs after its turn has ended. The worker executes it with the capabilities and page context recorded when the proposal was made, so its `present` output is negotiated for the channel that asked. The outcome is admitted into the thread as an assistant message — the result summary followed by the text of any component the client could not draw — with the drawable components on its `ui` list. A channel served by [`channels.handle`](/docs/agent/channels) relays it to the conversation with `actionProposalWorker: { onSettled: channels.onSettled }`; any other client reads the thread (or `GET <path>/threads/:id/action-proposals`) and relays the new message itself.
