@@ -124,6 +124,7 @@ export default class A2aProvider {
       timeoutMs: config.timeoutMs ?? 120_000,
       maxBodyBytes: config.maxBodyBytes ?? 1024 * 1024,
       ...(config.roles !== undefined ? { roles: config.roles } : {}),
+      ...(config.actor !== undefined ? { actor: config.actor } : {}),
     });
   }
 

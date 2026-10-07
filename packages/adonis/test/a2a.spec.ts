@@ -762,3 +762,47 @@ describe('bring your own runtime (A2aTurnService)', () => {
     });
   });
 });
+
+describe('actor hook', () => {
+  it("maps the caller to the app's actor, keeps personal_agent, and says the channel is a2a", async () => {
+    const seen: any[] = [];
+    const service = {
+      chat: async (params: unknown) => {
+        seen.push(params);
+        return { runId: 'r1', threadId: 'thread-1' };
+      },
+      subscribe: async function* () {
+        yield { t: 'text', v: 'ok' } as never;
+      },
+      approve: async () => {},
+      reject: async () => {},
+      skip: async () => {},
+      cancel: async () => {},
+    };
+    const handle = createA2aHandler({
+      path: 'a2a',
+      brands,
+      auth: fakeAuth,
+      store: new InMemoryA2aStore(),
+      service: service as never,
+      registry: new ToolRegistry(),
+      actions: 'approve-delegated',
+      timeoutMs: 5_000,
+      maxBodyBytes: 64 * 1024,
+      // e.g. an app whose actor is the account's main PROFILE, and a hook that "forgets" the role
+      actor: async (caller, defaults) => ({
+        id: `profile-of-${caller.delegation?.accountId}`,
+        roles: (defaults.roles ?? []).filter((role) => role !== PERSONAL_AGENT_ROLE),
+      }),
+    });
+    await call(handle, 'POST', '/a2a/support/message:send', {
+      headers: { authorization: 'Bearer deleg|u1|acct-1|orders:read' },
+      body: send('hi'),
+    });
+    expect(seen[0].actor).toEqual({
+      id: 'profile-of-acct-1',
+      roles: [PERSONAL_AGENT_ROLE, 'scope:orders:read'],
+    });
+    expect(seen[0].pageContext).toEqual({ channel: 'a2a' });
+  });
+});

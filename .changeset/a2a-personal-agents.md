@@ -10,6 +10,7 @@ Expose registered agents to personal agents (ChatGPT, Meta AI, a user's own assi
 - `action` calls that park for approval are approved when the delegation grants one of the tool's roles, and rejected otherwise (`actions: 'reject'` rejects all of them). Question sets are skipped.
 - `request_permission` lets the model ask for a scope the user has not granted. The reply becomes a `TASK_STATE_AUTH_REQUIRED` step-up with a consent link.
 - Replies under delegation carry a signed receipt listing the tools that ran under a delegated scope.
+- `actor` maps the caller to the app's own actor (e.g. a profile instead of the account); turns carry `pageContext.channel = 'a2a'`.
 - `service` plugs in an app's own runtime (an `A2aTurnService` adapter) instead of the agent provider's `AgentService`.
 
 **Security:** the agent provider now wraps the configured authorizer with `personalAgentGate`. An actor with the `personal_agent` role reaches only tools that declare one of its roles; tools with no `roles` are out of its reach. Its memory and skill scopes resolve to none, so it never reads or writes what the assistant remembers about the user. Nothing changes for any other actor.

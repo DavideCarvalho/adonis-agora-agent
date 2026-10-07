@@ -58,6 +58,8 @@ export interface A2aHandlerOptions {
   maxBodyBytes: number;
   /** Roles of the actor a turn runs as. Default: the personal-agent role plus the delegated scopes. */
   roles?: (caller: A2aCaller) => string[];
+  /** Map the caller to the app's actor (see `A2aConfig.actor`). */
+  actor?: (caller: A2aCaller, defaults: Actor) => Actor | Promise<Actor>;
 }
 
 const DEFAULT_PAGE_SIZE = 50;
@@ -70,13 +72,16 @@ export function personalAgentActorId(issuer: string, sub: string): string {
   return `pa:${createHash('sha256').update(`${issuer}\n${sub}`).digest('hex').slice(0, 40)}`;
 }
 
-function actorFor(caller: A2aCaller, options: A2aHandlerOptions): Actor {
+async function actorFor(caller: A2aCaller, options: A2aHandlerOptions): Promise<Actor> {
   const extra = options.roles?.(caller) ?? (caller.delegation?.scopes ?? []).map(scopeRole);
-  return {
+  const defaults: Actor = {
     id: caller.delegation?.accountId ?? personalAgentActorId(caller.issuer, caller.sub),
-    // `personal_agent` is ALWAYS there: it is what puts the actor behind `personalAgentGate`.
     roles: [...new Set([PERSONAL_AGENT_ROLE, ...extra])],
   };
+  const actor = options.actor ? await options.actor(caller, defaults) : defaults;
+  // `personal_agent` is ALWAYS there, whatever the hook returned: it is what puts the actor behind
+  // `personalAgentGate`.
+  return { ...actor, roles: [...new Set([PERSONAL_AGENT_ROLE, ...(actor.roles ?? [])])] };
 }
 
 /** What a `messageId` keeps for its retries: the status and the body they get back. */
@@ -205,7 +210,7 @@ export function createA2aHandler(options: A2aHandlerOptions) {
 
   async function send(ctx: HttpContext, brand: A2aBrand, caller: A2aCaller): Promise<void> {
     const input = parseSendMessage(await readBody(ctx, options.maxBodyBytes));
-    const actor = actorFor(caller, options);
+    const actor = await actorFor(caller, options);
     const accountId = caller.delegation?.accountId ?? null;
 
     if (input.contextId !== undefined) {

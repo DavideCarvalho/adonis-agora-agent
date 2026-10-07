@@ -1,4 +1,5 @@
 import type { ApplicationService } from '@adonisjs/core/types';
+import type { Actor } from '../types.js';
 import type { A2aAuth, A2aAuthFactory, A2aCaller } from './auth.js';
 import type { A2aCardInput } from './handler.js';
 import type { A2aStore } from './store.js';
@@ -63,6 +64,12 @@ export interface A2aConfig {
     | ((ctx: { app: ApplicationService }) => A2aTurnService | Promise<A2aTurnService>);
   /** Roles of the actor a turn runs as. Default: `personal_agent` plus the delegated scopes. */
   roles?: (caller: A2aCaller) => string[];
+  /**
+   * Map the caller to the actor your tools expect — e.g. an app whose actor is a PROFILE, not the
+   * account. Gets the default actor (account id under delegation, `pa:<hash>` without; the roles
+   * above). `personal_agent` is added back whatever this returns.
+   */
+  actor?: (caller: A2aCaller, defaults: Actor) => Actor | Promise<Actor>;
 }
 
 /** Identity helper giving `config/a2a.ts` full type-checking. */

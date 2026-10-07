@@ -83,6 +83,8 @@ export async function runA2aTurn(
     actor: input.actor,
     message: input.text,
     agentName: input.agentName,
+    // A prompt can tell it is answering a personal agent, not the person in the app.
+    pageContext: { channel: 'a2a' },
     ...(input.threadId !== undefined ? { threadId: input.threadId } : { transient: true }),
   });
 

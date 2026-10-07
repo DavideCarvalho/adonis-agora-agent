@@ -68,6 +68,9 @@ so nothing is lost.
 
 ## What a personal agent can reach
 
+Every turn gets `pageContext: { channel: 'a2a' }`, so a prompt can tell it is answering a personal
+agent rather than the person in your app.
+
 A turn from a personal agent runs as an actor with the role **`personal_agent`** — plus, under
 delegation, one **`scope:<id>`** role per delegated scope (namespaced, so a scope can never pose as one
 of your app's roles), and the user's account id as the actor id. Without delegation
@@ -133,6 +136,8 @@ use (`store: 'lucid'`, the default). `store: 'memory'` keeps them in-process; an
 | `timeoutMs` | `120000` | A turn that runs longer is cancelled (`INTERNAL`). |
 | `maxBodyBytes` | 1 MiB | |
 | `roles` | `scope:<id>` per delegated scope | `(caller) => string[]` — extra roles; `personal_agent` is always added. |
+| `actor` | account id / `pa:<hash>` | `(caller, defaults) => Actor` — map the caller to the actor your tools expect (e.g. a profile, not the account). `personal_agent` is added back. |
+| `service` | `AgentService` | Your own turn runtime — see below. |
 
 ## Bring your own runtime
 
