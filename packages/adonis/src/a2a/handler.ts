@@ -4,6 +4,7 @@ import type { AgentService } from '../agent-service.js';
 import type { ToolRegistry } from '../tool-registry.js';
 import type { Actor } from '../types.js';
 import type { A2aAuth, A2aCaller } from './auth.js';
+import { scopeRole } from './gate.js';
 import { PERSONAL_AGENT_ROLE } from './permission-tool.js';
 import {
   A2A_CONTENT_TYPE,
@@ -70,14 +71,26 @@ export function personalAgentActorId(issuer: string, sub: string): string {
 }
 
 function actorFor(caller: A2aCaller, options: A2aHandlerOptions): Actor {
-  const roles = options.roles?.(caller) ?? [
-    PERSONAL_AGENT_ROLE,
-    ...(caller.delegation?.scopes ?? []),
-  ];
+  const extra = options.roles?.(caller) ?? (caller.delegation?.scopes ?? []).map(scopeRole);
   return {
     id: caller.delegation?.accountId ?? personalAgentActorId(caller.issuer, caller.sub),
-    roles,
+    // `personal_agent` is ALWAYS there: it is what puts the actor behind `personalAgentGate`.
+    roles: [...new Set([PERSONAL_AGENT_ROLE, ...extra])],
   };
+}
+
+/** What a `messageId` keeps for its retries: the status and the body they get back. */
+interface StoredReply {
+  status: number;
+  body: unknown;
+}
+
+/**
+ * Where the FIRST message of a conversation is claimed: it has no `contextId` yet, so a retry of it
+ * could only be told apart from a new conversation by this per-(brand, personal-agent user) slot.
+ */
+function newConversationKey(brand: string, caller: A2aCaller): string {
+  return `new:${brand}:${personalAgentActorId(caller.issuer, caller.sub)}`;
 }
 
 function sendA2a(ctx: HttpContext, status: number, body: unknown): void {
@@ -193,9 +206,8 @@ export function createA2aHandler(options: A2aHandlerOptions) {
     const actor = actorFor(caller, options);
     const accountId = caller.delegation?.accountId ?? null;
 
-    let contextId = input.contextId;
-    if (contextId !== undefined) {
-      const context = await options.store.getContext(contextId);
+    if (input.contextId !== undefined) {
+      const context = await options.store.getContext(input.contextId);
       // Another user's or another brand's context is indistinguishable from none (PACT §4.2).
       if (
         !context ||
@@ -205,16 +217,36 @@ export function createA2aHandler(options: A2aHandlerOptions) {
       ) {
         throw new A2aError('INVALID_PARAMS', 'Unknown contextId');
       }
-      // Once it ran as one account, a token for another is refused (PACT §5.5).
-      if (accountId !== null && !(await options.store.bindAccount(contextId, accountId))) {
+      // A conversation that ran as an account holds that account's data: it continues only under
+      // a delegation for it — not identity-only (a revoked grant), not another account (§5.5).
+      if (context.accountRef !== null && accountId === null) {
+        throw new A2aError('INVALID_PARAMS', 'contextId needs the delegation it ran under');
+      }
+      if (accountId !== null && !(await options.store.bindAccount(input.contextId, accountId))) {
         throw new A2aError('INVALID_PARAMS', 'contextId belongs to another account');
       }
-      const claim = await options.store.claimMessage(contextId, input.messageId);
-      if (claim.status === 'done') return sendA2a(ctx, 200, claim.reply);
-      if (claim.status === 'pending') {
-        throw new A2aError('INVALID_PARAMS', 'messageId is already in use in this context');
-      }
     }
+
+    const claimKey = input.contextId ?? newConversationKey(brand.id, caller);
+    const claim = await options.store.claimMessage(claimKey, input.messageId);
+    if (claim.status === 'done') {
+      const stored = claim.reply as StoredReply;
+      return sendA2a(ctx, stored.status, stored.body);
+    }
+    if (claim.status === 'pending') {
+      throw new A2aError('INVALID_PARAMS', 'messageId is already in use in this context');
+    }
+
+    let threadId = input.contextId;
+    const finish = async (reply: StoredReply) => {
+      await options.store.completeMessage(claimKey, input.messageId, reply);
+      // A first message is also answerable from its new context — a retry may carry it by now.
+      if (threadId !== undefined && threadId !== claimKey) {
+        await options.store.claimMessage(threadId, input.messageId);
+        await options.store.completeMessage(threadId, input.messageId, reply);
+      }
+      sendA2a(ctx, reply.status, reply.body);
+    };
 
     let turn: Awaited<ReturnType<typeof runA2aTurn>>;
     try {
@@ -222,34 +254,38 @@ export function createA2aHandler(options: A2aHandlerOptions) {
         actor,
         text: input.text,
         agentName: brand.agentName,
-        ...(contextId !== undefined ? { threadId: contextId } : {}),
+        ...(input.contextId !== undefined ? { threadId: input.contextId } : {}),
         delegatedScopes: caller.delegation?.scopes ?? null,
         actions: options.actions,
         timeoutMs: options.timeoutMs,
-        onStarted: async (threadId) => {
-          if (contextId !== undefined) return;
-          contextId = threadId;
+        onStarted: async (id) => {
+          threadId = id;
+          if (input.contextId !== undefined) return;
           await options.store.createContext({
-            id: threadId,
+            id,
             brand: brand.id,
             agentIssuer: caller.issuer,
             agentSub: caller.sub,
             accountRef: accountId,
           });
-          await options.store.claimMessage(threadId, input.messageId);
         },
       });
     } catch (error) {
-      if (contextId !== undefined) await options.store.releaseMessage(contextId, input.messageId);
+      await options.store.releaseMessage(claimKey, input.messageId);
       if ((error as { code?: string }).code === 'run_active') {
         throw new A2aError('INVALID_PARAMS', 'contextId already has a message in progress');
       }
       throw error;
     }
-    const threadId = turn.threadId;
+
     if (turn.error !== null) {
-      await options.store.releaseMessage(threadId, input.messageId);
-      throw new A2aError('INTERNAL', 'The agent could not answer');
+      const failure = new A2aError('INTERNAL', 'The agent could not answer');
+      // Something already ran on the account: a retry must get this failure back, not run it again.
+      if (turn.actions.length > 0) {
+        return finish({ status: failure.httpStatus, body: failure.toJSON() });
+      }
+      await options.store.releaseMessage(claimKey, input.messageId);
+      throw failure;
     }
 
     const receipt = caller.delegation
@@ -260,7 +296,7 @@ export function createA2aHandler(options: A2aHandlerOptions) {
       : {};
     const message: A2aMessage = {
       messageId: randomUUID(),
-      contextId: threadId,
+      contextId: turn.threadId,
       role: 'ROLE_AGENT',
       parts: [{ text: turn.text }],
       ...(Object.keys(receipt).length > 0 ? { metadata: receipt } : {}),
@@ -276,16 +312,14 @@ export function createA2aHandler(options: A2aHandlerOptions) {
         reply = {
           task: {
             id: `t-${randomUUID()}`,
-            contextId: threadId,
+            contextId: turn.threadId,
             status: { state: 'TASK_STATE_AUTH_REQUIRED', message },
             metadata: { ...receipt, ...stepUp },
           },
         };
       }
     }
-
-    await options.store.completeMessage(threadId, input.messageId, reply);
-    sendA2a(ctx, 200, reply);
+    await finish({ status: 200, body: reply });
   }
 
   function listTasks(ctx: HttpContext): void {
@@ -305,14 +339,23 @@ export function createA2aHandler(options: A2aHandlerOptions) {
     if (path === '/.well-known/agent-card.json' && options.rootCardBrand !== undefined) {
       const brand = options.brands.get(options.rootCardBrand);
       if (!brand) return false;
-      if (method !== 'GET') return sendBare(ctx, 405), true;
+      if (method !== 'GET') {
+        sendBare(ctx, 405);
+        return true;
+      }
       await card(ctx, brand);
       return true;
     }
     if (!path.startsWith(prefix)) return false;
 
     const [brandSegment = '', ...restSegments] = path.slice(prefix.length).split('/');
-    const brand = options.brands.get(decodeURIComponent(brandSegment));
+    let brandId: string;
+    try {
+      brandId = decodeURIComponent(brandSegment);
+    } catch {
+      brandId = '';
+    }
+    const brand = options.brands.get(brandId);
     const route = brand ? matchRoute(method, restSegments.join('/')) : 404;
     if (!brand || route === 404 || route === 405) {
       sendBare(ctx, route === 405 ? 405 : 404);

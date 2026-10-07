@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { AgentService } from '../agent-service.js';
 import type { ToolRegistry } from '../tool-registry.js';
 import type { Actor } from '../types.js';
+import { scopeRole } from './gate.js';
 import { PERMISSION_COMPONENT } from './permission-tool.js';
 
 /**
@@ -75,21 +76,36 @@ export async function runA2aTurn(
     agentName: input.agentName,
     ...(input.threadId !== undefined ? { threadId: input.threadId } : { transient: true }),
   });
-  await input.onStarted?.(threadId);
 
   const result: A2aTurnResult = { threadId, text: '', permission: null, actions: [], error: null };
   const delegated = input.delegatedScopes ?? [];
-  const scopesOf = (tool: string) =>
-    delegated.filter((scope) => (registry.spec(tool)?.roles ?? []).includes(scope));
+  // The delegated scopes a tool's roles name (as `scope:<id>` roles).
+  const scopesOf = (tool: string) => {
+    const roles = registry.spec(tool)?.roles ?? [];
+    return delegated.filter((scope) => roles.includes(scopeRole(scope)));
+  };
   // Announced calls, by id, until their output says they ran.
   const calls = new Map<string, { name: string; input: unknown }>();
-  const timer = setTimeout(() => {
-    result.error = 'timeout';
-    void service.cancel(runId).catch(() => {});
-  }, input.timeoutMs);
+  const cancel = () => service.cancel(runId).catch(() => {});
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // A HARD deadline: if cancelling does not end the stream, the request still answers.
+  const deadline = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), input.timeoutMs);
+  });
+  const stream = service.subscribe(runId)[Symbol.asyncIterator]();
 
   try {
-    for await (const frame of service.subscribe(runId)) {
+    await input.onStarted?.(threadId);
+    for (;;) {
+      const next = await Promise.race([stream.next(), deadline]);
+      if (next === 'timeout') {
+        result.error = 'timeout';
+        await cancel();
+        break;
+      }
+      if (next.done) break;
+      const frame = next.value;
       if (frame.t === 'text') {
         result.text += frame.v;
       } else if (frame.t === 'component' && frame.name === PERMISSION_COMPONENT) {
@@ -135,8 +151,14 @@ export async function runA2aTurn(
         result.error = frame.message;
       }
     }
+  } catch (error) {
+    // Nobody will read this run's stream any more: leaving it parked would hold the thread's
+    // active stream, and every later message to this context would be refused as busy.
+    await cancel();
+    throw error;
   } finally {
     clearTimeout(timer);
+    void stream.return?.();
   }
   return result;
 }

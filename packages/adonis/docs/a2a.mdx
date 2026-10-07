@@ -13,8 +13,8 @@ exposes your registered agents to them over [A2A 1.0](https://a2a-protocol.org) 
 - **Identity** — every request carries a JWT the personal agent signs. You know which agent is calling
   and for which of its users. Without more, the agent talks to yours the way a chat widget would.
 - **Delegation** — the user signs in on *your* app and approves scopes you define. The personal agent's
-  turns then run **as that user**, with those scopes as roles, so your tools gate on them exactly like
-  they gate on anything else.
+  turns then run **as that user**, with each scope as a `scope:<id>` role, so your tools gate on them
+  exactly like they gate on anything else.
 
 Authentication and delegation come from [AuthKit's personal agents](https://davidecarvalho.github.io/agora/docs/authkit/personal-agents)
 (`@adonis-agora/authkit-server` 0.76+). This surface is the conversation: Agent Cards, `message:send`,
@@ -69,13 +69,15 @@ so nothing is lost.
 ## What a personal agent can reach
 
 A turn from a personal agent runs as an actor with the role **`personal_agent`** — plus, under
-delegation, one role per delegated scope, and the user's account id as the actor id. Without delegation
+delegation, one **`scope:<id>`** role per delegated scope (namespaced, so a scope can never pose as one
+of your app's roles), and the user's account id as the actor id. Without delegation
 the actor is a stable synthetic id per (personal agent, its user), never an account.
 
 A personal agent reaches **only tools that name one of its roles**. A tool with no `roles` — which, under
 the default policy, means "anyone" — is out of its reach: your existing tools were not written with an
 outside caller in mind. This gate wraps whatever `authorizer` you configured and changes nothing for
-other actors.
+other actors. Memory and skills resolve **no scope** for a personal agent: it never reads what your
+assistant remembers about the user, and cannot write to it.
 
 ```ts
 registry.register(
@@ -83,7 +85,7 @@ registry.register(
   handler,
 )
 registry.register(
-  { name: 'cancel_order', kind: 'action', roles: ['orders:cancel'], /* ... */ }, // delegated scope
+  { name: 'cancel_order', kind: 'action', roles: ['scope:orders:cancel'], /* ... */ }, // delegated scope
   handler,
 )
 ```
@@ -130,7 +132,7 @@ use (`store: 'lucid'`, the default). `store: 'memory'` keeps them in-process; an
 | `actions` | `'approve-delegated'` | Or `'reject'`. |
 | `timeoutMs` | `120000` | A turn that runs longer is cancelled (`INTERNAL`). |
 | `maxBodyBytes` | 1 MiB | |
-| `roles` | `personal_agent` + scopes | `(caller) => string[]` — the actor's roles. |
+| `roles` | `scope:<id>` per delegated scope | `(caller) => string[]` — extra roles; `personal_agent` is always added. |
 
 ## Conformance
 

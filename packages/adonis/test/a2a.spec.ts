@@ -2,7 +2,7 @@ import { Readable } from 'node:stream';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { A2aAuth, A2aCaller } from '../src/a2a/auth.js';
-import { personalAgentGate } from '../src/a2a/gate.js';
+import { personalAgentGate, personalAgentScopes } from '../src/a2a/gate.js';
 import { type A2aBrand, createA2aHandler, personalAgentActorId } from '../src/a2a/handler.js';
 import {
   PERSONAL_AGENT_ROLE,
@@ -11,6 +11,7 @@ import {
 } from '../src/a2a/permission-tool.js';
 import { A2aError, parseSendMessage } from '../src/a2a/protocol.js';
 import { InMemoryA2aStore } from '../src/a2a/store.js';
+import { runA2aTurn } from '../src/a2a/turn.js';
 import {
   AgentDepsFactory,
   AgentRegistry,
@@ -424,7 +425,7 @@ describe('delegated turns (PACT §5)', () => {
         kind: 'action',
         description: 'Cancel an order',
         inputSchema: z.object({ id: z.string() }),
-        roles: ['orders:cancel'],
+        roles: ['scope:orders:cancel'],
       },
       {
         execute: async (input) => {
@@ -487,7 +488,7 @@ describe('delegated turns (PACT §5)', () => {
         kind: 'read',
         description: 'List orders',
         inputSchema: z.object({}),
-        roles: ['orders:read'],
+        roles: ['scope:orders:read'],
       },
       { execute: async () => ({ orders: 2 }) },
     );
@@ -536,7 +537,7 @@ describe('personalAgentGate', () => {
   const gate = personalAgentGate(new DefaultToolAuthorizer());
   const tool = (roles?: string[]) =>
     ({ name: 't', kind: 'read', description: '', inputSchema: z.object({}), roles }) as never;
-  const pa = { id: 'pa:1', roles: [PERSONAL_AGENT_ROLE, 'orders:read'] };
+  const pa = { id: 'pa:1', roles: [PERSONAL_AGENT_ROLE, 'scope:orders:read'] };
   const human = { id: 'u1', roles: ['USER'] };
 
   it('keeps tools that name no role away from personal agents (and only from them)', async () => {
@@ -546,8 +547,8 @@ describe('personalAgentGate', () => {
 
   it('lets personal agents reach tools that name their role or a delegated scope', async () => {
     expect(await gate.can(pa, tool([PERSONAL_AGENT_ROLE]))).toBe(true);
-    expect(await gate.can(pa, tool(['orders:read']))).toBe(true);
-    expect(await gate.can(pa, tool(['orders:cancel']))).toBe(false);
+    expect(await gate.can(pa, tool(['scope:orders:read']))).toBe(true);
+    expect(await gate.can(pa, tool(['scope:orders:cancel']))).toBe(false);
     expect(await gate.can(human, tool([PERSONAL_AGENT_ROLE]))).toBe(false);
   });
 
@@ -558,12 +559,148 @@ describe('personalAgentGate', () => {
     );
     h.registry.register(
       { name: 'internal_report', kind: 'read', description: 'x', inputSchema: z.object({}) },
-      { execute: async () => (ran.push('ran'), {}) },
+      {
+        execute: async () => {
+          ran.push('ran');
+          return {};
+        },
+      },
     );
     await call(h.handle, 'POST', '/a2a/support/message:send', {
       headers: { authorization: 'Bearer user|u1' },
       body: send('report'),
     });
     expect(ran).toEqual([]);
+  });
+});
+
+describe('hardening (review findings)', () => {
+  const cancelTool = (h: ReturnType<typeof handlerFor>, ran: string[]) =>
+    h.registry.register(
+      {
+        name: 'cancel_order',
+        kind: 'action',
+        description: 'Cancel',
+        inputSchema: z.object({ id: z.string() }),
+        roles: ['scope:orders:cancel'],
+      },
+      {
+        execute: async (input) => {
+          ran.push((input as { id: string }).id);
+          return { ok: true };
+        },
+      },
+    );
+
+  it('a scope can never pose as an app role (scope "ADMIN" does not reach ADMIN tools)', async () => {
+    const ran: string[] = [];
+    const h = handlerFor((_args, turn) =>
+      turn === 0 ? { text: '', toolCall: { name: 'purge', input: {} } } : { text: 'ok' },
+    );
+    h.registry.register(
+      {
+        name: 'purge',
+        kind: 'read',
+        description: 'x',
+        inputSchema: z.object({}),
+        roles: ['ADMIN'],
+      },
+      {
+        execute: async () => {
+          ran.push('purged');
+          return {};
+        },
+      },
+    );
+    await call(h.handle, 'POST', '/a2a/support/message:send', {
+      headers: { authorization: 'Bearer deleg|u1|acct-1|ADMIN' },
+      body: send('purge'),
+    });
+    expect(ran).toEqual([]);
+  });
+
+  it('a conversation that ran as an account refuses identity-only turns', async () => {
+    const h = handlerFor(() => ({ text: 'ok' }));
+    const contextId = (
+      await call(h.handle, 'POST', '/a2a/support/message:send', {
+        headers: { authorization: 'Bearer deleg|u1|acct-1|orders:read' },
+        body: send('hi'),
+      })
+    ).json().message.contextId;
+    const res = await call(h.handle, 'POST', '/a2a/support/message:send', {
+      headers: { authorization: 'Bearer user|u1' },
+      body: send('hi', { contextId }),
+    });
+    expect(res.json().error.details[0].reason).toBe('INVALID_PARAMS');
+  });
+
+  it('a retried FIRST message (no contextId yet) does not start a second conversation', async () => {
+    let runs = 0;
+    const h = handlerFor(() => ({ text: `run ${++runs}` }));
+    const body = JSON.stringify({
+      message: { messageId: 'm-first', role: 'ROLE_USER', parts: [{ text: 'hi' }] },
+    });
+    const headers = { authorization: 'Bearer user|u1' };
+    const a = (await call(h.handle, 'POST', '/a2a/support/message:send', { headers, body })).json();
+    const b = (await call(h.handle, 'POST', '/a2a/support/message:send', { headers, body })).json();
+    expect(b).toEqual(a);
+    expect(runs).toBe(1);
+  });
+
+  it('a turn that failed AFTER an action ran is replayed, not re-run', async () => {
+    const ran: string[] = [];
+    const h = handlerFor((_args, turn) => {
+      if (turn === 0) return { text: '', toolCall: { name: 'cancel_order', input: { id: 'A-1' } } };
+      throw new Error('model down');
+    });
+    cancelTool(h, ran);
+    const body = send('cancel A-1');
+    const headers = { authorization: 'Bearer deleg|u1|acct-1|orders:cancel' };
+    const first = await call(h.handle, 'POST', '/a2a/support/message:send', { headers, body });
+    expect(first.sent.status).toBe(500);
+    const retry = await call(h.handle, 'POST', '/a2a/support/message:send', { headers, body });
+    expect(retry.sent.status).toBe(500);
+    expect(ran).toEqual(['A-1']);
+  });
+
+  it('a malformed brand segment is a 404, not a crash', async () => {
+    const h = handlerFor(() => ({ text: 'ok' }));
+    const res = await call(h.handle, 'GET', '/a2a/%E0/.well-known/agent-card.json');
+    expect(res.sent.status).toBe(404);
+  });
+
+  it('the deadline holds even when cancelling does not end the stream', async () => {
+    const service = {
+      chat: async () => ({ runId: 'r1', threadId: 't1' }),
+      subscribe: () => ({
+        [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => {}) }),
+      }),
+      cancel: async () => {},
+      approve: async () => {},
+      reject: async () => {},
+      skip: async () => {},
+    } as never;
+    const result = await runA2aTurn(service, new ToolRegistry(), {
+      actor: { id: 'a', roles: [PERSONAL_AGENT_ROLE] },
+      text: 'hi',
+      agentName: 'default',
+      delegatedScopes: null,
+      actions: 'approve-delegated',
+      timeoutMs: 20,
+    });
+    expect(result.error).toBe('timeout');
+  });
+
+  it('personal agents resolve no memory/skill scope; everyone else is untouched', async () => {
+    const scopes = personalAgentScopes({ resolve: () => ['actor:u1', 'tenant:t1'] });
+    expect(
+      await scopes.resolve({
+        actor: { id: 'acct-1', roles: [PERSONAL_AGENT_ROLE] },
+        threadId: 't',
+      } as never),
+    ).toEqual([]);
+    expect(
+      await scopes.resolve({ actor: { id: 'u1', roles: ['USER'] }, threadId: 't' } as never),
+    ).toEqual(['actor:u1', 'tenant:t1']);
   });
 });

@@ -1,7 +1,7 @@
 import { pathToFileURL } from 'node:url';
 import type { HttpContext } from '@adonisjs/core/http';
 import type { ApplicationService } from '@adonisjs/core/types';
-import { personalAgentGate } from '../src/a2a/gate.js';
+import { personalAgentGate, personalAgentScopes } from '../src/a2a/gate.js';
 import { assertIndependentActionRuntime } from '../src/action-proposal-runtime.js';
 import {
   ActionProposalService,
@@ -381,8 +381,13 @@ export default class AgentProvider {
         ? { toolTransientRetry: config.toolTransientRetry }
         : {}),
       ...(config.historyWindow !== undefined ? { historyWindow: config.historyWindow } : {}),
-      ...(config.skills !== undefined ? { skills: config.skills } : {}),
-      ...(config.memory !== undefined ? { memory: config.memory } : {}),
+      // Personal agents (A2A) resolve no memory or skill scope — see `personalAgentScopes`.
+      ...(config.skills !== undefined
+        ? { skills: { ...config.skills, scopes: personalAgentScopes(config.skills.scopes) } }
+        : {}),
+      ...(config.memory !== undefined
+        ? { memory: { ...config.memory, scopes: personalAgentScopes(config.memory.scopes) } }
+        : {}),
       ...(config.inputProcessors !== undefined ? { inputProcessors: config.inputProcessors } : {}),
       ...(config.outputProcessors !== undefined
         ? { outputProcessors: config.outputProcessors }

@@ -25,6 +25,10 @@ import { ToolRegistry } from '../src/tool-registry.js';
  * session or CSRF (see `src/a2a/server_middleware.ts`). Everything is resolved on the first A2A
  * request, so this provider can sit anywhere in `adonisrc.ts`.
  */
+function normalizePath(path: string | undefined): string {
+  return (path ?? 'a2a').replace(/^\/+|\/+$/g, '');
+}
+
 export default class A2aProvider {
   constructor(protected app: ApplicationService) {}
 
@@ -35,10 +39,18 @@ export default class A2aProvider {
     const server = await this.app.container.make('server');
     server.use([() => import('../src/a2a/server_middleware.js')]);
 
+    // Only A2A traffic ever touches the A2A runtime: a broken auth driver or database must not
+    // turn every route of the app into a 500.
+    const prefix = `/${normalizePath(config.path)}/`;
+    const isA2a = (url: string) =>
+      url.startsWith(prefix) ||
+      (config.rootCard !== undefined && url === '/.well-known/agent-card.json');
+
     // Built on the first A2A request: the agent provider binds `AgentService` in its own boot, and
-    // the auth driver may need a fully booted app. A failed build is retried on the next request.
+    // the auth driver may need a fully booted app. A failed build is retried on the next one.
     let built: Promise<A2aRequestHandler> | null = null;
     setA2aHandler(async (ctx) => {
+      if (!isA2a((ctx.request.url() ?? '').split('?')[0] ?? '')) return false;
       if (built === null) {
         built = this.#build(config);
         built.catch(() => {
@@ -49,8 +61,35 @@ export default class A2aProvider {
     });
   }
 
+  /**
+   * Register `request_permission` in every process — a queue or durable worker that replays a turn
+   * which called it needs the tool as much as the web process that started it.
+   */
+  async ready() {
+    const config = this.app.config.get<A2aConfig | undefined>('a2a', undefined);
+    if (!config) return;
+    try {
+      await this.#registerPermissionTool(config);
+    } catch (error) {
+      const logger = await this.app.container.make('logger');
+      logger.warn({ err: error }, 'a2a: could not register request_permission yet');
+    }
+  }
+
   async shutdown() {
     setA2aHandler(null);
+  }
+
+  #permissionToolRegistered = false;
+
+  async #registerPermissionTool(config: A2aConfig): Promise<void> {
+    if (this.#permissionToolRegistered) return;
+    const auth = await resolveA2aAuth(config.auth, { app: this.app });
+    const scopes = await auth.delegableScopes();
+    if (Object.keys(scopes).length > 0) {
+      registerRequestPermissionTool(await this.app.container.make(ToolRegistry), scopes);
+    }
+    this.#permissionToolRegistered = true;
   }
 
   async #build(config: A2aConfig): Promise<A2aRequestHandler> {
@@ -58,8 +97,7 @@ export default class A2aProvider {
     const service = await this.app.container.make(AgentService);
     const auth = await resolveA2aAuth(config.auth, { app: this.app });
 
-    const scopes = await auth.delegableScopes();
-    if (Object.keys(scopes).length > 0) registerRequestPermissionTool(registry, scopes);
+    await this.#registerPermissionTool(config);
 
     const brands = new Map<string, A2aBrand>(
       Object.entries(config.agents).map(([id, agent]) => [
@@ -69,7 +107,7 @@ export default class A2aProvider {
     );
 
     return createA2aHandler({
-      path: (config.path ?? 'a2a').replace(/^\/+|\/+$/g, ''),
+      path: normalizePath(config.path),
       ...(config.baseUrl !== undefined ? { baseUrl: config.baseUrl } : {}),
       brands,
       ...(config.rootCard !== undefined ? { rootCardBrand: config.rootCard } : {}),
