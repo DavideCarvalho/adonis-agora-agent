@@ -314,7 +314,8 @@ describe('mcp_provider: stateless mode', () => {
     // a later request, with no session, is served too (as if it landed on another instance)
     const list = await rpc(booted, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
     expect(list.status).toBe(200);
-    expect(await list.text()).toContain('"tools"');
+    expect(list.headers.get('content-type')).toContain('application/json');
+    expect((await list.json()).result.tools).toEqual(expect.any(Array));
 
     expect((await rpc(booted, null, 'GET')).status).toBe(405);
     expect((await rpc(booted, null, 'DELETE')).status).toBe(405);

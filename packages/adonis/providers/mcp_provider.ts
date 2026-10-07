@@ -224,8 +224,9 @@ export default class McpProvider {
     try {
       let transport: StreamableHTTPServerTransport | undefined;
       if (config.stateless === true) {
-        // No session: this request gets its own transport and server, closed once answered.
-        const stateless = new StreamableHTTPServerTransport({});
+        // No session: this request gets its own transport and server, closed once answered — and a
+        // plain JSON answer, since there is no stream to keep open.
+        const stateless = new StreamableHTTPServerTransport({ enableJsonResponse: true });
         const server = newServer();
         res.on('close', () => {
           void stateless.close();
