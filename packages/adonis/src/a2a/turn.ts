@@ -142,7 +142,7 @@ export async function runA2aTurn(
         const listed = await listActionProposals.call(service, input.actor, threadId);
         const current = listed.find((p) => p.id === proposal.id);
         const status = current?.execution?.status;
-        if (!current || current.decision !== 'approved' || status === 'failed') {
+        if (current?.decision !== 'approved' || status === 'failed') {
           result.error = current?.execution?.error ?? `${proposal.toolName} did not run`;
           return;
         }
