@@ -36,6 +36,8 @@ export interface CreateMcpServerOptions extends McpToolContextOptions {
   name: string;
   /** Server version reported in the initialize handshake. */
   version: string;
+  /** Instructions for the client's model, sent in the initialize result. */
+  instructions?: string;
   /** The agent tool registry to expose. */
   registry: ToolRegistry;
   /** Tool authorization gate (role re-check happens per call, defense-in-depth). */
@@ -130,7 +132,10 @@ export function createMcpServer(options: CreateMcpServerOptions): Server {
   const actions = options.actions ?? 'refuse';
   const server = new Server(
     { name: options.name, version: options.version },
-    { capabilities: { tools: {} } },
+    {
+      capabilities: { tools: {} },
+      ...(options.instructions !== undefined ? { instructions: options.instructions } : {}),
+    },
   );
 
   const buildCtx = (

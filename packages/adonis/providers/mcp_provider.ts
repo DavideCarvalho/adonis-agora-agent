@@ -213,6 +213,7 @@ export default class McpProvider {
       createMcpServer({
         name: config.name,
         version: config.version,
+        ...(config.instructions !== undefined ? { instructions: config.instructions } : {}),
         registry,
         policy: authorizer,
         ...(config.allowedTools !== undefined ? { allowedTools: config.allowedTools } : {}),

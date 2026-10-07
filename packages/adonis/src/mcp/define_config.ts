@@ -25,6 +25,11 @@ export interface McpConfig {
   /** Server version reported to MCP clients. */
   version: string;
   /**
+   * Instructions sent in the `initialize` result — how the client's model should use these tools
+   * (where to start, units and time zone, what not to do).
+   */
+  instructions?: string;
+  /**
    * Route prefix the MCP Streamable HTTP endpoint mounts under. Defaults to `'mcp'` (→ `/mcp`).
    * OAuth metadata (when `auth.oauth` is set) is served at `/.well-known/oauth-protected-resource{path}`.
    */

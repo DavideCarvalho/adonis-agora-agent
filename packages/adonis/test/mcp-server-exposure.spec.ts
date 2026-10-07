@@ -224,3 +224,20 @@ describe('the context a tool gets over MCP', () => {
     expect(first?.idempotencyKey).not.toBe(second?.idempotencyKey);
   });
 });
+
+describe('server instructions', () => {
+  it('reaches the client in the initialize result', async () => {
+    const server = createMcpServer({
+      name: 'test',
+      version: '0.0.0',
+      instructions: 'Start with list_profiles.',
+      registry: new ToolRegistry(),
+      policy: new DefaultRolesPolicy(),
+      actorFromAuth: () => ACTOR,
+    });
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+    expect(client.getInstructions()).toBe('Start with list_profiles.');
+  });
+});

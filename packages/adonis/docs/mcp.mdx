@@ -59,12 +59,13 @@ Point an MCP client at `http://localhost:3333/mcp`. It will discover the OAuth f
 
 ## Configuration
 
-`McpConfig` has thirteen keys — two required, eleven optional.
+`McpConfig` has fourteen keys — two required, twelve optional.
 
 | Key | Type | Default | Purpose |
 | --- | --- | --- | --- |
 | `name` | `string` | — | Server name reported in the MCP `initialize` handshake. |
 | `version` | `string` | — | Server version reported in the handshake. |
+| `instructions` | `string` | — | Sent in the `initialize` result: how the client's model should use these tools. |
 | `path` | `string` | `'mcp'` | Route prefix. Leading/trailing slashes are stripped, so `'/mcp/'` and `'mcp'` are the same. |
 | `publicUrl` | `string` | — | The public origin clients reach the app at (e.g. `'https://app.example.com'`). Base of the RFC 9728 `resource` and of the `WWW-Authenticate` challenge. Omit → built from the request. |
 | `auth` | `McpAuth \| McpAuthFactory` | — | How clients authenticate. Omit for open mode (see below). |

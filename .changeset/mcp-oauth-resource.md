@@ -11,3 +11,4 @@ MCP server and OAuth, with `@adonis-agora/authkit-server`'s `mcp: true`:
 - `middleware` in `config/mcp.ts`: route middleware for the MCP endpoint (a rate limiter, say); it runs before the bearer check.
 - `stateless: true` in `config/mcp.ts`: every `POST` gets its own transport (no in-memory sessions), for more than one instance behind a load balancer; `GET`/`DELETE` answer `405`.
 - `actions` in `config/mcp.ts` (`'refuse'` by default, or `'execute'`): the provider never passed it to the server, so action tools could not be exposed through `config/mcp.ts`.
+- `instructions` in `config/mcp.ts`: sent to the client in the `initialize` result.
