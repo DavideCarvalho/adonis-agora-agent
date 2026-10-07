@@ -113,6 +113,8 @@ export default defineConfig({
 })
 ```
 
+`BUILTIN_COMPONENTS` are ready-made definitions (no visuals) for a table, a chart, KPI cards, sources, a checklist, a timeline, code, a diff and a callout; `LAYOUT_COMPONENTS` adds `Stack`, `Card`, `Heading`, `Text`, `Badge`, `Link` and `Image` for tree mode. Each is listed with its props, and how to pick or override them, in [Builtin components](/docs/agent/genui-builtins).
+
 That registers a `ui__show_<snake_case name>` tool per model-facing component (`OrderCard` → `ui__show_order_card`); each call validates its input against the catalog (a refused call reaches the model as a tool error it can fix) and pushes through `ctx.emitUi`. Component names are letters and digits starting with a letter (`/^[A-Za-z][A-Za-z0-9]{0,63}$/`); a definition marked `internal: true` is never offered to the model. Options, all optional:
 
 | Option | Meaning |
@@ -435,6 +437,7 @@ frameToEvents({ t: 'component', name: 'card', data: { a: 1 } }, 0)
 - [React](/docs/agent/react) — the provider and `useAgentChat`, whose transcript carries these components as `ui` blocks.
 - [Browser client](/docs/agent/browser-client) — the framework-free SSE client that decodes the same frames.
 - [Tools](/docs/agent/authoring/tools) — how to author the tool that calls `emitUi`, and the full `AiToolCtx`.
+- [Builtin components](/docs/agent/genui-builtins) — `BUILTIN_COMPONENTS` and `LAYOUT_COMPONENTS`, their props and text fallbacks.
 - [One output, many surfaces](/docs/agent/surfaces) — UI capabilities, text fallbacks, and what AG-UI, text channels and MCP receive.
 - [Component registries and server rendering](/docs/agent/authoring/component-rendering) — `present`, custom components, and image/PDF export.
 - [Streaming & HTTP](/docs/agent/streaming-and-http) — the SSE envelope, the routes that carry component frames, and re-attaching to a live run.
