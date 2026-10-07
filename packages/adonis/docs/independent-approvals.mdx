@@ -67,38 +67,61 @@ In process, `AgentService` offers the same operations: `listActionProposals(acto
 
 ### Text decisions
 
-A message that is exactly a decision command is treated as a decision, not as a turn. The recognized commands are Portuguese:
+A message that is exactly a decision command is treated as a decision, not as a turn. The default commands are English:
 
 | Command | Effect |
 | --- | --- |
-| `sim`, `confirmo`, `confirmar`, `aprovo`, `aprovar` | approve |
-| `não`, `nao`, `cancelar`, `rejeito`, `rejeitar` | reject |
-| `confirmar sempre nesta conversa` (any approve verb + `sempre nesta conversa`) | approve and remember |
+| `yes`, `confirm`, `approve`, `approved`, `ok` | approve |
+| `no`, `cancel`, `reject`, `deny` | reject |
+| `approve always in this conversation` (any approve word + `always in this conversation`) | approve and remember |
 
-Matching is case-insensitive, allows one trailing `.` or `!`, and refuses anything on more than one line. Append `#<proposalId>` to choose a proposal. Without an id the command decides only when exactly one pending proposal is visible to the sender; with several it answers which ones are pending and asks for an explicit id; with none the message goes to the model. Anything else — a question, a quoted command, a sentence that merely contains "sim" — is an ordinary message for the model. The decision is recorded with `via: 'text'`, and no model call is made.
+`actionProposalText` in `config/agent.ts` changes the words and the replies. Brazilian Portuguese ships ready — `sim`, `confirmar`, `cancelar`, `sempre nesta conversa`, … (English still works) with Portuguese replies:
+
+```ts title="config/agent.ts"
+import { defineConfig, ptBrActionProposalText } from '@adonis-agora/agent'
+
+export default defineConfig({
+  // ...
+  actionProposalText: ptBrActionProposalText,
+  // or any language: { vocabulary: { approve, reject, remember }, replies: { approved, rejected, … } }
+})
+```
+
+Matching is case-insensitive, allows one trailing `.` or `!`, and refuses anything on more than one line. Append `#<proposalId>` to choose a proposal. Without an id the command decides only when exactly one pending proposal is visible to the sender; with several it answers which ones are pending and asks for an explicit id; with none the message goes to the model. Anything else — a question, a quoted command, a sentence that merely contains "yes" — is an ordinary message for the model, and so is a command naming an `#ID` that is not one of the thread's proposals. The decision is recorded with `via: 'text'`, and no model call is made.
 
 Text decisions apply to `POST <path>/chat` and `AgentService.send` on an existing thread, and to the AG-UI route. `POST <path>/chat` then answers JSON instead of a stream:
 
 ```json
-{ "threadId": "t1", "proposalDecision": { "status": "applied", "proposal": { "…": "…" } }, "text": "Proposta aprovada e enfileirada para execução." }
+{ "threadId": "t1", "proposalDecision": { "status": "applied", "proposal": { "…": "…" } }, "text": "Proposal approved and queued to run." }
 ```
 
-`text` is a confirmation (in Portuguese) to show or relay. Over AG-UI the same decision is a short run: `RUN_STARTED`, a `CUSTOM` event `aviary.action-proposal-decision` with `{ threadId, proposalDecision }`, the text as one assistant message, then `RUN_FINISHED`. `AgentService.chat` never interprets text as a decision.
+`text` is a confirmation (in the configured language) to show or relay. Over AG-UI the same decision is a short run: `RUN_STARTED`, a `CUSTOM` event `agora.action-proposal-decision` with `{ threadId, proposalDecision }`, the text as one assistant message, then `RUN_FINISHED`. `AgentService.chat` never interprets text as a decision.
 
 ### From the clients
 
 - **React.** A proposal shows in the transcript as a call awaiting approval; `call.approve.run()` and `chat.reject({ toolCallId, target })` route to the proposal endpoints by themselves. `useAgentChat` reads the thread's proposals whenever the chat or connection status changes and when the window regains focus, polls every `proposalPollMs` (default 1000) while one is pending, queued, executing or undelivered, and merges outcomes into the transcript without overwriting a turn in progress. `chat.proposals` is `{ items, error, refresh() }`; `proposals: false` turns the reads off.
 - **Browser client.** `client.listActionProposals(threadId)` follows every page; `client.decideActionProposal(threadId, proposalId, 'approved' | 'rejected', { remember?, reason? })` decides. `send` resolves with `proposalDecision` when the message was a text decision. See [Browser client](/docs/agent/browser-client).
 
+### Delivering outcomes to other channels
+
+An outcome is written to the thread, where the web chat picks it up. For a channel that is not the web chat — a WhatsApp bridge, a Slack message — `actionProposalWorker.onSettled` is called with the settled proposal by the worker that ran it, so the host can push the result instead of polling:
+
+```ts title="config/agent.ts"
+actionProposalWorker: {
+  onSettled: async (proposal) => {
+    await whatsapp.notifyOutcome(proposal) // proposal.outcome, proposal.execution, …
+  },
+},
+```
+
+A throw is logged and never retried, and it does not fail the worker.
+
 ## Expiry and replacement
 
 A policy `ttlMs` becomes the proposal's persisted deadline (the card's `expiresAt`). The worker expires due proposals in batches; a decision on an expired proposal answers `expired`, so a stale card can never authorize the action.
 
-`replacementKey` on a `defineTool` action groups proposals that supersede each other — a string, or a function of the validated input and the tool context. A new proposal with the same requester, tenant, thread, tool and key supersedes the pending ones in the same transaction; approved or executing ones still run. Replaying the creation of an older proposal does not supersede a newer one.
+`replacementKey` on an action (`defineTool`, `@AiTool` or `static tool`) groups proposals that supersede each other — a string, or a function of the validated input and the tool context. A new proposal with the same requester, tenant, thread, tool and key supersedes the pending ones in the same transaction; approved or executing ones still run. Replaying the creation of an older proposal does not supersede a newer one.
 
-<Callout type="warn" title="Function tools only, in this release">
-`replacementKey` is accepted on `@AiTool({ … })` and `static tool` options, but class discovery does not forward it yet: declare it with `defineTool`.
-</Callout>
 
 ## Execution
 

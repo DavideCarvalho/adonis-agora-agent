@@ -141,7 +141,15 @@ A public deployment should set a `quota`: model spend is otherwise unbounded (pe
 
 `backgroundActorResolver`: `{ resolve({ actorRef, tenantRef }): Promise<Actor | null> }`. Loads the requester's current identity and roles for a deferred execution. Required in independent mode.
 
-`actionProposalWorker`: `{ pollIntervalMs?, leaseMs?, maxConcurrency? }` — **defaults `1000`, `30000`, `1`**; positive integers, with `pollIntervalMs` below a third of `leaseMs`. See [Independent approvals](/docs/agent/independent-approvals).
+`actionProposalWorker`: `{ pollIntervalMs?, leaseMs?, maxConcurrency?, onSettled? }` — **defaults `1000`, `30000`, `1`**; positive integers, with `pollIntervalMs` below a third of `leaseMs`. `onSettled(proposal)` is called by the worker that ran a proposal once it settles — to push the outcome to a channel that is not the web chat; a throw is logged, never retried. See [Independent approvals](/docs/agent/independent-approvals).
+
+### `actionProposalText`
+
+`{ vocabulary?, replies? }` — the words a chat message must be to decide a proposal (`approve`, `reject`, `remember`) and what the agent answers. **Default English** (`yes`/`approve`/`no`/`reject`, …). `ptBrActionProposalText` (exported) is Brazilian Portuguese. Each field you omit keeps its default. See [Text decisions](/docs/agent/independent-approvals#text-decisions).
+
+### `onPresentationError`
+
+`(error, { toolName, toolCallId?, runId?, threadId? }) => void | Promise<void>`. Where a tool's presentation failures go — a `present` hook that throws, a component push the catalog refuses — in turns and in proposal executions. The tool's result is unaffected. **Default: a warning on the app logger.**
 
 ### `genui`
 
