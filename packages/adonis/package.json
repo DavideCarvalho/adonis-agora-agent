@@ -23,6 +23,7 @@
     "ai-sdk",
     "durable",
     "tanstack-intent",
+    "opencode",
     "agora",
     "guardrails"
   ],
@@ -90,6 +91,16 @@
       "types": "./dist/src/durable/index.d.ts",
       "import": "./dist/src/durable/index.js",
       "default": "./dist/src/durable/index.js"
+    },
+    "./opencode": {
+      "types": "./dist/src/opencode/index.d.ts",
+      "import": "./dist/src/opencode/index.js",
+      "default": "./dist/src/opencode/index.js"
+    },
+    "./opencode/durable": {
+      "types": "./dist/src/opencode/durable/index.d.ts",
+      "import": "./dist/src/opencode/durable/index.js",
+      "default": "./dist/src/opencode/durable/index.js"
     },
     "./authz": {
       "types": "./dist/src/authz/index.d.ts",
@@ -366,6 +377,7 @@
     "@ag-ui/client": "1.0.1",
     "@ag-ui/core": "1.0.1",
     "@ai-sdk/react": "^4.0.125",
+    "@opencode/client": "2.0.18",
     "@qdrant/js-client-rest": "1.19.0",
     "@tanstack/intent": "0.5.0",
     "@testcontainers/mysql": "12.2.0",

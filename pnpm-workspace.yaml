@@ -13,6 +13,9 @@ allowBuilds:
   # without them (as in nestjs-agent).
   cpu-features: false
   esbuild: true
+  # effect (under @opencode/client, a dev dependency) pulls msgpackr's optional native speedup; it
+  # runs without it.
+  msgpackr-extract: false
   protobufjs: false
   ssh2: false
 minimumReleaseAgeExclude:
