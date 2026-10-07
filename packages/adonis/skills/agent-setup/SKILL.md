@@ -289,7 +289,8 @@ Source: `packages/adonis/docs/authoring/component-rendering.mdx`,
 
 The route answers the LAST user message of `messages`; the thread's history is the one the server
 stored under `threadId`. Media parts must be inline (`source.type: 'data'`) and need
-`attachments:` configured — a `url` or `file` source is dropped with an `agora.warning`.
+`attachments:` configured — a `url` or a `file` source from another provider is dropped with an `agora.warning`.
+A `file` handle with `provider: 'agora'` naming an upload this agent staged is resolved for the caller instead.
 
 Source: `packages/adonis/docs/ag-ui.mdx`.
 
