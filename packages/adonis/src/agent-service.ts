@@ -1,5 +1,6 @@
 import { assertIndependentActionRuntime } from './action-proposal-runtime.js';
 import { ActionProposalService, ActionProposalServiceError } from './action-proposal-service.js';
+import { textActionProposalReply } from './action-proposal-text.js';
 import { utcDay } from './agent-deps.js';
 import type { AgentDepsFactory } from './agent-deps-factory.js';
 import type { ChatQueueService } from './chat-queue-service.js';
@@ -1013,6 +1014,15 @@ export class AgentService {
     if (!this.options.actionProposals)
       throw new ActionProposalServiceError(501, 'Independent proposals are unavailable');
     return this.options.actionProposals.decide(actor, threadId, proposalId, decision, body, via);
+  }
+  /** The configured chat reply to a proposal decision (see `actionProposalText.replies`). */
+  actionProposalReply(
+    result: import('./spi/action-proposal-store.js').ActionProposalMutationResult,
+    decision: 'approved' | 'rejected',
+  ): string {
+    return this.options.actionProposals
+      ? this.options.actionProposals.reply(result, decision)
+      : textActionProposalReply(result, decision);
   }
   handleTextDecision(actor: Actor, threadId: string, text: string) {
     if (!this.options.actionProposals) return Promise.resolve({ status: 'unmatched' as const });

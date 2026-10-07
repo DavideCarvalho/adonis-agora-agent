@@ -268,6 +268,67 @@ describe('AgUiEncoder', () => {
     });
   });
 
+  it('carries a component`s fallbackText and componentVersions, so a client can degrade to text', async () => {
+    const events = await collect(
+      ended([
+        {
+          t: 'component',
+          name: 'genuiTree',
+          data: { root: {} },
+          id: 'c1:ui:0',
+          version: 1,
+          fallbackText: 'Total: 3',
+          componentVersions: { Card: 2 },
+        },
+      ]),
+    );
+    await assertConforms(events);
+    expect(events).toContainEqual({
+      type: 'CUSTOM',
+      name: AG_UI_CUSTOM.ui,
+      value: {
+        id: 'c1:ui:0',
+        component: 'genuiTree',
+        props: { root: {} },
+        version: 1,
+        fallbackText: 'Total: 3',
+        componentVersions: { Card: 2 },
+      },
+    });
+  });
+
+  it('marks an independent proposal`s approval with its target and a proposal interrupt', async () => {
+    const proposal: StreamFrame = {
+      ...approval,
+      target: { kind: 'proposal', proposalId: 'proposal-1' },
+      confirmation: { title: 'Refund 7?', verb: 'Refund' },
+      approver: 'requester',
+    };
+    const events = await collect(parked([proposal]), { streamThreadId: 'lib-thread-1' });
+    await assertConforms(events);
+    const custom = events.find(
+      (event) => event.type === 'CUSTOM' && event.name === AG_UI_CUSTOM.approvalRequested,
+    ) as { value: Record<string, unknown> };
+    expect(custom.value).toMatchObject({
+      target: { kind: 'proposal', proposalId: 'proposal-1' },
+      confirmation: { title: 'Refund 7?', verb: 'Refund' },
+    });
+    const finished = events.at(-1) as {
+      outcome: { interrupts: { id: string; metadata: Record<string, unknown> }[] };
+    };
+    const interrupt = finished.outcome.interrupts[0]!;
+    expect(interrupt.metadata['agora.target']).toEqual({
+      kind: 'proposal',
+      proposalId: 'proposal-1',
+    });
+    expect(decodeInterruptId(interrupt.id)).toMatchObject({
+      kind: 'proposal',
+      toolCallId: 'call-1',
+      proposalId: 'proposal-1',
+      threadId: 'lib-thread-1',
+    });
+  });
+
   it('reports a failed run with RUN_ERROR and nothing after it', async () => {
     const events = await collect(
       ended([

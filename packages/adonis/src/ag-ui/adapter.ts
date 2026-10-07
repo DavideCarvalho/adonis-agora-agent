@@ -86,6 +86,26 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
             warnings.push(`The resume entry ${id} answers an interrupt this agent did not raise.`);
           }
           const first = plan.decisions[0];
+          // Independent proposals do not park their run: deciding them is the whole answer.
+          if (
+            first !== undefined &&
+            plan.decisions.every((decision) => decision.address.kind === 'proposal')
+          ) {
+            const decided = await decideProposals(host, ctx, actor, plan.decisions);
+            if (decided === null) return;
+            writeEvents(ctx, [
+              ...warningEvents(warnings),
+              ...decided.flatMap((outcome, index) =>
+                actionProposalDecisionEvents({
+                  threadId: input.threadId,
+                  runId: index === 0 ? input.runId : `${input.runId}:${index}`,
+                  text: outcome.text,
+                  proposalDecision: outcome.proposalDecision,
+                }),
+              ),
+            ]);
+            return;
+          }
           // A list that answers nothing this agent asked continues nothing: an ordinary run.
           if (first !== undefined) {
             const streamRunId = first.address.stream;
@@ -131,12 +151,7 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
           try {
             const decision = await service.handleTextDecision(actor, input.threadId, turn.text);
             if ('proposalDecision' in decision) {
-              const raw = ctx.response.response;
-              raw.writeHead(200, {
-                'Content-Type': 'text/event-stream',
-                'Cache-Control': 'no-cache, no-transform',
-              });
-              for (const event of [
+              writeEvents(ctx, [
                 ...warningEvents(warnings),
                 ...actionProposalDecisionEvents({
                   threadId: input.threadId,
@@ -144,9 +159,7 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
                   text: decision.text,
                   proposalDecision: decision.proposalDecision,
                 }),
-              ])
-                raw.write(agUiSse(event));
-              raw.end();
+              ]);
               return;
             }
           } catch (error) {
@@ -242,9 +255,15 @@ async function settleResume(
 ): Promise<boolean> {
   const { service } = host;
   const deliveries: (() => Promise<void>)[] = [];
+  const proposals = decisions.filter((decision) => decision.address.kind === 'proposal');
+  if (proposals.length > 0) {
+    // Settled before the parked calls, like any other delivery: one refusal settles nothing more.
+    if ((await decideProposals(host, ctx, actor, proposals)) === null) return false;
+  }
   for (const { address, entry } of decisions) {
     const { parked, toolCallId } = address;
     const abandoned = entry.status === 'cancelled';
+    if (address.kind === 'proposal') continue;
     if (address.kind === 'approval') {
       if (!(await host.mayDecide(ctx, actor, parked, toolCallId))) {
         return false;
@@ -319,6 +338,78 @@ async function settleResume(
     return false;
   }
   return true;
+}
+
+/**
+ * Decide independent proposals through the proposal service — the call the native
+ * `action-proposals/:id/approve|reject` routes make — never by signalling the origin run, which is
+ * not waiting. Every payload is checked before the first decision. `null` after writing a refusal.
+ */
+async function decideProposals(
+  host: ProtocolAdapterHost,
+  ctx: HttpContext,
+  actor: Actor,
+  decisions: ResumeDecision[],
+): Promise<{ proposalDecision: unknown; text: string }[] | null> {
+  const { service } = host;
+  const planned: {
+    threadId: string;
+    proposalId: string;
+    decision: 'approved' | 'rejected';
+    body: Record<string, unknown>;
+  }[] = [];
+  for (const { address, entry } of decisions) {
+    const decision =
+      entry.status === 'cancelled' ? { approved: false } : readApprovalPayload(entry.payload);
+    if (decision === null || address.proposalId === undefined || address.threadId === undefined) {
+      ctx.response.badRequest({
+        code: 'invalid_resume',
+        message: 'an approval is answered with { approved: boolean, reason?, remember? }',
+      });
+      return null;
+    }
+    planned.push({
+      threadId: address.threadId,
+      proposalId: address.proposalId,
+      decision: decision.approved ? 'approved' : 'rejected',
+      body: {
+        ...(decision.remember !== undefined ? { remember: decision.remember } : {}),
+        ...(decision.reason !== undefined ? { reason: decision.reason } : {}),
+      },
+    });
+  }
+  const outcomes: { proposalDecision: unknown; text: string }[] = [];
+  try {
+    for (const item of planned) {
+      const result = await service.decideActionProposal(
+        actor,
+        item.threadId,
+        item.proposalId,
+        item.decision,
+        item.body,
+        AG_UI_VIA,
+      );
+      outcomes.push({
+        proposalDecision: result,
+        text: service.actionProposalReply(result, item.decision),
+      });
+    }
+  } catch (error) {
+    if (host.refuseSend(ctx, error)) return null;
+    throw error;
+  }
+  return outcomes;
+}
+
+/** Answer with a complete list of events, no run behind them. */
+function writeEvents(ctx: HttpContext, events: AgUiEvent[]): void {
+  const raw = ctx.response.response;
+  raw.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+  });
+  for (const event of events) raw.write(agUiSse(event));
+  raw.end();
 }
 
 /**

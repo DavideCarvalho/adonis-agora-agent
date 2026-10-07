@@ -2099,6 +2099,10 @@ export default class AgentProvider {
    * `POST <path>/chat` does. `false` for an error that is none of those (the caller rethrows).
    */
   #refuseSend(ctx: HttpContext, error: unknown): boolean {
+    if (error instanceof ActionProposalServiceError) {
+      ctx.response.status(error.status).json({ message: error.message });
+      return true;
+    }
     if (error instanceof AttachmentRefusedError) {
       ctx.response.status(error.status).json({ message: error.message });
       return true;

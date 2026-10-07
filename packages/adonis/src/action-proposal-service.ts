@@ -91,7 +91,7 @@ export class ActionProposalService {
       return {
         threadId,
         proposalDecision: result,
-        text: this.decisionText(result, command.decision),
+        text: this.reply(result, command.decision),
       };
     }
     const scope = await this.scope(actor, threadId);
@@ -136,10 +136,11 @@ export class ActionProposalService {
     return {
       threadId,
       proposalDecision: result,
-      text: this.decisionText(result, resolution.decision),
+      text: this.reply(result, resolution.decision),
     };
   }
-  private decisionText(
+  /** The configured reply to a decision the store answered with `result`. */
+  reply(
     result: import('./spi/action-proposal-store.js').ActionProposalMutationResult,
     decision: 'approved' | 'rejected',
   ) {

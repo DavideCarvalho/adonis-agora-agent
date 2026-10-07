@@ -46,9 +46,10 @@ interface OpenCall {
 
 interface Pending {
   interrupt: Omit<AgUiInterrupt, 'id'>;
-  kind: 'approval' | 'elicitation';
+  kind: 'approval' | 'elicitation' | 'proposal';
   parked: string;
   toolCallId: string;
+  proposalId?: string;
 }
 
 const APPROVAL_SCHEMA = {
@@ -237,6 +238,11 @@ export class AgUiEncoder {
             component: event.component,
             props: event.props,
             ...(event.version !== undefined ? { version: event.version } : {}),
+            // What a client that cannot draw the component shows instead.
+            ...(event.fallbackText !== undefined ? { fallbackText: event.fallbackText } : {}),
+            ...(event.componentVersions !== undefined
+              ? { componentVersions: event.componentVersions }
+              : {}),
             ...(event.toolCallId !== undefined ? { toolCallId: event.toolCallId } : {}),
           }),
         ];
@@ -245,10 +251,13 @@ export class AgUiEncoder {
         const parked = event.runId ?? this.options.streamRunId;
         const toolName = event.toolName ?? call?.name ?? '';
         const input = event.input ?? call?.input ?? null;
+        // An independent proposal: decided through the proposal service, not by signalling the run.
+        const proposal = event.target?.kind === 'proposal' ? event.target : undefined;
         this.pending.set(event.id, {
-          kind: 'approval',
+          kind: proposal !== undefined ? 'proposal' : 'approval',
           parked,
           toolCallId: event.id,
+          ...(proposal !== undefined ? { proposalId: proposal.proposalId } : {}),
           interrupt: {
             reason: 'tool_approval',
             message: event.reason ?? (toolName.length > 0 ? `Approve ${toolName}?` : 'Approve?'),
@@ -259,6 +268,7 @@ export class AgUiEncoder {
               'agora.toolName': toolName,
               'agora.input': input,
               'agora.approver': event.approver,
+              ...(event.target !== undefined ? { 'agora.target': event.target } : {}),
             },
           },
         });
@@ -269,6 +279,8 @@ export class AgUiEncoder {
             toolName,
             input,
             approver: event.approver,
+            ...(event.target !== undefined ? { target: event.target } : {}),
+            ...(event.confirmation !== undefined ? { confirmation: event.confirmation } : {}),
             ...(event.expiresAt !== undefined ? { expiresAt: event.expiresAt } : {}),
             ...(event.reason !== undefined ? { reason: event.reason } : {}),
           }),
@@ -440,6 +452,12 @@ export class AgUiEncoder {
         stream: this.options.streamRunId,
         toolCallId: entry.toolCallId,
         position: this.position,
+        ...(entry.proposalId !== undefined
+          ? {
+              proposalId: entry.proposalId,
+              threadId: this.options.streamThreadId ?? this.options.threadId,
+            }
+          : {}),
       }),
       ...entry.interrupt,
     }));

@@ -2,7 +2,12 @@ import { HttpAgent } from '@ag-ui/client';
 import type { BaseEvent, Interrupt, RunAgentInput } from '@ag-ui/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { type AgUiEvent, agUiAdapter, decodeInterruptId } from '../src/ag-ui/index.js';
+import {
+  type AgUiEvent,
+  agUiAdapter,
+  decodeInterruptId,
+  encodeInterruptId,
+} from '../src/ag-ui/index.js';
 import { type AgentConfig, AgentService, attachmentStores, defineTool } from '../src/index.js';
 import { FakeModelProvider, type FakeScript } from '../src/testing/fake-model-provider.js';
 import { InMemoryAgentStore } from '../src/testing/in-memory-store.js';
@@ -393,4 +398,78 @@ it('acknowledges an independent text decision over AG-UI without starting a mode
     )?.decisionAudit?.via,
   ).toBe('text');
   assertConforms(result.events);
+});
+
+it('resumes a proposal interrupt through the proposal service, not by signalling the run', async () => {
+  const store = new InMemoryAgentStore();
+  const actor = { id: 'u1', roles: ['ADMIN'] };
+  const thread = await store.createThread({ id: 'proposal-resume-thread', actor });
+  await store.createActionProposal({
+    id: 'proposal-resume',
+    threadId: thread.id,
+    actorRef: actor.id,
+    tenantRef: null,
+    originRunId: 'finished-origin',
+    originMessageId: 'origin-message',
+    originToolCallId: 'origin-call',
+    toolName: 'refund',
+    input: { id: 11 },
+    confirmation: { title: 'Refund?', verb: 'Refund' },
+    approver: 'requester',
+    expiresAt: null,
+    idempotencyKey: 'resume',
+  });
+  let modelCalls = 0;
+  booted = await bootApp(
+    () => {
+      modelCalls++;
+      return { text: 'Unexpected model run' };
+    },
+    {
+      store: 'test',
+      stores: { test: async () => store },
+      actionApprovalMode: 'independent',
+      backgroundActorResolver: { resolve: async () => actor },
+      tools: [refund],
+    },
+  );
+  const interruptId = encodeInterruptId({
+    kind: 'proposal',
+    parked: 'finished-origin',
+    stream: 'finished-origin',
+    toolCallId: 'origin-call',
+    position: 4,
+    proposalId: 'proposal-resume',
+    threadId: thread.id,
+  });
+  const response = await post(
+    booted.url,
+    input({
+      threadId: thread.id,
+      resume: [{ interruptId, status: 'resolved', payload: { approved: false, reason: 'no' } }],
+    }),
+  );
+  expect(response.status).toBe(200);
+  const events = (await readSse(response)).map((frame) => frame.data as unknown as AgUiEvent);
+  expect(modelCalls).toBe(0);
+  expect(
+    events.find(
+      (event) => event.type === 'CUSTOM' && event.name === 'agora.action-proposal-decision',
+    ),
+  ).toMatchObject({ value: { proposalDecision: { status: 'applied' } } });
+  const decided = await store.getActionProposal(
+    { threadId: thread.id, actorRef: actor.id, tenantRef: null },
+    'proposal-resume',
+  );
+  expect(decided?.decision).toBe('rejected');
+  expect(decided?.decisionAudit?.via).toBe('ag-ui');
+  assertConforms(events);
+
+  // Somebody else's proposal is refused the way the native route refuses it.
+  const intruder = await post(
+    booted.url,
+    input({ threadId: thread.id, resume: [{ interruptId, status: 'resolved', payload: true }] }),
+    'u2',
+  );
+  expect(intruder.status).toBe(403);
 });

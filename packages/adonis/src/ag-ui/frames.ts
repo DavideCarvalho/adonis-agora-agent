@@ -17,6 +17,10 @@ export function toAgUiFrame(frame: StreamFrame): AgUiSourceFrame {
         props: frame.data,
         ...(frame.id !== undefined ? { id: frame.id } : {}),
         ...(frame.version !== undefined ? { version: frame.version } : {}),
+        ...(frame.fallbackText !== undefined ? { fallbackText: frame.fallbackText } : {}),
+        ...(frame.componentVersions !== undefined
+          ? { componentVersions: frame.componentVersions }
+          : {}),
         ...(frame.toolCallId !== undefined ? { toolCallId: frame.toolCallId } : {}),
       };
     case 'approval':
@@ -27,6 +31,7 @@ export function toAgUiFrame(frame: StreamFrame): AgUiSourceFrame {
         toolName: frame.toolName,
         input: frame.input ?? null,
         approver: frame.approver ?? 'requester',
+        ...(frame.target !== undefined ? { target: frame.target } : {}),
         ...(frame.confirmation !== undefined ? { confirmation: frame.confirmation } : {}),
         ...(frame.expiresAt !== undefined ? { expiresAt: frame.expiresAt } : {}),
       };

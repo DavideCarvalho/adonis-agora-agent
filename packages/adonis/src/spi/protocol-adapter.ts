@@ -46,9 +46,9 @@ export interface ProtocolAdapterHost {
   /** May `actor` settle this approval — the approval policy's approver, not yet lapsed? */
   mayDecide(ctx: HttpContext, actor: Actor, runId: string, toolCallId: string): Promise<boolean>;
   /**
-   * Answer an error `service.send` / `service.chat` threw the way `POST <path>/chat` does (a refused
-   * attachment or model, a busy thread, an exhausted budget). `false` when it is none of those:
-   * rethrow it.
+   * Answer an error `service.send` / `service.chat` / a proposal decision threw the way
+   * `POST <path>/chat` does (a refused attachment or model, a busy thread, an exhausted budget, a
+   * proposal the caller may not decide). `false` when it is none of those: rethrow it.
    */
   refuseSend(ctx: HttpContext, error: unknown): boolean;
   /** Answer `409` for a decision nothing is waiting for; rethrows anything else. */

@@ -1,3 +1,4 @@
+import type { ActionProposalTarget } from '../../action-proposal-receipt.js';
 import type { AgentStreamEvent } from '../../stream-events.js';
 
 /**
@@ -169,6 +170,8 @@ export const AG_UI_CUSTOM = {
  *  - `runId` — the run that is PARKED, when it is not the one whose stream this is (a delegated
  *    sub-agent forwards its frames into its ancestor's stream). Absent → the stream's own run.
  *  - `toolName`, `input` — the call being approved. Absent → read off the call's announcement.
+ *  - `target` — the independent proposal the approval decides (`actionApprovalMode: 'independent'`).
+ *    Absent → an ordinary parked approval.
  *
  * Framework-free on purpose: both servers project their own sink onto this and share one encoder.
  */
@@ -181,6 +184,7 @@ export type AgUiSourceFrame =
       runId?: string;
       toolName?: string;
       input?: unknown;
+      target?: ActionProposalTarget;
     })
   | (Extract<AgentStreamEvent, { kind: 'elicitation' }> & { runId?: string })
   /** A component with no `id` is numbered by its position in the stream (`ui:<n>`). */
