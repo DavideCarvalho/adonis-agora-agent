@@ -72,8 +72,8 @@ export type DefaultAgentOptions = Omit<AgentDefinition, 'name'> & { name?: strin
 /**
  * Shape of `config/agent.ts`. Only `model` is required. Pick a `store` by name from the `stores` map
  * (built with the {@link stores} factory so each peer is imported lazily); omit it for the in-memory
- * store. The default runner is in-process (`durable: false`); the actor resolver defaults to one that
- * THROWS — an identity is never fabricated.
+ * store. The default runner is in-process (`durable: false`); with no actor resolver every browser is
+ * its own anonymous actor (the routes are public, and the provider logs a boot warning saying so).
  *
  * ```ts
  * import { defineConfig, stores } from '@adonis-agora/agent'
@@ -197,8 +197,10 @@ export interface AgentConfig {
    */
   adapters?: ProtocolAdapter[];
   /**
-   * Tool authorization gate. Defaults to `DefaultToolAuthorizer` (fail-closed, ADMIN-only; role-set
-   * intersection). `authorizer` and `rolesPolicy` are aliases — pass either.
+   * Tool authorization gate. Defaults to `DefaultToolAuthorizer` (role-set intersection over each
+   * tool's `roles`, else {@link AgentConfig.defaultRoles}; an empty list follows
+   * {@link AgentConfig.emptyRoles}, unrestricted by default). `authorizer` and `rolesPolicy` are
+   * aliases — pass either.
    */
   authorizer?: RolesPolicy;
   /** Alias of {@link AgentConfig.authorizer}. */
@@ -217,8 +219,9 @@ export interface AgentConfig {
    */
   emptyRoles?: EmptyRoles;
   /**
-   * Resolves the acting actor per request (the identity seam). Defaults to a resolver that THROWS on
-   * every request — the agent never fabricates a caller. Wire `AuthActorResolver` / `HeaderActorResolver`.
+   * Resolves the acting actor per request (the identity seam). Defaults to `AnonymousActorResolver`:
+   * the routes are PUBLIC and every browser is its own anonymous actor (the provider logs a boot
+   * warning). Wire `AuthActorResolver` / `HeaderActorResolver` to require login.
    */
   actorResolver?: ActorResolver;
   /**
@@ -253,9 +256,8 @@ export interface AgentConfig {
    */
   models?: ModelCatalog | ModelCatalogView;
   /**
-   * Generative UI: `genui({ catalog, … })` from `@adonis-agora/agent/genui` (needs the optional peer
-   * `@dudousxd/nestjs-agent-core`). Registers tools that let the model push catalog components into
-   * the conversation, and binds the catalog in the container as `AgentGenui`.
+   * Generative UI: `genui({ catalog, … })` from `@adonis-agora/agent/genui` (no extra peer). Registers
+   * tools that let the model push catalog components into the conversation, and binds the catalog in the container as `AgentGenui`.
    */
   genui?: GenuiFactory;
   /**

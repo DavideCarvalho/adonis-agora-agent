@@ -85,7 +85,7 @@ uiCapabilities: {
 
 Use the names and versions actually defined in your catalog. `components: []` requests text only. Omitting capabilities preserves the legacy catalog behavior. The server intersects capabilities with the authorized catalog; client declarations never create components or grant permissions. Only supported components are offered to the model. Unsupported validated emissions and trees become their complete text representation.
 
-Capabilities travel through native HTTP, queued messages, proposal execution context and AG-UI forwarded properties. Agora React can derive capabilities from its renderer registration or accept `uiCapabilities` explicitly. Drawable emissions retain `fallbackText` so stored history remains readable when a component renderer is removed, its version changes or rendering fails. A custom renderer fallback can override the default text display.
+Capabilities travel through native HTTP, queued messages, proposal execution context and AG-UI forwarded properties. Agora React sends capabilities only when you pass them explicitly — `<AgentProvider uiCapabilities={...}>` for every chat under it, or `useAgentChat({ uiCapabilities })` for one; it does not derive them from the registered renderers, so list the components you registered. Drawable emissions retain `fallbackText` so stored history remains readable when a component renderer is removed, its version changes or rendering fails. A custom renderer fallback can override the default text display.
 
 ## Database rollout
 
