@@ -52,7 +52,7 @@ import { AgentProvider, agUiBackend, useAgentChat } from '@adonis-agora/agent/re
 
 Input that is malformed — no `threadId`, no user message, a resume entry without a status — is an HTTP `400` and no stream. A failure after the stream opened is a `RUN_ERROR` event.
 
-With [independent approvals](/docs/agent/independent-approvals#text-decisions), a user message on an existing thread that is exactly a decision command (and carries no media) decides the proposal instead of starting a turn. The answer is a short run: `RUN_STARTED`, a `CUSTOM` event `aviary.action-proposal-decision` with `{ threadId, proposalDecision }`, the confirmation as one assistant text message, and `RUN_FINISHED`. The AG-UI projection does not carry a proposal's id (`agora.approval-requested` has no `target`), so an AG-UI client decides proposals by such a message or through the [proposal routes](/docs/agent/independent-approvals#over-http), not through `resume`.
+With [independent approvals](/docs/agent/independent-approvals#text-decisions), a user message on an existing thread that is exactly a decision command (and carries no media) decides the proposal instead of starting a turn. The answer is a short run: `RUN_STARTED`, a `CUSTOM` event `agora.action-proposal-decision` with `{ threadId, proposalDecision }`, the confirmation as one assistant text message, and `RUN_FINISHED`. A proposal's approval interrupt carries its `target` (and the `confirmation` wording), and its interrupt id names the proposal: resuming it decides the proposal through the proposal service, like the [proposal routes](/docs/agent/independent-approvals#over-http). A decision the caller may not make answers `403`, an unknown proposal `404`.
 
 ## What the stream carries
 

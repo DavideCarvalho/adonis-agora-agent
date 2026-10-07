@@ -108,8 +108,8 @@ With `genui` configured, every component a tool pushes — through `present`, `c
 
 The model is also offered only what the client can draw: each `ui__show_<component>` tool is hidden for an undeclared component, and `ui__render` / `ui__show` describe only the drawable part of the catalog (hidden when none is).
 
-<Callout type="warn" title="Capabilities need a catalog">
-Without `genui` in `config/agent.ts`, pushes are not validated and any component name is accepted — but a turn that carries `uiCapabilities` makes every push throw `UI capabilities require an authorized server catalog`. Configure `genui` before clients send capabilities, and make every component a tool pushes part of the catalog: once a catalog is configured, a name it does not define is refused even for a client that sent no capabilities.
+<Callout type="info" title="Capabilities without a catalog">
+Without `genui` in `config/agent.ts`, pushes are not validated against a catalog. A turn that carries `uiCapabilities` still negotiates: a component the client declared is drawn, any other one becomes the `fallbackText` given to the push — and nothing at all when the push gave none. Configure `genui` to get validation and a generated `fallbackText`; once a catalog is configured, a name it does not define is refused even for a client that sent no capabilities.
 </Callout>
 
 ## How a component becomes text
@@ -141,7 +141,7 @@ The provider does not derive capabilities from the registry: pass them, or omit 
 
 ### Web — any AG-UI client
 
-The `agUiAdapter()` route reads `forwardedProps.uiCapabilities` (a malformed value is a `400`) and negotiates exactly as above. A drawable component arrives as the `CUSTOM` event `agora.ui` with `{ id, component, props, version?, toolCallId? }`; an undeclared one arrives as text, inside the run's `TEXT_MESSAGE_*` events. `agUiBackend()` from `@adonis-agora/agent/react` forwards the chat's `uiCapabilities` for you. See [AG-UI](/docs/agent/ag-ui).
+The `agUiAdapter()` route reads `forwardedProps.uiCapabilities` (a malformed value is a `400`) and negotiates exactly as above. A drawable component arrives as the `CUSTOM` event `agora.ui` with `{ id, component, props, version?, fallbackText?, componentVersions?, toolCallId? }` — so an AG-UI client that cannot draw it after all can still show the text; an undeclared one arrives as text, inside the run's `TEXT_MESSAGE_*` events. `agUiBackend()` from `@adonis-agora/agent/react` forwards the chat's `uiCapabilities` for you. See [AG-UI](/docs/agent/ag-ui).
 
 ### Text-only channels — WhatsApp and similar
 
