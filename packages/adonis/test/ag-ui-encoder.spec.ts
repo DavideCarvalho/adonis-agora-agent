@@ -376,7 +376,7 @@ describe('what AG-UI does not model, for a consumer of this family', () => {
           t: 'elicitation',
           runId: 'lib-run-1',
           id: 'ask-1',
-          request: { id: 'ask-1', source: 'tool', questions: [{ id: 'q', prompt: 'Which?' }] },
+          request: { id: 'ask-1', source: 'ask', questions: [{ id: 'q', prompt: 'Which?' }] },
         },
       ]),
     );

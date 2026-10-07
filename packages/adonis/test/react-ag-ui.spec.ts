@@ -158,7 +158,7 @@ describe('agUiBackend() — attachments and regenerate', { timeout: 30_000 }, ()
       );
     });
     await waitFor(() => expect(result.current.status).toBe('ready'));
-    const user = model.seen[0]?.findLast((entry) => entry.role === 'user');
+    const user = [...(model.seen[0] ?? [])].reverse().find((entry) => entry.role === 'user');
     expect(user?.content).toBe('what is this?');
     expect(user?.attachments).toMatchObject([
       { mediaId: uploaded.mediaId, contentType: 'image/png', name: 'cat.png' },
@@ -208,7 +208,7 @@ describe('reframeAgUiStream — what the Adonis producer says beyond AG-UI', () 
   it("keeps a tool call's kind, a step's usage and a question set", async () => {
     const request = {
       id: 'ask-1',
-      source: 'tool',
+      source: 'ask',
       questions: [{ id: 'q', prompt: 'Which?' }],
     };
     const frames = await reframe([

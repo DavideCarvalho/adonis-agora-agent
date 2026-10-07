@@ -107,7 +107,9 @@ export function genuiTools(catalog: Catalog, options: GenuiToolsOptions = {}): G
   const tools =
     options.mode === 'tree'
       ? [treeTool(catalog, options)]
-      : standaloneComponents(catalog).map((component) => componentTool(catalog, component, options));
+      : standaloneComponents(catalog).map((component) =>
+          componentTool(catalog, component, options),
+        );
   if (options.showTool !== undefined && options.showTool !== false) {
     tools.push(showTool(catalog, options));
   }
