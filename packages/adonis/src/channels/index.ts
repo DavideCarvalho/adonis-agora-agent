@@ -16,9 +16,11 @@ export {
   type ChannelTextsOverrides,
   type ChannelTurnService,
   channels,
+  channelTextsFor,
   DEFAULT_CHANNEL_TEXTS,
   handleChannel,
   proposalButtonIds,
+  ptBrChannelTexts,
   relayChannelOutcome,
 } from './handler.js';
 export { ChannelDeliveryError, type ChannelFetch, ChannelMediaTooLargeError } from './http.js';
@@ -33,6 +35,7 @@ export {
   DEFAULT_CHANNEL_QUESTION_TEXTS,
   formatChannelQuestion,
   parseChannelAnswer,
+  ptBrChannelQuestionTexts,
 } from './questions.js';
 export { splitMessage } from './split.js';
 export {

@@ -63,6 +63,11 @@ export interface TextActionProposalVocabulary {
   reject: readonly string[];
   /** The phrase after an approve word that also approves later calls of the tool in this thread. */
   remember: readonly string[];
+  /**
+   * The language these words are in (a BCP 47 tag, e.g. `pt-BR`). Surfaces that speak on their own
+   * (text channels) pick their default texts by it, so the words and the texts agree.
+   */
+  language?: string;
 }
 
 /** English. Portuguese ships as {@link ptBrActionProposalText}; any other language via config. */
@@ -158,6 +163,7 @@ export function parseTextActionProposalCommand(
  */
 export const ptBrActionProposalText: Required<TextActionProposalConfig> = {
   vocabulary: {
+    language: 'pt-BR',
     approve: [
       'sim',
       'confirmo',

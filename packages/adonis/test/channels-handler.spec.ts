@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { channels, proposalButtonIds, telegram } from '../src/channels/index.js';
+import {
+  channels,
+  channelTextsFor,
+  DEFAULT_CHANNEL_TEXTS,
+  proposalButtonIds,
+  ptBrChannelTexts,
+  telegram,
+} from '../src/channels/index.js';
 import {
   ActionProposalWorker,
   DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY,
@@ -184,6 +191,7 @@ describe('channels.handle', () => {
         ],
         fallbackText:
           '*Refund order A-1?*\nAmount: 10.00\n\nReply *yes* to confirm or *no* to cancel.',
+        instruction: 'Reply *yes* to confirm or *no* to cancel.',
       },
     ]);
     // Telegram's callback_data holds 64 bytes.
@@ -212,6 +220,55 @@ describe('channels.handle', () => {
       'I prepared the refund.',
       '*Refund order A-1?*\nAmount: 10.00\n\nResponda *sim* ou *não*.',
     ]);
+  });
+
+  it('speaks Brazilian Portuguese by default when the vocabulary is ptBrActionProposalText', async () => {
+    const { adapter, outbox } = fakeAdapter({ buttons: 3 });
+    const service = fakeService(proposalFrames, {
+      actionProposalVocabulary: () => ({
+        ...DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY,
+        ...ptBrActionProposalText.vocabulary,
+      }),
+    });
+    const handle = channels.handle(adapter, { service, actor: () => actor, thread: () => 't' });
+    await handle(makeCtx(inbound('reembolso')).ctx);
+    await handle.drain();
+    const ids = proposalButtonIds(`proposal-${'a'.repeat(64)}`);
+    expect(outbox[1]!.message).toEqual({
+      text: '*Refund order A-1?*\nAmount: 10.00',
+      buttons: [
+        { id: ids.approve, label: 'Confirmar' },
+        { id: ids.reject, label: 'Cancelar' },
+      ],
+      fallbackText:
+        '*Refund order A-1?*\nAmount: 10.00\n\nResponda *sim* para confirmar ou *não* para cancelar.',
+      instruction: 'Responda *sim* para confirmar ou *não* para cancelar.',
+    });
+  });
+
+  it('keeps the pt-BR base under partial overrides, and English for other vocabularies', async () => {
+    const { adapter, outbox } = fakeAdapter();
+    const service = fakeService([{ t: 'error', message: 'boom' } as StreamFrame], {
+      actionProposalVocabulary: () => ptBrActionProposalText.vocabulary as never,
+    });
+    const handle = channels.handle(adapter, {
+      service,
+      actor: (message) => (message.from === 'stranger' ? null : actor),
+      thread: () => 't',
+      texts: { unknownSender: 'Não conheço este número.' },
+    });
+    await handle(makeCtx(inbound('oi', { id: 'm1', from: 'stranger' })).ctx);
+    await handle(makeCtx(inbound('oi', { id: 'm2' })).ctx);
+    await handle.drain();
+    expect(texts(outbox)).toEqual([
+      'Não conheço este número.',
+      'Desculpe, algo deu errado. Tente de novo, por favor.',
+    ]);
+    expect(channelTextsFor(DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY)).toBe(DEFAULT_CHANNEL_TEXTS);
+    expect(channelTextsFor({ ...DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY, language: 'pt-PT' })).toBe(
+      ptBrChannelTexts,
+    );
+    expect(channelTextsFor(null)).toBe(DEFAULT_CHANNEL_TEXTS);
   });
 
   it('names each proposal by #ID when the turn left several', async () => {

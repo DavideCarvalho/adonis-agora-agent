@@ -34,6 +34,49 @@ export const DEFAULT_CHANNEL_QUESTION_TEXTS: ChannelQuestionTexts = {
   invalid: (problem) => `I could not read that answer (${problem}).`,
 };
 
+/** The checks' English problems ({@link parseChannelAnswer}), in Brazilian Portuguese. */
+const PT_BR_PROBLEMS: [RegExp, (...groups: string[]) => string][] = [
+  [/^empty answer$/, () => 'resposta vazia'],
+  [/^not one of the options$/, () => 'não é uma das opções'],
+  [/^must be one of the offered options$/, () => 'precisa ser uma das opções'],
+  [/^requires an answer$/, () => 'precisa de uma resposta'],
+  [/^must be "true" or "false"$/, () => 'precisa ser "true" ou "false"'],
+  [/^must be a number$/, () => 'precisa ser um número'],
+  [/^must be at least (.+) characters$/, (n) => `precisa ter pelo menos ${n} caracteres`],
+  [/^must be at most (.+) characters$/, (n) => `precisa ter no máximo ${n} caracteres`],
+  [/^must be at least (.+)$/, (n) => `precisa ser no mínimo ${n}`],
+  [/^must be at most (.+)$/, (n) => `precisa ser no máximo ${n}`],
+  [/^must be a date as YYYY-MM-DD$/, () => 'precisa ser uma data no formato AAAA-MM-DD'],
+  [/^must be on or after (.+)$/, (d) => `precisa ser a partir de ${d}`],
+  [/^must be on or before (.+)$/, (d) => `precisa ser até ${d}`],
+  [/^must be an email address$/, () => 'precisa ser um endereço de e-mail'],
+  [/^must be an http\(s\) URL$/, () => 'precisa ser um link http(s)'],
+  [/^does not match the expected format$/, () => 'não está no formato esperado'],
+  [/^takes a single value$/, () => 'aceita só um valor'],
+];
+
+const ptBrProblem = (problem: string): string | null => {
+  for (const [pattern, say] of PT_BR_PROBLEMS) {
+    const match = pattern.exec(problem);
+    if (match) return say(...match.slice(1).map((group) => group ?? ''));
+  }
+  return null;
+};
+
+/** Brazilian Portuguese question texts — part of `ptBrChannelTexts`. */
+export const ptBrChannelQuestionTexts: ChannelQuestionTexts = {
+  counter: (index, total) => `(${index + 1}/${total})`,
+  pickOne: 'Responda com o número da sua escolha.',
+  pickMany: 'Responda com um ou mais números, separados por vírgula.',
+  orWrite: 'Ou escreva sua própria resposta.',
+  skipWord: 'pular',
+  keep: (skipWord, labels) => `Responda *${skipWord}* para manter: ${labels}.`,
+  invalid: (problem) => {
+    const said = ptBrProblem(problem);
+    return said === null ? 'Não entendi essa resposta.' : `Não entendi essa resposta (${said}).`;
+  },
+};
+
 const labelOf = (question: ElicitationQuestion, value: string) =>
   questionOptions(question).find((option) => option.value === value)?.label ?? value;
 

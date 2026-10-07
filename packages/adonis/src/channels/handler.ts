@@ -1,5 +1,9 @@
 import type { HttpContext } from '@adonisjs/core/http';
-import { DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY } from '../action-proposal-text.js';
+import {
+  DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY,
+  ptBrActionProposalText,
+  type TextActionProposalVocabulary,
+} from '../action-proposal-text.js';
 import { AgentService, AttachmentRefusedError } from '../agent-service.js';
 import type { AttachmentLimits } from '../attachment-limits.js';
 import type { ElicitationQuestion } from '../elicitation.js';
@@ -15,6 +19,7 @@ import {
   DEFAULT_CHANNEL_QUESTION_TEXTS,
   formatChannelQuestion,
   parseChannelAnswer,
+  ptBrChannelQuestionTexts,
 } from './questions.js';
 import { splitMessage } from './split.js';
 import { type ChannelStore, InMemoryChannelStore, lucidChannelStore } from './store.js';
@@ -57,7 +62,11 @@ export interface ChannelProposal {
 /** Why a media message could not be attached. */
 export type ChannelMediaRefusal = 'disabled' | 'type' | 'size' | 'failed';
 
-/** Everything the channel says on its own (not the model). English defaults; override any. */
+/**
+ * Everything the channel says on its own (not the model). English by default, Brazilian Portuguese
+ * ({@link ptBrChannelTexts}) when the agent's `actionProposalText` is `ptBrActionProposalText`;
+ * override any.
+ */
 export interface ChannelTexts {
   /** The Confirm button's label. */
   approve: string;
@@ -122,7 +131,53 @@ export const DEFAULT_CHANNEL_TEXTS: ChannelTexts = {
   questions: DEFAULT_CHANNEL_QUESTION_TEXTS,
 };
 
-/** `texts` as `channels.handle` takes it: any part, `questions` too. */
+/**
+ * Brazilian Portuguese channel texts — the default when the agent's `actionProposalText` is
+ * `ptBrActionProposalText`, so the reply words and what the channel says agree.
+ */
+export const ptBrChannelTexts: ChannelTexts = {
+  approve: 'Confirmar',
+  reject: 'Cancelar',
+  proposal: ({ confirmation, toolName }) =>
+    confirmation
+      ? `*${confirmation.title}*${confirmation.detail ? `\n${confirmation.detail}` : ''}`
+      : `*Executar ${toolName}?*`,
+  instruction: ({ approve, reject }) =>
+    `Responda *${approve}* para confirmar ou *${reject}* para cancelar.`,
+  blockingApproval: 'Esta ação precisa de uma aprovação que só pode ser dada no app.',
+  failed: 'Desculpe, algo deu errado. Tente de novo, por favor.',
+  actionSucceeded: 'Pronto.',
+  actionFailed: 'Não foi possível concluir a ação.',
+  mediaRefused: (reason, media, limits) =>
+    reason === 'disabled'
+      ? 'Por aqui eu só consigo ler mensagens de texto.'
+      : reason === 'size'
+        ? `Esse arquivo é grande demais${limits ? ` (o limite é ${readableSize(limits.maxBytes)})` : ''}.`
+        : reason === 'failed'
+          ? 'Não consegui baixar esse arquivo. Envie de novo, por favor.'
+          : media.kind === 'audio'
+            ? 'Não consigo ouvir mensagens de áudio. Escreva sua mensagem, por favor.'
+            : `Não consigo ler esse tipo de arquivo${media.contentType ? ` (${media.contentType})` : ''}.`,
+  questions: ptBrChannelQuestionTexts,
+};
+
+/**
+ * The channel texts that speak the language of the agent's text-decision words: {@link
+ * ptBrChannelTexts} for `ptBrActionProposalText` (or any vocabulary whose `language` is Portuguese),
+ * else {@link DEFAULT_CHANNEL_TEXTS}.
+ */
+export function channelTextsFor(vocabulary?: TextActionProposalVocabulary | null): ChannelTexts {
+  if (!vocabulary) return DEFAULT_CHANNEL_TEXTS;
+  const portuguese =
+    /^pt(-|$)/i.test(vocabulary.language ?? '') ||
+    vocabulary.approve === ptBrActionProposalText.vocabulary.approve;
+  return portuguese ? ptBrChannelTexts : DEFAULT_CHANNEL_TEXTS;
+}
+
+/**
+ * `texts` as `channels.handle` takes it: any part, `questions` too — over the texts in the language of
+ * the agent's `actionProposalText` (see {@link channelTextsFor}).
+ */
 export type ChannelTextsOverrides = Partial<Omit<ChannelTexts, 'questions'>> & {
   questions?: Partial<ChannelQuestionTexts>;
 };
@@ -171,6 +226,10 @@ export interface ChannelHandleOptions {
   outcomeTimeoutMs?: number;
   /** How long a question waits for its answer before the agent proceeds without it. Default 30 min. */
   questionTimeoutMs?: number;
+  /**
+   * What the channel says on its own. Omitted parts come from {@link channelTextsFor}: Brazilian
+   * Portuguese when the agent's `actionProposalText` is `ptBrActionProposalText`, else English.
+   */
   texts?: ChannelTextsOverrides;
   /** A message whose handling failed. Default: `console.error`. */
   onError?(error: unknown, message: InboundMessage): void;
@@ -235,16 +294,19 @@ async function containerService(): Promise<ChannelTurnService> {
 /** One registered channel: what `channels.onSettled` sends an outcome through. */
 interface Registration {
   adapter: ChannelAdapter;
-  texts: ChannelTexts;
+  texts(service?: ChannelTurnService): Promise<ChannelTexts>;
   store(service?: ChannelTurnService): Promise<ChannelStore>;
 }
 
 const registry = new Map<string, Registration>();
 
-const mergeTexts = (overrides: ChannelTextsOverrides = {}): ChannelTexts => ({
-  ...DEFAULT_CHANNEL_TEXTS,
+const mergeTexts = (
+  overrides: ChannelTextsOverrides = {},
+  base: ChannelTexts = DEFAULT_CHANNEL_TEXTS,
+): ChannelTexts => ({
+  ...base,
   ...overrides,
-  questions: { ...DEFAULT_CHANNEL_QUESTION_TEXTS, ...overrides.questions },
+  questions: { ...base.questions, ...overrides.questions },
 });
 
 /** Send `text` converted to the channel's markdown, split at its length limit. */
@@ -280,7 +342,7 @@ async function deliverOutcome(
   return relayOnce(
     await registration.store(service),
     registration.adapter,
-    registration.texts,
+    await registration.texts(service),
     conversation,
     proposal,
   );
@@ -336,7 +398,17 @@ export function handleChannel(
   adapter: ChannelAdapter,
   options: ChannelHandleOptions,
 ): ChannelRouteHandler {
-  const texts = mergeTexts(options.texts);
+  let resolvedTexts: ChannelTexts | undefined;
+  /** The texts, over the defaults in the language of the service's vocabulary — chosen once. */
+  const textsFor = (service?: ChannelTurnService): ChannelTexts => {
+    if (resolvedTexts) return resolvedTexts;
+    const texts = mergeTexts(
+      options.texts,
+      channelTextsFor(service?.actionProposalVocabulary?.() ?? null),
+    );
+    if (service) resolvedTexts = texts;
+    return texts;
+  };
   const dedupeTtlMs = options.dedupeTtlMs ?? 24 * 60 * 60 * 1000;
   const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000;
   const outcomeTimeoutMs = options.outcomeTimeoutMs ?? 60_000;
@@ -356,7 +428,12 @@ export function handleChannel(
     })();
     return resolvedStore;
   };
-  registry.set(adapter.name, { adapter, texts, store: storeFor });
+  registry.set(adapter.name, {
+    adapter,
+    texts: async (service) =>
+      textsFor(options.service ?? service ?? (await containerService().catch(() => undefined))),
+    store: storeFor,
+  });
 
   const deliver = (conversation: string, text: string) => deliverText(adapter, conversation, text);
   const questionKey = (conversation: string) => `${adapter.name}:question:${conversation}`;
@@ -381,6 +458,7 @@ export function handleChannel(
     proposal: ChannelProposal,
     withId: boolean,
   ) => {
+    const texts = textsFor(service);
     const summary = texts.proposal(proposal);
     const instruction = texts.instruction(commandsFor(service, proposal.id, withId));
     const asText = toChannelMarkdown(`${summary}\n\n${instruction}`, capabilities.markdown);
@@ -397,6 +475,7 @@ export function handleChannel(
         { id: ids.reject, label: texts.reject },
       ],
       fallbackText: asText.slice(0, capabilities.maxLength),
+      instruction: toChannelMarkdown(instruction, capabilities.markdown),
     };
     await adapter.send(conversation, message);
   };
@@ -416,6 +495,7 @@ export function handleChannel(
         (proposal) => proposal.id === proposalId,
       );
       if (current?.decision !== 'approved') return;
+      const texts = textsFor(service);
       if (outcomeText(current, texts) !== null) {
         await relayOnce(await storeFor(service), adapter, texts, conversation, current);
         return;
@@ -462,7 +542,11 @@ export function handleChannel(
     return true;
   };
 
-  const askNext = (conversation: string, pending: PendingQuestions) => {
+  const askNext = (
+    service: ChannelTurnService,
+    conversation: string,
+    pending: PendingQuestions,
+  ) => {
     const question = pending.questions[pending.index];
     if (!question) return Promise.resolve();
     return deliver(
@@ -474,7 +558,7 @@ export function handleChannel(
           total: pending.questions.length,
           ...(pending.preamble !== undefined ? { preamble: pending.preamble } : {}),
         },
-        texts.questions,
+        textsFor(service).questions,
       ),
     );
   };
@@ -489,10 +573,11 @@ export function handleChannel(
   ) => {
     const question = pending.questions[pending.index];
     if (!question || !service.answer) return;
+    const texts = textsFor(service);
     const parsed = parseChannelAnswer(question, message.text, texts.questions.skipWord);
     if (parsed.status === 'invalid') {
       await deliver(message.conversation, texts.questions.invalid(parsed.problem));
-      await askNext(message.conversation, pending);
+      await askNext(service, message.conversation, pending);
       return;
     }
     const next: PendingQuestions = {
@@ -506,7 +591,7 @@ export function handleChannel(
     const key = questionKey(message.conversation);
     if (next.index < next.questions.length) {
       await store.set(key, JSON.stringify(next), questionTimeoutMs);
-      await askNext(message.conversation, next);
+      await askNext(service, message.conversation, next);
       return;
     }
     await store.delete(key);
@@ -528,6 +613,7 @@ export function handleChannel(
   ): Promise<AttachmentRef[]> => {
     const refs: AttachmentRef[] = [];
     const limits = service.attachmentLimits?.() ?? null;
+    const texts = textsFor(service);
     for (const media of message.media ?? []) {
       const refuse = (reason: ChannelMediaRefusal) =>
         deliver(message.conversation, texts.mediaRefused(reason, media, limits));
@@ -667,7 +753,7 @@ export function handleChannel(
             answers: {},
           };
           await store.set(questionKey(conversation), JSON.stringify(pending), questionTimeoutMs);
-          await askNext(conversation, pending);
+          await askNext(service, conversation, pending);
           asking = { runId: frame.runId, toolCallId: frame.id };
           deadlineAt = Date.now() + questionTimeoutMs;
         } else if (frame.t === 'error') failed = true;
@@ -680,6 +766,7 @@ export function handleChannel(
 
   const handleMessage = async (service: ChannelTurnService, message: InboundMessage) => {
     await adapter.acknowledge?.(message).catch(() => {});
+    const texts = textsFor(service);
     const store = await storeFor(service);
     const actor = await options.actor(message);
     if (actor === null) {
