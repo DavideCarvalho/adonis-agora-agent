@@ -13,6 +13,9 @@ allowBuilds:
   # without them (as in nestjs-agent).
   cpu-features: false
   esbuild: true
+  # effect (under @opencode/client, a dev dependency) pulls msgpackr's optional native speedup; it
+  # runs without it.
+  msgpackr-extract: false
   protobufjs: false
   ssh2: false
 minimumReleaseAgeExclude:
@@ -20,4 +23,4 @@ minimumReleaseAgeExclude:
   - '@dudousxd/nestjs-agent-react@0.28.0 || 0.31.0 || 0.33.0'
   # Earlier releases are installed under aliases to test replay across upgrades.
   - '@adonis-agora/agent@0.56.0 || 0.58.0 || 0.59.0'
-  - '@adonis-agora/durable@0.43.1'
+  - '@adonis-agora/durable@0.43.1 || 0.43.3'

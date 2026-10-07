@@ -230,6 +230,12 @@ export {
   validateElicitationValue,
 } from './elicitation-input.js';
 export {
+  type AgentEngine,
+  type AgentEngineContext,
+  type AgentEngineFactory,
+  assertRunnable,
+} from './engine.js';
+export {
   AgentGenui,
   type GenuiFactory,
   type GenuiFactoryContext,

@@ -101,6 +101,37 @@ describe('createAgentTables repairs a run table that predates parent tracking', 
     expect((await store.getQueuedMessage(queued.id))?.persona).toBe('sql');
   });
 
+  it('adds host_context to a queue table that predates it, and the store round-trips it', async () => {
+    const raw = db.connection('sqlite');
+    await runTableWithoutParent();
+    await raw.rawQuery(
+      `CREATE TABLE "agent_queued_message" ("id" VARCHAR(255) PRIMARY KEY NOT NULL,
+       "thread_id" VARCHAR(255) NOT NULL, "actor" TEXT NOT NULL, "content" TEXT NOT NULL,
+       "attachments" TEXT NULL, "agent_name" VARCHAR(255) NULL, "persona" VARCHAR(255) NULL,
+       "model" VARCHAR(255) NULL, "page_context" TEXT NULL, "ui_capabilities" TEXT NULL,
+       "interrupt" INTEGER NOT NULL DEFAULT 0, "position" INTEGER NOT NULL,
+       "created_at" BIGINT NOT NULL, "updated_at" BIGINT NOT NULL)`,
+    );
+    expect(await raw.schema.hasColumn('agent_queued_message', 'host_context')).toBe(false);
+
+    const repairs = await createAgentTables(asStoreDb(db));
+    expect(repairs).toContain('agent_queued_message.host_context');
+
+    const store = new LucidAgentStore(asStoreDb(db), { autoCreateTables: false });
+    const actor = { id: 'u1', roles: ['ADMIN'] };
+    const thread = await store.createThread({ actor });
+    const hostContext = { source: 'slack', delivery: { channel: 'C1', ts: '1.2' } };
+    const queued = await store.enqueueMessage({
+      threadId: thread.id,
+      actor,
+      content: 'later',
+      hostContext,
+    });
+    expect((await store.getQueuedMessage(queued.id))?.hostContext).toEqual(hostContext);
+    const plain = await store.enqueueMessage({ threadId: thread.id, actor, content: 'plain' });
+    expect((await store.getQueuedMessage(plain.id))?.hostContext).toBeUndefined();
+  });
+
   it('reports no repair for a database it just created', async () => {
     const repairs = await createAgentTables(asStoreDb(db));
 

@@ -26,9 +26,11 @@ sources:
 # Setting up @adonis-agora/agent
 
 `@adonis-agora/agent` is a governed AI agent module for AdonisJS: one `defineConfig`
-call in `config/agent.ts` wires a provider-agnostic agent loop, persistence, budgeting,
-and the `/agent/*` HTTP+SSE routes. Only `model` is required — everything else ships with a
-default that this skill walks through.
+call in `config/agent.ts` wires a provider-agnostic agent (the loop by default, or an
+`engine` that runs turns instead), persistence, budgeting,
+and the `/agent/*` HTTP+SSE routes. Either `model` (the loop runs the turns) or
+`engine` (something else does) is required — everything else ships with a default that
+this skill walks through.
 
 ## Setup
 
@@ -181,6 +183,7 @@ export default defineConfig({
 
 Requires `@adonisjs/redis` installed and configured unless you pass `client:` (a
 bring-your-own `RedisStreamClient`). Pair with `durable: true` for cross-instance resume.
+Under an `engine`, `durable: true` is refused at boot unless the engine is durable itself.
 
 No Redis? `tokenSinks.lucid()` keeps the frames in the app's SQL database instead
 (table `agent_stream_frame`, created with the other agent tables). Subscribers poll

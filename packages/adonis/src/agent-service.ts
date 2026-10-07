@@ -36,6 +36,7 @@ import type { ToolCatalogEntry } from './tool-presentation.js';
 import type {
   Actor,
   AgentCatalogEntry,
+  AgentHostContext,
   AgentRunInput,
   MessageAttachment,
   MessageFeedback,
@@ -95,6 +96,12 @@ export interface ChatParams {
    * thread's real id is always the one on the result.
    */
   newThreadId?: string;
+  /**
+   * The host's own facts about this send — where it came from, where its answer goes (see
+   * `AgentRunInput.hostContext`). Carried to the turn as sent, through the queue when it waits there;
+   * never shown to the model or to clients. Set by in-process callers, never from a request body.
+   */
+  hostContext?: AgentHostContext;
 }
 
 /**
@@ -599,6 +606,7 @@ export class AgentService {
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(model !== undefined ? { model } : {}),
       ...(params.regenerate === true ? { regenerate: true } : {}),
+      ...(params.hostContext !== undefined ? { hostContext: params.hostContext } : {}),
     };
 
     const queue = this.queueing();
@@ -619,7 +627,7 @@ export class AgentService {
     // `queue` always answers as a queued send (202), so a client that asked for it handles one
     // shape; an idle thread starts it straight away all the same (`enqueue` kicks the queue).
     if (live === null && mode !== 'queue') {
-      const runId = crypto.randomUUID();
+      const runId = this.runner.runIdFor?.(input) ?? crypto.randomUUID();
       if (
         await queue
           .queueStore()
@@ -682,6 +690,7 @@ export class AgentService {
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
       ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
+      ...(input.hostContext !== undefined ? { hostContext: input.hostContext } : {}),
       ...(interrupting !== undefined ? { interrupt: true, at: 'head' as const } : {}),
     });
     let runId: string | undefined;

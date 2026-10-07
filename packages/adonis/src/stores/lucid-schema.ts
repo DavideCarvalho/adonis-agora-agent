@@ -235,6 +235,7 @@ export function createTableStatements(): string[] {
       "model" VARCHAR(255) NULL,
       "page_context" TEXT NULL,
       "ui_capabilities" TEXT NULL,
+      "host_context" TEXT NULL,
       "interrupt" INTEGER NOT NULL DEFAULT 0,
       "position" INTEGER NOT NULL,
       "created_at" BIGINT NOT NULL,
@@ -275,6 +276,7 @@ const RUN_ID_COLUMNS: readonly string[] = [
  */
 const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }[] = [
   { table: AGENT_TABLES.queuedMessages, column: 'ui_capabilities', type: 'TEXT NULL' },
+  { table: AGENT_TABLES.queuedMessages, column: 'host_context', type: 'TEXT NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'proposal_id', type: 'VARCHAR(255) NULL' },
   {
     table: AGENT_TABLES.actionProposals,

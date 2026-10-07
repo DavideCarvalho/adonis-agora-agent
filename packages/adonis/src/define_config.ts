@@ -2,6 +2,7 @@ import type { ActionApprovalMode } from './action-proposal-receipt.js';
 import type { TextActionProposalConfig } from './action-proposal-text.js';
 import type { BrandedFunctionalTool } from './ai-tool-ref.js';
 import type { AgentDashboardConfig } from './dashboard/define_config.js';
+import type { AgentEngine, AgentEngineFactory } from './engine.js';
 import type { GenuiFactory } from './genui/factory.js';
 import type { AgentGovernanceAuthorize } from './governance-gate.js';
 import type { McpServerConfig } from './mcp-client/options.js';
@@ -73,7 +74,7 @@ export type SinkFactory = (ctx: StoreContext) => TokenStreamSink | Promise<Token
 export type DefaultAgentOptions = Omit<AgentDefinition, 'name'> & { name?: string };
 
 /**
- * Shape of `config/agent.ts`. Only `model` is required. Pick a `store` by name from the `stores` map
+ * Shape of `config/agent.ts`. Only `model` is required (or an `engine` that runs the turns instead). Pick a `store` by name from the `stores` map
  * (built with the {@link stores} factory so each peer is imported lazily); omit it for the in-memory
  * store. The default runner is in-process (`durable: false`); with no actor resolver every browser is
  * its own anonymous actor (the routes are public, and the provider logs a boot warning saying so).
@@ -130,8 +131,19 @@ export interface AgentConfig {
    * proposal execution, the call, run and thread. Omit → a warning on the app's logger.
    */
   onPresentationError?: PresentationErrorHandler;
-  /** The LLM provider, or a lazy factory thunk so the provider SDK peer loads lazily. Required. */
-  model: ModelProvider | ModelFactory;
+  /**
+   * The LLM provider, or a lazy factory thunk so the provider SDK peer loads lazily. Required unless
+   * an {@link AgentConfig.engine} runs the turns instead.
+   */
+  model?: ModelProvider | ModelFactory;
+  /**
+   * Run turns on something other than this library's loop — e.g. `openCode({ host })` from
+   * `@adonis-agora/agent/opencode`. The engine builds the runner; the routes, store, sink, approvals,
+   * questions and queue stay the library's. An engine, or a lazy factory returning one. With an engine
+   * `model` is optional, and `durable: true` is refused unless the engine is durable itself
+   * (`openCodeDurable()`). Omit → the loop, on `model`.
+   */
+  engine?: AgentEngine | AgentEngineFactory;
   /** Name of the store (a key of `stores`). Omit for the in-memory store (single-process). */
   store?: string;
   /** Named stores, built with the {@link stores} factory. Provide `lucid` and/or `memory`. */

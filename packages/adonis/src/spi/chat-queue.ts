@@ -1,4 +1,4 @@
-import type { Actor, MessageAttachment, PageContext } from '../types.js';
+import type { Actor, AgentHostContext, MessageAttachment, PageContext } from '../types.js';
 import type { UiCapabilities } from '../ui-capabilities.js';
 import { type AgentStore, clearActiveRun } from './agent-store.js';
 
@@ -49,6 +49,8 @@ export interface QueuedMessage {
   model?: string;
   pageContext?: PageContext;
   uiCapabilities?: UiCapabilities;
+  /** The send's `AgentRunInput.hostContext`, carried to the turn it starts. Never on the wire view. */
+  hostContext?: AgentHostContext;
   /**
    * Queued by an interrupt (`POST chat { mode: 'interrupt' }`): the running turn was cancelled to
    * make room for it, so the cancel starts it instead of pausing the queue.
@@ -91,6 +93,7 @@ export interface EnqueueMessageInput {
   model?: string;
   pageContext?: PageContext;
   uiCapabilities?: UiCapabilities;
+  hostContext?: AgentHostContext;
   interrupt?: boolean;
   /** `'tail'` (default) runs it after everything already waiting; `'head'` runs it next. */
   at?: 'tail' | 'head';
