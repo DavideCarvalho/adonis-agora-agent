@@ -788,6 +788,121 @@ describe('bring your own runtime (A2aTurnService)', () => {
   });
 });
 
+describe('independent proposals (actionApprovalMode: independent)', () => {
+  function proposalService(opts: { executes: boolean }) {
+    const decided: { id: string; decision: string; via: string }[] = [];
+    let execution: { status: string; error?: string } | null = null;
+    const service = {
+      chat: async () => ({ runId: 'r1', threadId: 'thread-1' }),
+      subscribe: async function* () {
+        yield* [
+          {
+            t: 'event',
+            event: {
+              kind: 'tool-input-available',
+              id: 'c1',
+              name: 'cancel_order',
+              input: { id: 'A-1' },
+              toolKind: 'action',
+            },
+          },
+          {
+            t: 'approval',
+            runId: 'r1',
+            id: 'c1',
+            toolName: 'cancel_order',
+            input: { id: 'A-1' },
+            target: { kind: 'proposal', proposalId: 'p1' },
+          },
+        ] as never[];
+      },
+      approve: async () => {},
+      reject: async () => {},
+      skip: async () => {},
+      cancel: async () => {},
+      toolRoles: (name: string) => (name === 'cancel_order' ? ['scope:orders:cancel'] : undefined),
+      decideActionProposal: async (
+        _actor: unknown,
+        _thread: string,
+        id: string,
+        decision: string,
+        _body: unknown,
+        via: string,
+      ) => {
+        decided.push({ id, decision, via });
+        // the app's proposal worker picks it up a moment later
+        if (decision === 'approved' && opts.executes) {
+          execution = { status: 'queued' };
+          setTimeout(() => {
+            execution = { status: 'succeeded' };
+          }, 300);
+        }
+        return { status: 'applied' };
+      },
+      listActionProposals: async () => [
+        {
+          id: 'p1',
+          input: { id: 'A-1' },
+          decision: decided.length ? decided[0]!.decision : 'pending',
+          execution,
+          ...(execution?.status === 'succeeded'
+            ? { outcome: { text: 'Order A-1 cancelled.' } }
+            : {}),
+        },
+      ],
+    };
+    return { service, decided };
+  }
+
+  function handlerWith(service: unknown, timeoutMs = 5_000) {
+    return createA2aHandler({
+      path: 'a2a',
+      brands,
+      auth: fakeAuth,
+      store: new InMemoryA2aStore(),
+      service: service as never,
+      registry: new ToolRegistry(),
+      actions: 'approve-delegated',
+      timeoutMs,
+      maxBodyBytes: 64 * 1024,
+    });
+  }
+
+  it('under a delegated scope: approves it, waits for it to execute, and reports it', async () => {
+    const { service, decided } = proposalService({ executes: true });
+    const res = await call(handlerWith(service), 'POST', '/a2a/support/message:send', {
+      headers: { authorization: 'Bearer deleg|u1|acct-1|orders:cancel' },
+      body: send('cancel A-1'),
+    });
+    expect(decided).toEqual([{ id: 'p1', decision: 'approved', via: 'a2a' }]);
+    expect(res.json().message).toMatchObject({
+      parts: [{ text: 'Order A-1 cancelled.' }],
+      metadata: {
+        'pact.receipt': { scopesUsed: ['orders:cancel'], actions: [{ tool: 'cancel_order' }] },
+      },
+    });
+  });
+
+  it('without the scope: rejects it, and nothing is reported as done', async () => {
+    const { service, decided } = proposalService({ executes: true });
+    const res = await call(handlerWith(service), 'POST', '/a2a/support/message:send', {
+      headers: { authorization: 'Bearer deleg|u1|acct-1|orders:read' },
+      body: send('cancel A-1'),
+    });
+    expect(decided).toEqual([{ id: 'p1', decision: 'rejected', via: 'a2a' }]);
+    expect(JSON.stringify(res.json())).not.toContain('cancel_order');
+  });
+
+  it('an approved proposal that never executes does not hang the turn', async () => {
+    const { service } = proposalService({ executes: false });
+    const res = await call(handlerWith(service, 600), 'POST', '/a2a/support/message:send', {
+      headers: { authorization: 'Bearer deleg|u1|acct-1|orders:cancel' },
+      body: send('cancel A-1'),
+    });
+    expect(res.json().error).toBeDefined();
+  });
+});
+
 describe('actor hook', () => {
   it("maps the caller to the app's actor, keeps personal_agent, and says the channel is a2a", async () => {
     const seen: any[] = [];

@@ -8,7 +8,9 @@ import { PERMISSION_COMPONENT } from './permission-tool.js';
  * What an A2A turn does with an `action` call that parks for approval:
  *  - `'approve-delegated'` (default) — approve it when the caller's delegation grants one of the
  *    tool's roles: the user approved that scope on their own account page, which IS the consent the
- *    in-app approval stands for. Anything else is rejected.
+ *    in-app approval stands for. Anything else is rejected. An independent proposal
+ *    (`actionApprovalMode: 'independent'`) is decided the same way once the run ends, and the turn
+ *    waits for it to execute, so the reply never claims an action that did not happen.
  *  - `'reject'` — reject every action; personal agents only read.
  */
 export type A2aActionPolicy = 'approve-delegated' | 'reject';
@@ -52,13 +54,17 @@ export interface A2aTurnResult {
  * writes an adapter with the same shape (`defineA2aConfig({ service })`).
  */
 export interface A2aTurnService
-  extends Pick<AgentService, 'chat' | 'subscribe' | 'approve' | 'reject' | 'skip' | 'cancel'> {
+  extends Pick<AgentService, 'chat' | 'subscribe' | 'approve' | 'reject' | 'skip' | 'cancel'>,
+    Partial<Pick<AgentService, 'decideActionProposal' | 'listActionProposals'>> {
   /**
    * The roles a tool declares — what an approval and a receipt match the delegated scopes against.
    * Omitted → the shared `ToolRegistry`. An app whose registry is built per turn answers it here.
    */
   toolRoles?(toolName: string): string[] | undefined;
 }
+
+/** How often a turn looks at an approved proposal while it waits for it to execute. */
+const PROPOSAL_POLL_MS = 250;
 
 function argsHash(input: unknown): string {
   return createHash('sha256')
@@ -97,7 +103,63 @@ export async function runA2aTurn(
   };
   // Announced calls, by id, until their output says they ran.
   const calls = new Map<string, { name: string; input: unknown }>();
+  // Independent proposals the run left behind, decided once it ends.
+  const proposals: { id: string; toolName: string; toolCallId: string }[] = [];
+  // Set once the turn answered (or gave up): a wait still polling stops there.
+  let finished = false;
   const cancel = () => service.cancel(runId).catch(() => {});
+
+  /**
+   * Decide the proposals by {@link A2aActionPolicy} and wait for the approved ones to execute. One
+   * the caller may not decide (another approver) stays with the app, and is not reported as done.
+   */
+  const settleProposals = async (): Promise<void> => {
+    const { decideActionProposal, listActionProposals } = service;
+    if (!decideActionProposal || !listActionProposals) return;
+    for (const proposal of proposals) {
+      const scopes = scopesOf(proposal.toolName);
+      const approve = input.actions === 'approve-delegated' && scopes.length > 0;
+      try {
+        await decideActionProposal.call(
+          service,
+          input.actor,
+          threadId,
+          proposal.id,
+          approve ? 'approved' : 'rejected',
+          approve
+            ? {}
+            : {
+                reason:
+                  'A personal agent may not run this action without a delegated permission for it.',
+              },
+          'a2a',
+        );
+      } catch {
+        continue;
+      }
+      if (!approve) continue;
+      while (!finished) {
+        const listed = await listActionProposals.call(service, input.actor, threadId);
+        const current = listed.find((p) => p.id === proposal.id);
+        const status = current?.execution?.status;
+        if (!current || current.decision !== 'approved' || status === 'failed') {
+          result.error = current?.execution?.error ?? `${proposal.toolName} did not run`;
+          return;
+        }
+        if (status === 'succeeded') {
+          result.actions.push({
+            tool: proposal.toolName,
+            argsHash: argsHash(calls.get(proposal.toolCallId)?.input ?? current.input),
+            scopes,
+          });
+          const said = current.outcome?.text?.trim();
+          if (said) result.text = result.text ? `${result.text}\n\n${said}` : said;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, PROPOSAL_POLL_MS));
+      }
+    }
+  };
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   // A HARD deadline: if cancelling does not end the stream, the request still answers.
@@ -147,8 +209,14 @@ export async function runA2aTurn(
           }
         }
       } else if (frame.t === 'approval') {
-        // An independent proposal waits for a person in the app's own approval flow — not ours.
-        if (frame.target?.kind === 'proposal') continue;
+        if (frame.target?.kind === 'proposal') {
+          proposals.push({
+            id: frame.target.proposalId,
+            toolName: frame.toolName,
+            toolCallId: frame.id,
+          });
+          continue;
+        }
         if (input.actions === 'approve-delegated' && scopesOf(frame.toolName).length > 0) {
           await service.approve(frame.runId, frame.id, {
             executedByRef: input.actor.id,
@@ -173,12 +241,17 @@ export async function runA2aTurn(
         result.error = frame.message;
       }
     }
+    if (result.error === null && proposals.length > 0) {
+      const settled = await Promise.race([settleProposals(), deadline]);
+      if (settled === 'timeout') result.error = 'timeout';
+    }
   } catch (error) {
     // Nobody will read this run's stream any more: leaving it parked would hold the thread's
     // active stream, and every later message to this context would be refused as busy.
     await cancel();
     throw error;
   } finally {
+    finished = true;
     clearTimeout(timer);
     void stream.return?.();
   }

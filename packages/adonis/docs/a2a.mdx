@@ -95,7 +95,11 @@ registry.register(
 
 An `action` that parks for approval is **approved** when the caller's delegation grants one of its roles
 — the user approved that scope on their own account page, which is the consent the in-app approval stands
-for — and rejected otherwise (`actions: 'reject'` rejects them all). A question set (`ask`) is skipped:
+for — and rejected otherwise (`actions: 'reject'` rejects them all). With `actionApprovalMode: 'independent'`, the
+same decision applies to the proposal the run leaves behind: the turn decides it once the run ends and,
+when approved, **waits for it to execute** before answering — the reply carries the proposal's outcome
+text and the receipt lists it, so a personal agent is never told an action happened when it did not. A
+proposal whose approver is someone else stays with your app. A question set (`ask`) is skipped:
 there is nobody on this side to answer it, so the agent proceeds on its own assumptions.
 
 ## Step-up and receipts
