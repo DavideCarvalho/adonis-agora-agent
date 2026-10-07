@@ -8,6 +8,7 @@ import {
   ActionProposalServiceError,
 } from '../src/action-proposal-service.js';
 import { validateActionProposalListQuery } from '../src/action-proposal-transitions.js';
+import { type AgentEngine, assertRunnable, engineOnlyModel } from '../src/engine.js';
 import type { Catalog } from '../src/genui/index.js';
 import {
   ActionProposalExecutor,
@@ -237,6 +238,8 @@ export default class AgentProvider {
   #mcpTools: McpToolImporter | null = null;
   /** Whatever was built at boot that may own a schema: the store, the pricing store, the read-model. */
   #schemaOwners: unknown[] = [];
+  /** The engine running the turns instead of the loop (`engine` in the config), when there is one. */
+  #engine: AgentEngine | undefined;
 
   constructor(protected app: ApplicationService) {}
 
@@ -312,7 +315,15 @@ export default class AgentProvider {
     }
 
     // ── Runtime graph ──
-    const model = await this.#resolveModel(config);
+    // An engine (`engine` in the config) runs the turns instead of the loop: `model` is optional
+    // then, and `durable: true` (the LOOP's durable runner) is refused unless the engine is durable.
+    const engine = typeof config.engine === 'function' ? await config.engine() : config.engine;
+    assertRunnable({ model: config.model, engine, durable: config.durable });
+    this.#engine = engine;
+    const model =
+      config.model === undefined && engine !== undefined
+        ? engineOnlyModel(engine)
+        : await this.#resolveModel(config);
     const store = await this.#resolveStore(config);
     const sink = await this.#resolveSink(config);
     // One budget: `{ limits }` over the usage ledger, or a `QuotaProvider` of your own — reported by
@@ -449,11 +460,21 @@ export default class AgentProvider {
     }
     if (this.#actionProposalWorker)
       this.app.container.bindValue(ActionProposalWorker, this.#actionProposalWorker);
-    const runner =
-      config.durable === true
-        ? ((await this.#resolveDurableRunner(factory, store, queue, sink)) ??
-          new InlineAgentRunner(factory, store, queue))
-        : new InlineAgentRunner(factory, store, queue);
+    const runner: AgentRunner =
+      engine !== undefined
+        ? await engine.createRunner({
+            factory,
+            store,
+            sink,
+            registry,
+            queue,
+            make: (binding) => this.app.container.make(binding as never),
+            ...this.#appKey(),
+          })
+        : config.durable === true
+          ? ((await this.#resolveDurableRunner(factory, store, queue, sink)) ??
+            new InlineAgentRunner(factory, store, queue))
+          : new InlineAgentRunner(factory, store, queue);
     const service: AgentService = new AgentService(runner, store, factory, {
       queue,
       ...(config.backgroundActorResolver !== undefined
@@ -530,6 +551,8 @@ export default class AgentProvider {
   }
 
   async shutdown() {
+    await this.#engine?.shutdown?.();
+    this.#engine = undefined;
     await this.#actionProposalWorker?.stop();
     this.#actionProposalWorker = null;
     // The Lucid store shares the app's `db` (it owns no connection to close); the in-process sink
@@ -564,8 +587,18 @@ export default class AgentProvider {
 
   // ── resolution helpers ────────────────────────────────────────────────────
 
+  /** The app's `APP_KEY` (a `Secret` in `config/app.ts`), for an engine that signs something. */
+  #appKey(): { appKey?: string } {
+    const raw = this.app.config.get<unknown>('app.appKey', undefined);
+    const released =
+      typeof (raw as { release?: unknown } | undefined)?.release === 'function'
+        ? (raw as { release(): unknown }).release()
+        : raw;
+    return typeof released === 'string' && released.length > 0 ? { appKey: released } : {};
+  }
+
   async #resolveModel(config: AgentConfig): Promise<ModelProvider> {
-    const model = config.model;
+    const model = config.model as AgentConfig['model'] & {};
     if (typeof model === 'function') {
       return model();
     }
@@ -884,7 +917,9 @@ export default class AgentProvider {
     // 3b. Protocol adapters (`adapters` in the config): other wire protocols over the same runs —
     // e.g. `agUiAdapter()` mounts `POST <path>/ag-ui`. Each gets the checks these routes use, so an
     // adapter cannot be more permissive than the native routes by forgetting one.
-    for (const adapter of config.adapters ?? []) {
+    // An engine's own routes (the MCP endpoint OpenCode reaches the app's tools through) mount the
+    // same way, after the configured adapters.
+    for (const adapter of [...(config.adapters ?? []), ...(this.#engine?.adapters?.() ?? [])]) {
       await adapter.mount({
         service,
         defaultAgentName,
