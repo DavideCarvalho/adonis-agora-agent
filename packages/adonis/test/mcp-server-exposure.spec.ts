@@ -284,3 +284,32 @@ describe('tool annotations in tools/list', () => {
     });
   });
 });
+
+describe('generative-UI tools over MCP', () => {
+  it('a tool whose result is shown elsewhere (a UI push) is neither listed nor callable', async () => {
+    const registry = buildRegistry();
+    registry.register(
+      {
+        name: 'ui__show_chart',
+        kind: 'read',
+        description: 'Show a chart',
+        inputSchema: z.object({}),
+        presentation: { result: { kind: 'elsewhere' } },
+      } as never,
+      { execute: async () => ({}) },
+    );
+    const server = createMcpServer({
+      name: 'test',
+      version: '0.0.0',
+      registry,
+      policy: new DefaultRolesPolicy(),
+      actorFromAuth: () => ACTOR,
+    });
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+    expect((await client.listTools()).tools.map((t) => t.name)).not.toContain('ui__show_chart');
+    const called = await client.callTool({ name: 'ui__show_chart', arguments: {} });
+    expect(called.isError).toBe(true);
+  });
+});

@@ -9,7 +9,7 @@ import type { RolesPolicy } from '../spi/roles-policy.js';
 import type { AiToolCtx } from '../spi/tool.js';
 import { ToolNotFoundError, ToolRegistry } from '../tool-registry.js';
 import { createNoopEmitUi } from '../tool-ui.js';
-import type { Actor } from '../types.js';
+import type { Actor, ToolSpec } from '../types.js';
 import type { McpToolDescriber } from './define_config.js';
 
 /**
@@ -65,11 +65,19 @@ export interface CreateMcpServerOptions extends McpToolContextOptions {
 const LOOP_SERVED_KINDS = new Set(['agent', 'ask', 'skill', 'memory']);
 
 /** Whether this tool may be reached over MCP at all — the same answer for listing and for calling. */
-function isExposable(kind: string, actions: 'refuse' | 'execute'): boolean {
-  if (LOOP_SERVED_KINDS.has(kind)) {
+function isExposable(
+  spec: { kind: string; presentation?: ToolSpec['presentation'] } | undefined,
+  actions: 'refuse' | 'execute',
+): boolean {
+  if (spec === undefined || LOOP_SERVED_KINDS.has(spec.kind)) {
     return false;
   }
-  return kind !== 'action' || actions === 'execute';
+  // A tool whose result is shown elsewhere (a generative-UI `ui__show_*` / `ui__render`) only
+  // pushes a component; over MCP there is no screen, and the model would get nothing back.
+  if (spec.presentation?.result?.kind === 'elsewhere') {
+    return false;
+  }
+  return spec.kind !== 'action' || actions === 'execute';
 }
 
 /**
@@ -173,7 +181,7 @@ export function createMcpServer(options: CreateMcpServerOptions): Server {
   server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
     const actor = actorFromAuth(extra.authInfo);
     const defs = (await registry.definitionsFor(actor, policy, allowedTools)).filter((definition) =>
-      isExposable(definition.kind, actions),
+      isExposable(registry.spec(definition.name), actions),
     );
     return {
       tools: await Promise.all(
@@ -207,7 +215,7 @@ export function createMcpServer(options: CreateMcpServerOptions): Server {
       // stance — so a caller who guesses a name would otherwise reach a tool deliberately left off
       // the surface.
       const spec = registry.spec(name);
-      if (spec === undefined || !isExposable(spec.kind, actions)) {
+      if (!isExposable(spec, actions)) {
         throw new ToolNotFoundError(name);
       }
       if (allowedTools !== undefined && !allowedTools.includes(name)) {

@@ -16,3 +16,4 @@ MCP server and OAuth, with `@adonis-agora/authkit-server`'s `mcp: true`:
 - `tools/list` carries MCP `annotations` (`readOnlyHint` from the tool's kind by default); `describeTool` sets the `title` and the annotations per tool.
 - In stateless mode, `GET`/`DELETE` authenticate first (`401` with the login challenge), then answer `405`.
 - The RFC 9728 metadata route is named (`mcp.oauth_protected_resource`; `metadataRouteName` per endpoint).
+- Generative-UI tools (`ui__show_*`, `ui__render` — any tool whose result is shown elsewhere) are no longer exposed over MCP: there is no screen there, and the model got nothing back.
