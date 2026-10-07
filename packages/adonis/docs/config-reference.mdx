@@ -61,7 +61,7 @@ export default defineConfig({
 
 ### `pricingStore`
 
-`AgentPricingStore | PricingFactory`. Prices each turn's tokens into the assistant message's `usage.costUsd`. A provider-reported (gateway) cost always wins; otherwise the loop estimates from this store's current price rows. **Omit → `costUsd` is always `null`** (never a fabricated `0`). Use `pricingStores.lucid()` (the SQL `agent_model_pricing` table) or `pricingStores.memory()`. See [Quota & cost](/docs/agent/governance/quota-and-cost).
+`AgentPricingStore | PricingFactory | false`. Prices each turn's tokens into the assistant message's `usage.costUsd`. A provider-reported (gateway) cost always wins; otherwise the loop estimates from this store's current price rows. **Omit → it mirrors the main store**: with a `stores.lucid()` store, a Lucid pricing store on the same connection (`agent_model_pricing`, auto-created); with any other store, pricing is off. `false` turns it off. With no pricing store `costUsd` is always `null` (never a fabricated `0`). Use `pricingStores.lucid()` or `pricingStores.memory()` to choose one. See [Quota & cost](/docs/agent/governance/quota-and-cost).
 
 ### `governanceQueries`
 
@@ -129,7 +129,49 @@ A public deployment should set a `quota`: model spend is otherwise unbounded (pe
 
 ### `models`
 
-`ModelCatalog | ModelCatalogView`. Which models a caller may pick — served by `GET /agent/models`, checked on a send's `model` and on `PATCH /agent/threads/:id { model }`. A literal view for a fixed list, a `ModelCatalog` (`list({ actor, agent })`) to decide per caller. **Omit → an empty catalog**, and a request naming a model is refused. See [Models](/docs/agent/streaming-and-http#models).
+`ModelCatalog | ModelCatalogView`. Which models a caller may pick — served by `GET /agent/models`, checked on a send's `model` and on `PATCH /agent/threads/:id { model }`. A literal view for a fixed list, a `ModelCatalog` (`list({ actor, agent })`) to decide per caller. **Omit → the catalog the model provider carries** (`aiSdkModels({ … })`), else an empty one — and a request naming a model is refused with `400`. See [Models](/docs/agent/streaming-and-http#models).
+
+### `approvalPolicy`
+
+`ApprovalPolicy | ApprovalRules`. Who approves an `action` call and how long the request stays open. The shorthand `{ approver?, ttlMs?, tools?: { [name]: { required?, approver?, ttlMs? } } }` covers most deployments; a whole `ApprovalPolicy` (`requirementFor`, optional `canDecide`) decides per actor, thread or agent. **Omit → the person chatting approves, with no expiry.** See [Approval policy](/docs/agent/streaming-and-http#approval-policy).
+
+### `actionApprovalMode` / `backgroundActorResolver` / `actionProposalWorker`
+
+`actionApprovalMode`: `'blocking' | 'independent'`. **Default `'blocking'`** — an approval-requiring `action` call parks its turn. `'independent'` stores it as a proposal, ends the turn, and executes it in a background worker once approved. Requires a store with the proposal capabilities (Lucid, or the in-memory store for one process) and a `backgroundActorResolver`; the boot fails otherwise.
+
+`backgroundActorResolver`: `{ resolve({ actorRef, tenantRef }): Promise<Actor | null> }`. Loads the requester's current identity and roles for a deferred execution. Required in independent mode.
+
+`actionProposalWorker`: `{ pollIntervalMs?, leaseMs?, maxConcurrency?, onSettled? }` — **defaults `1000`, `30000`, `1`**; positive integers, with `pollIntervalMs` below a third of `leaseMs`. `onSettled(proposal)` is called by the worker that ran a proposal once it settles — to push the outcome to a channel that is not the web chat; a throw is logged, never retried. See [Independent approvals](/docs/agent/independent-approvals).
+
+### `actionProposalText`
+
+`{ vocabulary?, replies? }` — the words a chat message must be to decide a proposal (`approve`, `reject`, `remember`) and what the agent answers. **Default English** (`yes`/`approve`/`no`/`reject`, …). `ptBrActionProposalText` (exported) is Brazilian Portuguese. Each field you omit keeps its default. See [Text decisions](/docs/agent/independent-approvals#text-decisions).
+
+### `onPresentationError`
+
+`(error, { toolName, toolCallId?, runId?, threadId? }) => void | Promise<void>`. Where a tool's presentation failures go — a `present` hook that throws, a component push the catalog refuses — in turns and in proposal executions. The tool's result is unaffected. **Default: a warning on the app logger.**
+
+### `genui`
+
+`GenuiFactory` — `genui({ catalog, resolver?, mode?, showTool?, terminal?, … })` from `@adonis-agora/agent/genui`. Registers the tools a model uses to push catalog components, binds the catalog in the container (`AgentGenui`), and makes every component push validated and [negotiated](/docs/agent/surfaces#ui-capabilities) against the catalog. **Omit → no catalog tools, and pushes are not validated** (a turn carrying `uiCapabilities` then refuses every push). See [Generative UI](/docs/agent/generative-ui#a-component-catalog--adonis-agoraagentgenui).
+
+### `adapters`
+
+`ProtocolAdapter[]`. Other wire protocols served over the same runs, each mounting its own routes under `path`. `agUiAdapter()` from `@adonis-agora/agent/ag-ui` serves [AG-UI](/docs/agent/ag-ui) at `POST <path>/ag-ui`. **Omit → only the native routes.**
+
+### `inputProcessors` / `outputProcessors`
+
+`InputProcessor[]` / `OutputProcessor[]`. Rewrite the prompt before every model call, and rule on each step's answer before anything downstream sees it. `createGuardrails` (`@adonis-agora/agent/guardrails`) provides both. See [Input and output processors](/docs/agent/authoring/processors).
+
+### `mcpServers`
+
+`McpServerConfig[]`. External MCP servers whose tools this deployment imports into its own registry (imported tools default to `kind: 'action'`). The other direction from `config/mcp.ts`. See [MCP client](/docs/agent/mcp-client).
+
+### `skills` / `memory`
+
+`skills`: `{ provider: SkillProvider, scopes?, maxSkills? }`. Authored procedures the model can load mid-turn: one catalog line per skill in the system prompt, and a `skill` tool that returns a body. Served by `GET <path>/skills`. **Omit → no catalog and no `skill` tool.**
+
+`memory`: `{ provider: MemoryProvider, scopes?, maxMemories?, maxFactChars? }`. Facts about an actor and their organisation carried across turns and threads, with a `remember` tool. `GET <path>/memories` lists what is on file about the caller and `DELETE <path>/memories/:id` forgets one. **Omit → no memory block and no `remember` tool.** Both default `scopes` to the actor's own, their tenant's and the deployment's.
 
 ### `durable`
 

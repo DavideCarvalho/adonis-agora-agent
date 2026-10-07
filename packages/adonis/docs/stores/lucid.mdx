@@ -59,13 +59,15 @@ stores.lucid({ connection: 'agent' })
 
 ## Independent proposal storage
 
-`LucidAgentStore` and the testing `InMemoryAgentStore` also implement the optional `ActionProposalStore` capability. It stores proposals separately from runs, with an immutable input/card snapshot, scoped reads, decision audit and recoverable execution leases. Approval and queued work are written atomically in the same row. The capability is the persistence foundation; it does not yet change how the agent loop waits for approval.
+`LucidAgentStore` and the testing `InMemoryAgentStore` also implement the optional `ActionProposalStore` capability, with the worker discovery and outcome admission that [independent approvals](/docs/agent/independent-approvals) (`actionApprovalMode: 'independent'`) need. It stores proposals separately from runs, with an immutable input/card snapshot, scoped reads, decision audit and recoverable execution leases. Approval and queued work are written atomically in the same row. In the default blocking mode nothing writes proposals.
 
 Create proposals with deterministic ids and stable idempotency keys. Every read/decision/claim requires the full `tenantRef` (explicitly `null` when absent), `actorRef` and `threadId` scope. Identity fields are limited to 255 UTF-16 units. `listActionProposals` accepts a decision filter and a limit from 1 to 1000 (default 100). The application must authorize the deciding actor before calling the store; possession of a proposal id is never authorization.
 
 `decideActionProposal` returns `applied`, `unchanged`, `conflict`, `not_found` or `expired`; matching decisions do not replace the original audit. `claimActionProposal` issues a token and generation. Renewing or settling requires both and an unexpired lease. Crash recovery advances the generation while preserving the idempotency key; the domain must honor that key because delivery is at least once.
 
 The additive `agent_action_proposal` table is provisioned with the rest of the schema. With `autoCreateTables: false`, run the library-delegating migration before using this capability. Repeated provision preserves existing history and proposals. The clock can be injected through `LucidAgentStoreOptions.clock` for server-side coordination/testing; never accept a decision timestamp from the client.
+
+`configure` publishes two more forward-only migrations for this: `add_action_proposal_discovery` (the discovery index, plus a bounded backfill of existing proposals) and `add_action_proposal_runtime` (outcome storage on messages, outcome delivery on proposals, UI capabilities on queued messages). Stop older writers before running them. See [Database rollout](/docs/agent/independent-approvals#database-rollout).
 
 For an existing installation whose old migration is already recorded, create a **new additive migration**: its `up` calls `createAgentTables(db.connection(this.db.connectionName))`, with `static disableTransactions = true` as in the published stub. Running `migration:run` alone will not rerun the old migration. Its `down` must not call `dropAgentTables`, because that would erase the existing conversations; keep the additive upgrade forward-only.
 

@@ -1,0 +1,195 @@
+---
+title: One output, many surfaces
+description: How one tool result reaches a React chat, an AG-UI client, a text-only channel such as WhatsApp, and an MCP client — UI capability negotiation, text fallbacks, and what each surface receives.
+icon: MonitorSmartphone
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A tool answers once. The same run can be watched by a React chat that draws components, an AG-UI client, a webhook that relays text to WhatsApp, or nothing at all (an MCP call). This page follows one result through each of them.
+
+The pieces involved are documented on their own pages: [Generative UI](/docs/agent/generative-ui) (pushing components), [Component registries and server rendering](/docs/agent/authoring/component-rendering) (`present`, custom components, image/PDF export), and the transports ([Streaming & HTTP](/docs/agent/streaming-and-http), [AG-UI](/docs/agent/ag-ui), [MCP](/docs/agent/mcp)).
+
+## The contract: one definition, three readers
+
+A component definition in the server catalog carries everything every surface needs:
+
+| Field | Read by |
+| --- | --- |
+| `name`, `version` | the client registry that draws it, and capability negotiation |
+| `props` (Standard Schema or JSON Schema) | the server, which validates every push; the client, which can validate before drawing |
+| `description` | the model, when the `genui` tools offer the component |
+| `fallbackText(props)` | every surface that cannot draw it |
+
+```ts title="app/genui/order_summary.ts"
+import { createComponent } from '@adonis-agora/agent/genui'
+import { z } from 'zod'
+
+export const orderSummary = createComponent({
+  name: 'OrderSummary',
+  title: 'Order summary',
+  description: 'One order: status and total.',
+  version: 1,
+  props: z.object({ id: z.string(), status: z.string(), totalCents: z.number().int() }),
+  fallbackText: ({ id, status, totalCents }) =>
+    `*Order ${id}* — ${status}, ${(totalCents / 100).toFixed(2)}`,
+})
+```
+
+```ts title="app/genui/catalog.ts"
+import { defineCatalog } from '@adonis-agora/agent/genui'
+import { BUILTIN_COMPONENTS } from '@adonis-agora/agent/genui/builtins'
+import { orderSummary } from './order_summary.js'
+
+export const catalog = defineCatalog([...BUILTIN_COMPONENTS, orderSummary.definition])
+```
+
+```ts title="config/agent.ts"
+import { genui } from '@adonis-agora/agent/genui'
+import { catalog } from '#genui/catalog'
+
+export default defineConfig({ model, genui: genui({ catalog }) })
+```
+
+The tool returns domain data and presents it with the component:
+
+```ts title="app/agent_tools/order_status.ts"
+import { defineTool } from '@adonis-agora/agent'
+import { z } from 'zod'
+import { orderSummary } from '#genui/order_summary'
+
+export const orderStatus = defineTool({
+  name: 'orderStatus',
+  description: 'Look up one of the customer’s orders',
+  input: z.object({ orderId: z.string() }),
+  execute: async ({ orderId }, ctx) => Order.findForCustomer(orderId, ctx.actor.id),
+  present: (order) =>
+    orderSummary({ id: order.id, status: order.status, totalCents: order.totalCents }),
+})
+```
+
+The model reads `execute`'s return value on every surface. `present` (or a direct `ctx.emitUi`) is the only part whose delivery differs.
+
+## UI capabilities
+
+A client says which components it can draw with `uiCapabilities`:
+
+```ts
+{ components: [{ name: 'OrderSummary', version: 1 }, { name: 'DataTable', version: 1 }] }
+```
+
+| Value | Meaning |
+| --- | --- |
+| omitted | No negotiation. Every catalog component is drawable (the behaviour before negotiation existed). |
+| `{ components: [] }` | Text only. Nothing is drawn; every push becomes its text. |
+| a list | Only components whose `name` **and** `version` match exactly (a definition without `version` is version `1`). |
+
+Each entry is `{ name, version }`: `name` matches `/^[A-Za-z][A-Za-z0-9]{0,63}$/`, `version` is a positive integer, names are unique, and no other key is allowed. Anything else is refused: `validateUiCapabilities` (exported) throws a `TypeError`, and the AG-UI route answers `400`.
+
+Capabilities only narrow. The server intersects them with the catalog the actor is authorized for; a client cannot add a component, change a schema, or reach a tool by declaring something. They travel with the turn:
+
+| Where | How |
+| --- | --- |
+| `POST <path>/chat` | `uiCapabilities` in the body |
+| `POST <path>/ag-ui` | `forwardedProps.uiCapabilities` |
+| `AgentService.send` / `chat` | `ChatParams.uiCapabilities` |
+| a queued message | stored with it, so the turn it starts later negotiates the same way |
+| an [independent action proposal](/docs/agent/independent-approvals) | stored in its execution context, so the deferred execution renders for the channel that asked |
+| a `PromptBuilder` | `PromptContext.uiCapabilities` |
+| a tool | `ctx.uiCapabilities` |
+
+## What the server does with a push
+
+With `genui` configured, every component a tool pushes — through `present`, `ctx.emitUi`, `ctx.emitComponent` or a `ui__show_*` tool — is checked against the catalog resolved for that request before anything is streamed:
+
+1. **Validation.** An unknown component name, a `version` option that differs from the definition's, or props that fail the schema throw. From `execute` that fails the tool call like any other error; from `present` it is a [presentation failure](/docs/agent/authoring/component-rendering#validation-replay-and-capture-boundaries), and the successful result stands.
+2. **Negotiation.** A drawable component is streamed as a `ui` event carrying `fallbackText`, generated on the server from the definition. One the client did not declare is not streamed as a component at all: its text is.
+3. **The text path.** That text is streamed as ordinary `text`, persisted as an assistant message in the thread, and added to what the model reads for the rest of the turn, so its next sentence follows on from what the user actually saw.
+
+The model is also offered only what the client can draw: each `ui__show_<component>` tool is hidden for an undeclared component, and `ui__render` / `ui__show` describe only the drawable part of the catalog (hidden when none is).
+
+<Callout type="info" title="Capabilities without a catalog">
+Without `genui` in `config/agent.ts`, pushes are not validated against a catalog. A turn that carries `uiCapabilities` still negotiates: a component the client declared is drawn, any other one becomes the `fallbackText` given to the push — and nothing at all when the push gave none. Configure `genui` to get validation and a generated `fallbackText`; once a catalog is configured, a name it does not define is refused even for a client that sent no capabilities.
+</Callout>
+
+## How a component becomes text
+
+`componentToText(catalog, component, props)` (exported from `@adonis-agora/agent/genui`) is the rule every surface shares:
+
+- the definition's `fallbackText(props)`, when it returns a non-empty string;
+- otherwise — no `fallbackText`, an empty result, or a throw — the props as a JSON code block, headed by `*title*` when the props have a `title`;
+- a composed tree (`ui__render`) renders node by node, depth first. A layout node that takes children and has no `fallbackText` contributes only its children's text.
+
+The text is Slack-mrkdwn compatible (`*bold*`, fenced blocks), which WhatsApp also reads. The built-in `DataTable` fallback is a fixed-width table of at most 15 rows that ends with `… N more rows`; when every row matters on a text channel, send an [image or PDF export](/docs/agent/authoring/component-rendering#render-html-png-or-pdf) instead.
+
+## Surface by surface
+
+### Web — React over the native stream
+
+Declare what the registry draws, once, on the provider (or per chat with `useAgentChat({ uiCapabilities })`, which wins):
+
+```tsx
+<AgentProvider
+  genui={{ registry: { OrderSummary, DataTable }, catalog }}
+  uiCapabilities={{ components: [{ name: 'OrderSummary', version: 1 }, { name: 'DataTable', version: 1 }] }}
+>
+  <Chat />
+</AgentProvider>
+```
+
+The provider does not derive capabilities from the registry: pass them, or omit them to keep every catalog component drawable. Each `ui` block renders through `<GenerativeUI>`. When a component cannot be drawn there — unknown to the registry, props that fail the client catalog, a renderer that throws, or a stored tree whose component versions no longer match — and no `fallback` was given, it renders the item's `fallbackText`. A reloaded thread draws the same components (or texts) from the message's persisted `ui` list.
+
+### Web — any AG-UI client
+
+The `agUiAdapter()` route reads `forwardedProps.uiCapabilities` (a malformed value is a `400`) and negotiates exactly as above. A drawable component arrives as the `CUSTOM` event `agora.ui` with `{ id, component, props, version?, fallbackText?, componentVersions?, toolCallId? }` — so an AG-UI client that cannot draw it after all can still show the text; an undeclared one arrives as text, inside the run's `TEXT_MESSAGE_*` events. `agUiBackend()` from `@adonis-agora/agent/react` forwards the chat's `uiCapabilities` for you. See [AG-UI](/docs/agent/ag-ui).
+
+### Text-only channels — WhatsApp and similar
+
+A webhook resolves the sender to an actor and the conversation to a thread, sends the message with text-only capabilities, and relays the text frames:
+
+```ts title="app/controllers/whatsapp_webhook_controller.ts"
+import { inject } from '@adonisjs/core'
+import type { HttpContext } from '@adonisjs/core/http'
+import { AgentService } from '@adonis-agora/agent'
+
+@inject()
+export default class WhatsappWebhookController {
+  constructor(private readonly agent: AgentService) {}
+
+  async handle({ request }: HttpContext) {
+    const { from, text } = request.body()
+    const actor = await whatsappActor(from)         // your identity mapping
+    const threadId = await whatsappThread(actor)    // your thread per conversation
+
+    const sent = await this.agent.send({
+      actor,
+      threadId,
+      message: text,
+      uiCapabilities: { components: [] },          // nothing is drawn: components arrive as text
+      pageContext: { kind: 'whatsapp' },
+    })
+    if ('proposalDecision' in sent) return whatsapp.reply(from, sent.text)
+    if (sent.queued === true) return                 // runs after the turn in progress
+
+    let reply = ''
+    for await (const frame of this.agent.subscribe(sent.runId)) {
+      if (frame.t === 'text') reply += frame.v
+    }
+    await whatsapp.reply(from, reply)
+  }
+}
+```
+
+`reply` holds the model's prose and, where `present` pushed `OrderSummary`, its `fallbackText` — in the order they were produced. `pageContext` is free-form: tools and prompt builders read `ctx.pageContext.kind` to tailor wording; nothing in the library interprets it.
+
+To send a table or chart as an image instead, keep `uiCapabilities` listing it, collect the `t: 'component'` frames as well, and route them through the [server renderer](/docs/agent/authoring/component-rendering#render-html-png-or-pdf) and your WhatsApp media upload. The library never sends attachments itself.
+
+In the default blocking mode an `action` call keeps that stream open until someone decides it, so a channel without approval buttons wants [independent approvals](/docs/agent/independent-approvals). Use `send`, not `chat`, there: `send` recognizes [text decisions](/docs/agent/independent-approvals#text-decisions) and returns `proposalDecision` without starting a turn.
+
+### MCP
+
+The [MCP server](/docs/agent/mcp) exposes tools, not conversations. `tools/call` answers the tool's return value as one text content block (a string as is, anything else as JSON). The call's `emitUi` accepts pushes and discards them, and `present` runs against the same no-op, so no component and no fallback text reach an MCP client. Return what an MCP client should read from `execute`.
+
+## Outcomes that arrive later
+
+With [independent approvals](/docs/agent/independent-approvals), an approved action runs after its turn has ended. The worker executes it with the capabilities and page context recorded when the proposal was made, so its `present` output is negotiated for the channel that asked. The outcome is admitted into the thread as an assistant message — the result summary followed by the text of any component the client could not draw — with the drawable components on its `ui` list. A text channel delivers it by reading the thread (or `GET <path>/threads/:id/action-proposals`) and relaying the new message; nothing pushes it to the channel.

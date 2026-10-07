@@ -42,11 +42,11 @@ try {
 }
 ```
 
-Both requests it makes carry `credentials: 'include'`, matching the cookie/session auth the default `AuthActorResolver` expects.
+Every request it makes carries `credentials: 'include'`, matching the cookie/session auth the default `AuthActorResolver` expects.
 
 ### `send`
 
-`send({ body, signal?, ...handlers })` posts `body` to `POST {basePath}/chat` and drains the stream, resolving to `{ runId?, threadId?, parts }`. The four handlers are all optional:
+`send({ body, signal?, ...handlers })` posts `body` to `POST {basePath}/chat` and drains the stream, resolving to `{ runId?, threadId?, parts }`. `body` is the route's body (`message`, `threadId`, `agent`, `persona`, `pageContext`, `uiCapabilities`, `attachments`, `model`, `regenerate`, `mode`); `uiCapabilities` tells the server which components this client draws ([UI capabilities](/docs/agent/surfaces#ui-capabilities)). The four handlers are all optional:
 
 | Handler | Fires |
 | --- | --- |
@@ -54,6 +54,8 @@ Both requests it makes carry `credentials: 'include'`, matching the cookie/sessi
 | `onFrame(frame)` | Once per decoded frame, in wire order. |
 | `onRunId(runId)` | As soon as the run id is known: from the `X-Agent-Run-Id` response header, before the first byte of body. |
 | `onThreadId(threadId)` | Likewise, from `X-Agent-Thread-Id` and then the `meta` frame. |
+
+Two answers carry no stream. A `202` (the message waits in the thread's queue) resolves with `queued`. A JSON `200` — the message was an [independent-approval text decision](/docs/agent/independent-approvals#text-decisions) — resolves with `proposalDecision`, and `parts` holds the server's confirmation as one text part.
 
 If the POST itself is refused, `send` throws an `AgentChatHttpError` carrying the server's `status`, its machine-readable `code` (`quota_exceeded`, `model_not_allowed`, …), the parsed `body`, and the server's own words as `message` — the shape a `401`, `403`, or `429` takes.
 
@@ -92,31 +94,36 @@ Rendering `error.parts` and offering "try again" is a strictly better failure mo
 
 ## Frames and parts
 
-The SSE layer is exported piecemeal so you can build your own consumer over it. Four decoded frame types, two renderable part types — and that is the complete enumeration, not a subset:
+The SSE layer is exported piecemeal so you can build your own consumer over it. The decoded frames, and the two renderable part types:
 
 ```ts
 type ChatFrame =
   | { type: 'text'; delta: string }
-  | { type: 'component'; name: string; data: unknown }
+  | { type: 'component'; name: string; data: unknown; id?: string; version?: number; fallbackText?: string; componentVersions?: Record<string, number> }
   | { type: 'meta'; runId?: string; threadId?: string }
+  | { type: 'error'; code: string; message: string }
+  | { type: 'event'; event: { kind: string; [key: string]: unknown } } // reasoning, tool calls, steps, title, …
+  | { type: 'elicitation'; runId: string; toolCallId: string; request: ElicitationRequest }
+  | { type: 'approval'; runId: string; toolCallId: string; toolName: string; input: unknown; target?: { kind: 'proposal'; proposalId: string }; confirmation?: ToolConfirmation; approver?: string; expiresAt?: string; reason?: string }
   | { type: 'done' }
 
 type ChatPart =
   | { type: 'text'; text: string }
-  | { type: 'component'; name: string; data: unknown }
+  | { type: 'component'; name: string; data: unknown; id?: string; version?: number; fallbackText?: string; componentVersions?: Record<string, number> }
 ```
 
-`foldPart(parts, frame)` is the pure reducer that turns the first into the second: consecutive `text` frames concatenate into one part, a `component` frame appends a new part, and `meta`/`done` return the array untouched. It never mutates.
+`foldPart(parts, frame)` is the pure reducer that turns frames into parts: consecutive `text` frames concatenate into one part, a `component` frame appends a new part (or replaces the one with the same `id`), a `step-start` event closes the text before it with a paragraph break, and every other frame returns the array untouched. It never mutates. `send` and `resume` hand every frame to `onFrame`, so approvals and questions can be read there; an `error` frame makes them throw `AgentChatStreamError` (`code`, `message`).
 
 Rendering a `component` part is a `name` → component lookup you own:
 
 ```tsx
-const REGISTRY = { metric_card: MetricCard, bar_chart: BarChart } as const
+const REGISTRY = { MetricCard, BarChart } as const
 
 function renderPart(part: ChatPart, index: number) {
   if (part.type === 'text') return <p key={index}>{part.text}</p>
   const Component = REGISTRY[part.name as keyof typeof REGISTRY]
-  return Component ? <Component key={index} {...(part.data as object)} /> : null
+  if (Component) return <Component key={index} {...(part.data as object)} />
+  return part.fallbackText ? <pre key={index}>{part.fallbackText}</pre> : null
 }
 ```
 
@@ -151,6 +158,13 @@ for await (const event of readSseStream(response.body!)) {
 
 ## What the client does not do
 
-It has exactly two endpoints: `POST {basePath}/chat` and `GET {basePath}/chat/:runId/stream`. It keeps no transcript, loads no history, and its parts are text and components only — approvals, questions, tool calls, the queue's state and attachments are not modelled. A `202` (the message was queued behind a running turn) is reported as `result.queued`, and following it is up to you.
+It streams over `POST {basePath}/chat` and `GET {basePath}/chat/:runId/stream`, and reads and decides [independent proposals](/docs/agent/independent-approvals) over their routes:
+
+```ts
+const proposals = await client.listActionProposals(threadId) // follows every page
+await client.decideActionProposal(threadId, proposals[0].id, 'approved', { remember: true })
+```
+
+It keeps no transcript, loads no history, and its parts are text and components only — approvals, questions and tool calls arrive as frames (`onFrame`) but are not folded into parts, and the queue's state and attachments are not modelled. A `202` (the message was queued behind a running turn) is reported as `result.queued`, and following it is up to you.
 
 Those are all plain routes ([Streaming & HTTP](/docs/agent/streaming-and-http)), so a consumer in any framework can call them; in React, [`@adonis-agora/agent/react`](/docs/agent/react) already does.
