@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { resolveTextActionProposalDecision } from '../src/action-proposal-text.js';
+import {
+  parseTextActionProposalCommand,
+  resolveTextActionProposalDecision,
+} from '../src/action-proposal-text.js';
 
 const pending = [{ id: 'send-123', decision: 'pending' as const }];
 
@@ -79,5 +82,33 @@ describe('text action proposal decisions', () => {
       resolveTextActionProposalDecision('Confirmar #send-123.', Object.freeze([candidate])),
     ).toMatchObject({ status: 'decision' });
     expect(candidate).toEqual({ id: 'send-123', decision: 'pending' });
+  });
+  it('accepts English commands alongside Portuguese', () => {
+    expect(resolveTextActionProposalDecision('yes', pending)).toMatchObject({
+      decision: 'approved',
+    });
+    expect(resolveTextActionProposalDecision('Reject #send-123.', pending)).toMatchObject({
+      decision: 'rejected',
+      proposalId: 'send-123',
+    });
+    expect(
+      resolveTextActionProposalDecision('approve always in this conversation', pending),
+    ).toMatchObject({ decision: 'approved', remember: true });
+    expect(resolveTextActionProposalDecision('yes please', pending)).toEqual({
+      status: 'unmatched',
+    });
+  });
+  it('reads a custom vocabulary instead of the default one', () => {
+    const vocabulary = { approve: ['vale'], reject: ['nada'], remember: ['siempre'] };
+    expect(parseTextActionProposalCommand('sim', vocabulary)).toEqual({ status: 'unmatched' });
+    expect(parseTextActionProposalCommand('Vale siempre #x', vocabulary)).toEqual({
+      status: 'command',
+      decision: 'approved',
+      remember: true,
+      proposalId: 'x',
+    });
+    expect(parseTextActionProposalCommand('nada siempre', vocabulary)).toEqual({
+      status: 'unmatched',
+    });
   });
 });

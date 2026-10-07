@@ -119,3 +119,67 @@ it('pages beyond a filtered full page and authorizes explicit text IDs beyond th
     proposalDecision: { status: 'applied' },
   });
 });
+
+describe('text decisions', () => {
+  async function seeded(ids: string[]) {
+    const store = new InMemoryAgentStore({ clock: () => 1000 });
+    const actor = { id: 'owner', tenantRef: null, roles: [] };
+    const thread = await store.createThread({ actor });
+    for (const id of ids)
+      await store.createActionProposal({
+        id,
+        actorRef: actor.id,
+        tenantRef: null,
+        threadId: thread.id,
+        originRunId: 'run',
+        originMessageId: 'message',
+        originToolCallId: `call-${id}`,
+        toolName: 'refund',
+        input: null,
+        confirmation: { title: 'Refund?', verb: 'Refund' },
+        approver: 'requester',
+        expiresAt: null,
+        idempotencyKey: id,
+      });
+    return { store, actor, thread };
+  }
+
+  it('lets an unknown #ID fall through as an ordinary message', async () => {
+    const { store, actor, thread } = await seeded(['known']);
+    const service = new ActionProposalService(store);
+    expect(await service.handleTextDecision(actor, thread.id, 'sim #abc')).toEqual({
+      status: 'unmatched',
+    });
+    expect((await service.list(actor, thread.id))[0]?.decision).toBe('pending');
+  });
+
+  it('accepts English commands by default and answers in Portuguese', async () => {
+    const { store, actor, thread } = await seeded(['p']);
+    const service = new ActionProposalService(store);
+    expect(await service.handleTextDecision(actor, thread.id, 'Yes!')).toMatchObject({
+      proposalDecision: { status: 'applied' },
+      text: 'Proposta aprovada e enfileirada para execução.',
+    });
+  });
+
+  it('takes the vocabulary and the replies from the config hook', async () => {
+    const { store, actor, thread } = await seeded(['a', 'b']);
+    const service = new ActionProposalService(store, undefined, {
+      vocabulary: { approve: ['ok'], reject: ['nope'] },
+      replies: {
+        rejected: 'Rejected; nothing ran.',
+        ambiguous: (ids) => `Which one? ${ids.join(' ')}`,
+      },
+    });
+    expect(await service.handleTextDecision(actor, thread.id, 'sim')).toEqual({
+      status: 'unmatched',
+    });
+    expect(await service.handleTextDecision(actor, thread.id, 'ok')).toMatchObject({
+      text: 'Which one? a b',
+    });
+    expect(await service.handleTextDecision(actor, thread.id, 'nope #b')).toMatchObject({
+      proposalDecision: { status: 'applied' },
+      text: 'Rejected; nothing ran.',
+    });
+  });
+});

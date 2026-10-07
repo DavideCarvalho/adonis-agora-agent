@@ -1,4 +1,5 @@
 import type { ActionApprovalMode } from './action-proposal-receipt.js';
+import type { TextActionProposalConfig } from './action-proposal-text.js';
 import type { BrandedFunctionalTool } from './ai-tool-ref.js';
 import type { AgentDashboardConfig } from './dashboard/define_config.js';
 import type { GenuiFactory } from './genui/factory.js';
@@ -91,6 +92,21 @@ export interface AgentConfig {
   actionApprovalMode?: ActionApprovalMode;
   backgroundActorResolver?: BackgroundActorResolver;
   actionProposalWorker?: { pollIntervalMs?: number; leaseMs?: number; maxConcurrency?: number };
+  /**
+   * How a chat message decides an independent proposal (`actionApprovalMode: 'independent'`). A
+   * message that is exactly an approve/reject word — optionally the remember phrase, an `#ID`, a
+   * trailing `.`/`!` — decides instead of starting a turn. `vocabulary` replaces the word lists
+   * (default: Portuguese and English — `sim`/`yes`, `não`/`no`, `sempre nesta conversa`/`always in
+   * this conversation`, …); `replies` replaces the answers (default: Portuguese). Each field you
+   * omit keeps its default.
+   *
+   * ```ts
+   * actionProposalText: {
+   *   replies: { approved: 'Approved — it will run shortly.', rejected: 'Rejected; nothing ran.' },
+   * }
+   * ```
+   */
+  actionProposalText?: TextActionProposalConfig;
   /** The LLM provider, or a lazy factory thunk so the provider SDK peer loads lazily. Required. */
   model: ModelProvider | ModelFactory;
   /** Name of the store (a key of `stores`). Omit for the in-memory store (single-process). */

@@ -1,6 +1,12 @@
 import {
+  DEFAULT_TEXT_ACTION_PROPOSAL_REPLIES,
+  DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY,
   parseTextActionProposalCommand,
   resolveTextActionProposalDecision,
+  type TextActionProposalConfig,
+  type TextActionProposalReplies,
+  type TextActionProposalVocabulary,
+  textActionProposalReply,
 } from './action-proposal-text.js';
 import { validateActionProposalListQuery } from './action-proposal-transitions.js';
 import type {
@@ -25,10 +31,16 @@ export class ActionProposalServiceError extends Error {
 
 /** Authenticated decisions live independently of the origin runner and its signals. */
 export class ActionProposalService {
+  private readonly vocabulary: TextActionProposalVocabulary;
+  private readonly replies: TextActionProposalReplies;
   constructor(
     private readonly store: ActionProposalStore & ActionProposalScopeStore,
     private readonly policy?: ApprovalPolicy,
-  ) {}
+    text: TextActionProposalConfig = {},
+  ) {
+    this.vocabulary = { ...DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY, ...text.vocabulary };
+    this.replies = { ...DEFAULT_TEXT_ACTION_PROPOSAL_REPLIES, ...text.replies };
+  }
   private async scope(actor: Actor, threadId: string) {
     const scope = await this.store.getThreadActionProposalScope(threadId);
     if (!scope) throw new ActionProposalServiceError(404, 'Unknown thread');
@@ -60,9 +72,14 @@ export class ActionProposalService {
     return { items: permitted, ...(next !== undefined ? { next } : {}) };
   }
   async handleTextDecision(actor: Actor, threadId: string, text: string) {
-    const command = parseTextActionProposalCommand(text);
+    const command = parseTextActionProposalCommand(text, this.vocabulary);
     if (command.status === 'unmatched') return command;
     if (command.proposalId !== undefined) {
+      // An `#ID` naming no proposal of this thread is an ordinary message, not a failed decision —
+      // the same answer the candidate resolver gives.
+      const scope = await this.scope(actor, threadId);
+      if (!(await this.store.getActionProposal(scope, command.proposalId)))
+        return { status: 'unmatched' as const };
       const result = await this.decide(
         actor,
         threadId,
@@ -88,6 +105,7 @@ export class ActionProposalService {
     const resolution = resolveTextActionProposalDecision(
       text,
       permitted.filter((proposal): proposal is NonNullable<typeof proposal> => proposal !== null),
+      this.vocabulary,
     );
     if (resolution.status === 'unmatched') return resolution;
     if (visible.length === 1000 && resolution.status === 'decision' && !text.includes('#'))
@@ -99,13 +117,13 @@ export class ActionProposalService {
             .filter((proposal): proposal is NonNullable<typeof proposal> => proposal !== null)
             .map((proposal) => proposal.id),
         },
-        text: 'Há várias propostas. Confirme ou rejeite usando #ID explícito.',
+        text: this.replies.tooMany,
       };
     if (resolution.status === 'ambiguous')
       return {
         threadId,
         proposalDecision: resolution,
-        text: `Qual proposta? Responda confirmar #ID ou cancelar #ID: ${resolution.proposalIds.join(', ')}`,
+        text: this.replies.ambiguous(resolution.proposalIds),
       };
     const result = await this.decide(
       actor,
@@ -125,13 +143,7 @@ export class ActionProposalService {
     result: import('./spi/action-proposal-store.js').ActionProposalMutationResult,
     decision: 'approved' | 'rejected',
   ) {
-    return result.status === 'expired' || result.proposal?.decision === 'expired'
-      ? 'A proposta expirou; nenhuma ação foi executada.'
-      : result.status === 'applied' || result.status === 'unchanged'
-        ? decision === 'approved'
-          ? 'Proposta aprovada e enfileirada para execução.'
-          : 'Proposta rejeitada; nenhuma ação foi executada.'
-        : 'Não foi possível alterar esta proposta; atualize a lista para consultar seu estado.';
+    return textActionProposalReply(result, decision, this.replies);
   }
   private canDecide(
     actor: Actor,

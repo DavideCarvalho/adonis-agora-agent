@@ -450,7 +450,13 @@ export default class AgentProvider {
         ? { backgroundActorResolver: config.backgroundActorResolver }
         : {}),
       ...(config.actionApprovalMode === 'independent'
-        ? { actionProposals: new ActionProposalService(store, factory.forAgent().approvalPolicy) }
+        ? {
+            actionProposals: new ActionProposalService(
+              store,
+              factory.forAgent().approvalPolicy,
+              config.actionProposalText,
+            ),
+          }
         : {}),
       // No `models` → the catalog the model provider carries (`aiSdkModels`), else none.
       ...(config.models !== undefined
