@@ -44,16 +44,6 @@ function isSignalTimeout(error: unknown): boolean {
 export class OpenCodeRunWorkflow extends BaseWorkflow {
   static override workflow = { name: OPENCODE_RUN_WORKFLOW, version: '1' };
 
-  /**
-   * Step bodies in flight (or done) in this process, by run and step. The runtime may run one run's
-   * body twice at once in the same process — a resume that lands while the run is still executing
-   * towards its suspension is not excluded by the run's lease, which is per process — and a step of
-   * this workflow talks to OpenCode: a second `reply` would answer a permission twice (OpenCode
-   * refuses the second), a second `observe` would steal the turn's milestone. So a step's body runs
-   * once per process, and a concurrent duplicate execution shares its result.
-   */
-  private readonly bodies = new Map<string, Promise<unknown>>();
-
   constructor(
     private readonly turns: OpenCodeTurns,
     private readonly engine?: WorkflowEngine,
@@ -63,8 +53,9 @@ export class OpenCodeRunWorkflow extends BaseWorkflow {
 
   async run(ctx: WorkflowCtx, input: AgentRunInput): Promise<{ outcome: string }> {
     const turns = this.turns;
-    const step = <T>(name: string, body: () => Promise<T>): Promise<T> =>
-      ctx.localStep(name, () => this.once(ctx.runId, name, body));
+    // `@adonis-agora/durable` >= 0.43.3 never runs one run twice at once in a process, so a step
+    // that talks to OpenCode (a `reply`, an `observe`) runs once per execution of the run.
+    const step = <T>(name: string, body: () => Promise<T>): Promise<T> => ctx.localStep(name, body);
     try {
       const begun = await step('begin', async () => ({
         handle: await turns.begin(ctx.runId, input, true),
@@ -88,7 +79,6 @@ export class OpenCodeRunWorkflow extends BaseWorkflow {
             }
             return true;
           });
-          this.forget(ctx.runId);
           return { outcome: milestone.outcome.status };
         }
         let reply: HumanReply;
@@ -110,35 +100,8 @@ export class OpenCodeRunWorkflow extends BaseWorkflow {
         await turns.settleFailed(ctx.runId, input, errorText(error, 'the turn failed'));
         return true;
       });
-      this.forget(ctx.runId);
       return { outcome: 'failed' };
     }
-  }
-
-  private once<T>(runId: string, name: string, body: () => Promise<T>): Promise<T> {
-    const key = `${runId}\u0000${name}`;
-    let running = this.bodies.get(key) as Promise<T> | undefined;
-    if (running === undefined) {
-      const started = body();
-      running = started;
-      this.bodies.set(key, started);
-      // A failed body is forgotten soon, so an explicit retry of the run runs it again.
-      started.catch(() => {
-        setTimeout(() => {
-          if (this.bodies.get(key) === started) this.bodies.delete(key);
-        }, 5_000).unref?.();
-      });
-    }
-    return running;
-  }
-
-  /** Drop a settled run's step bodies — after a grace, so a duplicate still finishing reads them. */
-  private forget(runId: string): void {
-    setTimeout(() => {
-      for (const key of this.bodies.keys()) {
-        if (key.startsWith(`${runId}\u0000`)) this.bodies.delete(key);
-      }
-    }, 60_000).unref?.();
   }
 
   private async cancelled(runId: string): Promise<boolean> {
