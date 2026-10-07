@@ -3,9 +3,9 @@ title: AG-UI
 description: Serve the agent over AG-UI 1.0 — the open agent-to-application protocol — next to the native stream.
 ---
 
-[AG-UI](https://docs.ag-ui.com/spec/1.0) is an open protocol between an agent and the application in front of it. With the AG-UI adapter in `adapters`, the same agent answers it as well, so any AG-UI client (`@ag-ui/client`'s `HttpAgent`, CopilotKit, a client in Python or .NET) can drive it without knowing this library. The [native stream](/docs/agent/streaming-and-http) is unchanged and stays the richer surface; AG-UI is a second door onto the same runs.
+[AG-UI](https://docs.ag-ui.com/spec/1.0) is an open protocol between an agent and the application in front of it. With the AG-UI adapter in `adapters`, the same agent answers it as well, so any AG-UI client (`@ag-ui/client`'s `HttpAgent`, CopilotKit, a client in Python or .NET) can drive it without knowing this library. The [native stream](/docs/agent/streaming-and-http) is unchanged and stays the richer surface; AG-UI is a second door onto the same runs. What each capability becomes over AG-UI — and what is not available there — is compared in [What AG-UI costs you](/docs/agent/surfaces#what-ag-ui-costs-you).
 
-```ts title="config/agent.ts"
+```ts title="config/agent.ts (backend)"
 import { agUiAdapter } from '@adonis-agora/agent/ag-ui'
 
 export default defineConfig({
@@ -28,7 +28,7 @@ await agent.runAgent()
 
 `@adonis-agora/agent/react` can drive this route (or any AG-UI 1.0 producer) through the same hooks as the native stream. `agUiBackend()` sends the chat turn over AG-UI and keeps everything else — threads, the queue, approvals, uploads — on the REST routes, with the session cookie and the shield CSRF token on every request:
 
-```tsx
+```tsx title="inertia/pages/chat.tsx (frontend)"
 import { AgentProvider, agUiBackend, useAgentChat } from '@adonis-agora/agent/react'
 
 <AgentProvider backend={agUiBackend()}><Chat /></AgentProvider>
@@ -74,7 +74,7 @@ What AG-UI has no event for travels as `CUSTOM` events, which a client that does
 | `name` | `value` |
 | --- | --- |
 | `agora.run` | `{ runId, threadId }` — the library's ids, e.g. for `POST <path>/chat/:runId/cancel` |
-| `agora.ui` | a [generative-UI](/docs/agent/generative-ui) component `{ id, component, props, version?, toolCallId? }`; a repeat `id` replaces. A component left out of `forwardedProps.uiCapabilities` is not sent here: its text arrives in the `TEXT_MESSAGE_*` events |
+| `agora.ui` | a [generative-UI](/docs/agent/generative-ui) component `{ id, component, props, version?, fallbackText?, componentVersions?, toolCallId? }`; a repeat `id` replaces. A component left out of `forwardedProps.uiCapabilities` is not sent here: its text arrives in the `TEXT_MESSAGE_*` events |
 | `agora.title` | `{ title }` |
 | `agora.step-usage` | `{ usage, costUsd, reasoningMs }` of one model step |
 | `agora.approval-requested`, `agora.approval-settled`, `agora.elicitation` | the native frames, for a client that renders them live |

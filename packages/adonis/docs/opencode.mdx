@@ -61,12 +61,14 @@ export class AppOpenCodeHost implements OpenCodeHost {
 import { defineConfig, stores } from '@adonis-agora/agent'
 import { openCode } from '@adonis-agora/agent/opencode'
 import { AppOpenCodeHost } from '#agent/opencode_host'
+import env from '#start/env'
 
 export default defineConfig({
   // No `model`: the engine runs the turns.
   engine: openCode({
     host: AppOpenCodeHost, // a class is built by the container (`@inject()` works); an instance works too
-    tools: { url: 'http://app.internal:3333/agent/opencode/mcp' },
+    // Where the OpenCode server reaches this app's MCP endpoint — see "The tools URL" below.
+    tools: { url: env.get('OPENCODE_TOOLS_URL') },
   }),
   store: 'lucid',
   stores: { lucid: stores.lucid() },
@@ -118,6 +120,31 @@ With `tools` set, the engine mounts `POST <path>/opencode/mcp` and registers it 
 exists only to serve OpenCode turns, and it is built to stay safe if the token leaks out of the
 sandbox.
 
+### The tools URL
+
+`tools.url` has no default and is not derived from anything: the engine passes it verbatim to
+OpenCode (`mcp.add` with `{ type: 'remote', url, headers: { Authorization: 'Bearer <token>' } }`),
+and it is the **OpenCode server** — a separate process, often in another container or sandbox — that
+calls it back. So it must be an address of this Adonis app **as seen from the OpenCode server**,
+ending in `<path>/opencode/mcp` (`path` is the agent's route prefix, `agent` by default). There is
+no special hostname: `app.internal` in older examples was only a placeholder. Keep it in an env
+variable (`OPENCODE_TOOLS_URL: Env.schema.string()` in `start/env.ts`) so each deployment sets its own.
+
+| Where OpenCode runs | `OPENCODE_TOOLS_URL` |
+| --- | --- |
+| Same machine as the app | `http://127.0.0.1:3333/agent/opencode/mcp` |
+| Docker Compose | the app's service name: `http://web:3333/agent/opencode/mcp` |
+| Kubernetes | the app's Service DNS: `http://web.my-namespace.svc.cluster.local:3333/agent/opencode/mcp` |
+| Anywhere else | the app's public URL works (`https://app.example.com/agent/opencode/mcp`) |
+
+Prefer an internal network address: the endpoint only ever serves OpenCode, and a public URL puts it
+on the internet (it stays guarded by the token, below). If several app processes sit behind that
+address, give them all the same `tools.secret` (or the same `APP_KEY`), so a token signed by one is
+accepted by the others; without either, each process signs with its own random secret and the engine
+logs a warning.
+
+### What guards the endpoint
+
 - **The token** names an actor and an OpenCode server, expires (`ttlMs`, default 7 days, re-issued
   half-way), and is HMAC-signed with `tools.secret`, else a key derived from the app's `APP_KEY`.
 - **A call runs only inside a turn**: OpenCode names its session in every call's `_meta`; the call
@@ -139,7 +166,7 @@ directory, so actors sharing one would overwrite each other's token, and calls w
 import { openCodeDurable } from '@adonis-agora/agent/opencode/durable'
 
 export default defineConfig({
-  engine: openCodeDurable({ host: AppOpenCodeHost, tools: { url: '…' } }),
+  engine: openCodeDurable({ host: AppOpenCodeHost, tools: { url: env.get('OPENCODE_TOOLS_URL') } }),
   // next to a configured @adonis-agora/durable (its WorkflowEngine is taken from the container)
 })
 ```

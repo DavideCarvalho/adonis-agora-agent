@@ -1,6 +1,6 @@
 ---
 title: One output, many surfaces
-description: How one tool result reaches a React chat, an AG-UI client, a text-only channel such as WhatsApp, and an MCP client — UI capability negotiation, text fallbacks, and what each surface receives.
+description: How one tool result reaches a React chat, an AG-UI client, a text-only channel such as WhatsApp, and an MCP client — what lives on the AdonisJS backend and what in the Inertia React frontend, UI capability negotiation, text fallbacks, and what AG-UI carries compared with the native stream.
 icon: MonitorSmartphone
 ---
 
@@ -10,18 +10,39 @@ A tool answers once. The same run can be watched by a React chat that draws comp
 
 The pieces involved are documented on their own pages: [Generative UI](/docs/agent/generative-ui) (pushing components), [Component registries and server rendering](/docs/agent/authoring/component-rendering) (`present`, custom components, image/PDF export), and the transports ([Streaming & HTTP](/docs/agent/streaming-and-http), [AG-UI](/docs/agent/ag-ui), [MCP](/docs/agent/mcp)).
 
-## The contract: one definition, three readers
+## Backend and frontend
 
-A component definition in the server catalog carries everything every surface needs:
+Every piece below runs on one of two sides. Each code block on this page is labelled with its side and the file it belongs in.
+
+| Side | Runs in | Files (in a standard Adonis + Inertia app) | Imports from |
+| --- | --- | --- | --- |
+| **Backend** | the AdonisJS process | `adonisrc.ts` (the provider), `config/agent.ts`, `app/genui/*.ts` (component definitions, the catalog), `app/agent_tools/*.ts` (tools), `start/routes.ts` (the page route), `app/controllers/*.ts` (webhooks of your own) | `@adonis-agora/agent`, `@adonis-agora/agent/genui`, `@adonis-agora/agent/genui/builtins`, `@adonis-agora/agent/ag-ui` |
+| **Frontend** | the browser, bundled by Vite | `inertia/pages/*.tsx` (the page that mounts the chat), `inertia/components/**/*.tsx` (the React renderers of your components, the chat UI), `inertia/layouts/*.tsx` | `@adonis-agora/agent/react`, `@adonis-agora/agent/react/genui` |
+
+The backend owns everything the model and the database touch: which components exist (the catalog), what each tool returns, validation, negotiation, the text fallback and the HTTP routes. The frontend only draws: it maps a component name to a React component, says which of them it can draw, and renders the stream. Nothing reaches the browser through Inertia page props; the chat talks to the agent's own routes over `fetch`.
+
+<Callout type="info" title="One file may be read by both sides">
+`app/genui/catalog.ts` lives with the backend, but it is plain data: `@adonis-agora/agent/genui` imports nothing server-only, so the browser bundle may import the same file to validate props before drawing. That import is optional. Keep anything server-only (models, services, `#config/*`) out of that file and of the definitions it imports.
+</Callout>
+
+## End to end: an Inertia chat that draws `OrderSummary`
+
+One component, one tool, one chat page. The backend half is the same for every surface on this page; only the frontend half is specific to the React chat.
+
+### Backend — AdonisJS
+
+**1. The provider.** `node ace add @adonis-agora/agent` registers `@adonis-agora/agent/agent_provider` in `adonisrc.ts` and publishes `config/agent.ts` ([Getting started](/docs/agent/getting-started)). At boot the provider mounts the agent's HTTP routes under `/agent` (the `path` in `config/agent.ts`). You write no controller and no route for the chat itself.
+
+**2. The component definition** — the contract every surface reads:
 
 | Field | Read by |
 | --- | --- |
-| `name`, `version` | the client registry that draws it, and capability negotiation |
-| `props` (Standard Schema or JSON Schema) | the server, which validates every push; the client, which can validate before drawing |
+| `name`, `version` | the frontend registry that draws it, and capability negotiation |
+| `props` (Standard Schema or JSON Schema) | the backend, which validates every push; the frontend, which can validate before drawing |
 | `description` | the model, when the `genui` tools offer the component |
 | `fallbackText(props)` | every surface that cannot draw it |
 
-```ts title="app/genui/order_summary.ts"
+```ts title="app/genui/order_summary.ts (backend)"
 import { createComponent } from '@adonis-agora/agent/genui'
 import { z } from 'zod'
 
@@ -36,7 +57,9 @@ export const orderSummary = createComponent({
 })
 ```
 
-```ts title="app/genui/catalog.ts"
+**3. The catalog**, and `genui` in the config:
+
+```ts title="app/genui/catalog.ts (backend; the frontend may import it too)"
 import { defineCatalog } from '@adonis-agora/agent/genui'
 import { BUILTIN_COMPONENTS } from '@adonis-agora/agent/genui/builtins'
 import { orderSummary } from './order_summary.js'
@@ -44,16 +67,24 @@ import { orderSummary } from './order_summary.js'
 export const catalog = defineCatalog([...BUILTIN_COMPONENTS, orderSummary.definition])
 ```
 
-```ts title="config/agent.ts"
+```ts title="config/agent.ts (backend)"
+import { defineConfig, AuthActorResolver } from '@adonis-agora/agent'
 import { genui } from '@adonis-agora/agent/genui'
 import { catalog } from '#genui/catalog'
 
-export default defineConfig({ model, genui: genui({ catalog }) })
+export default defineConfig({
+  model,                                   // see Getting started
+  actorResolver: new AuthActorResolver(),  // who is calling: reads ctx.auth.user
+  genui: genui({ catalog }),
+  // path: 'agent',                        // the default: routes under /agent
+})
 ```
 
-The tool returns domain data and presents it with the component:
+`#genui/*` is not one of Adonis's default import aliases: add `"#genui/*": "./app/genui/*.js"` to `imports` in `package.json`, or import the file by relative path.
 
-```ts title="app/agent_tools/order_status.ts"
+**4. The tool** returns domain data and presents it with the component:
+
+```ts title="app/agent_tools/order_status.ts (backend)"
 import { defineTool } from '@adonis-agora/agent'
 import { z } from 'zod'
 import { orderSummary } from '#genui/order_summary'
@@ -70,11 +101,101 @@ export const orderStatus = defineTool({
 
 The model reads `execute`'s return value on every surface. `present` (or a direct `ctx.emitUi`) is the only part whose delivery differs.
 
+**5. The page route.** Only the page is yours to route; it renders the Inertia page and passes no agent data as props:
+
+```ts title="start/routes.ts (backend)"
+import router from '@adonisjs/core/services/router'
+import { middleware } from '#start/kernel'
+
+router.on('/chat').renderInertia('chat').use(middleware.auth())
+```
+
+`middleware.auth()` protects the page, not the `/agent/*` routes: those are mounted by the provider and identify the caller through `actorResolver`. `AuthActorResolver` reads `ctx.auth.user`, so that user has to be populated on those requests too (for example by a server middleware that calls `ctx.auth.check()`), or write an `ActorResolver` of your own ([Authorization](/docs/agent/governance/authorization)).
+
+### Frontend — Inertia + React
+
+**6. The renderer** — an ordinary React component whose props are the definition's `props`:
+
+```tsx title="inertia/components/genui/order_summary.tsx (frontend)"
+export function OrderSummary({ id, status, totalCents }: { id: string; status: string; totalCents: number }) {
+  return (
+    <section>
+      <h3>Order {id}</h3>
+      <p>{status} — {(totalCents / 100).toFixed(2)}</p>
+    </section>
+  )
+}
+```
+
+**7. The page** mounts the connection, hands it the registry, says what it can draw, and renders each `ui` block:
+
+```tsx title="inertia/pages/chat.tsx (frontend)"
+import { AgentProvider, useAgentChat } from '@adonis-agora/agent/react'
+import { GenerativeUI, type GenuiRegistry } from '@adonis-agora/agent/react/genui'
+import { OrderSummary } from '~/components/genui/order_summary'
+import { catalog } from '../../app/genui/catalog' // optional: the backend's catalog, to validate props before drawing
+
+// Keys are the catalog's component names.
+const registry: GenuiRegistry = { OrderSummary }
+
+export default function ChatPage() {
+  return (
+    <AgentProvider
+      genui={{ registry, catalog }}
+      uiCapabilities={{ components: [{ name: 'OrderSummary', version: 1 }] }}
+    >
+      <Chat />
+    </AgentProvider>
+  )
+}
+
+function Chat() {
+  const { transcript, composer } = useAgentChat()
+  return (
+    <main>
+      {transcript.items.map((item) => (
+        <article key={item.id} data-role={item.role}>
+          {item.blocks.map((block) => {
+            if (block.kind === 'text') return <p key={block.key}>{block.text}</p>
+            if (block.kind === 'ui') return <GenerativeUI key={block.key} part={block} />
+            return null
+          })}
+        </article>
+      ))}
+      <form onSubmit={(event) => { event.preventDefault(); void composer.submit() }}>
+        <input value={composer.text} onChange={(event) => composer.setText(event.target.value)} />
+        <button type="submit" disabled={!composer.canSend}>Send</button>
+      </form>
+    </main>
+  )
+}
+```
+
+Nothing changes in `inertia/app.tsx`: `<AgentProvider>` is an ordinary component. Put it in the page, or in a layout when several pages show a chat. The rest of the hook (history, queue, approvals, attachments) is on [React](/docs/agent/react).
+
+With this page, `OrderSummary` is drawn; any other catalog component a tool presents (a builtin `DataTable`, say) arrives as its text, and the `genui` tools offer the model only `OrderSummary`, because the page declared nothing else.
+
+### How the two halves connect
+
+| | Backend side | Frontend side |
+| --- | --- | --- |
+| **Base URL** | the provider mounts `POST /agent/chat`, `GET /agent/chat/:runId/stream`, `GET /agent/threads/:id`, … ([all routes](/docs/agent/streaming-and-http#the-routes)) under `path` in `config/agent.ts` (default `agent`) | `<AgentProvider>` calls the same origin under `/agent`; pass `path` when the config sets another, `baseUrl` for an API on another origin |
+| **Identity** | `actorResolver` turns the request into an actor; every thread and run is owner-scoped to it | the session cookie rides every request (`credentials: 'same-origin'`) |
+| **CSRF** | `@adonisjs/shield` checks every `POST` | `<AgentProvider>` sends the token per request: the `XSRF-TOKEN` cookie as `X-XSRF-TOKEN` (shield's `enableXsrfCookie: true`, the Inertia default), else `<meta name="csrf-token">` as `X-CSRF-TOKEN` |
+| **What can be drawn** | intersects `uiCapabilities` with the catalog, validates, sends a `ui` frame or text | `uiCapabilities` on the provider (or `useAgentChat({ uiCapabilities })`) rides in the body of every `POST /agent/chat` |
+| **Component identity** | `name` and `version` of the definition | the registry key, and the `{ name, version }` declared in `uiCapabilities` — all three must match |
+| **History** | messages are persisted with their `ui` list | `useAgentChat({ threadId })` loads `GET /agent/threads/:id` and draws the same components (or texts) again |
+| **Inertia page props** | none needed | none read; the chat does not go through Inertia visits |
+
+<Callout type="warn" title="Mount the provider">
+A hook used outside `<AgentProvider>` falls back to a bare client that sends no CSRF token, and shield answers every `POST` from it with `403`.
+</Callout>
+
 ## UI capabilities
 
-A client says which components it can draw with `uiCapabilities`:
+A client says which components it can draw with `uiCapabilities`. It is written by the **frontend** (or by the backend code that speaks for a channel, such as a webhook) and applied by the **backend**:
 
-```ts
+```ts title="uiCapabilities (sent by the client)"
 { components: [{ name: 'OrderSummary', version: 1 }, { name: 'DataTable', version: 1 }] }
 ```
 
@@ -88,17 +209,19 @@ Each entry is `{ name, version }`: `name` matches `/^[A-Za-z][A-Za-z0-9]{0,63}$/
 
 Capabilities only narrow. The server intersects them with the catalog the actor is authorized for; a client cannot add a component, change a schema, or reach a tool by declaring something. They travel with the turn:
 
-| Where | How |
-| --- | --- |
-| `POST <path>/chat` | `uiCapabilities` in the body |
-| `POST <path>/ag-ui` | `forwardedProps.uiCapabilities` |
-| `AgentService.send` / `chat` | `ChatParams.uiCapabilities` |
-| a queued message | stored with it, so the turn it starts later negotiates the same way |
-| an [independent action proposal](/docs/agent/independent-approvals) | stored in its execution context, so the deferred execution renders for the channel that asked |
-| a `PromptBuilder` | `PromptContext.uiCapabilities` |
-| a tool | `ctx.uiCapabilities` |
+| Where | How | Side |
+| --- | --- | --- |
+| `POST <path>/chat` | `uiCapabilities` in the body | frontend: `<AgentProvider uiCapabilities>` / `useAgentChat({ uiCapabilities })` |
+| `POST <path>/ag-ui` | `forwardedProps.uiCapabilities` | frontend: any AG-UI client, or `agUiBackend()` |
+| `AgentService.send` / `chat` | `ChatParams.uiCapabilities` | backend: your controller, job or webhook |
+| a queued message | stored with it, so the turn it starts later negotiates the same way | backend |
+| an [independent action proposal](/docs/agent/independent-approvals) | stored in its execution context, so the deferred execution renders for the channel that asked | backend |
+| a `PromptBuilder` | `PromptContext.uiCapabilities` | backend |
+| a tool | `ctx.uiCapabilities` | backend |
 
-## What the server does with a push
+## What the server does with a push (backend)
+
+All of this happens in the AdonisJS process; the frontend receives only the result.
 
 With `genui` configured, every component a tool pushes — through `present`, `ctx.emitUi`, `ctx.emitComponent` or a `ui__show_*` tool — is checked against the catalog resolved for that request before anything is streamed:
 
@@ -112,7 +235,9 @@ The model is also offered only what the client can draw: each `ui__show_<compone
 Without `genui` in `config/agent.ts`, pushes are not validated against a catalog. A turn that carries `uiCapabilities` still negotiates: a component the client declared is drawn, any other one becomes the `fallbackText` given to the push — and nothing at all when the push gave none. Configure `genui` to get validation and a generated `fallbackText`; once a catalog is configured, a name it does not define is refused even for a client that sent no capabilities.
 </Callout>
 
-## How a component becomes text
+## How a component becomes text (backend)
+
+The text is produced on the server and sent with the component, so a frontend never computes it: `<GenerativeUI>` shows the `fallbackText` it was given.
 
 `componentToText(catalog, component, props)` (exported from `@adonis-agora/agent/genui`) is the rule every surface shares:
 
@@ -126,28 +251,77 @@ The text is Slack-mrkdwn compatible (`*bold*`, fenced blocks), which WhatsApp al
 
 ### Web — React over the native stream
 
-Declare what the registry draws, once, on the provider (or per chat with `useAgentChat({ uiCapabilities })`, which wins):
-
-```tsx
-<AgentProvider
-  genui={{ registry: { OrderSummary, DataTable }, catalog }}
-  uiCapabilities={{ components: [{ name: 'OrderSummary', version: 1 }, { name: 'DataTable', version: 1 }] }}
->
-  <Chat />
-</AgentProvider>
-```
+**Backend:** nothing beyond the [end-to-end setup](#end-to-end-an-inertia-chat-that-draws-ordersummary); the provider's `/agent` routes are the native stream. **Frontend:** declare what the registry draws, once, on the provider (or per chat with `useAgentChat({ uiCapabilities })`, which wins), as `inertia/pages/chat.tsx` does above.
 
 The provider does not derive capabilities from the registry: pass them, or omit them to keep every catalog component drawable. Each `ui` block renders through `<GenerativeUI>`. When a component cannot be drawn there — unknown to the registry, props that fail the client catalog, a renderer that throws, or a stored tree whose component versions no longer match — and no `fallback` was given, it renders the item's `fallbackText`. A reloaded thread draws the same components (or texts) from the message's persisted `ui` list.
 
 ### Web — any AG-UI client
 
-The `agUiAdapter()` route reads `forwardedProps.uiCapabilities` (a malformed value is a `400`) and negotiates exactly as above. A drawable component arrives as the `CUSTOM` event `agora.ui` with `{ id, component, props, version?, fallbackText?, componentVersions?, toolCallId? }` — so an AG-UI client that cannot draw it after all can still show the text; an undeclared one arrives as text, inside the run's `TEXT_MESSAGE_*` events. `agUiBackend()` from `@adonis-agora/agent/react` forwards the chat's `uiCapabilities` for you. See [AG-UI](/docs/agent/ag-ui).
+**Backend.** Add the adapter next to the native routes; it mounts `POST /agent/ag-ui`:
+
+```ts title="config/agent.ts (backend)"
+import { agUiAdapter } from '@adonis-agora/agent/ag-ui'
+
+export default defineConfig({
+  // …
+  adapters: [agUiAdapter()],
+})
+```
+
+The route reads `forwardedProps.uiCapabilities` (a malformed value is a `400`) and negotiates exactly as above. A drawable component arrives as the `CUSTOM` event `agora.ui` with `{ id, component, props, version?, fallbackText?, componentVersions?, toolCallId? }` — so an AG-UI client that cannot draw it after all can still show the text; an undeclared one arrives as text, inside the run's `TEXT_MESSAGE_*` events.
+
+**Frontend.** Any AG-UI client posts `RunAgentInput` to that URL with `uiCapabilities` in `forwardedProps`. The React chat above switches its turns to AG-UI with one prop; `agUiBackend()` forwards the chat's `uiCapabilities`, the session cookie and the CSRF header for you:
+
+```tsx title="inertia/pages/chat.tsx (frontend)"
+import { AgentProvider, agUiBackend } from '@adonis-agora/agent/react'
+
+<AgentProvider
+  backend={agUiBackend()}
+  genui={{ registry, catalog }}
+  uiCapabilities={{ components: [{ name: 'OrderSummary', version: 1 }] }}
+>
+  <Chat />
+</AgentProvider>
+```
+
+`agUiBackend()` sends only the chat turn over AG-UI; threads, the queue, decisions, uploads, cancel and re-attach stay on the native REST routes. See [AG-UI](/docs/agent/ag-ui).
+
+#### What AG-UI costs you
+
+AG-UI is a second door onto the same runs, not a richer one. The server-side behaviour — tools, authorization, quota, durable runs, memory — is identical; what differs is what the wire can carry and what a request can ask for. The native stream is `POST /agent/chat` plus `GET /agent/chat/:runId/stream`; AG-UI is `POST /agent/ag-ui`. "React" below means `useAgentChat` over `agUiBackend()`, which keeps the REST routes for everything but the turn.
+
+| Capability | Native stream + React client | AG-UI |
+| --- | --- | --- |
+| Text streaming | `text` frames | **Supported.** `TEXT_MESSAGE_START` / `CONTENT` / `END`, one message per stretch of text |
+| Reasoning | `reasoning` frames | **Supported.** `REASONING_START`, one reasoning message, `REASONING_END` |
+| Tool calls and results | `tool-input-*` with `toolKind` (`read` / `action`) and `parentId`; `tool-output`, `-error`, `-denied` | **Partial.** `TOOL_CALL_START` / `ARGS` / `END` and `TOOL_CALL_RESULT` (a failure or a refusal marked in `metadata['agora.outcome']`). `toolKind` and `parentId` are not carried: the React client marks every call `read`, and nested calls arrive flat |
+| Generative UI and `fallbackText` | `ui` frames, drawn by `<GenerativeUI>` | **Partial.** The `CUSTOM` event `agora.ui`, with `fallbackText`; a generic AG-UI client ignores it unless it knows the name. Negotiation through `forwardedProps.uiCapabilities` works the same |
+| `pageContext`, agent, persona, model | body fields of `POST /chat` | **Supported** through `forwardedProps` (`pageContext`, `agent`, `persona`, `model`, `uiCapabilities`); AG-UI `context` is added to the page context as `agUiContext` |
+| Approvals (`action` tools) | the run stays open; `approval-requested` / `-settled` frames; decided through `POST /agent/tool-call/approve` / `reject` while the stream continues | **Partial.** The AG-UI run **ends** with an `Interrupt` (`reason: 'tool_approval'`) on `RUN_FINISHED`; the decision is a new request with `resume`, which re-attaches to the parked run. `agora.approval-requested` / `-settled` are sent as `CUSTOM` events for a live view |
+| Questions (elicitation) | `elicitation` block with `answer.run()` / `skip.run()` | **Partial.** An `Interrupt` (`reason: 'input_required'`) carrying a JSON Schema of the answers, answered through `resume`. The `agora.elicitation` event is sent, but the React client does not read it: the question set reaches the transcript as a `ui` block named `AgUiInterrupt`, for the app to render |
+| Independent action proposals | proposal routes; a text decision answers `200` JSON | **Supported.** A proposal's interrupt id names it and `resume` decides it through the proposal service; a text decision answers with the `CUSTOM` event `agora.action-proposal-decision` and the confirmation as text |
+| Message queue | a send on a busy thread is queued (`202`); `mode: 'queue' \| 'interrupt'` | **Not available** on `POST /ag-ui`: a send while a turn runs is refused with `409`. The queue's snapshots are sent as `agora.queue`. React queues through the REST route (`enqueueMessage`), so `chat.queue` keeps working |
+| Regenerate | `regenerate: true` on `POST /chat` replaces the last answer | **Not available.** The AG-UI input has no such field and `agUiBackend()` does not forward it: a regenerate is sent as a new turn carrying the last user message's text, so the thread gets the question again instead of a replaced answer |
+| Edit and fork | `POST /agent/threads/:id/fork-from/:messageId`, truncate | Not part of AG-UI. React still forks through the REST routes |
+| Transient threads | `transient: true` on `POST /chat` | **Not available.** A thread named by AG-UI's `threadId` that does not exist is created as a regular thread |
+| Attachments | uploaded to `POST /agent/attachments`, sent as `{ mediaId }` references | **Partial.** Only media content parts carried inline (`source.type: 'data'`) are staged and used; a `url` or `file` source is dropped with an `agora.warning`. With `agUiBackend()`, files the composer uploaded are **not** forwarded — the turn carries only the text unless you pass `agUi.content` to inline them |
+| Re-attach after a dropped connection | `GET /agent/chat/:runId/stream?after=<seq>` replays and follows | **Not on AG-UI.** There is no AG-UI route to re-attach; a dropped connection does not stop the run, and the library's run id (from `agora.run`) re-attaches over the native route. React does exactly that |
+| Cancel | `POST /agent/chat/:runId/cancel` | **Partial.** AG-UI has no cancel request: use the native route with the id from `agora.run`. A cancelled run ends with `RUN_FINISHED` `outcome: { type: 'cancelled' }` |
+| Durable runs, multiple replicas | re-attach from any replica | **Supported.** A parked run waits durably; the interrupt id carries everything a resume needs, so any replica sharing the token sink serves it |
+| Memory | applied on the server; `GET /agent/memories` | **Supported** on the server (same run). Listing and deleting memories stays on the REST routes |
+| Tool presentation (`elsewhere`, result views) | `GET /agent/tools`, read by `useToolCatalog()` | Not part of AG-UI. React still reads it over REST |
+| Receipts and other data | tool results (an action-proposal receipt, a background-delegation receipt) are `tool-output`; frames of a kind the client does not know become `data-<kind>` parts | **Partial.** Receipts arrive as `TOOL_CALL_RESULT` content (JSON). A frame kind the encoder does not know is dropped |
+| Title, usage, cost | `title`; `step-finish` with `usage`, `costUsd`, `reasoningMs` | **Supported** as `agora.title`, `agora.step-usage`, and per-model `RUN_FINISHED.usage`. The React client keeps the title but reads no usage from the AG-UI stream |
+| Background (detached) runs | receipt + a later message in the thread | Same on the server; the later message is read from the thread over REST, as on the native path |
+| Frontend tools, AG-UI `state` | — | **Not supported.** `tools` is ignored with a warning; `state` is ignored and no state events are sent |
+
+Choose AG-UI when the client is someone else's (CopilotKit, `@ag-ui/client`, a Python or .NET agent UI). For your own React app, the native stream carries more and needs no adapter.
 
 ### Text-only channels — WhatsApp and similar
 
-`@adonis-agora/agent/channels` turns a provider's webhook into a turn: it resolves the sender to an actor and the conversation to a thread, sends the message with text-only capabilities (`uiCapabilities: { components: [] }`), and relays the reply — the model's prose and, where `present` pushed `OrderSummary`, its `fallbackText`, in the order they were produced — converted to the channel's markdown and split at its length limit:
+**Backend only.** There is no frontend of yours: the channel's app is the client. `@adonis-agora/agent/channels` turns a provider's webhook into a turn: it resolves the sender to an actor and the conversation to a thread, sends the message with text-only capabilities (`uiCapabilities: { components: [] }`), and relays the reply — the model's prose and, where `present` pushed `OrderSummary`, its `fallbackText`, in the order they were produced — converted to the channel's markdown and split at its length limit:
 
-```ts title="start/routes.ts"
+```ts title="start/routes.ts (backend)"
 import router from '@adonisjs/core/services/router'
 import { channels, evolutionApi } from '@adonis-agora/agent/channels'
 import env from '#start/env'
@@ -178,8 +352,10 @@ In the default blocking mode an `action` call keeps that stream open until someo
 
 ### MCP
 
-The [MCP server](/docs/agent/mcp) exposes tools, not conversations. `tools/call` answers the tool's return value as one text content block (a string as is, anything else as JSON). The call's `emitUi` accepts pushes and discards them, and `present` runs against the same no-op, so no component and no fallback text reach an MCP client. Return what an MCP client should read from `execute`.
+**Backend only.** The [MCP server](/docs/agent/mcp) exposes tools, not conversations. `tools/call` answers the tool's return value as one text content block (a string as is, anything else as JSON). The call's `emitUi` accepts pushes and discards them, and `present` runs against the same no-op, so no component and no fallback text reach an MCP client. Return what an MCP client should read from `execute`.
 
 ## Outcomes that arrive later
 
-With [independent approvals](/docs/agent/independent-approvals), an approved action runs after its turn has ended. The worker executes it with the capabilities and page context recorded when the proposal was made, so its `present` output is negotiated for the channel that asked. The outcome is admitted into the thread as an assistant message — the result summary followed by the text of any component the client could not draw — with the drawable components on its `ui` list. A text channel delivers it by reading the thread (or `GET <path>/threads/:id/action-proposals`) and relaying the new message; nothing pushes it to the channel.
+This happens on the **backend** (a worker), after the turn; each surface picks the result up from the thread.
+
+With [independent approvals](/docs/agent/independent-approvals), an approved action runs after its turn has ended. The worker executes it with the capabilities and page context recorded when the proposal was made, so its `present` output is negotiated for the channel that asked. The outcome is admitted into the thread as an assistant message — the result summary followed by the text of any component the client could not draw — with the drawable components on its `ui` list. A channel served by [`channels.handle`](/docs/agent/channels) relays it to the conversation with `actionProposalWorker: { onSettled: channels.onSettled }`; any other client reads the thread (or `GET <path>/threads/:id/action-proposals`) and relays the new message itself.
