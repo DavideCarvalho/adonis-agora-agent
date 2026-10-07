@@ -131,6 +131,7 @@ function specFromMeta(meta: AiToolMeta, defaultRoles: string[]): ToolSpec {
     ...(meta.ability !== undefined ? { ability: meta.ability } : {}),
     ...(meta.enabled !== undefined ? { enabled: meta.enabled } : {}),
     ...(meta.presentation !== undefined ? { presentation: meta.presentation } : {}),
+    ...(meta.replacementKey !== undefined ? { replacementKey: meta.replacementKey } : {}),
     ...(meta.terminal === true ? { terminal: true } : {}),
   };
 }
@@ -165,7 +166,7 @@ function moduleExtensionFor(entries: string[]): '.ts' | '.js' {
  * tool into `registry` — the `app/agent_tools` convention. Only the environment-appropriate extension
  * is imported and each export is visited once (deduped), so a built `.js` and a dev `.ts` of the same
  * module never both register. Missing directory → no-op (the convention is opt-in). `defaultRoles`
- * fills a tool that declares no `roles` (ADMIN-only by default).
+ * fills a tool that declares no `roles` (`[]` by default: unrestricted).
  */
 export async function discoverTools(
   registry: ToolRegistry,

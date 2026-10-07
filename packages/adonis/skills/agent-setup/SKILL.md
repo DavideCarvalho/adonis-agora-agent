@@ -27,8 +27,8 @@ sources:
 
 `@adonis-agora/agent` is a governed AI agent module for AdonisJS: one `defineConfig`
 call in `config/agent.ts` wires a provider-agnostic agent loop, persistence, budgeting,
-and the `/agent/*` HTTP+SSE routes. Only `model` is required — everything else is a
-fail-closed default that this skill walks through.
+and the `/agent/*` HTTP+SSE routes. Only `model` is required — everything else ships with a
+default that this skill walks through.
 
 ## Setup
 
@@ -42,8 +42,9 @@ node ace configure @adonis-agora/agent
 `configure` registers `@adonis-agora/agent/agent_provider` and
 `@adonis-agora/agent/dashboard_provider` in `adonisrc.ts`, registers the Assembler init
 hook that generates the typed `app/agent_tools` barrel, publishes `config/agent.ts`,
-`config/mcp.ts`, and two migrations (the agent tables; a Postgres-only pgvector RAG chunk
-table you can delete). Then add the model peer and write your config:
+`config/mcp.ts`, and five migrations: three for the agent tables (the base tables plus two
+forward-only action-proposal upgrades) and two Postgres-only ones (the pgvector RAG chunk
+table and the document-tree tables — delete the ones you don't use). Then add the model peer and write your config:
 
 ```bash
 pnpm add ai zod @ai-sdk/openai
@@ -75,9 +76,10 @@ export default defineConfig({
 })
 ```
 
-Run the migration for the six agent tables (`agent_thread`, `agent_message`,
-`agent_tool_call`, `agent_token_usage`, `agent_model_pricing`, plus the run-lifecycle
-columns):
+Run the published migrations for the ten agent tables (`agent_action_proposal`,
+`agent_thread`, `agent_message`, `agent_tool_call`, `agent_token_usage`,
+`agent_model_pricing`, `agent_run`, `agent_queued_message`, `agent_confirm_token`, plus the
+`agent_stream_frame` buffer):
 
 ```bash
 node ace migration:run
@@ -85,8 +87,8 @@ node ace migration:run
 
 You can skip it: the Lucid store provisions and repairs its own tables as the app starts
 (`autoCreateTables` defaults to true; an ace command or a hand-built store does it on first
-use), so an upgrade that adds a column needs no app migration. The published migration
-delegates to the same `createAgentTables` helper, so the two schemas can never drift.
+use), so an upgrade that adds a column needs no app migration. The published migrations
+delegate to the same `createAgentTables` helper, so the two schemas can never drift.
 Only with `autoCreateTables: false` does an upgrade need a migration that calls
 `createAgentTables` again.
 

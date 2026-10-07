@@ -27,9 +27,20 @@ export function createNegotiatedUiCollector(
     },
     emit: async (component, props, options = {}) => {
       if (!resolveCatalog) {
-        if (scope.uiCapabilities !== undefined)
-          throw new Error('UI capabilities require an authorized server catalog');
-        return collector.emit(component, props, options);
+        // No server catalog to negotiate against: the client's declaration can only narrow what is
+        // drawn. A component it does not declare degrades to its fallback text, else is left out.
+        const declared =
+          scope.uiCapabilities === undefined ||
+          scope.uiCapabilities.components.some(
+            (entry) => entry.name === component && entry.version === (options.version ?? 1),
+          );
+        if (declared) return collector.emit(component, props, options);
+        const id = options.id ?? `${toolCallId}:ui:${next++}`;
+        if (options.fallbackText !== undefined && options.fallbackText.length > 0) {
+          texts.set(id, options.fallbackText);
+          await writer?.write({ t: 'text', v: options.fallbackText });
+        }
+        return { id };
       }
       props = snapshotActionProposal(props);
       options = { ...options };

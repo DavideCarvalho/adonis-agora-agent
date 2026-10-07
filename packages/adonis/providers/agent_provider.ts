@@ -80,6 +80,7 @@ import {
 import { McpToolImporter } from '../src/mcp-client/index.js';
 import type { ResolveToolUiCatalog } from '../src/negotiated-tool-ui.js';
 import type { ListActionProposals } from '../src/spi/action-proposal-store.js';
+import type { PresentationErrorHandler } from '../src/spi/tool.js';
 import { setTelescopeGovernanceQueries } from '../src/telescope/governance-registry.js';
 import type { UiCapabilities } from '../src/ui-capabilities.js';
 import { validateUiCapabilities } from '../src/ui-capabilities.js';
@@ -353,8 +354,10 @@ export default class AgentProvider {
     this.#sink = sink;
     this.#actorDirectory = actorDirectory;
     this.#schemaOwners = [store, pricingStore, governance, sink];
+    const onPresentationError = config.onPresentationError ?? (await this.#logPresentationErrors());
 
     const factory = new AgentDepsFactory({
+      ...(onPresentationError !== undefined ? { onPresentationError } : {}),
       model,
       store,
       sink,
@@ -422,6 +425,7 @@ export default class AgentProvider {
           return {
             registry: deps.registry,
             rolesPolicy: deps.rolesPolicy,
+            ...(onPresentationError !== undefined ? { onPresentationError } : {}),
             ...(resolveUiCatalog !== undefined ? { resolveUiCatalog } : {}),
             ...(persona !== undefined ? { persona } : {}),
             ...(allowedTools !== undefined ? { allowedTools } : {}),
@@ -450,7 +454,13 @@ export default class AgentProvider {
         ? { backgroundActorResolver: config.backgroundActorResolver }
         : {}),
       ...(config.actionApprovalMode === 'independent'
-        ? { actionProposals: new ActionProposalService(store, factory.forAgent().approvalPolicy) }
+        ? {
+            actionProposals: new ActionProposalService(
+              store,
+              factory.forAgent().approvalPolicy,
+              config.actionProposalText,
+            ),
+          }
         : {}),
       // No `models` → the catalog the model provider carries (`aiSdkModels`), else none.
       ...(config.models !== undefined
@@ -763,6 +773,16 @@ export default class AgentProvider {
       if (mode === null) {
         return ctx.response.badRequest({ message: "mode must be 'auto', 'queue' or 'interrupt'" });
       }
+      let uiCapabilities: UiCapabilities | undefined;
+      try {
+        if (body.uiCapabilities !== undefined)
+          uiCapabilities = validateUiCapabilities(body.uiCapabilities);
+      } catch {
+        return ctx.response.badRequest({
+          message: 'uiCapabilities must be valid UI capabilities',
+          code: 'invalid_ui_capabilities',
+        });
+      }
       let started: ChatSendResult;
       try {
         started = await service.send({
@@ -779,9 +799,7 @@ export default class AgentProvider {
             ? { personaId: body.persona }
             : {}),
           ...(body.pageContext !== undefined ? { pageContext: body.pageContext } : {}),
-          ...(body.uiCapabilities !== undefined
-            ? { uiCapabilities: validateUiCapabilities(body.uiCapabilities) }
-            : {}),
+          ...(uiCapabilities !== undefined ? { uiCapabilities } : {}),
           ...(refs.length > 0 ? { attachments: refs } : {}),
         });
       } catch (error) {
@@ -2068,6 +2086,18 @@ export default class AgentProvider {
     return this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize);
   }
 
+  /** The default `onPresentationError`: a warning on the app's logger (none bound → `undefined`). */
+  async #logPresentationErrors(): Promise<PresentationErrorHandler | undefined> {
+    if (!this.app.container.hasBinding('logger')) return undefined;
+    const logger = await this.app.container.make('logger');
+    return (error, details) => {
+      logger.warn(
+        { err: error, ...details },
+        'Tool presentation failed after successful execution',
+      );
+    };
+  }
+
   #conflictOnMismatch(ctx: HttpContext, error: unknown): void {
     // The run the decision was for has ended: nothing is waiting for it (`409 run_not_active`).
     if (error instanceof RunNotActiveError) {
@@ -2085,6 +2115,10 @@ export default class AgentProvider {
    * `POST <path>/chat` does. `false` for an error that is none of those (the caller rethrows).
    */
   #refuseSend(ctx: HttpContext, error: unknown): boolean {
+    if (error instanceof ActionProposalServiceError) {
+      ctx.response.status(error.status).json({ message: error.message });
+      return true;
+    }
     if (error instanceof AttachmentRefusedError) {
       ctx.response.status(error.status).json({ message: error.message });
       return true;

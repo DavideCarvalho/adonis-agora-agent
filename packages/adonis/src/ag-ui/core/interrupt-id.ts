@@ -12,7 +12,8 @@
  * the native approve/answer routes do.
  */
 export interface InterruptAddress {
-  kind: 'approval' | 'elicitation';
+  /** `proposal` — an independent proposal's approval, decided through the proposal service. */
+  kind: 'approval' | 'elicitation' | 'proposal';
   /** The run to settle the call on. */
   parked: string;
   /** The run whose buffered stream the resume re-attaches to. */
@@ -20,18 +21,24 @@ export interface InterruptAddress {
   toolCallId: string;
   /** Frames of `stream` already delivered when the run was reported interrupted. */
   position: number;
+  /** `proposal` only: the proposal and the library thread it belongs to. */
+  proposalId?: string;
+  threadId?: string;
 }
+
+const KIND_CODES = { approval: 'a', elicitation: 'e', proposal: 'p' } as const;
 
 const PREFIX = 'agora_';
 
 export function encodeInterruptId(address: InterruptAddress): string {
-  const compact = [
-    address.kind === 'approval' ? 'a' : 'e',
+  const compact: unknown[] = [
+    KIND_CODES[address.kind],
     address.parked,
     address.stream,
     address.toolCallId,
     address.position,
   ];
+  if (address.kind === 'proposal') compact.push(address.proposalId, address.threadId);
   return PREFIX + Buffer.from(JSON.stringify(compact), 'utf8').toString('base64url');
 }
 
@@ -42,10 +49,12 @@ export function decodeInterruptId(id: unknown): InterruptAddress | null {
     const parsed: unknown = JSON.parse(
       Buffer.from(id.slice(PREFIX.length), 'base64url').toString('utf8'),
     );
-    if (!Array.isArray(parsed) || parsed.length !== 5) return null;
-    const [kind, parked, stream, toolCallId, position] = parsed as unknown[];
+    if (!Array.isArray(parsed)) return null;
+    const [kind, parked, stream, toolCallId, position, proposalId, threadId] = parsed as unknown[];
     if (
-      (kind !== 'a' && kind !== 'e') ||
+      parsed.length !== (kind === 'p' ? 7 : 5) ||
+      (kind === 'p' && (typeof proposalId !== 'string' || typeof threadId !== 'string')) ||
+      (kind !== 'a' && kind !== 'e' && kind !== 'p') ||
       typeof parked !== 'string' ||
       typeof stream !== 'string' ||
       typeof toolCallId !== 'string' ||
@@ -56,11 +65,12 @@ export function decodeInterruptId(id: unknown): InterruptAddress | null {
       return null;
     }
     return {
-      kind: kind === 'a' ? 'approval' : 'elicitation',
+      kind: kind === 'a' ? 'approval' : kind === 'e' ? 'elicitation' : 'proposal',
       parked,
       stream,
       toolCallId,
       position,
+      ...(kind === 'p' ? { proposalId: proposalId as string, threadId: threadId as string } : {}),
     };
   } catch {
     return null;

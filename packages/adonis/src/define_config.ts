@@ -1,4 +1,5 @@
 import type { ActionApprovalMode } from './action-proposal-receipt.js';
+import type { TextActionProposalConfig } from './action-proposal-text.js';
 import type { BrandedFunctionalTool } from './ai-tool-ref.js';
 import type { AgentDashboardConfig } from './dashboard/define_config.js';
 import type { GenuiFactory } from './genui/factory.js';
@@ -6,6 +7,7 @@ import type { AgentGovernanceAuthorize } from './governance-gate.js';
 import type { McpServerConfig } from './mcp-client/options.js';
 import type { MemoryConfig } from './memory.js';
 import type { SkillsConfig } from './skills.js';
+import type { ActionProposal } from './spi/action-proposal-store.js';
 import type { ActorDirectory } from './spi/actor-directory.js';
 import type { ActorResolver } from './spi/actor-resolver.js';
 import type { ApprovalPolicy, ApprovalRules } from './spi/approval-policy.js';
@@ -22,6 +24,7 @@ import type { QuotaProvider } from './spi/quota-provider.js';
 import type { Retriever } from './spi/retriever.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
 import type { TokenStreamSink } from './spi/token-stream-sink.js';
+import type { PresentationErrorHandler } from './spi/tool.js';
 import type {
   ActorDirectoryFactory,
   AttachmentStagingContext,
@@ -72,8 +75,8 @@ export type DefaultAgentOptions = Omit<AgentDefinition, 'name'> & { name?: strin
 /**
  * Shape of `config/agent.ts`. Only `model` is required. Pick a `store` by name from the `stores` map
  * (built with the {@link stores} factory so each peer is imported lazily); omit it for the in-memory
- * store. The default runner is in-process (`durable: false`); the actor resolver defaults to one that
- * THROWS — an identity is never fabricated.
+ * store. The default runner is in-process (`durable: false`); with no actor resolver every browser is
+ * its own anonymous actor (the routes are public, and the provider logs a boot warning saying so).
  *
  * ```ts
  * import { defineConfig, stores } from '@adonis-agora/agent'
@@ -90,7 +93,43 @@ export type DefaultAgentOptions = Omit<AgentDefinition, 'name'> & { name?: strin
 export interface AgentConfig {
   actionApprovalMode?: ActionApprovalMode;
   backgroundActorResolver?: BackgroundActorResolver;
-  actionProposalWorker?: { pollIntervalMs?: number; leaseMs?: number; maxConcurrency?: number };
+  actionProposalWorker?: {
+    pollIntervalMs?: number;
+    leaseMs?: number;
+    maxConcurrency?: number;
+    /**
+     * Called once a proposal's execution settles (`proposal.outcome?.executionStatus` says how), on the replica
+     * that ran it — the push for a channel that is not the web chat (a WhatsApp bridge, a Slack
+     * message) instead of polling. The outcome is still written to the thread as usual. A throw is
+     * logged, never retried.
+     */
+    onSettled?(proposal: ActionProposal): void | Promise<void>;
+  };
+  /**
+   * How a chat message decides an independent proposal (`actionApprovalMode: 'independent'`). A
+   * message that is exactly an approve/reject word — optionally the remember phrase, an `#ID`, a
+   * trailing `.`/`!` — decides instead of starting a turn. `vocabulary` replaces the word lists
+   * (default: English — `yes`/`approve`, `no`/`reject`, `always in this conversation`, …); `replies`
+   * replaces the answers (default: English). Each field you omit keeps its default. Portuguese ships
+   * ready as `ptBrActionProposalText`.
+   *
+   * ```ts
+   * import { ptBrActionProposalText } from '@adonis-agora/agent'
+   *
+   * actionProposalText: ptBrActionProposalText,
+   * // or your own:
+   * actionProposalText: {
+   *   replies: { approved: 'Approved — it will run shortly.', rejected: 'Rejected; nothing ran.' },
+   * }
+   * ```
+   */
+  actionProposalText?: TextActionProposalConfig;
+  /**
+   * Called when a tool's `present` fails after its `execute` succeeded — the action stays done and is
+   * never retried; only its rendering is lost. `details` names the tool and, inside a turn or a
+   * proposal execution, the call, run and thread. Omit → a warning on the app's logger.
+   */
+  onPresentationError?: PresentationErrorHandler;
   /** The LLM provider, or a lazy factory thunk so the provider SDK peer loads lazily. Required. */
   model: ModelProvider | ModelFactory;
   /** Name of the store (a key of `stores`). Omit for the in-memory store (single-process). */
@@ -197,8 +236,10 @@ export interface AgentConfig {
    */
   adapters?: ProtocolAdapter[];
   /**
-   * Tool authorization gate. Defaults to `DefaultToolAuthorizer` (fail-closed, ADMIN-only; role-set
-   * intersection). `authorizer` and `rolesPolicy` are aliases — pass either.
+   * Tool authorization gate. Defaults to `DefaultToolAuthorizer` (role-set intersection over each
+   * tool's `roles`, else {@link AgentConfig.defaultRoles}; an empty list follows
+   * {@link AgentConfig.emptyRoles}, unrestricted by default). `authorizer` and `rolesPolicy` are
+   * aliases — pass either.
    */
   authorizer?: RolesPolicy;
   /** Alias of {@link AgentConfig.authorizer}. */
@@ -217,8 +258,9 @@ export interface AgentConfig {
    */
   emptyRoles?: EmptyRoles;
   /**
-   * Resolves the acting actor per request (the identity seam). Defaults to a resolver that THROWS on
-   * every request — the agent never fabricates a caller. Wire `AuthActorResolver` / `HeaderActorResolver`.
+   * Resolves the acting actor per request (the identity seam). Defaults to `AnonymousActorResolver`:
+   * the routes are PUBLIC and every browser is its own anonymous actor (the provider logs a boot
+   * warning). Wire `AuthActorResolver` / `HeaderActorResolver` to require login.
    */
   actorResolver?: ActorResolver;
   /**
@@ -253,9 +295,8 @@ export interface AgentConfig {
    */
   models?: ModelCatalog | ModelCatalogView;
   /**
-   * Generative UI: `genui({ catalog, … })` from `@adonis-agora/agent/genui` (needs the optional peer
-   * `@dudousxd/nestjs-agent-core`). Registers tools that let the model push catalog components into
-   * the conversation, and binds the catalog in the container as `AgentGenui`.
+   * Generative UI: `genui({ catalog, … })` from `@adonis-agora/agent/genui` (no extra peer). Registers
+   * tools that let the model push catalog components into the conversation, and binds the catalog in the container as `AgentGenui`.
    */
   genui?: GenuiFactory;
   /**

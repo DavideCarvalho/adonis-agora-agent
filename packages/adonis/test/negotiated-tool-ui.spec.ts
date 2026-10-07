@@ -23,12 +23,17 @@ it('validates current catalog before collecting full fallback text for unsupport
   expect(collector.text()).toBe('Complete text');
   await expect(collector.emit('Card', { title: 1 })).rejects.toThrow();
 });
-it('refuses explicit capabilities when there is no server-owned catalog', async () => {
+it('without a server catalog, draws declared components and degrades the rest to text', async () => {
   const collector = createNegotiatedUiCollector('call', {
     actor: { id: 'actor' },
-    uiCapabilities: { components: [] },
+    uiCapabilities: { components: [{ name: 'Card', version: 2 }] },
   });
-  await expect(collector.emit('Forged', {})).rejects.toThrow('catalog');
+  await collector.emit('Card', { title: 'Drawn' }, { version: 2, fallbackText: 'Drawn' });
+  await collector.emit('Card', { title: 'Old' }, { fallbackText: 'Old version as text' });
+  await collector.emit('Chart', { points: [1] }, { fallbackText: 'Chart as text' });
+  await collector.emit('Forged', {});
+  expect(collector.components().map((ui) => [ui.component, ui.version])).toEqual([['Card', 2]]);
+  expect(collector.text()).toBe('Old version as text\nChart as text');
 });
 it('snapshots emitted props before asynchronous catalog resolution', async () => {
   let release!: () => void;

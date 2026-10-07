@@ -23,6 +23,7 @@ import type { QuotaStore } from './spi/quota-store.js';
 import type { Retriever } from './spi/retriever.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
 import type { TokenStreamSink } from './spi/token-stream-sink.js';
+import type { PresentationErrorHandler } from './spi/tool.js';
 import type { ToolRegistry } from './tool-registry.js';
 import type { ToolTransientRetrySetting } from './tool-retry.js';
 import type {
@@ -158,6 +159,8 @@ export function registerDelegateTools(registry: ToolRegistry, agents: AgentRegis
 export interface AgentDepsFactoryConfig {
   actionApprovalMode?: ActionApprovalMode;
   resolveUiCatalog?: ResolveToolUiCatalog;
+  /** Where a tool's failed `present` is reported. Undefined → a console warning. */
+  onPresentationError?: PresentationErrorHandler;
   model: ModelProvider;
   store: AgentStore;
   sink: TokenStreamSink;
@@ -327,6 +330,9 @@ export class AgentDepsFactory {
     return {
       ...(this.config.resolveUiCatalog !== undefined
         ? { resolveUiCatalog: this.config.resolveUiCatalog }
+        : {}),
+      ...(this.config.onPresentationError !== undefined
+        ? { onPresentationError: this.config.onPresentationError }
         : {}),
       model: this.config.model,
       store: this.config.store,

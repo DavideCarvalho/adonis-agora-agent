@@ -1,4 +1,7 @@
-import type { ActionProposalDecision } from './spi/action-proposal-store.js';
+import type {
+  ActionProposalDecision,
+  ActionProposalMutationResult,
+} from './spi/action-proposal-store.js';
 
 export interface TextActionProposalCandidate {
   id: string;
@@ -22,8 +25,9 @@ export type TextActionProposalResolution =
 export function resolveTextActionProposalDecision(
   text: string,
   proposals: readonly TextActionProposalCandidate[],
+  vocabulary?: TextActionProposalVocabulary,
 ): TextActionProposalResolution {
-  const command = parseTextActionProposalCommand(text);
+  const command = parseTextActionProposalCommand(text, vocabulary);
   if (command.status === 'unmatched') return command;
   const { decision, remember } = command;
   const pending = proposals.filter((proposal) => proposal.decision === 'pending');
@@ -47,26 +51,140 @@ export type TextActionProposalCommand =
       remember: boolean;
       proposalId?: string;
     };
+
+/**
+ * The words a whole chat message must consist of to decide a proposal by text. Matched
+ * case-insensitively, as the complete message (an optional trailing `.`/`!`, an optional `#ID`).
+ */
+export interface TextActionProposalVocabulary {
+  /** Approve, e.g. `sim`, `yes`. */
+  approve: readonly string[];
+  /** Reject, e.g. `não`, `no`. */
+  reject: readonly string[];
+  /** The phrase after an approve word that also approves later calls of the tool in this thread. */
+  remember: readonly string[];
+}
+
+/** English. Portuguese ships as {@link ptBrActionProposalText}; any other language via config. */
+export const DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY: TextActionProposalVocabulary = {
+  approve: ['yes', 'confirm', 'approve', 'approved', 'ok'],
+  reject: ['no', 'cancel', 'reject', 'deny'],
+  remember: ['always in this conversation'],
+};
+
+/** What the agent answers to a text decision. Every field has an English default. */
+export interface TextActionProposalReplies {
+  approved: string;
+  rejected: string;
+  expired: string;
+  /** The proposal could not change (already decided by someone else, superseded, …). */
+  unchanged: string;
+  /** More than one pending proposal could be meant: ask for the `#ID`. */
+  ambiguous(proposalIds: readonly string[]): string;
+  /** Too many pending proposals to pick one without an explicit `#ID`. */
+  tooMany: string;
+}
+
+export const DEFAULT_TEXT_ACTION_PROPOSAL_REPLIES: TextActionProposalReplies = {
+  approved: 'Proposal approved and queued to run.',
+  rejected: 'Proposal rejected; nothing was run.',
+  expired: 'The proposal expired; nothing was run.',
+  unchanged: 'This proposal could not be changed; refresh the list to see where it stands.',
+  ambiguous: (ids) => `Which proposal? Reply confirm #ID or cancel #ID: ${ids.join(', ')}`,
+  tooMany: 'There are several proposals. Confirm or reject one with an explicit #ID.',
+};
+
+/** `config/agent.ts`'s `actionProposalText`: either part replaces the default it names. */
+export interface TextActionProposalConfig {
+  vocabulary?: Partial<TextActionProposalVocabulary>;
+  replies?: Partial<TextActionProposalReplies>;
+}
+
+/** The reply to a decision the store answered with `result`. */
+export function textActionProposalReply(
+  result: ActionProposalMutationResult,
+  decision: 'approved' | 'rejected',
+  replies: TextActionProposalReplies = DEFAULT_TEXT_ACTION_PROPOSAL_REPLIES,
+): string {
+  return result.status === 'expired' || result.proposal?.decision === 'expired'
+    ? replies.expired
+    : result.status === 'applied' || result.status === 'unchanged'
+      ? decision === 'approved'
+        ? replies.approved
+        : replies.rejected
+      : replies.unchanged;
+}
+
+const escapeRegExp = (word: string) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const alternatives = (words: readonly string[]) =>
+  words
+    .map((word) => word.trim())
+    .filter((word) => word.length > 0)
+    .map((word) => escapeRegExp(word).replace(/\s+/g, '\\s+'))
+    .join('|');
+const fold = (word: string) => word.trim().toLowerCase();
+
 /** Parse exact consent syntax only. Authentication and target lookup remain the caller's responsibility. */
-export function parseTextActionProposalCommand(text: string): TextActionProposalCommand {
+export function parseTextActionProposalCommand(
+  text: string,
+  vocabulary: TextActionProposalVocabulary = DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY,
+): TextActionProposalCommand {
   if (/[\r\n]/u.test(text)) return { status: 'unmatched' };
-  const normalized = text.trim();
-  const match =
-    /^(sim|confirmo|confirmar|aprovar|aprovo|cancelar|rejeitar|rejeito|não|nao)(?: (sempre nesta conversa))?(?: #([^\s]+?))?[.!]?$/iu.exec(
-      normalized,
-    );
+  const verbs = alternatives([...vocabulary.approve, ...vocabulary.reject]);
+  if (verbs.length === 0) return { status: 'unmatched' };
+  const remember = alternatives(vocabulary.remember);
+  const match = new RegExp(
+    `^(${verbs})${remember.length > 0 ? `(?: (${remember}))?` : '()'}(?: #([^\\s]+?))?[.!]?$`,
+    'iu',
+  ).exec(text.trim());
   if (!match) return { status: 'unmatched' };
-  const verb = match[1]?.toLocaleLowerCase('pt-BR');
+  const verb = match[1] === undefined ? undefined : fold(match[1]);
   if (verb === undefined) return { status: 'unmatched' };
-  const decision = ['cancelar', 'rejeitar', 'rejeito', 'não', 'nao'].includes(verb)
-    ? 'rejected'
-    : 'approved';
-  const remember = match[2] !== undefined;
-  if (remember && decision !== 'approved') return { status: 'unmatched' };
+  // A word on both lists is read as a refusal: never infer consent from an ambiguous word.
+  const decision = vocabulary.reject.some((word) => fold(word) === verb) ? 'rejected' : 'approved';
+  const remembers = match[2] !== undefined && match[2] !== '';
+  if (remembers && decision !== 'approved') return { status: 'unmatched' };
   return {
     status: 'command',
     decision,
-    remember,
+    remember: remembers,
     ...(match[3] !== undefined ? { proposalId: match[3] } : {}),
   };
 }
+
+/**
+ * Brazilian Portuguese text decisions — `config/agent.ts`: `actionProposalText: ptBrActionProposalText`.
+ * Commands in Portuguese (English ones still work), replies in Portuguese.
+ */
+export const ptBrActionProposalText: Required<TextActionProposalConfig> = {
+  vocabulary: {
+    approve: [
+      'sim',
+      'confirmo',
+      'confirmar',
+      'aprovar',
+      'aprovo',
+      'pode',
+      ...DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY.approve,
+    ],
+    reject: [
+      'não',
+      'nao',
+      'cancelar',
+      'cancela',
+      'rejeitar',
+      'rejeito',
+      ...DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY.reject,
+    ],
+    remember: ['sempre nesta conversa', ...DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY.remember],
+  },
+  replies: {
+    approved: 'Proposta aprovada e enfileirada para execução.',
+    rejected: 'Proposta rejeitada; nenhuma ação foi executada.',
+    expired: 'A proposta expirou; nenhuma ação foi executada.',
+    unchanged:
+      'Não foi possível alterar esta proposta; atualize a lista para consultar seu estado.',
+    ambiguous: (ids) => `Qual proposta? Responda confirmar #ID ou cancelar #ID: ${ids.join(', ')}`,
+    tooMany: 'Há várias propostas. Confirme ou rejeite usando #ID explícito.',
+  },
+};

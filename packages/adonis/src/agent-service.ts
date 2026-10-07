@@ -1,5 +1,6 @@
 import { assertIndependentActionRuntime } from './action-proposal-runtime.js';
 import { ActionProposalService, ActionProposalServiceError } from './action-proposal-service.js';
+import { textActionProposalReply } from './action-proposal-text.js';
 import { utcDay } from './agent-deps.js';
 import type { AgentDepsFactory } from './agent-deps-factory.js';
 import type { ChatQueueService } from './chat-queue-service.js';
@@ -505,9 +506,7 @@ export class AgentService {
    * {@link ChatQueueError} instead; {@link send} is the form that queues it.
    */
   async chat(params: ChatParams): Promise<{ runId: string; threadId: string }> {
-    const result = await this.sendInternal({ ...params, mode: 'auto' }, false);
-    if ('proposalDecision' in result)
-      throw new ChatQueueError(409, result.text, 'proposal_decision');
+    const result = await this.sendTurn(withValidCapabilities({ ...params, mode: 'auto' }));
     if (result.queued !== true) {
       return result;
     }
@@ -533,17 +532,8 @@ export class AgentService {
    * to run after it (see {@link ChatSendMode}). What `POST <path>/chat` calls.
    */
   async send(params: ChatParams): Promise<ChatSendResult> {
-    return this.sendInternal(params, true);
-  }
-
-  private async sendInternal(
-    params: ChatParams,
-    resolveTextDecision: boolean,
-  ): Promise<ChatSendResult> {
-    if (params.uiCapabilities !== undefined)
-      params = { ...params, uiCapabilities: validateUiCapabilities(params.uiCapabilities) };
+    params = withValidCapabilities(params);
     if (
-      resolveTextDecision &&
       params.threadId !== undefined &&
       params.regenerate !== true &&
       this.options.actionProposals
@@ -555,6 +545,13 @@ export class AgentService {
       );
       if ('proposalDecision' in decision) return decision;
     }
+    return this.sendTurn(params);
+  }
+
+  /** Start or queue the turn itself — what a send is once it is not a text decision. */
+  private async sendTurn(
+    params: ChatParams,
+  ): Promise<Exclude<ChatSendResult, ProposalDecisionSend>> {
     if (params.regenerate === true && params.threadId === undefined) {
       throw new RegenerateNeedsThreadError();
     }
@@ -1018,6 +1015,15 @@ export class AgentService {
       throw new ActionProposalServiceError(501, 'Independent proposals are unavailable');
     return this.options.actionProposals.decide(actor, threadId, proposalId, decision, body, via);
   }
+  /** The configured chat reply to a proposal decision (see `actionProposalText.replies`). */
+  actionProposalReply(
+    result: import('./spi/action-proposal-store.js').ActionProposalMutationResult,
+    decision: 'approved' | 'rejected',
+  ): string {
+    return this.options.actionProposals
+      ? this.options.actionProposals.reply(result, decision)
+      : textActionProposalReply(result, decision);
+  }
   handleTextDecision(actor: Actor, threadId: string, text: string) {
     if (!this.options.actionProposals) return Promise.resolve({ status: 'unmatched' as const });
     return this.options.actionProposals.handleTextDecision(actor, threadId, text);
@@ -1434,4 +1440,11 @@ export class AgentService {
   async quotaToday(actorRef: string): Promise<{ usedTokens: number }> {
     return this.store.quotaToday(actorRef, utcDay());
   }
+}
+
+/** `params` with its `uiCapabilities` validated (a `TypeError` when malformed). */
+function withValidCapabilities(params: ChatParams): ChatParams {
+  return params.uiCapabilities === undefined
+    ? params
+    : { ...params, uiCapabilities: validateUiCapabilities(params.uiCapabilities) };
 }

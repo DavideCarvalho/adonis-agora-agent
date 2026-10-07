@@ -13,6 +13,7 @@ import type { QuotaStore } from './spi/quota-store.js';
 import type { Retriever } from './spi/retriever.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
 import type { TokenStreamSink } from './spi/token-stream-sink.js';
+import type { PresentationErrorHandler } from './spi/tool.js';
 import type { ToolRegistry } from './tool-registry.js';
 import type { ToolTransientRetrySetting } from './tool-retry.js';
 import type { Actor, Persona, PromptBuilder } from './types.js';
@@ -21,6 +22,8 @@ import type { Actor, Persona, PromptBuilder } from './types.js';
 export interface AgentDeps {
   actionApprovalMode?: ActionApprovalMode;
   resolveUiCatalog?: ResolveToolUiCatalog;
+  /** Where a tool's failed `present` is reported. Undefined → a console warning. */
+  onPresentationError?: PresentationErrorHandler;
   model: ModelProvider;
   store: AgentStore;
   registry: ToolRegistry;

@@ -9,3 +9,4 @@ coverage/
 .migrations-tmp/
 
 .aviary-preview/
+*.orig
