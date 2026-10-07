@@ -74,12 +74,20 @@ export default defineConfig({
 })
 ```
 
-Because the offered-tools filter AND the invoke-time re-check call the same
-`can(actor, tool)`, swapping the policy changes both layers together — they can never
-disagree about what an actor may reach.
+Because the offered-tools filter calls `canOffer(actor, tool)` when the policy defines
+it (else `can`) and the invoke-time re-check always calls `can(actor, tool)`, swapping
+the policy changes both layers together — they disagree only when a policy defines
+`canOffer` to offer what it will not run (A2A step-up).
+
+The provider wraps whatever policy you configure with `personalAgentGate`: an actor with
+the `personal_agent` role (A2A personal agents) reaches only tools that declare one of its
+roles — a tool with no `roles` is out of its reach even when open by default — and its
+memory and skill scopes resolve to none. Nothing changes for any other actor.
 
 Source: `packages/adonis/docs/governance/authorization.mdx` ("Ability-aware
-authorization"), `packages/adonis/src/authorizer.ts`.
+authorization"), `packages/adonis/src/authorizer.ts`,
+`packages/adonis/src/a2a/gate.ts` (`personalAgentGate`, `personalAgentScopes`),
+`packages/adonis/docs/a2a.mdx` ("What a personal agent can reach").
 
 ### Pattern 2 — mount the governance read-model with `governanceAuthorize`
 

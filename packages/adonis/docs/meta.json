@@ -20,6 +20,7 @@
     "browser-client",
     "mcp",
     "mcp-client",
+    "a2a",
     "redis-streaming",
     "sql-streaming",
     "diagnostics",

@@ -41,6 +41,21 @@
       "import": "./dist/src/ai-sdk/index.js",
       "default": "./dist/src/ai-sdk/index.js"
     },
+    "./a2a": {
+      "types": "./dist/src/a2a/index.d.ts",
+      "import": "./dist/src/a2a/index.js",
+      "default": "./dist/src/a2a/index.js"
+    },
+    "./a2a_provider": {
+      "types": "./dist/providers/a2a_provider.d.ts",
+      "import": "./dist/providers/a2a_provider.js",
+      "default": "./dist/providers/a2a_provider.js"
+    },
+    "./a2a/server_middleware": {
+      "types": "./dist/src/a2a/server_middleware.d.ts",
+      "import": "./dist/src/a2a/server_middleware.js",
+      "default": "./dist/src/a2a/server_middleware.js"
+    },
     "./mcp": {
       "types": "./dist/src/mcp/index.d.ts",
       "import": "./dist/src/mcp/index.js",

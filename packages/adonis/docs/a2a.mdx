@@ -1,0 +1,183 @@
+---
+title: Personal agents (A2A)
+description: Let AI assistants — ChatGPT, Meta AI, a user's own agent — talk to your agents over A2A 1.0, identified and, when the user delegates, acting on the user's account within scopes you define (PACT).
+icon: Handshake
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A **personal agent** is an assistant acting for one of your users. `@adonis-agora/agent/a2a_provider`
+exposes your registered agents to them over [A2A 1.0](https://a2a-protocol.org) (HTTP+JSON), following
+[PACT](https://openpactprotocol.org):
+
+- **Identity** — every request carries a JWT the personal agent signs. You know which agent is calling
+  and for which of its users. Without more, the agent talks to yours the way a chat widget would.
+- **Delegation** — the user signs in on *your* app and approves scopes you define. The personal agent's
+  turns then run **as that user**, with each scope as a `scope:<id>` role, so your tools gate on them
+  exactly like they gate on anything else.
+
+Authentication and delegation come from [AuthKit's personal agents](https://davidecarvalho.github.io/agora/docs/authkit/personal-agents)
+(`@adonis-agora/authkit-server` 0.76+). This surface is the conversation: Agent Cards, `message:send`,
+`contextId`, retries, step-up and receipts.
+
+## Mounting it
+
+Register the provider in `adonisrc.ts`, after the agent provider:
+
+```ts title="adonisrc.ts"
+providers: [
+  // ...
+  () => import('@adonis-agora/agent/agent_provider'),
+  () => import('@adonis-agora/agent/a2a_provider'),
+]
+```
+
+```ts title="config/a2a.ts"
+import { authKitPersonalAgents, defineA2aConfig } from '@adonis-agora/agent/a2a'
+
+export default defineA2aConfig({
+  baseUrl: 'https://acme.com',
+  auth: authKitPersonalAgents(),
+  rootCard: 'support',
+  agents: {
+    support: {
+      agent: 'support', // a registered agent; defaults to the key
+      card: { name: 'Acme Support', description: 'Orders, returns and refunds.' },
+    },
+  },
+})
+```
+
+Each entry is a "brand" in PACT terms, answered at `/a2a/{key}`:
+
+| Route | |
+| --- | --- |
+| `GET /a2a/{key}/.well-known/agent-card.json` | The Agent Card (public). `rootCard` also serves one at `/.well-known/agent-card.json`. |
+| `POST /a2a/{key}/message:send` | A synchronous turn. |
+| `GET /a2a/{key}/tasks`, `GET …/tasks/{id}`, `POST …/tasks/{id}:cancel` | As PACT §2.2 fixes them: empty list, `TASK_NOT_FOUND`. |
+
+In AuthKit, set `personalAgents.delegation.interfaceUrl` to the interface URL of the agent that offers
+delegation (`https://acme.com/a2a/support`): only that card advertises it.
+
+<Callout type="info">
+The A2A routes are served by **server middleware**, ahead of the router — the bodyparser, the session
+and CSRF never see them. PACT requires authenticating before the body is read, and A2A bodies are JSON
+whatever their `Content-Type`. They are stateless and authenticated by the personal agent's signature,
+so nothing is lost.
+</Callout>
+
+## What a personal agent can reach
+
+Every turn gets `pageContext: { channel: 'a2a' }`, so a prompt can tell it is answering a personal
+agent rather than the person in your app.
+
+A turn from a personal agent runs as an actor with the role **`personal_agent`** — plus, under
+delegation, one **`scope:<id>`** role per delegated scope (namespaced, so a scope can never pose as one
+of your app's roles), and the user's account id as the actor id. Without delegation
+the actor is a stable synthetic id per (personal agent, its user), never an account.
+
+A personal agent runs **only tools that name one of its roles**. A tool with no `roles` — which, under
+the default policy, means "anyone" — is out of its reach: your existing tools were not written with an
+outside caller in mind. This gate wraps whatever `authorizer` you configured and changes nothing for
+other actors. Memory and skills resolve **no scope** for a personal agent: it never reads what your
+assistant remembers about the user, and cannot write to it.
+
+```ts
+registry.register(
+  { name: 'order_status', kind: 'read', roles: ['personal_agent'], /* ... */ }, // anyone's agent
+  handler,
+)
+registry.register(
+  { name: 'cancel_order', kind: 'action', roles: ['scope:orders:cancel'], /* ... */ }, // delegated scope
+  handler,
+)
+```
+
+An `action` that parks for approval is **approved** when the caller's delegation grants one of its roles
+— the user approved that scope on their own account page, which is the consent the in-app approval stands
+for — and rejected otherwise (`actions: 'reject'` rejects them all). With `actionApprovalMode: 'independent'`, the
+same decision applies to the proposal the run leaves behind: the turn decides it once the run ends and,
+when approved, **waits for it to execute** before answering, so a personal agent is never told an action
+happened when it did not. The model never sees a proposal's result, so the reply carries it as an A2A
+**data part** — `{ action: { tool, status, summary: { title, detail }, result } }`, the summary being the
+confirmation your tool would have shown the person — next to whatever the model wrote, and the receipt
+lists it. A
+proposal whose approver is someone else stays with your app. A question set (`ask`) is skipped:
+there is nobody on this side to answer it, so the agent proceeds on its own assumptions.
+
+## Step-up and receipts
+
+A personal agent is **offered** every tool that names `personal_agent` or any `scope:` role — even a
+scope the user has not delegated — but only **runs** the ones its roles reach. When the model calls a
+tool behind a scope that was not delegated, the call is refused and the reply becomes a
+`TASK_STATE_AUTH_REQUIRED` task carrying the missing scopes and a consent link: the model asks for a
+permission by doing what it would do anyway. (Offering and running are separate checks in the
+`RolesPolicy` SPI: an optional `canOffer` for the tool list, `can` for every invoke.)
+
+When delegation is on, the provider also registers **`request_permission`**, reachable only by personal
+agents, for a model that knows up front it needs a scope. The conversation stays
+open: once the user approves, the agent refreshes its token and re-sends with the same `contextId`.
+
+Every reply under delegation carries a **signed receipt** in `metadata['pact.receipt']`: the grant, the
+account, the tools that ran under a delegated scope (with a hash of their arguments) and the scopes they
+used — signed with your IdP keystore, verifiable through the delegation JWKS.
+
+## Conversations
+
+- A `message:send` without `contextId` starts a conversation; the reply carries its `contextId` (the
+  agent thread, created **transient**, so it stays out of the user's own thread list).
+- A `contextId` belongs to one brand and one (personal agent, user). Anyone else gets `INVALID_PARAMS`
+  "Unknown contextId", without learning whether it exists.
+- Once a turn in it ran under a delegation, the conversation is bound to that account: a token for
+  another account is refused there.
+- A repeated `messageId` in the same context returns the stored reply without running the agent again.
+
+Ownership and replies live in two tables (`agent_a2a_context`, `agent_a2a_message`), created on first
+use (`store: 'lucid'`, the default). `store: 'memory'` keeps them in-process; any `A2aStore` works.
+
+## Configuration
+
+| Field | Default | |
+| --- | --- | --- |
+| `agents` | — | `{ [key]: { agent?, card } }` — what is exposed, and its Agent Card. |
+| `auth` | — | `authKitPersonalAgents()`, or your own `A2aAuth`. |
+| `baseUrl` | request origin | Public origin for the cards' interface URLs. Set it in production. |
+| `path` | `'a2a'` | Mount prefix. |
+| `rootCard` | — | Also serve this agent's card at `/.well-known/agent-card.json`. |
+| `store` | `'lucid'` | `'lucid'`, `'memory'`, or an `A2aStore`. `connection` picks the Lucid connection. |
+| `actions` | `'approve-delegated'` | Or `'reject'`. |
+| `timeoutMs` | `120000` | A turn that runs longer is cancelled (`INTERNAL`). |
+| `maxBodyBytes` | 1 MiB | |
+| `roles` | `scope:<id>` per delegated scope | `(caller) => string[]` — extra roles; `personal_agent` is always added. |
+| `actor` | account id / `pa:<hash>` | `(caller, defaults) => Actor` — map the caller to the actor your tools expect (e.g. a profile, not the account). `personal_agent` is added back. |
+| `service` | `AgentService` | Your own turn runtime — see below. |
+
+## Bring your own runtime
+
+By default a turn runs through the agent provider's `AgentService`. An app that runs its agent its own
+way — a `runAgentLoop` built per request, tools locked to a tenant — passes an adapter instead:
+
+```ts title="config/a2a.ts"
+export default defineA2aConfig({
+  // ...
+  service: ({ app }) => app.container.make(MyA2aTurnService),
+})
+```
+
+An `A2aTurnService` has `AgentService`'s shape — `chat` (start a turn, return its `runId` and
+`threadId`), `subscribe` (its frames), `approve` / `reject` / `skip` / `cancel` — plus an optional
+`toolRoles(name)`: the roles a tool declares, which the surface matches delegated scopes against to
+approve actions and build receipts. Answer it when your registry is built per turn and the shared
+`ToolRegistry` does not know your tools. The `personalAgentGate` is the agent provider's: with your own
+runtime, deciding which tools a personal agent reaches is your adapter's job — and so is offering
+`request_permission`: call `registerRequestPermissionTool(yourRegistry, scopes)` where your tools live
+(the provider only registers it in the shared registry when it runs `AgentService`).
+
+## Conformance
+
+This surface passes PACT's Identity conformance suite (`e2e/pact.test.ts`, `E2E_PROVIDER=any`) running
+against a real AdonisJS app with AuthKit, and the delegated flow — device code, consent on AuthKit's
+screens, step-up, approved action, receipt verification, refresh rotation and reuse — through PACT's own
+client library. The card's identity scheme is named `platformJwt`, as in PACT's reference implementation
+and conformance suite (the spec text says `paJwt`; AuthKit's `pact({ identitySchemeName: 'paJwt' })`
+switches).
