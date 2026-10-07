@@ -271,8 +271,8 @@ Source: `packages/adonis/docs/authoring/tools.mdx`, `packages/adonis/src/tool-fi
 ### CRITICAL — shipping a privileged tool without `roles`
 
 ```ts
-// Wrong — no roles → inherits defaultRoles, which is [] (open) by default: every actor,
-// an anonymous visitor included, is offered this tool.
+// Wrong — no roles → inherits defaultRoles, which is [] (open) by default: every actor
+// except A2A personal agents, an anonymous visitor included, is offered this tool.
 static tool = { name: 'refund_order', kind: 'action', description: '...', input }
 ```
 
@@ -284,10 +284,13 @@ static tool = { name: 'refund_order', kind: 'action', description: '...', input,
 Mechanism: `definitionsFor` filters the offered tool list through the role gate BEFORE
 each model turn, and `invoke` re-checks it. A tool with no `roles` takes `defaultRoles`;
 an empty list is no restriction (since 0.46 — before, it denied everyone; `emptyRoles: 'deny'`
-in the config, or `ClosedRolesPolicy`, keeps it closed). An `action` still parks on approval — but by default the
+in the config, or `ClosedRolesPolicy`, keeps it closed) — except for an actor with the
+`personal_agent` role (A2A personal agents): it reaches only tools that declare one of its
+roles, so a tool with no `roles` is out of its reach even when open by default. An `action` still parks on approval — but by default the
 requester approves, so for a public chat that is only a confirmation.
 Source: `packages/adonis/docs/governance/authorization.mdx`,
-`packages/adonis/src/tool-registry.ts` (`DefaultRolesPolicy.can`).
+`packages/adonis/src/tool-registry.ts` (`DefaultRolesPolicy.can`),
+`packages/adonis/src/a2a/gate.ts` (`personalAgentGate`).
 
 ### HIGH — trusting an id from the model's arguments instead of `ctx.actor`
 
