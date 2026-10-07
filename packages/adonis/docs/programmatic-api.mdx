@@ -41,12 +41,20 @@ interface ChatParams {
   threadId?: string                  // omit to create a new thread
   agentName?: string                 // omit for the default agent
   personaId?: string                 // pinned on the thread; PersonaNotFoundError if undeclared
-  pageContext?: PageContext
-  attachments?: MessageAttachment[]  // already staged
+  pageContext?: PageContext          // free-form; reaches tools and prompt builders
+  uiCapabilities?: UiCapabilities    // what the receiving surface can draw; { components: [] } = text only
+  attachments?: AttachmentRef[]      // already staged, by { mediaId }
+  model?: string                     // a catalog model, for this turn only
+  regenerate?: boolean               // answer the thread's last user message again
+  transient?: boolean                // a new thread left out of the list until promoted
+  mode?: 'auto' | 'queue' | 'interrupt' // send() only — chat() always starts or refuses
 }
 
 await agent.chat(params)  // → { runId, threadId }
+await agent.send(params)  // → started { runId, threadId } | queued { queued: true, … } | { proposalDecision, text }
 ```
+
+`chat` starts the turn or throws `ChatQueueError` (`409 run_active`) when the thread is busy. `send` is what `POST /agent/chat` calls: it queues behind a running turn, and with [independent approvals](/docs/agent/independent-approvals#text-decisions) it recognizes a decision command (`sim`, `cancelar #id`) and returns `{ threadId, proposalDecision, text }` without starting a turn. A channel bridge — WhatsApp, Slack — wants `send`; see [One output, many surfaces](/docs/agent/surfaces#text-only-channels--whatsapp-and-similar).
 
 <Callout type="warn" title="`chat` starts the turn, it does not await it">
 It returns as soon as the run has been handed to the runner. Under the inline runner the loop then runs detached in-process — so a worker that returns immediately after `chat()` can exit mid-turn and lose the run.
@@ -71,9 +79,11 @@ Or set [`durable: true`](/docs/agent/durability/durable-runner), which is the ri
 | Method | Returns | Notes |
 | --- | --- | --- |
 | `chat(params)` | `{ runId, threadId }` | Starts a turn. |
-| `subscribe(runId)` | `AsyncIterable<StreamFrame>` | The live token stream — `{ t: 'text', v }` and `{ t: 'component', name, data }`. |
-| `approve(runId, toolCallId)` | `void` | Deliver a HITL approval. |
-| `reject(runId, toolCallId, reason?)` | `void` | Deliver a rejection; `reason` is fed back to the model. |
+| `send(params)` | `ChatSendResult` | Starts, queues, or applies a text decision (above). |
+| `subscribe(runId)` | `AsyncIterable<StreamFrame>` | The live token stream — `{ t: 'text', v }`, `{ t: 'component', name, data, id?, fallbackText?, … }`, and the `event`, `error`, `elicitation` and `approval` frames. |
+| `approve(runId, toolCallId, { executedByRef?, remember?, via? }?)` | `void` | Deliver a HITL approval. Refuses a call that became an independent proposal. |
+| `reject(runId, toolCallId, reason?, { executedByRef?, via? }?)` | `void` | Deliver a rejection; `reason` is fed back to the model. |
+| `listActionProposals(actor, threadId)` / `decideActionProposal(actor, threadId, proposalId, decision, { remember?, reason? }, via?)` | proposals / mutation result | [Independent approvals](/docs/agent/independent-approvals#over-http), authorized by the approval policy. |
 | `cancel(runId)` | `void` | Abort a run. |
 | `runOwner(runId)` | `string \| null` | The owning `actorRef`, for your own ownership checks. |
 | `threadOwner(threadId)` | `string \| null` | Likewise. |
@@ -104,7 +114,7 @@ Or set [`durable: true`](/docs/agent/durability/durable-runner), which is the ri
 What **does** still apply is everything inside the loop: the tool authorizer gates every tool call, `action` tools still suspend for approval, and the quota is still checked before the model runs. The governance the agent enforces is intact; the governance the HTTP layer enforces is yours to reproduce.
 
 <Callout type="warn" title="HITL from a job will hang">
-An `action` tool suspends the run waiting for a decision. From a job with nobody watching, that is a run that never finishes. Either keep human-approval tools off the agent a job invokes (`tools:` on its definition), or have the job deliver the decision itself.
+An `action` tool suspends the run waiting for a decision. From a job with nobody watching, that is a run that never finishes. Either keep human-approval tools off the agent a job invokes (`tools:` on its definition), have the job deliver the decision itself, or use [`actionApprovalMode: 'independent'`](/docs/agent/independent-approvals): the turn then ends with a pending proposal, decided and executed later.
 
 A *delegated* sub-agent is no exception, on either runner: its `action` tools park too, under the sub-agent's **own** run id, and the `approval`/`elicitation` frame forwarded into the stream you are watching carries that id so you can answer it. Nothing is auto-declined for you — a sub-agent nobody will answer hangs exactly like a top-level one.
 </Callout>

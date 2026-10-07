@@ -162,6 +162,20 @@ export const purgeCache = defineTool(
 )
 ```
 
+The second argument can also be a handler object — `{ execute, preflight?, present?, isEnabled?, canUse?, describe? }` — and everything can go in one object, with the input type inferred from the schema:
+
+```ts
+export const orderStatus = defineTool({
+  name: 'orderStatus',
+  description: 'Look up one order',
+  input: z.object({ orderId: z.string() }),
+  execute: async ({ orderId }, ctx) => Order.findForCustomer(orderId, ctx.actor.id),
+  // optional: `orderSummary` is a component factory — see One output, many surfaces
+  present: (order) =>
+    orderSummary({ id: order.id, status: order.status, totalCents: order.totalCents }),
+})
+```
+
 You can also pass functional tools directly to the config instead of a file: `defineConfig({ tools: [purgeCache] })`.
 
 ### `defineConfirmedTool` — a write that previews first
@@ -175,7 +189,7 @@ The `kind` decides how the loop treats a call:
 | Kind | Behavior |
 | --- | --- |
 | `read` | **Auto-executes.** Recorded as `auto_executed`, then invoked immediately. Use for anything safe to run without a human — lookups, reads, computations. |
-| `action` | **Requires approval (HITL).** Recorded as `pending_approval`; the run pauses until a human approves or rejects it. Use for anything that mutates state or has side effects. See [Streaming & HTTP](/docs/agent/streaming-and-http#human-in-the-loop). |
+| `action` | **Requires approval (HITL).** Recorded as `pending_approval`; the run pauses until a human approves or rejects it — or, with [`actionApprovalMode: 'independent'`](/docs/agent/independent-approvals), becomes a proposal executed later. Use for anything that mutates state or has side effects. See [Streaming & HTTP](/docs/agent/streaming-and-http#human-in-the-loop). |
 
 <Callout type="info" title="The agent kind is synthesized, never authored">
 Core also has an `agent` kind for delegation, but you never write it. It's synthesized from an agent's `delegatesTo` edges as `ask_<target>` tools. See [Personas & agents](/docs/agent/authoring/personas-and-agents).
@@ -224,7 +238,7 @@ The same field works on `@AiTool({ … })` and `static tool = { … }`. `GET /ag
 Two optional governance fields on every tool:
 
 - **`roles: string[]`** — the roles allowed to invoke it. Omit it and the tool inherits the config's `defaultRoles` (`[]` — no restriction — unless you change it). Authorization is a plain set intersection of the actor's roles against the tool's. A tool the actor can't reach is never even offered to the model.
-- **`ability: string`** — an authorization ability name (e.g. `'cache.purge'`) consumed by an *ability-aware* `RolesPolicy` such as a future [`@adonis-agora/authz`](/docs/authz) Bouncer adapter. The default role-based policy ignores it. Both live on the same seam, so neither is required.
+- **`ability: string`** — an authorization ability name (e.g. `'cache.purge'`) consumed by an *ability-aware* `RolesPolicy` such as the [Bouncer adapter](/docs/agent/governance/authz-bouncer) in `@adonis-agora/agent/authz`. The default role-based policy ignores it. Both live on the same seam, so neither is required.
 
 See [Authorization](/docs/agent/governance/authorization) for the full governance model.
 
@@ -265,11 +279,19 @@ interface AiToolCtx {
   threadId: string
   runId: string
   requestId: string
+  toolCallId?: string // absent outside a turn (MCP, a direct registry.invoke)
+  idempotencyKey?: string // `<runId>:<toolCallId>`, stable across replays and retries
   agentName?: string
   persona?: Persona
-  pageContext?: PageContext
+  pageContext?: PageContext // free-form, from the send (`{ kind?, …anything }`)
+  uiCapabilities?: UiCapabilities // what the client can draw — see Generative UI
   host?: unknown // optional host handle (e.g. an ORM manager)
-  emitUi(component: string, props: Record<string, unknown>, options?: { id?: string; version?: number }): Promise<{ id: string }>
+  onPresentationError?(error: unknown, details: { toolName: string }): void | Promise<void>
+  emitUi(
+    component: string,
+    props: Record<string, unknown>,
+    options?: { id?: string; version?: number; fallbackText?: string },
+  ): Promise<{ id: string }>
   emitComponent?(name: string, data: unknown): void | Promise<void> // the older push
 }
 ```
@@ -278,7 +300,16 @@ A test that calls a handler directly builds the ctx itself — pass `emitUi: cre
 
 Identity is single-sourced on `ctx.actor` — read `ctx.actor.id` / `ctx.actor.tenantRef` and scope every query to it. Never trust an id the model passes in its arguments.
 
-`ctx.emitUi(component, props)` pushes a typed **UI component** into the conversation instead of (or alongside) text — streamed live, persisted on the message, rendered by the frontend's own component. See [Generative UI](/docs/agent/generative-ui).
+`ctx.emitUi(component, props)` pushes a typed **UI component** into the conversation instead of (or alongside) text — streamed live, persisted on the message, rendered by the frontend's own component, and sent as text to a client that cannot draw it. See [Generative UI](/docs/agent/generative-ui) and [One output, many surfaces](/docs/agent/surfaces).
+
+## More per-tool options
+
+| Option | On | Meaning |
+| --- | --- | --- |
+| `present(output, ctx)` | handler (class method, `defineTool` handler/object) | Turns a successful result into component presentations, pushed through `ctx.emitUi`. A presentation failure never fails the call. See [Component registries](/docs/agent/authoring/component-rendering). |
+| `terminal: true` | `@AiTool`, `static tool`, `defineTool` | A successful call ends the turn: no model call narrates what it showed. |
+| `replacementKey` | `defineTool` | Groups [independent proposals](/docs/agent/independent-approvals#expiry-and-replacement) that supersede each other. |
+| `describe(scope)` | handler | Varies the description and input schema the model sees per actor, thread, agent or UI capabilities; `{ available: false }` hides the tool for that turn. |
 
 ## Constructor DI (`@inject`)
 

@@ -1,13 +1,13 @@
 ---
 title: Generative UI
-description: "Let a tool stream a typed UI component — a chart, a card, a form — into the reply instead of (or alongside) plain text, via ctx.emitComponent, the text|component stream frame, and the component SSE frame."
+description: "Let a tool stream a typed UI component — a chart, a card, a form — into the reply instead of (or alongside) plain text: ctx.emitUi, the component catalog and its genui tools, the ui stream event, and rendering in React or any other client."
 icon: Blocks
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 import { Steps, Step } from 'fumadocs-ui/components/steps';
 
-A tool does not have to answer only in prose. It can push a **typed UI component frame** into the run's live stream — a weather card, a chart, a confirmation form — and the frontend renders your real React component in the transcript, right where the text would have gone. Text-only clients are untouched: the wire stays byte-for-byte backward compatible.
+A tool does not have to answer only in prose. It can push a **typed UI component frame** into the run's live stream — a weather card, a chart, a confirmation form — and the frontend renders your real React component in the transcript, right where the text would have gone. A client that cannot draw it declares so, and receives the component's text instead — see [One output, many surfaces](/docs/agent/surfaces).
 
 For result-driven UI, use the tool’s optional `present` hook. See [Component registries and server rendering](/docs/agent/authoring/component-rendering) for functional/class tools, custom components, shared React renderers, and WhatsApp image/PDF delivery.
 
@@ -17,13 +17,13 @@ The model streams text. Sometimes text is the wrong medium: "your glucose is tre
 
 The split is deliberate:
 
-- **The server decides *what* to show and *with what data*** — the tool computes the payload and emits `('weather_card', { city, tempC, condition })`. It never ships markup, HTML, or JSX over the wire.
-- **The client decides *how* to render it** — it owns the `weather_card` React component and the styling. The server's `name` is just a key into that registry.
+- **The server decides *what* to show and *with what data*** — the tool computes the payload and emits `('WeatherCard', { city, tempC, condition })`. It never ships markup, HTML, or JSX over the wire.
+- **The client decides *how* to render it** — it owns the `WeatherCard` React component and the styling. The server's `name` is just a key into that registry.
 
 That keeps the trust boundary clean (no server-authored HTML executing in the browser) and lets the same run drive a rich web UI, a terminal renderer, or a mobile app from one stream.
 
 <Callout type="info" title="Emit alongside text, not only instead of it">
-`emitComponent` doesn't replace the tool's return value or the model's prose. A tool can emit a component **and** return a text result to the model (so the model can keep reasoning about it) **and** the model can keep streaming text after. Component and text frames interleave in emission order — see [Interleaving](#interleaving-with-text).
+A push doesn't replace the tool's return value or the model's prose. A tool can emit a component **and** return a text result to the model (so the model can keep reasoning about it) **and** the model can keep streaming text after. Component and text frames interleave in emission order — see [Interleaving](#interleaving-with-text).
 </Callout>
 
 Use it when the answer is inherently visual or interactive: metrics/charts, maps, media galleries, structured records (an order, an invoice), or a small inline form. Reach for plain text (or a plain [tool](/docs/agent/authoring/tools) return) when the answer is prose or a value the model needs to reason over.
@@ -34,19 +34,19 @@ Use it when the answer is inherently visual or interactive: metrics/charts, maps
 
 <Step>
 
-**A tool calls `ctx.emitComponent(name, data)`** during `execute`. This writes a `{ t: 'component', name, data }` frame to the run's token stream at the current position.
+**A tool pushes a component** — `ctx.emitUi(component, props)` during `execute`, its `present` hook after it, or a `ui__show_*` tool the catalog registered. With a [catalog](#a-component-catalog--adonis-agoraagentgenui) configured the push is validated and negotiated against the client's [UI capabilities](/docs/agent/surfaces#ui-capabilities) first; a drawable one is written as a `{ t: 'component', name, data, id, toolCallId, … }` frame to the run's token stream at the current position.
 
 </Step>
 
 <Step>
 
-**The sink carries the typed frame.** The token stream is a union of `{ t: 'text' }` and `{ t: 'component' }` frames — the in-process sink buffers them for reconnect, the Redis sink shares them across replicas. Frame-for-frame identical either way.
+**The sink carries the typed frame.** Text and component frames travel in the same token stream — the in-process sink buffers them for reconnect, the Redis and Lucid sinks share them across replicas. Frame-for-frame identical either way.
 
 </Step>
 
 <Step>
 
-**The provider serializes each frame to SSE** in the agent stream protocol: a text frame becomes `{"kind":"text","text":...}`; a component frame becomes a `ui` event carrying `{ id, component, props }`.
+**The provider serializes each frame to SSE** in the agent stream protocol: a text frame becomes `{"kind":"text","text":...}`; a component frame becomes a `ui` event carrying `{ id, component, props, version?, fallbackText?, toolCallId? }`. Over [AG-UI](/docs/agent/ag-ui) it is the `agora.ui` custom event.
 
 </Step>
 
@@ -68,16 +68,19 @@ The push to reach for. Every tool's context carries it — always present, a no-
 defineTool(
   { name: 'orders', kind: 'read', description: 'List recent orders', input: z.object({}) },
   async (_input, ctx) => {
-    const rows = await Order.query().limit(20)
-    const { id } = await ctx.emitUi('DataTable', { rows: [] }, { version: 2 }) // a placeholder
-    await ctx.emitUi('DataTable', { rows }, { id, version: 2 }) // same id → replaced in place
+    const columns = [{ key: 'id', label: 'Order' }, { key: 'status', label: 'Status' }]
+    const { id } = await ctx.emitUi('DataTable', { columns, rows: [] }) // a placeholder
+    const orders = await Order.query().select('id', 'status').limit(20)
+    const rows = orders.map((order) => ({ id: order.id, status: order.status }))
+    await ctx.emitUi('DataTable', { columns, rows }, { id }) // same id → replaced in place
     return { count: rows.length } // what the model reads
   },
 )
 ```
 
-- It streams at once as a `ui` event (`{ kind: 'ui', id, component, props, version?, toolCallId }`).
-- `id` defaults to `<toolCallId>:ui:<n>`; pushing an `id` again replaces that component rather than adding one. `props` must be a JSON object (it is snapshotted at the push). `version` names the props' schema version, so a client can keep rendering components an older server persisted.
+- It streams at once as a `ui` event (`{ kind: 'ui', id, component, props, version?, fallbackText?, toolCallId }`).
+- `id` defaults to `<toolCallId>:ui:<n>`; pushing an `id` again replaces that component rather than adding one. `props` must be a JSON object (it is snapshotted at the push). `version` names the props' schema version, so a client can keep rendering components an older server persisted. `fallbackText` is the text a client shows when it cannot draw the component.
+- With `genui` configured, the push is checked against the catalog resolved for the request: the component must be defined there, a given `version` must be the definition's, and the props must pass its schema — otherwise `emitUi` throws. The server then stamps the definition's `version` and generates `fallbackText` from it (any `fallbackText` option is replaced). A component the client did not declare in its [UI capabilities](/docs/agent/surfaces#ui-capabilities) is streamed and persisted as text instead, and `emitUi` still resolves with its `id`.
 - Once the step's tools have settled, every component they pushed is **persisted on the assistant message** (`StoredMessage.ui`, after what the model turn itself streamed), so `GET /agent/threads/:id` returns what the live stream showed. The pushes ride the tool step's journaled result, so a durable replay neither re-streams nor re-persists them. A custom `AgentStore` opts in with `setMessageUi` (optional).
 
 ### A component catalog — `@adonis-agora/agent/genui`
@@ -110,7 +113,20 @@ export default defineConfig({
 })
 ```
 
-That registers a `ui__show_<component>` tool per model-facing component; each call validates its input against the catalog (a refused call reaches the model as a tool error it can fix) and pushes through `ctx.emitUi`. Options, all optional: `mode: 'tree'` (one `ui__render` tool taking a nested `{ type, props, children }` tree, pushed as one `genui:tree` component), `showTool: true` (a generic `ui__show` taking `{ component, props }`), `terminal: true` (a successful push ends the turn), `roles`, `presentation`, `namePrefix`. The catalog is bound in the container — `@inject() constructor(private genui: AgentGenui)` → `this.genui.catalog`.
+That registers a `ui__show_<snake_case name>` tool per model-facing component (`OrderCard` → `ui__show_order_card`); each call validates its input against the catalog (a refused call reaches the model as a tool error it can fix) and pushes through `ctx.emitUi`. Component names are letters and digits starting with a letter (`/^[A-Za-z][A-Za-z0-9]{0,63}$/`); a definition marked `internal: true` is never offered to the model. Options, all optional:
+
+| Option | Meaning |
+| --- | --- |
+| `mode` | `'per-component'` (default) or `'tree'` — one `ui__render` tool taking a nested `{ type, props, children }` tree, pushed as one `genui:tree` component. |
+| `showTool` | `true` (or a tool name) adds a generic `ui__show` taking `{ component, props }` — how a model reaches components that exist only in a per-request catalog. |
+| `terminal` | A successful push ends the turn. |
+| `roles` | Roles allowed to call the tools; omitted → `defaultRoles`. |
+| `presentation` | `(component) => ToolPresentation \| undefined`, overriding the generated chat copy per tool. |
+| `namePrefix` | Prefix of the per-component tools. Default `ui__show_`. |
+| `treeToolName`, `treeInstructions`, `treeLimits` | The tree tool's name (default `ui__render`), extra description, and size limits. |
+| `showInstructions` | Extra description for the show tool. |
+
+When a turn carries [UI capabilities](/docs/agent/surfaces#ui-capabilities), each tool describes only what the client can draw, and a component's tool is hidden from the model when it cannot. The catalog is bound in the container — `@inject() constructor(private genui: AgentGenui)` → `this.genui.catalog`.
 
 **Per request.** A tenant with its own components, or its own version of one, is a resolver:
 
@@ -139,37 +155,23 @@ defineTool({ name: 'showChart', kind: 'read', description: '…', input, termina
 )
 ```
 
-`ctx.emitComponent(name, data)` below is the older form. It still works — and now goes through the same path, so its components are persisted too.
+`ctx.emitComponent(name, data)` below is the older form. It still works — and now goes through the same path, so its components are validated, negotiated and persisted too.
 
 ### `ctx.emitComponent(name, data)`
 
-Every tool handler's second argument is an [`AiToolCtx`](/docs/agent/authoring/tools#the-tool-context). Under the agent loop it carries an `emitComponent` method:
+Every tool handler's second argument is an [`AiToolCtx`](/docs/agent/authoring/tools#the-tool-context). Under the agent loop it also carries the older push:
 
 ```ts
-interface AiToolCtx {
-  actor: Actor
-  threadId: string
-  runId: string
-  requestId: string
-  persona?: Persona
-  pageContext?: PageContext
-  host?: unknown
-  /**
-   * Push a UI component onto the run's stream at the current position (between the
-   * text tokens already emitted and the ones that follow). Optional: only the
-   * agent-loop assembly provides it — other ctx constructors may omit it.
-   */
-  emitComponent?(name: string, data: unknown): void | Promise<void>
-}
+emitComponent?(name: string, data: unknown): void | Promise<void>
 ```
 
-The signature is exactly `emitComponent?(name: string, data: unknown): void | Promise<void>`:
+- **`name`** — the component name, a key the client resolves to a component. With a catalog configured it must be a catalog component, so use the same identifier rules (`'WeatherCard'`, `'TrendChart'`).
+- **`data`** — the props. A JSON object is pushed as is; any other value is wrapped as `{ value: data }`. Keep it serializable: no class instances, no functions, no circular references.
 
-- **`name`** — a string key the client resolves to a component. Choose stable names your frontend registry knows (`'weather_card'`, `'trend_chart'`). It has no server-side meaning beyond being echoed on the wire.
-- **`data`** — an arbitrary payload, sent as JSON. Keep it serializable: no class instances, no functions, no circular references.
+It is `ctx.emitUi(name, data)` without options and without the returned id.
 
 <Callout type="warn" title="Call it through the optional chain">
-`emitComponent` is **optional** on `AiToolCtx` — the agent loop wires it, but some ctx constructors (tests, the container-less registration path) omit it. Always call it as `ctx.emitComponent?.(...)` so a tool stays runnable in a context that doesn't provide a stream. A tool that hard-requires generative UI should still degrade to its text return when the method is absent.
+`emitComponent` is **optional** on `AiToolCtx` — the agent loop wires it, but other contexts (an [MCP](/docs/agent/mcp) call, a test, a direct `registry.invoke`) omit it. Call it as `ctx.emitComponent?.(...)`, or use `ctx.emitUi`, which is always present and does nothing where there is no conversation.
 </Callout>
 
 Here is a `ReadTool` that emits a weather card and *also* returns a text summary to the model — so the model can narrate around the card:
@@ -213,7 +215,7 @@ export default class GetWeather extends ReadTool<Input, { tempC: number }> {
       condition: w.condition,
       humidity: w.humidity,
     }
-    await ctx.emitComponent?.('weather_card', card)
+    await ctx.emitComponent?.('WeatherCard', card)
 
     // 2) Still return a text result so the model can reason about / narrate it.
     return { tempC: w.tempC }
@@ -222,7 +224,7 @@ export default class GetWeather extends ReadTool<Input, { tempC: number }> {
 ```
 
 <Callout type="info" title="Works from any tool shape">
-`emitComponent` lives on the ctx, not on a base class — so it works identically from a [`@AiTool` class, a `BaseTool`/`ReadTool`/`ActionTool` subclass, or a `defineTool` function](/docs/agent/authoring/tools). An `action` tool can emit a component *before* its side effect (e.g. render a confirmation card, then wait for HITL approval).
+`emitUi` and `emitComponent` live on the ctx, not on a base class — so they work identically from a [`@AiTool` class, a `BaseTool`/`ReadTool`/`ActionTool` subclass, or a `defineTool` function](/docs/agent/authoring/tools). An `action` tool's `execute` runs only after approval, so what it pushes arrives with the result; the approval card itself is worded by `presentation.confirm` or a preflight `confirmation` ([Action preflight](/docs/agent/authoring/tools#action-preflight)).
 </Callout>
 
 ### The typed stream frame
@@ -230,17 +232,27 @@ export default class GetWeather extends ReadTool<Input, { tempC: number }> {
 The transport is a discriminated union — the "data plane" that carries live output decoupled from the durable control plane:
 
 ```ts
-// from @adonis-agora/agent
+// from @adonis-agora/agent — the two arms generative UI uses
 export type StreamFrame =
   | { t: 'text'; v: string }
-  | { t: 'component'; name: string; data: unknown }
+  | {
+      t: 'component'
+      name: string
+      data: unknown
+      id?: string // `<toolCallId>:ui:<n>` unless the push named one
+      toolCallId?: string
+      version?: number
+      fallbackText?: string
+      componentVersions?: Record<string, number> // per node type, on a `genui:tree` push
+    }
+  | { t: 'event'; event: AgentStreamEvent } // …and the error, elicitation and approval frames
 ```
 
-`ctx.emitComponent('weather_card', card)` is sugar for writing `{ t: 'component', name: 'weather_card', data: card }` to the run's `SinkWriter`. Text tokens from the model are the `{ t: 'text'; v }` arm. Both flow through the same [`TokenStreamSink`](/docs/agent/streaming-and-http#re-attaching-to-a-run) — so component frames get the same buffering/replay guarantees as text: a late subscriber that re-attaches replays every component frame emitted so far, in order, before following live.
+A push is written as `{ t: 'component', name: 'WeatherCard', data: card, id, toolCallId, … }` to the run's `SinkWriter`. Text tokens from the model — and the text of a component the client could not draw — are the `{ t: 'text'; v }` arm. Both flow through the same [`TokenStreamSink`](/docs/agent/streaming-and-http#re-attaching-to-a-run) — so component frames get the same buffering/replay guarantees as text: a late subscriber that re-attaches replays every component frame emitted so far, in order, before following live.
 
 ### The `ui` stream event
 
-`AgentSseEncoder` (exported) writes each frame as the `AgentStreamEvent`s it stands for. A component frame becomes a `ui` event; one that carries no data object is wrapped as `{ value: data }`, and one buffered without an id is numbered by its position (`ui:<n>`) so a replay replaces rather than duplicates it.
+`AgentSseEncoder` (exported) writes each frame as the `AgentStreamEvent`s it stands for. A component frame becomes a `ui` event carrying its `version`, `fallbackText`, `componentVersions` and `toolCallId` when set; one that carries no data object is wrapped as `{ value: data }`, and one buffered without an id is numbered by its position (`ui:<n>`) so a replay replaces rather than duplicates it.
 
 So a run that emits a weather card mid-sentence produces this on the wire (`POST /agent/chat` or `GET /agent/chat/:runId/stream`):
 
@@ -255,7 +267,7 @@ id: 2
 data: {"kind":"text","text":"Lisbon:"}
 
 id: 3
-data: {"kind":"ui","id":"c1:ui:0","component":"weather_card","props":{"city":"Lisbon","tempC":21,"condition":"sunny","humidity":48},"toolCallId":"c1"}
+data: {"kind":"ui","id":"c1:ui:0","component":"WeatherCard","props":{"city":"Lisbon","tempC":21,"condition":"sunny","humidity":48},"version":1,"fallbackText":"*Lisbon* 21°C, sunny","toolCallId":"c1"}
 
 id: 4
 data: {"kind":"text","text":" Looks like a nice day."}
@@ -267,7 +279,7 @@ data: {}
 The key facts a client relies on:
 
 - **Every frame is an `AgentStreamEvent`** dispatched on `kind` — `text`, `ui`, and the rest of the shared vocabulary. A reader skips kinds it does not know.
-- **A `ui` event carries `{ id, component, props }`**; a second `ui` with the same `id` replaces the first in place.
+- **A `ui` event carries `{ id, component, props }`**, plus `version` and `fallbackText` when a catalog is configured; a second `ui` with the same `id` replaces the first in place.
 - **Order is preserved** — the event lands exactly where `emitUi`/`emitComponent` was called relative to the surrounding text.
 
 ## Client side
@@ -285,7 +297,7 @@ import { WeatherCard } from '~/components/weather_card'
 import { TrendChart } from '~/components/trend_chart'
 import { catalog } from '#genui/catalog' // optional: the file the server uses — props are validated before drawing
 
-const registry: GenuiRegistry = { weather_card: WeatherCard, trend_chart: TrendChart }
+const registry: GenuiRegistry = { WeatherCard, TrendChart }
 
 export default function ChatPage() {
   return (
@@ -309,7 +321,7 @@ function Chat() {
 }
 ```
 
-A component the registry does not know renders nothing (or your `fallback`) — a name is a lookup, never something to evaluate. A repeated `id` replaces the component in place, and a reloaded thread draws the same components from the message's persisted `ui` list. See [React](/docs/agent/react) for the rest of the hook.
+A component the registry does not know, props the catalog refuses, or a renderer that throws renders your `fallback` — or, without one, the item's `fallbackText` (nothing when it has none). A name is a lookup, never something to evaluate. A repeated `id` replaces the component in place, and a reloaded thread draws the same components from the message's persisted `ui` list. To tell the server what this registry can draw, pass `uiCapabilities` to `<AgentProvider>` — see [One output, many surfaces](/docs/agent/surfaces#web--react-over-the-native-stream). See [React](/docs/agent/react) for the rest of the hook.
 
 ### Without React
 
@@ -329,7 +341,7 @@ await client.send({
 function paint(parts: ChatPart[]) {
   for (const part of parts) {
     if (part.type === 'text') appendText(part.text)
-    else mountComponent(part.name, part.data)
+    else mountComponent(part.name, part.data, part.fallbackText)
   }
 }
 ```
@@ -343,7 +355,7 @@ Component and text frames land in **emission order**. A tool that emits a card b
 ```ts
 // inside a tool's execute:
 // (the model has already streamed "olha ")
-await ctx.emitComponent?.('trend_chart', { series, unit: 'mg/dL' })
+await ctx.emitUi('TrendChart', { series, unit: 'mg/dL' })
 // (the model then streams "tá subindo")
 ```
 
@@ -351,7 +363,7 @@ yields, frame for frame:
 
 ```text
 data: {"kind":"text","text":"olha "}
-data: {"kind":"ui","id":"ui:1","component":"trend_chart","props":{"series":[...],"unit":"mg/dL"}}
+data: {"kind":"ui","id":"c1:ui:0","component":"TrendChart","props":{"series":[...],"unit":"mg/dL"},"toolCallId":"c1"}
 data: {"kind":"text","text":"tá subindo"}
 ```
 
@@ -359,7 +371,7 @@ The client appends `"olha "`, drops the chart component into the transcript, the
 
 ## A second example — a chart
 
-Server: a tool that computes a series and emits a `trend_chart` component (payload only — the client owns the SVG/canvas).
+Server: a tool that computes a series and emits a `TrendChart` component (payload only — the client owns the SVG/canvas).
 
 ```ts title="app/agent_tools/glucose_trend.ts"
 import { ReadTool } from '@adonis-agora/agent'
@@ -379,7 +391,7 @@ export default class GlucoseTrend extends ReadTool<Input, { points: number }> {
   async execute({ metric, days }: Input, ctx: AiToolCtx) {
     const series = await readSeries(ctx.actor.id, metric, days) // [{ t, v }, …]
 
-    await ctx.emitComponent?.('trend_chart', {
+    await ctx.emitUi('TrendChart', {
       series,
       unit: metric === 'glucose' ? 'mg/dL' : 'kg',
       label: metric,
@@ -392,23 +404,23 @@ export default class GlucoseTrend extends ReadTool<Input, { points: number }> {
 }
 ```
 
-Client: the `trend_chart` entry in the registry renders your real chart component with the emitted `series`/`unit` — nothing about the chart's implementation crosses the wire, only its data.
+Client: the `TrendChart` entry in the registry renders your real chart component with the emitted `series`/`unit` — nothing about the chart's implementation crosses the wire, only its data.
 
 ## Testing it
 
-`emitComponent` writes to the same sink you already assert against in [tool/loop tests](/docs/agent/testing). Emit from a fake tool and drain the sink — component frames come out typed and in order:
+A push writes to the same sink you already assert against in [tool/loop tests](/docs/agent/testing). Emit from a fake tool and drain the sink — component frames come out typed and in order:
 
 ```ts
 const sink = new InProcessTokenStreamSink()
 const w = await sink.open('r1')
 await w.write({ t: 'text', v: 'olha ' })
-await w.write({ t: 'component', name: 'trend_chart', data: { unit: 'mg/dL' } })
+await w.write({ t: 'component', name: 'TrendChart', data: { unit: 'mg/dL' } })
 await w.write({ t: 'text', v: 'tá subindo' })
 await w.end()
 
 const frames = []
 for await (const f of sink.subscribe('r1')) frames.push(f)
-// → [ {t:'text',v:'olha '}, {t:'component',name:'trend_chart',data:{unit:'mg/dL'}}, {t:'text',v:'tá subindo'} ]
+// → [ {t:'text',v:'olha '}, {t:'component',name:'TrendChart',data:{unit:'mg/dL'}}, {t:'text',v:'tá subindo'} ]
 ```
 
 And at the wire level, `frameToEvents(frame, position)` is a pure function — assert the exact events without booting HTTP:
@@ -422,6 +434,8 @@ frameToEvents({ t: 'component', name: 'card', data: { a: 1 } }, 0)
 
 - [React](/docs/agent/react) — the provider and `useAgentChat`, whose transcript carries these components as `ui` blocks.
 - [Browser client](/docs/agent/browser-client) — the framework-free SSE client that decodes the same frames.
-- [Tools](/docs/agent/authoring/tools) — how to author the tool that calls `emitComponent`, and the full `AiToolCtx`.
+- [Tools](/docs/agent/authoring/tools) — how to author the tool that calls `emitUi`, and the full `AiToolCtx`.
+- [One output, many surfaces](/docs/agent/surfaces) — UI capabilities, text fallbacks, and what AG-UI, text channels and MCP receive.
+- [Component registries and server rendering](/docs/agent/authoring/component-rendering) — `present`, custom components, and image/PDF export.
 - [Streaming & HTTP](/docs/agent/streaming-and-http) — the SSE envelope, the routes that carry component frames, and re-attaching to a live run.
 - [Redis streaming](/docs/agent/redis-streaming) — the multi-replica sink that replays component frames across pods.
