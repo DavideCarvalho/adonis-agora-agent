@@ -1,4 +1,5 @@
-const COMPONENT_NAME = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
+import { COMPONENT_NAME } from './genui/catalog.js';
+
 /** Renderer support only. Component definitions and authorization remain server-owned. */
 export interface UiCapabilities {
   components: Array<{ name: string; version: number }>;
