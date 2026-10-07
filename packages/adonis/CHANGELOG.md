@@ -1,5 +1,67 @@
 # @adonis-agora/agent
 
+## 0.62.0
+
+### Minor Changes
+
+- [#303](https://github.com/DavideCarvalho/adonis-agora-agent/pull/303) [`ee0a5c6`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/ee0a5c66f424f22deb4e1d904c64cb5e6701ae07) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Expose registered agents to personal agents (ChatGPT, Meta AI, a user's own assistant) over A2A 1.0 HTTP+JSON, following PACT (https://openpactprotocol.org). Register `@adonis-agora/agent/a2a_provider` and add `config/a2a.ts` (`defineA2aConfig`, from `@adonis-agora/agent/a2a`).
+  
+  - Per agent: an Agent Card, a synchronous `message:send`, and the task routes as PACT fixes them. Served as server middleware ahead of the router, so authentication happens before the body is read.
+  - `authKitPersonalAgents()` authenticates with `@adonis-agora/authkit-server` 0.76+ personal agents: the agent's signed JWT and, when the user delegated, the delegation token. A delegated turn runs as the user's account, with each delegated scope as a `scope:<id>` role.
+  - Conversations: `contextId` is bound to one agent and one (personal agent, user), and to the account once a delegated turn ran in it. A repeated `messageId` returns the stored reply. Conversation state lives in two tables created on first use (`store: 'lucid'`), or in memory.
+  - `action` calls that park for approval are approved when the delegation grants one of the tool's roles, and rejected otherwise (`actions: 'reject'` rejects all of them). Independent proposals (`actionApprovalMode: 'independent'`) are decided the same way once the run ends, and the turn waits for an approved one to execute before answering; the reply carries what it did as a data part (`{ action: { tool, status, summary, result } }`). Question sets are skipped.
+  - Step-up: a personal agent is offered the tools behind scopes it was not delegated but cannot run them. Calling one, or `request_permission`, makes the reply a `TASK_STATE_AUTH_REQUIRED` step-up with a consent link. `RolesPolicy` gains an optional `canOffer` (what the model is offered), separate from `can` (what runs).
+  - Replies under delegation carry a signed receipt listing the tools that ran under a delegated scope.
+  - `actor` maps the caller to the app's own actor (e.g. a profile instead of the account); turns carry `pageContext.channel = 'a2a'`.
+  - `service` plugs in an app's own runtime (an `A2aTurnService` adapter) instead of the agent provider's `AgentService`.
+  
+  **Security:** the agent provider now wraps the configured authorizer with `personalAgentGate`. An actor with the `personal_agent` role reaches only tools that declare one of its roles; tools with no `roles` are out of its reach. Its memory and skill scopes resolve to none, so it never reads or writes what the assistant remembers about the user. Nothing changes for any other actor.
+  - A `config/a2a.ts` that exports `undefined` (the surface flagged off) mounts nothing and logs nothing.
+
+- [#306](https://github.com/DavideCarvalho/adonis-agora-agent/pull/306) [`2796edd`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/2796edd4b9f998b84cbc12cea779c21cfbe22c77) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Proposal and presentation hooks, and AG-UI fidelity:
+  
+  - **Text decisions are English by default** (`yes`, `confirm`, `approve`, `ok`, `no`, `cancel`, `reject`, `deny`, `always in this conversation`), and so are the replies. **Behavior change:** Portuguese commands (`sim`, `confirmar`, `cancelar`, …) and replies were the default; pass `actionProposalText: ptBrActionProposalText` to keep them. The new `actionProposalText: { vocabulary, replies }` config replaces the word lists and the reply texts for any other language. A command naming an `#ID` that is not a proposal of the thread (`sim #abc`) is now an ordinary message for the model instead of a `404`.
+  - **`actionProposalWorker.onSettled(proposal)`**: called when a proposal's execution settles, so another channel (a WhatsApp bridge) gets the outcome pushed instead of polling. A throwing listener is logged and does not fail the worker.
+  - **`onPresentationError(error, { toolName, toolCallId?, runId?, threadId? })`**: now wired for turns and proposal executions. Default: a warning on the app logger (was `console.warn`).
+  - **No genui catalog + `uiCapabilities`**: `ctx.emitUi` no longer throws. A component the client declares is drawn; any other one degrades to its `fallbackText` (or is left out when it has none).
+  - **AG-UI**: `agora.ui` carries `fallbackText` and `componentVersions`; `agora.approval-requested` carries the proposal `target` (and `confirmation`); a proposal's interrupt has `metadata['agora.target']` and resuming it decides the proposal through the proposal service (it used to hit the parked-call approve and fail with `400`).
+  - **AG-UI event rename**: the proposal-decision custom event is now `agora.action-proposal-decision`, like every other `agora.*` event. The old `aviary.action-proposal-decision` is no longer sent — move listeners to the new name.
+  - `AgentService.chat` lost an unreachable proposal-decision branch (`chat` never decides by text; `send` does).
+
+- [#300](https://github.com/DavideCarvalho/adonis-agora-agent/pull/300) [`6db8d70`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/6db8d70189bb36ba6c4e4f77b585050da8f712d2) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Support result presentation on functional tools and `@AiTool` classes through the existing journaled UI stream. Add the inferred object form of `defineTool`, preserve raw domain results, and report presentation failures separately so successful actions are not retried because rendering failed. Export Agora-owned optional React static HTML, paginated PNG and PDF renderers and Playwright capture adapter.
+  
+  Remove cross-ecosystem peers: Agora owns its GenUI contracts, React adapters, AG-UI codec, and resumable upload client. All entries build and publish independently of Aviary; compatible wire protocols remain supported.
+
+- [#307](https://github.com/DavideCarvalho/adonis-agora-agent/pull/307) [`f3b8aa4`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/f3b8aa496d0b84f52811defd38b1f42ebcd5bf86) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Requires `@adonis-agora/durable` 0.43.3 or later (peer `>=0.43.3 <1.0.0`). Earlier versions could run one durable run twice at once in a process — a resume landing while the run was still executing — so a tool step could run twice after a very fast approval. 0.43.3 serializes a run's executions per process; the OpenCode durable engine relies on it instead of guarding its steps itself.
+
+- [#304](https://github.com/DavideCarvalho/adonis-agora-agent/pull/304) [`5d263b0`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/5d263b0742d8f726c9a40561d2559d2032d16092) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - MCP server and OAuth, with `@adonis-agora/authkit-server`'s `mcp: true`:
+  
+  - The MCP server registers its URL with AuthKit at boot, so `claude mcp add <url>` logs users in with no URL in AuthKit's config.
+  - `authKitAuth()` only accepts a token issued **for this server** (its RFC 8707 audience must be the endpoint's URL), as the MCP authorization spec requires. A token for another resource, or with no audience, is refused with `401`. **Behavior change:** clients that do not send `resource` need `authKitAuth({ audience: 'any' })`.
+  - `McpAuth.verify(token, context?)` gets `{ resource }`; `anyOf()` passes it on.
+  - Tool calls over MCP carry a `toolCallId` and an `idempotencyKey` per `tools/call` (tools that need one to write, ran refused before) and `pageContext.channel = 'mcp'`.
+  - `middleware` in `config/mcp.ts`: route middleware for the MCP endpoint (a rate limiter, say); it runs before the bearer check.
+  - `stateless: true` in `config/mcp.ts`: every `POST` gets its own transport (no in-memory sessions), for more than one instance behind a load balancer; `GET`/`DELETE` answer `405`.
+  - `actions` in `config/mcp.ts` (`'refuse'` by default, or `'execute'`): the provider never passed it to the server, so action tools could not be exposed through `config/mcp.ts`.
+  - `instructions` in `config/mcp.ts`: sent to the client in the `initialize` result.
+  - `endpoints` in `config/mcp.ts`: more MCP servers in the same app, each a protected resource of its own (path, registry, auth, sessions, RFC 9728 metadata, OAuth registration), inheriting the top-level settings.
+  - `tools/list` carries MCP `annotations` (`readOnlyHint` from the tool's kind by default); `describeTool` sets the `title` and the annotations per tool.
+  - In stateless mode, `GET`/`DELETE` authenticate first (`401` with the login challenge), then answer `405`.
+  - The RFC 9728 metadata route is named (`mcp.oauth_protected_resource`; `metadataRouteName` per endpoint).
+  - Generative-UI tools (`ui__show_*`, `ui__render` — any tool whose result is shown elsewhere) are no longer exposed over MCP: there is no screen there, and the model got nothing back.
+
+- [#307](https://github.com/DavideCarvalho/adonis-agora-agent/pull/307) [`f3b8aa4`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/f3b8aa496d0b84f52811defd38b1f42ebcd5bf86) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Engines: `defineConfig({ engine })` runs turns on something other than the library's loop — the routes, stream protocol, store, approvals, questions and queue stay the library's. `model` is optional under an engine, and `durable: true` is refused at boot unless the engine is durable itself. `@adonis-agora/agent/opencode`'s `openCode({ host })` runs turns on OpenCode 2 sessions, and `@adonis-agora/agent/opencode/durable`'s `openCodeDurable({ host })` checkpoints each step as the `agora.agent.opencode.run` workflow (decisions are durable signals; a parked turn survives restarts and catches up on what OpenCode asked meanwhile). OpenCode's events become the native frames and store rows (steps with usage, text, reasoning, nested code-mode calls, permissions as approval cards, forms as elicitations, cancel as `session.interrupt`); the agent's prompt and persona, `approvalPolicy`, skills, memory and regenerate reach the session; the app's tools are served to it over an internal MCP endpoint (`POST <path>/opencode/mcp`: signed per-actor tokens, calls only from a session running a turn of that actor, actions only against an approval the turn granted, `remember` at the actor's scope, `ctx.emitUi` into the turn). `AgentRunInput.hostContext` (and `ChatParams.hostContext`) carries the host's own JSON about a send through the queue (new nullable `host_context` column, healed on boot; never on the wire view) and the durable journal to the engine's host hooks: `onAsk`, `onUi`, `beforeSettle` and `onSettled`. `AgentRunner.runIdFor` lets a runner name its runs; `ToolCallRequest.parentId` records a call made inside another.
+
+### Patch Changes
+
+- [#306](https://github.com/DavideCarvalho/adonis-agora-agent/pull/306) [`2796edd`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/2796edd4b9f998b84cbc12cea779c21cfbe22c77) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Fixes from a docs audit:
+  
+  - `@AiTool` / `static tool` classes keep their `replacementKey` (it only worked with `defineTool`).
+  - `POST <path>/chat` answers malformed `uiCapabilities` with `400 invalid_ui_capabilities` instead of a `500`.
+  - A refused proposal decision over AG-UI (text or resume) answers its status (`403`/`404`) instead of a `500`.
+  - `UiCapabilities` / `validateUiCapabilities` have one definition; both the root and `/genui` entries still export them.
+  - Corrected stale comments (`genui` needs no extra peer, the default authorizer and actor resolver are not fail-closed, the migrations `configure` publishes) and removed a committed `.orig` file.
+
 ## 0.61.0
 
 ### Minor Changes
