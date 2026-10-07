@@ -305,7 +305,13 @@ export function createA2aHandler(options: A2aHandlerOptions) {
       messageId: randomUUID(),
       contextId: turn.threadId,
       role: 'ROLE_AGENT',
-      parts: [{ text: turn.text }],
+      parts: [
+        ...(turn.text !== '' || turn.outcomes.length === 0 ? [{ text: turn.text }] : []),
+        ...turn.outcomes.map((outcome) => ({
+          data: { action: outcome },
+          mediaType: 'application/json',
+        })),
+      ],
       ...(Object.keys(receipt).length > 0 ? { metadata: receipt } : {}),
     };
 

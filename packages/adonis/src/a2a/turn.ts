@@ -37,6 +37,17 @@ export interface A2aTurnAction {
   scopes: string[];
 }
 
+/**
+ * An independent proposal that executed during the turn: the app's own summary of it (the
+ * confirmation it would have shown the person) and what the tool returned.
+ */
+export interface A2aTurnOutcome {
+  tool: string;
+  status: 'succeeded';
+  summary: { title: string; detail?: string };
+  result?: unknown;
+}
+
 export interface A2aTurnResult {
   threadId: string;
   text: string;
@@ -44,6 +55,8 @@ export interface A2aTurnResult {
   permission: string[] | null;
   /** Tools that RAN under a delegated scope (reads and approved actions) — what a receipt lists. */
   actions: A2aTurnAction[];
+  /** Approved proposals that executed — the reply carries each as a data part. */
+  outcomes: A2aTurnOutcome[];
   /** Why the run failed, when it did. */
   error: string | null;
 }
@@ -94,7 +107,14 @@ export async function runA2aTurn(
     ...(input.threadId !== undefined ? { threadId: input.threadId } : { transient: true }),
   });
 
-  const result: A2aTurnResult = { threadId, text: '', permission: null, actions: [], error: null };
+  const result: A2aTurnResult = {
+    threadId,
+    text: '',
+    permission: null,
+    actions: [],
+    outcomes: [],
+    error: null,
+  };
   const delegated = input.delegatedScopes ?? [];
   // The delegated scopes a tool's roles name (as `scope:<id>` roles).
   const scopesOf = (tool: string) => {
@@ -151,6 +171,19 @@ export async function runA2aTurn(
             tool: proposal.toolName,
             argsHash: argsHash(calls.get(proposal.toolCallId)?.input ?? current.input),
             scopes,
+          });
+          // The model never sees an independent proposal's result: the app's own summary and the
+          // tool's output go back as data, whatever the model wrote before calling it.
+          result.outcomes.push({
+            tool: proposal.toolName,
+            status: 'succeeded',
+            summary: {
+              title: current.confirmation.title,
+              ...(current.confirmation.detail ? { detail: current.confirmation.detail } : {}),
+            },
+            ...(current.execution?.result !== undefined
+              ? { result: current.execution.result }
+              : {}),
           });
           const said = current.outcome?.text?.trim();
           if (said) result.text = result.text ? `${result.text}\n\n${said}` : said;

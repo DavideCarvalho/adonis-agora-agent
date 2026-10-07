@@ -789,7 +789,7 @@ describe('bring your own runtime (A2aTurnService)', () => {
 });
 
 describe('independent proposals (actionApprovalMode: independent)', () => {
-  function proposalService(opts: { executes: boolean }) {
+  function proposalService(opts: { executes: boolean; outcomeText?: string }) {
     const decided: { id: string; decision: string; via: string }[] = [];
     let execution: { status: string; error?: string } | null = null;
     const service = {
@@ -834,7 +834,7 @@ describe('independent proposals (actionApprovalMode: independent)', () => {
         if (decision === 'approved' && opts.executes) {
           execution = { status: 'queued' };
           setTimeout(() => {
-            execution = { status: 'succeeded' };
+            execution = { status: 'succeeded', result: { cancelled: 'A-1' } };
           }, 300);
         }
         return { status: 'applied' };
@@ -843,10 +843,11 @@ describe('independent proposals (actionApprovalMode: independent)', () => {
         {
           id: 'p1',
           input: { id: 'A-1' },
+          confirmation: { title: 'Cancel order A-1?', verb: 'Cancel', detail: 'Order: A-1' },
           decision: decided.length ? decided[0]!.decision : 'pending',
           execution,
-          ...(execution?.status === 'succeeded'
-            ? { outcome: { text: 'Order A-1 cancelled.' } }
+          ...(execution?.status === 'succeeded' && opts.outcomeText
+            ? { outcome: { text: opts.outcomeText } }
             : {}),
         },
       ],
@@ -869,18 +870,45 @@ describe('independent proposals (actionApprovalMode: independent)', () => {
   }
 
   it('under a delegated scope: approves it, waits for it to execute, and reports it', async () => {
-    const { service, decided } = proposalService({ executes: true });
+    const { service, decided } = proposalService({
+      executes: true,
+      outcomeText: 'Order A-1 cancelled.',
+    });
     const res = await call(handlerWith(service), 'POST', '/a2a/support/message:send', {
       headers: { authorization: 'Bearer deleg|u1|acct-1|orders:cancel' },
       body: send('cancel A-1'),
     });
     expect(decided).toEqual([{ id: 'p1', decision: 'approved', via: 'a2a' }]);
     expect(res.json().message).toMatchObject({
-      parts: [{ text: 'Order A-1 cancelled.' }],
+      parts: [
+        { text: 'Order A-1 cancelled.' },
+        {
+          data: {
+            action: {
+              tool: 'cancel_order',
+              status: 'succeeded',
+              summary: { title: 'Cancel order A-1?', detail: 'Order: A-1' },
+              result: { cancelled: 'A-1' },
+            },
+          },
+          mediaType: 'application/json',
+        },
+      ],
       metadata: {
         'pact.receipt': { scopesUsed: ['orders:cancel'], actions: [{ tool: 'cancel_order' }] },
       },
     });
+  });
+
+  it('when the model wrote nothing, the executed action alone is the reply', async () => {
+    const { service } = proposalService({ executes: true });
+    const res = await call(handlerWith(service), 'POST', '/a2a/support/message:send', {
+      headers: { authorization: 'Bearer deleg|u1|acct-1|orders:cancel' },
+      body: send('cancel A-1'),
+    });
+    const parts = res.json().message.parts;
+    expect(parts).toHaveLength(1);
+    expect(parts[0].data.action).toMatchObject({ tool: 'cancel_order', status: 'succeeded' });
   });
 
   it('without the scope: rejects it, and nothing is reported as done', async () => {

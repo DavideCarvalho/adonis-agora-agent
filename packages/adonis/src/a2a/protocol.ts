@@ -13,12 +13,19 @@ export interface A2aTextPart {
   metadata?: Record<string, unknown>;
 }
 
+/** A structured part (A2A `DataPart`): what an action did, for the personal agent to relay. */
+export interface A2aDataPart {
+  data: unknown;
+  mediaType?: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface A2aMessage {
   messageId: string;
   contextId?: string;
   taskId?: string;
   role: A2aRole;
-  parts: A2aTextPart[];
+  parts: (A2aTextPart | A2aDataPart)[];
   metadata?: Record<string, unknown>;
 }
 
