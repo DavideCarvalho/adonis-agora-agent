@@ -61,7 +61,7 @@ it('finishes the origin, accepts a second turn and text decision, then delivers 
     { method: 'POST', headers, body: JSON.stringify({ input: null }) },
   );
   expect(forged.status).toBe(400);
-  const decision = await post('confirmar', threadId);
+  const decision = await post('confirm', threadId);
   expect(decision.headers.get('content-type')).toContain('application/json');
   expect(await decision.json()).toMatchObject({ proposalDecision: { status: 'applied' } });
   await (await app.app.container.make(ActionProposalWorker)).runOnce();
@@ -110,11 +110,11 @@ it('AgentService.chat runs a decision-shaped message as a turn; only send decide
   );
   const threadId = String(first.find((frame) => frame.event === 'meta')!.data.threadId);
   const service = await app.app.container.make(AgentService);
-  const started = await service.chat({ actor: { id: 'u1', roles: [] }, threadId, message: 'sim' });
+  const started = await service.chat({ actor: { id: 'u1', roles: [] }, threadId, message: 'yes' });
   expect(started).toMatchObject({ threadId, runId: expect.any(String) });
   for (let attempt = 0; attempt < 100 && seen.length < 2; attempt++)
     await new Promise((resolve) => setTimeout(resolve, 10));
-  expect(seen.at(-1)).toBe('sim');
+  expect(seen.at(-1)).toBe('yes');
   expect(
     (await store.listActionProposals({ actorRef: 'u1', tenantRef: null, threadId }))[0]?.decision,
   ).toBe('pending');

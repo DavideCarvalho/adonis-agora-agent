@@ -65,14 +65,14 @@ export interface TextActionProposalVocabulary {
   remember: readonly string[];
 }
 
-/** Portuguese and English, side by side. */
+/** English. Portuguese ships as {@link ptBrActionProposalText}; any other language via config. */
 export const DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY: TextActionProposalVocabulary = {
-  approve: ['sim', 'confirmo', 'confirmar', 'aprovar', 'aprovo', 'yes', 'confirm', 'approve'],
-  reject: ['cancelar', 'rejeitar', 'rejeito', 'não', 'nao', 'no', 'cancel', 'reject', 'deny'],
-  remember: ['sempre nesta conversa', 'always in this conversation'],
+  approve: ['yes', 'confirm', 'approve', 'approved', 'ok'],
+  reject: ['no', 'cancel', 'reject', 'deny'],
+  remember: ['always in this conversation'],
 };
 
-/** What the agent answers to a text decision. Every field has a Portuguese default. */
+/** What the agent answers to a text decision. Every field has an English default. */
 export interface TextActionProposalReplies {
   approved: string;
   rejected: string;
@@ -86,12 +86,12 @@ export interface TextActionProposalReplies {
 }
 
 export const DEFAULT_TEXT_ACTION_PROPOSAL_REPLIES: TextActionProposalReplies = {
-  approved: 'Proposta aprovada e enfileirada para execução.',
-  rejected: 'Proposta rejeitada; nenhuma ação foi executada.',
-  expired: 'A proposta expirou; nenhuma ação foi executada.',
-  unchanged: 'Não foi possível alterar esta proposta; atualize a lista para consultar seu estado.',
-  ambiguous: (ids) => `Qual proposta? Responda confirmar #ID ou cancelar #ID: ${ids.join(', ')}`,
-  tooMany: 'Há várias propostas. Confirme ou rejeite usando #ID explícito.',
+  approved: 'Proposal approved and queued to run.',
+  rejected: 'Proposal rejected; nothing was run.',
+  expired: 'The proposal expired; nothing was run.',
+  unchanged: 'This proposal could not be changed; refresh the list to see where it stands.',
+  ambiguous: (ids) => `Which proposal? Reply confirm #ID or cancel #ID: ${ids.join(', ')}`,
+  tooMany: 'There are several proposals. Confirm or reject one with an explicit #ID.',
 };
 
 /** `config/agent.ts`'s `actionProposalText`: either part replaces the default it names. */
@@ -151,3 +151,40 @@ export function parseTextActionProposalCommand(
     ...(match[3] !== undefined ? { proposalId: match[3] } : {}),
   };
 }
+
+/**
+ * Brazilian Portuguese text decisions — `config/agent.ts`: `actionProposalText: ptBrActionProposalText`.
+ * Commands in Portuguese (English ones still work), replies in Portuguese.
+ */
+export const ptBrActionProposalText: Required<TextActionProposalConfig> = {
+  vocabulary: {
+    approve: [
+      'sim',
+      'confirmo',
+      'confirmar',
+      'aprovar',
+      'aprovo',
+      'pode',
+      ...DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY.approve,
+    ],
+    reject: [
+      'não',
+      'nao',
+      'cancelar',
+      'cancela',
+      'rejeitar',
+      'rejeito',
+      ...DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY.reject,
+    ],
+    remember: ['sempre nesta conversa', ...DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY.remember],
+  },
+  replies: {
+    approved: 'Proposta aprovada e enfileirada para execução.',
+    rejected: 'Proposta rejeitada; nenhuma ação foi executada.',
+    expired: 'A proposta expirou; nenhuma ação foi executada.',
+    unchanged:
+      'Não foi possível alterar esta proposta; atualize a lista para consultar seu estado.',
+    ambiguous: (ids) => `Qual proposta? Responda confirmar #ID ou cancelar #ID: ${ids.join(', ')}`,
+    tooMany: 'Há várias propostas. Confirme ou rejeite usando #ID explícito.',
+  },
+};

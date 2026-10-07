@@ -109,11 +109,15 @@ export interface AgentConfig {
    * How a chat message decides an independent proposal (`actionApprovalMode: 'independent'`). A
    * message that is exactly an approve/reject word — optionally the remember phrase, an `#ID`, a
    * trailing `.`/`!` — decides instead of starting a turn. `vocabulary` replaces the word lists
-   * (default: Portuguese and English — `sim`/`yes`, `não`/`no`, `sempre nesta conversa`/`always in
-   * this conversation`, …); `replies` replaces the answers (default: Portuguese). Each field you
-   * omit keeps its default.
+   * (default: English — `yes`/`approve`, `no`/`reject`, `always in this conversation`, …); `replies`
+   * replaces the answers (default: English). Each field you omit keeps its default. Portuguese ships
+   * ready as `ptBrActionProposalText`.
    *
    * ```ts
+   * import { ptBrActionProposalText } from '@adonis-agora/agent'
+   *
+   * actionProposalText: ptBrActionProposalText,
+   * // or your own:
    * actionProposalText: {
    *   replies: { approved: 'Approved — it will run shortly.', rejected: 'Rejected; nothing ran.' },
    * }
