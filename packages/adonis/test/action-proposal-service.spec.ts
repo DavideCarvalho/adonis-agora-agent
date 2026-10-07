@@ -123,7 +123,7 @@ it('pages beyond a filtered full page and authorizes explicit text IDs beyond th
 describe('text decisions', () => {
   async function seeded(ids: string[]) {
     const store = new InMemoryAgentStore({ clock: () => 1000 });
-    const actor = { id: 'owner', tenantRef: null, roles: [] };
+    const actor = { id: 'owner', roles: [] };
     const thread = await store.createThread({ actor });
     for (const id of ids)
       await store.createActionProposal({
