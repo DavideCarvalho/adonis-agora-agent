@@ -31,7 +31,8 @@ export class ActionProposalServiceError extends Error {
 
 /** Authenticated decisions live independently of the origin runner and its signals. */
 export class ActionProposalService {
-  private readonly vocabulary: TextActionProposalVocabulary;
+  /** The words a text decision is made of — `actionProposalText.vocabulary` over the defaults. */
+  readonly vocabulary: TextActionProposalVocabulary;
   private readonly replies: TextActionProposalReplies;
   constructor(
     private readonly store: ActionProposalStore & ActionProposalScopeStore,

@@ -8,6 +8,10 @@ import {
   ActionProposalServiceError,
 } from '../src/action-proposal-service.js';
 import { validateActionProposalListQuery } from '../src/action-proposal-transitions.js';
+import {
+  DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES,
+  DEFAULT_MAX_ATTACHMENT_BYTES,
+} from '../src/attachment-limits.js';
 import { type AgentEngine, assertRunnable, engineOnlyModel } from '../src/engine.js';
 import type { Catalog } from '../src/genui/index.js';
 import {
@@ -191,20 +195,6 @@ function attachmentRefs(claimed: unknown): { mediaId: string }[] | string {
   }
   return refs;
 }
-
-/** Default per-file size cap when the attachment store declares none (20 MiB). */
-const DEFAULT_MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-
-/** Default allowlist: what multimodal model providers commonly accept as native image/file parts. */
-const DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES: readonly string[] = [
-  'image/png',
-  'image/jpeg',
-  'image/gif',
-  'image/webp',
-  'application/pdf',
-  'text/plain',
-  'text/csv',
-];
 
 /**
  * Wires `@adonis-agora/agent` into the AdonisJS application from `config/agent.ts`:

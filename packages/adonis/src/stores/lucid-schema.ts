@@ -2,7 +2,7 @@ import type { LucidRawRunner } from './lucid.js';
 import { isMySql, portableSql } from './sql-dialect.js';
 
 /**
- * The ten agent table names. They match the cross-adapter snake_case contract the reference Drizzle
+ * The eleven agent table names. They match the cross-adapter snake_case contract the reference Drizzle
  * store uses, so a dashboard or migration can point at any adapter and see the same physical schema.
  */
 export const AGENT_TABLES = {
@@ -20,6 +20,11 @@ export const AGENT_TABLES = {
   confirmTokens: 'agent_confirm_token',
   /** A run's live stream, buffered for replay by the Lucid token sink (`tokenSinks.lucid()`). */
   streamFrames: 'agent_stream_frame',
+  /**
+   * Text channels' short-lived state (`lucidChannelStore`): the provider message ids already taken,
+   * questions waiting for an answer, outcomes already relayed — each row expiring at `expires_at`.
+   */
+  channelState: 'agent_channel_state',
 } as const;
 
 /**
@@ -64,7 +69,24 @@ export function streamFrameTableStatement(table: string = AGENT_TABLES.streamFra
 }
 
 /**
- * `CREATE TABLE IF NOT EXISTS` DDL for the ten agent tables plus their indexes, one statement per
+ * `CREATE TABLE IF NOT EXISTS` for text channels' state (`lucidChannelStore`), under `table`. The
+ * primary key IS the dedupe lock: two deliveries of one message race on the insert and one loses.
+ * No foreign key: the rows name provider ids, not agent rows.
+ */
+export function channelStateTableStatements(table: string = AGENT_TABLES.channelState): string[] {
+  return [
+    `CREATE TABLE IF NOT EXISTS "${table}" (
+      "key" VARCHAR(255) PRIMARY KEY NOT NULL,
+      "value" TEXT NULL,
+      "expires_at" BIGINT NOT NULL,
+      "created_at" BIGINT NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS "${table}_expires_idx" ON "${table}" ("expires_at")`,
+  ];
+}
+
+/**
+ * `CREATE TABLE IF NOT EXISTS` DDL for the eleven agent tables plus their indexes, one statement per
  * array element so each can be issued through Lucid's `rawQuery`. Portable across SQLite / Postgres /
  * MySQL: quoted identifiers, epoch-ms `BIGINT` timestamps, `INTEGER` booleans (0/1) and `TEXT` JSON
  * columns — no dialect-only types. A real deployment should prefer the bundled migration stub so the
@@ -253,6 +275,7 @@ export function createTableStatements(): string[] {
     )`,
     `CREATE INDEX IF NOT EXISTS "${t.confirmTokens}_expires_idx" ON "${t.confirmTokens}" ("expires_at")`,
     streamFrameTableStatement(t.streamFrames),
+    ...channelStateTableStatements(t.channelState),
   ];
 }
 
@@ -443,7 +466,7 @@ function isTransientLockFailure(error: unknown): boolean {
 }
 
 /**
- * Idempotently provision the ten agent tables through Lucid's async raw runner (`CREATE TABLE IF
+ * Idempotently provision the eleven agent tables through Lucid's async raw runner (`CREATE TABLE IF
  * NOT EXISTS`), then additively repair a database that predates run tracking by ALTERing in the
  * `run_id` columns its three older tables are missing.
  *
@@ -510,7 +533,7 @@ export async function createAgentTables(db: LucidRawRunner): Promise<string[]> {
 }
 
 /**
- * `DROP TABLE IF EXISTS` for the ten agent tables, in reverse dependency order so a dialect that
+ * `DROP TABLE IF EXISTS` for the eleven agent tables, in reverse dependency order so a dialect that
  * enforces the `REFERENCES` clauses never refuses a drop for a child that still exists. The mirror of
  * {@link createAgentTables}, and what the published migration's `down()` calls.
  */
@@ -518,6 +541,7 @@ export function dropTableStatements(): string[] {
   const t = AGENT_TABLES;
   return [
     t.actionProposals,
+    t.channelState,
     t.confirmTokens,
     t.streamFrames,
     t.queuedMessages,
@@ -530,7 +554,7 @@ export function dropTableStatements(): string[] {
   ].map((table) => `DROP TABLE IF EXISTS "${table}"`);
 }
 
-/** Drop the ten agent tables. Destructive and irreversible — this erases every thread and every ledger row. */
+/** Drop the eleven agent tables. Destructive and irreversible — this erases every thread and every ledger row. */
 export async function dropAgentTables(db: LucidRawRunner): Promise<void> {
   for (const stmt of dropTableStatements()) {
     await db.rawQuery(portableSql(db, stmt));
@@ -603,7 +627,7 @@ export function schemaRunner(db: LucidRawRunner): LucidRawRunner {
 const provisioned = new WeakMap<object, Promise<void>>();
 
 /**
- * Idempotently ensure the ten agent tables exist, memoized per db client. This is what the stores
+ * Idempotently ensure the eleven agent tables exist, memoized per db client. This is what the stores
  * run when `autoCreateTables` is on (the default): the agent provider calls each store's
  * `ensureSchema()` once as the app starts, and a store used without the provider (a script, a test
  * that builds one by hand) falls back to it on first use — whichever store touches the connection
@@ -639,5 +663,30 @@ export async function ensureStreamFrameTable(
   if (await hasTable(runner, table)) return;
   await issue(runner, forDialect(streamFrameTableStatement(table), isMySql(runner)), () =>
     hasTable(runner, table),
+  );
+}
+
+/**
+ * Idempotently create text channels' state table, under whatever name the store was given — what
+ * `lucidChannelStore` runs for itself (`autoCreateTables`), so it stands up next to any agent store.
+ * {@link createAgentTables} creates the same table under its default name, so the published
+ * migration covers it too.
+ */
+export async function ensureChannelStateTable(
+  db: LucidRawRunner,
+  table: string = AGENT_TABLES.channelState,
+): Promise<void> {
+  const runner = schemaRunner(db);
+  const mysql = isMySql(runner);
+  const [create, index] = channelStateTableStatements(table) as [string, string];
+  if (!(await hasTable(runner, table))) {
+    await issue(runner, forDialect(create, mysql), () => hasTable(runner, table));
+  }
+  const name = `${table}_expires_idx`;
+  if ((await existingIndexes(runner))?.has(name)) return;
+  await issue(
+    runner,
+    forDialect(index, mysql),
+    async () => (await existingIndexes(runner))?.has(name) ?? false,
   );
 }

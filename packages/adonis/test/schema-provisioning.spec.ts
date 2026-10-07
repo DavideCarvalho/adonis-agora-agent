@@ -78,7 +78,7 @@ describe('a DDL statement that lost a race to another process', () => {
     // Tables: the failed CREATE is re-checked, the table is there. Indexes with no catalog to
     // re-check against cannot be proven, so that failure surfaces.
     await expect(createAgentTables(db)).rejects.toThrow('already exists');
-    expect(statements.filter((sql) => sql.startsWith('CREATE TABLE'))).toHaveLength(10);
+    expect(statements.filter((sql) => sql.startsWith('CREATE TABLE'))).toHaveLength(11);
   });
 
   it('still throws when it does not — a real failure is never swallowed', async () => {

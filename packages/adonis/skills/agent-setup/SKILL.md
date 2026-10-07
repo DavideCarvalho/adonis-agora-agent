@@ -21,6 +21,7 @@ sources:
   - "DavideCarvalho/adonis-agent:packages/adonis/src/stores/factory.ts"
   - "DavideCarvalho/adonis-agent:packages/adonis/docs/react.mdx"
   - "DavideCarvalho/adonis-agent:packages/adonis/src/react/index.ts"
+  - "DavideCarvalho/adonis-agent:packages/adonis/docs/channels.mdx"
 ---
 
 # Setting up @adonis-agora/agent
@@ -78,10 +79,10 @@ export default defineConfig({
 })
 ```
 
-Run the published migrations for the ten agent tables (`agent_action_proposal`,
+Run the published migrations for the agent tables (`agent_action_proposal`,
 `agent_thread`, `agent_message`, `agent_tool_call`, `agent_token_usage`,
 `agent_model_pricing`, `agent_run`, `agent_queued_message`, `agent_confirm_token`, plus the
-`agent_stream_frame` buffer):
+`agent_stream_frame` buffer and the text channels' `agent_channel_state`):
 
 ```bash
 node ace migration:run
@@ -264,6 +265,40 @@ answer it in the next request's `resume` (`{ approved: boolean }` for `tool_appr
 token sink any replica serves the resume. The native stream is unchanged.
 
 Source: `packages/adonis/docs/ag-ui.mdx`, `packages/adonis/src/ag-ui/`.
+
+### Pattern 6 — answer on WhatsApp / Telegram with `channels.handle()`
+
+```ts
+// start/routes.ts
+import { channels, evolutionApi } from '@adonis-agora/agent/channels'
+
+router.post(
+  '/webhooks/whatsapp',
+  channels.handle(
+    evolutionApi({ url, instance, apiKey, webhookToken }), // or whatsappCloud({…}) / telegram({…})
+    {
+      actor: (message) => actorForPhone(message.from), // null → not answered
+      thread: (actor, message) => threadFor(message.conversation), // null → new thread
+      onThreadCreated: (threadId, actor, message) => saveThread(message.conversation, threadId),
+    },
+  ),
+)
+```
+
+The handler verifies the webhook (token / HMAC / secret header), dedupes by provider message id,
+answers `200` at once and runs the turn in the background (`await handler.drain()` in tests).
+Replies are text-only (components → `fallbackText`), converted to the channel's markdown and split
+at its length limit. Media is downloaded and attached when `attachments` is configured (else the
+person is told why not). `ask` questions go out as numbered text, one at a time; the next messages
+answer them. State (message ids, questions in progress, relayed outcomes) lives in
+`agent_channel_state` via `lucidChannelStore()` when the agent store is Lucid, else memory —
+`store: redisChannelStore(redis)` otherwise on several replicas. Use
+`actionApprovalMode: 'independent'`: pending proposals go out as Confirm/Cancel buttons (or a text
+instruction in the `actionProposalText` vocabulary), and `actionProposalWorker: { onSettled:
+channels.onSettled }` relays outcomes that settle later. In blocking mode the channel can only say
+the approval must happen in the app. Exclude webhook routes from Shield's CSRF check.
+
+Source: `packages/adonis/docs/channels.mdx`, `packages/adonis/src/channels/`.
 
 ## Component rendering entries
 
