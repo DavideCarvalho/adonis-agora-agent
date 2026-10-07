@@ -791,7 +791,7 @@ describe('bring your own runtime (A2aTurnService)', () => {
 describe('independent proposals (actionApprovalMode: independent)', () => {
   function proposalService(opts: { executes: boolean; outcomeText?: string }) {
     const decided: { id: string; decision: string; via: string }[] = [];
-    let execution: { status: string; error?: string } | null = null;
+    let execution: { status: string; error?: string; result?: unknown } | null = null;
     const service = {
       chat: async () => ({ runId: 'r1', threadId: 'thread-1' }),
       subscribe: async function* () {
