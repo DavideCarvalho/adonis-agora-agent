@@ -1,0 +1,288 @@
+---
+title: Builtin components
+description: "The ready-made component definitions in @adonis-agora/agent/genui/builtins — BUILTIN_COMPONENTS (DataTable, Chart, KpiCards, …) and LAYOUT_COMPONENTS (Stack, Card, Text, …): what each is for, its props, its text fallback, and how to combine, pick or override them in your catalog."
+icon: Shapes
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+`@adonis-agora/agent/genui/builtins` ships **component definitions** for the things most chat apps end up showing — a table, a chart, a few KPIs, sources, a checklist. Each one is an ordinary [`ComponentDefinition`](/docs/agent/generative-ui#a-component-catalog--adonis-agoraagentgenui): a name, a title, a description the model reads, a JSON Schema for its props, and a `fallbackText` for channels that cannot draw it.
+
+<Callout type="info">
+Builtins are **definitions only — no visuals**. The package does not ship a React `DataTable` or `Chart`. Your app renders each one with its own components, keyed by name in the client registry, exactly like any other component in your catalog. A builtin the client has no renderer for falls back to its `fallbackText`.
+</Callout>
+
+## The two lists
+
+The module exports two arrays plus every definition on its own:
+
+| Export | Contents | Use |
+| --- | --- | --- |
+| `BUILTIN_COMPONENTS` | `DataTable`, `Chart`, `KpiCards`, `SourceCards`, `Checklist`, `Timeline`, `CodeBlock`, `Diff`, `Callout` | Content: data a model shows. |
+| `LAYOUT_COMPONENTS` | `Stack`, `Card`, `Heading`, `Text`, `Badge`, `Link`, `Image` | Layout and text primitives, mostly for composing trees in `mode: 'tree'` (`Stack` and `Card` take children). |
+| `DataTable`, `Chart`, … | Each definition individually | Pick only the ones you want. |
+
+Neither list is added for you: a catalog contains exactly what you pass to `defineCatalog`. Nothing is marked `internal` and none has a `version`, so every builtin is offered to the model and is stamped as version `1`.
+
+## Using them in a catalog
+
+Spread them next to your own components:
+
+```ts title="app/genui/catalog.ts"
+import { defineCatalog, defineComponent } from '@adonis-agora/agent/genui'
+import { BUILTIN_COMPONENTS, LAYOUT_COMPONENTS } from '@adonis-agora/agent/genui/builtins'
+import { z } from 'zod'
+
+const OrderCard = defineComponent({
+  name: 'OrderCard',
+  title: 'Order card',
+  description: 'One order at a glance.',
+  props: z.object({ id: z.number(), status: z.string() }),
+})
+
+export const catalog = defineCatalog([...BUILTIN_COMPONENTS, ...LAYOUT_COMPONENTS, OrderCard])
+```
+
+```ts title="config/agent.ts"
+import { genui } from '@adonis-agora/agent/genui'
+import { catalog } from '#genui/catalog'
+
+export default defineConfig({ model, genui: genui({ catalog }) })
+```
+
+With the default `mode: 'per-component'`, each builtin becomes a tool named `ui__show_<snake_case name>` (`DataTable` → `ui__show_data_table`, `KpiCards` → `ui__show_kpi_cards`). Its description is `Show the user a <title> (<name>). <description>` and its input schema is the props schema below. In `mode: 'tree'` the builtins are listed, with a one-line props signature each, in the description of the single `ui__render` tool; `Stack` and `Card` are marked "takes children".
+
+<Callout type="warn">
+`Stack` and `Card` only make sense in tree mode, where they wrap children. In per-component mode they still get a `ui__show_stack` / `ui__show_card` tool, which can only push an empty container (shown on text channels as a JSON block of its props) — leave `LAYOUT_COMPONENTS` out of a per-component catalog, or pick the leaf primitives (`Heading`, `Text`, `Badge`, `Link`, `Image`) individually.
+</Callout>
+
+### Picking, excluding and overriding
+
+There is no flag to switch builtins on or off — you choose what goes in the array:
+
+```ts
+import { defineCatalog } from '@adonis-agora/agent/genui'
+import { BUILTIN_COMPONENTS, Callout, Chart, DataTable } from '@adonis-agora/agent/genui/builtins'
+
+// Only some of them
+const small = defineCatalog([DataTable, Chart, Callout])
+
+// All but one
+const noDiff = defineCatalog(BUILTIN_COMPONENTS.filter((c) => c.name !== 'Diff'))
+```
+
+`defineCatalog` rejects two definitions with the same name (`genui: component "DataTable" is defined twice in one catalog`). To **replace** a builtin with your own definition of the same name — a stricter schema, another description, a `version` — use `catalog.extend`, where a later definition replaces an earlier one:
+
+```ts
+import { defineCatalog, defineComponent } from '@adonis-agora/agent/genui'
+import { BUILTIN_COMPONENTS, DataTable } from '@adonis-agora/agent/genui/builtins'
+
+export const catalog = defineCatalog(BUILTIN_COMPONENTS).extend([
+  defineComponent({
+    ...DataTable,
+    description: 'Orders, invoices or customers as a table. Always include the id column.',
+    version: 2,
+  }),
+])
+```
+
+A definition is a plain object, so spreading it keeps the builtin's schema and `fallbackText` while you change the rest. A [per-request resolver](/docs/agent/generative-ui#a-component-catalog--adonis-agoraagentgenui) can do the same per tenant with `catalog.extend(...)`.
+
+### Rendering them on the client
+
+Register a renderer under each builtin's name, as for any component:
+
+```tsx
+import type { GenuiRegistry } from '@adonis-agora/agent/react/genui'
+import { DataTable, Chart, KpiCards, Callout } from '~/components/genui'
+
+const registry: GenuiRegistry = { DataTable, Chart, KpiCards, Callout }
+```
+
+Each React component receives the validated props described below. Passing the same `catalog` to `<AgentProvider genui={{ registry, catalog }}>` validates props before drawing. If you send [UI capabilities](/docs/agent/surfaces#ui-capabilities), declare only the builtins you actually render (at version `1`, or your override's `version`); the rest are hidden from the model for that turn and streamed as their text fallback.
+
+The `table` and `chart` factories from `@adonis-agora/agent/genui` (see [Component registries and server rendering](/docs/agent/authoring/component-rendering)) produce presentations of the builtin `DataTable` and `Chart`, so a tool that `present`s with them needs those two definitions in its catalog and renderers registered under those names. The React server registry's default pagination splits `DataTable` rows across pages.
+
+## Content components — `BUILTIN_COMPONENTS`
+
+Every props object is closed (`additionalProperties: false`): a prop not listed below is refused. "Row" means an object whose values are each a string, number, boolean or `null`.
+
+### `DataTable`
+
+Tabular data (records with the same fields) as a sortable table; the model is told to prefer it over markdown tables for more than 3 rows.
+
+| Prop | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `title` | `string` | no | Short caption. |
+| `columns` | `{ key, label, align?, format? }[]` | yes | 1–12 columns. `key`: field name in each row; `label`: header. `align`: `'left' \| 'right' \| 'center'`. `format`: `'text' \| 'number' \| 'currency' \| 'percent' \| 'date' \| 'link'`. |
+| `rows` | row`[]` | yes | Up to 500 rows. |
+
+Fallback: the title in bold, then a fixed-width text table in a code block (columns capped at 28 characters, at most 15 rows, then `… N more rows`).
+
+### `Chart`
+
+A `bar` chart to compare categories or a `line` chart for a trend over time.
+
+| Prop | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `type` | `'bar' \| 'line'` | yes | |
+| `title` | `string` | no | |
+| `xKey` | `string` | yes | Field of each point used for the x axis. |
+| `series` | `{ key, label? }[]` | yes | 1–6 series; `key` names a numeric field of each point. |
+| `data` | row`[]` | yes | 1–200 points. |
+| `unit` | `string` | no | Shown after values, e.g. `KB` or `%`. |
+
+Fallback: a text bar chart of the **first** series (up to 20 points), whatever the `type`.
+
+### `KpiCards`
+
+A few key numbers (metrics, totals, counts) as cards.
+
+| Prop | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `title` | `string` | no | |
+| `items` | `{ label, value, delta?, trend?, hint? }[]` | yes | 1–8 items. `label`: `string`; `value`: `string \| number`; `delta`: change, e.g. `+12%`; `trend`: `'up' \| 'down' \| 'flat'`; `hint`: `string`. |
+
+Fallback: one bullet per item, `• *label:* value (delta)`.
+
+### `SourceCards`
+
+The documents, pages or links an answer is based on, as cards.
+
+| Prop | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `title` | `string` | no | |
+| `items` | `{ title, url?, snippet?, source? }[]` | yes | 1–12 items. `source`: where it came from, e.g. `Wiki`, `GitHub`. |
+
+Fallback: one bullet per item, the title linked to `url` (Slack `<url\|title>` syntax) followed by `— source`.
+
+### `Checklist`
+
+Steps or a to-do list with done/not-done state.
+
+| Prop | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `title` | `string` | no | |
+| `items` | `{ label, done?, note? }[]` | yes | 1–50 items. `done`: `boolean`. |
+
+Fallback: `☑` / `☐` per item, with the note in italics.
+
+### `Timeline`
+
+Events in chronological order — the history of a project, an incident, a deal.
+
+| Prop | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `title` | `string` | no | |
+| `events` | `{ date?, title, description? }[]` | yes | 1–50 events; `date` is a free-form string. |
+
+Fallback: one bullet per event, the date in bold.
+
+### `CodeBlock`
+
+A code snippet or file excerpt with syntax highlighting.
+
+| Prop | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `title` | `string` | no | |
+| `language` | `string` | no | |
+| `code` | `string` | yes | |
+
+Fallback: the code in a code block.
+
+### `Diff`
+
+A before/after change to a text or code file, as a line diff.
+
+| Prop | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `title` | `string` | no | |
+| `language` | `string` | no | |
+| `before` | `string` | yes | |
+| `after` | `string` | yes | |
+
+The model sends both versions, not a patch. Fallback: a unified-style `+`/`-` line diff in a code block. The diff function is exported as `lineDiff(before, after)` (returning `{ op: 'same' | 'add' | 'del', text }[]`), so a renderer can draw the same diff.
+
+### `Callout`
+
+A short note, warning or success message, emphasized.
+
+| Prop | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `tone` | `'info' \| 'success' \| 'warning' \| 'danger'` | no | |
+| `title` | `string` | no | |
+| `text` | `string` | yes | |
+
+Fallback: `:warning:` for `warning`/`danger`, `:information_source:` otherwise, then the title in bold and the text.
+
+## Layout components — `LAYOUT_COMPONENTS`
+
+| Component | Purpose | Props (required in **bold**) | Children |
+| --- | --- | --- | --- |
+| `Stack` | Lays its children out vertically, or horizontally with `direction: 'row'`. | `direction?: 'column' \| 'row'`, `gap?: number` | yes |
+| `Card` | A box with an optional title around its children. | `title?: string`, `subtitle?: string` | yes |
+| `Heading` | A heading. | **`text: string`** | no |
+| `Text` | A paragraph of plain text (no markdown). | **`text: string`**, `muted?: boolean` | no |
+| `Badge` | A small label. | **`text: string`**, `tone?: 'neutral' \| 'brand' \| 'success' \| 'warning' \| 'danger'` | no |
+| `Link` | A link to an http(s) URL. | **`text: string`**, **`url: string`** (must match `^https?://`) | no |
+| `Image` | An image from an https URL. | **`url: string`** (must match `^https://`), `alt?: string` | no |
+
+Text fallbacks: `Card` prints its title in bold (and `— subtitle`), then its children's text; `Heading` prints bold text, `Text` the text, `Badge` `[text]`, `Link` `<url|text>`, `Image` the URL. `Stack` — and a `Card` without a title — has an empty fallback, so the generic rendering takes over and prints its props as a JSON code block (`{}` for a bare `Stack`) before its children's text.
+
+## What the model sends
+
+A per-component tool call takes the props directly. `ui__show_kpi_cards`:
+
+```json
+{
+  "title": "This month",
+  "items": [
+    { "label": "Revenue", "value": "$48.2k", "delta": "+12%", "trend": "up" },
+    { "label": "New customers", "value": 132 }
+  ]
+}
+```
+
+The client renders your `KpiCards` component with those props; a text-only channel receives:
+
+```text
+*This month*
+• *Revenue:* $48.2k (+12%)
+• *New customers:* 132
+```
+
+In tree mode, `ui__render` takes one nested element, mixing content and layout builtins:
+
+```json
+{
+  "type": "Card",
+  "props": { "title": "Deploy 1.4.0" },
+  "children": [
+    { "type": "Callout", "props": { "tone": "warning", "text": "Migrations run before the switch-over." } },
+    {
+      "type": "Checklist",
+      "props": {
+        "items": [
+          { "label": "Build image", "done": true },
+          { "label": "Run migrations" }
+        ]
+      }
+    }
+  ]
+}
+```
+
+It is pushed as one `genui:tree` component; giving `children` to a component that does not take them (`Callout`, `Checklist`, …) is refused and reaches the model as a tool error it can fix.
+
+## Using the text helpers
+
+Besides the definitions, the module exports the helpers their fallbacks use:
+
+- `textTable(columns, rows, max = 15)` — the fixed-width code-block table `DataTable` falls back to.
+- `lineDiff(before, after)` — the LCS line diff behind `Diff` (inputs larger than 250,000 line pairs degrade to "all removed, all added").
+
+## See also
+
+- [Generative UI](/docs/agent/generative-ui) — `ctx.emitUi`, the catalog, `genui({ catalog })` and its options, and React rendering.
+- [One output, many surfaces](/docs/agent/surfaces) — UI capabilities and where `fallbackText` is used.
+- [Component registries and server rendering](/docs/agent/authoring/component-rendering) — the `table` and `chart` factories built on `DataTable` and `Chart`.

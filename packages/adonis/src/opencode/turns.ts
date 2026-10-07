@@ -41,8 +41,10 @@ import { type Milestone, OpenCodeTurn, type PendingAsk, type TurnOutcome } from 
  */
 export interface OpenCodeToolsOptions {
   /**
-   * The URL OpenCode reaches that endpoint at — from where OpenCode runs (a sandbox reaches the app
-   * at an internal address), e.g. `http://app.internal:3333/agent/opencode/mcp`.
+   * The URL the OpenCode server calls that endpoint at, passed to it verbatim (no default). It is
+   * resolved from where OpenCode runs, not from the app: e.g. `http://127.0.0.1:3333/agent/opencode/mcp`
+   * on the same machine, the app's Compose service or Kubernetes Service name otherwise.
+   * `/agent` is the agent's route prefix (`path`).
    */
   url: string;
   /** The MCP server's name in OpenCode; its tools are `<server>.<tool>` / `<server>_<tool>`. Default `'agora'`. */
