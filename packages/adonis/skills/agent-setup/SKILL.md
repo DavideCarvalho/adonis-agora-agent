@@ -21,6 +21,7 @@ sources:
   - "DavideCarvalho/adonis-agent:packages/adonis/src/stores/factory.ts"
   - "DavideCarvalho/adonis-agent:packages/adonis/docs/react.mdx"
   - "DavideCarvalho/adonis-agent:packages/adonis/src/react/index.ts"
+  - "DavideCarvalho/adonis-agent:packages/adonis/docs/channels.mdx"
 ---
 
 # Setting up @adonis-agora/agent
@@ -264,6 +265,35 @@ answer it in the next request's `resume` (`{ approved: boolean }` for `tool_appr
 token sink any replica serves the resume. The native stream is unchanged.
 
 Source: `packages/adonis/docs/ag-ui.mdx`, `packages/adonis/src/ag-ui/`.
+
+### Pattern 6 — answer on WhatsApp / Telegram with `channels.handle()`
+
+```ts
+// start/routes.ts
+import { channels, evolutionApi } from '@adonis-agora/agent/channels'
+
+router.post(
+  '/webhooks/whatsapp',
+  channels.handle(
+    evolutionApi({ url, instance, apiKey, webhookToken }), // or whatsappCloud({…}) / telegram({…})
+    {
+      actor: (message) => actorForPhone(message.from), // null → not answered
+      thread: (actor, message) => threadFor(message.conversation), // null → new thread
+      onThreadCreated: (threadId, actor, message) => saveThread(message.conversation, threadId),
+    },
+  ),
+)
+```
+
+The handler verifies the webhook (token / HMAC / secret header), dedupes by provider message id
+(in memory by default — `redisChannelDedupe(redis)` on several replicas), answers `200` at once and
+runs the turn in the background (`await handler.drain()` in tests). Replies are text-only
+(components → `fallbackText`), converted to the channel's markdown and split at its length limit.
+Use `actionApprovalMode: 'independent'`: pending proposals go out as Confirm/Cancel buttons (or a
+text instruction in the `actionProposalText` vocabulary); in blocking mode the channel can only say
+the approval must happen in the app. Exclude webhook routes from Shield's CSRF check.
+
+Source: `packages/adonis/docs/channels.mdx`, `packages/adonis/src/channels/`.
 
 ## Component rendering entries
 

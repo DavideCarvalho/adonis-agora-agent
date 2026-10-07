@@ -87,6 +87,11 @@
       "import": "./dist/src/ag-ui/index.js",
       "default": "./dist/src/ag-ui/index.js"
     },
+    "./channels": {
+      "types": "./dist/src/channels/index.d.ts",
+      "import": "./dist/src/channels/index.js",
+      "default": "./dist/src/channels/index.js"
+    },
     "./durable": {
       "types": "./dist/src/durable/index.d.ts",
       "import": "./dist/src/durable/index.js",

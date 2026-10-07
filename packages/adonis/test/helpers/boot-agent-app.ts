@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { IgnitorFactory } from '@adonisjs/core/factories/core/ignitor';
-import type { HttpContext } from '@adonisjs/core/http';
+import type { HttpContext, Router } from '@adonisjs/core/http';
 import type { ApplicationService } from '@adonisjs/core/types';
 import type { Actor, AgentConfig } from '../../src/index.js';
 
@@ -29,7 +29,11 @@ export const headerActorResolver = {
  */
 export async function bootAgentApp(
   agent: Partial<AgentConfig> & Pick<AgentConfig, 'model'>,
-  options: { anonymous?: boolean } = {},
+  options: {
+    anonymous?: boolean;
+    /** Register the app's own routes, as `start/routes.ts` would. */
+    routes?: (router: Router) => void;
+  } = {},
 ): Promise<BootedApp> {
   const ignitor = new IgnitorFactory()
     .withCoreProviders()
@@ -48,6 +52,7 @@ export async function bootAgentApp(
   await app.boot();
   const router = await app.container.make('router');
   router.use([() => import('@adonisjs/core/bodyparser_middleware')]);
+  options.routes?.(router);
   const server = await app.container.make('server');
   await server.boot();
   const node: Server = createServer(server.handle.bind(server));

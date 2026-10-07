@@ -1,6 +1,11 @@
+import type { ActionApprovalMode } from './action-proposal-receipt.js';
 import { assertIndependentActionRuntime } from './action-proposal-runtime.js';
 import { ActionProposalService, ActionProposalServiceError } from './action-proposal-service.js';
-import { textActionProposalReply } from './action-proposal-text.js';
+import {
+  DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY,
+  type TextActionProposalVocabulary,
+  textActionProposalReply,
+} from './action-proposal-text.js';
 import { utcDay } from './agent-deps.js';
 import type { AgentDepsFactory } from './agent-deps-factory.js';
 import type { ChatQueueService } from './chat-queue-service.js';
@@ -1023,6 +1028,19 @@ export class AgentService {
     if (!this.options.actionProposals)
       throw new ActionProposalServiceError(501, 'Independent proposals are unavailable');
     return this.options.actionProposals.decide(actor, threadId, proposalId, decision, body, via);
+  }
+  /** `actionApprovalMode` in `config/agent.ts` — `'blocking'` unless it says `'independent'`. */
+  actionApprovalMode(): ActionApprovalMode {
+    return typeof this.deps.actionApprovalMode === 'function'
+      ? this.deps.actionApprovalMode()
+      : 'blocking';
+  }
+  /**
+   * The words a text decision is made of (`actionProposalText.vocabulary` over the English
+   * defaults) — what a surface tells a person to reply, or what it maps a button to.
+   */
+  actionProposalVocabulary(): TextActionProposalVocabulary {
+    return this.options.actionProposals?.vocabulary ?? DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY;
   }
   /** The configured chat reply to a proposal decision (see `actionProposalText.replies`). */
   actionProposalReply(

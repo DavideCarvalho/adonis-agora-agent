@@ -145,42 +145,32 @@ The `agUiAdapter()` route reads `forwardedProps.uiCapabilities` (a malformed val
 
 ### Text-only channels — WhatsApp and similar
 
-A webhook resolves the sender to an actor and the conversation to a thread, sends the message with text-only capabilities, and relays the text frames:
+`@adonis-agora/agent/channels` turns a provider's webhook into a turn: it resolves the sender to an actor and the conversation to a thread, sends the message with text-only capabilities (`uiCapabilities: { components: [] }`), and relays the reply — the model's prose and, where `present` pushed `OrderSummary`, its `fallbackText`, in the order they were produced — converted to the channel's markdown and split at its length limit:
 
-```ts title="app/controllers/whatsapp_webhook_controller.ts"
-import { inject } from '@adonisjs/core'
-import type { HttpContext } from '@adonisjs/core/http'
-import { AgentService } from '@adonis-agora/agent'
+```ts title="start/routes.ts"
+import router from '@adonisjs/core/services/router'
+import { channels, evolutionApi } from '@adonis-agora/agent/channels'
+import env from '#start/env'
 
-@inject()
-export default class WhatsappWebhookController {
-  constructor(private readonly agent: AgentService) {}
-
-  async handle({ request }: HttpContext) {
-    const { from, text } = request.body()
-    const actor = await whatsappActor(from)         // your identity mapping
-    const threadId = await whatsappThread(actor)    // your thread per conversation
-
-    const sent = await this.agent.send({
-      actor,
-      threadId,
-      message: text,
-      uiCapabilities: { components: [] },          // nothing is drawn: components arrive as text
-      pageContext: { kind: 'whatsapp' },
-    })
-    if ('proposalDecision' in sent) return whatsapp.reply(from, sent.text)
-    if (sent.queued === true) return                 // runs after the turn in progress
-
-    let reply = ''
-    for await (const frame of this.agent.subscribe(sent.runId)) {
-      if (frame.t === 'text') reply += frame.v
-    }
-    await whatsapp.reply(from, reply)
-  }
-}
+router.post(
+  '/webhooks/whatsapp',
+  channels.handle(
+    evolutionApi({
+      url: env.get('EVOLUTION_URL'),
+      instance: env.get('EVOLUTION_INSTANCE'),
+      apiKey: env.get('EVOLUTION_API_KEY'),
+      webhookToken: env.get('EVOLUTION_WEBHOOK_TOKEN'),
+    }),
+    {
+      actor: (message) => whatsappActor(message.from), // your identity mapping
+      thread: (actor, message) => whatsappThread(actor, message.conversation), // null → new thread
+      onThreadCreated: (threadId, actor, message) => saveWhatsappThread(threadId, actor, message),
+    },
+  ),
+)
 ```
 
-`reply` holds the model's prose and, where `present` pushed `OrderSummary`, its `fallbackText` — in the order they were produced. `pageContext` is free-form: tools and prompt builders read `ctx.pageContext.kind` to tailor wording; nothing in the library interprets it.
+It verifies the webhook, deduplicates provider retries, answers `200` before the turn runs, and puts pending proposals to the person as Confirm/Cancel buttons where the channel has them. WhatsApp Cloud API and Telegram adapters, the capability table and custom adapters are on [Text channels](/docs/agent/channels). `pageContext` (default `{ kind: '<channel>' }`) is free-form: tools and prompt builders read `ctx.pageContext.kind` to tailor wording; nothing in the library interprets it.
 
 To send a table or chart as an image instead, keep `uiCapabilities` listing it, collect the `t: 'component'` frames as well, and route them through the [server renderer](/docs/agent/authoring/component-rendering#render-html-png-or-pdf) and your WhatsApp media upload. The library never sends attachments itself.
 
