@@ -27,5 +27,5 @@ export {
   InMemoryA2aStore,
   LucidA2aStore,
 } from './store.js';
-export type { A2aActionPolicy, A2aTurnResult } from './turn.js';
+export type { A2aActionPolicy, A2aTurnResult, A2aTurnService } from './turn.js';
 export { runA2aTurn } from './turn.js';

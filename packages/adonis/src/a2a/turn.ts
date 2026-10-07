@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import type { AgentService } from '../agent-service.js';
-import type { ToolRegistry } from '../tool-registry.js';
 import type { Actor } from '../types.js';
 import { scopeRole } from './gate.js';
 import { PERMISSION_COMPONENT } from './permission-tool.js';
@@ -47,10 +46,19 @@ export interface A2aTurnResult {
   error: string | null;
 }
 
-type TurnService = Pick<
-  AgentService,
-  'chat' | 'subscribe' | 'approve' | 'reject' | 'skip' | 'cancel'
->;
+/**
+ * What runs an A2A turn: start it, read its frames, settle what it parks on. `AgentService` (the
+ * agent provider's) is one; an app with its own runtime — a `runAgentLoop` built per request, say —
+ * writes an adapter with the same shape (`defineA2aConfig({ service })`).
+ */
+export interface A2aTurnService
+  extends Pick<AgentService, 'chat' | 'subscribe' | 'approve' | 'reject' | 'skip' | 'cancel'> {
+  /**
+   * The roles a tool declares — what an approval and a receipt match the delegated scopes against.
+   * Omitted → the shared `ToolRegistry`. An app whose registry is built per turn answers it here.
+   */
+  toolRoles?(toolName: string): string[] | undefined;
+}
 
 function argsHash(input: unknown): string {
   return createHash('sha256')
@@ -66,8 +74,9 @@ function argsHash(input: unknown): string {
  * `request_permission` call becomes a step-up.
  */
 export async function runA2aTurn(
-  service: TurnService,
-  registry: ToolRegistry,
+  service: A2aTurnService,
+  /** The roles a tool declares (see {@link A2aTurnService.toolRoles}). */
+  toolRoles: (toolName: string) => string[] | undefined,
   input: A2aTurnInput,
 ): Promise<A2aTurnResult> {
   const { runId, threadId } = await service.chat({
@@ -81,7 +90,7 @@ export async function runA2aTurn(
   const delegated = input.delegatedScopes ?? [];
   // The delegated scopes a tool's roles name (as `scope:<id>` roles).
   const scopesOf = (tool: string) => {
-    const roles = registry.spec(tool)?.roles ?? [];
+    const roles = toolRoles(tool) ?? [];
     return delegated.filter((scope) => roles.includes(scopeRole(scope)));
   };
   // Announced calls, by id, until their output says they ran.

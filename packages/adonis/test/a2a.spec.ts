@@ -680,7 +680,7 @@ describe('hardening (review findings)', () => {
       reject: async () => {},
       skip: async () => {},
     } as never;
-    const result = await runA2aTurn(service, new ToolRegistry(), {
+    const result = await runA2aTurn(service, () => undefined, {
       actor: { id: 'a', roles: [PERSONAL_AGENT_ROLE] },
       text: 'hi',
       agentName: 'default',
@@ -702,5 +702,63 @@ describe('hardening (review findings)', () => {
     expect(
       await scopes.resolve({ actor: { id: 'u1', roles: ['USER'] }, threadId: 't' } as never),
     ).toEqual(['actor:u1', 'tenant:t1']);
+  });
+});
+
+describe('bring your own runtime (A2aTurnService)', () => {
+  it('a custom service drives the turn, and its toolRoles decide approvals and receipts', async () => {
+    const approved: string[] = [];
+    const frames = [
+      {
+        t: 'event',
+        event: {
+          kind: 'tool-input-available',
+          id: 'c1',
+          name: 'cancel_order',
+          input: { id: 'A-1' },
+          toolKind: 'action',
+        },
+      },
+      { t: 'approval', runId: 'r1', id: 'c1', toolName: 'cancel_order', input: { id: 'A-1' } },
+      { t: 'event', event: { kind: 'tool-output', id: 'c1', output: { ok: true } } },
+      { t: 'text', v: 'Cancelled.' },
+    ];
+    const service = {
+      chat: async () => ({ runId: 'r1', threadId: 'thread-1' }),
+      subscribe: async function* () {
+        yield* frames as never[];
+      },
+      approve: async (_run: string, id: string) => {
+        approved.push(id);
+      },
+      reject: async () => {},
+      skip: async () => {},
+      cancel: async () => {},
+      toolRoles: (name: string) => (name === 'cancel_order' ? ['scope:orders:cancel'] : undefined),
+    };
+    const handle = createA2aHandler({
+      path: 'a2a',
+      brands,
+      auth: fakeAuth,
+      store: new InMemoryA2aStore(),
+      service: service as never,
+      // The shared registry knows nothing about the app's per-turn tools.
+      registry: new ToolRegistry(),
+      actions: 'approve-delegated',
+      timeoutMs: 5_000,
+      maxBodyBytes: 64 * 1024,
+    });
+    const res = await call(handle, 'POST', '/a2a/support/message:send', {
+      headers: { authorization: 'Bearer deleg|u1|acct-1|orders:cancel' },
+      body: send('cancel A-1'),
+    });
+    expect(approved).toEqual(['c1']);
+    expect(res.json().message).toMatchObject({
+      contextId: 'thread-1',
+      parts: [{ text: 'Cancelled.' }],
+      metadata: {
+        'pact.receipt': { scopesUsed: ['orders:cancel'], actions: [{ tool: 'cancel_order' }] },
+      },
+    });
   });
 });

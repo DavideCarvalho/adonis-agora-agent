@@ -94,7 +94,12 @@ export default class A2aProvider {
 
   async #build(config: A2aConfig): Promise<A2aRequestHandler> {
     const registry = await this.app.container.make(ToolRegistry);
-    const service = await this.app.container.make(AgentService);
+    const service =
+      config.service === undefined
+        ? await this.app.container.make(AgentService)
+        : typeof config.service === 'function'
+          ? await config.service({ app: this.app })
+          : config.service;
     const auth = await resolveA2aAuth(config.auth, { app: this.app });
 
     await this.#registerPermissionTool(config);

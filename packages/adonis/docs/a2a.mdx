@@ -134,6 +134,25 @@ use (`store: 'lucid'`, the default). `store: 'memory'` keeps them in-process; an
 | `maxBodyBytes` | 1 MiB | |
 | `roles` | `scope:<id>` per delegated scope | `(caller) => string[]` — extra roles; `personal_agent` is always added. |
 
+## Bring your own runtime
+
+By default a turn runs through the agent provider's `AgentService`. An app that runs its agent its own
+way — a `runAgentLoop` built per request, tools locked to a tenant — passes an adapter instead:
+
+```ts title="config/a2a.ts"
+export default defineA2aConfig({
+  // ...
+  service: ({ app }) => app.container.make(MyA2aTurnService),
+})
+```
+
+An `A2aTurnService` has `AgentService`'s shape — `chat` (start a turn, return its `runId` and
+`threadId`), `subscribe` (its frames), `approve` / `reject` / `skip` / `cancel` — plus an optional
+`toolRoles(name)`: the roles a tool declares, which the surface matches delegated scopes against to
+approve actions and build receipts. Answer it when your registry is built per turn and the shared
+`ToolRegistry` does not know your tools. The `personalAgentGate` is the agent provider's: with your own
+runtime, deciding which tools a personal agent reaches is your adapter's job.
+
 ## Conformance
 
 This surface passes PACT's Identity conformance suite (`e2e/pact.test.ts`, `E2E_PROVIDER=any`) running

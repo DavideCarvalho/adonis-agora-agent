@@ -1,7 +1,8 @@
+import type { ApplicationService } from '@adonisjs/core/types';
 import type { A2aAuth, A2aAuthFactory, A2aCaller } from './auth.js';
 import type { A2aCardInput } from './handler.js';
 import type { A2aStore } from './store.js';
-import type { A2aActionPolicy } from './turn.js';
+import type { A2aActionPolicy, A2aTurnService } from './turn.js';
 
 /** One agent exposed over A2A, keyed by its public id (the `{brand}` in `/a2a/{brand}`). */
 export interface A2aAgentConfig {
@@ -53,6 +54,13 @@ export interface A2aConfig {
   timeoutMs?: number;
   /** Largest accepted request body, in bytes. Default 1 MiB. */
   maxBodyBytes?: number;
+  /**
+   * What runs a turn. Default: the agent provider's `AgentService`. An app with its own runtime
+   * (a `runAgentLoop` built per request) passes an adapter — or a factory resolved on first use.
+   */
+  service?:
+    | A2aTurnService
+    | ((ctx: { app: ApplicationService }) => A2aTurnService | Promise<A2aTurnService>);
   /** Roles of the actor a turn runs as. Default: `personal_agent` plus the delegated scopes. */
   roles?: (caller: A2aCaller) => string[];
 }

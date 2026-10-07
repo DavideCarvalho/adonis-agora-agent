@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { HttpContext } from '@adonisjs/core/http';
-import type { AgentService } from '../agent-service.js';
 import type { ToolRegistry } from '../tool-registry.js';
 import type { Actor } from '../types.js';
 import type { A2aAuth, A2aCaller } from './auth.js';
@@ -14,7 +13,7 @@ import {
   parseSendMessage,
 } from './protocol.js';
 import type { A2aStore } from './store.js';
-import { type A2aActionPolicy, runA2aTurn } from './turn.js';
+import { type A2aActionPolicy, type A2aTurnService, runA2aTurn } from './turn.js';
 
 /** What an Agent Card says about the agent, beyond what the surface fills in. */
 export interface A2aCardInput {
@@ -51,7 +50,8 @@ export interface A2aHandlerOptions {
   rootCardBrand?: string;
   auth: A2aAuth;
   store: A2aStore;
-  service: Pick<AgentService, 'chat' | 'subscribe' | 'approve' | 'reject' | 'skip' | 'cancel'>;
+  service: A2aTurnService;
+  /** Where a tool's roles are read when the service does not answer them. */
   registry: ToolRegistry;
   actions: A2aActionPolicy;
   timeoutMs: number;
@@ -171,6 +171,8 @@ function matchRoute(method: string, rest: string): Route | 404 | 405 {
  */
 export function createA2aHandler(options: A2aHandlerOptions) {
   const prefix = `/${options.path}/`;
+  const toolRoles = (name: string) =>
+    options.service.toolRoles?.(name) ?? options.registry.spec(name)?.roles;
 
   const interfaceUrl = (ctx: HttpContext, brand: A2aBrand): string => {
     const origin =
@@ -250,7 +252,7 @@ export function createA2aHandler(options: A2aHandlerOptions) {
 
     let turn: Awaited<ReturnType<typeof runA2aTurn>>;
     try {
-      turn = await runA2aTurn(options.service, options.registry, {
+      turn = await runA2aTurn(options.service, toolRoles, {
         actor,
         text: input.text,
         agentName: brand.agentName,
