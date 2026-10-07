@@ -108,11 +108,12 @@ The response is an SSE stream: an `event: meta` frame with the run and thread id
 ## What you get
 
 - **Streaming chat over SSE** — the core `/agent` routes for chat, re-attach, cancel, threads, HITL approve/reject, and quota.
-- **Tool-calling with governance** — `@AiTool` classes, `defineTool` functions, or `BaseTool`/`ReadTool`/`ActionTool` base classes, discovered from `app/agent_tools` (resolved through the IoC container, so a tool can `@inject` its dependencies), gated by a fail-closed role/persona policy.
+- **Tool-calling with governance** — `@AiTool` classes, `defineTool` functions, or `BaseTool`/`ReadTool`/`ActionTool` base classes, discovered from `app/agent_tools` (resolved through the IoC container, so a tool can `@inject` its dependencies), gated per actor by roles, abilities, feature flags and the persona's allow-list.
 - **Object-level ownership** — a caller may act only on the runs and threads it owns; a non-owner who guesses a `runId`/`threadId` gets `404`/`403`, unless it is governance-privileged (IDOR closed). See [Authorization](/docs/agent/governance/authorization#object-level-ownership).
-- **Human-in-the-loop** — `action` tools pause the run for an explicit approve/reject decision before they execute.
+- **Human-in-the-loop** — `action` tools pause the run for an explicit approve/reject decision before they execute — or, in [independent mode](/docs/agent/independent-approvals), become proposals decided from the web, an API or a text reply and executed by a background worker.
+- **Generative UI on every surface** — tools push typed components from a shared catalog; a React chat draws them, an AG-UI client receives them, and a text-only channel gets each component's text. See [One output, many surfaces](/docs/agent/surfaces).
 - **Multi-agent delegation** — declare `delegatesTo` and an orchestrator gets synthesized `ask_<agent>` tools that hand work to other named agents.
-- **Cost & quota accounting** — a per-turn usage ledger, a daily token quota checked before the model runs, and a pricing table for cost estimates.
+- **Cost & quota accounting** — a per-turn usage ledger, day/month token and USD budgets checked before a send, and a pricing table for cost estimates.
 - **Durable persistence** — the agent tables on Postgres / MySQL / SQLite via Lucid, plus an in-memory twin for tests.
 - **A shipped React layer** — `<AgentProvider>` + `useAgentChat()` from `@adonis-agora/agent/react`: history, resume, a message queue, approvals, attachments and threads, headless, with the session cookie and CSRF token already wired. A framework-free SSE client for everything else.
 - **An MCP server** — the same governed registry exposed to external assistants over Streamable HTTP, with OAuth or API-key auth.
@@ -132,6 +133,9 @@ The response is an SSE stream: an `event: meta` frame with the run and thread id
   <Card title="Governance read-model" href="/docs/agent/governance/read-model" description="Spend, run lifecycle, tool stats, reliability, and the approvals inbox over /agent/governance/*." />
   <Card title="State store" href="/docs/agent/stores/lucid" description="The Lucid tables, the migration, and the in-memory store." />
   <Card title="Streaming & HTTP" href="/docs/agent/streaming-and-http" description="The routes, the SSE envelope, HITL, and re-attaching to a live run." />
+  <Card title="Generative UI" href="/docs/agent/generative-ui" description="Push typed components from a catalog — ctx.emitUi, present, and the genui tools." />
+  <Card title="One output, many surfaces" href="/docs/agent/surfaces" description="UI capabilities, text fallbacks, and what React, AG-UI, text channels and MCP receive." />
+  <Card title="Independent approvals" href="/docs/agent/independent-approvals" description="Actions that wait for a decision while the conversation goes on." />
   <Card title="React" href="/docs/agent/react" description="AgentProvider + useAgentChat — a Hello chat for Adonis + Inertia, the message queue, approvals, attachments." />
   <Card title="Browser client" href="/docs/agent/browser-client" description="The framework-free SSE client — streaming, resume, and component frames." />
   <Card title="MCP server" href="/docs/agent/mcp" description="Expose the same governed tool registry to Claude, Cursor, and any other MCP client." />

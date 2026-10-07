@@ -1,0 +1,129 @@
+---
+title: Independent approvals
+description: Let an action wait for its decision while the conversation goes on — persisted proposals, decisions from the web, an API or a text reply, a background worker that executes them, and outcomes admitted into the thread.
+icon: Stamp
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+By default an `action` call **blocks** its turn: the run parks until someone approves or rejects it ([Human-in-the-loop](/docs/agent/streaming-and-http#human-in-the-loop)). That fits a person watching a web chat. It fits poorly where the decision comes later or from somewhere else — a WhatsApp conversation, a manager's inbox, an approval that takes a day.
+
+`actionApprovalMode: 'independent'` turns each such call into a persisted **proposal**. The turn ends at once with a receipt, the conversation accepts the next message, and a background worker executes the action after it is approved. Blocking stays the default.
+
+## Configuration
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  // …
+  store: 'lucid',
+  actionApprovalMode: 'independent',
+  backgroundActorResolver: {
+    async resolve({ actorRef, tenantRef }) {
+      // The CURRENT actor, roles included — or null when the user was removed or left the tenant.
+      return findCurrentActor(actorRef, tenantRef)
+    },
+  },
+  actionProposalWorker: { pollIntervalMs: 1_000, leaseMs: 30_000, maxConcurrency: 1 },
+})
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `actionApprovalMode` | `'blocking'` | `'independent'` turns approval-requiring `action` calls into proposals. |
+| `backgroundActorResolver` | — | **Required** in independent mode. `resolve({ actorRef, tenantRef })` returns the requester as they are now (`Actor`), or `null`. Execution runs as the requester, re-authorized with these roles; recorded role snapshots are never execution authority. |
+| `actionProposalWorker.pollIntervalMs` | `1000` | How often the worker looks for work. Must be below a third of `leaseMs`. |
+| `actionProposalWorker.leaseMs` | `30000` | How long a claimed execution is held before another worker may recover it. Renewed every third of it while the action runs. |
+| `actionProposalWorker.maxConcurrency` | `1` | Proposals executed at once per process. |
+
+All worker options are positive integers. The provider starts the worker when the app starts and stops it on shutdown; several processes coordinate through leases and compare-and-set transitions in the store.
+
+The boot fails early unless the store implements the proposal, worker and outcome capabilities and the [message queue](/docs/agent/streaming-and-http#message-queue): the Lucid store (SQLite, PostgreSQL, MySQL) and the in-memory store (one process; tests) do.
+
+## What a turn does
+
+When the model calls an action that the [approval policy](/docs/agent/streaming-and-http#approval-policy) says needs a decision:
+
+1. The registry validates the input and runs the tool's `preflight` with `phase: 'prepare'` ([Action preflight](/docs/agent/authoring/tools#action-preflight)). `denied` and `completed` settle the call without a proposal, as in blocking mode.
+2. A proposal is stored with the validated input, the original input, the resolved confirmation copy (`presentation.confirm`, or the preflight's own `confirmation`, with `{path}` placeholders filled from the input), the approver and expiry from the policy, and an execution context: agent, persona, page context and [UI capabilities](/docs/agent/surfaces#ui-capabilities).
+3. The stream carries `approval-requested` with `target: { kind: 'proposal', proposalId }`. The model receives `{ proposalId, status: 'pending', executed: false }` as the tool result, and the turn ends without another model call. Approving later reports that the action was queued, never that it ran.
+
+The thread is free again; the next message starts a new turn. Stopping a turn does not cancel its proposals.
+
+## Deciding
+
+### Over HTTP
+
+| Route | Body | Answers |
+| --- | --- | --- |
+| `GET <path>/threads/:id/action-proposals` | `?after=<cursor>` | The proposals the caller may see, as an array. |
+| `POST <path>/threads/:id/action-proposals/:proposalId/approve` | `{ remember?: boolean }` | The mutation result. |
+| `POST <path>/threads/:id/action-proposals/:proposalId/reject` | `{ reason?: string }` | The mutation result. |
+
+A list page holds at most 1000 proposals. When there are more, the response carries `X-Action-Proposals-Next`: decode it with `decodeURIComponent` and send the resulting JSON string as `after`. The header is listed in `Access-Control-Expose-Headers`; a cross-origin host must also allow it in its CORS configuration. The thread's owner sees every proposal; anyone else sees those the policy lets them decide, so a page may be empty and still have a next cursor.
+
+A decision is authorized by the approval policy (`canDecide`, else the requester or a holder of the approver role) and recorded with the deciding actor and the channel (`via: 'web'` on these routes). A body with other fields or wrong types is a `400`, an unknown thread or proposal a `404`, a thread of another tenant or an actor who may not decide a `403`. The mutation result has a `status` — `applied`, `unchanged` (the same decision again), `conflict`, `not_found` or `expired` — and the proposal. The blocking routes (`POST <path>/tool-call/approve` / `reject`) refuse a call that became a proposal with `400`.
+
+In process, `AgentService` offers the same operations: `listActionProposals(actor, threadId)`, `listActionProposalsPage(actor, threadId, after?)` and `decideActionProposal(actor, threadId, proposalId, 'approved' | 'rejected', { remember?, reason? }, via?)` — pass `via` (`'slack'`, `'teams'`, …) to record where a decision came from. Each throws `ActionProposalServiceError` (`status` 400, 403, 404 or 501 when independent mode is off).
+
+### Text decisions
+
+A message that is exactly a decision command is treated as a decision, not as a turn. The recognized commands are Portuguese:
+
+| Command | Effect |
+| --- | --- |
+| `sim`, `confirmo`, `confirmar`, `aprovo`, `aprovar` | approve |
+| `não`, `nao`, `cancelar`, `rejeito`, `rejeitar` | reject |
+| `confirmar sempre nesta conversa` (any approve verb + `sempre nesta conversa`) | approve and remember |
+
+Matching is case-insensitive, allows one trailing `.` or `!`, and refuses anything on more than one line. Append `#<proposalId>` to choose a proposal. Without an id the command decides only when exactly one pending proposal is visible to the sender; with several it answers which ones are pending and asks for an explicit id; with none the message goes to the model. Anything else — a question, a quoted command, a sentence that merely contains "sim" — is an ordinary message for the model. The decision is recorded with `via: 'text'`, and no model call is made.
+
+Text decisions apply to `POST <path>/chat` and `AgentService.send` on an existing thread, and to the AG-UI route. `POST <path>/chat` then answers JSON instead of a stream:
+
+```json
+{ "threadId": "t1", "proposalDecision": { "status": "applied", "proposal": { "…": "…" } }, "text": "Proposta aprovada e enfileirada para execução." }
+```
+
+`text` is a confirmation (in Portuguese) to show or relay. Over AG-UI the same decision is a short run: `RUN_STARTED`, a `CUSTOM` event `aviary.action-proposal-decision` with `{ threadId, proposalDecision }`, the text as one assistant message, then `RUN_FINISHED`. `AgentService.chat` never interprets text as a decision.
+
+### From the clients
+
+- **React.** A proposal shows in the transcript as a call awaiting approval; `call.approve.run()` and `chat.reject({ toolCallId, target })` route to the proposal endpoints by themselves. `useAgentChat` reads the thread's proposals whenever the chat or connection status changes and when the window regains focus, polls every `proposalPollMs` (default 1000) while one is pending, queued, executing or undelivered, and merges outcomes into the transcript without overwriting a turn in progress. `chat.proposals` is `{ items, error, refresh() }`; `proposals: false` turns the reads off.
+- **Browser client.** `client.listActionProposals(threadId)` follows every page; `client.decideActionProposal(threadId, proposalId, 'approved' | 'rejected', { remember?, reason? })` decides. `send` resolves with `proposalDecision` when the message was a text decision. See [Browser client](/docs/agent/browser-client).
+
+## Expiry and replacement
+
+A policy `ttlMs` becomes the proposal's persisted deadline (the card's `expiresAt`). The worker expires due proposals in batches; a decision on an expired proposal answers `expired`, so a stale card can never authorize the action.
+
+`replacementKey` on a `defineTool` action groups proposals that supersede each other — a string, or a function of the validated input and the tool context. A new proposal with the same requester, tenant, thread, tool and key supersedes the pending ones in the same transaction; approved or executing ones still run. Replaying the creation of an older proposal does not supersede a newer one.
+
+<Callout type="warn" title="Function tools only, in this release">
+`replacementKey` is accepted on `@AiTool({ … })` and `static tool` options, but class discovery does not forward it yet: declare it with `defineTool`.
+</Callout>
+
+## Execution
+
+The worker claims approved proposals and, for each:
+
+1. resolves the requester through `backgroundActorResolver` and refuses when it is gone or its tenant changed;
+2. resolves the recorded agent and persona against the **current** configuration and refuses when either no longer exists, or when the tool is no longer an `action`;
+3. invokes the tool through the registry — `enabled`, roles, `canUse` and the persona allow-list re-checked — with the stored original input, parsed again by the current schema and compared with the approved snapshot. Schema drift fails the execution instead of running something other than what was approved;
+4. runs `preflight` with `phase: 'execute'` before `execute`, then `present`, rendering for the recorded UI capabilities.
+
+Execution is **at least once**: a worker can die after the side effect and before recording it, and recovery runs the action again. `ctx.idempotencyKey` is stable for the proposal — pass it to the external service, or use it as a unique key on your write.
+
+A remembered approval becomes a grant for later calls of the same tool in the same thread once its execution reaches a terminal state, not when it is queued. A later call still passes permissions, validation and preflight.
+
+## Outcomes
+
+Every terminal proposal — succeeded, failed, rejected or expired — records an outcome, and the worker admits it into the thread as one assistant message: a one-line summary of what happened (including the result, or the error or rejection reason), the text of any component the recorded capabilities could not draw, the drawable components on its `ui` list, and the outcome itself as `actionProposalOutcome`. Admission waits while a turn holds the thread, is deduplicated across retries, and is discarded when the thread no longer exists. It does not start a model turn.
+
+A channel delivers outcomes by reading them: React merges them as above; a text channel reads the thread (`GET <path>/threads/:id`, or `AgentService.getThread`) after the proposal list shows the outcome `admitted`, and relays the new message. There is no push to the channel. See [One output, many surfaces](/docs/agent/surfaces#outcomes-that-arrive-later).
+
+## Database rollout
+
+`configure` publishes two forward-only migrations next to `create_agent_tables`:
+
+- `add_action_proposal_discovery` — adds the proposal discovery index and backfills existing proposals in bounded batches (`LucidAgentStore.backfillActionProposalDiscoveryIndex`).
+- `add_action_proposal_runtime` — adds outcome storage on messages, outcome delivery on proposals, and UI capabilities on queued messages.
+
+Both call `createAgentTables`; with `autoCreateTables` on, the provider applies the same additive schema at boot, but the backfill only runs from the migration. Stop older writers, run the migrations, then deploy the processes that run the worker. Runs already parked under blocking mode keep blocking: the mode is recorded on the turn, and changing the configuration does not rewrite a run in flight.
