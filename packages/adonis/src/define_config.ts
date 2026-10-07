@@ -23,6 +23,7 @@ import type { QuotaProvider } from './spi/quota-provider.js';
 import type { Retriever } from './spi/retriever.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
 import type { TokenStreamSink } from './spi/token-stream-sink.js';
+import type { PresentationErrorHandler } from './spi/tool.js';
 import type {
   ActorDirectoryFactory,
   AttachmentStagingContext,
@@ -107,6 +108,12 @@ export interface AgentConfig {
    * ```
    */
   actionProposalText?: TextActionProposalConfig;
+  /**
+   * Called when a tool's `present` fails after its `execute` succeeded — the action stays done and is
+   * never retried; only its rendering is lost. `details` names the tool and, inside a turn or a
+   * proposal execution, the call, run and thread. Omit → a warning on the app's logger.
+   */
+  onPresentationError?: PresentationErrorHandler;
   /** The LLM provider, or a lazy factory thunk so the provider SDK peer loads lazily. Required. */
   model: ModelProvider | ModelFactory;
   /** Name of the store (a key of `stores`). Omit for the in-memory store (single-process). */

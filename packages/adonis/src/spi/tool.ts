@@ -43,7 +43,7 @@ export interface AiToolCtx {
   /** Optional host handle (e.g. an ORM EntityManager) the app threads through options. */
   host?: unknown;
   /** Reports presentation failures separately from successful domain execution. */
-  onPresentationError?(error: unknown, details: { toolName: string }): void | Promise<void>;
+  onPresentationError?(error: unknown, details: PresentationErrorDetails): void | Promise<void>;
   /**
    * Pushes a UI component into the run's stream at the current position (between the text
    * tokens already emitted and the ones still to come). Optional: only the agent-loop's own
@@ -147,3 +147,17 @@ export type ToolPreflightResult<O = unknown> =
   | { status: 'ready'; confirmation?: ToolConfirmation }
   | { status: 'denied'; reason: string }
   | { status: 'completed'; output: O };
+
+/** Which presentation failed: the tool, and — inside a turn — the call, run and thread. */
+export interface PresentationErrorDetails {
+  toolName: string;
+  toolCallId?: string;
+  runId?: string;
+  threadId?: string;
+}
+
+/** The host's sink for presentation failures (`config/agent.ts`'s `onPresentationError`). */
+export type PresentationErrorHandler = (
+  error: unknown,
+  details: PresentationErrorDetails,
+) => void | Promise<void>;

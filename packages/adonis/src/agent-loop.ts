@@ -99,7 +99,12 @@ import type { QuotaStore } from './spi/quota-store.js';
 import type { Passage, RetrievalResult, RetrieveOptions, Retriever } from './spi/retriever.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
 import type { SinkWriter, StreamFrame } from './spi/token-stream-sink.js';
-import type { AiToolCtx, ToolPreflightResult } from './spi/tool.js';
+import type {
+  AiToolCtx,
+  PresentationErrorDetails,
+  PresentationErrorHandler,
+  ToolPreflightResult,
+} from './spi/tool.js';
 import type { AgentStreamErrorCode, AgentStreamEvent, AgentUiComponent } from './stream-events.js';
 import {
   DEFAULT_STRUCTURED_OUTPUT_INSTRUCTION,
@@ -143,6 +148,8 @@ import type {
 export interface AgentLoopDeps<TOutput = unknown> {
   actionApprovalMode?: ActionApprovalMode;
   resolveUiCatalog?: ResolveToolUiCatalog;
+  /** Where a tool's failed `present` is reported, with the call's ids. Undefined → a console warning. */
+  onPresentationError?: PresentationErrorHandler;
   model: ModelProvider;
   store: AgentStore;
   registry: ToolRegistry;
@@ -1385,6 +1392,17 @@ async function claimToolCall(
     // Replaced by the call's own collector inside its `tool:` step (see invokeClaimedTool); a
     // kind that never reaches a handler keeps this no-op.
     emitUi: createNoopEmitUi(call.id),
+    ...(deps.onPresentationError !== undefined
+      ? {
+          onPresentationError: (error: unknown, details: PresentationErrorDetails) =>
+            deps.onPresentationError!(error, {
+              ...details,
+              toolCallId: call.id,
+              runId: hooks.runId,
+              threadId: input.threadId,
+            }),
+        }
+      : {}),
     ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
     ...(persona !== undefined ? { persona } : {}),
     ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),

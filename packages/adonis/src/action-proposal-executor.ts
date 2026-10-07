@@ -3,6 +3,7 @@ import { createNegotiatedUiCollector, type ResolveToolUiCatalog } from './negoti
 import type { ActionProposal } from './spi/action-proposal-store.js';
 import type { BackgroundActorResolver } from './spi/background-actor-resolver.js';
 import type { RolesPolicy } from './spi/roles-policy.js';
+import type { PresentationErrorDetails, PresentationErrorHandler } from './spi/tool.js';
 import type { AgentUiComponent } from './stream-events.js';
 import type { ToolRegistry } from './tool-registry.js';
 import type { Actor, Persona } from './types.js';
@@ -14,6 +15,8 @@ export interface ActionProposalExecutionDeps {
   host?: unknown;
   persona?: Persona;
   resolveUiCatalog?: ResolveToolUiCatalog;
+  /** Where a tool's failed `present` is reported. Undefined → a console warning. */
+  onPresentationError?: PresentationErrorHandler;
 }
 export interface ActionProposalExecutorOptions {
   resolver: BackgroundActorResolver;
@@ -76,6 +79,17 @@ export class ActionProposalExecutor {
             ? { uiCapabilities: context.uiCapabilities }
             : {}),
           ...(deps.host !== undefined ? { host: deps.host } : {}),
+          ...(deps.onPresentationError !== undefined
+            ? {
+                onPresentationError: (error: unknown, details: PresentationErrorDetails) =>
+                  deps.onPresentationError!(error, {
+                    ...details,
+                    toolCallId: proposal.originToolCallId,
+                    runId: proposal.originRunId,
+                    threadId: proposal.threadId,
+                  }),
+              }
+            : {}),
           emitUi: ui.emit,
         },
         deps.rolesPolicy,
