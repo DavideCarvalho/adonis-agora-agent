@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from 'vitest';
 import { z } from 'zod';
-import { ActionProposalWorker, defineTool } from '../src/index.js';
+import { ActionProposalWorker, AgentService, defineTool } from '../src/index.js';
 import { FakeModelProvider } from '../src/testing/fake-model-provider.js';
 import { InMemoryAgentStore } from '../src/testing/in-memory-store.js';
 import { type BootedApp, bootAgentApp, readSse } from './helpers/boot-agent-app.js';
@@ -80,4 +80,42 @@ it('finishes the origin, accepts a second turn and text decision, then delivers 
   );
   expect(facts).toHaveLength(1);
   expect(facts[0]?.content).toContain('completed');
+}, 15000);
+
+it('AgentService.chat runs a decision-shaped message as a turn; only send decides by text', async () => {
+  const store = new InMemoryAgentStore();
+  const refund = defineTool(
+    { name: 'refund', kind: 'action', description: 'refund', input: z.object({}) },
+    () => 'done',
+  );
+  const seen: string[] = [];
+  app = await bootAgentApp({
+    model: new FakeModelProvider((args, turn) => {
+      seen.push(String(args.messages.at(-1)?.content));
+      return turn === 0 ? { text: '', toolCall: { name: 'refund', input: {} } } : { text: 'ok' };
+    }),
+    tools: [refund],
+    store: 'test',
+    stores: { test: async () => store },
+    actionApprovalMode: 'independent',
+    backgroundActorResolver: { resolve: async ({ actorRef }) => ({ id: actorRef, roles: [] }) },
+    actionProposalWorker: { pollIntervalMs: 10, leaseMs: 3000 },
+  });
+  const first = await readSse(
+    await fetch(`${app.url}/agent/chat`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ message: 'refund' }),
+    }),
+  );
+  const threadId = String(first.find((frame) => frame.event === 'meta')!.data.threadId);
+  const service = await app.app.container.make(AgentService);
+  const started = await service.chat({ actor: { id: 'u1', roles: [] }, threadId, message: 'sim' });
+  expect(started).toMatchObject({ threadId, runId: expect.any(String) });
+  for (let attempt = 0; attempt < 100 && seen.length < 2; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(seen.at(-1)).toBe('sim');
+  expect(
+    (await store.listActionProposals({ actorRef: 'u1', tenantRef: null, threadId }))[0]?.decision,
+  ).toBe('pending');
 }, 15000);
