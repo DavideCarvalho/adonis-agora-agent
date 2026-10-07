@@ -76,6 +76,14 @@ describe('refusals answer { message, code? }', () => {
     expect(typeof body.message).toBe('string');
     expect(body).not.toHaveProperty('error');
   });
+  it('refuses malformed uiCapabilities with a 400, not a 500', async () => {
+    booted = await bootAgentApp({ model: echoModel([]) });
+    for (const uiCapabilities of [{ components: 'nope' }, { components: [{ name: '1x' }] }]) {
+      const refused = await send(booted.url, { message: 'hi', uiCapabilities });
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toMatchObject({ code: 'invalid_ui_capabilities' });
+    }
+  });
 });
 
 describe("a send's model is that turn's only", () => {

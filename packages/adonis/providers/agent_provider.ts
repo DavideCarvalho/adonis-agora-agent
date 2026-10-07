@@ -763,6 +763,16 @@ export default class AgentProvider {
       if (mode === null) {
         return ctx.response.badRequest({ message: "mode must be 'auto', 'queue' or 'interrupt'" });
       }
+      let uiCapabilities: UiCapabilities | undefined;
+      try {
+        if (body.uiCapabilities !== undefined)
+          uiCapabilities = validateUiCapabilities(body.uiCapabilities);
+      } catch {
+        return ctx.response.badRequest({
+          message: 'uiCapabilities must be valid UI capabilities',
+          code: 'invalid_ui_capabilities',
+        });
+      }
       let started: ChatSendResult;
       try {
         started = await service.send({
@@ -779,9 +789,7 @@ export default class AgentProvider {
             ? { personaId: body.persona }
             : {}),
           ...(body.pageContext !== undefined ? { pageContext: body.pageContext } : {}),
-          ...(body.uiCapabilities !== undefined
-            ? { uiCapabilities: validateUiCapabilities(body.uiCapabilities) }
-            : {}),
+          ...(uiCapabilities !== undefined ? { uiCapabilities } : {}),
           ...(refs.length > 0 ? { attachments: refs } : {}),
         });
       } catch (error) {
