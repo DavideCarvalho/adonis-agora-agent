@@ -264,3 +264,21 @@ describe('mcp_provider: the authorization server knows this server', () => {
     expect(registered()?.length ?? 0).toBe(before);
   });
 });
+
+describe('mcp_provider: route middleware', () => {
+  it('runs the configured middleware before the endpoint, and not on the metadata route', async () => {
+    const hits: string[] = [];
+    booted = await bootApp({
+      auth: oauthAuth,
+      middleware: [
+        async (ctx: { request: { url(): string } }, next: () => Promise<void>) => {
+          hits.push(ctx.request.url());
+          return next();
+        },
+      ],
+    });
+    await expectAuthenticated(await post(booted, 'good'));
+    await fetch(`${booted.url}/.well-known/oauth-protected-resource/mcp`).then((r) => r.json());
+    expect(hits).toEqual(['/mcp']);
+  });
+});

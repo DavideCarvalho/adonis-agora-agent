@@ -67,7 +67,18 @@ export interface McpConfig {
    * permit are exposed.
    */
   allowedTools?: string[];
+  /**
+   * Route middleware for the MCP endpoint (`POST|GET|DELETE {path}`) — e.g. a rate limiter. They
+   * run BEFORE the bearer check (authentication happens in the handler), so key a limiter on the
+   * `Authorization` header or the IP, not on the authenticated account. The RFC 9728 metadata
+   * route is public and gets none.
+   */
+  middleware?: McpRouteMiddleware[];
 }
+
+/** Anything Adonis accepts in `route.use()`: a function, or a named/lazy middleware reference. */
+// biome-ignore lint/suspicious/noExplicitAny: mirrors the router's own `use()` parameter
+export type McpRouteMiddleware = any;
 
 /** Identity helper giving `config/mcp.ts` full type-checking. */
 export function defineMcpConfig(config: McpConfig): McpConfig {

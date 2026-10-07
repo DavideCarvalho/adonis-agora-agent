@@ -72,11 +72,15 @@ export default class McpProvider {
     this.#path = path;
 
     const route = `/${path}`;
-    router.post(route, (ctx: HttpContext) =>
-      this.#handlePost(ctx, config, registry, authorizer, auth, openActor),
-    );
-    router.get(route, (ctx: HttpContext) => this.#handleGet(ctx, auth, openActor));
-    router.delete(route, (ctx: HttpContext) => this.#handleDelete(ctx, auth, openActor));
+    const middleware = config.middleware ?? [];
+    const routes = [
+      router.post(route, (ctx: HttpContext) =>
+        this.#handlePost(ctx, config, registry, authorizer, auth, openActor),
+      ),
+      router.get(route, (ctx: HttpContext) => this.#handleGet(ctx, auth, openActor)),
+      router.delete(route, (ctx: HttpContext) => this.#handleDelete(ctx, auth, openActor)),
+    ];
+    if (middleware.length > 0) for (const r of routes) r.use(middleware);
 
     if (auth?.oauth) {
       // Announce this server to the authorization server in the same process (authkit's `mcp`):
