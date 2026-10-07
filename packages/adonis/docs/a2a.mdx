@@ -76,7 +76,7 @@ delegation, one **`scope:<id>`** role per delegated scope (namespaced, so a scop
 of your app's roles), and the user's account id as the actor id. Without delegation
 the actor is a stable synthetic id per (personal agent, its user), never an account.
 
-A personal agent reaches **only tools that name one of its roles**. A tool with no `roles` — which, under
+A personal agent runs **only tools that name one of its roles**. A tool with no `roles` — which, under
 the default policy, means "anyone" — is out of its reach: your existing tools were not written with an
 outside caller in mind. This gate wraps whatever `authorizer` you configured and changes nothing for
 other actors. Memory and skills resolve **no scope** for a personal agent: it never reads what your
@@ -100,9 +100,15 @@ there is nobody on this side to answer it, so the agent proceeds on its own assu
 
 ## Step-up and receipts
 
-When delegation is on, the provider registers **`request_permission`**, reachable only by personal
-agents. The model calls it when a request needs a scope the user has not granted; the reply becomes a
-`TASK_STATE_AUTH_REQUIRED` task carrying the missing scopes and a consent link. The conversation stays
+A personal agent is **offered** every tool that names `personal_agent` or any `scope:` role — even a
+scope the user has not delegated — but only **runs** the ones its roles reach. When the model calls a
+tool behind a scope that was not delegated, the call is refused and the reply becomes a
+`TASK_STATE_AUTH_REQUIRED` task carrying the missing scopes and a consent link: the model asks for a
+permission by doing what it would do anyway. (Offering and running are separate checks in the
+`RolesPolicy` SPI: an optional `canOffer` for the tool list, `can` for every invoke.)
+
+When delegation is on, the provider also registers **`request_permission`**, reachable only by personal
+agents, for a model that knows up front it needs a scope. The conversation stays
 open: once the user approves, the agent refreshes its token and re-sends with the same `contextId`.
 
 Every reply under delegation carries a **signed receipt** in `metadata['pact.receipt']`: the grant, the

@@ -4,8 +4,10 @@ import type { Actor, ToolSpec } from '../types.js';
 import { PERSONAL_AGENT_ROLE } from './permission-tool.js';
 
 /** The role a delegated scope becomes. Namespaced, so a scope can never pose as an app role. */
+export const SCOPE_ROLE_PREFIX = 'scope:';
+
 export function scopeRole(scope: string): string {
-  return `scope:${scope}`;
+  return `${SCOPE_ROLE_PREFIX}${scope}`;
 }
 
 function isPersonalAgent(actor: Actor): boolean {
@@ -29,6 +31,20 @@ export function personalAgentGate(inner: RolesPolicy): RolesPolicy {
         if (!(tool.roles ?? []).some((role) => roles.includes(role))) return false;
       }
       return inner.can(actor, tool);
+    },
+    /**
+     * A personal agent is OFFERED every tool written for personal agents — `personal_agent`, or a
+     * `scope:` role even when that scope was not delegated. Running it still needs {@link can}; the
+     * denied call is what the A2A turn turns into a permission request (step-up), so the model asks
+     * for a permission by doing what it would do anyway, not by remembering a separate tool.
+     */
+    async canOffer(actor: Actor, tool: ToolSpec) {
+      if (!isPersonalAgent(actor)) {
+        return inner.canOffer ? inner.canOffer(actor, tool) : inner.can(actor, tool);
+      }
+      return (tool.roles ?? []).some(
+        (role) => role === PERSONAL_AGENT_ROLE || role.startsWith(SCOPE_ROLE_PREFIX),
+      );
     },
   };
 }

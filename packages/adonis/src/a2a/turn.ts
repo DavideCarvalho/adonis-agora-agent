@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { AgentService } from '../agent-service.js';
 import type { Actor } from '../types.js';
-import { scopeRole } from './gate.js';
+import { SCOPE_ROLE_PREFIX, scopeRole } from './gate.js';
 import { PERMISSION_COMPONENT } from './permission-tool.js';
 
 /**
@@ -128,6 +128,17 @@ export async function runA2aTurn(
         const event = frame.event;
         if (event.kind === 'tool-input-available') {
           calls.set(event.id, { name: event.name, input: event.input });
+        } else if (event.kind === 'tool-output-error') {
+          // A tool behind a scope the caller did not delegate is offered but not run
+          // (`personalAgentGate`): its denied call IS the request for that scope.
+          const call = calls.get(event.id);
+          const missing = (call ? (toolRoles(call.name) ?? []) : [])
+            .filter((role) => role.startsWith(SCOPE_ROLE_PREFIX))
+            .map((role) => role.slice(SCOPE_ROLE_PREFIX.length))
+            .filter((scope) => !delegated.includes(scope));
+          if (missing.length > 0) {
+            result.permission = [...new Set([...(result.permission ?? []), ...missing])];
+          }
         } else if (event.kind === 'tool-output') {
           const call = calls.get(event.id);
           const scopes = call ? scopesOf(call.name) : [];

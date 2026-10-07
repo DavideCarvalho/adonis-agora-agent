@@ -15,7 +15,10 @@ export async function filterToolsByRole(
   policy: RolesPolicy,
 ): Promise<ToolSpec[]> {
   const checked = await Promise.all(
-    tools.map(async (tool) => ({ tool, allowed: await policy.can(actor, tool) })),
+    tools.map(async (tool) => ({
+      tool,
+      allowed: await (policy.canOffer ? policy.canOffer(actor, tool) : policy.can(actor, tool)),
+    })),
   );
   return checked.filter((entry) => entry.allowed).map((entry) => entry.tool);
 }

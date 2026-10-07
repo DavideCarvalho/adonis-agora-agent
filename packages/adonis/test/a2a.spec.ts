@@ -457,7 +457,7 @@ describe('delegated turns (PACT §5)', () => {
     });
   });
 
-  it('without the scope the action is never offered; with policy "reject" it is refused', async () => {
+  it('without the scope the action never runs; with policy "reject" it is refused', async () => {
     const ran: string[] = [];
     const h = handlerFor(cancelScript, 'reject');
     withCancelTool(h, ran);
@@ -526,6 +526,22 @@ describe('delegated turns (PACT §5)', () => {
     expect(task.contextId).toEqual(expect.any(String));
   });
 
+  it('a call to a tool behind a scope not delegated is the step-up, and does not run', async () => {
+    const ran: string[] = [];
+    for (const authorization of ['Bearer deleg|u1|acct-1|orders:read', 'Bearer user|u1']) {
+      const h = handlerFor(cancelScript);
+      withCancelTool(h, ran);
+      const res = await call(h.handle, 'POST', '/a2a/support/message:send', {
+        headers: { authorization },
+        body: send('cancel A-1'),
+      });
+      const task = res.json().task;
+      expect(task.status.state).toBe('TASK_STATE_AUTH_REQUIRED');
+      expect(task.metadata['pact.missingScopes']).toEqual(['orders:cancel']);
+    }
+    expect(ran).toEqual([]);
+  });
+
   it('request_permission is reachable only by personal agents', () => {
     const registry = new ToolRegistry();
     registerRequestPermissionTool(registry, { a: 'A' });
@@ -550,6 +566,15 @@ describe('personalAgentGate', () => {
     expect(await gate.can(pa, tool(['scope:orders:read']))).toBe(true);
     expect(await gate.can(pa, tool(['scope:orders:cancel']))).toBe(false);
     expect(await gate.can(human, tool([PERSONAL_AGENT_ROLE]))).toBe(false);
+  });
+
+  it('offers personal agents every tool written for them, delegated or not; can() still decides', async () => {
+    expect(await gate.canOffer!(pa, tool(['scope:orders:cancel']))).toBe(true);
+    expect(await gate.canOffer!(pa, tool([PERSONAL_AGENT_ROLE]))).toBe(true);
+    expect(await gate.canOffer!(pa, tool())).toBe(false);
+    expect(await gate.canOffer!(pa, tool(['ADMIN']))).toBe(false);
+    expect(await gate.canOffer!(human, tool())).toBe(true);
+    expect(await gate.canOffer!(human, tool(['scope:orders:cancel']))).toBe(false);
   });
 
   it('an app tool with no roles is never run for a personal agent', async () => {
