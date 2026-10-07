@@ -42,6 +42,15 @@ export function textTable(
   rows: readonly Props[],
   max = 15,
 ): string {
+  return `\`\`\`\n${tableLines(columns, rows, max).join('\n')}\n\`\`\``;
+}
+
+/** {@link textTable}'s lines, without the code block. */
+function tableLines(
+  columns: readonly { key: string; label: string }[],
+  rows: readonly Props[],
+  max: number,
+): string[] {
   const shown = rows.slice(0, max);
   const widths = columns.map((column) =>
     Math.min(28, Math.max(column.label.length, ...shown.map((r) => s(r[column.key]).length))),
@@ -56,7 +65,7 @@ export function textTable(
     ...shown.map((r) => format(columns.map((column) => s(r[column.key])))),
   ];
   if (rows.length > max) lines.push(`… ${rows.length - max} more rows`);
-  return `\`\`\`\n${lines.join('\n')}\n\`\`\``;
+  return lines;
 }
 
 export interface DiffLine {
@@ -159,18 +168,91 @@ export const Chart = defineComponent<ChartProps>({
   fallbackText: (props) => {
     const series = props.series ?? [];
     const data = props.data ?? [];
-    const first = series[0]?.key ?? '';
-    const max = Math.max(0, ...data.map((point) => Math.abs(Number(point[first]) || 0)));
     const unit = props.unit ? ` ${s(props.unit)}` : '';
-    const lines = data
-      .slice(0, 20)
-      .map(
-        (point) =>
-          `${s(point[props.xKey]).slice(0, 18).padEnd(18)} ${bar(Number(point[first]) || 0, max)} ${s(point[first])}${unit}`,
-      );
+    const lines =
+      props.type === 'line'
+        ? lineChartLines(props.xKey, series, data, unit)
+        : barChartLines(props.xKey, series, data, unit);
     return `${heading(props)}\`\`\`\n${lines.join('\n')}\n\`\`\``;
   },
 });
+
+const seriesName = (each: { key: string; label?: string }): string => s(each.label || each.key);
+const pad = (value: unknown, width: number): string => s(value).slice(0, width).padEnd(width);
+
+/**
+ * A bar chart as text: one bar per point (one series), or per point a bar per series, all on one
+ * scale. At most 20 points.
+ */
+function barChartLines(
+  xKey: string,
+  series: ChartProps['series'],
+  data: ChartProps['data'],
+  unit: string,
+): string[] {
+  const value = (point: ChartProps['data'][number], key: string) => Number(point[key]) || 0;
+  const max = Math.max(
+    0,
+    ...data.flatMap((point) => series.map((each) => Math.abs(value(point, each.key)))),
+  );
+  const lines: string[] = [];
+  const width = Math.min(18, Math.max(0, ...series.map((each) => seriesName(each).length)));
+  for (const point of data.slice(0, 20)) {
+    if (series.length <= 1) {
+      const key = series[0]?.key ?? '';
+      lines.push(`${pad(point[xKey], 18)} ${bar(value(point, key), max)} ${s(point[key])}${unit}`);
+      continue;
+    }
+    lines.push(s(point[xKey]));
+    for (const each of series) {
+      lines.push(
+        `  ${pad(seriesName(each), width)} ${bar(value(point, each.key), max)} ${s(point[each.key])}${unit}`,
+      );
+    }
+  }
+  if (data.length > 20) lines.push(`… ${data.length - 20} more points`);
+  return lines;
+}
+
+const SPARKS = '▁▂▃▄▅▆▇█';
+
+/** `▁▃▅█`: one block per value, scaled between the smallest and the largest. */
+function sparkline(values: readonly number[]): string {
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  return values
+    .map((value) =>
+      max === min
+        ? SPARKS[3]
+        : SPARKS[Math.round(((value - min) / (max - min)) * (SPARKS.length - 1))],
+    )
+    .join('');
+}
+
+/** A line chart as text: a sparkline per series (first → last, min/max), then the points as a table. */
+function lineChartLines(
+  xKey: string,
+  series: ChartProps['series'],
+  data: ChartProps['data'],
+  unit: string,
+): string[] {
+  const width = Math.min(18, Math.max(0, ...series.map((each) => seriesName(each).length)));
+  // At most 40 sparkline points, sampled evenly across the data.
+  const step = Math.max(1, Math.ceil(data.length / 40));
+  const lines = series.map((each) => {
+    const values = data.map((point) => Number(point[each.key]) || 0);
+    if (values.length === 0) return seriesName(each);
+    const spark = sparkline(values.filter((_value, index) => index % step === 0));
+    const first = s(data[0]?.[each.key]);
+    const last = s(data[data.length - 1]?.[each.key]);
+    return `${pad(seriesName(each), width)}  ${spark}  ${first} → ${last}${unit} (min ${Math.min(...values)}, max ${Math.max(...values)})`;
+  });
+  const columns = [
+    { key: xKey, label: xKey },
+    ...series.map((each) => ({ key: each.key, label: seriesName(each) })),
+  ];
+  return [...lines, '', ...tableLines(columns, data, 20)];
+}
 
 export const KpiCards = defineComponent<{
   title?: string;

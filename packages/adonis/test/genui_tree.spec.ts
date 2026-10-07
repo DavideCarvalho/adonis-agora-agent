@@ -134,6 +134,58 @@ describe('text', () => {
     expect(componentToText(custom, 'Unknown', { title: 'T' })).toMatch(/^\*T\*\n```/);
   });
 
+  it('renders nothing for an empty fallback (a bare layout), but still renders its children', () => {
+    expect(componentToText(catalog, 'Stack', {})).toBe('');
+    expect(componentToText(catalog, 'Card', {})).toBe('');
+    expect(componentToText(catalog, 'Card', { title: 'T' })).toBe('*T*');
+    const layout = {
+      type: 'Stack',
+      props: { gap: 2 },
+      children: [{ type: 'Card', props: {}, children: [{ type: 'Text', props: { text: 'hi' } }] }],
+    };
+    expect(treeToText(catalog, layout)).toBe('hi');
+    expect(componentToText(catalog, GENUI_TREE_COMPONENT, { root: layout })).toBe('hi');
+  });
+
+  it('draws every chart series, and a line chart as sparklines plus a table', () => {
+    const data = [
+      { month: 'Jan', revenue: 10, cost: 4 },
+      { month: 'Feb', revenue: 20, cost: 8 },
+      { month: 'Mar', revenue: 40, cost: 6 },
+    ];
+    const series = [
+      { key: 'revenue', label: 'Revenue' },
+      { key: 'cost', label: 'Cost' },
+    ];
+    const bar = componentToText(catalog, 'Chart', { type: 'bar', xKey: 'month', series, data });
+    expect(bar).toContain('Revenue');
+    expect(bar).toContain('Cost');
+    expect(bar).toMatch(/Cost\s+█+ 8/);
+    expect(bar).toMatch(/Revenue\s+█{20} 40/);
+    const single = componentToText(catalog, 'Chart', {
+      type: 'bar',
+      xKey: 'month',
+      series: [{ key: 'revenue' }],
+      data,
+      unit: 'k',
+    });
+    expect(single).toContain(`Jan${' '.repeat(16)}█████ 10 k`);
+    const line = componentToText(catalog, 'Chart', {
+      type: 'line',
+      title: 'Trend',
+      xKey: 'month',
+      series,
+      data,
+    });
+    expect(line).toMatch(/^\*Trend\*\n```/);
+    expect(line).not.toContain('█████');
+    expect(line).toMatch(/Revenue\s+▁\S▇?█? /);
+    expect(line).toContain('10 → 40');
+    expect(line).toContain('4 → 6');
+    expect(line).toMatch(/month\s+Revenue\s+Cost/);
+    expect(line).toMatch(/Mar\s+40\s+6/);
+  });
+
   it('describes the catalog for a model', () => {
     const small = defineCatalog([...LAYOUT_COMPONENTS.slice(0, 2), KpiCards]);
     expect(catalogToModelText(small, { mode: 'tree' })).toMatchInlineSnapshot(`
@@ -152,5 +204,8 @@ describe('text', () => {
     expect(catalogToModelText(small, { mode: 'per-component' })).toContain(
       '- KpiCards (tool `ui__show_kpi_cards`)',
     );
+    // A layout has no tool of its own outside tree mode.
+    expect(catalogToModelText(small, { mode: 'per-component' })).not.toContain('Stack');
+    expect(catalogToModelText(small, { mode: 'show' })).not.toContain('Card:');
   });
 });
