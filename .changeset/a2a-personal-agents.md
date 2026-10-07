@@ -14,3 +14,4 @@ Expose registered agents to personal agents (ChatGPT, Meta AI, a user's own assi
 - `service` plugs in an app's own runtime (an `A2aTurnService` adapter) instead of the agent provider's `AgentService`.
 
 **Security:** the agent provider now wraps the configured authorizer with `personalAgentGate`. An actor with the `personal_agent` role reaches only tools that declare one of its roles; tools with no `roles` are out of its reach. Its memory and skill scopes resolve to none, so it never reads or writes what the assistant remembers about the user. Nothing changes for any other actor.
+- A `config/a2a.ts` that exports `undefined` (the surface flagged off) mounts nothing and logs nothing.

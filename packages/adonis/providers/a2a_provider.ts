@@ -29,11 +29,21 @@ function normalizePath(path: string | undefined): string {
   return (path ?? 'a2a').replace(/^\/+|\/+$/g, '');
 }
 
+/**
+ * The A2A config, or `undefined` when the surface is off. A `config/a2a.ts` whose default export
+ * is `undefined` (feature-flagged off) reaches the config store as its module namespace
+ * (`{ default: undefined }`), not as `undefined`.
+ */
+function a2aConfigOf(app: ApplicationService): A2aConfig | undefined {
+  const config = app.config.get<A2aConfig | undefined>('a2a', undefined);
+  return config && typeof config === 'object' && config.agents && config.auth ? config : undefined;
+}
+
 export default class A2aProvider {
   constructor(protected app: ApplicationService) {}
 
   async boot() {
-    const config = this.app.config.get<A2aConfig | undefined>('a2a', undefined);
+    const config = a2aConfigOf(this.app);
     if (!config) return;
 
     const server = await this.app.container.make('server');
@@ -66,7 +76,7 @@ export default class A2aProvider {
    * which called it needs the tool as much as the web process that started it.
    */
   async ready() {
-    const config = this.app.config.get<A2aConfig | undefined>('a2a', undefined);
+    const config = a2aConfigOf(this.app);
     if (!config) return;
     try {
       await this.#registerPermissionTool(config);
