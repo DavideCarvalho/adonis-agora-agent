@@ -22,7 +22,7 @@ The resolvers that ship:
 
 - **`AnonymousActorResolver`** — the default described above. Options: `cookieName`, `maxAgeDays`, `sameSite` (`'none'` for a cross-site client, which forces `Secure`), `secure`, `path`, `roles`.
 
-- **`AuthActorResolver`** (recommended) — reads Adonis's authenticated principal off `ctx.auth.user` (populated by `@adonisjs/auth`). Fail-closed: throws when no user is authenticated. Pass a `toActor` mapper when your user model doesn't expose `id` / `roles` / `tenantRef` directly:
+- **`AuthActorResolver`** (recommended) — reads Adonis's authenticated principal off `ctx.auth.user` (populated by `@adonisjs/auth`). The agent routes run no auth middleware, so when no guard has tried the request yet it calls `ctx.auth.check()` itself — a session cookie or an access token works with no middleware; `guards: ['web', 'api']` checks those guards in order (`checkUsing`) instead of the default one. Fail-closed: throws (`401`) when no user is authenticated. Pass a `toActor` mapper when your user model doesn't expose `id` / `roles` / `tenantRef` directly:
 
   ```ts
   new AuthActorResolver({
