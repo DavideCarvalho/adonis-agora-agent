@@ -139,5 +139,6 @@ use (`store: 'lucid'`, the default). `store: 'memory'` keeps them in-process; an
 This surface passes PACT's Identity conformance suite (`e2e/pact.test.ts`, `E2E_PROVIDER=any`) running
 against a real AdonisJS app with AuthKit, and the delegated flow — device code, consent on AuthKit's
 screens, step-up, approved action, receipt verification, refresh rotation and reuse — through PACT's own
-client library. PACT's reference implementation names the card's identity scheme `platformJwt` where the
-spec says `paJwt`; AuthKit's `pact({ identitySchemeName })` picks either.
+client library. The card's identity scheme is named `platformJwt`, as in PACT's reference implementation
+and conformance suite (the spec text says `paJwt`; AuthKit's `pact({ identitySchemeName: 'paJwt' })`
+switches).
