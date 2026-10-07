@@ -5,6 +5,7 @@ import type { Actor, PageContext } from '../types.js';
 import {
   AG_UI_CUSTOM,
   type AgUiEvent,
+  actionProposalDecisionEvents,
   parseRunInput,
   planResume,
   type ResumeDecision,
@@ -14,7 +15,6 @@ import {
   readForwardedProps,
   readUserTurn,
 } from './core/index.js';
-import { actionProposalDecisionEvents } from './proposal-decision.js';
 import { type AgUiStreamOptions, agUiEvents, agUiSse } from './stream.js';
 
 export interface AgUiAdapterOptions {

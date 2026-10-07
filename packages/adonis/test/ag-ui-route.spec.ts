@@ -376,11 +376,14 @@ it('acknowledges an independent text decision over AG-UI without starting a mode
   const result = await run(client, 'confirmar #proposal-control');
   expect(modelCalls).toBe(0);
   expect(result.events.map((event) => event.type)).toContain('RUN_FINISHED');
-  expect(
-    result.events.some(
-      (event) => event.type === 'CUSTOM' && event.name === 'aviary.action-proposal-decision',
-    ),
-  ).toBe(true);
+  const decisions = result.events.filter(
+    (event) => event.type === 'CUSTOM' && event.name.endsWith('.action-proposal-decision'),
+  );
+  // The `agora.*` name, then the deprecated pre-rename one for older clients.
+  expect(decisions.map((event) => (event as { name: string }).name)).toEqual([
+    'agora.action-proposal-decision',
+    'aviary.action-proposal-decision',
+  ]);
   expect(
     (
       await store.getActionProposal(

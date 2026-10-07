@@ -158,6 +158,8 @@ export const AG_UI_CUSTOM = {
   stepUsage: 'agora.step-usage',
   /** `{ message }` — input material this producer could not use and dropped. */
   warning: 'agora.warning',
+  /** `{ threadId, proposalDecision }` — a message decided an independent proposal instead of a run. */
+  actionProposalDecision: 'agora.action-proposal-decision',
 } as const;
 
 /**
