@@ -83,7 +83,9 @@ export default class A2aProvider {
   #permissionToolRegistered = false;
 
   async #registerPermissionTool(config: A2aConfig): Promise<void> {
-    if (this.#permissionToolRegistered) return;
+    // With its own runtime the app registers `request_permission` where ITS tools live
+    // (`registerRequestPermissionTool`) — the shared registry may be another surface's.
+    if (this.#permissionToolRegistered || config.service !== undefined) return;
     const auth = await resolveA2aAuth(config.auth, { app: this.app });
     const scopes = await auth.delegableScopes();
     if (Object.keys(scopes).length > 0) {

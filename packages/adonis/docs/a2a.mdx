@@ -156,7 +156,9 @@ An `A2aTurnService` has `AgentService`'s shape — `chat` (start a turn, return 
 `toolRoles(name)`: the roles a tool declares, which the surface matches delegated scopes against to
 approve actions and build receipts. Answer it when your registry is built per turn and the shared
 `ToolRegistry` does not know your tools. The `personalAgentGate` is the agent provider's: with your own
-runtime, deciding which tools a personal agent reaches is your adapter's job.
+runtime, deciding which tools a personal agent reaches is your adapter's job — and so is offering
+`request_permission`: call `registerRequestPermissionTool(yourRegistry, scopes)` where your tools live
+(the provider only registers it in the shared registry when it runs `AgentService`).
 
 ## Conformance
 
