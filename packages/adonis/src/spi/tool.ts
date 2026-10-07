@@ -16,8 +16,8 @@ export interface AiToolCtx {
   requestId: string;
   persona?: Persona;
   /**
-   * The id of the tool call this invocation serves. Absent where a tool is invoked outside a turn
-   * (the MCP server, a direct `registry.invoke`).
+   * The id of the tool call this invocation serves. The MCP server mints one per `tools/call`.
+   * Absent where a tool is invoked outside a turn (a direct `registry.invoke`).
    */
   toolCallId?: string;
   /**
@@ -33,7 +33,8 @@ export interface AiToolCtx {
    * twice. Stable across replays: the run id is the run's own, and the call id comes out of the
    * journaled model step.
    *
-   * Absent where a tool is invoked outside a turn (the MCP server, a direct `registry.invoke`).
+   * The MCP server mints one per `tools/call` — each call is its own, and nothing replays it.
+   * Absent where a tool is invoked outside a turn (a direct `registry.invoke`).
    */
   idempotencyKey?: string;
   /** The agent running the turn, when it has a name. */

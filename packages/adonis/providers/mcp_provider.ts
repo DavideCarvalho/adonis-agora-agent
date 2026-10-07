@@ -12,12 +12,14 @@ import type { McpAuth, McpAuthInfo } from '../src/mcp/auth.js';
 import { McpAuthError, resolveMcpAuth } from '../src/mcp/auth.js';
 import type { McpConfig } from '../src/mcp/define_config.js';
 import {
+  mcpResourceUrl,
   normalizeMcpPath,
   protectedResourceMetadata,
   protectedResourceMetadataUrl,
   publicOrigin,
   wwwAuthenticateChallenge,
 } from '../src/mcp/discovery.js';
+import { registerOAuthResource } from '../src/mcp/oauth-resource.js';
 import { createMcpServer } from '../src/mcp/server.js';
 import type { RolesPolicy } from '../src/spi/roles-policy.js';
 import { ToolRegistry } from '../src/tool-registry.js';
@@ -77,6 +79,13 @@ export default class McpProvider {
     router.delete(route, (ctx: HttpContext) => this.#handleDelete(ctx, auth, openActor));
 
     if (auth?.oauth) {
+      // Announce this server to the authorization server in the same process (authkit's `mcp`):
+      // tokens it issues for this URL are then bound to it, with no URL repeated in its config.
+      registerOAuthResource(
+        this.#publicOrigin !== undefined
+          ? { url: mcpResourceUrl(this.#publicOrigin, path) }
+          : { path: `/${path}` },
+      );
       const oauth = auth.oauth;
       const metadataPath = `/.well-known/oauth-protected-resource/${path}`;
       router.get(metadataPath, async (ctx: HttpContext) => {
@@ -148,7 +157,9 @@ export default class McpProvider {
         return this.#refuse(ctx, auth, 401, 'missing bearer token', false);
       }
       try {
-        return await auth.verify(token);
+        return await auth.verify(token, {
+          resource: mcpResourceUrl(this.#origin(ctx), this.#path),
+        });
       } catch (error) {
         const status = error instanceof McpAuthError ? error.status : 401;
         const message = error instanceof Error ? error.message : 'unauthorized';

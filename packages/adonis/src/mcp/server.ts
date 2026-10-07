@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import type { AnyObjectSchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
@@ -132,18 +133,33 @@ export function createMcpServer(options: CreateMcpServerOptions): Server {
     { capabilities: { tools: {} } },
   );
 
-  const buildCtx = (authInfo: AuthInfo | undefined, sessionId: string | undefined): AiToolCtx => {
+  const buildCtx = (
+    authInfo: AuthInfo | undefined,
+    sessionId: string | undefined,
+    requestId: string | number | undefined,
+  ): AiToolCtx => {
     const actor = actorFromAuth(authInfo);
     const ids = idsFromRequest
-      ? idsFromRequest(sessionId, undefined)
+      ? idsFromRequest(sessionId, requestId)
       : {
           threadId: `mcp:${sessionId ?? actor.id}`,
           runId: `mcp:${sessionId ?? 'run'}`,
           requestId: `mcp:${sessionId ?? 'req'}`,
         };
-    // No conversation to push into: `emitUi` accepts the push and does nothing, so a tool that
-    // shows UI in a chat still runs over MCP.
-    return { actor, ...ids, emitUi: createNoopEmitUi(ids.requestId) };
+    // Each `tools/call` is one call of its own: no runtime replays it, so its id — and the
+    // idempotency key a tool writes with — is fresh per call.
+    const toolCallId = `mcp-call:${randomUUID()}`;
+    return {
+      actor,
+      ...ids,
+      toolCallId,
+      idempotencyKey: `${ids.runId}:${toolCallId}`,
+      // A tool can tell it is answering an MCP client, not the person in the app.
+      pageContext: { channel: 'mcp' },
+      // No conversation to push into: `emitUi` accepts the push and does nothing, so a tool that
+      // shows UI in a chat still runs over MCP.
+      emitUi: createNoopEmitUi(ids.requestId),
+    };
   };
 
   server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => {
@@ -161,7 +177,7 @@ export function createMcpServer(options: CreateMcpServerOptions): Server {
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-    const ctx = buildCtx(extra.authInfo, extra.sessionId);
+    const ctx = buildCtx(extra.authInfo, extra.sessionId, extra.requestId);
     const { name, arguments: args } = request.params;
     try {
       // Re-decided on the CALL, not inherited from the listing. `registry.invoke` re-checks roles

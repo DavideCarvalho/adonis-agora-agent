@@ -12,6 +12,7 @@ import {
 
 interface FakeToken {
   accountId: string;
+  aud?: string | string[];
   clientId?: string;
   grantId?: string;
   scope?: string;
@@ -246,5 +247,55 @@ describe('anyOf()', () => {
 
   it('refuses to be built empty', () => {
     expect(() => anyOf()).toThrow(/at least one/);
+  });
+});
+
+describe('authKitAuth() → audience (the token must be for THIS server)', () => {
+  const resource = 'https://app.example.com/mcp';
+  const tokens = {
+    mine: { ...validToken, aud: resource },
+    slash: { ...validToken, aud: `${resource}/` },
+    other: { ...validToken, aud: 'https://app.example.com/other-mcp' },
+    web: { ...validToken },
+  };
+
+  it('accepts a token issued for this resource, trailing slash tolerated', async () => {
+    const { app } = fakeAuthKit({ tokens, grants: { 'grant-1': {} } });
+    const auth = await resolveMcpAuth(authKitAuth(), { app });
+    await expect(auth.verify('mine', { resource })).resolves.toMatchObject({ token: 'mine' });
+    await expect(auth.verify('slash', { resource })).resolves.toMatchObject({ token: 'slash' });
+  });
+
+  it('refuses a token for another resource, or with no audience at all', async () => {
+    const { app } = fakeAuthKit({ tokens, grants: { 'grant-1': {} } });
+    const auth = await resolveMcpAuth(authKitAuth(), { app });
+    for (const token of ['other', 'web']) {
+      const refusal = await auth.verify(token, { resource }).catch((error) => error);
+      expect(refusal).toBeInstanceOf(McpAuthError);
+      expect(refusal.message).toBe('token was not issued for this MCP server');
+    }
+  });
+
+  it("audience: 'any' skips the check; so does a caller that names no resource", async () => {
+    const { app } = fakeAuthKit({ tokens, grants: { 'grant-1': {} } });
+    const any = await resolveMcpAuth(authKitAuth({ audience: 'any' }), { app });
+    await expect(any.verify('web', { resource })).resolves.toMatchObject({ token: 'web' });
+    const strict = await resolveMcpAuth(authKitAuth(), { app });
+    await expect(strict.verify('web')).resolves.toMatchObject({ token: 'web' });
+  });
+
+  it('anyOf() hands the resource on to each strategy', async () => {
+    const seen: unknown[] = [];
+    const auth = await resolveMcpAuth(
+      anyOf({
+        async verify(token, context) {
+          seen.push(context);
+          return { token, clientId: '', scopes: [], extra: { actor: { id: 'u' } } };
+        },
+      }),
+      { app: {} as ApplicationService },
+    );
+    await auth.verify('t', { resource });
+    expect(seen).toEqual([{ resource }]);
   });
 });

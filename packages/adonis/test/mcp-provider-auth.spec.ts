@@ -222,3 +222,45 @@ describe('mcp_provider: anyOf', () => {
     expect(metadata.status).toBe(200);
   });
 });
+
+describe('mcp_provider: the authorization server knows this server', () => {
+  const REGISTRY = Symbol.for('@adonis-agora/oauth:resources');
+  const registered = () => (globalThis as Record<symbol, unknown>)[REGISTRY] as unknown[];
+
+  it('registers its URL with publicUrl, or its path without, and verifies tokens for it', async () => {
+    const seen: unknown[] = [];
+    const recording: McpAuth = {
+      oauth: async () => oauthMeta,
+      async verify(token, context) {
+        seen.push(context);
+        return { token, clientId: 'c', scopes: [], extra: { actor: { id: 'u1' } } };
+      },
+    };
+    booted = await bootApp({
+      auth: recording,
+      publicUrl: 'https://acme.example.com',
+      path: 'tools/mcp',
+    });
+    expect(registered()).toContainEqual({ url: 'https://acme.example.com/tools/mcp' });
+    await fetch(`${booted.url}/tools/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: 'Bearer any',
+      },
+      body: JSON.stringify(initialize),
+    }).then((r) => r.body?.cancel());
+    expect(seen).toEqual([{ resource: 'https://acme.example.com/tools/mcp' }]);
+    await booted.close();
+
+    booted = await bootApp({ auth: recording, path: 'api/mcp' });
+    expect(registered()).toContainEqual({ path: '/api/mcp' });
+  });
+
+  it('registers nothing without OAuth (an API-key-only server)', async () => {
+    const before = registered()?.length ?? 0;
+    booted = await bootApp({ auth: apiKeyAuth({ apiKeys: ['k'] }), path: 'keys-only' });
+    expect(registered()?.length ?? 0).toBe(before);
+  });
+});

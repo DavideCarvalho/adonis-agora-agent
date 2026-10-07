@@ -189,3 +189,38 @@ describe('a confirmed write over MCP', () => {
     expect(written).toEqual([{ orderId: 'o-1' }]);
   });
 });
+
+describe('the context a tool gets over MCP', () => {
+  it('a fresh call id and idempotency key per call, and the mcp channel', async () => {
+    const seen: Record<string, unknown>[] = [];
+    const registry = new ToolRegistry();
+    registry.register(
+      { name: 'log_dose', kind: 'action', description: 'x', inputSchema: z.object({}) } as never,
+      {
+        execute: async (_input: unknown, ctx: Record<string, unknown>) => {
+          seen.push(ctx);
+          return { ok: true };
+        },
+      } as never,
+    );
+    const server = createMcpServer({
+      name: 'test',
+      version: '0.0.0',
+      registry,
+      policy: new DefaultRolesPolicy(),
+      actorFromAuth: () => ACTOR,
+      actions: 'execute',
+    });
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+
+    await client.callTool({ name: 'log_dose', arguments: {} });
+    await client.callTool({ name: 'log_dose', arguments: {} });
+    const [first, second] = seen;
+    expect(first?.pageContext).toEqual({ channel: 'mcp' });
+    expect(first?.idempotencyKey).toBe(`${first?.runId}:${first?.toolCallId}`);
+    expect(first?.toolCallId).not.toBe(second?.toolCallId);
+    expect(first?.idempotencyKey).not.toBe(second?.idempotencyKey);
+  });
+});
