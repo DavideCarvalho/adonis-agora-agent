@@ -7,6 +7,7 @@ import type { AgentGovernanceAuthorize } from './governance-gate.js';
 import type { McpServerConfig } from './mcp-client/options.js';
 import type { MemoryConfig } from './memory.js';
 import type { SkillsConfig } from './skills.js';
+import type { ActionProposal } from './spi/action-proposal-store.js';
 import type { ActorDirectory } from './spi/actor-directory.js';
 import type { ActorResolver } from './spi/actor-resolver.js';
 import type { ApprovalPolicy, ApprovalRules } from './spi/approval-policy.js';
@@ -92,7 +93,18 @@ export type DefaultAgentOptions = Omit<AgentDefinition, 'name'> & { name?: strin
 export interface AgentConfig {
   actionApprovalMode?: ActionApprovalMode;
   backgroundActorResolver?: BackgroundActorResolver;
-  actionProposalWorker?: { pollIntervalMs?: number; leaseMs?: number; maxConcurrency?: number };
+  actionProposalWorker?: {
+    pollIntervalMs?: number;
+    leaseMs?: number;
+    maxConcurrency?: number;
+    /**
+     * Called once a proposal's execution settles (`proposal.outcome?.executionStatus` says how), on the replica
+     * that ran it — the push for a channel that is not the web chat (a WhatsApp bridge, a Slack
+     * message) instead of polling. The outcome is still written to the thread as usual. A throw is
+     * logged, never retried.
+     */
+    onSettled?(proposal: ActionProposal): void | Promise<void>;
+  };
   /**
    * How a chat message decides an independent proposal (`actionApprovalMode: 'independent'`). A
    * message that is exactly an approve/reject word — optionally the remember phrase, an `#ID`, a

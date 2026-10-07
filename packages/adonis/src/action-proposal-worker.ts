@@ -10,7 +10,8 @@ export interface ActionProposalWorkerOptions {
   leaseMs?: number;
   maxConcurrency?: number;
   onError?(error: unknown): void;
-  onSettled?(proposal: ActionProposal): Promise<void>;
+  /** After a proposal's execution settled (succeeded or failed). A throw goes to `onError`. */
+  onSettled?(proposal: ActionProposal): void | Promise<void>;
 }
 export class ActionProposalWorker {
   private readonly leaseMs: number;
@@ -119,8 +120,14 @@ export class ActionProposalWorker {
         token: lease.token,
         generation: lease.generation,
       });
-      if (settled.status === 'applied' && settled.proposal)
-        await this.options.onSettled?.(settled.proposal);
+      if (settled.status === 'applied' && settled.proposal) {
+        try {
+          await this.options.onSettled?.(settled.proposal);
+        } catch (error) {
+          // The settlement is already committed: a broken listener must not fail the tick.
+          this.options.onError?.(error);
+        }
+      }
     } finally {
       clearInterval(timer);
       this.renewals.delete(timer);

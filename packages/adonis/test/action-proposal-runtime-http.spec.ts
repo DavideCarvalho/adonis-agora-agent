@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { ActionProposalWorker, AgentService, defineTool } from '../src/index.js';
 import { FakeModelProvider } from '../src/testing/fake-model-provider.js';
@@ -118,4 +118,52 @@ it('AgentService.chat runs a decision-shaped message as a turn; only send decide
   expect(
     (await store.listActionProposals({ actorRef: 'u1', tenantRef: null, threadId }))[0]?.decision,
   ).toBe('pending');
+}, 15000);
+
+it('pushes a settled proposal to actionProposalWorker.onSettled, and survives a throwing one', async () => {
+  const store = new InMemoryAgentStore();
+  const refund = defineTool(
+    { name: 'refund', kind: 'action', description: 'refund', input: z.object({}) },
+    () => 'refunded',
+  );
+  const settled: unknown[] = [];
+  const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+  app = await bootAgentApp({
+    model: new FakeModelProvider((_args, turn) =>
+      turn === 0 ? { text: '', toolCall: { name: 'refund', input: {} } } : { text: 'ok' },
+    ),
+    tools: [refund],
+    store: 'test',
+    stores: { test: async () => store },
+    actionApprovalMode: 'independent',
+    backgroundActorResolver: { resolve: async ({ actorRef }) => ({ id: actorRef, roles: [] }) },
+    actionProposalWorker: {
+      pollIntervalMs: 10,
+      leaseMs: 3000,
+      onSettled: (proposal) => {
+        settled.push(proposal);
+        throw new Error('bridge down');
+      },
+    },
+  });
+  const post = (message: string, threadId?: string) =>
+    fetch(`${app!.url}/agent/chat`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ message, threadId }),
+    });
+  const first = await readSse(await post('refund'));
+  const threadId = String(first.find((frame) => frame.event === 'meta')!.data.threadId);
+  expect(await (await post('yes', threadId)).json()).toMatchObject({
+    proposalDecision: { status: 'applied' },
+  });
+  const worker = await app.app.container.make(ActionProposalWorker);
+  for (let attempt = 0; attempt < 100 && settled.length === 0; attempt++) await worker.runOnce();
+  expect(settled).toHaveLength(1);
+  expect(settled[0]).toMatchObject({ threadId, toolName: 'refund' });
+  expect(logged).toHaveBeenCalledWith(
+    '[@adonis-agora/agent] Action proposal worker failed',
+    expect.objectContaining({ message: 'bridge down' }),
+  );
+  logged.mockRestore();
 }, 15000);
