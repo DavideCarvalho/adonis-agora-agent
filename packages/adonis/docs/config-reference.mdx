@@ -41,6 +41,8 @@ export default defineConfig({
 
 ### `model` <span data-req>required</span>
 
+Required unless an [`engine`](#engine) runs the turns.
+
 `ModelProvider | () => ModelProvider | Promise<ModelProvider>`. The LLM. Pass a `ModelProvider` directly, or (recommended) a **lazy thunk** so the provider SDK peer is imported only at boot. Wrap a Vercel AI SDK model with `aiSdkModel(...)`, or implement the tiny `ModelProvider` SPI yourself.
 
 ### `store`
@@ -176,6 +178,10 @@ A public deployment should set a `quota`: model spend is otherwise unbounded (pe
 ### `durable`
 
 `boolean`. Run each turn as a replay-safe durable workflow (over [`@adonis-agora/durable`](/docs/durable)) instead of in-process: LLM/tool steps become memoized checkpoints, HITL approval suspends on a signal (resuming across a restart), and delegation is a tracked child run. **Requires `@adonis-agora/durable` installed and configured** (`config/durable.ts`); if it can't be wired the provider logs a warning and falls back to the inline runner, so setting it is always safe. See [The durable runner](/docs/agent/durability/durable-runner).
+
+### `engine`
+
+`AgentEngine | (() => AgentEngine | Promise<AgentEngine>)`. Run turns on something other than the library's loop — `openCode({ host })` from `@adonis-agora/agent/opencode`. The routes, store, sink, approvals, questions and queue stay the library's; `model` becomes optional, and `durable: true` is refused at boot unless the engine is durable itself (`openCodeDurable()`). See [OpenCode engine](/docs/agent/opencode).
 
 ### `agents`
 

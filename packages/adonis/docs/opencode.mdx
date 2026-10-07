@@ -1,0 +1,194 @@
+---
+title: OpenCode engine
+description: Run the agent's turns on OpenCode 2 sessions behind the library's routes, stream protocol, approvals, questions and queue — with the app's tools served to OpenCode over an internal MCP endpoint.
+icon: Terminal
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+An **engine** runs a turn instead of the library's own loop. Everything around the turn stays the
+library's: the `/agent` routes and the stream protocol (so `@adonis-agora/agent/react` works
+unchanged), threads and the store, the sink, approvals and questions through `AgentService`, the
+message queue and the quota gate. The engine owns the model calls, the tools and the context it keeps.
+
+`@adonis-agora/agent/opencode` is the engine that ships: it runs turns on [OpenCode 2](https://opencode.ai)
+sessions. The OpenCode client is structural, so the subpath has no runtime dependency on
+`@opencode/client`; you hand it a client (`OpenCode.make({ baseUrl, headers })` from
+`@opencode/client` 2.x satisfies it).
+
+## The host
+
+The host is the one thing you write: which OpenCode server a turn runs on, and how a thread's session
+is created.
+
+```ts title="app/agent/opencode_host.ts"
+import { OpenCode } from '@opencode/client'
+import type { OpenCodeHost, OpenCodeTurnContext } from '@adonis-agora/agent/opencode'
+import type { Actor } from '@adonis-agora/agent'
+
+export class AppOpenCodeHost implements OpenCodeHost {
+  #client = OpenCode.make({
+    baseUrl: 'http://opencode.internal:4096',
+    headers: { authorization: `Basic ${btoa(`opencode:${process.env.OPENCODE_PASSWORD}`)}` },
+  })
+
+  /** Which server runs this actor's turns. `bootId` changes when it restarts and loses sessions. */
+  async server(actor: Actor) {
+    return { client: this.#client, key: 'main', bootId: await this.bootIdOfTheSandbox() }
+  }
+
+  /** How a thread's session is created (only when it has none on this server). */
+  async session({ input }: OpenCodeTurnContext) {
+    return {
+      location: { directory: `/work/${input.actor.id}` },
+      model: { providerID: 'anthropic', id: 'claude-sonnet-4-5' },
+      permissions: [
+        { action: '*', resource: '*', effect: 'deny' },
+        { action: 'question', resource: '*', effect: 'allow' }, // → an elicitation form
+        { action: 'webfetch', resource: '*', effect: 'ask' }, // → an approval card
+      ],
+    }
+  }
+
+  /** Extra instructions entries, refreshed every turn. */
+  async instructions() {
+    return { 'app.profile': 'The user writes short emails.' }
+  }
+}
+```
+
+```ts title="config/agent.ts"
+import { defineConfig, stores } from '@adonis-agora/agent'
+import { openCode } from '@adonis-agora/agent/opencode'
+import { AppOpenCodeHost } from '#agent/opencode_host'
+
+export default defineConfig({
+  // No `model`: the engine runs the turns.
+  engine: openCode({
+    host: AppOpenCodeHost, // a class is built by the container (`@inject()` works); an instance works too
+    tools: { url: 'http://app.internal:3333/agent/opencode/mcp' },
+  }),
+  store: 'lucid',
+  stores: { lucid: stores.lucid() },
+  defaultAgent: { systemPrompt: 'You are the support assistant.' },
+})
+```
+
+`engine` also takes a lazy factory (`engine: async () => (await import('…')).openCode({ … })`).
+With an engine `model` is optional, and `durable: true` — which names the loop's own durable runner —
+is refused at boot unless the engine is durable itself (`openCodeDurable()`, below).
+
+## What OpenCode's events become
+
+| OpenCode | The library's stream and store |
+| --- | --- |
+| `session.text.delta` / `session.reasoning.delta` | `text` / `reasoning` |
+| a step (`session.step.ended`) | `step-start` … `step-finish` with usage; a `chat` usage row per step |
+| tools (`session.tool.*`) | `tool-input-*` / `tool-output*`; code-mode inner calls nested by `parentId` |
+| `permission.asked` | an `action` call + `approval-requested`, recorded `pending_approval`; approve / reject → `permission.reply` |
+| `form.created` (the `question` tool) | `elicitation`; answer / skip → `session.form.reply` / `cancel` |
+| `session.renamed` | `title` |
+| `session.execution.*` | the run settles: queue handoff, `cancelled`, or an `event: error` |
+| cancel (`POST <path>/chat/:runId/cancel`) | `session.interrupt` |
+
+One session per thread, kept by an `OpenCodeSessionStore` (in memory by default). A session is
+recreated when the server's `bootId` changes, and told the conversation so far.
+
+## The library's seams under OpenCode
+
+| Seam | In the session |
+| --- | --- |
+| the agent's `systemPrompt` and its persona | instructions entry `agora.system`, every turn |
+| `approvalPolicy` | consulted on every `permission.asked`: not required → answered at once; otherwise its approver and `ttlMs` (expiry → rejected) |
+| remembered approvals | answered without asking |
+| the app's tools (`tools: { url }`) | served over the engine's MCP endpoint; reads allowed, actions asked, tools outside the agent's allow-list denied |
+| `skills` | `.opencode/skills/<name>/SKILL.md` in the session's directory, allowed for OpenCode's `skill` tool |
+| `memory` | instructions entry `agora.memory`; with `tools` and a provider that writes, a `remember` tool (one fact, at the actor's own scope) |
+| `ctx.emitUi` in a tool | the component is a `ui` frame on the turn's stream, persisted on its message |
+| regenerate | the thread is rewound and the session reverted (`session.revert`) |
+
+What an engine does not get: everything that lives inside the loop — input/output processors,
+`outputSchema`, `maxSteps`, `historyWindow`, inject-mode retrieval, delegation (`delegatesTo`), the
+loop's quota check per step (the send gate still applies). Under OpenCode those are OpenCode's.
+
+## The app's tools over MCP
+
+With `tools` set, the engine mounts `POST <path>/opencode/mcp` and registers it in each session
+(`mcp.add`, as the `agora` server) with a bearer token. It is not the `config/mcp.ts` surface: it
+exists only to serve OpenCode turns, and it is built to stay safe if the token leaks out of the
+sandbox.
+
+- **The token** names an actor and an OpenCode server, expires (`ttlMs`, default 7 days, re-issued
+  half-way), and is HMAC-signed with `tools.secret`, else a key derived from the app's `APP_KEY`.
+- **A call runs only inside a turn**: OpenCode names its session in every call's `_meta`; the call
+  must come from a session that is running a turn of the token's actor right now. Anything else is
+  refused.
+- **The agent's allow-list and the roles policy** apply to the call, as in the loop.
+- **An `action` tool runs only against an approval the turn granted** — the person approved
+  OpenCode's permission, or the policy / a remembered approval answered it. Each approval runs one
+  call. A caller that skips OpenCode's permission rules cannot run an action unapproved.
+
+<Callout type="warn">
+Give each actor their own session `location.directory`: OpenCode registers an MCP server per
+directory, so actors sharing one would overwrite each other's token, and calls would be refused.
+</Callout>
+
+## Durable turns
+
+```ts title="config/agent.ts"
+import { openCodeDurable } from '@adonis-agora/agent/opencode/durable'
+
+export default defineConfig({
+  engine: openCodeDurable({ host: AppOpenCodeHost, tools: { url: '…' } }),
+  // next to a configured @adonis-agora/durable (its WorkflowEngine is taken from the container)
+})
+```
+
+Each turn is the `agora.agent.opencode.run` workflow: `begin → prompt → observe → [wait for a person →
+reply → observe]* → finish`, every step checkpointed, a person's decision a durable signal. A turn
+parked on an approval survives restarts and is resumed by whichever process receives the decision;
+a resumed step first catches up on what OpenCode asked while nobody listened. If OpenCode itself
+restarted while the turn waited, a new session is opened with the conversation and the decision.
+
+`durable: { start, startError }` in the engine's options (or `startOptions` / `startError` on the
+host) sets each turn's start options — tags, search attributes, a concurrency quota — and maps a
+refused start (e.g. to a `429`). `runId: (input) => …` names the runs.
+
+## Host hooks and `hostContext`
+
+`AgentService.chat({ …, hostContext })` carries the host's own JSON facts about a send — where it
+came from, where its answer goes — to the turn: through the queue (the `host_context` column, healed
+on boot; never on the queue's wire view) and the durable journal. The model and clients never see it.
+The host's hooks receive it on `input.hostContext`:
+
+| Hook | When |
+| --- | --- |
+| `onAsk({ input, runId, sessionId, ask })` | a person was asked (an approval or a form) — post it elsewhere; may run again after a restart |
+| `onUi({ input, runId, component })` | a tool pushed a component |
+| `beforeSettle(result)` | the run is over: append components to the answer, or word a failure for the person |
+| `onSettled(result)` | the run settled: deliver the answer elsewhere, record spend and telemetry |
+
+Also on the host: `reuse` (keep the thread's session or open a new one), `beforePrompt` (update the
+session every turn), `prepare` (a new session, before its first prompt), `promptFor` (what the session
+is prompted with) and `files` (attachments). Hook errors are logged, never the run's.
+
+`engine.turns.pushToSession(sessionId, component)` pushes a component into the run a session serves,
+for the host's own trusted callers; `engine.turns.liveRuns()` lists the runs this process follows.
+
+## Several processes
+
+Use `openCodeDurable()`, a cross-process sink (`tokenSinks.redis()` / `tokenSinks.lucid()`), a shared
+session store — `sessions: keyValueOpenCodeSessionStore(redis)` — and the same `tools.secret` (or
+`APP_KEY`) everywhere. The tools endpoint answers from any process: a call is tied to its turn through
+OpenCode itself.
+
+## Testing against a real OpenCode
+
+The live specs run the engine against `opencode serve` (2.x, `OPENCODE_SERVER_PASSWORD` set, with a
+key for the model's provider), and are skipped without `OPENCODE_LIVE_URL`:
+
+```sh
+OPENCODE_LIVE_URL=http://127.0.0.1:4096 OPENCODE_LIVE_PASSWORD=… \
+OPENCODE_LIVE_MODEL=opencode-go/longcat-2.5-preview-free OPENCODE_LIVE_DIR=/tmp/work \
+npx vitest run test/opencode/live
+```
