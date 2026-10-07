@@ -86,6 +86,6 @@ describe('autoCreateTables defaults to true (the lib manages its own schema)', (
     await gov.spendByModel({ fromDay: '2026-01-01', toDay: '2026-12-31' });
     // Nine tables (the six, the chat queue's, the confirm tokens' and the Lucid sink's frame
     // buffer), created exactly once — not 9 × 3 stores.
-    expect(ddlCount).toBe(10);
+    expect(ddlCount).toBe(11);
   });
 });

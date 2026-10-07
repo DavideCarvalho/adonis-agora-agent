@@ -1,13 +1,23 @@
 import {
   ChannelDeliveryError,
   type ChannelFetch,
+  ChannelMediaTooLargeError,
+  decodeBase64,
+  fetchBytes,
   postJson,
   queryParam,
   record,
   safeEqual,
+  sizeOf,
   str,
 } from '../http.js';
-import type { ChannelAdapter, ChannelRequest, InboundMessage, OutboundMessage } from '../types.js';
+import type {
+  ChannelAdapter,
+  ChannelRequest,
+  InboundMedia,
+  InboundMessage,
+  OutboundMessage,
+} from '../types.js';
 
 export interface EvolutionApiOptions {
   /**
@@ -80,6 +90,54 @@ function buttonReply(
   };
 }
 
+const MEDIA_FIELDS = [
+  ['imageMessage', 'image'],
+  ['audioMessage', 'audio'],
+  ['videoMessage', 'video'],
+  ['documentMessage', 'document'],
+  ['stickerMessage', 'sticker'],
+] as const;
+
+/** What {@link evolutionApi}'s `download` needs: the message key, and the bytes if Evolution inlined them. */
+interface EvolutionMediaRef {
+  key: Record<string, unknown>;
+  base64?: string | undefined;
+  mediaUrl?: string | undefined;
+}
+
+/** The file a message carries, and its caption. */
+function mediaOf(
+  message: Record<string, unknown>,
+  key: Record<string, unknown>,
+): { media: InboundMedia; caption: string | undefined } | undefined {
+  // A document sent with a caption arrives wrapped.
+  const wrapped = record(record(message.documentWithCaptionMessage)?.message);
+  const source = wrapped ?? message;
+  for (const [field, kind] of MEDIA_FIELDS) {
+    const body = record(source[field]);
+    if (!body) continue;
+    const ref: EvolutionMediaRef = {
+      key,
+      ...(str(message.base64) !== undefined ? { base64: str(message.base64) } : {}),
+      ...(str(message.mediaUrl) !== undefined ? { mediaUrl: str(message.mediaUrl) } : {}),
+    };
+    const contentType = str(body.mimetype);
+    const filename = str(body.fileName);
+    const sizeBytes = sizeOf(body.fileLength);
+    return {
+      media: {
+        kind,
+        ref,
+        ...(contentType !== undefined ? { contentType } : {}),
+        ...(filename !== undefined ? { filename } : {}),
+        ...(sizeBytes !== undefined ? { sizeBytes } : {}),
+      },
+      caption: str(body.caption),
+    };
+  }
+  return undefined;
+}
+
 function parseOne(
   data: Record<string, unknown>,
   options: EvolutionApiOptions,
@@ -103,16 +161,20 @@ function parseOne(
   const message = record(data.message);
   if (!message) return null;
   const button = buttonReply(message);
+  const file = button ? undefined : mediaOf(message, key);
   const text = button
     ? (button.label ?? button.id)
-    : (str(message.conversation) ?? str(record(message.extendedTextMessage)?.text));
-  if (text === undefined || text.trim() === '') return null;
+    : file
+      ? (file.caption ?? '')
+      : (str(message.conversation) ?? str(record(message.extendedTextMessage)?.text));
+  if (text === undefined || (text.trim() === '' && !file)) return null;
   return {
     id,
     from: addressOf(sender),
     conversation: remoteJid,
     text: text.trim(),
     ...(button ? { buttonId: button.id } : {}),
+    ...(file ? { media: [file.media] } : {}),
     raw: data,
   };
 }
@@ -125,8 +187,11 @@ const MAX_BUTTONS = 3;
  * routes). Point the instance's webhook — event `MESSAGES_UPSERT` — at the route, with the token:
  * `https://app.example.com/webhooks/whatsapp?token=<webhookToken>`.
  *
- * Reads `messages.upsert` (text, extended text, button and list replies); ignores the instance's own
- * messages, broadcasts and (unless `groups`) groups. Sends with `POST {url}/message/sendText/{instance}`.
+ * Reads `messages.upsert` (text, extended text, button and list replies, images, audio, video,
+ * documents and stickers); ignores the instance's own messages, broadcasts and (unless `groups`)
+ * groups. Sends with `POST {url}/message/sendText/{instance}`. Downloads media from the webhook's
+ * inline `base64` (Evolution's "webhook base64" setting), else its `mediaUrl`, else
+ * `POST {url}/chat/getBase64FromMediaMessage/{instance}`.
  */
 export function evolutionApi(options: EvolutionApiOptions): ChannelAdapter {
   const name = options.name ?? 'whatsapp';
@@ -171,6 +236,51 @@ export function evolutionApi(options: EvolutionApiOptions): ChannelAdapter {
         .filter((item): item is Record<string, unknown> => item !== undefined)
         .map((item) => parseOne(item, options))
         .filter((item): item is InboundMessage => item !== null);
+    },
+
+    async download(media: InboundMedia, { maxBytes }) {
+      const ref = media.ref as EvolutionMediaRef;
+      if (media.sizeBytes !== undefined && media.sizeBytes > maxBytes) {
+        throw new ChannelMediaTooLargeError(maxBytes);
+      }
+      const fallbackType = media.contentType ?? 'application/octet-stream';
+      const named = media.filename !== undefined ? { filename: media.filename } : {};
+      if (ref.base64 !== undefined) {
+        return { data: decodeBase64(ref.base64, maxBytes), contentType: fallbackType, ...named };
+      }
+      if (ref.mediaUrl !== undefined) {
+        // The instance's key goes only to the Evolution server itself, never to a storage host.
+        const sameHost = new URL(ref.mediaUrl).origin === new URL(base).origin;
+        const file = await fetchBytes(
+          name,
+          fetcher,
+          ref.mediaUrl,
+          sameHost ? headers : {},
+          timeoutMs,
+          maxBytes,
+        );
+        return {
+          data: file.data,
+          contentType: media.contentType ?? file.contentType ?? fallbackType,
+          ...named,
+        };
+      }
+      const answer = record(
+        await post('/chat/getBase64FromMediaMessage', {
+          message: { key: ref.key },
+          convertToMp4: false,
+        }),
+      );
+      const base64 = str(answer?.base64);
+      if (base64 === undefined) {
+        throw new ChannelDeliveryError(name, null, `${name}: the media could not be downloaded`);
+      }
+      const filename = str(answer?.fileName) ?? media.filename;
+      return {
+        data: decodeBase64(base64, maxBytes),
+        contentType: str(answer?.mimetype) ?? fallbackType,
+        ...(filename !== undefined ? { filename } : {}),
+      };
     },
 
     async send(conversation: string, message: OutboundMessage) {

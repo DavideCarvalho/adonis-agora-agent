@@ -79,10 +79,10 @@ export default defineConfig({
 })
 ```
 
-Run the published migrations for the ten agent tables (`agent_action_proposal`,
+Run the published migrations for the agent tables (`agent_action_proposal`,
 `agent_thread`, `agent_message`, `agent_tool_call`, `agent_token_usage`,
 `agent_model_pricing`, `agent_run`, `agent_queued_message`, `agent_confirm_token`, plus the
-`agent_stream_frame` buffer):
+`agent_stream_frame` buffer and the text channels' `agent_channel_state`):
 
 ```bash
 node ace migration:run
@@ -285,12 +285,17 @@ router.post(
 )
 ```
 
-The handler verifies the webhook (token / HMAC / secret header), dedupes by provider message id
-(in memory by default — `redisChannelDedupe(redis)` on several replicas), answers `200` at once and
-runs the turn in the background (`await handler.drain()` in tests). Replies are text-only
-(components → `fallbackText`), converted to the channel's markdown and split at its length limit.
-Use `actionApprovalMode: 'independent'`: pending proposals go out as Confirm/Cancel buttons (or a
-text instruction in the `actionProposalText` vocabulary); in blocking mode the channel can only say
+The handler verifies the webhook (token / HMAC / secret header), dedupes by provider message id,
+answers `200` at once and runs the turn in the background (`await handler.drain()` in tests).
+Replies are text-only (components → `fallbackText`), converted to the channel's markdown and split
+at its length limit. Media is downloaded and attached when `attachments` is configured (else the
+person is told why not). `ask` questions go out as numbered text, one at a time; the next messages
+answer them. State (message ids, questions in progress, relayed outcomes) lives in
+`agent_channel_state` via `lucidChannelStore()` when the agent store is Lucid, else memory —
+`store: redisChannelStore(redis)` otherwise on several replicas. Use
+`actionApprovalMode: 'independent'`: pending proposals go out as Confirm/Cancel buttons (or a text
+instruction in the `actionProposalText` vocabulary), and `actionProposalWorker: { onSettled:
+channels.onSettled }` relays outcomes that settle later. In blocking mode the channel can only say
 the approval must happen in the app. Exclude webhook routes from Shield's CSRF check.
 
 Source: `packages/adonis/docs/channels.mdx`, `packages/adonis/src/channels/`.

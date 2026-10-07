@@ -1,13 +1,22 @@
 import {
   ChannelDeliveryError,
   type ChannelFetch,
+  ChannelMediaTooLargeError,
+  fetchBytes,
   postJson,
   record,
   safeEqual,
+  sizeOf,
   str,
 } from '../http.js';
 import { unescapeTelegramMarkdown } from '../markdown.js';
-import type { ChannelAdapter, ChannelRequest, InboundMessage, OutboundMessage } from '../types.js';
+import type {
+  ChannelAdapter,
+  ChannelRequest,
+  InboundMedia,
+  InboundMessage,
+  OutboundMessage,
+} from '../types.js';
 
 export interface TelegramOptions {
   /** The bot's token from @BotFather. */
@@ -34,6 +43,47 @@ export interface TelegramOptions {
 const MAX_TEXT = 4096;
 const MAX_BUTTONS = 8;
 
+/** The file a message carries: the largest photo size, a document, a voice note, audio, video, a sticker. */
+function mediaOf(message: Record<string, unknown>): InboundMedia | undefined {
+  const photo = Array.isArray(message.photo) ? record(message.photo.at(-1)) : undefined;
+  const candidates: [
+    InboundMedia['kind'],
+    Record<string, unknown> | undefined,
+    string | undefined,
+  ][] = [
+    ['image', photo, 'image/jpeg'],
+    ['document', record(message.document), undefined],
+    ['audio', record(message.voice), 'audio/ogg'],
+    ['audio', record(message.audio), undefined],
+    ['video', record(message.video), 'video/mp4'],
+    ['video', record(message.video_note), 'video/mp4'],
+    [
+      'sticker',
+      record(message.sticker),
+      record(message.sticker)?.is_animated === true
+        ? 'application/x-tgsticker'
+        : record(message.sticker)?.is_video === true
+          ? 'video/webm'
+          : 'image/webp',
+    ],
+  ];
+  for (const [kind, body, implied] of candidates) {
+    const fileId = str(body?.file_id);
+    if (!body || fileId === undefined) continue;
+    const contentType = str(body.mime_type) ?? implied;
+    const filename = str(body.file_name);
+    const sizeBytes = sizeOf(body.file_size);
+    return {
+      kind,
+      ref: fileId,
+      ...(contentType !== undefined ? { contentType } : {}),
+      ...(filename !== undefined ? { filename } : {}),
+      ...(sizeBytes !== undefined ? { sizeBytes } : {}),
+    };
+  }
+  return undefined;
+}
+
 /** The label of the inline button with `data` on the message it was pressed on. */
 function pressedLabel(message: Record<string, unknown> | undefined, data: string) {
   const rows = record(message?.reply_markup)?.inline_keyboard;
@@ -51,7 +101,8 @@ function pressedLabel(message: Record<string, unknown> | undefined, data: string
  * A Telegram bot over the [Bot API](https://core.telegram.org/bots/api) webhook. Register it with
  * `setWebhook({ url, secret_token, allowed_updates: ['message', 'callback_query'] })`.
  *
- * Reads text messages and inline-keyboard presses (`callback_query`, answered with
+ * Reads text messages, media (photos, documents, voice notes, audio, video, stickers — downloaded
+ * with `getFile`, which serves up to 20 MB) and inline-keyboard presses (`callback_query`, answered with
  * `answerCallbackQuery` and the keyboard removed so it cannot be pressed twice); ignores bots and
  * (unless `groups`) group chats. Sends `sendMessage` in MarkdownV2 — when Telegram refuses the
  * formatting, the same text goes again as plain text.
@@ -61,7 +112,8 @@ export function telegram(options: TelegramOptions): ChannelAdapter {
   const fetcher = options.fetch ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? 20_000;
   const markdown = options.markdown !== false;
-  const api = `${(options.apiUrl ?? 'https://api.telegram.org').replace(/\/+$/, '')}/bot${options.botToken}`;
+  const origin = (options.apiUrl ?? 'https://api.telegram.org').replace(/\/+$/, '');
+  const api = `${origin}/bot${options.botToken}`;
   const call = (method: string, body: unknown) =>
     postJson(name, fetcher, `${api}/${method}`, {}, body, timeoutMs);
   const privateOnly = (chat: Record<string, unknown> | undefined) =>
@@ -88,9 +140,18 @@ export function telegram(options: TelegramOptions): ChannelAdapter {
       if (message) {
         const chat = record(message.chat);
         const from = record(message.from);
-        const text = str(message.text)?.trim();
-        if (!chat || !from || from.is_bot === true || !privateOnly(chat) || !text) return null;
-        return { id, from: String(from.id), conversation: String(chat.id), text, raw: update };
+        const media = mediaOf(message);
+        const text = (str(message.text) ?? str(message.caption) ?? '').trim();
+        if (!chat || !from || from.is_bot === true || !privateOnly(chat)) return null;
+        if (text === '' && !media) return null;
+        return {
+          id,
+          from: String(from.id),
+          conversation: String(chat.id),
+          text,
+          ...(media ? { media: [media] } : {}),
+          raw: update,
+        };
       }
       const query = record(update?.callback_query);
       if (query) {
@@ -124,6 +185,31 @@ export function telegram(options: TelegramOptions): ChannelAdapter {
           reply_markup: { inline_keyboard: [] },
         }).catch(() => {});
       }
+    },
+
+    async download(media: InboundMedia, { maxBytes }) {
+      if (media.sizeBytes !== undefined && media.sizeBytes > maxBytes) {
+        throw new ChannelMediaTooLargeError(maxBytes);
+      }
+      const answer = record(await call('getFile', { file_id: media.ref }));
+      const path = str(record(answer?.result)?.file_path);
+      if (path === undefined) {
+        // The Bot API serves files up to 20 MB; a larger one has no path.
+        throw new ChannelDeliveryError(name, null, `${name}: the file could not be downloaded`);
+      }
+      const file = await fetchBytes(
+        name,
+        fetcher,
+        `${origin}/file/bot${options.botToken}/${path}`,
+        {},
+        timeoutMs,
+        maxBytes,
+      );
+      return {
+        data: file.data,
+        contentType: media.contentType ?? file.contentType ?? 'application/octet-stream',
+        ...(media.filename !== undefined ? { filename: media.filename } : {}),
+      };
     },
 
     async send(conversation: string, message: OutboundMessage) {

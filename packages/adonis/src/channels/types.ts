@@ -47,12 +47,37 @@ export interface InboundMessage {
   from: string;
   /** Where replies go: the chat / conversation id {@link ChannelAdapter.send} is called with. */
   conversation: string;
-  /** What the person wrote — for a button press, the button's label (or its id when there is none). */
+  /**
+   * What the person wrote — for a button press, the button's label (or its id when there is none);
+   * for a media message, its caption (`''` when it has none).
+   */
   text: string;
+  /** Files the message carries (an image, a voice note, a document) — downloaded and attached to the turn. */
+  media?: InboundMedia[];
   /** The id of the reply button the person pressed, when the message is a button press. */
   buttonId?: string;
   /** The provider's payload, untouched. */
   raw: unknown;
+}
+
+/** One file in an inbound message, before it is downloaded. */
+export interface InboundMedia {
+  kind: 'image' | 'audio' | 'video' | 'document' | 'sticker';
+  /** MIME type, when the webhook says (it usually does). */
+  contentType?: string;
+  /** The file's name, when the webhook says (documents). */
+  filename?: string;
+  /** Size in bytes, when the webhook says. */
+  sizeBytes?: number;
+  /** Whatever the adapter needs to download it (a media id, a file id, the message key). */
+  ref: unknown;
+}
+
+/** A downloaded file. */
+export interface ChannelMediaFile {
+  data: Buffer;
+  contentType: string;
+  filename?: string;
 }
 
 export interface ChannelButton {
@@ -107,6 +132,12 @@ export interface ChannelAdapter {
    * `answerCallbackQuery` after a button press. Runs in the background, before the turn.
    */
   acknowledge?(message: InboundMessage): Promise<void>;
+  /**
+   * Download one of a message's {@link InboundMessage.media}. Throws {@link
+   * import('./http.js').ChannelMediaTooLargeError} past `maxBytes` (without reading the rest).
+   * Absent → media messages are answered with `texts.mediaRefused`.
+   */
+  download?(media: InboundMedia, options: { maxBytes: number }): Promise<ChannelMediaFile>;
   /** Deliver one message to a conversation. Throws when the provider refused it. */
   send(conversation: string, message: OutboundMessage): Promise<void>;
 }

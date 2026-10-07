@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   ChannelDeliveryError,
+  ChannelMediaTooLargeError,
   type ChannelRequest,
   evolutionApi,
   telegram,
@@ -126,7 +127,7 @@ describe('evolutionApi', () => {
     ).toMatchObject([{ text: 'agora:reject:y', buttonId: 'agora:reject:y' }]);
   });
 
-  it('ignores its own messages, other events and instances, broadcasts, media and groups', () => {
+  it('ignores its own messages, other events and instances, broadcasts and groups', () => {
     const adapter = evolutionApi({
       url: 'https://evo',
       instance: 'main',
@@ -142,7 +143,7 @@ describe('evolutionApi', () => {
     expect(
       adapter.parse(incoming({ conversation: 'x' }, { remoteJid: 'status@broadcast' })),
     ).toEqual([]);
-    expect(adapter.parse(incoming({ imageMessage: { caption: '' } }))).toEqual([]);
+    expect(adapter.parse(incoming({ reactionMessage: { text: '👍' } }))).toEqual([]);
     const group = incoming(
       { conversation: 'hey bot' },
       { remoteJid: '1203630@g.us', participant: '5511888880000@s.whatsapp.net' },
@@ -352,7 +353,7 @@ describe('whatsappCloud', () => {
               button_reply: { id: 'agora:approve:x', title: 'Confirm' },
             },
           },
-          { from: '5511999990000', id: 'wamid.3', type: 'image', image: { id: 'm' } },
+          { from: '5511999990000', id: 'wamid.3', type: 'reaction', reaction: { emoji: 'x' } },
         ]),
       ),
     ).toEqual([
@@ -552,5 +553,216 @@ describe('telegram', () => {
       text: 'hi',
       link_preview_options: { is_disabled: true },
     });
+  });
+});
+
+// ── media ─────────────────────────────────────────────────────────────────────
+
+/** A `fetch` answering by url: JSON for an object, bytes for a Buffer. */
+function routedFetch(routes: Record<string, unknown>) {
+  const calls: { url: string; method: string; headers: Record<string, string>; body?: any }[] = [];
+  const fetch = (async (url: string, init: RequestInit = {}) => {
+    calls.push({
+      url,
+      method: init.method ?? 'GET',
+      headers: (init.headers ?? {}) as Record<string, string>,
+      ...(init.body !== undefined ? { body: JSON.parse(String(init.body)) } : {}),
+    });
+    const answer = routes[url];
+    if (answer === undefined) return new Response('not found', { status: 404 });
+    if (Buffer.isBuffer(answer))
+      return new Response(new Uint8Array(answer), { headers: { 'content-type': 'image/jpeg' } });
+    return new Response(JSON.stringify(answer), {
+      headers: { 'content-type': 'application/json' },
+    });
+  }) as typeof globalThis.fetch;
+  return { fetch, calls };
+}
+
+describe('media', () => {
+  const jpeg = Buffer.from('fake-jpeg-bytes');
+
+  it('evolutionApi: parses an image with its caption and a document; downloads three ways', async () => {
+    const base64 = jpeg.toString('base64');
+    const { fetch, calls } = routedFetch({
+      'https://files.example/m.jpg': jpeg,
+      'https://evo/chat/getBase64FromMediaMessage/main': {
+        base64,
+        mimetype: 'application/pdf',
+        fileName: 'report.pdf',
+      },
+    });
+    const adapter = evolutionApi({
+      url: 'https://evo',
+      instance: 'main',
+      apiKey: 'k',
+      webhookToken: 's',
+      fetch,
+    });
+    const key = { remoteJid: '5511999990000@s.whatsapp.net', fromMe: false, id: 'M1' };
+    const [image] = adapter.parse({
+      event: 'messages.upsert',
+      instance: 'main',
+      data: {
+        key,
+        message: {
+          imageMessage: { caption: 'my rash', mimetype: 'image/jpeg', fileLength: '15' },
+          base64,
+        },
+      },
+    }) as any[];
+    expect(image).toMatchObject({
+      text: 'my rash',
+      media: [{ kind: 'image', contentType: 'image/jpeg', sizeBytes: 15 }],
+    });
+    expect((await adapter.download!(image.media[0], { maxBytes: 100 })).data).toEqual(jpeg);
+    await expect(adapter.download!(image.media[0], { maxBytes: 5 })).rejects.toBeInstanceOf(
+      ChannelMediaTooLargeError,
+    );
+
+    const [linked] = adapter.parse({
+      event: 'messages.upsert',
+      instance: 'main',
+      data: {
+        key,
+        message: {
+          imageMessage: { mimetype: 'image/jpeg' },
+          mediaUrl: 'https://files.example/m.jpg',
+        },
+      },
+    }) as any[];
+    expect(linked.text).toBe('');
+    expect((await adapter.download!(linked.media[0], { maxBytes: 100 })).data).toEqual(jpeg);
+    // the instance key never goes to a storage host
+    expect(calls[0]).toMatchObject({ url: 'https://files.example/m.jpg', headers: {} });
+
+    const [document] = adapter.parse({
+      event: 'messages.upsert',
+      instance: 'main',
+      data: {
+        key,
+        message: {
+          documentWithCaptionMessage: {
+            message: {
+              documentMessage: {
+                fileName: 'report.pdf',
+                mimetype: 'application/pdf',
+                caption: 'see',
+              },
+            },
+          },
+        },
+      },
+    }) as any[];
+    expect(document).toMatchObject({
+      text: 'see',
+      media: [{ kind: 'document', filename: 'report.pdf' }],
+    });
+    expect(await adapter.download!(document.media[0], { maxBytes: 100 })).toEqual({
+      data: jpeg,
+      contentType: 'application/pdf',
+      filename: 'report.pdf',
+    });
+    expect(calls[1]).toMatchObject({
+      method: 'POST',
+      headers: expect.objectContaining({ apikey: 'k' }),
+      body: { message: { key }, convertToMp4: false },
+    });
+  });
+
+  it('whatsappCloud: resolves the media id, then downloads with the token', async () => {
+    const { fetch, calls } = routedFetch({
+      'https://graph.facebook.com/v23.0/MEDIA1': {
+        url: 'https://lookaside.fbsbx.com/m?x=1',
+        mime_type: 'audio/ogg',
+        file_size: 15,
+      },
+      'https://lookaside.fbsbx.com/m?x=1': jpeg,
+    });
+    const adapter = whatsappCloud({
+      phoneNumberId: '1061',
+      accessToken: 'EAAG',
+      appSecret: 's',
+      verifyToken: 'v',
+      fetch,
+    });
+    const [voice] = adapter.parse({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                metadata: { phone_number_id: '1061' },
+                messages: [
+                  {
+                    from: '55119',
+                    id: 'wamid.9',
+                    type: 'audio',
+                    audio: { id: 'MEDIA1', mime_type: 'audio/ogg; codecs=opus' },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    }) as any[];
+    expect(voice).toMatchObject({
+      text: '',
+      media: [{ kind: 'audio', ref: 'MEDIA1', contentType: 'audio/ogg; codecs=opus' }],
+    });
+    const file = await adapter.download!(voice.media[0], { maxBytes: 100 });
+    expect(file.data).toEqual(jpeg);
+    expect(calls.map((call) => call.headers.authorization)).toEqual(['Bearer EAAG', 'Bearer EAAG']);
+    await expect(adapter.download!(voice.media[0], { maxBytes: 10 })).rejects.toBeInstanceOf(
+      ChannelMediaTooLargeError,
+    );
+  });
+
+  it('telegram: takes the largest photo size, and downloads through getFile', async () => {
+    const { fetch } = routedFetch({
+      'https://api.telegram.org/bot1:x/getFile': {
+        ok: true,
+        result: { file_path: 'photos/p.jpg' },
+      },
+      'https://api.telegram.org/file/bot1:x/photos/p.jpg': jpeg,
+    });
+    const adapter = telegram({ botToken: '1:x', secretToken: 's', fetch });
+    const message = adapter.parse({
+      update_id: 5,
+      message: {
+        chat: { id: 42, type: 'private' },
+        from: { id: 42 },
+        caption: 'look',
+        photo: [
+          { file_id: 'small', file_size: 10 },
+          { file_id: 'big', file_size: 15 },
+        ],
+      },
+    }) as any;
+    expect(message).toMatchObject({
+      text: 'look',
+      media: [{ kind: 'image', ref: 'big', contentType: 'image/jpeg', sizeBytes: 15 }],
+    });
+    expect(await adapter.download!(message.media[0], { maxBytes: 100 })).toEqual({
+      data: jpeg,
+      contentType: 'image/jpeg',
+    });
+    await expect(adapter.download!(message.media[0], { maxBytes: 10 })).rejects.toBeInstanceOf(
+      ChannelMediaTooLargeError,
+    );
+    const voice = adapter.parse({
+      update_id: 6,
+      message: {
+        chat: { id: 42, type: 'private' },
+        from: { id: 42 },
+        voice: { file_id: 'v1', file_size: 3 },
+      },
+    }) as any;
+    expect(voice.media).toEqual([
+      { kind: 'audio', ref: 'v1', contentType: 'audio/ogg', sizeBytes: 3 },
+    ]);
   });
 });

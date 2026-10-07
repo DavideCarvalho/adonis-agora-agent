@@ -20,6 +20,94 @@ export class ChannelDeliveryError extends Error {
   }
 }
 
+/** A file was larger than the attachment limit; it was not (fully) downloaded. */
+export class ChannelMediaTooLargeError extends Error {
+  constructor(readonly maxBytes: number) {
+    super(`the file exceeds the ${maxBytes}-byte limit`);
+    this.name = 'ChannelMediaTooLargeError';
+  }
+}
+
+/**
+ * GET a file, refusing one past `maxBytes` — by its `content-length` before reading, and by what
+ * actually arrives while reading. Throws a {@link ChannelDeliveryError} on a non-2xx.
+ */
+export async function fetchBytes(
+  channel: string,
+  fetcher: ChannelFetch,
+  url: string,
+  headers: Record<string, string>,
+  timeoutMs: number,
+  maxBytes: number,
+): Promise<{ data: Buffer; contentType: string | undefined }> {
+  let response: Response;
+  try {
+    response = await fetcher(url, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    throw new ChannelDeliveryError(
+      channel,
+      null,
+      `${channel}: download failed (${error instanceof Error ? error.name : 'network error'})`,
+    );
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    throw new ChannelDeliveryError(
+      channel,
+      response.status,
+      `${channel}: the provider refused the download (HTTP ${response.status})`,
+    );
+  }
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    throw new ChannelMediaTooLargeError(maxBytes);
+  }
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  if (response.body) {
+    const reader = response.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new ChannelMediaTooLargeError(maxBytes);
+      }
+      chunks.push(value);
+    }
+  }
+  return {
+    data: Buffer.concat(chunks),
+    contentType: response.headers.get('content-type')?.split(';')[0]?.trim() || undefined,
+  };
+}
+
+/** Bytes of a base64 string, refusing past `maxBytes` before decoding. */
+export function decodeBase64(base64: string, maxBytes: number): Buffer {
+  const body = base64.replace(/^data:[^,]*,/, '');
+  if (Math.floor((body.length * 3) / 4) - 2 > maxBytes)
+    throw new ChannelMediaTooLargeError(maxBytes);
+  const data = Buffer.from(body, 'base64');
+  if (data.byteLength > maxBytes) throw new ChannelMediaTooLargeError(maxBytes);
+  return data;
+}
+
+/** A positive number out of a webhook field that may be a number, a numeric string or a Long object. */
+export function sizeOf(value: unknown): number | undefined {
+  const raw =
+    typeof value === 'object' && value !== null && 'low' in value
+      ? (value as { low: unknown }).low
+      : value;
+  const size = typeof raw === 'string' ? Number(raw) : raw;
+  return typeof size === 'number' && Number.isFinite(size) && size > 0 ? size : undefined;
+}
+
 /** Compare two secrets in constant time (over their hashes, so lengths leak nothing either). */
 export function safeEqual(supplied: string | undefined | null, expected: string): boolean {
   if (typeof supplied !== 'string' || expected.length === 0) return false;

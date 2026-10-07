@@ -1,6 +1,23 @@
 import { createHmac } from 'node:crypto';
-import { type ChannelFetch, postJson, queryParam, record, safeEqual, str } from '../http.js';
-import type { ChannelAdapter, ChannelRequest, InboundMessage, OutboundMessage } from '../types.js';
+import {
+  ChannelDeliveryError,
+  type ChannelFetch,
+  ChannelMediaTooLargeError,
+  fetchBytes,
+  postJson,
+  queryParam,
+  record,
+  safeEqual,
+  sizeOf,
+  str,
+} from '../http.js';
+import type {
+  ChannelAdapter,
+  ChannelRequest,
+  InboundMedia,
+  InboundMessage,
+  OutboundMessage,
+} from '../types.js';
 
 export interface WhatsappCloudOptions {
   /** The business phone number's id (WhatsApp Manager → API setup) — not the number itself. */
@@ -26,6 +43,29 @@ const MAX_INTERACTIVE_BODY = 1024;
 const MAX_BUTTON_TITLE = 20;
 const MAX_BUTTONS = 3;
 
+const MEDIA_TYPES = ['image', 'audio', 'video', 'document', 'sticker'] as const;
+
+/** The file a Cloud API message carries (`{ id, mime_type, caption?, filename? }`), and its caption. */
+function mediaOf(
+  message: Record<string, unknown>,
+): { media: InboundMedia; caption: string | undefined } | undefined {
+  const kind = MEDIA_TYPES.find((type) => type === message.type);
+  const body = kind === undefined ? undefined : record(message[kind]);
+  const mediaId = str(body?.id);
+  if (kind === undefined || !body || mediaId === undefined) return undefined;
+  const contentType = str(body.mime_type);
+  const filename = str(body.filename);
+  return {
+    media: {
+      kind,
+      ref: mediaId,
+      ...(contentType !== undefined ? { contentType } : {}),
+      ...(filename !== undefined ? { filename } : {}),
+    },
+    caption: str(body.caption),
+  };
+}
+
 function parseMessage(message: Record<string, unknown>): InboundMessage | null {
   const id = str(message.id);
   const from = str(message.from);
@@ -35,15 +75,18 @@ function parseMessage(message: Record<string, unknown>): InboundMessage | null {
   // A template's quick-reply button.
   const button = record(message.button);
   const buttonId = str(reply?.id) ?? str(button?.payload);
-  const text =
-    str(record(message.text)?.body) ?? str(reply?.title) ?? str(button?.text) ?? buttonId;
-  if (text === undefined || text.trim() === '') return null;
+  const file = mediaOf(message);
+  const text = file
+    ? (file.caption ?? '')
+    : (str(record(message.text)?.body) ?? str(reply?.title) ?? str(button?.text) ?? buttonId);
+  if (text === undefined || (text.trim() === '' && !file)) return null;
   return {
     id,
     from,
     conversation: from,
     text: text.trim(),
     ...(buttonId !== undefined ? { buttonId } : {}),
+    ...(file ? { media: [file.media] } : {}),
     raw: message,
   };
 }
@@ -53,15 +96,17 @@ function parseMessage(message: Record<string, unknown>): InboundMessage | null {
  * Route both `GET` (the subscription check) and `POST` (messages) to the same handler, and subscribe
  * the app to the `messages` field.
  *
- * Verifies `X-Hub-Signature-256` over the raw body; reads text, interactive button/list replies and
- * template quick replies addressed to `phoneNumberId` (status updates are ignored); sends text and
+ * Verifies `X-Hub-Signature-256` over the raw body; reads text, interactive button/list replies,
+ * template quick replies and media (image, audio, video, document, sticker — downloaded through the
+ * Graph API media endpoint) addressed to `phoneNumberId` (status updates are ignored); sends text and
  * interactive reply buttons (at most 3, 20-character titles).
  */
 export function whatsappCloud(options: WhatsappCloudOptions): ChannelAdapter {
   const name = options.name ?? 'whatsapp';
   const fetcher = options.fetch ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? 20_000;
-  const endpoint = `https://graph.facebook.com/${options.graphVersion ?? 'v23.0'}/${encodeURIComponent(options.phoneNumberId)}/messages`;
+  const graphVersion = options.graphVersion ?? 'v23.0';
+  const endpoint = `https://graph.facebook.com/${graphVersion}/${encodeURIComponent(options.phoneNumberId)}/messages`;
   const post = (body: Record<string, unknown>) =>
     postJson(
       name,
@@ -115,6 +160,42 @@ export function whatsappCloud(options: WhatsappCloudOptions): ChannelAdapter {
         }
       }
       return messages;
+    },
+
+    async download(media: InboundMedia, { maxBytes }) {
+      const auth = { authorization: `Bearer ${options.accessToken}` };
+      // The media id resolves to a short-lived url, which wants the same token.
+      const lookup = await fetchBytes(
+        name,
+        fetcher,
+        `https://graph.facebook.com/${graphVersion}/${encodeURIComponent(String(media.ref))}`,
+        auth,
+        timeoutMs,
+        64 * 1024,
+      );
+      let info: Record<string, unknown> | undefined;
+      try {
+        info = record(JSON.parse(lookup.data.toString('utf8')));
+      } catch {
+        info = undefined;
+      }
+      const url = str(info?.url);
+      if (url === undefined) {
+        throw new ChannelDeliveryError(name, null, `${name}: the media could not be resolved`);
+      }
+      const declared = sizeOf(info?.file_size);
+      if (declared !== undefined && declared > maxBytes)
+        throw new ChannelMediaTooLargeError(maxBytes);
+      const file = await fetchBytes(name, fetcher, url, auth, timeoutMs, maxBytes);
+      return {
+        data: file.data,
+        contentType:
+          media.contentType ??
+          str(info?.mime_type) ??
+          file.contentType ??
+          'application/octet-stream',
+        ...(media.filename !== undefined ? { filename: media.filename } : {}),
+      };
     },
 
     async send(conversation: string, message: OutboundMessage) {

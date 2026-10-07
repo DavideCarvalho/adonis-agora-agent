@@ -1,12 +1,16 @@
+import type { RedisConnection } from '@adonisjs/redis';
 import { describe, expect, it, vi } from 'vitest';
 import {
   escapeTelegramMarkdown,
-  InMemoryChannelDedupe,
-  redisChannelDedupe,
+  formatChannelQuestion,
+  InMemoryChannelStore,
+  parseChannelAnswer,
+  redisChannelStore,
   splitMessage,
   toChannelMarkdown,
   unescapeTelegramMarkdown,
 } from '../src/channels/index.js';
+import type { ElicitationQuestion } from '../src/elicitation.js';
 
 describe('toChannelMarkdown', () => {
   const source = [
@@ -110,44 +114,126 @@ describe('splitMessage', () => {
   });
 });
 
-describe('dedupe', () => {
-  it('in memory: claims once per TTL', () => {
+describe('channel stores', () => {
+  it('in memory: claims once per TTL, and holds values', () => {
     vi.useFakeTimers();
     try {
-      const dedupe = new InMemoryChannelDedupe();
-      expect(dedupe.claim('whatsapp:1', 1000)).toBe(true);
-      expect(dedupe.claim('whatsapp:1', 1000)).toBe(false);
-      expect(dedupe.claim('whatsapp:2', 1000)).toBe(true);
-      vi.advanceTimersByTime(1001);
-      expect(dedupe.claim('whatsapp:1', 1000)).toBe(true);
+      const store = new InMemoryChannelStore();
+      expect(store.claim('whatsapp:1', 1000)).toBe(true);
+      expect(store.claim('whatsapp:1', 1000)).toBe(false);
+      expect(store.claim('whatsapp:2', 1000)).toBe(true);
+      store.set('q', '{"a":1}', 500);
+      expect(store.get('q')).toBe('{"a":1}');
+      vi.advanceTimersByTime(501);
+      expect(store.get('q')).toBeNull();
+      vi.advanceTimersByTime(500);
+      expect(store.claim('whatsapp:1', 1000)).toBe(true);
+      store.set('q', 'x', 1000);
+      store.delete('q');
+      expect(store.get('q')).toBeNull();
     } finally {
       vi.useRealTimers();
     }
   });
 
   it('in memory: forgets the oldest keys past its cap', () => {
-    const dedupe = new InMemoryChannelDedupe(2);
-    dedupe.claim('a', 60_000);
-    dedupe.claim('b', 60_000);
-    dedupe.claim('c', 60_000);
-    expect(dedupe.claim('a', 60_000)).toBe(true);
-    expect(dedupe.claim('c', 60_000)).toBe(false);
+    const store = new InMemoryChannelStore(2);
+    store.claim('a', 60_000);
+    store.claim('b', 60_000);
+    store.claim('c', 60_000);
+    expect(store.claim('a', 60_000)).toBe(true);
+    expect(store.claim('c', 60_000)).toBe(false);
   });
 
-  it('redis: SET NX PX', async () => {
-    const keys = new Set<string>();
+  it('redis: SET NX PX, GET, DEL', async () => {
+    const values = new Map<string, string>();
     const calls: unknown[][] = [];
     const redis = {
-      async set(...args: [string, string, 'PX', number, 'NX']) {
-        calls.push(args);
-        if (keys.has(args[0])) return null;
-        keys.add(args[0]);
+      async set(key: string, value: string, ...rest: unknown[]) {
+        calls.push([key, value, ...rest]);
+        if (rest.includes('NX') && values.has(key)) return null;
+        values.set(key, value);
         return 'OK';
       },
+      get: async (key: string) => values.get(key) ?? null,
+      del: async (key: string) => (values.delete(key) ? 1 : 0),
     };
-    const dedupe = redisChannelDedupe(redis);
-    expect(await dedupe.claim('telegram:9', 5000)).toBe(true);
-    expect(await dedupe.claim('telegram:9', 5000)).toBe(false);
-    expect(calls[0]).toEqual(['agora:channel:dedupe:telegram:9', '1', 'PX', 5000, 'NX']);
+    const store = redisChannelStore(redis);
+    expect(await store.claim('telegram:9', 5000)).toBe(true);
+    expect(await store.claim('telegram:9', 5000)).toBe(false);
+    expect(calls[0]).toEqual(['agora:channel:telegram:9', '', 'PX', 5000, 'NX']);
+    await store.set('q', 'v', 1000);
+    expect(calls[2]).toEqual(['agora:channel:q', 'v', 'PX', 1000]);
+    expect(await store.get('q')).toBe('v');
+    await store.delete('q');
+    expect(await store.get('q')).toBeNull();
+  });
+
+  it('redis: an @adonisjs/redis connection fits', () => {
+    // Type-level: compiles only if the connection has the slice the store uses.
+    const fits = (connection: RedisConnection) => redisChannelStore(connection);
+    expect(typeof fits).toBe('function');
+  });
+});
+
+describe('questions', () => {
+  const color: ElicitationQuestion = {
+    id: 'color',
+    prompt: 'Which color?',
+    options: [
+      { value: 'r', label: 'Red' },
+      { value: 'g', label: 'Green' },
+      { value: 'b', label: 'Blue' },
+    ],
+    defaults: ['g'],
+  };
+
+  it('formats a question with numbered options and its defaults', () => {
+    expect(formatChannelQuestion(color, { index: 0, total: 2, preamble: 'A few things:' })).toBe(
+      [
+        'A few things:',
+        '',
+        '*(1/2) Which color?*',
+        '',
+        '1. Red',
+        '2. Green',
+        '3. Blue',
+        '',
+        'Reply with the number of your choice.',
+        'Reply *skip* to keep: Green.',
+      ].join('\n'),
+    );
+  });
+
+  it('reads a number, a label, the skip word — and refuses anything else', () => {
+    expect(parseChannelAnswer(color, '3')).toEqual({ status: 'answer', values: ['b'] });
+    expect(parseChannelAnswer(color, ' red ')).toEqual({ status: 'answer', values: ['r'] });
+    expect(parseChannelAnswer(color, '2.')).toEqual({ status: 'answer', values: ['g'] });
+    expect(parseChannelAnswer(color, 'SKIP')).toEqual({ status: 'skip' });
+    expect(parseChannelAnswer(color, '7')).toMatchObject({ status: 'invalid' });
+    expect(parseChannelAnswer(color, 'purple')).toMatchObject({ status: 'invalid' });
+    expect(parseChannelAnswer({ ...color, allowFreeText: true }, 'purple')).toEqual({
+      status: 'answer',
+      values: ['purple'],
+    });
+  });
+
+  it('reads several picks for a multiple choice', () => {
+    const many = { ...color, multiple: true };
+    expect(parseChannelAnswer(many, '1, 3')).toEqual({ status: 'answer', values: ['r', 'b'] });
+    expect(parseChannelAnswer(many, '1 3 3')).toEqual({ status: 'answer', values: ['r', 'b'] });
+    expect(parseChannelAnswer(many, '1, 9')).toMatchObject({ status: 'invalid' });
+  });
+
+  it('takes a typed value, checked against its type', () => {
+    const guests: ElicitationQuestion = {
+      id: 'guests',
+      prompt: 'How many guests?',
+      input: { type: 'number', min: 1, max: 10 },
+    };
+    expect(formatChannelQuestion(guests, { index: 0, total: 1 })).toBe('*How many guests?*');
+    expect(parseChannelAnswer(guests, '4')).toEqual({ status: 'answer', values: ['4'] });
+    expect(parseChannelAnswer(guests, 'many')).toMatchObject({ status: 'invalid' });
+    expect(parseChannelAnswer(guests, '40')).toMatchObject({ status: 'invalid' });
   });
 });

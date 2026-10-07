@@ -1,17 +1,35 @@
 import type { HttpContext } from '@adonisjs/core/http';
 import { DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY } from '../action-proposal-text.js';
-import { AgentService } from '../agent-service.js';
+import { AgentService, AttachmentRefusedError } from '../agent-service.js';
+import type { AttachmentLimits } from '../attachment-limits.js';
+import type { ElicitationQuestion } from '../elicitation.js';
+import type { ActionProposal } from '../spi/action-proposal-store.js';
+import type { AttachmentRef } from '../spi/attachment-staging.js';
 import type { StreamFrame } from '../spi/token-stream-sink.js';
 import type { ToolConfirmation } from '../tool-presentation.js';
 import type { Actor, PageContext } from '../types.js';
-import { type ChannelDedupeStore, InMemoryChannelDedupe } from './dedupe.js';
+import { ChannelMediaTooLargeError } from './http.js';
 import { toChannelMarkdown } from './markdown.js';
+import {
+  type ChannelQuestionTexts,
+  DEFAULT_CHANNEL_QUESTION_TEXTS,
+  formatChannelQuestion,
+  parseChannelAnswer,
+} from './questions.js';
 import { splitMessage } from './split.js';
-import type { ChannelAdapter, ChannelRequest, InboundMessage, OutboundMessage } from './types.js';
+import { type ChannelStore, InMemoryChannelStore, lucidChannelStore } from './store.js';
+import type {
+  ChannelAdapter,
+  ChannelRequest,
+  InboundMedia,
+  InboundMessage,
+  OutboundMessage,
+} from './types.js';
 
 /**
- * What a channel turn needs from the agent — `AgentService` is one. The proposal methods are
- * optional: without them (blocking approvals) a button press is read as the text it says.
+ * What a channel turn needs from the agent — `AgentService` is one. The optional methods turn
+ * features on: proposals (buttons, outcomes), questions (`answer`), media (`stageAttachment`), and
+ * the Lucid default store (`lucidDatabase`).
  */
 export interface ChannelTurnService
   extends Pick<AgentService, 'send' | 'subscribe' | 'skip' | 'cancel' | 'actionProposalReply'>,
@@ -22,6 +40,10 @@ export interface ChannelTurnService
         | 'listActionProposals'
         | 'actionProposalVocabulary'
         | 'actionApprovalMode'
+        | 'answer'
+        | 'attachmentLimits'
+        | 'stageAttachment'
+        | 'lucidDatabase'
       >
     > {}
 
@@ -31,6 +53,9 @@ export interface ChannelProposal {
   toolName: string;
   confirmation?: ToolConfirmation;
 }
+
+/** Why a media message could not be attached. */
+export type ChannelMediaRefusal = 'disabled' | 'type' | 'size' | 'failed';
 
 /** Everything the channel says on its own (not the model). English defaults; override any. */
 export interface ChannelTexts {
@@ -54,9 +79,23 @@ export interface ChannelTexts {
   actionSucceeded: string;
   /** An approved action's execution failed. */
   actionFailed: string;
+  /** A file that could not be attached — no attachment store, a type or size it refuses, a failed download. */
+  mediaRefused(
+    reason: ChannelMediaRefusal,
+    media: InboundMedia,
+    limits: AttachmentLimits | null,
+  ): string;
+  /** How questions (the `ask` tool, intakes) are worded. */
+  questions: ChannelQuestionTexts;
   /** Answer a sender `actor()` maps to nobody. Omitted → say nothing. */
   unknownSender?: string;
 }
+
+/** `20 MB`, `512 KB`. */
+const readableSize = (bytes: number) =>
+  bytes >= 1024 * 1024
+    ? `${Math.round(bytes / (1024 * 1024))} MB`
+    : `${Math.max(1, Math.ceil(bytes / 1024))} KB`;
 
 export const DEFAULT_CHANNEL_TEXTS: ChannelTexts = {
   approve: 'Confirm',
@@ -70,6 +109,22 @@ export const DEFAULT_CHANNEL_TEXTS: ChannelTexts = {
   failed: 'Sorry, something went wrong. Please try again.',
   actionSucceeded: 'Done.',
   actionFailed: 'The action could not be completed.',
+  mediaRefused: (reason, media, limits) =>
+    reason === 'disabled'
+      ? 'I can only read text messages here.'
+      : reason === 'size'
+        ? `That file is too large${limits ? ` (the limit is ${readableSize(limits.maxBytes)})` : ''}.`
+        : reason === 'failed'
+          ? 'I could not download that file. Please send it again.'
+          : media.kind === 'audio'
+            ? 'I cannot listen to audio messages. Please type your message.'
+            : `I cannot read this kind of file${media.contentType ? ` (${media.contentType})` : ''}.`,
+  questions: DEFAULT_CHANNEL_QUESTION_TEXTS,
+};
+
+/** `texts` as `channels.handle` takes it: any part, `questions` too. */
+export type ChannelTextsOverrides = Partial<Omit<ChannelTexts, 'questions'>> & {
+  questions?: Partial<ChannelQuestionTexts>;
 };
 
 export interface ChannelHandleOptions {
@@ -89,28 +144,34 @@ export interface ChannelHandleOptions {
   ): string | null | undefined | Promise<string | null | undefined>;
   /** A new thread was created for the conversation — remember it for {@link thread}. */
   onThreadCreated?(threadId: string, actor: Actor, message: InboundMessage): void | Promise<void>;
-  /** The turn's page context. Default `{ kind: adapter.name }`. */
+  /**
+   * The turn's page context. Default `{ kind: adapter.name }`. The handler adds `channel: { name,
+   * conversation }` to it — what a proposal's outcome is routed back by.
+   */
   pageContext?: PageContext | ((message: InboundMessage) => PageContext);
   /** The agent that answers. Default: the thread's, else the configured default. */
   agentName?: string;
   /** The agent service. Default: `AgentService` from the container. */
   service?: ChannelTurnService;
   /**
-   * Where taken message ids are remembered. Default: in this process's memory — use
-   * `redisChannelDedupe()` (or your own store) when the app runs on several replicas. `false` → no
-   * deduplication.
+   * Where the channel's short-lived state lives: message ids already taken, questions waiting for an
+   * answer, outcomes already relayed. Default: `lucidChannelStore()` over the agent store's database
+   * when the agent store is Lucid, else this process's memory.
    */
-  dedupe?: ChannelDedupeStore | false;
+  store?: ChannelStore;
   /** How long a message id is remembered. Default 24 h. */
   dedupeTtlMs?: number;
   /** Stop waiting for a turn after this long (and cancel it). Default 5 minutes. */
   timeoutMs?: number;
   /**
    * After a proposal is approved, wait this long for it to execute and relay its outcome. `0` → do
-   * not wait (the decision reply is all the person gets). Default 60 s.
+   * not wait (the decision reply is all the person gets; `channels.onSettled` can still relay it).
+   * Default 60 s.
    */
   outcomeTimeoutMs?: number;
-  texts?: Partial<ChannelTexts>;
+  /** How long a question waits for its answer before the agent proceeds without it. Default 30 min. */
+  questionTimeoutMs?: number;
+  texts?: ChannelTextsOverrides;
   /** A message whose handling failed. Default: `console.error`. */
   onError?(error: unknown, message: InboundMessage): void;
 }
@@ -126,6 +187,8 @@ const BUTTON_ID = /^agora:(approve|reject):([^\s]+)$/;
 /** The tail of a proposal id a button carries — Telegram's `callback_data` holds 64 bytes. */
 const BUTTON_REF_LENGTH = 32;
 const OUTCOME_POLL_MS = 500;
+/** How long "this outcome was relayed" is remembered. */
+const OUTCOME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const buttonRef = (proposalId: string) => proposalId.slice(-BUTTON_REF_LENGTH);
 
@@ -133,6 +196,23 @@ const buttonRef = (proposalId: string) => proposalId.slice(-BUTTON_REF_LENGTH);
 export function proposalButtonIds(proposalId: string): { approve: string; reject: string } {
   const ref = buttonRef(proposalId);
   return { approve: `agora:approve:${ref}`, reject: `agora:reject:${ref}` };
+}
+
+/** Where a turn's output goes back to — `pageContext.channel`, recorded with every proposal. */
+export interface ChannelAddress {
+  name: string;
+  conversation: string;
+}
+
+/** A question set waiting for the person's answer, one question at a time. */
+interface PendingQuestions {
+  threadId: string | null;
+  runId: string;
+  toolCallId: string;
+  preamble?: string;
+  questions: ElicitationQuestion[];
+  index: number;
+  answers: Record<string, string[]>;
 }
 
 function requestOf(ctx: HttpContext): ChannelRequest {
@@ -146,41 +226,140 @@ function requestOf(ctx: HttpContext): ChannelRequest {
   };
 }
 
+/** `AgentService` from the app's container, for code that runs outside a request. */
+async function containerService(): Promise<ChannelTurnService> {
+  const { default: app } = await import('@adonisjs/core/services/app');
+  return (await app.container.make(AgentService)) as unknown as ChannelTurnService;
+}
+
+/** One registered channel: what `channels.onSettled` sends an outcome through. */
+interface Registration {
+  adapter: ChannelAdapter;
+  texts: ChannelTexts;
+  store(service?: ChannelTurnService): Promise<ChannelStore>;
+}
+
+const registry = new Map<string, Registration>();
+
+const mergeTexts = (overrides: ChannelTextsOverrides = {}): ChannelTexts => ({
+  ...DEFAULT_CHANNEL_TEXTS,
+  ...overrides,
+  questions: { ...DEFAULT_CHANNEL_QUESTION_TEXTS, ...overrides.questions },
+});
+
+/** Send `text` converted to the channel's markdown, split at its length limit. */
+async function deliverText(adapter: ChannelAdapter, conversation: string, text: string) {
+  const { markdown, maxLength } = adapter.capabilities;
+  for (const piece of splitMessage(toChannelMarkdown(text, markdown), maxLength))
+    await adapter.send(conversation, { text: piece });
+}
+
+/** What an executed proposal tells the person; `null` when it did not execute. */
+function outcomeText(proposal: ActionProposal, texts: ChannelTexts): string | null {
+  const status = proposal.execution?.status;
+  if (status === 'failed') return texts.actionFailed;
+  if (status !== 'succeeded') return null;
+  // What its presentation said (`present` / `emitUi` text), else a plain confirmation.
+  return proposal.outcome?.text?.trim() || texts.actionSucceeded;
+}
+
+/**
+ * Relay an executed proposal's outcome to the conversation it was proposed in — once: the handler's
+ * own wait and this share a claim in the channel's store. `false` when it was not relayed (no
+ * channel recorded, the channel is not registered in this process, not executed, already relayed).
+ */
+async function deliverOutcome(
+  proposal: ActionProposal,
+  service?: ChannelTurnService,
+): Promise<boolean> {
+  const address = record(proposal.executionContext?.pageContext?.channel);
+  const name = typeof address?.name === 'string' ? address.name : undefined;
+  const conversation = typeof address?.conversation === 'string' ? address.conversation : undefined;
+  const registration = name === undefined ? undefined : registry.get(name);
+  if (!registration || conversation === undefined) return false;
+  return relayOnce(
+    await registration.store(service),
+    registration.adapter,
+    registration.texts,
+    conversation,
+    proposal,
+  );
+}
+
+/** Send an executed proposal's outcome unless it was sent already (by this or another replica). */
+async function relayOnce(
+  store: ChannelStore,
+  adapter: ChannelAdapter,
+  texts: ChannelTexts,
+  conversation: string,
+  proposal: ActionProposal,
+): Promise<boolean> {
+  const text = outcomeText(proposal, texts);
+  if (text === null) return false;
+  if (!(await store.claim(`${adapter.name}:outcome:${proposal.id}`, OUTCOME_TTL_MS))) return false;
+  await deliverText(adapter, conversation, text);
+  return true;
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** `image/jpeg` → `jpeg`, for a file that arrives without a name. */
+const extensionOf = (contentType: string) =>
+  (contentType.split('/')[1] ?? 'bin').split(/[;+]/)[0] ?? 'bin';
+
 /**
  * The webhook route for one channel. Each request is verified (`401` when it is not the provider's),
  * parsed, deduplicated by the provider's message id, and acknowledged with `200` at once; the turn
  * runs after the response, so a slow model never makes the provider retry. Then:
  *
+ * - media are downloaded and attached (held to the attachment store's limits), or refused with a text;
  * - the message is sent with text-only capabilities (components arrive as their `fallbackText`);
  *   a text decision ("yes", "confirm #ID") is answered with its reply instead of starting a turn;
  * - a press on a proposal's button decides that proposal (`via` = the adapter's name);
+ * - a question the turn asks is sent as text, one at a time, and the next messages answer it;
  * - the reply is converted to the channel's markdown, split at its length limit, and sent;
  * - a proposal the turn left pending is sent with Confirm/Cancel buttons — or, on a channel without
  *   them, with a text instruction in the configured `actionProposalText` vocabulary;
- * - an approved proposal's outcome is relayed once it executed (see `outcomeTimeoutMs`).
+ * - an approved proposal's outcome is relayed once it executed (see `outcomeTimeoutMs`, and
+ *   `channels.onSettled` for one that runs later).
  *
  * Wants `actionApprovalMode: 'independent'`: a blocking approval holds the turn open until someone
  * decides it in the app, so the channel sends what it has and `texts.blockingApproval`.
+ *
+ * Registers the adapter under its `name` for `channels.onSettled` — names must be unique.
  */
 export function handleChannel(
   adapter: ChannelAdapter,
   options: ChannelHandleOptions,
 ): ChannelRouteHandler {
-  const texts: ChannelTexts = { ...DEFAULT_CHANNEL_TEXTS, ...options.texts };
-  const dedupe = options.dedupe === false ? null : (options.dedupe ?? new InMemoryChannelDedupe());
+  const texts = mergeTexts(options.texts);
   const dedupeTtlMs = options.dedupeTtlMs ?? 24 * 60 * 60 * 1000;
   const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000;
   const outcomeTimeoutMs = options.outcomeTimeoutMs ?? 60_000;
+  const questionTimeoutMs = options.questionTimeoutMs ?? 30 * 60 * 1000;
   const { capabilities } = adapter;
   const buttons = (capabilities.buttons ?? 0) >= 2;
   const inFlight = new Set<Promise<void>>();
 
-  const format = (text: string) =>
-    splitMessage(toChannelMarkdown(text, capabilities.markdown), capabilities.maxLength);
-
-  const deliver = async (conversation: string, text: string) => {
-    for (const piece of format(text)) await adapter.send(conversation, { text: piece });
+  let resolvedStore: Promise<ChannelStore> | undefined;
+  /** The configured store, else Lucid over the agent store's database, else memory — chosen once. */
+  const storeFor = (service?: ChannelTurnService): Promise<ChannelStore> => {
+    resolvedStore ??= (async () => {
+      if (options.store) return options.store;
+      const agent = options.service ?? service ?? (await containerService().catch(() => undefined));
+      const db = agent?.lucidDatabase?.() ?? null;
+      return db === null ? new InMemoryChannelStore() : lucidChannelStore(db);
+    })();
+    return resolvedStore;
   };
+  registry.set(adapter.name, { adapter, texts, store: storeFor });
+
+  const deliver = (conversation: string, text: string) => deliverText(adapter, conversation, text);
+  const questionKey = (conversation: string) => `${adapter.name}:question:${conversation}`;
 
   const commandsFor = (
     service: ChannelTurnService,
@@ -237,14 +416,8 @@ export function handleChannel(
         (proposal) => proposal.id === proposalId,
       );
       if (current?.decision !== 'approved') return;
-      const status = current.execution?.status;
-      if (status === 'failed') {
-        await deliver(conversation, texts.actionFailed);
-        return;
-      }
-      if (status === 'succeeded') {
-        // What its presentation said (`present` / `emitUi` text), else a plain confirmation.
-        await deliver(conversation, current.outcome?.text?.trim() || texts.actionSucceeded);
+      if (outcomeText(current, texts) !== null) {
+        await relayOnce(await storeFor(service), adapter, texts, conversation, current);
         return;
       }
       await new Promise((resolve) => setTimeout(resolve, OUTCOME_POLL_MS));
@@ -289,27 +462,170 @@ export function handleChannel(
     return true;
   };
 
+  const askNext = (conversation: string, pending: PendingQuestions) => {
+    const question = pending.questions[pending.index];
+    if (!question) return Promise.resolve();
+    return deliver(
+      conversation,
+      formatChannelQuestion(
+        question,
+        {
+          index: pending.index,
+          total: pending.questions.length,
+          ...(pending.preamble !== undefined ? { preamble: pending.preamble } : {}),
+        },
+        texts.questions,
+      ),
+    );
+  };
+
+  /** The person's message answers the question in front of them; the last one resumes the run. */
+  const answerQuestion = async (
+    service: ChannelTurnService,
+    store: ChannelStore,
+    actor: Actor,
+    message: InboundMessage,
+    pending: PendingQuestions,
+  ) => {
+    const question = pending.questions[pending.index];
+    if (!question || !service.answer) return;
+    const parsed = parseChannelAnswer(question, message.text, texts.questions.skipWord);
+    if (parsed.status === 'invalid') {
+      await deliver(message.conversation, texts.questions.invalid(parsed.problem));
+      await askNext(message.conversation, pending);
+      return;
+    }
+    const next: PendingQuestions = {
+      ...pending,
+      index: pending.index + 1,
+      answers:
+        parsed.status === 'answer'
+          ? { ...pending.answers, [question.id]: parsed.values }
+          : pending.answers,
+    };
+    const key = questionKey(message.conversation);
+    if (next.index < next.questions.length) {
+      await store.set(key, JSON.stringify(next), questionTimeoutMs);
+      await askNext(message.conversation, next);
+      return;
+    }
+    await store.delete(key);
+    // The turn that asked is still being read: what the agent says next reaches the person there.
+    await service.answer({
+      runId: next.runId,
+      toolCallId: next.toolCallId,
+      answers: next.answers,
+      answeredByRef: actor.id,
+      answeredVia: adapter.name,
+    });
+  };
+
+  /** Download a message's files and stage them for the turn; refuse what cannot be attached. */
+  const attachMedia = async (
+    service: ChannelTurnService,
+    actor: Actor,
+    message: InboundMessage,
+  ): Promise<AttachmentRef[]> => {
+    const refs: AttachmentRef[] = [];
+    const limits = service.attachmentLimits?.() ?? null;
+    for (const media of message.media ?? []) {
+      const refuse = (reason: ChannelMediaRefusal) =>
+        deliver(message.conversation, texts.mediaRefused(reason, media, limits));
+      if (limits === null || !adapter.download || !service.stageAttachment) {
+        await refuse('disabled');
+        continue;
+      }
+      const declared = media.contentType?.split(';')[0]?.trim().toLowerCase();
+      if (declared !== undefined && !limits.allowedContentTypes.includes(declared)) {
+        await refuse('type');
+        continue;
+      }
+      if (media.sizeBytes !== undefined && media.sizeBytes > limits.maxBytes) {
+        await refuse('size');
+        continue;
+      }
+      try {
+        const file = await adapter.download(media, { maxBytes: limits.maxBytes });
+        const attachment = await service.stageAttachment(actor, {
+          data: file.data,
+          contentType: file.contentType,
+          filename: file.filename ?? `${media.kind}.${extensionOf(file.contentType)}`,
+        });
+        refs.push({ mediaId: attachment.mediaId });
+      } catch (error) {
+        if (error instanceof ChannelMediaTooLargeError) await refuse('size');
+        else if (error instanceof AttachmentRefusedError)
+          await refuse(error.status === 413 ? 'size' : error.status === 415 ? 'type' : 'failed');
+        else {
+          await refuse('failed');
+          options.onError?.(error, message);
+        }
+      }
+    }
+    return refs;
+  };
+
   /** Read a run's frames until it ends (or parks on something a text channel cannot settle). */
-  const readTurn = async (service: ChannelTurnService, actor: Actor, runId: string) => {
+  const readTurn = async (
+    service: ChannelTurnService,
+    store: ChannelStore,
+    actor: Actor,
+    runId: string,
+    threadId: string | null,
+    conversation: string,
+  ) => {
     const parts: string[] = [];
     const proposals = new Map<string, ChannelProposal>();
     let failed = false;
     let blocked = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<'timeout'>((resolve) => {
-      timer = setTimeout(() => resolve('timeout'), timeoutMs);
-    });
+    let deadlineAt = Date.now() + timeoutMs;
+    /** The question set this reader is waiting on, while it waits. */
+    let asking: { runId: string; toolCallId: string } | null = null;
+    const flush = async () => {
+      const text = parts.join('').trim();
+      parts.length = 0;
+      if (text !== '') await deliver(conversation, text);
+    };
     const stream = service.subscribe(runId)[Symbol.asyncIterator]();
+    let reading: Promise<IteratorResult<StreamFrame>> | undefined;
     try {
       for (;;) {
-        const next = await Promise.race([stream.next(), deadline]);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<'timeout'>((resolve) => {
+          timer = setTimeout(() => resolve('timeout'), Math.max(0, deadlineAt - Date.now()));
+        });
+        // A read that lost a race to the timer is still the next frame: keep it, never ask twice.
+        reading ??= stream.next();
+        const next = await Promise.race([reading, timeout]).finally(() => clearTimeout(timer));
+        if (next !== 'timeout') reading = undefined;
         if (next === 'timeout') {
+          if (asking !== null) {
+            // Nobody answered: the agent goes on on its own assumptions.
+            const { runId: parkedRun, toolCallId } = asking;
+            asking = null;
+            await store.delete(questionKey(conversation));
+            await service
+              .skip({
+                runId: parkedRun,
+                toolCallId,
+                answeredByRef: actor.id,
+                answeredVia: adapter.name,
+              })
+              .catch(() => {});
+            deadlineAt = Date.now() + timeoutMs;
+            continue;
+          }
           failed = parts.length === 0;
           await service.cancel(runId).catch(() => {});
           break;
         }
         if (next.done) break;
         const frame: StreamFrame = next.value;
+        if (asking !== null) {
+          // The run moved on: the questions were answered (or skipped elsewhere).
+          asking = null;
+          deadlineAt = Date.now() + timeoutMs;
+        }
         if (frame.t === 'text') parts.push(frame.v);
         else if (frame.t === 'component' && frame.fallbackText) {
           // Only a component the turn negotiated as drawable comes as a frame — never with
@@ -328,20 +644,35 @@ export function handleChannel(
             break;
           }
         } else if (frame.t === 'elicitation') {
-          // A form has no text rendering: the agent proceeds on its own assumptions, as if the
-          // person had skipped it.
-          await service
-            .skip({
-              runId: frame.runId,
-              toolCallId: frame.id,
-              answeredByRef: actor.id,
-              answeredVia: adapter.name,
-            })
-            .catch(() => {});
+          const questions = frame.request.questions;
+          if (!service.answer || questions.length === 0) {
+            await service
+              .skip({
+                runId: frame.runId,
+                toolCallId: frame.id,
+                answeredByRef: actor.id,
+                answeredVia: adapter.name,
+              })
+              .catch(() => {});
+            continue;
+          }
+          await flush();
+          const pending: PendingQuestions = {
+            threadId,
+            runId: frame.runId,
+            toolCallId: frame.id,
+            ...(frame.request.preamble !== undefined ? { preamble: frame.request.preamble } : {}),
+            questions,
+            index: 0,
+            answers: {},
+          };
+          await store.set(questionKey(conversation), JSON.stringify(pending), questionTimeoutMs);
+          await askNext(conversation, pending);
+          asking = { runId: frame.runId, toolCallId: frame.id };
+          deadlineAt = Date.now() + questionTimeoutMs;
         } else if (frame.t === 'error') failed = true;
       }
     } finally {
-      clearTimeout(timer);
       void stream.return?.();
     }
     return { text: parts.join('').trim(), proposals: [...proposals.values()], failed, blocked };
@@ -349,6 +680,7 @@ export function handleChannel(
 
   const handleMessage = async (service: ChannelTurnService, message: InboundMessage) => {
     await adapter.acknowledge?.(message).catch(() => {});
+    const store = await storeFor(service);
     const actor = await options.actor(message);
     if (actor === null) {
       if (texts.unknownSender !== undefined)
@@ -356,19 +688,33 @@ export function handleChannel(
       return;
     }
     const threadId = (await options.thread(actor, message)) ?? null;
+    const ours = message.buttonId !== undefined && BUTTON_ID.test(message.buttonId);
+    if (!ours) {
+      const waiting = await store.get(questionKey(message.conversation));
+      const pending = waiting === null ? null : (JSON.parse(waiting) as PendingQuestions);
+      if (pending !== null && (pending.threadId === null || pending.threadId === threadId)) {
+        await answerQuestion(service, store, actor, message, pending);
+        return;
+      }
+    }
     if (await pressButton(service, actor, threadId, message)) return;
+    const attachments = await attachMedia(service, actor, message);
+    // A file nobody could attach, and no caption: there is nothing left to answer.
+    if (message.text === '' && attachments.length === 0) return;
     const pageContext =
       typeof options.pageContext === 'function'
         ? options.pageContext(message)
         : (options.pageContext ?? { kind: adapter.name });
+    const channel: ChannelAddress = { name: adapter.name, conversation: message.conversation };
     const sent = await service.send({
       actor,
       message: message.text,
       ...(threadId !== null ? { threadId } : {}),
       ...(options.agentName !== undefined ? { agentName: options.agentName } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
       // Nothing is drawn: every component arrives as its text.
       uiCapabilities: { components: [] },
-      pageContext,
+      pageContext: { ...pageContext, channel },
       hostContext: {
         channel: adapter.name,
         conversation: message.conversation,
@@ -395,7 +741,7 @@ export function handleChannel(
     }
     // A queued message starts later under its own id: its answer is read the same way.
     const runId = sent.queued === true ? (sent.runId ?? sent.messageId) : sent.runId;
-    const turn = await readTurn(service, actor, runId);
+    const turn = await readTurn(service, store, actor, runId, sent.threadId, message.conversation);
     if (turn.text !== '') await deliver(message.conversation, turn.text);
     if (turn.failed) await deliver(message.conversation, texts.failed);
     if (turn.blocked) await deliver(message.conversation, texts.blockingApproval);
@@ -428,16 +774,16 @@ export function handleChannel(
     }
     const parsed = adapter.parse(request.body);
     const messages = parsed === null ? [] : Array.isArray(parsed) ? parsed : [parsed];
-    const fresh: InboundMessage[] = [];
-    // Claimed before the 200: a store that is down answers 500, and the provider retries.
-    for (const message of messages) {
-      if (dedupe === null || (await dedupe.claim(`${adapter.name}:${message.id}`, dedupeTtlMs)))
-        fresh.push(message);
-    }
-    if (fresh.length > 0) {
+    if (messages.length > 0) {
       const service =
         options.service ??
         ((await ctx.containerResolver.make(AgentService)) as unknown as ChannelTurnService);
+      const store = await storeFor(service);
+      const fresh: InboundMessage[] = [];
+      // Claimed before the 200: a store that is down answers 500, and the provider retries.
+      for (const message of messages) {
+        if (await store.claim(`${adapter.name}:${message.id}`, dedupeTtlMs)) fresh.push(message);
+      }
       for (const message of fresh) {
         track(
           handleMessage(service, message).catch((error: unknown) => {
@@ -461,5 +807,29 @@ export function handleChannel(
   });
 }
 
-/** `channels.handle(adapter, options)` — see {@link handleChannel}. */
-export const channels = { handle: handleChannel };
+/**
+ * `actionProposalWorker.onSettled` for text channels: relays an executed proposal's outcome to the
+ * conversation it was proposed in, through the adapter registered under the recorded channel name.
+ * Proposals from other surfaces are ignored. Safe next to the handler's own wait: an outcome is
+ * relayed once.
+ *
+ * ```ts
+ * // config/agent.ts
+ * actionProposalWorker: { onSettled: channels.onSettled }
+ * ```
+ */
+export async function relayChannelOutcome(proposal: ActionProposal): Promise<void> {
+  await deliverOutcome(proposal);
+}
+
+export const channels = {
+  /** See {@link handleChannel}. */
+  handle: handleChannel,
+  /** See {@link relayChannelOutcome}. */
+  onSettled: relayChannelOutcome,
+  /** Relay one proposal's outcome now; `true` when it was sent. */
+  deliverOutcome: (proposal: ActionProposal, service?: ChannelTurnService) =>
+    deliverOutcome(proposal, service),
+  /** The adapter registered under `name` (by `channels.handle`), if any. */
+  adapter: (name: string): ChannelAdapter | undefined => registry.get(name)?.adapter,
+};
