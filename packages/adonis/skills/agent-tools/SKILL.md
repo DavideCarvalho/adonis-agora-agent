@@ -238,6 +238,9 @@ export const listRecords = defineTool({
 })
 ```
 
+`table` and `chart` present the builtin `DataTable` and `Chart` definitions: put them in the
+genui catalog (`BUILTIN_COMPONENTS` from `@adonis-agora/agent/genui/builtins`, or the two
+definitions) and register app renderers under those names. Builtins carry no visuals.
 Use `createComponent` for custom definitions and one `createComponentRegistry` per app
 or tenant. Input `props` may transform; if the transform changes shape or is not
 idempotent, declare `outputProps` to validate the normalized JSON persisted in frames.
