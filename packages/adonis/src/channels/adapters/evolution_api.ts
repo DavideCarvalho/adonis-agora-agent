@@ -13,6 +13,7 @@ import {
 } from '../http.js';
 import type {
   ChannelAdapter,
+  ChannelIgnored,
   ChannelRequest,
   InboundMedia,
   InboundMessage,
@@ -140,28 +141,62 @@ function mediaOf(
   return undefined;
 }
 
+/** Why a webhook item is not a message to answer — logged by the handler, never message content. */
+interface Skipped {
+  skipped: string;
+  /** An item that looked like a person's message but could not be read — worth a warning. */
+  unexpected?: boolean;
+}
+
+const LID_JID = /@lid$/;
+
+/**
+ * Is the message from the person (not sent by the instance itself)? Explicit `fromMe: false` → yes,
+ * `fromMe: true` → no. Absent from both the key and the data — Whatsmiau (Go, `omitempty`) drops a
+ * `false` — only a `status: 'received'` says it came in; any other status is never assumed incoming,
+ * so the agent never answers its own messages.
+ */
+function direction(
+  key: Record<string, unknown>,
+  data: Record<string, unknown>,
+): 'incoming' | 'own' | 'unknown' {
+  if (key.fromMe === true || data.fromMe === true) return 'own';
+  if (key.fromMe === false || data.fromMe === false) return 'incoming';
+  if (key.fromMe === undefined && data.fromMe === undefined && data.status === 'received') {
+    return 'incoming';
+  }
+  return 'unknown';
+}
+
 function parseOne(
   data: Record<string, unknown>,
   options: EvolutionApiOptions,
-): InboundMessage | null {
+): InboundMessage | Skipped {
   const key = record(data.key);
   const remoteJid = str(key?.remoteJid);
   const id = str(key?.id);
-  if (!key || !remoteJid || !id) return null;
-  // Only a message explicitly marked as incoming: never assume a missing `fromMe` means "not mine".
-  if (!(key.fromMe === false || data.fromMe === false) || key.fromMe === true) return null;
-  if (remoteJid.endsWith('@broadcast') || remoteJid.endsWith('@newsletter')) return null;
+  if (!key || !remoteJid || !id) return { skipped: 'no message key', unexpected: true };
+  const from = direction(key, data);
+  if (from === 'own') return { skipped: 'own message' };
+  if (from === 'unknown') {
+    return { skipped: `fromMe missing and status ${String(data.status)}`, unexpected: true };
+  }
+  if (remoteJid.endsWith('@broadcast') || remoteJid.endsWith('@newsletter')) {
+    return { skipped: 'broadcast' };
+  }
   const group = remoteJid.endsWith('@g.us');
-  if (group && options.groups !== true) return null;
-  // A `@lid` chat (`addressingMode: 'lid'`) hides the number; Evolution adds it alongside
-  // (`remoteJidAlt`, older versions `senderPn`) when it knows it.
-  const phoneJid = [remoteJid, str(key.remoteJidAlt), str(key.senderPn)].find(
-    (jid) => jid !== undefined && PHONE_JID.test(jid),
-  );
-  const sender = group ? str(key.participant) : (phoneJid ?? remoteJid);
-  if (sender === undefined) return null;
+  if (group && options.groups !== true) return { skipped: 'group' };
+  // A chat is addressed by its phone jid or by its `@lid` one (`addressingMode: 'lid'`), and the
+  // server adds the other alongside when it knows it: Evolution `remoteJidAlt` (older versions
+  // `senderPn`), Whatsmiau `remoteLid`. The phone wins, so the chat keeps one id either way.
+  const aliases = [remoteJid, str(key.remoteJidAlt), str(key.senderPn), str(key.remoteLid)];
+  const phoneJid = aliases.find((jid) => jid !== undefined && PHONE_JID.test(jid));
+  const lidJid = aliases.find((jid) => jid !== undefined && LID_JID.test(jid));
+  const chat = phoneJid ?? lidJid ?? remoteJid;
+  const sender = group ? str(key.participant) : chat;
+  if (sender === undefined) return { skipped: 'no group participant', unexpected: true };
   const message = record(data.message);
-  if (!message) return null;
+  if (!message) return { skipped: 'no message body' };
   const button = buttonReply(message);
   const file = button ? undefined : mediaOf(message, key);
   const text = button
@@ -169,18 +204,54 @@ function parseOne(
     : file
       ? (file.caption ?? '')
       : (str(message.conversation) ?? str(record(message.extendedTextMessage)?.text));
-  if (text === undefined || (text.trim() === '' && !file)) return null;
+  if (text === undefined || (text.trim() === '' && !file)) {
+    return { skipped: 'unsupported message type' };
+  }
   return {
     id,
     from: addressOf(sender),
-    // Replies go to the phone when it is known — `sendText`'s `number` is a phone number, and the
-    // same chat arrives under its phone jid or its `@lid` one; the `@lid` jid only when it is all
-    // there is.
-    conversation: group ? remoteJid : (phoneJid ?? remoteJid),
+    // Replies go to the phone when it is known — `sendText`'s `number` is a phone number; the `@lid`
+    // jid only when it is all there is.
+    conversation: group ? remoteJid : chat,
     text: text.trim(),
     ...(button ? { buttonId: button.id } : {}),
     ...(file ? { media: [file.media] } : {}),
     raw: data,
+  };
+}
+
+/** The messages in a webhook body, or why there are none. */
+function readBody(
+  body: unknown,
+  options: EvolutionApiOptions,
+): { messages: InboundMessage[] | null; ignored?: ChannelIgnored } {
+  const envelope = record(body);
+  if (!envelope) return { messages: null, ignored: { reason: 'not a JSON object' } };
+  const rawEvent = str(envelope.event);
+  const event = rawEvent?.toLowerCase().replace(/_/g, '.');
+  const named = rawEvent !== undefined ? { event: rawEvent } : {};
+  if (event !== 'messages.upsert') {
+    return { messages: null, ignored: { ...named, reason: 'not a messages.upsert event' } };
+  }
+  const from = str(envelope.instance);
+  if (from !== undefined && from !== options.instance) {
+    return { messages: null, ignored: { ...named, reason: 'another instance' } };
+  }
+  const items = (Array.isArray(envelope.data) ? envelope.data : [envelope.data])
+    .map((item) => record(item))
+    .filter((item): item is Record<string, unknown> => item !== undefined)
+    .map((item) => parseOne(item, options));
+  const messages = items.filter((item): item is InboundMessage => !('skipped' in item));
+  if (messages.length > 0) return { messages };
+  const skipped = items.filter((item): item is Skipped => 'skipped' in item);
+  if (skipped.length === 0) return { messages, ignored: { ...named, reason: 'no data' } };
+  return {
+    messages,
+    ignored: {
+      ...named,
+      reason: [...new Set(skipped.map((item) => item.skipped))].join(', '),
+      ...(skipped.some((item) => item.unexpected) ? { unexpected: true } : {}),
+    },
   };
 }
 
@@ -193,8 +264,8 @@ const MAX_BUTTONS = 3;
  * `https://app.example.com/webhooks/whatsapp?token=<webhookToken>`.
  *
  * Reads `messages.upsert` (text, extended text, button and list replies, images, audio, video,
- * documents and stickers); ignores the instance's own messages, broadcasts and (unless `groups`)
- * groups. Sends with `POST {url}/message/sendText/{instance}`. Downloads media from the webhook's
+ * documents and stickers); ignores the instance's own messages (an item without `fromMe` counts as
+ * incoming only with `status: 'received'`), broadcasts and (unless `groups`) groups. Sends with `POST {url}/message/sendText/{instance}`. Downloads media from the webhook's
  * inline `base64` (Evolution's "webhook base64" setting), else its `mediaUrl`, else
  * `POST {url}/chat/getBase64FromMediaMessage/{instance}`.
  */
@@ -241,18 +312,11 @@ export function evolutionFormatAdapter(
     },
 
     parse(body) {
-      const envelope = record(body);
-      if (!envelope) return null;
-      const event = str(envelope.event)?.toLowerCase().replace(/_/g, '.');
-      if (event !== 'messages.upsert') return null;
-      const from = str(envelope.instance);
-      if (from !== undefined && from !== options.instance) return null;
-      const items = Array.isArray(envelope.data) ? envelope.data : [envelope.data];
-      return items
-        .map((item) => record(item))
-        .filter((item): item is Record<string, unknown> => item !== undefined)
-        .map((item) => parseOne(item, options))
-        .filter((item): item is InboundMessage => item !== null);
+      return readBody(body, options).messages;
+    },
+
+    ignored(body) {
+      return readBody(body, options).ignored ?? null;
     },
 
     async download(media: InboundMedia, { maxBytes }) {

@@ -7,6 +7,7 @@ import {
   proposalButtonIds,
   ptBrChannelTexts,
   telegram,
+  whatsmiau,
 } from '../src/channels/index.js';
 import {
   ActionProposalWorker,
@@ -23,6 +24,68 @@ import { actor, fakeAdapter, fakeService, inbound, makeCtx, texts } from './help
 // ── the route ──────────────────────────────────────────────────────────────────
 
 describe('channels.handle', () => {
+  it('logs a webhook that carried no message — event and reason, never the content', async () => {
+    const logs: { level: string; bindings: Record<string, unknown>; message: string }[] = [];
+    const logger = {
+      debug: (bindings: Record<string, unknown>, message: string) =>
+        logs.push({ level: 'debug', bindings, message }),
+      warn: (bindings: Record<string, unknown>, message: string) =>
+        logs.push({ level: 'warn', bindings, message }),
+    };
+    const handle = channels.handle(
+      whatsmiau({
+        url: 'http://whatsmiau:8080',
+        instance: 'main',
+        apiKey: 'k',
+        webhookToken: false,
+      }),
+      { service: fakeService(async function* () {}), actor: () => actor, thread: () => 't' },
+    );
+    const upsert = (key: Record<string, unknown>, status: string) => ({
+      event: 'messages.upsert',
+      instance: 'main',
+      data: { key, status, message: { conversation: 'secret text' } },
+    });
+    const pending = makeCtx(
+      upsert({ remoteJid: '5511999990000@s.whatsapp.net', id: 'a' }, 'PENDING'),
+      { logger },
+    );
+    await handle(pending.ctx);
+    const own = upsert(
+      { remoteJid: '5511999990000@s.whatsapp.net', id: 'b', fromMe: true },
+      'SERVER_ACK',
+    );
+    await handle(makeCtx(own, { logger }).ctx);
+    await handle(makeCtx({ event: 'connection.update', instance: 'main' }, { logger }).ctx);
+    expect(pending.sent).toEqual({ status: 200, body: { ok: true } });
+    expect(logs).toEqual([
+      {
+        level: 'warn',
+        bindings: {
+          channel: 'whatsapp',
+          event: 'messages.upsert',
+          reason: 'fromMe missing and status PENDING',
+        },
+        message: 'channels: webhook ignored',
+      },
+      {
+        level: 'debug',
+        bindings: { channel: 'whatsapp', event: 'messages.upsert', reason: 'own message' },
+        message: 'channels: webhook ignored',
+      },
+      {
+        level: 'debug',
+        bindings: {
+          channel: 'whatsapp',
+          event: 'connection.update',
+          reason: 'not a messages.upsert event',
+        },
+        message: 'channels: webhook ignored',
+      },
+    ]);
+    expect(JSON.stringify(logs)).not.toContain('secret');
+  });
+
   it('refuses an unverified request and acknowledges a verified one before the turn ends', async () => {
     const { adapter, outbox } = fakeAdapter();
     let release!: () => void;

@@ -285,6 +285,31 @@ function requestOf(ctx: HttpContext): ChannelRequest {
   };
 }
 
+type ChannelLogger = Partial<
+  Record<'debug' | 'warn', (bindings: Record<string, unknown>, message: string) => void>
+>;
+
+/**
+ * A verified webhook that carried no message to answer: logged (debug; warn when it looked like a
+ * person's message that could not be read) with the event and the reason — never the content — so a
+ * silently dropped message can be diagnosed.
+ */
+function logIgnored(ctx: HttpContext, adapter: ChannelAdapter, body: unknown): void {
+  const logger = (ctx as { logger?: ChannelLogger }).logger;
+  if (!logger) return;
+  const ignored = adapter.ignored?.(body) ?? null;
+  const event =
+    ignored?.event ??
+    (typeof body === 'object' && body !== null ? (body as { event?: unknown }).event : undefined);
+  const bindings = {
+    channel: adapter.name,
+    ...(typeof event === 'string' ? { event } : {}),
+    reason: ignored?.reason ?? 'no message',
+  };
+  const log = ignored?.unexpected ? logger.warn : logger.debug;
+  log?.call(logger, bindings, 'channels: webhook ignored');
+}
+
 /** `AgentService` from the app's container, for code that runs outside a request. */
 async function containerService(): Promise<ChannelTurnService> {
   const { default: app } = await import('@adonisjs/core/services/app');
@@ -861,6 +886,7 @@ export function handleChannel(
     }
     const parsed = adapter.parse(request.body);
     const messages = parsed === null ? [] : Array.isArray(parsed) ? parsed : [parsed];
+    if (messages.length === 0) logIgnored(ctx, adapter, request.body);
     if (messages.length > 0) {
       const service =
         options.service ??

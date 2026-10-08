@@ -11,7 +11,7 @@ import type { StreamFrame } from '../../src/spi/token-stream-sink.js';
 
 export function makeCtx(
   body: unknown,
-  opts: { headers?: Record<string, string>; method?: string } = {},
+  opts: { headers?: Record<string, string>; method?: string; logger?: unknown } = {},
 ) {
   const headers = { 'x-ok': '1', ...opts.headers };
   const sent: { status: number; body: unknown } = { status: 0, body: undefined };
@@ -24,6 +24,7 @@ export function makeCtx(
       raw: () => JSON.stringify(body),
     },
     params: {},
+    ...(opts.logger !== undefined ? { logger: opts.logger } : {}),
     response: {
       status(code: number) {
         sent.status = code;

@@ -406,6 +406,91 @@ describe('whatsmiau', () => {
       }),
     ).toMatchObject([{ from: '5511912345678', conversation: '5511912345678@s.whatsapp.net' }]);
   });
+
+  // A real Whatsmiau v1.5.0 (whatsmeow) incoming message: Go's `omitempty` drops `fromMe: false`, the
+  // chat is addressed by phone with the LID alongside in `remoteLid`.
+  const whatsmiauIncoming = (data: Record<string, unknown> = {}) => ({
+    event: 'messages.upsert',
+    instance: 'agora-test',
+    data: {
+      key: {
+        remoteJid: '5513981450000@s.whatsapp.net',
+        remoteLid: '239611947270000@lid',
+        id: '3EB0B66E111010A5A90000',
+        participant: '5513981450000@s.whatsapp.net',
+        addressingMode: 'lid',
+      },
+      pushName: 'Davi de Carvalho',
+      status: 'received',
+      message: { conversation: 'Oi vó' },
+      contextInfo: {},
+      messageType: 'conversation',
+      messageTimestamp: 1791420602,
+      instanceId: 'instance-id',
+      source: 'whatsapp',
+      ...data,
+    },
+  });
+
+  it('reads an incoming message without fromMe (status received), addressed by phone', () => {
+    const adapter = whatsmiau({ ...options, instance: 'agora-test', url: 'http://whatsmiau:8080' });
+    expect(adapter.parse(whatsmiauIncoming())).toMatchObject([
+      {
+        id: '3EB0B66E111010A5A90000',
+        from: '5513981450000',
+        conversation: '5513981450000@s.whatsapp.net',
+        text: 'Oi vó',
+      },
+    ]);
+    // The same chat addressed by its LID keeps the same conversation id.
+    expect(
+      adapter.parse({
+        event: 'messages.upsert',
+        instance: 'agora-test',
+        data: {
+          key: {
+            remoteJid: '239611947270000@lid',
+            remoteJidAlt: '5513981450000@s.whatsapp.net',
+            id: 'W2',
+          },
+          status: 'received',
+          message: { conversation: 'de novo' },
+        },
+      }),
+    ).toMatchObject([{ from: '5513981450000', conversation: '5513981450000@s.whatsapp.net' }]);
+    // Only the LID known: it is the conversation.
+    expect(
+      adapter.parse(
+        whatsmiauIncoming({
+          key: { remoteJid: '239611947270000@lid', remoteLid: '239611947270000@lid', id: 'W3' },
+        }),
+      ),
+    ).toMatchObject([{ from: '239611947270000@lid', conversation: '239611947270000@lid' }]);
+  });
+
+  it('never takes a message without fromMe for incoming unless its status is received', () => {
+    const adapter = whatsmiau({ ...options, instance: 'agora-test', url: 'http://whatsmiau:8080' });
+    for (const status of ['SERVER_ACK', 'PENDING', 'DELIVERY_ACK', undefined]) {
+      const body = whatsmiauIncoming({ status });
+      expect(adapter.parse(body)).toEqual([]);
+      expect(adapter.ignored?.(body)).toEqual({
+        event: 'messages.upsert',
+        reason: `fromMe missing and status ${String(status)}`,
+        unexpected: true,
+      });
+    }
+    // An explicit fromMe: true stays the instance's own message, whatever the status.
+    const own = whatsmiauIncoming({
+      key: { remoteJid: '5513981450000@s.whatsapp.net', id: 'W4', fromMe: true },
+    });
+    expect(adapter.parse(own)).toEqual([]);
+    expect(adapter.ignored?.(own)).toEqual({ event: 'messages.upsert', reason: 'own message' });
+    expect(adapter.parse(whatsmiauIncoming({ fromMe: true }))).toEqual([]);
+    expect(adapter.ignored?.({ event: 'messages.update', instance: 'agora-test' })).toEqual({
+      event: 'messages.update',
+      reason: 'not a messages.upsert event',
+    });
+  });
 });
 
 describe('whatsappCloud', () => {
