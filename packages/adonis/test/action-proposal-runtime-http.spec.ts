@@ -167,3 +167,17 @@ it('pushes a settled proposal to actionProposalWorker.onSettled, and survives a 
   );
   logged.mockRestore();
 }, 15000);
+
+it('lists no proposals (200, []) in blocking mode, where there are none, and still refuses a decision (501)', async () => {
+  app = await bootAgentApp({ model: new FakeModelProvider(() => ({ text: 'ok' })) });
+  const list = await fetch(`${app.url}/agent/threads/t1/action-proposals`, { headers });
+  expect(list.status).toBe(200);
+  expect(await list.json()).toEqual([]);
+  expect(list.headers.get('X-Action-Proposals-Next')).toBeNull();
+  const approve = await fetch(`${app.url}/agent/threads/t1/action-proposals/p1/approve`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({}),
+  });
+  expect(approve.status).toBe(501);
+});

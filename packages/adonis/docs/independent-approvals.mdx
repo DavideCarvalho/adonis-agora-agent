@@ -63,7 +63,7 @@ A list page holds at most 1000 proposals. When there are more, the response carr
 
 A decision is authorized by the approval policy (`canDecide`, else the requester or a holder of the approver role) and recorded with the deciding actor and the channel (`via: 'web'` on these routes). A body with other fields or wrong types is a `400`, an unknown thread or proposal a `404`, a thread of another tenant or an actor who may not decide a `403`. The mutation result has a `status` — `applied`, `unchanged` (the same decision again), `conflict`, `not_found` or `expired` — and the proposal. The blocking routes (`POST <path>/tool-call/approve` / `reject`) refuse a call that became a proposal with `400`.
 
-In process, `AgentService` offers the same operations: `listActionProposals(actor, threadId)`, `listActionProposalsPage(actor, threadId, after?)` and `decideActionProposal(actor, threadId, proposalId, 'approved' | 'rejected', { remember?, reason? }, via?)` — pass `via` (`'slack'`, `'teams'`, …) to record where a decision came from. Each throws `ActionProposalServiceError` (`status` 400, 403, 404 or 501 when independent mode is off).
+In process, `AgentService` offers the same operations: `listActionProposals(actor, threadId)`, `listActionProposalsPage(actor, threadId, after?)` and `decideActionProposal(actor, threadId, proposalId, 'approved' | 'rejected', { remember?, reason? }, via?)` — pass `via` (`'slack'`, `'teams'`, …) to record where a decision came from. Each throws `ActionProposalServiceError` (`status` 400, 403, 404, or 501 for a decision when independent mode is off; with it off the two list methods answer no proposals).
 
 ### Text decisions
 

@@ -41,7 +41,7 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 | 8g | `PATCH /agent/queue/:messageId` | `{ message?, attachments?: { mediaId }[] \| null, position? }` — edit and/or move a waiting message. Answers the queue; `410` when it already started or was removed, `404` unknown, `403` another actor's. |
 | 8h | `DELETE /agent/queue/:messageId` | Remove a waiting message. Answers the queue; `410` / `404` / `403` as above. |
 | 8i | `POST /agent/queue/:messageId/interrupt` | Run a waiting message **now**: it moves to the head as an interrupt, any pause is lifted, and the running turn is cancelled for it. Answers the queue plus `interrupting` (the cancelled run) — or `runId` when nothing was running and it started at once. `410` / `404` / `403` as above. |
-| 8j | `GET /agent/threads/:id/action-proposals` | The thread's [independent proposals](/docs/agent/independent-approvals#over-http) the caller may see; paginated through `?after=` and the `X-Action-Proposals-Next` header. `501` unless `actionApprovalMode: 'independent'`. |
+| 8j | `GET /agent/threads/:id/action-proposals` | The thread's [independent proposals](/docs/agent/independent-approvals#over-http) the caller may see; paginated through `?after=` and the `X-Action-Proposals-Next` header. Without `actionApprovalMode: 'independent'` there are none: `200` with `[]`. |
 | 8k | `POST /agent/threads/:id/action-proposals/:proposalId/approve` \| `…/reject` | Decide a proposal: `{ remember? }` / `{ reason? }`. Answers the mutation result (`applied`, `unchanged`, `conflict`, `not_found`, `expired`). |
 | 9 | `DELETE /agent/threads/:id` | Soft-delete a thread. |
 | 10 | `POST /agent/threads/:id/fork-from/:messageId` | Fork a thread up to a message (regenerate / branch). |
