@@ -294,7 +294,7 @@ durable work). Text decisions only decide cards delivered to that conversation. 
 own flows: `unknownSender`, `beforeTurn`, `canDeliver`, `texts` as a function, `onTurnStarted`,
 `renderComponent` (components as files), `prepareMedia` / `mediaLimits` / `transformInbound`,
 `formatOutcome`, `onWebhook`, `allowRemember: false`.
-Replies are text-only (components → `fallbackText`), converted to the channel's markdown and split
+Replies are text-only by default (components → `fallbackText`), or files `renderComponent` makes of them (`OutboundMessage.media` where the adapter declares `capabilities.media`), converted to the channel's markdown and split
 at its length limit. Media is downloaded and attached when `attachments` is configured (else the
 person is told why not). `ask` questions go out as numbered text, one at a time; the next messages
 answer them. State (message ids, questions in progress, relayed outcomes) lives in
