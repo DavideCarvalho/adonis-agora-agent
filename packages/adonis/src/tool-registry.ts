@@ -217,7 +217,8 @@ export class ToolRegistry {
    * `canUse` admits the actor (defense-in-depth — a call can reach here from a replayed durable step
    * or an approval granted before the flag moved, neither of which went through `definitionsFor`
    * again) and re-parses the input. With `options.allowedTools` (the turn's persona allow-list) a
-   * tool off that list is refused last, the same way the offer narrowed it.
+   * tool off that list is refused last, the same way the offer narrowed it. A tool whose
+   * `describe()` answers `available: false` for the call's scope is refused as not registered.
    */
   private async validated(
     name: string,
@@ -243,6 +244,13 @@ export class ToolRegistry {
     // model was never offered under this persona cannot run because the model named it anyway.
     if (options.allowedTools !== undefined && !options.allowedTools.includes(name)) {
       throw new ToolForbiddenError(name);
+    }
+    // The offer also drops a tool whose `describe()` answers `available: false` for this scope (a
+    // genui tool the renderer cannot draw). A call to it is refused as the unknown tool it was to
+    // the model, so naming a tool it was not shown cannot run it.
+    if (entry.handler.describe !== undefined) {
+      const described = await entry.handler.describe(describeScopeOf(ctx));
+      if (described?.available === false) throw new ToolNotFoundError(name);
     }
     const validation = await entry.spec.inputSchema['~standard'].validate(input);
     if (validation.issues !== undefined) {
@@ -377,4 +385,14 @@ export class ClosedRolesPolicy extends DefaultRolesPolicy {
   constructor(defaultRoles: string[] = []) {
     super(defaultRoles, { emptyRoles: 'deny' });
   }
+}
+
+/** The {@link ToolDescribeScope} a call's context stands for: what the offer was built for. */
+function describeScopeOf(ctx: AiToolCtx): ToolDescribeScope {
+  return {
+    actor: ctx.actor,
+    ...(ctx.threadId ? { threadId: ctx.threadId } : {}),
+    ...(ctx.agentName !== undefined ? { agentName: ctx.agentName } : {}),
+    ...(ctx.uiCapabilities !== undefined ? { uiCapabilities: ctx.uiCapabilities } : {}),
+  };
 }

@@ -115,9 +115,11 @@ export interface ToolHandler<I = unknown, O = unknown> {
    * the registered spec's `description` / `inputSchema` in the definition the model sees. Omit, or
    * return `undefined`, to use the registered spec as is.
    *
-   * It shapes what the model is SHOWN only: the registry still validates a call against the
+   * It shapes what the model is SHOWN: the registry still validates a call against the
    * registered `inputSchema`, so a tool whose accepted input varies per turn registers a permissive
-   * schema and validates in `execute`.
+   * schema and validates in `execute`. The one exception is `available: false`, which is also asked
+   * again on invoke (with the call's actor, thread, agent and `uiCapabilities`): a call to a tool
+   * that answers it is refused as an unknown tool, so the model cannot run what it was not offered.
    */
   describe?(
     scope: ToolDescribeScope,
