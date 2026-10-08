@@ -67,6 +67,8 @@ When every call in the turn is a `read`, their invocations run **concurrently** 
 | `openSink()` | opens the in-process token sink | opens a shared sink keyed by run id |
 | `runAgent(name, task)` | runs a nested in-process loop | starts a durable child workflow (`ctx.child`) |
 | `parallel(tasks)` | `settleAll` — nothing records a position, so reads simply overlap | `settleAll` — every task is launched in one tick, so `ctx.localStep` pins the block in call order |
+| `cancelled()` | asks the in-memory Stop flag, between steps and once a model call answers | omitted — the runtime's own cancel stops the run |
+| `abortSignal` | aborted by a Stop; passed to the model call (`ModelTurnArgs.abortSignal`) and to tools (`ctx.abortSignal`) | omitted |
 | `patched(id)` | omitted, so every run takes the current shape | `ctx.patched` — a run recorded under an older loop shape keeps replaying against it |
 
 Both runners ship — the durable one is opt-in via `durable: true`. See [The durable runner](/docs/agent/durability/durable-runner).

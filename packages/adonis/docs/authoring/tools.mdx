@@ -299,6 +299,17 @@ interface AiToolCtx {
 
 A test that calls a handler directly builds the ctx itself — pass `emitUi: createNoopEmitUi()` (from `@adonis-agora/agent/testing`).
 
+**Stopping.** A Stop (`POST <path>/chat/:runId/cancel`, `AgentService.cancel`, the React Stop button) aborts `ctx.abortSignal` under the inline runner. Hand it to whatever the tool waits on, so the Stop does not wait for the tool to finish:
+
+```ts
+async (input, ctx) => {
+  const response = await fetch(url, { signal: ctx.abortSignal })
+  return response.json()
+}
+```
+
+A call cut short this way settles failed, and the run ends `cancelled` at its next safe point. A tool that ignores the signal is not interrupted: it runs to the end, and the run stops after it. The signal is absent under the durable runner (its runtime's own cancel stops the run) and outside a turn, so read it as optional.
+
 Identity is single-sourced on `ctx.actor` — read `ctx.actor.id` / `ctx.actor.tenantRef` and scope every query to it. Never trust an id the model passes in its arguments.
 
 `ctx.emitUi(component, props)` pushes a typed **UI component** into the conversation instead of (or alongside) text — streamed live, persisted on the message, rendered by the frontend's own component, and sent as text to a client that cannot draw it. See [Generative UI](/docs/agent/generative-ui) and [One output, many surfaces](/docs/agent/surfaces).
