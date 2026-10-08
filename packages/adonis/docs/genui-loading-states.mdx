@@ -276,7 +276,7 @@ Held nodes get the provider's `placeholder` — a node, or a function of the nod
 >
 ```
 
-`<GenerativeUI placeholder={…}>` overrides it for one block. A preview the final call does not replace (the tree was invalid, or degraded to text for this client) is withdrawn, and the transcript drops it: the model's retry draws a new one. Previews are never persisted, never sent to text channels, and never sent to a client whose capabilities leave a node of the tree out.
+`<GenerativeUI placeholder={…}>` overrides it for one block. A preview the final call does not replace (the tree was invalid, or degraded to text for this client) is withdrawn, and the transcript drops it: the model's retry draws a new one. Previews are never persisted and never sent to text channels, and they only hold components the client declared: a tree that reaches one it cannot draw stops previewing there, and is withdrawn when its text arrives.
 
 ## Drawing skeletons that hold up
 

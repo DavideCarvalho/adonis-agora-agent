@@ -245,10 +245,18 @@ describe('progressive ui__render over the native stream', () => {
     expect(drawn?.props).toEqual(chart('bar').props);
   });
 
-  it('previews only for a client that draws the tree: a text-only one gets the final text', async () => {
+  it('previews only what the client draws: a tree it cannot draw is withdrawn for its final text', async () => {
     await boot(new StreamingTreeModel(dashboard()));
-    const { frames } = await chat({ uiCapabilities: { components: [] } });
-    expect(uiFrames(frames)).toEqual([]);
+    // `Card` only: `ui__render` is offered (the client draws something), but not this tree's KPIs
+    // or chart. (With nothing declared the tool is hidden, and a call to it is refused.)
+    const { frames } = await chat({
+      uiCapabilities: { components: [{ name: 'Card', version: 1 }] },
+    });
+    const ui = uiFrames(frames).map((frame) => frame.data as Record<string, unknown>);
+    // The Card previews until the KPIs' type arrives, then the preview stops and is withdrawn.
+    expect(ui.every((frame) => frame.partial === true && frame.id === 'call-0:ui:0')).toBe(true);
+    expect(JSON.stringify(ui)).not.toContain('KpiCards');
+    expect(ui.at(-1)?.props).toEqual({});
     const text = frames
       .filter((frame) => frame.data.kind === 'text')
       .map((frame) => frame.data.text)
