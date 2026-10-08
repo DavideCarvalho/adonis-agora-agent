@@ -293,8 +293,9 @@ person is told why not). `ask` questions go out as numbered text, one at a time;
 answer them. State (message ids, questions in progress, relayed outcomes) lives in
 `agent_channel_state` via `lucidChannelStore()` when the agent store is Lucid, else memory —
 `store: redisChannelStore(redis)` otherwise on several replicas. Use
-`actionApprovalMode: 'independent'`: pending proposals go out as Confirm/Cancel buttons (or a text
-instruction in the `actionProposalText` vocabulary), and `actionProposalWorker: { onSettled:
+`actionApprovalMode: 'independent'`: pending proposals go out as Confirm/Cancel buttons where the
+adapter enables them, else a text instruction in the `actionProposalText` vocabulary (a buttons
+message carries that instruction too, so a phone that shows no buttons can still answer by text), and `actionProposalWorker: { onSettled:
 channels.onSettled }` relays outcomes that settle later. In blocking mode the channel can only say
 the approval must happen in the app. Exclude webhook routes from Shield's CSRF check.
 
