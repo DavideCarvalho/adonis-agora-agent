@@ -55,4 +55,12 @@ export interface AgentRunner {
    */
   signal(runId: string, toolCallId: string, reply: HumanReply): Promise<void>;
   cancel(runId: string): Promise<void>;
+  /**
+   * OPTIONAL: execute in this process what of `runId` waits for a worker to pick it up — the run
+   * while it is not started yet, and the delegates it waits on — unless another process already
+   * holds it. Returns once that is set going, not once it ends. For a caller that waits on the run
+   * while being, itself, the work a worker is busy with (a channel job reading the turn it started):
+   * the run would otherwise wait for that worker. Absent → runs only where the runner sends them.
+   */
+  drive?(runId: string): Promise<void>;
 }
