@@ -79,8 +79,9 @@ async function resolveCatalogFn(
  * export default defineConfig({ model, genui: genui({ catalog }) })
  * ```
  *
- * Registers a `ui__show_<component>` tool per model-facing component (or one `ui__render` tree tool
- * with `mode: 'tree'`, and/or the generic `ui__show` with `showTool: true`). Each call validates
+ * Registers one `ui__render` tool taking a component tree composed from the catalog (or, with
+ * `mode: 'per-component'`, a `ui__show_<component>` tool per model-facing component; and/or the
+ * generic `ui__show` with `showTool: true`). Each call validates
  * against the catalog and pushes through `ctx.emitUi`, so it streams as a `ui` frame and is persisted
  * on the message. Tools without `roles` get the config's `defaultRoles`, like every other tool.
  */

@@ -31,6 +31,7 @@ import {
   GENUI_TREE_COMPONENT,
   type GenuiElement,
   type TreeLimits,
+  type TreeSchemaMode,
   treeJsonSchema,
   validateTree,
 } from './tree.js';
@@ -63,12 +64,20 @@ export type ResolveGenuiCatalog = (scope: GenuiCatalogScope) => Catalog | Promis
 
 export interface GenuiToolsOptions {
   /**
-   * `per-component` (default): one tool per model-facing component, `ui__show_<snake>`, whose input
-   * IS the component's props. Layouts (`children: true`) get none: they can only be composed in a
-   * tree. `tree`: a single tool whose input is a nested
-   * `{ type, props, children }` tree composed from the catalog (json-render's nested shape).
+   * `tree` (default): a single `ui__render` tool whose input is a nested `{ type, props, children }`
+   * tree composed from the catalog (json-render's nested shape). A tree of one component with no
+   * children is pushed as that component, exactly as its `ui__show_*` tool would push it.
+   * `per-component`: one tool per model-facing component, `ui__show_<snake>`, whose input IS the
+   * component's props — for small models, or when each tool should carry its exact schema. Layouts
+   * (`children: true`) get none: they can only be composed in a tree.
    */
   mode?: 'per-component' | 'tree';
+  /**
+   * How the tree tool's input schema describes the nodes (see {@link treeJsonSchema}): `'strict'`
+   * (default) — a recursive union by `type` with each component's exact props; `'loose'` — one
+   * generic node shape, for a provider that refuses `$ref` in tool parameters.
+   */
+  treeSchema?: TreeSchemaMode;
   /**
    * The model's turn ends once a genui call succeeds — no further model call to narrate what the UI
    * already shows. Stamped as `spec.terminal`.
@@ -129,11 +138,9 @@ export const GENUI_SHOW_TOOL = 'ui__show';
  */
 export function genuiTools(catalog: Catalog, options: GenuiToolsOptions = {}): GenuiTool[] {
   const tools =
-    options.mode === 'tree'
-      ? [treeTool(catalog, options)]
-      : standaloneComponents(catalog).map((component) =>
-          componentTool(catalog, component, options),
-        );
+    options.mode === 'per-component'
+      ? standaloneComponents(catalog).map((component) => componentTool(catalog, component, options))
+      : [treeTool(catalog, options)];
   if (options.showTool !== undefined && options.showTool !== false) {
     tools.push(showTool(catalog, options));
   }
@@ -260,6 +267,7 @@ function treeTool(catalog: Catalog, options: GenuiToolsOptions): GenuiTool {
       catalogToModelText(resolved, { mode: 'tree' }),
     ].join('\n');
   const dynamic = options.resolveCatalog !== undefined;
+  const treeSchemaOptions = options.treeSchema !== undefined ? { schema: options.treeSchema } : {};
   const handler: ToolHandler = {
     async execute(input: unknown, ctx: AiToolCtx): Promise<GenuiToolOutput> {
       const resolved = await catalogFor(catalog, options, scopeOf(ctx));
@@ -273,6 +281,12 @@ function treeTool(catalog: Catalog, options: GenuiToolsOptions): GenuiTool {
         throw new Error(`invalid UI tree: ${formatIssues(result.issues)}`);
       }
       const root: GenuiElement = result.value;
+      // A tree of one standalone component is that component: pushed as its `ui__show_*` tool
+      // would push it, so a client (or a channel's `renderComponent`) sees no difference.
+      const single = resolved.get(root.type);
+      if (root.children === undefined && single !== undefined && single.children !== true) {
+        return push(ctx, root.type, root.props, single.version);
+      }
       return push(ctx, GENUI_TREE_COMPONENT, { root });
     },
   };
@@ -284,7 +298,7 @@ function treeTool(catalog: Catalog, options: GenuiToolsOptions): GenuiTool {
     return {
       available: resolved.modelComponents().length > 0,
       description: describeFor(resolved),
-      inputSchema: permissiveSchema(treeJsonSchema(resolved)),
+      inputSchema: permissiveSchema(treeJsonSchema(resolved, treeSchemaOptions)),
     };
   };
   handler.previewInput = async (
@@ -322,8 +336,8 @@ function treeTool(catalog: Catalog, options: GenuiToolsOptions): GenuiTool {
       kind: 'read',
       description: describeFor(catalog),
       inputSchema: dynamic
-        ? permissiveSchema(treeJsonSchema(catalog))
-        : asyncJsonStandardSchema(treeJsonSchema(catalog), async (value) => {
+        ? permissiveSchema(treeJsonSchema(catalog, treeSchemaOptions))
+        : asyncJsonStandardSchema(treeJsonSchema(catalog, treeSchemaOptions), async (value) => {
             const result = await validateTree(catalog, value, options.treeLimits, 'input');
             return result.ok ? { value: result.value } : { issues: result.issues };
           }),

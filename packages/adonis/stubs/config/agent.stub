@@ -6,6 +6,8 @@ import { defineConfig, stores } from '@adonis-agora/agent'
 // import { attachmentStores } from '@adonis-agora/agent'
 // import { aiSdkModel } from '@adonis-agora/agent/ai-sdk'
 // import { openai } from '@ai-sdk/openai'
+// import { defineCatalog, genui } from '@adonis-agora/agent/genui'
+// import { BUILTIN_COMPONENTS, LAYOUT_COMPONENTS } from '@adonis-agora/agent/genui/builtins'
 
 /**
  * Configuration for @adonis-agora/agent. Only \`model\` is required. Pick a \`store\` by name from the
@@ -52,6 +54,12 @@ export default defineConfig({
   // Chat attachments — where uploads live (bring your own store, or @adonis-agora/media on any Drive
   // disk). Mounts POST /agent/attachments; a send names uploads as { mediaId }, resolved server-side.
   // attachments: attachmentStores.media(),
+
+  // Generative UI: the model composes catalog components (tables, charts, cards, …) into one
+  // \`ui__render\` tree, validated before it streams; your client renders each by name. Keep the
+  // catalog in its own file to share it with the browser. \`mode: 'per-component'\` gives one
+  // \`ui__show_*\` tool per component instead.
+  // genui: genui({ catalog: defineCatalog([...BUILTIN_COMPONENTS, ...LAYOUT_COMPONENTS]) }),
 
   // The implicit default agent (base prompt, personas, tool allow-list). Omit for a bare assistant.
   // defaultAgent: {

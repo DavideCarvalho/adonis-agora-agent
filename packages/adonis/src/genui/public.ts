@@ -81,6 +81,7 @@ export {
   type GenuiElement,
   type GenuiTreeProps,
   type TreeLimits,
+  type TreeSchemaMode,
   treeJsonSchema,
   treeToFlatSpec,
   validateTree,

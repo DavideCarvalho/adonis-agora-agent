@@ -11,6 +11,7 @@ import { reframeAgUiStream } from '../../../src/react/core/ag-ui-backend.js';
 import { GenerativeUI, useGenuiNode } from '../../../src/react/core/genui/generative-ui.js';
 import { treeToJsonRenderSpec } from '../../../src/react/core/genui/json-render.js';
 import type { GenuiRegistry } from '../../../src/react/core/genui/types.js';
+import { storedMessageToUiMessage } from '../../../src/react/core/stored-message-to-ui-message.js';
 import { buildTranscriptBlocks } from '../../../src/react/core/transcript/model.js';
 
 afterEach(cleanup);
@@ -273,5 +274,40 @@ describe('agUiBackend re-framing', () => {
       ['c:ui:0', true],
       ['c:ui:0', undefined],
     ]);
+  });
+});
+
+describe('threads persisted before tree mode was the default', () => {
+  it('still draw their per-component ui parts (a ui__show_* push) with the same renderer', () => {
+    const stored = storedMessageToUiMessage({
+      id: 'm-old',
+      threadId: 't',
+      role: 'assistant',
+      content: 'Your revenue:',
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+      toolCalls: [{ id: 'c1', name: 'ui__show_chart', input: finalChart.props }],
+      toolResults: [
+        { id: 'c1', name: 'ui__show_chart', output: { shown: 'Chart', id: 'c1:ui:0' } },
+      ],
+      ui: [
+        {
+          id: 'c1:ui:0',
+          component: 'Chart',
+          props: finalChart.props,
+          version: 1,
+          fallbackText: 'Revenue',
+          toolCallId: 'c1',
+        },
+      ],
+    } as never);
+    const [block] = buildTranscriptBlocks(stored, {
+      isReasoningOpen: () => false,
+      toggleReasoning: () => undefined,
+    }).filter((each) => each.kind === 'ui');
+    expect(block).toMatchObject({ component: 'Chart', id: 'c1:ui:0' });
+    render(<GenerativeUI part={block} registry={registry} catalog={catalog} />);
+    expect(screen.getByTestId('chart').textContent).toBe('1 points');
+    // Outside a tree: no node state, nothing incomplete.
+    expect(screen.getByTestId('chart').dataset.incomplete).toBe('undefined');
   });
 });

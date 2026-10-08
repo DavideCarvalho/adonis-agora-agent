@@ -1,5 +1,11 @@
 import type { Catalog } from './catalog.js';
-import { type GenuiIssue, type GenuiValidation, type JsonSchema, validateProps } from './schema.js';
+import {
+  type GenuiIssue,
+  type GenuiValidation,
+  type JsonSchema,
+  toJsonSchema,
+  validateProps,
+} from './schema.js';
 
 /**
  * One node of a composed UI: a catalog component, its props, and — for components declared with
@@ -139,33 +145,119 @@ export async function validateTree(
 }
 
 /**
- * The JSON Schema of a tree-mode tool's input: a recursive `{ type, props, children? }` node whose
- * `type` is one of the catalog's model-facing component names. Per-component props are described
- * to the model in the tool description (see `catalogToModelText`) and checked by
- * {@link validateTree}, which keeps this schema small enough for every provider.
+ * How exactly a tree-mode tool's input is described to the model ({@link treeJsonSchema}):
+ *
+ * - `'strict'` (default): every node's `props` is its component's own props schema, and `children`
+ *   is a discriminated union by `type` over the components — each variant with its exact props, and
+ *   `children` only on components that take them (recursive, through `$defs` / `$ref`).
+ * - `'loose'`: one `{ type, props: object, children }` node shape — for a provider that refuses
+ *   `$ref` in tool parameters. The props are then only described in the tool's text.
  */
-export function treeJsonSchema(catalog: Catalog): JsonSchema {
+export type TreeSchemaMode = 'strict' | 'loose';
+
+/**
+ * The JSON Schema of a tree-mode tool's input. Whatever it says, {@link validateTree} remains the
+ * check every call goes through: a provider is free to ignore the schema.
+ *
+ * Strict (the default), it is shaped for what the providers accept in tool parameters:
+ *  - the root is a plain `type: 'object'` — OpenAI and Anthropic both refuse a union at the top
+ *    level of a tool's parameters — whose `type` lists every component and whose `props` is any of
+ *    their props schemas;
+ *  - every `children` item is `{ $ref: '#/$defs/node' }`, an `anyOf` of one variant per component
+ *    (`type` a one-value `enum`, `props` that component's schema, `children` only where taken,
+ *    `additionalProperties: false`);
+ *  - a component whose props schema is not self-contained (it carries its own `$ref`, `$defs` or
+ *    `definitions`, as a recursive Zod schema does) is described as `{ type: 'object' }`, since its
+ *    references would not resolve once embedded; `$schema` is dropped.
+ */
+export function treeJsonSchema(
+  catalog: Catalog,
+  options: { schema?: TreeSchemaMode } = {},
+): JsonSchema {
+  const components = catalog.modelComponents();
+  const names = components.map((component) => component.name);
+  if (options.schema === 'loose') {
+    return {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: names, description: 'Component name from the catalog' },
+        props: {
+          type: 'object',
+          description: "The component's props, as the catalog describes them",
+        },
+        children: {
+          type: 'array',
+          items: { $ref: '#' },
+          description:
+            'Nested elements, only for components that take children. A literal JSON array, never a JSON-stringified one.',
+        },
+      },
+      required: ['type', 'props'],
+    };
+  }
+  const defs: Record<string, JsonSchema> = {};
+  const childrenSchema: JsonSchema = {
+    type: 'array',
+    items: { $ref: '#/$defs/node' },
+    description: 'Nested elements. A literal JSON array, never a JSON-stringified one.',
+  };
+  for (const component of components) {
+    defs[`props_${component.name}`] = embeddableProps(toJsonSchema(component.props));
+    defs[`node_${component.name}`] = {
+      type: 'object',
+      properties: {
+        type: { type: 'string', enum: [component.name] },
+        props: { $ref: `#/$defs/props_${component.name}` },
+        ...(component.children === true ? { children: childrenSchema } : {}),
+      },
+      required: ['type', 'props'],
+      additionalProperties: false,
+    };
+  }
+  defs.node = {
+    anyOf: components.map((component) => ({ $ref: `#/$defs/node_${component.name}` })),
+  };
   return {
     type: 'object',
     properties: {
       type: {
         type: 'string',
-        enum: catalog.modelComponents().map((component) => component.name),
-        description: 'Component name from the catalog',
+        enum: names,
+        description:
+          'Component name from the catalog. A single component (no children) is a valid tree.',
       },
       props: {
-        type: 'object',
-        description: "The component's props, as the catalog describes them",
+        description: "The component's props: the schema of the component named by `type`",
+        anyOf: components.map((component) => ({ $ref: `#/$defs/props_${component.name}` })),
       },
       children: {
-        type: 'array',
-        items: { $ref: '#' },
+        ...childrenSchema,
         description:
           'Nested elements, only for components that take children. A literal JSON array, never a JSON-stringified one.',
       },
     },
     required: ['type', 'props'],
+    additionalProperties: false,
+    $defs: defs,
   };
+}
+
+/** A props schema that stands on its own once embedded in the tree's `$defs`, else a plain object. */
+function embeddableProps(schema: JsonSchema | undefined): JsonSchema {
+  if (schema === undefined || typeof schema !== 'object' || schema === null) {
+    return { type: 'object' };
+  }
+  const references = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.some(references);
+    if (typeof value !== 'object' || value === null) return false;
+    return Object.entries(value).some(
+      ([key, nested]) =>
+        key === '$ref' || key === '$defs' || key === 'definitions' || references(nested),
+    );
+  };
+  if (references(schema)) return { type: 'object' };
+  const { $schema: _schema, ...rest } = schema as Record<string, unknown>;
+  return rest as JsonSchema;
 }
 
 /** A json-render flat spec: `{ root, elements: { [id]: { type, props, children: id[] } } }`. */
