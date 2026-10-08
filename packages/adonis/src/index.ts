@@ -297,6 +297,7 @@ export { evaluateOwnership } from './ownership.js';
 // The ecosystem-wide cursor pagination vocabulary — structurally identical to
 // `@adonis-agora/filter`'s `CursorParams`/`CursorPage`, deliberately not a dependency.
 export type { CursorPage, CursorParams } from './pagination.js';
+export { type PartialJson, parsePartialJson } from './partial-json.js';
 export * from './personas.js';
 export * from './pricing/models-dev.js';
 export {

@@ -113,6 +113,11 @@ import {
   validateStructured,
 } from './structured-output.js';
 import {
+  previewToolInputs,
+  type ShownPreview,
+  withdrawPreviewFrame,
+} from './tool-input-preview.js';
+import {
   ToolForbiddenError,
   ToolInputInvalidError,
   ToolPreflightDeniedError,
@@ -360,6 +365,8 @@ interface BufferedModelTurnResult extends ModelTurnResult {
   releasedText?: string;
   /** A refusal an incremental gate reached on a prefix, carried out rather than thrown. */
   gateRejection?: GateRejection;
+  /** Previews of streaming tool input the turn showed (`ToolHandler.previewInput`). */
+  previews?: ShownPreview[];
 }
 
 /** Renders retrieved passages as a numbered, citable context block appended to the system prompt. */
@@ -3260,9 +3267,25 @@ export async function runAgentLoop<TOutput = unknown>(
             // that returns the journaled turn never opens the step twice.
             await writer.write({ t: 'event', event: { kind: 'step-start' } });
             const announced = announcedToolCalls(incremental?.writer ?? buffer?.writer ?? writer);
+            // A tool that previews its input (genui's streaming tree) gets partial `ui` frames
+            // while the model writes its arguments. Added BELOW the observer: a preview is shown,
+            // never part of what the turn persists.
+            const previews = previewToolInputs(announced.writer, async (name, toolCallId) =>
+              tools.some((definition) => definition.name === name)
+                ? deps.registry.previewInput(name, {
+                    actor: input.actor,
+                    threadId: input.threadId,
+                    toolCallId,
+                    ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+                    ...(input.uiCapabilities !== undefined
+                      ? { uiCapabilities: input.uiCapabilities }
+                      : {}),
+                  })
+                : undefined,
+            );
             // Reasoning and pushed UI are read off the frames INSIDE this checkpoint, so they are
             // journaled with the turn and a replay persists the same thinking instead of none.
-            const frames = observeTurnFrames(announced.writer);
+            const frames = observeTurnFrames(previews.writer);
             const result = withTurnFrames(
               await abortableModelCall(hooks, (signal) =>
                 deps.model.runTurn({
@@ -3278,16 +3301,23 @@ export async function runAgentLoop<TOutput = unknown>(
             // A provider that streams no tool frames still gets its calls announced — an outcome
             // for a call the client never saw announced drops the whole message there.
             await announced.announceRest(result.toolCalls, tools);
+            // Journaled with the turn, so whichever process settles the calls withdraws the same
+            // previews the stream showed.
+            const shownPreviews = previews.shown();
+            const previewed = shownPreviews.length > 0 ? { previews: shownPreviews } : {};
             if (incremental !== undefined) {
               await incremental.settled();
               const refusal = incremental.rejection();
               return {
                 ...result,
+                ...previewed,
                 releasedText: incremental.released(),
                 ...(refusal !== undefined ? { gateRejection: refusal } : {}),
               };
             }
-            return buffer === undefined ? result : { ...result, bufferedFrames: buffer.frames() };
+            return buffer === undefined
+              ? { ...result, ...previewed }
+              : { ...result, ...previewed, bufferedFrames: buffer.frames() };
           },
           (result) => ({
             ...(result.modelId !== undefined ? { modelId: result.modelId } : {}),
@@ -3627,6 +3657,15 @@ export async function runAgentLoop<TOutput = unknown>(
         const toolUi = turn.toolCalls.flatMap((call) => turnCalls.toolUi.get(call.id) ?? []);
         if (toolUi.length > 0) {
           await deps.store.setMessageUi?.(assistant.id, mergeUi(turn.ui, toolUi));
+        }
+        // A preview of a call's input that the call's own push did not replace (it failed, was
+        // refused, or degraded to text) is withdrawn before its outcome: a live client never keeps
+        // a half-written layout the message will not have.
+        for (const preview of turn.previews ?? []) {
+          const pushed = turnCalls.toolUi.get(preview.toolCallId) ?? [];
+          if (!pushed.some((component) => component.id === preview.id)) {
+            await writer.write(withdrawPreviewFrame(preview));
+          }
         }
         // Every value here comes from a checkpoint above, so a replay would write the same frames —
         // and, being inside this one, it never writes them at all.

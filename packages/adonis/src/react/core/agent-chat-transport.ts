@@ -655,6 +655,9 @@ export class AgentChatTransport implements ChatTransport<UIMessage> {
                   props: event.props,
                   ...(event.version !== undefined ? { version: event.version } : {}),
                   ...(event.toolCallId !== undefined ? { toolCallId: event.toolCallId } : {}),
+                  // A preview of a layout the model is still writing: the final push (same id)
+                  // replaces this part in place.
+                  ...(event.partial === true ? { partial: true } : {}),
                 },
               });
               break;

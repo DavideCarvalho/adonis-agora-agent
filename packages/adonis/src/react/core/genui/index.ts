@@ -9,6 +9,7 @@ export {
   type GenuiProviderValue,
   GenuiTree,
   useGenerativeUI,
+  useGenuiNode,
   useGenuiProvider,
 } from './generative-ui.js';
 export {
@@ -25,6 +26,8 @@ export {
   type GenerativeUIState,
   type GenuiCatalogLike,
   type GenuiIssueLike,
+  type GenuiNodeState,
+  type GenuiPlaceholder,
   type GenuiRegistry,
   type GenuiRenderer,
   type ResolveComponent,

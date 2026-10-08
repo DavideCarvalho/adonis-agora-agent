@@ -34,7 +34,7 @@ const deal = defineComponent({
 const catalog = defineCatalog([...BUILTIN_COMPONENTS, ...LAYOUT_COMPONENTS, deal]);
 
 describe('genuiTools per-component', () => {
-  const tools = genuiTools(catalog, { roles: ['member'] });
+  const tools = genuiTools(catalog, { mode: 'per-component', roles: ['member'] });
 
   it('makes one read tool per model component, named ui__show_<snake>', () => {
     expect(tools.map((tool) => tool.spec.name)).toContain('ui__show_data_table');
@@ -107,7 +107,11 @@ describe('genuiTools per-component', () => {
   });
 
   it('stamps terminal and honours a custom prefix', () => {
-    const [first] = genuiTools(catalog, { terminal: true, namePrefix: 'show_' });
+    const [first] = genuiTools(catalog, {
+      mode: 'per-component',
+      terminal: true,
+      namePrefix: 'show_',
+    });
     expect(first?.spec).toMatchObject({ name: 'show_data_table', terminal: true });
   });
 });
@@ -178,7 +182,7 @@ describe('genuiTools show tool', () => {
   });
 
   it('takes a custom name', () => {
-    const tools = genuiTools(defineCatalog([deal]), { showTool: 'present' });
+    const tools = genuiTools(defineCatalog([deal]), { mode: 'per-component', showTool: 'present' });
     expect(tools.map((tool) => tool.spec.name)).toEqual(['ui__show_deal_card', 'present']);
   });
 });
@@ -208,7 +212,11 @@ describe('genuiTools with a per-request catalog', () => {
   const actorOf = (tenant: string) => ({ id: 'u1', roles: [], tenantRef: tenant });
 
   it('validates a show call against the tenant catalog and stamps its version', async () => {
-    const [show] = genuiTools(defineCatalog([]), { showTool: true, resolveCatalog });
+    const [show] = genuiTools(defineCatalog([]), {
+      mode: 'per-component',
+      showTool: true,
+      resolveCatalog,
+    });
     const { ctx, emitUi } = ctxWithEmit();
     await show?.handler.execute({ component: 'TenantCard', props: { headline: 'Hi' } }, ctx);
     expect(emitUi).toHaveBeenCalledWith('TenantCard', { headline: 'Hi' }, { version: 3 });
@@ -221,7 +229,11 @@ describe('genuiTools with a per-request catalog', () => {
   });
 
   it('lets any object through the registry and describes the tenant catalog per turn', async () => {
-    const [show] = genuiTools(defineCatalog([]), { showTool: true, resolveCatalog });
+    const [show] = genuiTools(defineCatalog([]), {
+      mode: 'per-component',
+      showTool: true,
+      resolveCatalog,
+    });
     const passthrough = await show?.spec.inputSchema['~standard'].validate({ anything: 1 });
     expect(passthrough?.issues).toBeUndefined();
     const described = await show?.handler.describe?.({ actor: actorOf('acme'), threadId: 't9' });
@@ -248,7 +260,7 @@ describe('genuiTools with a per-request catalog', () => {
   });
 
   it('refuses a per-component call the tenant catalog lacks, and says so in the description', async () => {
-    const tools = genuiTools(catalog, { resolveCatalog });
+    const tools = genuiTools(catalog, { mode: 'per-component', resolveCatalog });
     const table = tools.find((tool) => tool.spec.name === 'ui__show_data_table');
     const { ctx } = ctxWithEmit();
     await expect(table?.handler.execute({ columns: [], rows: [] }, ctx)).rejects.toThrow(
@@ -302,7 +314,11 @@ describe('transformed portable props through tool registry', () => {
         outputProps: z.object({ label: z.string() }),
       });
       const resolved = defineCatalog([transformed]);
-      const options = { showTool: true, ...(dynamic ? { resolveCatalog: () => resolved } : {}) };
+      const options = {
+        mode: 'per-component' as const,
+        showTool: true,
+        ...(dynamic ? { resolveCatalog: () => resolved } : {}),
+      };
       const tools = genuiTools(resolved, options);
       const registry = new ToolRegistry();
       for (const tool of tools) registry.register(tool.spec, tool.handler);
@@ -331,7 +347,7 @@ describe('transformed portable props through tool registry', () => {
         required: ['label'],
       },
     });
-    const tools = genuiTools(defineCatalog([component]), { showTool: true });
+    const tools = genuiTools(defineCatalog([component]), { mode: 'per-component', showTool: true });
     const show = tools.find((tool) => tool.spec.name === 'ui__show');
     expect(show?.spec.description).toContain('source');
     expect(show?.spec.description).not.toContain('label:');
@@ -369,10 +385,7 @@ it.each([false, true])(
       new DefaultRolesPolicy(),
     );
     expect(transforms).toBe(1);
-    expect(emitUi).toHaveBeenCalledWith(
-      GENUI_TREE_COMPONENT,
-      { root: { type: 'TreeLabel', props: { label: 'x!' } } },
-      {},
-    );
+    // A single-node tree is pushed as the component itself, as `ui__show_tree_label` would.
+    expect(emitUi).toHaveBeenCalledWith('TreeLabel', { label: 'x!' }, expect.any(Object));
   },
 );

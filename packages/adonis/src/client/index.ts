@@ -21,4 +21,5 @@ export {
   readSseStream,
   type SseEvent,
   STEP_SEPARATOR,
+  settleParts,
 } from './sse.js';

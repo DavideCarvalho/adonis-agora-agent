@@ -32,7 +32,9 @@ export function treeToJsonRenderSpec(root: GenerativeUIElement): JsonRenderFlatS
     const id = `el-${next++}`;
     const entry = { type: node.type, props: node.props ?? {}, children: [] as string[] };
     elements[id] = entry;
-    for (const child of node.children ?? []) entry.children.push(visit(child));
+    // A node held back while the model writes it (`streaming: 'complete'`) has no props to draw yet.
+    for (const child of node.children ?? [])
+      if (child.held !== true) entry.children.push(visit(child));
     return id;
   };
   return { root: visit(root), elements };

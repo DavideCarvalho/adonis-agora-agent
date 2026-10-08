@@ -27,6 +27,8 @@ export type StreamFrame =
       version?: number;
       fallbackText?: string;
       componentVersions?: Record<string, number>;
+      /** A preview of a call's streaming input (`AgentUiComponent.partial`): never persisted. */
+      partial?: true;
     }
   /**
    * One frame of the agent stream protocol (`AgentStreamEvent`, shared with `@dudousxd/nestjs-agent`)

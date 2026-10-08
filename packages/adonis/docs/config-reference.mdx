@@ -155,7 +155,7 @@ A public deployment should set a `quota`: model spend is otherwise unbounded (pe
 
 ### `genui`
 
-`GenuiFactory` — `genui({ catalog, resolver?, mode?, showTool?, terminal?, … })` from `@adonis-agora/agent/genui`. Registers the tools a model uses to push catalog components, binds the catalog in the container (`AgentGenui`), and makes every component push validated and [negotiated](/docs/agent/surfaces#ui-capabilities) against the catalog. **Omit → no catalog tools, and pushes are not validated** (a turn carrying `uiCapabilities` then refuses every push). See [Generative UI](/docs/agent/generative-ui#a-component-catalog--adonis-agoraagentgenui).
+`GenuiFactory` — `genui({ catalog, resolver?, mode?, treeSchema?, streaming?, showTool?, terminal?, … })` from `@adonis-agora/agent/genui`. `mode` defaults to `'tree'` (one `ui__render` tool; `'per-component'` registers a `ui__show_*` tool per component), `streaming` to `'complete'` (`'partial'` draws a tree while the model writes it — [Loading states and skeletons](/docs/agent/genui-loading-states#progressive-trees)). Registers the tools a model uses to push catalog components, binds the catalog in the container (`AgentGenui`), and makes every component push validated and [negotiated](/docs/agent/surfaces#ui-capabilities) against the catalog. **Omit → no catalog tools, and pushes are not validated** (a turn carrying `uiCapabilities` then refuses every push). See [Generative UI](/docs/agent/generative-ui#a-component-catalog--adonis-agoraagentgenui).
 
 ### `adapters`
 

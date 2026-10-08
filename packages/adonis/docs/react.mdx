@@ -237,7 +237,7 @@ Every route is listed in [Streaming & HTTP](/docs/agent/streaming-and-http). Err
 | Import | What it is |
 | --- | --- |
 | `@adonis-agora/agent/react` | the provider, the hooks, the transcript model, `AgentClient` |
-| `@adonis-agora/agent/react/genui` | `GenuiProvider`, `GenerativeUI` — draw the components an agent pushes ([Generative UI](/docs/agent/generative-ui)) |
+| `@adonis-agora/agent/react/genui` | `GenuiProvider`, `GenerativeUI`, `useGenuiNode` — draw the components an agent pushes, and skeletons while a tree streams ([Generative UI](/docs/agent/generative-ui), [Loading states](/docs/agent/genui-loading-states)) |
 | `@adonis-agora/agent/react/genui/json-render` | composed trees through `@json-render/react` |
 | `@adonis-agora/agent/react/genui/server` | `createReactServerRenderer` — static HTML, paginated PNG and PDF from the same React components, on the server ([Render HTML, PNG, or PDF](/docs/agent/authoring/component-rendering#render-html-png-or-pdf)) |
 | `@adonis-agora/agent/react/genui/server/playwright` | `createPlaywrightCaptureAdapter` — the PNG/PDF capture over `playwright-core` (optional peer) |

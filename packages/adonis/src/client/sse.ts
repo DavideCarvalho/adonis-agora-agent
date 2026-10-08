@@ -26,6 +26,11 @@ export type ChatPart =
       version?: number;
       fallbackText?: string;
       componentVersions?: Record<string, number>;
+      /**
+       * A preview of a layout the model is still writing (genui `streaming: 'partial'`): unvalidated,
+       * replaced in place by the final component under the same `id`.
+       */
+      partial?: true;
     };
 
 /** A decoded stream frame — the typed form of one SSE event. */
@@ -39,6 +44,11 @@ export type ChatFrame =
       version?: number;
       fallbackText?: string;
       componentVersions?: Record<string, number>;
+      /**
+       * A preview of a layout the model is still writing (genui `streaming: 'partial'`): unvalidated,
+       * replaced in place by the final component under the same `id`.
+       */
+      partial?: true;
     }
   | { type: 'meta'; runId?: string; threadId?: string }
   /** A failed run (`event: error` under the agent protocol). Terminal, like `done`. */
@@ -176,6 +186,7 @@ function decodeAgentEvent(event: Record<string, unknown> & { kind: string }): Ch
       !Array.isArray(event.componentVersions)
         ? { componentVersions: event.componentVersions as Record<string, number> }
         : {}),
+      ...(event.partial === true ? { partial: true as const } : {}),
     };
   }
   if (event.kind === 'elicitation' && typeof event.id === 'string') {
@@ -240,12 +251,17 @@ export function foldPart(parts: ChatPart[], frame: ChatFrame): ChatPart[] {
       ...(frame.componentVersions !== undefined
         ? { componentVersions: frame.componentVersions }
         : {}),
+      ...(frame.partial === true ? { partial: true as const } : {}),
     };
     // A repeat id (agent protocol `ui`) replaces the component in place, never adds a second one.
     const at =
       frame.id === undefined
         ? -1
         : parts.findIndex((each) => each.type === 'component' && each.id === frame.id);
+    // A withdrawn preview (partial, nothing to draw) removes the component it previewed.
+    if (frame.partial === true && isEmptyRecord(frame.data)) {
+      return at === -1 ? parts : parts.filter((_, index) => index !== at);
+    }
     return at === -1 ? [...parts, part] : parts.map((each, index) => (index === at ? part : each));
   }
   if (frame.type === 'text') {
@@ -326,4 +342,20 @@ function decodeConfirmation(value: unknown): ToolConfirmation | undefined {
     verb: value.verb,
     ...('detail' in value && typeof value.detail === 'string' ? { detail: value.detail } : {}),
   };
+}
+
+function isEmptyRecord(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 0
+  );
+}
+
+/** The parts with every preview left standing removed — what a finished stream keeps. */
+export function settleParts(parts: ChatPart[]): ChatPart[] {
+  return parts.some((part) => part.type === 'component' && part.partial === true)
+    ? parts.filter((part) => !(part.type === 'component' && part.partial === true))
+    : parts;
 }

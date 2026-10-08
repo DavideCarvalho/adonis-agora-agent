@@ -61,7 +61,7 @@ describe('genui in config/agent.ts', () => {
   it('registers a tool per component that pushes a validated ui frame', async () => {
     booted = await bootAgentApp({
       model: new FakeModelProvider(showOrder),
-      genui: genui({ catalog, showTool: true }),
+      genui: genui({ catalog, mode: 'per-component', showTool: true }),
     });
     const tools = (await (
       await fetch(`${booted.url}/agent/tools`, { headers })
@@ -101,7 +101,7 @@ describe('genui in config/agent.ts', () => {
     }
     booted = await bootAgentApp({
       model: new FakeModelProvider(showOrder),
-      genui: genui({ catalog, resolver: TenantCatalogs }),
+      genui: genui({ catalog, mode: 'per-component', resolver: TenantCatalogs }),
     });
     const frames = await readSse(
       await fetch(`${booted.url}/agent/chat`, {

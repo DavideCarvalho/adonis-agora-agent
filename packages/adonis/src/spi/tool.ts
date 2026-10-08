@@ -130,6 +130,56 @@ export interface ToolHandler<I = unknown, O = unknown> {
   describe?(
     scope: ToolDescribeScope,
   ): ToolDescription | undefined | Promise<ToolDescription | undefined>;
+  /**
+   * Show something while the model is still WRITING this tool's input: called when a streamed call
+   * starts (`tool-input-start`), it answers how to preview the arguments so far — or `undefined` for
+   * no preview. The loop parses the streamed argument text as it arrives and pushes what
+   * {@link ToolInputPreview.render} answers as a `ui` frame with `partial: true`, throttled, under
+   * the id the call's first `ctx.emitUi` push gets (`<toolCallId>:ui:0`) — so that push replaces it
+   * in place. A preview the call never replaces (it failed, or degraded to text) is withdrawn.
+   *
+   * A preview is shown, never trusted: it is not validated, not persisted, not handed to text
+   * channels, and nothing about it reaches the model.
+   */
+  previewInput?(
+    scope: ToolInputPreviewScope,
+  ): ToolInputPreview | undefined | Promise<ToolInputPreview | undefined>;
+}
+
+/** Whose call {@link ToolHandler.previewInput} previews. */
+export interface ToolInputPreviewScope extends ToolDescribeScope {
+  toolCallId: string;
+}
+
+/** The arguments of a streamed call so far, read with `parsePartialJson`. */
+export interface PartialToolInput {
+  /** What has been parsed so far (open objects and arrays hold what they have). */
+  value: unknown;
+  /** The model finished the arguments: `value` is the whole input (still unvalidated). */
+  done: boolean;
+  /** Is this object or array (one of `value`'s) still being written? */
+  isOpen(container: object): boolean;
+  /** The member of `container` whose value is cut off mid-way (a string half written). */
+  pendingMember(container: object): string | number | undefined;
+}
+
+/** A partial `ui` frame a preview pushes. */
+export interface ToolInputPreviewFrame {
+  component: string;
+  props: Record<string, unknown>;
+  version?: number;
+}
+
+/** How one streamed call is previewed ({@link ToolHandler.previewInput}). */
+export interface ToolInputPreview {
+  /**
+   * The frame for the input so far. `undefined`: nothing new to show (what was shown stays).
+   * `null`: stop previewing this call, and withdraw what was shown — the final push will not
+   * replace it (the input can no longer turn out valid, or will degrade to text).
+   */
+  render(input: PartialToolInput): ToolInputPreviewFrame | null | undefined;
+  /** Least time between two preview frames of one call, in ms. Default 100. */
+  throttleMs?: number;
 }
 
 /** Who a turn's tool list is being built for — what {@link ToolHandler.describe} can vary on. */

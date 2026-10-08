@@ -1,6 +1,13 @@
 import type { ActionProposal, ActionProposalMutationResult } from '../spi/action-proposal-store.js';
 import type { UiCapabilities } from '../ui-capabilities.js';
-import { type ChatFrame, type ChatPart, decodeFrame, foldPart, readSseStream } from './sse.js';
+import {
+  type ChatFrame,
+  type ChatPart,
+  decodeFrame,
+  foldPart,
+  readSseStream,
+  settleParts,
+} from './sse.js';
 
 /**
  * Body of `POST /agent/chat` (shape accepted by the provider → `AgentService.chat`). `message` is
@@ -261,6 +268,9 @@ export function createAgentChatClient(options: AgentChatClientOptions = {}): Age
       }
       sink.handlers.onFrame?.(frame);
       if (frame.type === 'done') {
+        // A preview its call never replaced (the run was cancelled mid-layout) is not the answer.
+        const settled = settleParts(parts);
+        if (settled !== parts) sink.onParts(settled);
         return true;
       }
       if (frame.type === 'error') {

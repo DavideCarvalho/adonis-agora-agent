@@ -8,6 +8,7 @@
     "authoring",
     "retrieval",
     "generative-ui",
+    "genui-loading-states",
     "genui-builtins",
     "surfaces",
     "channels",

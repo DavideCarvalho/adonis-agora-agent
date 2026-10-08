@@ -50,6 +50,7 @@ export function frameToEvents(frame: StreamFrame, position: number): AgentStream
             ? { componentVersions: frame.componentVersions }
             : {}),
           ...(frame.toolCallId !== undefined ? { toolCallId: frame.toolCallId } : {}),
+          ...(frame.partial === true ? { partial: true as const } : {}),
         },
       ];
     case 'elicitation':
