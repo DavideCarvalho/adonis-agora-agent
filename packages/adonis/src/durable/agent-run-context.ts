@@ -53,10 +53,31 @@ export function getDurableAgentContext(): DurableAgentContext {
 }
 
 let registered: WorkflowEngine | undefined;
+const engineListeners = new Set<(engine: WorkflowEngine) => void>();
 
 /** @internal Recorded by `registerAgentWorkflow`: the engine the agent workflow runs on. */
 export function rememberAgentEngine(engine: WorkflowEngine | undefined): void {
   registered = engine;
+  if (engine === undefined) return;
+  for (const listener of engineListeners) listener(engine);
+}
+
+/**
+ * @internal The engine the agent's durable runner was wired on (`durable: true`), if it was — what
+ * the text channels run their inbound messages on.
+ */
+export function registeredAgentEngine(): WorkflowEngine | undefined {
+  return registered;
+}
+
+/**
+ * @internal Be told when the agent's durable engine is wired (now, when it already is). Returns an
+ * unsubscribe function.
+ */
+export function onAgentEngine(listener: (engine: WorkflowEngine) => void): () => void {
+  engineListeners.add(listener);
+  if (registered !== undefined) listener(registered);
+  return () => engineListeners.delete(listener);
 }
 
 /** @internal The engine a detached delegation starts on — see {@link DurableAgentContext.engine}. */

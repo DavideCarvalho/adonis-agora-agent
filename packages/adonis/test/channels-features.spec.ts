@@ -170,6 +170,8 @@ describe('questions on a text channel', () => {
       questionTimeoutMs: 50,
     });
     await handle(makeCtx(inbound('order')).ctx);
+    // The turn parks on the question; nobody answering in time skips it and resumes the run.
+    await until(() => texts(outbox).at(-1) === 'Went with defaults.');
     await handle.drain();
     expect(service.skipped).toEqual([
       { runId: 'run-1', toolCallId: 'ask-1', answeredByRef: 'u1', answeredVia: 'test' },
@@ -402,7 +404,8 @@ describe('the default store', () => {
       await handle.drain();
       expect(service.sends).toHaveLength(1);
       const keys = (await db.from(AGENT_TABLES.channelState).select('key')).map((row) => row.key);
-      expect(keys).toEqual(['test:wamid.1']);
+      // The message id taken, the turn it started, and the reply sent (once).
+      expect(keys.sort()).toEqual(['test:out:run-1:0', 'test:turn:wamid.1', 'test:wamid.1']);
     } finally {
       await db.manager.closeAll();
     }

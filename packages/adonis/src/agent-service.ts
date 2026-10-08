@@ -115,6 +115,16 @@ export interface ChatParams {
   hostContext?: AgentHostContext;
 }
 
+/** How {@link AgentService.send} treats one send. */
+export interface ChatSendOptions {
+  /**
+   * Read a message that is a text decision ("yes", "no #ID") as one — decide the thread's pending
+   * proposal instead of starting a turn. Default `true`. `false` → always a turn: for a caller that
+   * decides by text itself, scoped to the proposals it showed (the text channels).
+   */
+  textDecisions?: boolean;
+}
+
 /**
  * What a send does when its thread already has a turn running:
  *  - `'auto'` (default) — run now when the thread is idle, else wait in the thread's queue.
@@ -549,9 +559,10 @@ export class AgentService {
    * Send a message: start a turn, or — when its thread already has one running — queue the message
    * to run after it (see {@link ChatSendMode}). What `POST <path>/chat` calls.
    */
-  async send(params: ChatParams): Promise<ChatSendResult> {
+  async send(params: ChatParams, options: ChatSendOptions = {}): Promise<ChatSendResult> {
     params = withValidCapabilities(params);
     if (
+      options.textDecisions !== false &&
       params.threadId !== undefined &&
       params.regenerate !== true &&
       this.options.actionProposals

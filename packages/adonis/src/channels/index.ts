@@ -1,27 +1,37 @@
 /**
  * `@adonis-agora/agent/channels` — the agent on text channels (WhatsApp, Telegram, …): one webhook
- * route per channel that verifies, deduplicates, acknowledges at once and answers in the background,
- * with the channel's markdown, length limit and reply buttons. See `docs/channels.mdx`.
+ * route per channel that verifies, deduplicates, acknowledges at once and answers in the background
+ * (durably, one message at a time per conversation, when the agent runs on `@adonis-agora/durable`),
+ * with the channel's markdown, length limit, reply buttons and files. See `docs/channels.mdx`.
  */
 export { type EvolutionApiOptions, evolutionApi } from './adapters/evolution_api.js';
 export { type TelegramOptions, telegram } from './adapters/telegram.js';
 export { type WhatsappCloudOptions, whatsappCloud } from './adapters/whatsapp_cloud.js';
 export { type WhatsmiauOptions, whatsmiau } from './adapters/whatsmiau.js';
 export {
+  type ChannelExecutor,
+  type ChannelJob,
+  type ChannelRetryOptions,
+  type ChannelWorkflowCtx,
+  type ChannelWorkflowEngine,
+  retryableByDefault,
+} from './executor.js';
+export {
   type ChannelAddress,
+  type ChannelDelivery,
+  type ChannelGate,
   type ChannelHandleOptions,
-  type ChannelMediaRefusal,
-  type ChannelProposal,
+  type ChannelHookContext,
+  type ChannelInbound,
+  type ChannelPreparedMedia,
+  type ChannelReply,
   type ChannelRouteHandler,
-  type ChannelTexts,
-  type ChannelTextsOverrides,
   type ChannelTurnService,
+  type ChannelTurnStarted,
+  type ChannelWebhookEvent,
   channels,
-  channelTextsFor,
-  DEFAULT_CHANNEL_TEXTS,
   handleChannel,
   proposalButtonIds,
-  ptBrChannelTexts,
   relayChannelOutcome,
 } from './handler.js';
 export { ChannelDeliveryError, type ChannelFetch, ChannelMediaTooLargeError } from './http.js';
@@ -48,6 +58,16 @@ export {
   lucidChannelStore,
   redisChannelStore,
 } from './store.js';
+export {
+  type ChannelComponent,
+  type ChannelMediaRefusal,
+  type ChannelProposal,
+  type ChannelTexts,
+  type ChannelTextsOverrides,
+  channelTextsFor,
+  DEFAULT_CHANNEL_TEXTS,
+  ptBrChannelTexts,
+} from './texts.js';
 export type {
   ChannelAdapter,
   ChannelButton,
@@ -59,5 +79,6 @@ export type {
   ChannelRequest,
   InboundMedia,
   InboundMessage,
+  OutboundMedia,
   OutboundMessage,
 } from './types.js';

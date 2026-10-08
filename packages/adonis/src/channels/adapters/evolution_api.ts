@@ -4,6 +4,7 @@ import {
   ChannelMediaTooLargeError,
   decodeBase64,
   fetchBytes,
+  mediaFilename,
   postJson,
   queryParam,
   record,
@@ -269,6 +270,10 @@ function readBody(
 
 /** The WhatsApp reply-button limit. */
 const MAX_BUTTONS = 3;
+/** The longest caption WhatsApp shows under a file. */
+const MAX_CAPTION = 1024;
+/** The longest footer a buttons message carries. */
+const MAX_FOOTER = 60;
 
 /**
  * WhatsApp through [Evolution API](https://doc.evolution-api.com) v2 (or a server with the same
@@ -316,6 +321,8 @@ export function evolutionFormatAdapter(
       ...(buttons ? { buttons: MAX_BUTTONS } : {}),
       markdown: 'whatsapp',
       maxLength: options.maxLength ?? 4096,
+      media: true,
+      maxCaptionLength: MAX_CAPTION,
     },
 
     verify(request: ChannelRequest) {
@@ -385,6 +392,20 @@ export function evolutionFormatAdapter(
 
     async send(conversation: string, message: OutboundMessage) {
       const number = addressOf(conversation);
+      if (message.media !== undefined) {
+        const { media } = message;
+        const source = media.url ?? media.data?.toString('base64');
+        if (source === undefined) throw new Error(`${name}: a file needs a url or its data`);
+        await post('/message/sendMedia', {
+          number,
+          mediatype: media.kind,
+          media: source,
+          ...(media.contentType !== undefined ? { mimetype: media.contentType } : {}),
+          ...(message.text !== '' ? { caption: message.text.slice(0, MAX_CAPTION) } : {}),
+          ...(media.kind === 'document' ? { fileName: mediaFilename(media) } : {}),
+        });
+        return;
+      }
       if (message.buttons !== undefined && buttons) {
         const [first = '', ...rest] = message.text.split('\n');
         const title = first.replace(/[*_~]/g, '').trim();
@@ -402,6 +423,9 @@ export function evolutionFormatAdapter(
               number,
               title,
               description: description === '' ? title : description,
+              ...(message.footer !== undefined && message.footer.trim() !== ''
+                ? { footer: message.footer.replace(/[*_~]/g, '').trim().slice(0, MAX_FOOTER) }
+                : {}),
               buttons: message.buttons.slice(0, MAX_BUTTONS).map((button) => ({
                 type: 'reply',
                 displayText: button.label.slice(0, 20),

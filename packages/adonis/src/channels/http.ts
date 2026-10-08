@@ -162,6 +162,70 @@ export async function postJson(
   }
 }
 
+/**
+ * POST a `multipart/form-data` body (a file upload). Same answers and errors as {@link postJson}.
+ * A `Buffer` field is sent as a file part: `{ data, contentType, filename }`.
+ */
+export async function postForm(
+  channel: string,
+  fetcher: ChannelFetch,
+  url: string,
+  headers: Record<string, string>,
+  fields: Record<string, string | { data: Buffer; contentType: string; filename: string }>,
+  timeoutMs: number,
+): Promise<unknown> {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    if (typeof value === 'string') form.append(key, value);
+    else
+      form.append(
+        key,
+        new Blob([new Uint8Array(value.data)], { type: value.contentType }),
+        value.filename,
+      );
+  }
+  let response: Response;
+  try {
+    response = await fetcher(url, {
+      method: 'POST',
+      headers,
+      body: form,
+      signal: AbortSignal.timeout(timeoutMs),
+      redirect: 'error',
+    });
+  } catch (error) {
+    throw new ChannelDeliveryError(
+      channel,
+      null,
+      `${channel}: delivery failed (${error instanceof Error ? error.name : 'network error'})`,
+    );
+  }
+  const text = await response.text().catch(() => '');
+  if (!response.ok) {
+    throw new ChannelDeliveryError(
+      channel,
+      response.status,
+      `${channel}: the provider refused the message (HTTP ${response.status})`,
+    );
+  }
+  try {
+    return text === '' ? null : (JSON.parse(text) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+/** A file's name when it has none: `image.png`, `document.pdf`. */
+export function mediaFilename(media: {
+  kind: string;
+  contentType?: string | undefined;
+  filename?: string | undefined;
+}): string {
+  if (media.filename !== undefined) return media.filename;
+  const extension = (media.contentType?.split('/')[1] ?? 'bin').split(/[;+]/)[0] ?? 'bin';
+  return `${media.kind}.${extension}`;
+}
+
 /** A query-string parameter of a request's url. */
 export function queryParam(url: string, name: string): string | undefined {
   const query = url.indexOf('?');

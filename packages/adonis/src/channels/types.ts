@@ -18,6 +18,13 @@ export interface ChannelCapabilities {
   markdown: ChannelMarkdown;
   /** The longest text one message may carry; longer replies are split into several messages. */
   maxLength: number;
+  /**
+   * The adapter can send files ({@link OutboundMessage} with `media`) — images and documents with a
+   * caption. Omitted → a file reply is sent as its caption / fallback text.
+   */
+  media?: boolean;
+  /** The longest caption a file may carry. Default: {@link maxLength}. */
+  maxCaptionLength?: number;
 }
 
 /** One webhook request, as an adapter sees it. */
@@ -92,9 +99,33 @@ export interface ChannelButton {
   label: string;
 }
 
-/** One message to deliver: text, or text with reply buttons. */
+/** A file to send: by a URL the provider downloads it from, or by its bytes. */
+export interface OutboundMedia {
+  kind: 'image' | 'document' | 'audio' | 'video';
+  /** An `https` URL the provider fetches the file from (short-lived URLs are fine). */
+  url?: string;
+  /** The file itself, when there is no URL. One of `url` / `data` is required. */
+  data?: Buffer;
+  /** MIME type — `image/png`, `application/pdf`. Recommended (some providers require it). */
+  contentType?: string;
+  /** The name a document is shown under. */
+  filename?: string;
+}
+
+/**
+ * One message to deliver: text, text with reply buttons, or a file with a caption (`text`, `''` for
+ * none). An adapter without {@link ChannelCapabilities.media} is never handed a file: the handler
+ * sends the caption (or the reply's `fallbackText`) instead.
+ */
 export type OutboundMessage =
-  | { text: string; buttons?: undefined; fallbackText?: undefined; instruction?: undefined }
+  | {
+      text: string;
+      buttons?: undefined;
+      fallbackText?: undefined;
+      instruction?: undefined;
+      footer?: undefined;
+      media?: undefined;
+    }
   | {
       text: string;
       buttons: ChannelButton[];
@@ -110,6 +141,22 @@ export type OutboundMessage =
        * buttons message too, so the person can still answer by text.
        */
       instruction?: string;
+      /**
+       * A short line under the card (`texts.footer` — "Valid for 5 minutes."), already in the
+       * channel's markdown. Sent as the provider's footer where it has one, else after the text.
+       * `fallbackText` already ends with it.
+       */
+      footer?: string;
+      media?: undefined;
+    }
+  | {
+      /** The caption, already in the channel's markdown — `''` for none. */
+      text: string;
+      media: OutboundMedia;
+      buttons?: undefined;
+      fallbackText?: undefined;
+      instruction?: undefined;
+      footer?: undefined;
     };
 
 /** A reply the adapter answers the webhook with instead of acknowledging it (a verification GET). */
