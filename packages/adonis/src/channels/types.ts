@@ -88,7 +88,7 @@ export interface ChannelButton {
 
 /** One message to deliver: text, or text with reply buttons. */
 export type OutboundMessage =
-  | { text: string; buttons?: undefined; fallbackText?: undefined }
+  | { text: string; buttons?: undefined; fallbackText?: undefined; instruction?: undefined }
   | {
       text: string;
       buttons: ChannelButton[];
@@ -98,6 +98,12 @@ export type OutboundMessage =
        * way to answer.
        */
       fallbackText: string;
+      /**
+       * The reply instruction alone ("Reply *yes* to confirm or *no* to cancel."), already in the
+       * channel's markdown. An adapter whose buttons may not render on every phone puts it in the
+       * buttons message too, so the person can still answer by text.
+       */
+      instruction?: string;
     };
 
 /** A reply the adapter answers the webhook with instead of acknowledging it (a verification GET). */
@@ -108,8 +114,8 @@ export interface ChannelChallengeResponse {
 }
 
 /**
- * One text channel. The built-in ones are `evolutionApi()`, `whatsappCloud()` and `telegram()`; any
- * object of this shape works the same way.
+ * One text channel. The built-in ones are `evolutionApi()`, `whatsmiau()`, `whatsappCloud()` and
+ * `telegram()`; any object of this shape works the same way.
  */
 export interface ChannelAdapter {
   /** Names the channel: the dedupe key's prefix, and `via` on a decision made with its buttons. */

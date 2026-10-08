@@ -5,6 +5,7 @@ import {
   formatChannelQuestion,
   InMemoryChannelStore,
   parseChannelAnswer,
+  ptBrChannelQuestionTexts,
   redisChannelStore,
   splitMessage,
   toChannelMarkdown,
@@ -235,5 +236,41 @@ describe('questions', () => {
     expect(parseChannelAnswer(guests, '4')).toEqual({ status: 'answer', values: ['4'] });
     expect(parseChannelAnswer(guests, 'many')).toMatchObject({ status: 'invalid' });
     expect(parseChannelAnswer(guests, '40')).toMatchObject({ status: 'invalid' });
+  });
+
+  it('words questions in Brazilian Portuguese with ptBrChannelQuestionTexts', () => {
+    expect(
+      formatChannelQuestion(
+        { ...color, multiple: true, allowFreeText: true },
+        { index: 1, total: 2 },
+        ptBrChannelQuestionTexts,
+      ),
+    ).toBe(
+      [
+        '*(2/2) Which color?*',
+        '',
+        '1. Red',
+        '2. Green',
+        '3. Blue',
+        '',
+        'Responda com um ou mais números, separados por vírgula.',
+        'Ou escreva sua própria resposta.',
+        'Responda *pular* para manter: Green.',
+      ].join('\n'),
+    );
+    expect(parseChannelAnswer(color, 'Pular', ptBrChannelQuestionTexts.skipWord)).toEqual({
+      status: 'skip',
+    });
+    const guests: ElicitationQuestion = {
+      id: 'guests',
+      prompt: 'Quantos convidados?',
+      input: { type: 'number', min: 1, max: 10 },
+    };
+    const parsed = parseChannelAnswer(guests, '40', 'pular');
+    expect(parsed.status).toBe('invalid');
+    expect(
+      ptBrChannelQuestionTexts.invalid(parsed.status === 'invalid' ? parsed.problem : ''),
+    ).toBe('Não entendi essa resposta (precisa ser no máximo 10).');
+    expect(ptBrChannelQuestionTexts.invalid('something new')).toBe('Não entendi essa resposta.');
   });
 });

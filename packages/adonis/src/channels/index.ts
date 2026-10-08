@@ -6,6 +6,7 @@
 export { type EvolutionApiOptions, evolutionApi } from './adapters/evolution_api.js';
 export { type TelegramOptions, telegram } from './adapters/telegram.js';
 export { type WhatsappCloudOptions, whatsappCloud } from './adapters/whatsapp_cloud.js';
+export { type WhatsmiauOptions, whatsmiau } from './adapters/whatsmiau.js';
 export {
   type ChannelAddress,
   type ChannelHandleOptions,
@@ -16,9 +17,11 @@ export {
   type ChannelTextsOverrides,
   type ChannelTurnService,
   channels,
+  channelTextsFor,
   DEFAULT_CHANNEL_TEXTS,
   handleChannel,
   proposalButtonIds,
+  ptBrChannelTexts,
   relayChannelOutcome,
 } from './handler.js';
 export { ChannelDeliveryError, type ChannelFetch, ChannelMediaTooLargeError } from './http.js';
@@ -33,6 +36,7 @@ export {
   DEFAULT_CHANNEL_QUESTION_TEXTS,
   formatChannelQuestion,
   parseChannelAnswer,
+  ptBrChannelQuestionTexts,
 } from './questions.js';
 export { splitMessage } from './split.js';
 export {

@@ -5,8 +5,10 @@ import {
   ChannelMediaTooLargeError,
   type ChannelRequest,
   evolutionApi,
+  type InboundMessage,
   telegram,
   whatsappCloud,
+  whatsmiau,
 } from '../src/channels/index.js';
 
 interface Call {
@@ -179,7 +181,67 @@ describe('evolutionApi', () => {
           { remoteJid: '123456@lid', remoteJidAlt: '5511777770000@s.whatsapp.net' },
         ),
       ),
-    ).toMatchObject([{ from: '5511777770000', conversation: '123456@lid' }]);
+    ).toMatchObject([{ from: '5511777770000', conversation: '5511777770000@s.whatsapp.net' }]);
+    // Without the phone, the @lid jid is all there is.
+    expect(
+      adapter.parse(incoming({ conversation: 'x' }, { remoteJid: '123456@lid' })),
+    ).toMatchObject([{ from: '123456@lid', conversation: '123456@lid' }]);
+  });
+
+  it('LID addressing (Evolution 2.3.7): from and the reply number are the phone', async () => {
+    const { fetch, calls } = fakeFetch();
+    const adapter = evolutionApi({
+      url: 'https://evo',
+      instance: 'main',
+      apiKey: 'k',
+      webhookToken: 's',
+      fetch,
+    });
+    // The payload shape Evolution 2.3.7 posts for a chat WhatsApp addresses by LID.
+    const body = {
+      event: 'messages.upsert',
+      instance: 'main',
+      data: {
+        key: {
+          remoteJid: '187654321098765@lid',
+          remoteJidAlt: '5511912345678@s.whatsapp.net',
+          fromMe: false,
+          id: '3EB0C4F1A2B3C4D5E6F7',
+          participant: '',
+          addressingMode: 'lid',
+        },
+        pushName: 'Maria',
+        status: 'DELIVERY_ACK',
+        message: { conversation: 'oi' },
+        messageType: 'conversation',
+        messageTimestamp: 1760000000,
+        instanceId: 'b1c2d3',
+        source: 'android',
+      },
+      destination: 'https://app.example.com/webhooks/whatsapp',
+      date_time: '2026-10-07T10:00:00.000Z',
+      sender: '5511900000000@s.whatsapp.net',
+      server_url: 'https://evo',
+      apikey: 'k',
+    };
+    const [message] = adapter.parse(body) as InboundMessage[];
+    expect(message).toMatchObject({
+      id: '3EB0C4F1A2B3C4D5E6F7',
+      from: '5511912345678',
+      conversation: '5511912345678@s.whatsapp.net',
+      text: 'oi',
+    });
+    // The same chat addressed by phone is the same conversation.
+    const byPhone = adapter.parse({
+      ...body,
+      data: {
+        ...body.data,
+        key: { remoteJid: '5511912345678@s.whatsapp.net', fromMe: false, id: 'X2' },
+      },
+    }) as InboundMessage[];
+    expect(byPhone[0]!.conversation).toBe(message!.conversation);
+    await adapter.send(message!.conversation, { text: 'olá' });
+    expect(calls[0]!.body).toEqual({ number: '5511912345678', text: 'olá' });
   });
 
   it('sends text with the apikey header', async () => {
@@ -227,6 +289,7 @@ describe('evolutionApi', () => {
         { id: 'agora:reject:x', label: 'Cancel' },
       ],
       fallbackText: 'Refund order A-1?\n\nReply yes or no.',
+      instruction: 'Reply *yes* or *no*.',
     };
     const ok = fakeFetch();
     const options = {
@@ -247,7 +310,8 @@ describe('evolutionApi', () => {
         body: {
           number: '5511999990000',
           title: 'Refund order A-1?',
-          description: 'Amount: 10.00',
+          // The text instruction rides along, for a phone that shows no buttons.
+          description: 'Amount: 10.00\n\nReply *yes* or *no*.',
           buttons: [
             { type: 'reply', displayText: 'Confirm', id: 'agora:approve:x' },
             { type: 'reply', displayText: 'Cancel', id: 'agora:reject:x' },
@@ -272,6 +336,75 @@ describe('evolutionApi', () => {
       evolutionApi({ ...options, fetch: down.fetch }).send('5511999990000@s.whatsapp.net', message),
     ).rejects.toBeInstanceOf(ChannelDeliveryError);
     expect(down.calls).toHaveLength(1);
+  });
+
+  it('evolutionApi: buttons off by default', () => {
+    const options = { url: 'https://evo', instance: 'main', apiKey: 'k', webhookToken: 's' };
+    expect(evolutionApi(options).capabilities.buttons).toBeUndefined();
+    expect(evolutionApi({ ...options, buttons: true }).capabilities.buttons).toBe(3);
+  });
+});
+
+describe('whatsmiau', () => {
+  const options = { instance: 'main', apiKey: 'k', webhookToken: 's' };
+
+  it('adds the /v1 prefix to a bare host, keeps a versioned url', async () => {
+    for (const [url, expected] of [
+      ['http://whatsmiau:8080', 'http://whatsmiau:8080/v1/message/sendText/main'],
+      ['http://whatsmiau:8080/', 'http://whatsmiau:8080/v1/message/sendText/main'],
+      ['http://whatsmiau:8080/v1', 'http://whatsmiau:8080/v1/message/sendText/main'],
+      ['https://api.whatsmiau.dev/v2/', 'https://api.whatsmiau.dev/v2/message/sendText/main'],
+    ] as const) {
+      const { fetch, calls } = fakeFetch();
+      await whatsmiau({ ...options, url, fetch }).send('5511999990000@s.whatsapp.net', {
+        text: 'hi',
+      });
+      expect(calls[0]!.url).toBe(expected);
+      expect(calls[0]!.body).toEqual({ number: '5511999990000', text: 'hi' });
+    }
+  });
+
+  it('is named whatsapp, has buttons by default, and sends them with the text instruction', async () => {
+    const adapter = whatsmiau({ ...options, url: 'http://whatsmiau:8080' });
+    expect(adapter.name).toBe('whatsapp');
+    expect(adapter.capabilities.buttons).toBe(3);
+    expect(
+      whatsmiau({ ...options, url: 'http://whatsmiau:8080', buttons: false }).capabilities.buttons,
+    ).toBeUndefined();
+    const { fetch, calls } = fakeFetch();
+    await whatsmiau({ ...options, url: 'http://whatsmiau:8080', fetch }).send('5511999990000', {
+      text: '*Refund order A-1?*',
+      buttons: [
+        { id: 'agora:approve:x', label: 'Confirmar' },
+        { id: 'agora:reject:x', label: 'Cancelar' },
+      ],
+      fallbackText: '*Refund order A-1?*\n\nResponda *sim* ou *não*.',
+      instruction: 'Responda *sim* ou *não*.',
+    });
+    expect(calls[0]!.url).toBe('http://whatsmiau:8080/v1/message/sendButtons/main');
+    expect(calls[0]!.body).toMatchObject({
+      title: 'Refund order A-1?',
+      description: 'Responda *sim* ou *não*.',
+    });
+  });
+
+  it('parses the same Evolution-format webhook', () => {
+    const adapter = whatsmiau({ ...options, url: 'http://whatsmiau:8080' });
+    expect(
+      adapter.parse({
+        event: 'messages.upsert',
+        instance: 'main',
+        data: {
+          key: {
+            remoteJid: '187654321098765@lid',
+            remoteJidAlt: '5511912345678@s.whatsapp.net',
+            fromMe: false,
+            id: 'W1',
+          },
+          message: { conversation: 'oi' },
+        },
+      }),
+    ).toMatchObject([{ from: '5511912345678', conversation: '5511912345678@s.whatsapp.net' }]);
   });
 });
 

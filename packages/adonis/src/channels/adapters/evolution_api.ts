@@ -21,9 +21,8 @@ import type {
 
 export interface EvolutionApiOptions {
   /**
-   * The Evolution API server, without a trailing slash — `https://evolution.example.com`. A
-   * compatible host that serves the same routes under a prefix takes it here
-   * (`https://api.whatsmiau.dev/v2`).
+   * The Evolution API server — `https://evolution.example.com`. A compatible host that serves the
+   * same routes under a prefix takes it here (`https://evolution.example.com/api`).
    */
   url: string;
   /** The instance (the connected WhatsApp number) to send from and accept webhooks for. */
@@ -39,8 +38,11 @@ export interface EvolutionApiOptions {
   webhookToken: string | false;
   /**
    * Send proposals with reply buttons (`POST /message/sendButtons/{instance}`). Off by default:
-   * WhatsApp does not reliably render buttons sent from a non-Business-API session, so many
-   * instances show nothing. When on, a 4xx from that endpoint falls back to the text instruction.
+   * Evolution (Baileys) sends them as a `nativeFlow` interactive message that WhatsApp did not show
+   * at all in our test (2.3.7, Android recipient) — while Evolution still reported it sent. For
+   * Whatsmiau, whose buttons render, use `whatsmiau()` (buttons on). The buttons message carries the
+   * text instruction too ("Reply *yes* to confirm…"), for a phone that shows the text but not the
+   * buttons; a 4xx from that endpoint falls back to the text-only message.
    */
   buttons?: boolean;
   /** Answer messages in groups too (the sender is the participant). Default `false`. */
@@ -151,12 +153,12 @@ function parseOne(
   if (remoteJid.endsWith('@broadcast') || remoteJid.endsWith('@newsletter')) return null;
   const group = remoteJid.endsWith('@g.us');
   if (group && options.groups !== true) return null;
-  const sender = group
-    ? str(key.participant)
-    : // A `@lid` chat hides the number; Evolution adds it alongside when it knows it.
-      ([remoteJid, str(key.remoteJidAlt), str(key.senderPn)].find(
-        (jid) => jid !== undefined && PHONE_JID.test(jid),
-      ) ?? remoteJid);
+  // A `@lid` chat (`addressingMode: 'lid'`) hides the number; Evolution adds it alongside
+  // (`remoteJidAlt`, older versions `senderPn`) when it knows it.
+  const phoneJid = [remoteJid, str(key.remoteJidAlt), str(key.senderPn)].find(
+    (jid) => jid !== undefined && PHONE_JID.test(jid),
+  );
+  const sender = group ? str(key.participant) : (phoneJid ?? remoteJid);
   if (sender === undefined) return null;
   const message = record(data.message);
   if (!message) return null;
@@ -171,7 +173,10 @@ function parseOne(
   return {
     id,
     from: addressOf(sender),
-    conversation: remoteJid,
+    // Replies go to the phone when it is known — `sendText`'s `number` is a phone number, and the
+    // same chat arrives under its phone jid or its `@lid` one; the `@lid` jid only when it is all
+    // there is.
+    conversation: group ? remoteJid : (phoneJid ?? remoteJid),
     text: text.trim(),
     ...(button ? { buttonId: button.id } : {}),
     ...(file ? { media: [file.media] } : {}),
@@ -194,19 +199,31 @@ const MAX_BUTTONS = 3;
  * `POST {url}/chat/getBase64FromMediaMessage/{instance}`.
  */
 export function evolutionApi(options: EvolutionApiOptions): ChannelAdapter {
+  return evolutionFormatAdapter(options, { buttons: false });
+}
+
+/**
+ * The adapter for any server speaking Evolution's webhook and routes — `evolutionApi()` and
+ * `whatsmiau()` differ only in their defaults. Internal.
+ */
+export function evolutionFormatAdapter(
+  options: EvolutionApiOptions,
+  defaults: { buttons: boolean },
+): ChannelAdapter {
   const name = options.name ?? 'whatsapp';
   const fetcher = options.fetch ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? 20_000;
   const base = options.url.replace(/\/+$/, '');
   const instance = encodeURIComponent(options.instance);
   const headers = { apikey: options.apiKey };
+  const buttons = options.buttons ?? defaults.buttons;
   const post = (path: string, body: unknown) =>
     postJson(name, fetcher, `${base}${path}/${instance}`, headers, body, timeoutMs);
 
   return {
     name,
     capabilities: {
-      ...(options.buttons === true ? { buttons: MAX_BUTTONS } : {}),
+      ...(buttons ? { buttons: MAX_BUTTONS } : {}),
       markdown: 'whatsapp',
       maxLength: options.maxLength ?? 4096,
     },
@@ -285,10 +302,14 @@ export function evolutionApi(options: EvolutionApiOptions): ChannelAdapter {
 
     async send(conversation: string, message: OutboundMessage) {
       const number = addressOf(conversation);
-      if (message.buttons !== undefined && options.buttons === true) {
+      if (message.buttons !== undefined && buttons) {
         const [first = '', ...rest] = message.text.split('\n');
         const title = first.replace(/[*_~]/g, '').trim();
-        const description = rest.join('\n').trim();
+        // The reply instruction rides along: a phone that shows the text but not the buttons can
+        // still answer by text.
+        const description = [rest.join('\n').trim(), message.instruction?.trim() ?? '']
+          .filter((part) => part !== '')
+          .join('\n\n');
         if (title.length <= 60 && description.length <= 1024 && message.buttons.length > 0) {
           try {
             await post('/message/sendButtons', {
