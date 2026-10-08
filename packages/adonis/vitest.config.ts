@@ -17,6 +17,7 @@ const LUCID_STORE_SPECS = [
   'test/channels-store-lucid.spec.ts',
   'test/chat-queue-store.spec.ts',
   'test/delegation-cycle.spec.ts',
+  'test/fake-model-provider-ids.spec.ts',
   'test/governance-queries-lucid.spec.ts',
   'test/governance-runs.spec.ts',
   'test/inline-agent.spec.ts',
