@@ -26,6 +26,8 @@ agent.addMessage({ id: crypto.randomUUID(), role: 'user', content: 'Refund order
 await agent.runAgent()
 ```
 
+Two third-party frontends are set up against this route, and compared with the native client for generative UI, in [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends): CopilotKit ([setup](/docs/agent/frontends#setting-up-copilotkit)) and OpenUI ([setup](/docs/agent/openui)).
+
 ## From React — `useAgentChat` over AG-UI
 
 `@adonis-agora/agent/react` can drive this route (or any AG-UI 1.0 producer) through the same hooks as the native stream. `agUiBackend()` sends the chat turn over AG-UI and keeps everything else — threads, the queue, approvals, uploads — on the REST routes, with the session cookie and the shield CSRF token on every request:

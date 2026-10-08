@@ -1,0 +1,113 @@
+---
+title: "Generative UI: native vs CopilotKit vs OpenUI"
+description: The same agent drawing the same generative UI through the native React client, CopilotKit and OpenUI over AG-UI — what each does out of the box, what takes glue, what is not possible, verified by running all three.
+icon: Scale
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The agent's generative UI can reach a browser three ways: the native React client over the [native stream](/docs/agent/streaming-and-http), or a third-party frontend over [AG-UI](/docs/agent/ag-ui). This page compares the three for generative UI only — tool-driven components, progressive rendering, model-composed layouts, interactive components, persistence, non-visual surfaces, validation, DX and cost. Every cell comes from running the same agent behind three pages:
+
+- **Native** — `@adonis-agora/agent/react`: `<AgentProvider>`, `useAgentChat`, `<GenerativeUI>`.
+- **CopilotKit** 1.77 — the v2 API (`@copilotkit/react-core/v2`, `CopilotChat`) on `agUiAdapter()`.
+- **OpenUI** 0.17 — `@openuidev/react-ui`'s `AgentInterface` on `agUiAdapter()`.
+
+The app is the [`frontends` example](https://github.com/DavideCarvalho/agora/tree/main/examples/frontends) (AdonisJS 7, SQLite, a scripted model, no API key). Its `pnpm e2e` drives every scenario on every page in headless Chromium and saves the screenshots its README shows. Versions: `@adonis-agora/agent` 0.66.0, `@copilotkit/react-core` 1.77.1, `@openuidev/react-ui` 0.17.0.
+
+## Three models of generative UI
+
+They do not mean the same thing by "generative UI", and that drives most of the table below.
+
+| | Who decides what is drawn | What crosses the wire | Who renders |
+| --- | --- | --- | --- |
+| **Native** | A tool (`present`, `ctx.emitUi`) or the model (`ui__render` / `ui__show_*`), checked against the server's [catalog](/docs/agent/generative-ui#a-component-catalog--adonis-agoraagentgenui) | A typed `ui` frame `{ id, component, props, version, fallbackText }` | Your React registry — or the server, as text, HTML, PNG or PDF |
+| **CopilotKit** | The client: it renders a **tool call** (its arguments and result) with a renderer registered for the tool's name | The ordinary tool-call events | Your React components, in the browser |
+| **OpenUI** | The model: it **writes the UI as text** in OpenUI Lang, in the vocabulary of a component library it was told about in the prompt | Text | OpenUI's component library, in the browser |
+
+So on the OpenUI page the server must hand the model the library's prompt, and the model answers in OpenUI Lang; on the CopilotKit page the server's own components (`agora.ui` events) are ignored unless app code reads them. The example does exactly that — the [OpenUI setup](/docs/agent/openui) and the [CopilotKit setup](#setting-up-copilotkit) below show how.
+
+## The matrix
+
+**Built in** means the frontend's documented API does it against this agent. **Glue** is app code that bridges the frontend to this agent — the count is non-blank, non-comment lines in the example. **No** means the frontend has no way to do it.
+
+| # | Capability | Native | CopilotKit | OpenUI |
+| --- | --- | --- | --- | --- |
+| 1 | Tool-driven component | **Built in.** The tool pushes `OrderList`'s [skeleton](/docs/agent/genui-loading-states#a-tool-driven-skeleton) before it reads, then the rows under the same `id`; `<GenerativeUI>` draws both from the registry, and only the rows are stored. | **Built in.** `useRenderTool({ name: 'list_orders', render })` draws the tool call from its result; until it arrives, `render` draws your own loading state. | **Built in, differently.** There is no tool-driven UI: the model reads the result and writes `OrderList([...])` in OpenUI Lang, so the data passes through the model. |
+| 2 | Progressive render | **Built in** for pushes: a push under the same `id` replaces in place (a chart, then five updates). **Built in** for model-written layouts: with [`streaming: 'partial'`](/docs/agent/generative-ui#drawing-a-tree-while-the-model-writes-it) the `ui__render` tree draws while the model writes it, nodes keep their place, renderers draw skeletons from `useGenuiNode().incomplete`, and a `streaming: 'complete'` chart is a placeholder until its props are whole. Only the final, validated tree is stored. | **Glue (20 lines)** for pushes: read the `agora.ui` events CopilotKit ignores. **Built in** for model-written layouts: `render` receives the partially parsed arguments while they stream. | **Built in** for model-written UI: each statement renders as it arrives, placeholders for the rest. Tool pushes: **no** (custom events are ignored). |
+| 3 | Model-composed layout | **Built in.** `genui({ catalog })`, tree mode being the default: `ui__render` nests any catalog component, with an exact schema per component, validated node by node. The [builtins](/docs/agent/genui-builtins) are definitions only — you write every renderer, and its skeleton. | **Glue (20 lines)** to draw the `ui__render` tree with your renderers, including error boundaries for half-streamed arguments. CopilotKit's own route here is A2UI, not tried against this agent. | **Built in, and the strongest.** 84 ready, styled components (charts, tables, forms, tabs, carousels) the model composes freely; no renderer to write. |
+| 4 | Interactive component → agent | **Built in.** Renderers are your React components; a small context reaches `chat.sendMessage`. The approval that follows is the transcript's `call.approve.run()`. | **Built in.** `agent.addMessage` + `copilotkit.runAgent`; `useInterrupt` answers the AG-UI interrupt with `resume`. | Clicks **built in** (`Action([@ToAssistant(...)])` in Lang, `useTriggerAction()` in a component). Approvals: **glue (46 lines)** — OpenUI ignores interrupts. |
+| 5 | Persistence (reload, reopen) | **Built in.** `useAgentChat({ threadId })` and `useThreads()`; components redraw from the message's persisted `ui` list. | **Glue (~70 lines).** `HttpAgent.connect` is not implemented, so history is loaded from `GET <path>/threads/:id` and replayed as `MESSAGES_SNAPSHOT`; a thread list is your own (CopilotKit's needs its hosted platform). | **Glue (~45 lines).** A `ChatStorage` over the thread routes. The OpenUI Lang source is the message text, so it redraws exactly. |
+| 6 | Non-visual surfaces, fallback | **Built in.** [Capability negotiation](/docs/agent/surfaces#ui-capabilities) and server-generated `fallbackText`: a client that draws only some of the dashboard's components received all of it as readable text (its previews withdrawn), and a text-only client, which is not offered `ui__render`, received the tools' components as text and no skeleton. The same React renderer renders to [PNG/PDF on the server](/docs/agent/authoring/component-rendering#render-html-png-or-pdf). | **No.** Rendering is client-side; a tool call with no renderer draws nothing (or the generic card). A text channel gets the prose. | **No.** The UI is the model's text: a text channel would receive OpenUI Lang source. No fallback, no server render. |
+| 7 | Typing, validation, versioning | **Built in.** A props schema per component, validated on the server before anything streams, and on the client against the same catalog. An invalid `ui__render` (a chart type the schema does not list) came back to the model as a tool error and it retried. Each component has a `version`. | **No.** The zod `parameters` type the renderer; arguments reach `render` unvalidated (and partial while they stream). No component versioning. | **No.** zod props per component, but invalid arguments are dropped silently — the component does not appear and the model is not told. No versioning. |
+| 8 | One new component, end to end | A definition in a file both sides import (schema, description, `fallbackText`, a loading state if it has a skeleton), the React renderer, one registry key. | The React renderer and a `useRenderTool`, all client-side; the component is bound to a tool, not to a catalog. | **Leanest:** one `defineComponent` (zod props, description, React component). The server imports that client module to build the prompt. |
+| 9 | Targets, token cost | React; the framework-free [browser client](/docs/agent/browser-client) for anything else; HTML/PNG/PDF; [text channels](/docs/agent/channels). `ui__render` over 9 components adds ~2.1k prompt tokens with its exact schema (~680 with `treeSchema: 'loose'`). | React, Vue, Angular and React Native packages (only React was run). No prompt of its own. | React, Vue, Svelte, Angular and React Email renderers (only React was run). The full chat library's prompt is ~14k tokens per turn (an 11-component library: ~1.3k). The same dashboard took 29% fewer output tokens than `ui__render` JSON (198 vs 279). |
+
+Token counts use the o200k tokenizer on the exact system prompt and tool definitions the model received, and on the two outputs for the same dashboard.
+
+<Callout type="info" title="A scripted model">
+The example's model is scripted: it writes what a model would, and shows what each frontend does with it — including invalid output (row 7). It does not measure how reliably a real model writes valid OpenUI Lang or valid `ui__render` trees. Set `AGENT_MODEL=openai:<model>` to run the same pages on a real one.
+</Callout>
+
+## Where each one wins
+
+**OpenUI** is the best at letting the model design the screen. Its library is large and styled, the model composes it freely, what it writes renders as it streams, and a component is one definition. It also spends fewer output tokens for the same UI. What it costs: a long prompt on every turn with its full library, UI that exists only as model text — no fallback text, nothing for a text channel, no server render — and invalid output that fails silently. Interactive approvals and history need glue against this agent.
+
+**CopilotKit** draws a layout while the model is still writing its arguments with no setup, from the raw partial arguments (unvalidated; renderers have to survive half-written props), and it speaks AG-UI interrupts natively (`useInterrupt`, `resume`), so approvals work with no glue. It ships more framework targets. Against this agent it needs glue for history, a thread list, and the components tools push.
+
+**Native** is the strongest where the server matters: one validated, versioned catalog as the source of truth, the same output on a text channel, an image or a PDF, and persistence, approvals and interactive components with no glue. With `streaming: 'partial'` it also draws a layout while the model writes it, with stable nodes, an `incomplete` flag for skeletons and only the validated tree stored, and a tool can show its component's skeleton before it reads ([Loading states and skeletons](/docs/agent/genui-loading-states)). It is weaker on breadth — the builtins have no visuals, so you write every renderer and its skeleton — and its exact `ui__render` schema costs more prompt than a generic one.
+
+### Choosing
+
+- **Your own app, and the same agent behind WhatsApp, Slack or e-mail** — native. Components are validated once on the server and degrade to text or images on every other surface.
+- **Open-ended, model-designed screens** (dashboards, reports, explorations) where only the web matters — OpenUI, with a [component library of your size](/docs/agent/openui#keep-the-prompt-small) to keep the prompt down.
+- **An app already on CopilotKit**, or that needs its Vue/Angular/React Native components — CopilotKit over `agUiAdapter()`; budget the glue for history and pushed components.
+
+## Setting up CopilotKit
+
+CopilotKit's v2 API takes an AG-UI `HttpAgent` directly. Point it at the AG-UI route, and add shield's CSRF header (the session cookie rides by default):
+
+```tsx title="resources/js/pages/copilotkit.tsx (frontend)"
+import { CopilotChat, CopilotKitProvider, HttpAgent, useRenderTool } from '@copilotkit/react-core/v2'
+import '@copilotkit/react-core/v2/styles.css'
+import { z } from 'zod'
+
+const csrfFetch: typeof fetch = (input, init = {}) => {
+  const token = document.cookie.match(/(?:^|; )XSRF-TOKEN=([^;]*)/)?.[1]
+  const headers = new Headers(init.headers)
+  if (token) headers.set('X-XSRF-TOKEN', decodeURIComponent(token))
+  return fetch(input, { ...init, headers, credentials: 'same-origin' })
+}
+
+const agent = new HttpAgent({ url: '/agent/ag-ui', fetch: csrfFetch })
+
+export default function Page({ threadId }: { threadId: string }) {
+  return (
+    <CopilotKitProvider agents__unsafe_dev_only={{ default: agent }}>
+      <Renderers />
+      <CopilotChat threadId={threadId} />
+    </CopilotKitProvider>
+  )
+}
+
+function Renderers() {
+  // A server tool's call, drawn from its result.
+  useRenderTool({
+    name: 'list_orders',
+    parameters: z.object({}),
+    render: ({ result }) => (result ? <OrderList {...JSON.parse(result)} /> : <p>Loading…</p>),
+  })
+  return null
+}
+```
+
+- **`agents__unsafe_dev_only`** is CopilotKit's name for an agent the browser calls itself. For production CopilotKit expects a `CopilotRuntime` (`@copilotkit/runtime/v2`) in front of the agent; it then calls `<path>/ag-ui` server to server, and has to forward the session cookie and the CSRF header (`forwardHeaders`).
+- **Approvals and questions** arrive as AG-UI interrupts. `useInterrupt({ render })` draws them, and `resolve({ approved: true }, interrupt.id)` sends the `resume` the [interrupt section](/docs/agent/ag-ui#interrupts-and-resume) describes.
+- **Components a tool pushes** arrive as `agora.ui` custom events; read them with `agent.subscribe({ onCustomEvent })`, keyed by `toolCallId`. **History**: subclass `HttpAgent` and implement `connect()` to replay `GET <path>/threads/:id` as a `MESSAGES_SNAPSHOT`. Both are in the example.
+- `@ag-ui/client` 1.0.2 refuses a run that leaves an open interrupt unanswered ("pending interrupt(s) not addressed by resume", read in its code): answer the interrupt before the next message.
+
+## See also
+
+- [OpenUI](/docs/agent/openui) — the OpenUI setup: the library prompt on the server, custom components, threads, approvals.
+- [AG-UI](/docs/agent/ag-ui) — the route both third-party pages use, and its interrupt and resume contract.
+- [What AG-UI costs you](/docs/agent/surfaces#what-ag-ui-costs-you) — every capability, native stream vs AG-UI.
+- [Generative UI](/docs/agent/generative-ui), [Builtin components](/docs/agent/genui-builtins) and [Loading states and skeletons](/docs/agent/genui-loading-states) — the native side.
