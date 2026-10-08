@@ -112,10 +112,21 @@ export function actionProposalOutcomeScope(outcome: ActionProposalOutcome): Acti
 }
 
 /**
+ * Text a database column can hold: NUL and unpaired surrogates — which Postgres and SQLite refuse —
+ * are written as their JSON escapes, the way the JSON summary already carries them.
+ */
+function storableText(text: string): string {
+  return text.replace(
+    /\u0000|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g,
+    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
+}
+
+/**
  * The outcome message admitted to the thread. The tool's own presentation text (`present` /
  * `emitUi`), when it has one, leads — what a person reads in the history; the summary follows.
  */
 export function actionProposalOutcomeText(outcome: ActionProposalOutcome): string {
-  const text = outcome.text?.trim();
+  const text = outcome.text === undefined ? undefined : storableText(outcome.text).trim();
   return text ? `${text}\n\n${outcomeSummary(outcome)}` : outcomeSummary(outcome);
 }

@@ -42,4 +42,12 @@ describe('actionProposalOutcomeText', () => {
     );
     expect(text).not.toContain('proposal-5d5c');
   });
+
+  it('writes NUL and unpaired surrogates in the presentation text as escapes a database can store', () => {
+    const text = actionProposalOutcomeText(
+      outcome({ executionStatus: 'succeeded', text: 'Fallback\u0000 lone\ud800 ok \ud83d\ude00' }),
+    );
+    expect(text).not.toContain('\u0000');
+    expect(text).toContain('Fallback\\u0000 lone\\ud800 ok \ud83d\ude00');
+  });
 });
