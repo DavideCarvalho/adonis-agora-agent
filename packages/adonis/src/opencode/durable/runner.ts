@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { StartOptions, WorkflowEngine } from '@adonis-agora/durable';
+import { drivePendingRuns } from '../../durable/drive-pending-runs.js';
 import type { HumanReply } from '../../elicitation.js';
 import type { AgentRunner, AgentRunStartOptions } from '../../spi/agent-runner.js';
 import type { AgentStore } from '../../spi/agent-store.js';
@@ -79,6 +80,14 @@ export class DurableOpenCodeAgentRunner implements AgentRunner {
 
   async signal(runId: string, toolCallId: string, reply: HumanReply): Promise<void> {
     await this.engine.signal(decisionToken(runId, toolCallId), reply);
+  }
+
+  /** The runs {@link drive} set going that have not ended yet. */
+  private readonly driving = new Set<string>();
+
+  /** Lease and execute here what of `runId` is still pending — see `drivePendingRuns`. */
+  async drive(runId: string): Promise<void> {
+    await drivePendingRuns(this.engine, runId, this.driving);
   }
 
   /**

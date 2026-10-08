@@ -66,6 +66,7 @@ export interface ChannelTurnService
         | 'attachmentLimits'
         | 'stageAttachment'
         | 'lucidDatabase'
+        | 'drive'
       >
     > {
   /**
@@ -359,6 +360,8 @@ const BUTTON_ID = /^agora:(approve|reject):([^\s]+)$/;
 /** The tail of a proposal id a button carries — Telegram's `callback_data` holds 64 bytes. */
 const BUTTON_REF_LENGTH = 32;
 const OUTCOME_POLL_MS = 500;
+/** How often a durable job reading a turn looks for a part of it still waiting for a worker. */
+const DRIVE_POLL_MS = 500;
 /** How long "this outcome was relayed" is remembered. */
 const OUTCOME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -480,6 +483,28 @@ function componentOf(frame: StreamFrame, position: number): ChannelComponent | n
     };
   }
   return null;
+}
+
+/**
+ * Keep executing, in this process, what of `runId` waits for a worker (`service.drive`), until
+ * stopped. A durable channel job runs inside a worker's tick, and the tick ends only when the job
+ * does: a turn the job started with a dispatcher that only persists it — or a delegate that turn
+ * started — would wait for the next tick, and the job for the turn, until the read times out.
+ */
+function keepDriving(drive: (runId: string) => Promise<void>, runId: string): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const pass = async () => {
+    await drive(runId).catch(() => {});
+    if (stopped) return;
+    timer = setTimeout(() => void pass(), DRIVE_POLL_MS);
+    timer.unref?.();
+  };
+  void pass();
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+  };
 }
 
 /**
@@ -1157,6 +1182,9 @@ export function handleChannel(
       }
     };
     const stream = service.subscribe(runId)[Symbol.asyncIterator]();
+    const drive = service.drive?.bind(service);
+    const stopDriving =
+      executor().durable && drive !== undefined ? keepDriving(drive, runId) : undefined;
     try {
       for (;;) {
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1280,6 +1308,7 @@ export function handleChannel(
         }
       }
     } finally {
+      stopDriving?.();
       void stream.return?.();
     }
     if (parked) return;

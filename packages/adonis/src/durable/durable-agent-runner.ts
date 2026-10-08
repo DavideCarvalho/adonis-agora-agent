@@ -9,6 +9,7 @@ import { releaseThreadRun } from '../spi/chat-queue.js';
 import type { TokenStreamSink } from '../spi/token-stream-sink.js';
 import type { AgentRunInput } from '../types.js';
 import { AgentRunWorkflow, type DurableAgentRunInput } from './agent-run-workflow.js';
+import { drivePendingRuns } from './drive-pending-runs.js';
 
 /**
  * A control-flow signal surfaced out of `engine.start`. With the default in-process dispatcher the
@@ -69,6 +70,14 @@ export class DurableAgentRunner implements AgentRunner {
 
   async signal(runId: string, toolCallId: string, reply: HumanReply): Promise<void> {
     await this.engine.signal(`tool:${runId}:${toolCallId}`, reply);
+  }
+
+  /** The runs {@link drive} set going that have not ended yet. */
+  private readonly driving = new Set<string>();
+
+  /** Lease and execute here what of `runId` is still pending — see {@link drivePendingRuns}. */
+  async drive(runId: string): Promise<void> {
+    await drivePendingRuns(this.engine, runId, this.driving);
   }
 
   /**

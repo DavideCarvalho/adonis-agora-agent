@@ -1207,6 +1207,15 @@ export class AgentService {
   }
 
   /**
+   * Execute in this process what of `runId` still waits for a worker (see
+   * {@link AgentRunner.drive}) — for a caller that waits on the run from inside that worker's own
+   * work. A no-op when the runner runs turns where it starts them.
+   */
+  async drive(runId: string): Promise<void> {
+    await this.runner.drive?.(runId);
+  }
+
+  /**
    * The tools THIS actor can reach through an agent, with how a chat surface talks about each —
    * the same list the model is offered (`ToolRegistry.visibleSpecs` behind `definitionsFor`, against
    * the agent's allow-list and the roles policy). Built-in tools the loop serves itself (`ask`,
