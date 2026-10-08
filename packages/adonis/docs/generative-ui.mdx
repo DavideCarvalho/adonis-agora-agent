@@ -202,6 +202,8 @@ While the model writes it, such a node is sent as a placeholder, `{ id, type, pr
 
 How renderers draw skeletons for incomplete and held nodes is in [Loading states and skeletons](/docs/agent/genui-loading-states#progressive-trees).
 
+Previews need a model stream that carries the call's arguments as they are written. `aiSdkModel` does; the [OpenCode engine](/docs/agent/opencode#no-streaming-tool-input) does not (its server sends a tool call's input whole), so there a tree appears once, when the call completes.
+
 The mechanism is a hook any tool can implement: `ToolHandler.previewInput(scope)` answers how to preview a streamed call (`render(partialInput)` → a frame, `undefined` for nothing new, `null` to withdraw), and the loop does the parsing (`parsePartialJson`, exported), the throttling and the withdrawal.
 
 ### Terminal tools
@@ -395,6 +397,8 @@ function KpiCards({ items = [] }: { items?: Kpi[] }) {
 ```
 
 Props of an incomplete node can be missing or half-built (an array still growing, its last item partial), so a renderer opted into previews defaults what it reads. A `held` node (`streaming: 'complete'`) never reaches its renderer: `<GenerativeUI>` draws `placeholder` instead — a node, or `(node) => ReactNode` — defaulting to `loading`, and settable once on `<GenuiProvider>`. A withdrawn preview draws nothing, and the transcript drops a preview whose call settled without replacing it. `incomplete` only ever means "the model has not finished writing this node"; it is not a loading state for data.
+
+Only the nodes that changed render again. The chat reaches React as a fresh copy on every update (each token, each partial frame), so the transcript and the tree renderer share structure with the previous frame: a node, a pushed component or a props object equal to the one before keeps that object, and its renderer does not run. A node that grew, or whose `incomplete` or `held` flag changed, is a new object, and so are its ancestors. A heavy renderer (a chart that measures itself, a table) therefore needs no `memo` of its own to keep up with a fast stream. Inline `fallback`, `loading`, `placeholder` and `onError` values are read when a node renders, so passing new ones does not re-render the tree either.
 
 A component the registry does not know, props the catalog refuses, or a renderer that throws renders your `fallback` — or, without one, the item's `fallbackText` (nothing when it has none). A name is a lookup, never something to evaluate. A repeated `id` replaces the component in place, and a reloaded thread draws the same components from the message's persisted `ui` list. To tell the server what this registry can draw, pass `uiCapabilities` to `<AgentProvider>` — see [One output, many surfaces](/docs/agent/surfaces#web--react-over-the-native-stream). See [React](/docs/agent/react) for the rest of the hook.
 

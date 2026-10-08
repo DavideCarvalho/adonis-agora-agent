@@ -5,6 +5,7 @@ import type { QueuePause } from '../../../index.js';
 import type { ApprovalTarget } from '../approvals/proposals.js';
 import { attachmentFile, type MessageFile } from '../attachments/files.js';
 import { type AgentBackend, requireBackendMethod } from '../backend.js';
+import { shareStructure } from '../genui/share-structure.js';
 import type { ToolCatalog } from '../presentation/phrasing.js';
 import { useAgentBackend } from '../provider.js';
 import type { QueuedChatMessage } from '../queue/model.js';
@@ -503,6 +504,7 @@ function useTranscriptItems({
 
   const callbackCache = useRef(new Map<string, ItemCallbacks>());
   const reasoningToggleCache = useRef(new Map<string, (open?: boolean) => void>());
+  const uiBlocks = useRef(new Map<string, TranscriptBlock>());
 
   const toggleReasoning = useCallback((key: string, open?: boolean) => {
     setOpenReasoning((current) => {
@@ -715,6 +717,16 @@ function useTranscriptItems({
 
   const lastAssistantId = findLastAssistant(messages)?.id ?? null;
   const items: TranscriptItem[] = [];
+  // Pushed components of the last render, by block key: an unchanged one keeps its object.
+  const previousUi = uiBlocks.current;
+  const keptUi = new Map<string, TranscriptBlock>();
+  const keepUiIdentity = (blocks: TranscriptBlock[]): TranscriptBlock[] =>
+    blocks.map((block) => {
+      if (block.kind !== 'ui') return block;
+      const kept = shareStructure(previousUi.get(block.key), block);
+      keptUi.set(block.key, kept);
+      return kept;
+    });
 
   for (let index = visibleStart; index < messages.length; index++) {
     const message = messages[index];
@@ -739,42 +751,44 @@ function useTranscriptItems({
       isAssistant,
       isLastAssistant,
       isStreaming: message.id === streamingMessageId,
-      blocks: buildTranscriptBlocks(message, {
-        isReasoningOpen: (key, isStreamingRun) => openReasoning.get(key) ?? isStreamingRun,
-        toggleReasoning: (key, open) => stableToggle(key)(open),
-        ...(options.sources !== undefined ? { sources: options.sources } : {}),
-        ...(options.toolCatalog !== undefined ? { toolCatalog: options.toolCatalog } : {}),
-        // Read-only still lifts question sets into their block, so the outcome shows.
-        ...(handlers.onAnswer !== undefined ||
-        (options.readOnly === true && options.onAnswer !== null)
-          ? {
-              elicitation: {
-                picked: (toolCallId, questionId) => picks.get(pickKey(toolCallId, questionId)),
-                pick,
-                canAnswer: handlers.onAnswer !== undefined,
-                canSkip: handlers.onSkip !== undefined,
-                answer,
-                skip,
-                submitting: (toolCallId) => settling.get(toolCallId) ?? null,
-                errorOf: (toolCallId) => settleErrors.get(toolCallId)?.message ?? null,
-                errorCodeOf: (toolCallId) => settleErrors.get(toolCallId)?.code ?? null,
-              },
-            }
-          : {}),
-        ...(handlers.onApprove !== undefined || handlers.onReject !== undefined
-          ? {
-              approval: {
-                canApprove: handlers.onApprove !== undefined,
-                canReject: handlers.onReject !== undefined,
-                approve,
-                reject,
-                submitting: (toolCallId) => settling.get(toolCallId) ?? null,
-                errorOf: (toolCallId) => settleErrors.get(toolCallId)?.message ?? null,
-                errorCodeOf: (toolCallId) => settleErrors.get(toolCallId)?.code ?? null,
-              },
-            }
-          : {}),
-      }),
+      blocks: keepUiIdentity(
+        buildTranscriptBlocks(message, {
+          isReasoningOpen: (key, isStreamingRun) => openReasoning.get(key) ?? isStreamingRun,
+          toggleReasoning: (key, open) => stableToggle(key)(open),
+          ...(options.sources !== undefined ? { sources: options.sources } : {}),
+          ...(options.toolCatalog !== undefined ? { toolCatalog: options.toolCatalog } : {}),
+          // Read-only still lifts question sets into their block, so the outcome shows.
+          ...(handlers.onAnswer !== undefined ||
+          (options.readOnly === true && options.onAnswer !== null)
+            ? {
+                elicitation: {
+                  picked: (toolCallId, questionId) => picks.get(pickKey(toolCallId, questionId)),
+                  pick,
+                  canAnswer: handlers.onAnswer !== undefined,
+                  canSkip: handlers.onSkip !== undefined,
+                  answer,
+                  skip,
+                  submitting: (toolCallId) => settling.get(toolCallId) ?? null,
+                  errorOf: (toolCallId) => settleErrors.get(toolCallId)?.message ?? null,
+                  errorCodeOf: (toolCallId) => settleErrors.get(toolCallId)?.code ?? null,
+                },
+              }
+            : {}),
+          ...(handlers.onApprove !== undefined || handlers.onReject !== undefined
+            ? {
+                approval: {
+                  canApprove: handlers.onApprove !== undefined,
+                  canReject: handlers.onReject !== undefined,
+                  approve,
+                  reject,
+                  submitting: (toolCallId) => settling.get(toolCallId) ?? null,
+                  errorOf: (toolCallId) => settleErrors.get(toolCallId)?.message ?? null,
+                  errorCodeOf: (toolCallId) => settleErrors.get(toolCallId)?.code ?? null,
+                },
+              }
+            : {}),
+        }),
+      ),
       text,
       usage: usage ? describeUsage(usage) : null,
       timestamp: describeTimestamp((options.getCreatedAt ?? createdAtFromMetadata)(message)),
@@ -818,6 +832,7 @@ function useTranscriptItems({
     });
   }
 
+  uiBlocks.current = keptUi;
   return items;
 }
 
