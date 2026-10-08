@@ -1,0 +1,12 @@
+---
+'@adonis-agora/agent': minor
+---
+
+Fixes found while building the frontends comparison example:
+
+- **Hidden tools no longer run.** A tool whose `describe()` answers `available: false` for the turn (a genui `ui__render` or `ui__show_*` tool that `uiCapabilities` rule out) was left out of the tools offered to the model, but still ran when the model called it anyway. `ToolRegistry.invoke` now asks `describe()` again with the call's actor, thread, agent and `uiCapabilities`, and refuses the call as an unknown tool (`ToolNotFoundError`). The other offer filters (allow-list, `isEnabled`, roles, `canUse`) were already checked again on invoke.
+- **No 501 from the proposals list in blocking mode.** `GET <path>/threads/:id/action-proposals` (and `AgentService.listActionProposals` / `listActionProposalsPage`) answer an empty list when `actionApprovalMode` is not `'independent'`, instead of `501`. `useAgentChat` reads that list by default, so every chat logged a failed request unless it passed `proposals: false`. Approving or rejecting a proposal still answers `501` there.
+- **AG-UI approval interrupt wording.** The `tool_approval` interrupt's `message` is now the tool's `confirmation.title` when the call has one, the same wording the `agora.approval-requested` event carries. Before, it was always `Approve <tool>?`.
+- **Config stub.** `config/agent.stub` (and the JSDoc on `defineConfig`, `retrievers`, `tokenSinks` and `AuthzToolAuthorizer`) showed `aiSdkModel({ model: … })`. The function takes the model itself: `aiSdkModel(openai('gpt-4o-mini'))`.
+- **`FakeModelProvider` tool call ids are unique.** Ids were `call-<turnIndex>-<name>`, so the same tool on the same turn of two threads got the same id. On the Lucid store, where `agent_tool_call.id` is the primary key, the second run failed. The first call still gets `call-<turnIndex>-<name>`. A repeat from the same provider instance gets the first free `-2`, `-3`… suffix.
+- **A Stop aborts what the run is in.** Under the inline runner, cancelling a run aborts the in-flight model call (`ModelTurnArgs.abortSignal`, which `aiSdkModel` passes to the AI SDK) and hands tools the signal as the new `AiToolCtx.abortSignal`. Before, the model kept streaming to the end of the step. The run still ends `cancelled`, and the step the Stop cut short is still not persisted. Custom runners can pass the signal through the new `AgentLoopHooks.abortSignal`. The durable runner is unchanged.
