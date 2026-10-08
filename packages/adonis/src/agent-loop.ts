@@ -942,12 +942,32 @@ function threadForTurn(recorded: RecordedThreadLoad | null): ThreadForTurn {
   // as a prompt a provider accepts. A no-op on a payload that is already whole.
   const messages = settleDanglingToolCalls((recorded?.messages ?? []).map(toModelMessage));
   return {
-    messages,
+    // Blank assistant messages are left out here, on every path a turn's history takes (recorded,
+    // replayed, windowed after this), so a thread that stored one before the loop stopped writing
+    // them heals on its next turn.
+    messages: messages.filter((message) => !isBlankAssistantMessage(message)),
     actionApprovalMode: recorded?.actionApprovalMode ?? 'blocking',
     title: recorded?.title ?? null,
     hasAssistantMessage:
       recorded?.hasAssistantMessage ?? messages.some((message) => message.role === 'assistant'),
   };
+}
+
+/**
+ * An assistant message that says nothing to the model: blank text, no tool call, no tool result.
+ *
+ * A step can end that way — the model stops right after a tool whose result IS the answer — and
+ * Anthropic and Bedrock refuse a request that replays one ("content … is empty"), so a single such
+ * message fails every later turn on its thread. A tool-call-only message is NOT blank: it is the
+ * valid assistant half of a tool exchange and has to stay.
+ */
+function isBlankAssistantMessage(message: ModelMessage): boolean {
+  return (
+    message.role === 'assistant' &&
+    message.content.trim().length === 0 &&
+    (message.toolCalls?.length ?? 0) === 0 &&
+    (message.toolResults?.length ?? 0) === 0
+  );
 }
 
 /**
@@ -3496,7 +3516,20 @@ export async function runAgentLoop<TOutput = unknown>(
         ...(turn.modelId !== undefined ? { model: turn.modelId } : {}),
       },
     };
+    // A step that ended with no text and nothing else on it (no call, no pushed UI, no reasoning)
+    // is not written: the row would say nothing to a reader, and replayed on the next turn its empty
+    // content gets the WHOLE request refused by Anthropic and Bedrock. Such a step has no tool calls,
+    // so it is the final one. The checkpoint still runs (holding `null`) and still ends the step.
+    const blankStep =
+      turn.text.trim().length === 0 &&
+      messageCalls.length === 0 &&
+      (turn.ui === undefined || turn.ui.length === 0) &&
+      turn.reasoning === undefined;
     const assistant = await hooks.step(`persist:assistant:${i}`, async () => {
+      if (blankStep) {
+        await writer.write(finishFrame);
+        return null;
+      }
       const appended = await deps.store.appendMessage({
         threadId: input.threadId,
         role: 'assistant',
@@ -3536,6 +3569,9 @@ export async function runAgentLoop<TOutput = unknown>(
       }
       return appended;
     });
+    if (assistant === null) {
+      break;
+    }
     modelMessages.push({
       role: 'assistant',
       content: turn.text,
@@ -3718,13 +3754,17 @@ export async function runAgentLoop<TOutput = unknown>(
         return;
       }
       const agent = input.agentName ?? 'default';
-      await deps.store.appendMessage({
-        threadId: delivery.threadId,
-        role: 'assistant',
-        content: lastText,
-        agentName: agent,
-        runId: hooks.runId,
-      });
+      // A run that ended on a blank step has no answer to deliver, and an empty assistant message
+      // would poison the delegating thread's next turn. The tool call is still settled below.
+      if (lastText.trim().length > 0) {
+        await deps.store.appendMessage({
+          threadId: delivery.threadId,
+          role: 'assistant',
+          content: lastText,
+          agentName: agent,
+          runId: hooks.runId,
+        });
+      }
       await deps.store.updateToolCall({
         toolCallId: delivery.toolCallId,
         status: 'executed',
