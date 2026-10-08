@@ -96,6 +96,29 @@ is refused at boot unless the engine is durable itself (`openCodeDurable()`, bel
 One session per thread, kept by an `OpenCodeSessionStore` (in memory by default). A session is
 recreated when the server's `bootId` changes, and told the conversation so far.
 
+### No streaming tool input
+
+On this engine a tool call's arguments arrive whole, so nothing previews while the model writes
+them: `ToolHandler.previewInput` never runs, and a `ui__render` tree (or any `streaming: 'partial'`
+component) appears once, validated, when the call completes. On `aiSdkModel` the same tools stream
+progressively ([Generative UI](/docs/agent/generative-ui)).
+
+The cause is upstream. OpenCode's event schema has a live-only `session.tool.input.delta` event, but
+the server (2.0.18 and 2.0.19) does not publish it: it buffers the model's tool-input deltas and
+publishes only `session.tool.input.started` (the tool's name), then `session.tool.input.ended` (the
+whole raw JSON) and `session.tool.called` (the parsed input), back to back once the arguments are
+complete. The 1.x line does not stream tool input either. Previews need OpenCode to publish
+`session.tool.input.delta { id, delta }` as the input buffer fills, the way it publishes
+`session.text.delta`; the engine would then forward each delta as a `tool-input-delta` frame and run
+the tool's `previewInput` over it.
+
+This covers MCP tools too, with a second obstacle. OpenCode runs MCP tools in code mode by default:
+the model calls one `execute` tool and writes JavaScript that calls `tools.<server>.<tool>(…)`, so a
+tool on your own MCP server (a `ui__show_*` component tool, say) is not a tool call of its own while
+the model writes it, and the MCP server only ever receives the complete arguments in `tools/call`.
+Even with the deltas published, an MCP tool would preview only if it were registered with
+`codemode: false`, which offers it to the model directly as `<server>_<tool>`.
+
 ## The library's seams under OpenCode
 
 | Seam | In the session |
