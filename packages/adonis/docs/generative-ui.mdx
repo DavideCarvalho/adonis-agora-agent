@@ -34,7 +34,7 @@ Use it when the answer is inherently visual or interactive: metrics/charts, maps
 
 <Step>
 
-**A tool pushes a component** — `ctx.emitUi(component, props)` during `execute`, its `present` hook after it, or a `ui__show_*` tool the catalog registered. With a [catalog](#a-component-catalog--adonis-agoraagentgenui) configured the push is validated and negotiated against the client's [UI capabilities](/docs/agent/surfaces#ui-capabilities) first; a drawable one is written as a `{ t: 'component', name, data, id, toolCallId, … }` frame to the run's token stream at the current position.
+**A tool pushes a component** — `ctx.emitUi(component, props)` during `execute`, its `present` hook after it, or the `ui__render` tool (or a `ui__show_*` one) the catalog registered. With a [catalog](#a-component-catalog--adonis-agoraagentgenui) configured the push is validated and negotiated against the client's [UI capabilities](/docs/agent/surfaces#ui-capabilities) first; a drawable one is written as a `{ t: 'component', name, data, id, toolCallId, … }` frame to the run's token stream at the current position.
 
 </Step>
 
@@ -89,11 +89,12 @@ Instead of writing a tool per component, declare the components once and let the
 
 ```ts title="app/genui/catalog.ts"
 import { defineCatalog, defineComponent } from '@adonis-agora/agent/genui'
-import { BUILTIN_COMPONENTS } from '@adonis-agora/agent/genui/builtins'
+import { BUILTIN_COMPONENTS, LAYOUT_COMPONENTS } from '@adonis-agora/agent/genui/builtins'
 import { z } from 'zod'
 
 export const catalog = defineCatalog([
   ...BUILTIN_COMPONENTS, // DataTable, Chart, KpiCards, …
+  ...LAYOUT_COMPONENTS, // Stack, Card, Heading, Text, …
   defineComponent({
     name: 'OrderCard',
     title: 'Order card',
@@ -115,16 +116,32 @@ export default defineConfig({
 
 `BUILTIN_COMPONENTS` are ready-made definitions (no visuals) for a table, a chart, KPI cards, sources, a checklist, a timeline, code, a diff and a callout; `LAYOUT_COMPONENTS` adds `Stack`, `Card`, `Heading`, `Text`, `Badge`, `Link` and `Image` for tree mode. Each is listed with its props, and how to pick or override them, in [Builtin components](/docs/agent/genui-builtins).
 
-That registers a `ui__show_<snake_case name>` tool per model-facing component (`OrderCard` → `ui__show_order_card`); each call validates its input against the catalog (a refused call reaches the model as a tool error it can fix) and pushes through `ctx.emitUi`. Component names are letters and digits starting with a letter (`/^[A-Za-z][A-Za-z0-9]{0,63}$/`); a definition marked `internal: true` is never offered to the model. Options, all optional:
+That registers one tool, `ui__render`, whose input is a component tree composed from the catalog — `{ type, props, children? }`, nested through the components that take children (`Stack`, `Card`):
+
+```json
+{ "type": "Card", "props": { "title": "Orders" }, "children": [
+  { "type": "KpiCards", "props": { "items": [{ "label": "Open", "value": 12 }] } },
+  { "type": "OrderCard", "props": { "id": 7, "status": "shipped" } }
+] }
+```
+
+A tree of a single component is just that component — `{ "type": "OrderCard", "props": { … } }` — and is pushed exactly as a per-component tool would push it, so one tool covers both a lone table and a dashboard. Each call is validated against the catalog node by node (a refused call reaches the model as a tool error it can fix) and pushed through `ctx.emitUi`; a composed tree streams as one `genui:tree` component that your client draws node by node. Component names are letters and digits starting with a letter (`/^[A-Za-z][A-Za-z0-9]{0,63}$/`); a definition marked `internal: true` is never offered to the model.
+
+The tool's input schema is exact: below the root, every node is a union by `type` whose variants carry their component's own props schema, and only components that take children have `children` (recursive through `$defs` / `$ref`). The root itself is a plain object listing every `type` and every props schema, because OpenAI and Anthropic both refuse a union at the top level of a tool's parameters. A component whose props schema is not self-contained (a recursive Zod schema carries its own references) is described as a plain object. A provider that refuses `$ref` in tool parameters at all takes `treeSchema: 'loose'` — one generic node shape, props described in the tool's text only. Whichever schema the model sees, the server validates every call.
+
+**Per-component mode.** `mode: 'per-component'` registers a `ui__show_<snake_case name>` tool per model-facing standalone component instead (`OrderCard` → `ui__show_order_card`), each taking that component's props directly. Reach for it with small models that compose trees poorly, when each tool should carry its exact schema on its own, or when the catalog only has standalone components to show one at a time. Layouts get no tool there (they could only push an empty box).
+
+Options, all optional:
 
 | Option | Meaning |
 | --- | --- |
-| `mode` | `'per-component'` (default) or `'tree'` — one `ui__render` tool taking a nested `{ type, props, children }` tree, pushed as one `genui:tree` component. |
+| `mode` | `'tree'` (default) — one `ui__render` tool taking a nested `{ type, props, children }` tree, pushed as one `genui:tree` component (or as the component itself for a single node) — or `'per-component'`, one `ui__show_*` tool per component. |
+| `treeSchema` | `'strict'` (default) or `'loose'`: how exactly `ui__render`'s input schema describes the nodes (see above). |
 | `showTool` | `true` (or a tool name) adds a generic `ui__show` taking `{ component, props }` — how a model reaches components that exist only in a per-request catalog. |
 | `terminal` | A successful push ends the turn. |
 | `roles` | Roles allowed to call the tools; omitted → `defaultRoles`. |
 | `presentation` | `(component) => ToolPresentation \| undefined`, overriding the generated chat copy per tool. |
-| `namePrefix` | Prefix of the per-component tools. Default `ui__show_`. |
+| `namePrefix` | Prefix of the per-component tools (`mode: 'per-component'`). Default `ui__show_`. |
 | `treeToolName`, `treeInstructions`, `treeLimits` | The tree tool's name (default `ui__render`), extra description, and size limits. |
 | `streaming` | Tree mode: `'complete'` (default) draws the tree once the call has run; `'partial'` draws it while the model writes it. See [Drawing a tree while the model writes it](#drawing-a-tree-while-the-model-writes-it). |
 | `streamingThrottleMs` | Least time between two partial tree frames of one call. Default `100`. |
@@ -154,7 +171,7 @@ A resolver class is built through the container (so it can `@inject()`); an inst
 A model-composed layout is one `ui__render` call, and its arguments stream for as long as the model writes them — seconds, for a dashboard. By default nothing is drawn until the call has run; then the validated tree appears whole. With `streaming: 'partial'` the layout fills in as it is written:
 
 ```ts title="config/agent.ts"
-genui: genui({ catalog, mode: 'tree', streaming: 'partial' })
+genui: genui({ catalog, streaming: 'partial' }) // tree mode, the default
 ```
 
 The server reads the streaming arguments (`tool-input-delta`) as far as they go and pushes the tree so far as `ui` frames marked `partial: true`, under the id the final push uses (`<toolCallId>:ui:0`). Each one replaces the last in place; the call's own push, validated as always, replaces the last preview. What a partial frame is, and is not:
