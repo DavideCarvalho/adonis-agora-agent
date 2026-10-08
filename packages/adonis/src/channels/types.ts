@@ -114,8 +114,8 @@ export interface ChannelChallengeResponse {
 }
 
 /**
- * One text channel. The built-in ones are `evolutionApi()`, `whatsappCloud()` and `telegram()`; any
- * object of this shape works the same way.
+ * One text channel. The built-in ones are `evolutionApi()`, `whatsmiau()`, `whatsappCloud()` and
+ * `telegram()`; any object of this shape works the same way.
  */
 export interface ChannelAdapter {
   /** Names the channel: the dedupe key's prefix, and `via` on a decision made with its buttons. */

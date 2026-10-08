@@ -8,6 +8,7 @@ import {
   type InboundMessage,
   telegram,
   whatsappCloud,
+  whatsmiau,
 } from '../src/channels/index.js';
 
 interface Call {
@@ -337,18 +338,41 @@ describe('evolutionApi', () => {
     expect(down.calls).toHaveLength(1);
   });
 
-  it('buttons default off for Evolution (Baileys) and on for Whatsmiau', async () => {
+  it('evolutionApi: buttons off by default', () => {
     const options = { url: 'https://evo', instance: 'main', apiKey: 'k', webhookToken: 's' };
     expect(evolutionApi(options).capabilities.buttons).toBeUndefined();
+    expect(evolutionApi({ ...options, buttons: true }).capabilities.buttons).toBe(3);
+  });
+});
+
+describe('whatsmiau', () => {
+  const options = { instance: 'main', apiKey: 'k', webhookToken: 's' };
+
+  it('adds the /v1 prefix to a bare host, keeps a versioned url', async () => {
+    for (const [url, expected] of [
+      ['http://whatsmiau:8080', 'http://whatsmiau:8080/v1/message/sendText/main'],
+      ['http://whatsmiau:8080/', 'http://whatsmiau:8080/v1/message/sendText/main'],
+      ['http://whatsmiau:8080/v1', 'http://whatsmiau:8080/v1/message/sendText/main'],
+      ['https://api.whatsmiau.dev/v2/', 'https://api.whatsmiau.dev/v2/message/sendText/main'],
+    ] as const) {
+      const { fetch, calls } = fakeFetch();
+      await whatsmiau({ ...options, url, fetch }).send('5511999990000@s.whatsapp.net', {
+        text: 'hi',
+      });
+      expect(calls[0]!.url).toBe(expected);
+      expect(calls[0]!.body).toEqual({ number: '5511999990000', text: 'hi' });
+    }
+  });
+
+  it('is named whatsapp, has buttons by default, and sends them with the text instruction', async () => {
+    const adapter = whatsmiau({ ...options, url: 'http://whatsmiau:8080' });
+    expect(adapter.name).toBe('whatsapp');
+    expect(adapter.capabilities.buttons).toBe(3);
     expect(
-      evolutionApi({ ...options, provider: 'evolution' }).capabilities.buttons,
-    ).toBeUndefined();
-    expect(evolutionApi({ ...options, provider: 'whatsmiau' }).capabilities.buttons).toBe(3);
-    expect(
-      evolutionApi({ ...options, provider: 'whatsmiau', buttons: false }).capabilities.buttons,
+      whatsmiau({ ...options, url: 'http://whatsmiau:8080', buttons: false }).capabilities.buttons,
     ).toBeUndefined();
     const { fetch, calls } = fakeFetch();
-    await evolutionApi({ ...options, provider: 'whatsmiau', fetch }).send('5511999990000', {
+    await whatsmiau({ ...options, url: 'http://whatsmiau:8080', fetch }).send('5511999990000', {
       text: '*Refund order A-1?*',
       buttons: [
         { id: 'agora:approve:x', label: 'Confirmar' },
@@ -357,11 +381,30 @@ describe('evolutionApi', () => {
       fallbackText: '*Refund order A-1?*\n\nResponda *sim* ou *não*.',
       instruction: 'Responda *sim* ou *não*.',
     });
-    expect(calls[0]!.url).toBe('https://evo/message/sendButtons/main');
+    expect(calls[0]!.url).toBe('http://whatsmiau:8080/v1/message/sendButtons/main');
     expect(calls[0]!.body).toMatchObject({
       title: 'Refund order A-1?',
       description: 'Responda *sim* ou *não*.',
     });
+  });
+
+  it('parses the same Evolution-format webhook', () => {
+    const adapter = whatsmiau({ ...options, url: 'http://whatsmiau:8080' });
+    expect(
+      adapter.parse({
+        event: 'messages.upsert',
+        instance: 'main',
+        data: {
+          key: {
+            remoteJid: '187654321098765@lid',
+            remoteJidAlt: '5511912345678@s.whatsapp.net',
+            fromMe: false,
+            id: 'W1',
+          },
+          message: { conversation: 'oi' },
+        },
+      }),
+    ).toMatchObject([{ from: '5511912345678', conversation: '5511912345678@s.whatsapp.net' }]);
   });
 });
 

@@ -6,6 +6,7 @@
 export { type EvolutionApiOptions, evolutionApi } from './adapters/evolution_api.js';
 export { type TelegramOptions, telegram } from './adapters/telegram.js';
 export { type WhatsappCloudOptions, whatsappCloud } from './adapters/whatsapp_cloud.js';
+export { type WhatsmiauOptions, whatsmiau } from './adapters/whatsmiau.js';
 export {
   type ChannelAddress,
   type ChannelHandleOptions,

@@ -21,9 +21,8 @@ import type {
 
 export interface EvolutionApiOptions {
   /**
-   * The Evolution API server, without a trailing slash — `https://evolution.example.com`. A
-   * compatible host that serves the same routes under a prefix takes it here
-   * (`https://api.whatsmiau.dev/v2`).
+   * The Evolution API server — `https://evolution.example.com`. A compatible host that serves the
+   * same routes under a prefix takes it here (`https://evolution.example.com/api`).
    */
   url: string;
   /** The instance (the connected WhatsApp number) to send from and accept webhooks for. */
@@ -38,20 +37,11 @@ export interface EvolutionApiOptions {
    */
   webhookToken: string | false;
   /**
-   * Which server speaks the Evolution routes — it decides whether {@link buttons} defaults on:
-   *
-   * - `'evolution'` (default): Evolution API itself, on Baileys. Its `sendButtons` goes out as a
-   *   `nativeFlow` interactive message that WhatsApp did not show at all in our test (2.3.7, Android
-   *   recipient) — while Evolution still reports it sent — so buttons stay off.
-   * - `'whatsmiau'`: [Whatsmiau](https://whatsmiau.dev), on whatsmeow, whose `sendButtons` renders a
-   *   buttons card — buttons default on.
-   */
-  provider?: 'evolution' | 'whatsmiau';
-  /**
-   * Send proposals with reply buttons (`POST /message/sendButtons/{instance}`). Default: on for
-   * `provider: 'whatsmiau'`, off for Evolution — a Baileys session's buttons may not be rendered by
-   * WhatsApp, and the message then does not show at all. The buttons message carries the text
-   * instruction too ("Reply *yes* to confirm…"), for a phone that shows the text but not the
+   * Send proposals with reply buttons (`POST /message/sendButtons/{instance}`). Off by default:
+   * Evolution (Baileys) sends them as a `nativeFlow` interactive message that WhatsApp did not show
+   * at all in our test (2.3.7, Android recipient) — while Evolution still reported it sent. For
+   * Whatsmiau, whose buttons render, use `whatsmiau()` (buttons on). The buttons message carries the
+   * text instruction too ("Reply *yes* to confirm…"), for a phone that shows the text but not the
    * buttons; a 4xx from that endpoint falls back to the text-only message.
    */
   buttons?: boolean;
@@ -209,13 +199,24 @@ const MAX_BUTTONS = 3;
  * `POST {url}/chat/getBase64FromMediaMessage/{instance}`.
  */
 export function evolutionApi(options: EvolutionApiOptions): ChannelAdapter {
+  return evolutionFormatAdapter(options, { buttons: false });
+}
+
+/**
+ * The adapter for any server speaking Evolution's webhook and routes — `evolutionApi()` and
+ * `whatsmiau()` differ only in their defaults. Internal.
+ */
+export function evolutionFormatAdapter(
+  options: EvolutionApiOptions,
+  defaults: { buttons: boolean },
+): ChannelAdapter {
   const name = options.name ?? 'whatsapp';
   const fetcher = options.fetch ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? 20_000;
   const base = options.url.replace(/\/+$/, '');
   const instance = encodeURIComponent(options.instance);
   const headers = { apikey: options.apiKey };
-  const buttons = options.buttons ?? options.provider === 'whatsmiau';
+  const buttons = options.buttons ?? defaults.buttons;
   const post = (path: string, body: unknown) =>
     postJson(name, fetcher, `${base}${path}/${instance}`, headers, body, timeoutMs);
 

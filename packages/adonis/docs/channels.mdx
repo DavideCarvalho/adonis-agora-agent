@@ -30,7 +30,7 @@ A text channel wants [`actionApprovalMode: 'independent'`](/docs/agent/independe
 
 ## WhatsApp with Evolution API
 
-[Evolution API](https://doc.evolution-api.com) v2 connects a WhatsApp number through WhatsApp Web. The adapter also works with hosts that serve the same routes under a prefix (Whatsmiau: `url: 'https://api.whatsmiau.dev/v2'`).
+[Evolution API](https://doc.evolution-api.com) v2 connects a WhatsApp number through WhatsApp Web. For [Whatsmiau](#whatsapp-with-whatsmiau), an Evolution-compatible server whose buttons render, use `whatsmiau()`.
 
 ### Environment
 
@@ -139,22 +139,30 @@ with the event `MESSAGES_UPSERT` and "webhook by events" **off** (with it on, Ev
 
 What the adapter reads: `messages.upsert` with `data.key.fromMe === false` (a missing `fromMe` is never taken as incoming), text from `message.conversation` or `message.extendedTextMessage.text`, button and list replies (`buttonsResponseMessage`, `templateButtonReplyMessage`, `listResponseMessage`, `interactiveResponseMessage`), and media (`imageMessage`, `audioMessage`, `videoMessage`, `documentMessage` — also inside `documentWithCaptionMessage` — and `stickerMessage`, with the caption as the text). Media is downloaded from the webhook's inline `base64` when Evolution's "webhook base64" setting is on, else from `mediaUrl` when the server stores media (S3/MinIO; the `apikey` is only sent when that url is on the Evolution server itself), else with `POST /chat/getBase64FromMediaMessage/{instance}`. It ignores the instance's own messages, other instances, broadcasts and newsletters, and groups unless `groups: true` (the sender is then the participant). A chat WhatsApp addresses by LID (`key.remoteJid: '<id>@lid'`, `key.addressingMode: 'lid'`) is read by its phone number when Evolution sends it alongside (`key.remoteJidAlt: '<phone>@s.whatsapp.net'`, older versions `senderPn`): `from` is the phone's digits and `conversation` the phone jid — so replies go to the phone (`sendText`'s `number` is a phone number), and the chat keeps one `conversation` whether a message arrives addressed by phone or by LID. Without the phone, both are the `@lid` jid.
 
-### Buttons on Evolution (and Whatsmiau)
+### Buttons on Evolution
 
-Evolution has a buttons endpoint (`POST /message/sendButtons/{instance}`), but WhatsApp may not render buttons sent from a WhatsApp Web session. **Evolution (Baileys) interactive buttons were not rendered in our test with Evolution API 2.3.7** (Android recipient): they go out as a `viewOnceMessage` › `interactiveMessage` (`nativeFlow`), and the phone showed nothing at all — not the buttons, not the text. Evolution still stores the message as sent (status `PENDING` / `SERVER_ACK`), so its delivery status cannot tell you it was not shown. [Whatsmiau](https://whatsmiau.dev) (whatsmeow), given the same `sendButtons` payload, does render a buttons card.
+Evolution has a buttons endpoint (`POST /message/sendButtons/{instance}`), but WhatsApp may not render buttons sent from a WhatsApp Web session. **Evolution (Baileys) interactive buttons were not rendered in our test with Evolution API 2.3.7** (Android recipient): they go out as a `viewOnceMessage` › `interactiveMessage` (`nativeFlow`), and the phone showed nothing at all — not the buttons, not the text. Evolution still stores the message as sent (status `PENDING` / `SERVER_ACK`), so its delivery status cannot tell you it was not shown.
 
-So the default depends on `provider`:
+So `evolutionApi` sends **no buttons by default**: a proposal arrives as its summary and a text instruction ("Reply *yes* to confirm or *no* to cancel."), which always works. Leave them off. `buttons: true` opts in; then the buttons message carries the text instruction too (in its description, under the summary), so a phone that shows the message but not its buttons can still answer by text — text decisions work whether buttons are on or not. A definite refusal (`400`, `403`, `404`, `422`) from the buttons endpoint falls back to the text-only message; a timeout or `5xx` does not (the buttons may have been delivered).
 
-- `provider: 'evolution'` (the default) — **no buttons**: a proposal arrives as its summary and a text instruction ("Reply *yes* to confirm or *no* to cancel."), which always works. Leave buttons off.
-- `provider: 'whatsmiau'` — buttons on.
+## WhatsApp with Whatsmiau
 
-`buttons: true | false` overrides either. With buttons on, the buttons message carries the text instruction too (in its description, under the summary), so a phone that shows the message but not its buttons can still answer by text — text decisions work whether buttons are on or not. A definite refusal (`400`, `403`, `404`, `422`) from the buttons endpoint falls back to the text-only message; a timeout or `5xx` does not (the buttons may have been delivered). Test on your own instance, with a real phone, before turning buttons on.
+[Whatsmiau](https://github.com/verbeux-ai/whatsmiau) is an Evolution-compatible server built on whatsmeow (a fork, [verbeux-ai/whatsmeow](https://github.com/verbeux-ai/whatsmeow)) instead of Baileys — and its buttons render: given the same `sendButtons` payload that the phone never showed from Evolution, Whatsmiau delivered a buttons card with Confirmar/Cancelar. `whatsmiau()` is the Evolution adapter with two different defaults:
+
+- **Buttons on** (`buttons: false` turns them off). The buttons message carries the text instruction too, and a `4xx` still falls back to text.
+- **The route prefix is added for you.** Self-hosted Whatsmiau serves Evolution's routes under `/v1` (`/v1/message/sendText/{instance}`, `/v1/message/sendButtons/{instance}`, `/v1/webhook/set/{instance}`), so `url` is the host alone; a url that already ends in a version (`/v1`, or the hosted service's `https://api.whatsmiau.dev/v2`) is used as is.
+
+Everything else — the options, the webhook token, what is parsed (LID chats included), media — is `evolutionApi`'s, and the adapter is named `'whatsapp'` too. Point the instance's webhook (`POST /v1/webhook/set/{instance}`, event `MESSAGES_UPSERT`) at the route with the token.
 
 ```ts
-export const whatsapp = evolutionApi({
-  url: 'https://api.whatsmiau.dev/v2',
-  provider: 'whatsmiau', // buttons on
-  // …
+import { whatsmiau } from '@adonis-agora/agent/channels'
+import env from '#start/env'
+
+export const whatsapp = whatsmiau({
+  url: env.get('WHATSMIAU_URL'), // http://whatsmiau:8080 → http://whatsmiau:8080/v1/…
+  instance: env.get('WHATSMIAU_INSTANCE'),
+  apiKey: env.get('WHATSMIAU_API_KEY'),
+  webhookToken: env.get('WHATSMIAU_WEBHOOK_TOKEN'),
 })
 ```
 
@@ -219,12 +227,12 @@ Telegram sends the secret back as `X-Telegram-Bot-Api-Secret-Token`. The adapter
 
 ## What each channel can do
 
-| | `evolutionApi` | `whatsappCloud` | `telegram` |
+| | `evolutionApi` / `whatsmiau` | `whatsappCloud` | `telegram` |
 | --- | --- | --- | --- |
 | Verification | shared token (query, route param or header) | `X-Hub-Signature-256` HMAC of the raw body; `GET` `hub.challenge` | `X-Telegram-Bot-Api-Secret-Token` |
 | Markdown | WhatsApp (`*bold*`, `_italic_`, `~strike~`, `` ``` ``) | WhatsApp | MarkdownV2, or none |
 | Message length | 4096 (`maxLength`) | 4096 | 4096 |
-| Proposal buttons | off for Evolution, on for `provider: 'whatsmiau'` (`buttons`, up to 3, text instruction included) | reply buttons, up to 3 (20-character labels) | inline keyboard |
+| Proposal buttons | off for `evolutionApi`, on for `whatsmiau` (`buttons`, up to 3, text instruction included) | reply buttons, up to 3 (20-character labels) | inline keyboard |
 | Inbound | text, extended text, button and list replies, media | text, interactive button/list replies, template quick replies, media | text, `callback_query`, media |
 | Media download | inline base64, `mediaUrl`, or `getBase64FromMediaMessage` | Graph API media id → url | `getFile` (≤ 20 MB) |
 | Ignored | own messages, broadcasts, groups (unless `groups`) | other numbers, statuses | bots, edits, groups (unless `groups`) |
