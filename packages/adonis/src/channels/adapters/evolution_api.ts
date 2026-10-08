@@ -270,7 +270,7 @@ const MAX_BUTTONS = 3;
  * `POST {url}/chat/getBase64FromMediaMessage/{instance}`.
  */
 export function evolutionApi(options: EvolutionApiOptions): ChannelAdapter {
-  return evolutionFormatAdapter(options, { buttons: false });
+  return evolutionFormatAdapter(options, { buttons: false, instructionWithButtons: true });
 }
 
 /**
@@ -279,7 +279,14 @@ export function evolutionApi(options: EvolutionApiOptions): ChannelAdapter {
  */
 export function evolutionFormatAdapter(
   options: EvolutionApiOptions,
-  defaults: { buttons: boolean },
+  defaults: {
+    buttons: boolean;
+    /**
+     * Put the reply instruction in the buttons message too — for a server whose buttons may not
+     * render (Evolution). Off where they render (Whatsmiau): the card shows the buttons alone.
+     */
+    instructionWithButtons: boolean;
+  },
 ): ChannelAdapter {
   const name = options.name ?? 'whatsapp';
   const fetcher = options.fetch ?? globalThis.fetch;
@@ -369,9 +376,12 @@ export function evolutionFormatAdapter(
       if (message.buttons !== undefined && buttons) {
         const [first = '', ...rest] = message.text.split('\n');
         const title = first.replace(/[*_~]/g, '').trim();
-        // The reply instruction rides along: a phone that shows the text but not the buttons can
-        // still answer by text.
-        const description = [rest.join('\n').trim(), message.instruction?.trim() ?? '']
+        // Where buttons may not render, the reply instruction rides along: a phone that shows the
+        // text but not the buttons can still answer by text.
+        const instruction = defaults.instructionWithButtons
+          ? (message.instruction?.trim() ?? '')
+          : '';
+        const description = [rest.join('\n').trim(), instruction]
           .filter((part) => part !== '')
           .join('\n\n');
         if (title.length <= 60 && description.length <= 1024 && message.buttons.length > 0) {

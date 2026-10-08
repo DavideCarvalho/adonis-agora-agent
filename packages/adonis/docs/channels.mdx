@@ -149,7 +149,7 @@ So `evolutionApi` sends **no buttons by default**: a proposal arrives as its sum
 
 [Whatsmiau](https://github.com/verbeux-ai/whatsmiau) is an Evolution-compatible server built on whatsmeow (a fork, [verbeux-ai/whatsmeow](https://github.com/verbeux-ai/whatsmeow)) instead of Baileys — and its buttons render: given the same `sendButtons` payload that the phone never showed from Evolution, Whatsmiau delivered a buttons card with Confirmar/Cancelar. `whatsmiau()` is the Evolution adapter with two different defaults:
 
-- **Buttons on** (`buttons: false` turns them off). The buttons message carries the text instruction too, and a `4xx` still falls back to text.
+- **Buttons on** (`buttons: false` turns them off). Since they render, the buttons card carries no text instruction — just the summary and Confirmar/Cancelar (typing *sim*/*não* still works). A `4xx` falls back to the text message, instruction included, and so does `buttons: false`.
 - **The route prefix is added for you.** Self-hosted Whatsmiau serves Evolution's routes under `/v1` (`/v1/message/sendText/{instance}`, `/v1/message/sendButtons/{instance}`, `/v1/webhook/set/{instance}`), so `url` is the host alone; a url that already ends in a version (`/v1`, or the hosted service's `https://api.whatsmiau.dev/v2`) is used as is.
 
 Everything else — the options, the webhook token, what is parsed (LID chats included), media — is `evolutionApi`'s, and the adapter is named `'whatsapp'` too. Point the instance's webhook (`POST /v1/webhook/set/{instance}`, event `MESSAGES_UPSERT`) at the route with the token.
@@ -234,7 +234,7 @@ Telegram sends the secret back as `X-Telegram-Bot-Api-Secret-Token`. The adapter
 | Verification | shared token (query, route param or header) | `X-Hub-Signature-256` HMAC of the raw body; `GET` `hub.challenge` | `X-Telegram-Bot-Api-Secret-Token` |
 | Markdown | WhatsApp (`*bold*`, `_italic_`, `~strike~`, `` ``` ``) | WhatsApp | MarkdownV2, or none |
 | Message length | 4096 (`maxLength`) | 4096 | 4096 |
-| Proposal buttons | off for `evolutionApi`, on for `whatsmiau` (`buttons`, up to 3, text instruction included) | reply buttons, up to 3 (20-character labels) | inline keyboard |
+| Proposal buttons | off for `evolutionApi`, on for `whatsmiau` (`buttons`, up to 3; text instruction included for `evolutionApi` only) | reply buttons, up to 3 (20-character labels) | inline keyboard |
 | Inbound | text, extended text, button and list replies, media | text, interactive button/list replies, template quick replies, media | text, `callback_query`, media |
 | Media download | inline base64, `mediaUrl`, or `getBase64FromMediaMessage` | Graph API media id → url | `getFile` (≤ 20 MB) |
 | Ignored | own messages, broadcasts, groups (unless `groups`) | other numbers, statuses | bots, edits, groups (unless `groups`) |

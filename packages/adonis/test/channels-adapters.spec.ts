@@ -364,7 +364,7 @@ describe('whatsmiau', () => {
     }
   });
 
-  it('is named whatsapp, has buttons by default, and sends them with the text instruction', async () => {
+  it('is named whatsapp, has buttons by default, and sends them without the text instruction', async () => {
     const adapter = whatsmiau({ ...options, url: 'http://whatsmiau:8080' });
     expect(adapter.name).toBe('whatsapp');
     expect(adapter.capabilities.buttons).toBe(3);
@@ -382,10 +382,48 @@ describe('whatsmiau', () => {
       instruction: 'Responda *sim* ou *não*.',
     });
     expect(calls[0]!.url).toBe('http://whatsmiau:8080/v1/message/sendButtons/main');
+    // The buttons render on Whatsmiau: the card is the summary and the buttons, no instruction line.
     expect(calls[0]!.body).toMatchObject({
       title: 'Refund order A-1?',
-      description: 'Responda *sim* ou *não*.',
+      description: 'Refund order A-1?',
     });
+    expect(JSON.stringify(calls[0]!.body)).not.toContain('Responda');
+  });
+
+  it('keeps the full instruction in the text fallback when the buttons are refused or off', async () => {
+    const proposal = {
+      text: '*Refund order A-1?*\nAmount: R$ 10',
+      buttons: [
+        { id: 'agora:approve:x', label: 'Confirmar' },
+        { id: 'agora:reject:x', label: 'Cancelar' },
+      ],
+      fallbackText: '*Refund order A-1?*\nAmount: R$ 10\n\nResponda *sim* ou *não*.',
+      instruction: 'Responda *sim* ou *não*.',
+    };
+    const refused = fakeFetch([400]);
+    await whatsmiau({ ...options, url: 'http://whatsmiau:8080', fetch: refused.fetch }).send(
+      '5511999990000',
+      proposal,
+    );
+    expect(refused.calls[0]!.body).toMatchObject({
+      title: 'Refund order A-1?',
+      description: 'Amount: R$ 10',
+    });
+    expect(refused.calls[1]!.url).toBe('http://whatsmiau:8080/v1/message/sendText/main');
+    expect(refused.calls[1]!.body).toEqual({
+      number: '5511999990000',
+      text: proposal.fallbackText,
+    });
+    const off = fakeFetch();
+    await whatsmiau({
+      ...options,
+      url: 'http://whatsmiau:8080',
+      buttons: false,
+      fetch: off.fetch,
+    }).send('5511999990000', proposal);
+    expect(off.calls.map((call) => call.body)).toEqual([
+      { number: '5511999990000', text: proposal.fallbackText },
+    ]);
   });
 
   it('parses the same Evolution-format webhook', () => {
