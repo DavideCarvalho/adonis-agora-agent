@@ -25,7 +25,7 @@ const model = new FakeModelProvider((args, turnIndex) => {
 })
 ```
 
-`turnIndex` is derived from the message history (the count of assistant turns so far), so the script is a pure function of its inputs — deterministic and replay-safe, with no internal counter. A scripted turn can also report a `costUsd`, exactly as a gateway provider would, to exercise cost accounting.
+`turnIndex` is derived from the message history (the count of assistant turns so far), so the script is a pure function of its inputs — deterministic and replay-safe, with no internal counter. A requested tool call's id is `call-<turnIndex>-<name>`; when the same provider already issued that id (the same turn of another thread, or the same tool twice in one turn) it gets the first free `-2`, `-3`… suffix, since a tool call id is the store's primary key across threads. A scripted turn can also report a `costUsd`, exactly as a gateway provider would, to exercise cost accounting.
 
 For the trivial case, `echoScript` streams a fixed reply and never calls a tool:
 

@@ -72,6 +72,13 @@ describe('every published stub renders through the real configure engine', () =>
     );
   });
 
+  it('shows aiSdkModel taking the model itself, as its signature does', async () => {
+    const config = (await renderAllStubs()).get('config/agent.stub')?.contents ?? '';
+    // `aiSdkModel(model, options?)`: an object with a `model` key is not a LanguageModel.
+    expect(config).not.toMatch(/aiSdkModel\(\s*\{/);
+    expect(config).toContain("aiSdkModel(openai('gpt-4o-mini'))");
+  });
+
   it('covers exactly the stubs `configure` publishes', () => {
     // A stub added to `configure.ts` but not to PUBLISHED_STUBS would ship ungated — which is the
     // shape of the original bug, not a hypothetical.

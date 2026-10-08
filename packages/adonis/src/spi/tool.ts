@@ -43,6 +43,12 @@ export interface AiToolCtx {
   uiCapabilities?: UiCapabilities;
   /** Optional host handle (e.g. an ORM EntityManager) the app threads through options. */
   host?: unknown;
+  /**
+   * Aborted when the run this call belongs to is stopped. Pass it to whatever the tool waits on (a
+   * `fetch`, a query, a child process) so a Stop does not wait for the tool to finish. Absent where
+   * the runner cannot stop a call in flight (the durable runner) and outside a turn.
+   */
+  abortSignal?: AbortSignal;
   /** Reports presentation failures separately from successful domain execution. */
   onPresentationError?(error: unknown, details: PresentationErrorDetails): void | Promise<void>;
   /**
@@ -115,9 +121,11 @@ export interface ToolHandler<I = unknown, O = unknown> {
    * the registered spec's `description` / `inputSchema` in the definition the model sees. Omit, or
    * return `undefined`, to use the registered spec as is.
    *
-   * It shapes what the model is SHOWN only: the registry still validates a call against the
+   * It shapes what the model is SHOWN: the registry still validates a call against the
    * registered `inputSchema`, so a tool whose accepted input varies per turn registers a permissive
-   * schema and validates in `execute`.
+   * schema and validates in `execute`. The one exception is `available: false`, which is also asked
+   * again on invoke (with the call's actor, thread, agent and `uiCapabilities`): a call to a tool
+   * that answers it is refused as an unknown tool, so the model cannot run what it was not offered.
    */
   describe?(
     scope: ToolDescribeScope,

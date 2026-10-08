@@ -386,7 +386,7 @@ export interface QdrantRetrieverConfig {
  *
  * ```ts
  * export default defineConfig({
- *   model: () => aiSdkModel({ model: '...' }),
+ *   model: () => aiSdkModel(openai('gpt-4o-mini')),
  *   retriever: retrievers.memory({ embedder: myEmbedder, documents: [...] }),
  *   retrievalTopK: 5,
  * })
@@ -685,7 +685,7 @@ export interface LucidTokenSinkConfig {
  * import { defineConfig, tokenSinks } from '@adonis-agora/agent'
  *
  * export default defineConfig({
- *   model: () => aiSdkModel({ model: '...' }),
+ *   model: () => aiSdkModel(openai('gpt-4o-mini')),
  *   sink: tokenSinks.redis({ connection: 'main' }), // multi-replica; any pod serves any run's SSE
  * })
  * ```

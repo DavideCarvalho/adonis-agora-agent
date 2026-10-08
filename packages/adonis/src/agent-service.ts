@@ -1020,18 +1020,22 @@ export class AgentService {
     throw new RunNotActiveError(runId);
   }
 
-  listActionProposals(actor: Actor, threadId: string) {
-    if (!this.options.actionProposals)
-      throw new ActionProposalServiceError(501, 'Independent proposals are unavailable');
+  /**
+   * A thread's independent proposals. Without them (the default blocking approvals) there are none,
+   * so the read answers an empty list rather than refusing: a client that lists by default (React's
+   * `useAgentChat`) needs no flag. Deciding one still answers `501`.
+   */
+  async listActionProposals(actor: Actor, threadId: string) {
+    if (!this.options.actionProposals) return [];
     return this.options.actionProposals.list(actor, threadId);
   }
-  listActionProposalsPage(
+  /** One page of {@link listActionProposals}: an empty, final page without independent proposals. */
+  async listActionProposalsPage(
     actor: Actor,
     threadId: string,
     after?: import('./spi/action-proposal-store.js').ListActionProposals['after'],
   ) {
-    if (!this.options.actionProposals)
-      throw new ActionProposalServiceError(501, 'Independent proposals are unavailable');
+    if (!this.options.actionProposals) return { items: [] };
     return this.options.actionProposals.listPage(actor, threadId, after);
   }
   decideActionProposal(

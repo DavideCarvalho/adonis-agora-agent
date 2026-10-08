@@ -101,7 +101,7 @@ export class AuthzToolAuthorizer implements RolesPolicy {
  * import authz from '@adonis-agora/authz/services/main'
  *
  * export default defineConfig({
- *   model: () => aiSdkModel({ model: '...' }),
+ *   model: () => aiSdkModel(openai('gpt-4o-mini')),
  *   authorizer: authzToolAuthorizer({ authz }),
  * })
  * ```

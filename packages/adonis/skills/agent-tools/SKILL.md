@@ -267,10 +267,13 @@ canUse(actor: Actor) { return this.plans.includesDocs(actor.tenantRef) }
 
 `defineTool` / `defineConfirmedTool` take `enabled` and `canUse` as options; `mcpServers[]`
 takes both per server. Order on the offered list AND on invoke: allow-list → `enabled` →
-`RolesPolicy` → `canUse`; none can widen. A disabled tool is never shown to the model and
-invoking one throws `ToolDisabledError` (not `ToolForbiddenError`). Prefer these to registering a
+`RolesPolicy` → `canUse`; none can widen. `invoke` additionally re-asks `describe()` with the
+call's actor, thread, agent and `uiCapabilities`: a tool answering `available: false` for that
+scope was never offered, and calling it anyway throws `ToolNotFoundError`. A disabled tool is
+never shown to the model and invoking one throws `ToolDisabledError` (not `ToolForbiddenError`). Prefer these to registering a
 tool conditionally, and to refusing inside `execute` (which costs the model a turn).
-Source: `packages/adonis/docs/authoring/tools.mdx`, `packages/adonis/src/tool-filters.ts`.
+Source: `packages/adonis/docs/authoring/tools.mdx`, `packages/adonis/src/tool-filters.ts`,
+`packages/adonis/src/tool-registry.ts` (`validated`, `describeScopeOf`).
 
 ## Common mistakes
 

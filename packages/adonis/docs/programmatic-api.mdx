@@ -84,7 +84,7 @@ Or set [`durable: true`](/docs/agent/durability/durable-runner), which is the ri
 | `approve(runId, toolCallId, { executedByRef?, remember?, via? }?)` | `void` | Deliver a HITL approval. Refuses a call that became an independent proposal. |
 | `reject(runId, toolCallId, reason?, { executedByRef?, via? }?)` | `void` | Deliver a rejection; `reason` is fed back to the model. |
 | `listActionProposals(actor, threadId)` / `decideActionProposal(actor, threadId, proposalId, decision, { remember?, reason? }, via?)` | proposals / mutation result | [Independent approvals](/docs/agent/independent-approvals#over-http), authorized by the approval policy. |
-| `cancel(runId)` | `void` | Abort a run. |
+| `cancel(runId)` | `void` | Abort a run. Under the inline runner the model call it is in is aborted at once (the AI SDK's `abortSignal`), as is a tool that passes on `ctx.abortSignal`; the run ends `cancelled`, and the step the Stop cut short is not persisted. |
 | `runOwner(runId)` | `string \| null` | The owning `actorRef`, for your own ownership checks. |
 | `threadOwner(threadId)` | `string \| null` | Likewise. |
 | `listThreads(actorRef)` | `ThreadSummary[]` | |

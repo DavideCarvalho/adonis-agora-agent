@@ -286,6 +286,7 @@ interface AiToolCtx {
   pageContext?: PageContext // free-form, from the send (`{ kind?, …anything }`)
   uiCapabilities?: UiCapabilities // what the client can draw — see Generative UI
   host?: unknown // optional host handle (e.g. an ORM manager)
+  abortSignal?: AbortSignal // aborted when the run is stopped (inline runner); pass it to fetch, queries…
   onPresentationError?(error: unknown, details: { toolName: string; toolCallId?: string; runId?: string; threadId?: string }): void | Promise<void>
   emitUi(
     component: string,
@@ -298,6 +299,17 @@ interface AiToolCtx {
 
 A test that calls a handler directly builds the ctx itself — pass `emitUi: createNoopEmitUi()` (from `@adonis-agora/agent/testing`).
 
+**Stopping.** A Stop (`POST <path>/chat/:runId/cancel`, `AgentService.cancel`, the React Stop button) aborts `ctx.abortSignal` under the inline runner. Hand it to whatever the tool waits on, so the Stop does not wait for the tool to finish:
+
+```ts
+async (input, ctx) => {
+  const response = await fetch(url, { signal: ctx.abortSignal })
+  return response.json()
+}
+```
+
+A call cut short this way settles failed, and the run ends `cancelled` at its next safe point. A tool that ignores the signal is not interrupted: it runs to the end, and the run stops after it. The signal is absent under the durable runner (its runtime's own cancel stops the run) and outside a turn, so read it as optional.
+
 Identity is single-sourced on `ctx.actor` — read `ctx.actor.id` / `ctx.actor.tenantRef` and scope every query to it. Never trust an id the model passes in its arguments.
 
 `ctx.emitUi(component, props)` pushes a typed **UI component** into the conversation instead of (or alongside) text — streamed live, persisted on the message, rendered by the frontend's own component, and sent as text to a client that cannot draw it. See [Generative UI](/docs/agent/generative-ui) and [One output, many surfaces](/docs/agent/surfaces).
@@ -309,7 +321,7 @@ Identity is single-sourced on `ctx.actor` — read `ctx.actor.id` / `ctx.actor.t
 | `present(output, ctx)` | handler (class method, `defineTool` handler/object) | Turns a successful result into component presentations, pushed through `ctx.emitUi`. A presentation failure never fails the call. See [Component registries](/docs/agent/authoring/component-rendering). |
 | `terminal: true` | `@AiTool`, `static tool`, `defineTool` | A successful call ends the turn: no model call narrates what it showed. |
 | `replacementKey` | `defineTool`, `@AiTool`, `static tool` | Groups [independent proposals](/docs/agent/independent-approvals#expiry-and-replacement) that supersede each other. |
-| `describe(scope)` | handler | Varies the description and input schema the model sees per actor, thread, agent or UI capabilities; `{ available: false }` hides the tool for that turn. |
+| `describe(scope)` | handler | Varies the description and input schema the model sees per actor, thread, agent or UI capabilities; `{ available: false }` hides the tool for that turn, and a call to it anyway is refused as an unknown tool. |
 
 ## Constructor DI (`@inject`)
 

@@ -21,10 +21,10 @@ export default defineConfig({
    * The LLM provider. Wrap the Vercel AI SDK via \`aiSdkModel(...)\` (from \`@adonis-agora/agent/ai-sdk\`)
    * or supply any \`ModelProvider\`. A lazy thunk keeps the provider SDK peer imported only at boot:
    *
-   *   model: () => aiSdkModel({ model: openai('gpt-4o-mini') }),
+   *   model: () => aiSdkModel(openai('gpt-4o-mini')),
    */
   model: () => {
-    throw new Error('Configure a model in config/agent.ts (e.g. aiSdkModel({ model: ... }))')
+    throw new Error('Configure a model in config/agent.ts (e.g. aiSdkModel(openai(...)))')
   },
 
   store: 'lucid',

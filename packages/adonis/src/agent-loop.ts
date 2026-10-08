@@ -507,13 +507,24 @@ export interface AgentLoopHooks {
   /**
    * Has someone asked this run to stop? Asked between steps and again once a step's model call has
    * answered (before anything of it is persisted); `true` unwinds the turn with
-   * {@link RunCancelledError}. A tool that is already executing is not interrupted.
+   * {@link RunCancelledError}. To also cut short the call the run is in, give it
+   * {@link AgentLoopHooks.abortSignal}.
    *
    * For a runner that records NO positions (the inline runner): the question is asked live, outside
    * any checkpoint, so a runner that replays a journal must leave it undefined — its runtime's own
    * cancel stops the run.
    */
   cancelled?(): Promise<boolean>;
+  /**
+   * Aborted when someone stops this run. Handed to the model call (`ModelTurnArgs.abortSignal`, the
+   * AI SDK's `abortSignal`) and to each tool (`AiToolCtx.abortSignal`), so a Stop cuts short what the
+   * run is waiting on instead of letting it run to the end of the step. A model call that fails
+   * because of it unwinds the turn with {@link RunCancelledError}, like {@link cancelled}; a tool
+   * that honours it settles failed, and the turn stops at its next safe point.
+   *
+   * For a runner that records no positions (the inline runner), like {@link cancelled}.
+   */
+  abortSignal?: AbortSignal;
 }
 
 /**
@@ -525,6 +536,24 @@ export class RunCancelledError extends Error {
   constructor() {
     super('Run cancelled');
     this.name = 'RunCancelledError';
+  }
+}
+
+/**
+ * Make a model call under the run's {@link AgentLoopHooks.abortSignal}. A call that fails once the
+ * run was stopped failed BECAUSE it was stopped (the AI SDK rejects with an `AbortError`, or with
+ * "no output" after an aborted stream): that is the run's cancel, not a failure.
+ */
+async function abortableModelCall<T>(
+  hooks: AgentLoopHooks,
+  call: (signal: { abortSignal?: AbortSignal }) => Promise<T>,
+): Promise<T> {
+  const signal = hooks.abortSignal;
+  try {
+    return await call(signal !== undefined ? { abortSignal: signal } : {});
+  } catch (error) {
+    if (signal?.aborted === true) throw new RunCancelledError();
+    throw error;
   }
 }
 
@@ -1392,6 +1421,7 @@ async function claimToolCall(
     // Replaced by the call's own collector inside its `tool:` step (see invokeClaimedTool); a
     // kind that never reaches a handler keeps this no-op.
     emitUi: createNoopEmitUi(call.id),
+    ...(hooks.abortSignal !== undefined ? { abortSignal: hooks.abortSignal } : {}),
     ...(deps.onPresentationError !== undefined
       ? {
           onPresentationError: (error: unknown, details: PresentationErrorDetails) =>
@@ -2645,13 +2675,16 @@ async function structureAnswer<TOutput>(args: {
         // A sink that drops every frame: this call is not the turn's answer, so its tokens must never
         // reach the reader's stream alongside the prose they are restating.
         const discard: SinkWriter = { write: () => {}, end: () => {} };
-        const turn = await deps.model.runTurn({
-          system,
-          messages,
-          tools: [],
-          sink: discard,
-          outputSchema: schema,
-        });
+        const turn = await abortableModelCall(hooks, (signal) =>
+          deps.model.runTurn({
+            system,
+            messages,
+            tools: [],
+            sink: discard,
+            outputSchema: schema,
+            ...signal,
+          }),
+        );
         return {
           text: turn.text,
           usage: turn.usage,
@@ -3231,12 +3264,15 @@ export async function runAgentLoop<TOutput = unknown>(
             // journaled with the turn and a replay persists the same thinking instead of none.
             const frames = observeTurnFrames(announced.writer);
             const result = withTurnFrames(
-              await deps.model.runTurn({
-                system: prompt.system,
-                messages: prompt.messages,
-                tools,
-                sink: frames.writer,
-              }),
+              await abortableModelCall(hooks, (signal) =>
+                deps.model.runTurn({
+                  system: prompt.system,
+                  messages: prompt.messages,
+                  tools,
+                  sink: frames.writer,
+                  ...signal,
+                }),
+              ),
               frames.summary(),
             );
             // A provider that streams no tool frames still gets its calls announced — an outcome

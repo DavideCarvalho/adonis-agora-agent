@@ -78,7 +78,9 @@ Source: `packages/adonis/README.md` ("Framework-agnostic core"),
 ### Pattern 1 — script a tool-call round-trip
 
 `FakeModelProvider` takes a script — a pure function of `(args, turnIndex)`. `turnIndex`
-counts assistant turns already in history, so there is no internal counter to reset:
+counts assistant turns already in history, so there is no internal counter to reset. A tool
+call's id is `call-<turnIndex>-<name>`, with a `-2`, `-3`… suffix when that provider instance
+already issued it (another thread's same turn), so one provider can serve many threads:
 
 ```ts
 import { FakeModelProvider } from '@adonis-agora/agent/testing'
