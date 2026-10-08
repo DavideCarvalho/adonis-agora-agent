@@ -84,7 +84,7 @@ export type DefaultAgentOptions = Omit<AgentDefinition, 'name'> & { name?: strin
  * import { aiSdkModel } from '@adonis-agora/agent/ai-sdk'
  *
  * export default defineConfig({
- *   model: () => aiSdkModel({ model: '...' }),
+ *   model: () => aiSdkModel(openai('gpt-4o-mini')),
  *   store: 'lucid',
  *   stores: { lucid: stores.lucid(), memory: stores.memory() },
  *   actorResolver: new AuthActorResolver(),
