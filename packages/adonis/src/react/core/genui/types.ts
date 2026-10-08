@@ -12,6 +12,11 @@ export interface GenerativeUIItem {
   props: Record<string, unknown>;
   version: number | null;
   toolCallId: string | null;
+  /**
+   * A preview drawn while the model is still writing the call (genui `streaming: 'partial'`):
+   * unvalidated, and replaced in place by the final frame under the same `id`.
+   */
+  partial?: true;
 }
 
 /** A node of a composed tree (`genui:tree` frames): `{ type, props, children? }`. */
@@ -19,6 +24,30 @@ export interface GenerativeUIElement {
   type: string;
   props: Record<string, unknown>;
   children?: GenerativeUIElement[];
+  /**
+   * The node's position (`root`, `root.0`, `root.0.2`), carried by partial frames. Stable as the
+   * tree grows, and the same rule names the final tree's nodes.
+   */
+  id?: string;
+  /** Partial frames only: the model has not finished writing this node. */
+  incomplete?: true;
+  /** Partial frames only: a `streaming: 'complete'` component held back until it closes (no props). */
+  held?: true;
+}
+
+/**
+ * What a tree node's renderer can learn about its node ({@link useGenuiNode}): which node it is,
+ * and whether the model is still writing it. Room is left for more states (data a node is bound
+ * to, loading) as separate fields — `incomplete` only ever means "still being written".
+ */
+export interface GenuiNodeState {
+  /** The node's position id (`root`, `root.1.0`): stable from the first preview to the final frame. */
+  id: string;
+  type: string;
+  /** The model has not finished writing this node: props (and children) may still grow. */
+  incomplete: boolean;
+  /** The node is a placeholder for a component that is only drawn whole (`streaming: 'complete'`). */
+  held: boolean;
 }
 
 /**
@@ -74,6 +103,12 @@ export interface GenerativeUIOptions {
    */
   treeRenderer?: GenuiRenderer<{ root?: GenerativeUIElement }>;
 }
+
+/**
+ * Drawn in place of a tree node that is not drawable yet — a `held` node (its component streams
+ * `complete`) while the model writes it. Default: the `loading` element.
+ */
+export type GenuiPlaceholder = ReactNode | ((node: GenuiNodeState) => ReactNode);
 
 /** Why an item did not render. */
 export type GenerativeUIProblem =

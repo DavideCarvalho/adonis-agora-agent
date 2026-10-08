@@ -40,6 +40,7 @@ export function toGenerativeUIItem(part: unknown): GenerativeUIItem | null {
     props: isRecord(source.props) ? source.props : {},
     version: typeof source.version === 'number' ? source.version : null,
     toolCallId: typeof source.toolCallId === 'string' ? source.toolCallId : null,
+    ...(source.partial === true ? { partial: true as const } : {}),
   };
 }
 
@@ -217,6 +218,8 @@ export function useGenerativeUIState(
     item?.props ?? empty,
   );
   if (item === null) return null;
+  // A withdrawn preview (partial, nothing to draw): the call will not replace it.
+  if (item.partial === true && Object.keys(item.props).length === 0) return null;
   if (
     name === GENUI_TREE_COMPONENT &&
     item.fallbackText !== undefined &&

@@ -234,6 +234,11 @@ export interface TranscriptUiBlock {
   componentVersions?: Record<string, number>;
   /** The tool call that pushed it (`ctx.emitUi`); `null` for a component pushed outside a tool. */
   toolCallId: string | null;
+  /**
+   * A preview drawn while the model writes the call's arguments (genui `streaming: 'partial'`):
+   * unvalidated, replaced in place by the final push. Absent on a final component.
+   */
+  partial?: true;
 }
 
 /** One choice a question offers, with its live selection state. */
@@ -504,6 +509,18 @@ export function buildTranscriptBlocks(
     flushFiles();
   }
 
+  const settledCalls = new Set<string>();
+  for (const part of message.parts ?? []) {
+    if (
+      isToolUIPart(part) &&
+      (part.state === 'output-available' ||
+        part.state === 'output-error' ||
+        part.state === 'output-denied')
+    ) {
+      settledCalls.add(part.toolCallId);
+    }
+  }
+
   for (const part of message.parts ?? []) {
     if (isToolUIPart(part)) {
       const elicitation = options.elicitation;
@@ -544,6 +561,15 @@ export function buildTranscriptBlocks(
     flushAll();
     if (isDataUIPart(part)) {
       const ui = part.type === UI_PART ? readUiComponent(part) : null;
+      // A preview stands only while its call is being written: withdrawn (no props), or left by a
+      // call that settled without replacing it, it is nothing to draw.
+      if (
+        ui?.partial === true &&
+        (Object.keys(ui.props).length === 0 ||
+          (ui.toolCallId !== null && settledCalls.has(ui.toolCallId)))
+      ) {
+        continue;
+      }
       if (ui !== null) {
         blocks.push({ kind: 'ui', key: `${message.id}-ui-${ui.id}`, ...ui });
       }
@@ -1119,6 +1145,7 @@ function readUiComponent(
       : {}),
     ...(typeof data.fallbackText === 'string' ? { fallbackText: data.fallbackText } : {}),
     toolCallId: typeof data.toolCallId === 'string' ? data.toolCallId : null,
+    ...(data.partial === true ? { partial: true as const } : {}),
   };
 }
 

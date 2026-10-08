@@ -16,6 +16,8 @@ import type {
   GenerativeUIOptions,
   GenerativeUIProblem,
   GenerativeUIState,
+  GenuiNodeState,
+  GenuiPlaceholder,
   GenuiRegistry,
   GenuiRenderer,
 } from './types.js';
@@ -34,10 +36,39 @@ interface TreeScope {
   options: GenerativeUIOptions;
   fallback: GenerativeUIFallback | undefined;
   loading: ReactNode;
+  placeholder: GenuiPlaceholder | undefined;
   onError: ((error: unknown, item: GenerativeUIItem) => void) | undefined;
 }
 
 const TreeScopeContext = createContext<TreeScope | null>(null);
+
+// Shared by key, like the provider's: a renderer imports the hook from `/genui` while the tree may
+// be drawn by the `/genui/json-render` bundle's copy of this module.
+const GenuiNodeContext: Context<GenuiNodeState | null> = sharedContext<GenuiNodeState>(
+  '@adonis-agora/agent/react:genui-node',
+);
+
+/**
+ * The tree node being rendered — read it in a renderer to draw a skeleton while the model is still
+ * writing the node (`incomplete`), e.g. a chart's axes before its data. `null` outside a tree.
+ *
+ * ```tsx
+ * function Chart(props: ChartProps) {
+ *   const node = useGenuiNode();
+ *   if (node?.incomplete && !props.data?.length) return <ChartSkeleton title={props.title} />;
+ *   return <BarChart {...props} />;
+ * }
+ * ```
+ */
+export function useGenuiNode(): GenuiNodeState | null {
+  return useContext(GenuiNodeContext);
+}
+
+function renderPlaceholder(scope: TreeScope, node: GenuiNodeState): ReactNode {
+  const { placeholder } = scope;
+  if (typeof placeholder === 'function') return placeholder(node);
+  return placeholder !== undefined ? placeholder : scope.loading;
+}
 
 function renderFallback(fallback: GenerativeUIFallback | undefined, problem: GenerativeUIProblem) {
   if (typeof fallback === 'function') return fallback(problem);
@@ -93,6 +124,14 @@ function nodeItem(node: GenerativeUIElement, id: string): GenerativeUIItem {
 function TreeNode({ node, id }: { node: GenerativeUIElement; id: string }) {
   const scope = useContext(TreeScopeContext);
   const item = useMemo(() => nodeItem(node, id), [node, id]);
+  // A node of a preview the model is still writing: its props are half there, so they are not
+  // validated (the final frame is) — the renderer is told instead, through `useGenuiNode`.
+  const incomplete = node.incomplete === true;
+  const held = node.held === true;
+  const state = useMemo<GenuiNodeState>(
+    () => ({ id, type: node.type, incomplete, held }),
+    [id, node.type, incomplete, held],
+  );
   const storedVersion = scope?.componentVersions?.[node.type];
   const definition = scope?.options.catalog?.get?.(node.type);
   const incompatible =
@@ -106,11 +145,18 @@ function TreeNode({ node, id }: { node: GenerativeUIElement; id: string }) {
     scope?.options.resolveComponent,
   );
   const validation = useValidatedProps(
-    incompatible ? undefined : scope?.options.catalog,
+    incompatible || incomplete ? undefined : scope?.options.catalog,
     node.type,
     item.props,
   );
   if (scope === null) return null;
+  if (held) {
+    return (
+      <GenuiNodeContext.Provider value={state}>
+        {renderPlaceholder(scope, state)}
+      </GenuiNodeContext.Provider>
+    );
+  }
   if (resolution.status === 'loading' || validation.status === 'pending') return scope.loading;
   if (resolution.status === 'unknown') {
     if (scope.fallback === undefined && scope.fallbackText !== undefined)
@@ -129,25 +175,27 @@ function TreeNode({ node, id }: { node: GenerativeUIElement; id: string }) {
   const Renderer = resolution.Component;
   const children = Array.isArray(node.children) ? node.children : [];
   return (
-    <Renderer {...validation.props}>
-      {children.length > 0
-        ? children.map((child, index) => {
-            const childId = `${id}.${index}`;
-            if (scope.fallback === undefined && scope.fallbackText !== undefined)
-              return <TreeNode key={childId} node={child} id={childId} />;
-            return (
-              <ItemBoundary
-                key={childId}
-                item={nodeItem(child, childId)}
-                fallback={scope.fallback}
-                onError={scope.onError}
-              >
-                <TreeNode node={child} id={childId} />
-              </ItemBoundary>
-            );
-          })
-        : undefined}
-    </Renderer>
+    <GenuiNodeContext.Provider value={state}>
+      <Renderer {...validation.props}>
+        {children.length > 0
+          ? children.map((child, index) => {
+              const childId = `${id}.${index}`;
+              if (scope.fallback === undefined && scope.fallbackText !== undefined)
+                return <TreeNode key={childId} node={child} id={childId} />;
+              return (
+                <ItemBoundary
+                  key={childId}
+                  item={nodeItem(child, childId)}
+                  fallback={scope.fallback}
+                  onError={scope.onError}
+                >
+                  <TreeNode node={child} id={childId} />
+                </ItemBoundary>
+              );
+            })
+          : undefined}
+      </Renderer>
+    </GenuiNodeContext.Provider>
   );
 }
 
@@ -166,6 +214,8 @@ export interface GenerativeUIScopeProps extends GenerativeUIOptions {
   componentVersions?: Record<string, number>;
   fallback?: GenerativeUIFallback;
   loading?: ReactNode;
+  /** Drawn for a tree node held back while the model writes it. Default: `loading`. */
+  placeholder?: GenuiPlaceholder;
   onError?: (error: unknown, item: GenerativeUIItem) => void;
   children?: ReactNode;
 }
@@ -182,6 +232,7 @@ export function GenerativeUIScope({
   fallbackText,
   componentVersions,
   loading = null,
+  placeholder,
   onError,
   children,
 }: GenerativeUIScopeProps) {
@@ -196,6 +247,7 @@ export function GenerativeUIScope({
       ...(componentVersions !== undefined ? { componentVersions } : {}),
       ...(fallbackText !== undefined ? { fallbackText } : {}),
       loading,
+      placeholder,
       onError,
     }),
     [
@@ -206,6 +258,7 @@ export function GenerativeUIScope({
       fallbackText,
       componentVersions,
       loading,
+      placeholder,
       onError,
     ],
   );
@@ -216,6 +269,8 @@ export function GenerativeUIScope({
 export interface GenuiProviderValue extends Partial<GenerativeUIOptions> {
   fallback?: GenerativeUIFallback;
   loading?: ReactNode;
+  /** Drawn for a tree node held back while the model writes it (`streaming: 'complete'`). */
+  placeholder?: GenuiPlaceholder;
   onError?: (error: unknown, item: GenerativeUIItem) => void;
 }
 
@@ -253,6 +308,7 @@ export function GenuiProvider({
   treeRenderer,
   fallback,
   loading,
+  placeholder,
   onError,
   children,
 }: GenuiProviderProps) {
@@ -264,9 +320,10 @@ export function GenuiProvider({
       ...(treeRenderer !== undefined ? { treeRenderer } : {}),
       ...(fallback !== undefined ? { fallback } : {}),
       ...(loading !== undefined ? { loading } : {}),
+      ...(placeholder !== undefined ? { placeholder } : {}),
       ...(onError !== undefined ? { onError } : {}),
     }),
-    [registry, catalog, resolveComponent, treeRenderer, fallback, loading, onError],
+    [registry, catalog, resolveComponent, treeRenderer, fallback, loading, placeholder, onError],
   );
   const renderUi = useCallback((block: TranscriptUiBlock) => <GenerativeUI part={block} />, []);
   return (
@@ -315,6 +372,11 @@ export interface GenerativeUIProps extends Partial<GenerativeUIOptions> {
   fallback?: GenerativeUIFallback;
   /** Drawn while a resolver or an async validation is pending. Default: the provider's, else nothing. */
   loading?: ReactNode;
+  /**
+   * Drawn for a tree node held back while the model writes it (its component streams `complete`).
+   * Default: the provider's, else `loading`.
+   */
+  placeholder?: GenuiPlaceholder;
   /** A renderer threw (the item shows `fallback`). */
   onError?: (error: unknown, item: GenerativeUIItem) => void;
 }
@@ -336,11 +398,13 @@ export function GenerativeUI({
   treeRenderer,
   fallback: ownFallback,
   loading: ownLoading,
+  placeholder: ownPlaceholder,
   onError: ownOnError,
 }: GenerativeUIProps) {
   const provided = useContext(GenuiContext);
   const fallback = ownFallback !== undefined ? ownFallback : provided?.fallback;
   const loading = ownLoading ?? provided?.loading ?? null;
+  const placeholder = ownPlaceholder !== undefined ? ownPlaceholder : provided?.placeholder;
   const onError = ownOnError ?? provided?.onError;
   const options = useMergedOptions({
     ...(registry !== undefined ? { registry } : {}),
@@ -369,6 +433,7 @@ export function GenerativeUI({
       {...(state.item.fallbackText !== undefined ? { fallbackText: state.item.fallbackText } : {})}
       fallback={fallback}
       loading={loading}
+      {...(placeholder !== undefined ? { placeholder } : {})}
       {...(onError !== undefined ? { onError } : {})}
     >
       <ItemBoundary item={state.item} fallback={fallback} onError={onError}>
