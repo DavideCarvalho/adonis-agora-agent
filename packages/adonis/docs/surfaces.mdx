@@ -315,7 +315,7 @@ AG-UI is a second door onto the same runs, not a richer one. The server-side beh
 | Background (detached) runs | receipt + a later message in the thread | Same on the server; the later message is read from the thread over REST, as on the native path |
 | Frontend tools, AG-UI `state` | — | **Not supported.** `tools` is ignored with a warning; `state` is ignored and no state events are sent |
 
-Choose AG-UI when the client is someone else's (CopilotKit, `@ag-ui/client`, a Python or .NET agent UI). For your own React app, the native stream carries more and needs no adapter.
+Choose AG-UI when the client is someone else's (CopilotKit, `@ag-ui/client`, a Python or .NET agent UI). For your own React app, the native stream carries more and needs no adapter. What that means for generative UI in two such clients — CopilotKit and OpenUI — is measured in [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends).
 
 ### Text-only channels — WhatsApp and similar
 

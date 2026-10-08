@@ -1,0 +1,185 @@
+---
+title: OpenUI
+description: Drive the agent from OpenUI's AgentInterface over AG-UI — the client, the component-library prompt on the server, your own components, threads, approvals, and what OpenUI does not do.
+icon: LayoutTemplate
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+[OpenUI](https://www.openui.com) is a React chat UI whose generative UI is **text**: the model answers in OpenUI Lang, a small declarative language over a component library, and the page renders it with that same library. `AgentInterface` (`@openuidev/react-ui`) speaks AG-UI, so it runs against [`agUiAdapter()`](/docs/agent/ag-ui) with no server code of its own beyond the prompt. How it compares with the native client and CopilotKit, row by row, is on [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends); the code below is from the [`frontends` example](https://github.com/DavideCarvalho/agora/tree/main/examples/frontends), verified against `@openuidev/react-ui` 0.17.0.
+
+```bash
+npm i @openuidev/react-ui @openuidev/react-headless @openuidev/react-lang zustand
+```
+
+## The client
+
+`fetchLLM` posts a `RunAgentInput` — `{ ...body, threadId, runId, messages, tools: [], context: [] }` — and `agUIAdapter()` reads the AG-UI stream back, so it only needs the URL, the CSRF header, and a way to tell the server this turn comes from OpenUI:
+
+```tsx title="resources/js/pages/openui.tsx (frontend)"
+import { AgentInterface, agUIAdapter, fetchLLM } from '@openuidev/react-ui'
+import { openuiChatLibrary } from '@openuidev/react-ui/genui-lib'
+import '@openuidev/react-ui/styles/index.css'
+
+// The session cookie rides by default; shield's CSRF token has to be added, read per request.
+const csrfFetch: typeof fetch = (input, init = {}) => {
+  const token = document.cookie.match(/(?:^|; )XSRF-TOKEN=([^;]*)/)?.[1]
+  const headers = new Headers(init.headers)
+  if (token) headers.set('X-XSRF-TOKEN', decodeURIComponent(token))
+  return fetch(input, { ...init, headers, credentials: 'same-origin' })
+}
+
+const llm = fetchLLM({
+  url: '/agent/ag-ui',
+  fetch: csrfFetch,
+  streamAdapter: agUIAdapter(),
+  body: { forwardedProps: { pageContext: { frontend: 'openui' } } },
+})
+
+export default function Chat() {
+  return <AgentInterface llm={llm} componentLibrary={openuiChatLibrary} agentName="Assistant" />
+}
+```
+
+`forwardedProps` carries what a native send carries (`agent`, `persona`, `model`, `pageContext`, `uiCapabilities` — see [What the input means here](/docs/agent/ag-ui#what-the-input-means-here)). The route reads only the **last** user message; OpenUI sends the whole history, which the server ignores in favour of the thread it stored.
+
+<Callout type="warn" title="AgentInterface fills the viewport">
+`AgentInterface` sizes itself to `100dvw × 100dvh`. Inside a layout of your own, override it: `.my-frame .openui-agent-container { width: 100%; height: 100%; }`.
+</Callout>
+
+## The prompt, on the server
+
+OpenUI renders the **whole** assistant reply as OpenUI Lang: a reply in plain prose is an empty bubble. So the model has to be told the language and the library on every OpenUI turn. The library writes that prompt itself — `library.prompt()` — and it runs in Node (it imports React, never the DOM). Add it from the agent's [prompt builder](/docs/agent/authoring/personas-and-agents) when the turn says it comes from OpenUI:
+
+```ts title="config/agent.ts (backend)"
+import { defineConfig, type PromptContext } from '@adonis-agora/agent'
+import { agUiAdapter } from '@adonis-agora/agent/ag-ui'
+
+let openUiPrompt: Promise<string> | undefined
+function loadOpenUiPrompt() {
+  openUiPrompt ??= Promise.all([
+    import('@openuidev/react-ui/genui-lib'),
+    import('@openuidev/react-ui/genui-lib/prompt-options'),
+  ]).then(([{ openuiChatLibrary }, { openuiChatPromptOptions }]) =>
+    openuiChatLibrary.prompt(openuiChatPromptOptions),
+  )
+  return openUiPrompt
+}
+
+const base = 'You are the orders assistant.'
+
+export default defineConfig({
+  // …
+  adapters: [agUiAdapter()],
+  defaultAgent: {
+    systemPrompt: async (ctx: PromptContext) =>
+      ctx.pageContext?.frontend === 'openui' ? `${await loadOpenUiPrompt()}\n\n${base}` : base,
+  },
+})
+```
+
+The native client and other AG-UI clients keep the plain prompt. Tools work as usual: OpenUI shows each call in its tool timeline, and the model writes the UI from the result.
+
+### Keep the prompt small
+
+The full chat library (`openuiChatLibrary`, 84 components) produces a prompt of about 54 KB — roughly 14,000 tokens, on every OpenUI turn. A library of the components you need is far smaller: one of 11 (`Card`, `CardHeader`, `TextContent`, `Callout`, `BarChart`, `LineChart`, `Series`, `Table`, `Col`, `Buttons`, `Button`) is about 1,300 tokens. Build it with `createLibrary` from `@openuidev/react-lang`, and use the same library on the page and in the prompt.
+
+## Your own components
+
+An OpenUI component is one definition — props as zod, a description for the prompt, and the React component — so the file is shared by the page (to render) and the server (to write the prompt):
+
+```tsx title="resources/js/shared/openui_library.tsx (both sides)"
+import { createLibrary, defineComponent, useTriggerAction } from '@openuidev/react-lang'
+import { openuiChatLibrary } from '@openuidev/react-ui/genui-lib'
+import { z } from 'zod'
+import { OrderTable } from './order_table.js'
+
+const OrderList = defineComponent({
+  name: 'OrderList',
+  description: 'The customer’s orders, each row with a Refund button. Use it for list_orders results.',
+  props: z.object({
+    orders: z.array(z.object({ id: z.string(), customer: z.string(), totalCents: z.number(), status: z.string() })),
+  }),
+  component: ({ props }) => {
+    const send = useTriggerAction() // sends a user message: the next turn
+    return <OrderTable orders={props.orders} onRefund={(id) => send(`Refund order #${id}`)} />
+  },
+})
+
+export const library = createLibrary({
+  components: [...Object.values(openuiChatLibrary.components), OrderList],
+  componentGroups: openuiChatLibrary.componentGroups,
+  root: 'Card',
+})
+```
+
+Pass `library` to `<AgentInterface componentLibrary>` and build the prompt from `library.prompt(openuiChatPromptOptions)`. The server now imports a React module: keep that file free of anything browser-only.
+
+This is a separate component system from the agent's [catalog](/docs/agent/generative-ui#a-component-catalog--adonis-agoraagentgenui). A component a tool pushes (`present`, `ctx.emitUi`) reaches OpenUI as an `agora.ui` custom event, which OpenUI ignores; with no `uiCapabilities` the server sends it that way rather than as text inside the reply.
+
+## Threads
+
+Without a `storage`, OpenUI keeps threads in memory and loses them on reload, and its `restStorage()` expects a REST shape of its own. A `ChatStorage` over the agent's thread routes keeps them on the server:
+
+```ts title="resources/js/pages/openui.tsx (frontend)"
+import type { ChatStorage } from '@openuidev/react-ui'
+
+const storage: ChatStorage = {
+  thread: {
+    listThreads: async () => ({
+      threads: (await (await csrfFetch('/agent/threads')).json()).map((t) => ({ id: t.id, title: t.title, createdAt: t.createdAt })),
+    }),
+    // No request: the AG-UI route creates a thread under the id it is first sent.
+    createThread: async (first) => ({ id: crypto.randomUUID(), title: String(first.content).slice(0, 40), createdAt: Date.now() }),
+    getMessages: (threadId) => threadMessages(threadId), // GET /agent/threads/:id, as AG-UI messages
+    updateThread: async (thread) => thread,
+    deleteThread: async (id) => void (await csrfFetch(`/agent/threads/${id}`, { method: 'DELETE' })),
+  },
+}
+
+<AgentInterface llm={llm} storage={storage} componentLibrary={library} />
+```
+
+`getMessages` returns AG-UI messages: each stored user message as is, each assistant message with its `toolCalls` (`{ id, type: 'function', function: { name, arguments } }`) followed by one `tool` message per result. The assistant's OpenUI Lang is its stored text, so a reopened thread redraws exactly what was shown. The example's converter is `threadMessages` in `resources/js/shared/agora_rest.ts`.
+
+## Approvals and questions
+
+OpenUI reads text, tool calls and errors from the stream and nothing else: an `action` tool's approval — `RUN_FINISHED` with an [interrupt](/docs/agent/ag-ui#interrupts-and-resume) — ends the reply with nothing to press. To decide it from the page, wrap the stream adapter to catch the interrupt, draw your own card, and send the next turn with `resume` added to the body through the `fetch` you already pass:
+
+```ts title="resources/js/pages/openui.tsx (frontend)"
+let pendingResume: unknown[] | null = null
+
+const watchInterrupts = (inner: StreamProtocolAdapter): StreamProtocolAdapter => ({
+  async *parse(response) {
+    for await (const event of inner.parse(response)) {
+      if (event.type === 'RUN_FINISHED' && event.outcome?.type === 'interrupt') showCard(event.outcome.interrupts[0])
+      yield event
+    }
+  },
+})
+
+const agentFetch: typeof fetch = (input, init = {}) => {
+  if (pendingResume && typeof init.body === 'string') {
+    init = { ...init, body: JSON.stringify({ ...JSON.parse(init.body), resume: pendingResume }) }
+    pendingResume = null
+  }
+  return csrfFetch(input, init)
+}
+
+// The card's buttons, inside <AgentInterface> (useThread):
+pendingResume = [{ interruptId: interrupt.id, status: 'resolved', payload: { approved: true } }]
+processMessage({ role: 'user', content: 'Approved.' })
+```
+
+The resumed run streams into a new reply. The "Approved." message is OpenUI's own: the route answers the `resume` and does not store it. A question set (`reason: 'input_required'`) is answered the same way with `{ answers: { <questionId>: string[] } }`.
+
+## What OpenUI does not do here
+
+- **Text channels, images, PDFs.** The UI is the model's OpenUI Lang. There is no `fallbackText` and no server render; a text channel would receive the source. Use the [native catalog](/docs/agent/surfaces) for surfaces that cannot run the library.
+- **Validation the model hears about.** Props are zod, but a component with invalid arguments is dropped from the render, and the model is not told. The catalog's server-side validation does not apply to OpenUI Lang.
+- **Re-attach and cancel** (read in OpenUI's code, not part of the example's checks). Nothing re-attaches to a reply after a reload; the thread shows it once it is stored. Stop aborts the request and sends nothing: to stop the run itself, call `POST <path>/chat/:runId/cancel` with the id from the `agora.run` event.
+- **Reasoning, title, usage.** `REASONING_*` and the `agora.*` custom events are ignored.
+
+<Callout type="info" title="Install scripts">
+`@openuidev/lang-core` has a `postinstall` that sends an install ping (opt out with `OPENUI_TELEMETRY_DISABLED=1`, or do not run the script — pnpm runs none unless allowed). In development `@openuidev/react-lang` also mounts an Inspect widget; production builds drop it.
+</Callout>

@@ -9,6 +9,8 @@ import { Steps, Step } from 'fumadocs-ui/components/steps';
 
 A tool does not have to answer only in prose. It can push a **typed UI component frame** into the run's live stream — a weather card, a chart, a confirmation form — and the frontend renders your real React component in the transcript, right where the text would have gone. A client that cannot draw it declares so, and receives the component's text instead — see [One output, many surfaces](/docs/agent/surfaces).
 
+Drawing the same components through CopilotKit or OpenUI instead of the native client is compared, row by row, in [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends).
+
 For result-driven UI, use the tool’s optional `present` hook. See [Component registries and server rendering](/docs/agent/authoring/component-rendering) for functional/class tools, custom components, shared React renderers, and WhatsApp image/PDF delivery.
 
 ## What it is (and when to reach for it)
@@ -438,6 +440,7 @@ frameToEvents({ t: 'component', name: 'card', data: { a: 1 } }, 0)
 - [Browser client](/docs/agent/browser-client) — the framework-free SSE client that decodes the same frames.
 - [Tools](/docs/agent/authoring/tools) — how to author the tool that calls `emitUi`, and the full `AiToolCtx`.
 - [Builtin components](/docs/agent/genui-builtins) — `BUILTIN_COMPONENTS` and `LAYOUT_COMPONENTS`, their props and text fallbacks.
+- [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends) — the same components through three frontends, verified.
 - [One output, many surfaces](/docs/agent/surfaces) — UI capabilities, text fallbacks, and what AG-UI, text channels and MCP receive.
 - [Component registries and server rendering](/docs/agent/authoring/component-rendering) — `present`, custom components, and image/PDF export.
 - [Streaming & HTTP](/docs/agent/streaming-and-http) — the SSE envelope, the routes that carry component frames, and re-attaching to a live run.
