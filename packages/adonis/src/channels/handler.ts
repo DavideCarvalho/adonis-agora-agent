@@ -250,6 +250,10 @@ const OUTCOME_POLL_MS = 500;
 const OUTCOME_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const buttonRef = (proposalId: string) => proposalId.slice(-BUTTON_REF_LENGTH);
+/** How long the proposal cards sent to a conversation are remembered, and how many. */
+const CARDS_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_CARDS = 20;
+const foldLabel = (label: string) => label.trim().toLowerCase();
 
 /** The button ids for a proposal: what {@link ChannelRouteHandler} maps back to its decision. */
 export function proposalButtonIds(proposalId: string): { approve: string; reject: string } {
@@ -283,6 +287,31 @@ function requestOf(ctx: HttpContext): ChannelRequest {
     body: ctx.request.body(),
     rawBody: ctx.request.raw(),
   };
+}
+
+type ChannelLogger = Partial<
+  Record<'debug' | 'warn', (bindings: Record<string, unknown>, message: string) => void>
+>;
+
+/**
+ * A verified webhook that carried no message to answer: logged (debug; warn when it looked like a
+ * person's message that could not be read) with the event and the reason — never the content — so a
+ * silently dropped message can be diagnosed.
+ */
+function logIgnored(ctx: HttpContext, adapter: ChannelAdapter, body: unknown): void {
+  const logger = (ctx as { logger?: ChannelLogger }).logger;
+  if (!logger) return;
+  const ignored = adapter.ignored?.(body) ?? null;
+  const event =
+    ignored?.event ??
+    (typeof body === 'object' && body !== null ? (body as { event?: unknown }).event : undefined);
+  const bindings = {
+    channel: adapter.name,
+    ...(typeof event === 'string' ? { event } : {}),
+    reason: ignored?.reason ?? 'no message',
+  };
+  const log = ignored?.unexpected ? logger.warn : logger.debug;
+  log?.call(logger, bindings, 'channels: webhook ignored');
 }
 
 /** `AgentService` from the app's container, for code that runs outside a request. */
@@ -437,6 +466,7 @@ export function handleChannel(
 
   const deliver = (conversation: string, text: string) => deliverText(adapter, conversation, text);
   const questionKey = (conversation: string) => `${adapter.name}:question:${conversation}`;
+  const cardsKey = (conversation: string) => `${adapter.name}:cards:${conversation}`;
 
   const commandsFor = (
     service: ChannelTurnService,
@@ -478,6 +508,51 @@ export function handleChannel(
       instruction: toChannelMarkdown(instruction, capabilities.markdown),
     };
     await adapter.send(conversation, message);
+    await rememberCard(await storeFor(service), conversation, proposal.id);
+  };
+
+  /** Remember a proposal card sent to `conversation` — for a press that comes back without its id. */
+  const rememberCard = async (store: ChannelStore, conversation: string, proposalId: string) => {
+    const key = cardsKey(conversation);
+    const saved = await store.get(key);
+    const ref = buttonRef(proposalId);
+    const refs = saved === null ? [] : (JSON.parse(saved) as string[]);
+    const next = [...refs.filter((known) => known !== ref), ref].slice(-MAX_CARDS);
+    await store.set(key, JSON.stringify(next), CARDS_TTL_MS);
+  };
+
+  /**
+   * A button press the provider forwarded without its id — only the label (Whatsmiau): the id of
+   * the one card it can have come from — a card sent to this conversation whose proposal is still
+   * pending. Several such cards → `undefined`: never guess; the label then goes on as a text
+   * decision, which asks for the `#id`.
+   */
+  const recoverButtonId = async (
+    service: ChannelTurnService,
+    store: ChannelStore,
+    actor: Actor,
+    threadId: string | null,
+    message: InboundMessage,
+  ): Promise<string | undefined> => {
+    if (message.buttonId !== undefined || message.buttonWithoutId !== true) return undefined;
+    if (threadId === null || !service.listActionProposals) return undefined;
+    const texts = textsFor(service);
+    const label = foldLabel(message.text);
+    const action =
+      label === foldLabel(texts.approve)
+        ? 'approve'
+        : label === foldLabel(texts.reject)
+          ? 'reject'
+          : undefined;
+    if (action === undefined) return undefined;
+    const saved = await store.get(cardsKey(message.conversation));
+    if (saved === null) return undefined;
+    const refs = new Set(JSON.parse(saved) as string[]);
+    const live = (await service.listActionProposals(actor, threadId)).filter(
+      (proposal) => proposal.decision === 'pending' && refs.has(buttonRef(proposal.id)),
+    );
+    const only = live.length === 1 ? live[0] : undefined;
+    return only === undefined ? undefined : `agora:${action}:${buttonRef(only.id)}`;
   };
 
   /** Wait for an approved proposal to run, then relay what it said (or that it failed). */
@@ -764,17 +839,19 @@ export function handleChannel(
     return { text: parts.join('').trim(), proposals: [...proposals.values()], failed, blocked };
   };
 
-  const handleMessage = async (service: ChannelTurnService, message: InboundMessage) => {
-    await adapter.acknowledge?.(message).catch(() => {});
+  const handleMessage = async (service: ChannelTurnService, received: InboundMessage) => {
+    await adapter.acknowledge?.(received).catch(() => {});
     const texts = textsFor(service);
     const store = await storeFor(service);
-    const actor = await options.actor(message);
+    const actor = await options.actor(received);
     if (actor === null) {
       if (texts.unknownSender !== undefined)
-        await deliver(message.conversation, texts.unknownSender);
+        await deliver(received.conversation, texts.unknownSender);
       return;
     }
-    const threadId = (await options.thread(actor, message)) ?? null;
+    const threadId = (await options.thread(actor, received)) ?? null;
+    const recovered = await recoverButtonId(service, store, actor, threadId, received);
+    const message = recovered === undefined ? received : { ...received, buttonId: recovered };
     const ours = message.buttonId !== undefined && BUTTON_ID.test(message.buttonId);
     if (!ours) {
       const waiting = await store.get(questionKey(message.conversation));
@@ -861,6 +938,7 @@ export function handleChannel(
     }
     const parsed = adapter.parse(request.body);
     const messages = parsed === null ? [] : Array.isArray(parsed) ? parsed : [parsed];
+    if (messages.length === 0) logIgnored(ctx, adapter, request.body);
     if (messages.length > 0) {
       const service =
         options.service ??

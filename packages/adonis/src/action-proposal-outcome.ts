@@ -95,17 +95,40 @@ export function actionProposalOutcomeFenceValid(
     now < delivery.lease.expiresAt
   );
 }
+/**
+ * What happened, for the model (it reads the result from here) and the chat history. No proposal id:
+ * the structured outcome stored with the message carries it.
+ */
 function outcomeSummary(outcome: ActionProposalOutcome): string {
+  const tool = JSON.stringify(outcome.toolName);
   if (outcome.executionStatus === 'succeeded')
-    return `Action ${JSON.stringify(outcome.toolName)} completed (proposal ${JSON.stringify(outcome.proposalId)}).${Object.hasOwn(outcome, 'result') ? ` Result: ${JSON.stringify(outcome.result)}` : ''}`;
+    return `Action ${tool} completed.${Object.hasOwn(outcome, 'result') ? ` Result: ${JSON.stringify(outcome.result)}` : ''}`;
   if (outcome.executionStatus === 'failed')
-    return `Action ${JSON.stringify(outcome.toolName)} failed (proposal ${JSON.stringify(outcome.proposalId)}): ${JSON.stringify(outcome.error ?? 'Execution failed')}`;
-  return `Action ${JSON.stringify(outcome.toolName)} was ${outcome.decision} (proposal ${JSON.stringify(outcome.proposalId)}) and was not executed.${outcome.error ? ` Reason: ${JSON.stringify(outcome.error)}` : ''}`;
+    return `Action ${tool} failed: ${JSON.stringify(outcome.error ?? 'Execution failed')}`;
+  return `Action ${tool} was ${outcome.decision} and was not executed.${outcome.error ? ` Reason: ${JSON.stringify(outcome.error)}` : ''}`;
 }
 export function actionProposalOutcomeScope(outcome: ActionProposalOutcome): ActionProposalScope {
   return { tenantRef: outcome.tenantRef, actorRef: outcome.actorRef, threadId: outcome.threadId };
 }
 
+/**
+ * Text a database column can hold: NUL and unpaired surrogates — which Postgres and SQLite refuse —
+ * are written as their JSON escapes, the way the JSON summary already carries them.
+ */
+function storableText(text: string): string {
+  return text
+    .replaceAll(String.fromCharCode(0), '\\u0000')
+    .replace(
+      /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g,
+      (char) => `\\u${char.charCodeAt(0).toString(16)}`,
+    );
+}
+
+/**
+ * The outcome message admitted to the thread. The tool's own presentation text (`present` /
+ * `emitUi`), when it has one, leads — what a person reads in the history; the summary follows.
+ */
 export function actionProposalOutcomeText(outcome: ActionProposalOutcome): string {
-  return outcomeSummary(outcome) + (outcome.text ? ` UI: ${JSON.stringify(outcome.text)}` : '');
+  const text = outcome.text === undefined ? undefined : storableText(outcome.text).trim();
+  return text ? `${text}\n\n${outcomeSummary(outcome)}` : outcomeSummary(outcome);
 }

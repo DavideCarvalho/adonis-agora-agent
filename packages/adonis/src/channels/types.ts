@@ -56,6 +56,12 @@ export interface InboundMessage {
   media?: InboundMedia[];
   /** The id of the reply button the person pressed, when the message is a button press. */
   buttonId?: string;
+  /**
+   * A button press whose id the provider did not forward — only its label, in {@link text}
+   * (Whatsmiau). The handler maps it to the proposal card it can only have come from, if there is
+   * exactly one.
+   */
+  buttonWithoutId?: boolean;
   /** The provider's payload, untouched. */
   raw: unknown;
 }
@@ -113,6 +119,16 @@ export interface ChannelChallengeResponse {
   contentType?: string;
 }
 
+/** Why a webhook body carried no message to answer — see {@link ChannelAdapter.ignored}. */
+export interface ChannelIgnored {
+  /** The provider's event name, when the body has one. */
+  event?: string;
+  /** Short and content-free: `own message`, `group`, `fromMe missing and status PENDING`… */
+  reason: string;
+  /** It looked like a person's message but could not be read — logged as a warning, not debug. */
+  unexpected?: boolean;
+}
+
 /**
  * One text channel. The built-in ones are `evolutionApi()`, `whatsmiau()`, `whatsappCloud()` and
  * `telegram()`; any object of this shape works the same way.
@@ -133,6 +149,11 @@ export interface ChannelAdapter {
    * delivery receipt, the bot's own message, a group, a media message…
    */
   parse(body: unknown): InboundMessage | InboundMessage[] | null;
+  /**
+   * Why a body {@link parse}d to no message — the handler logs it, so a dropped webhook can be
+   * diagnosed. Called only then; never put message content in it. `null` → no reason to give.
+   */
+  ignored?(body: unknown): ChannelIgnored | null;
   /**
    * Tell the provider the message was received, where it waits for that — Telegram's
    * `answerCallbackQuery` after a button press. Runs in the background, before the turn.

@@ -53,6 +53,7 @@ export type {
   ChannelButton,
   ChannelCapabilities,
   ChannelChallengeResponse,
+  ChannelIgnored,
   ChannelMarkdown,
   ChannelMediaFile,
   ChannelRequest,

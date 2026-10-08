@@ -10,8 +10,9 @@ export interface WhatsmiauOptions extends EvolutionApiOptions {
   url: string;
   /**
    * Send proposals with reply buttons (`POST /v1/message/sendButtons/{instance}`). Default `true`:
-   * Whatsmiau runs on whatsmeow, whose buttons WhatsApp renders. The buttons message carries the
-   * text instruction too; a 4xx from that endpoint falls back to the text-only message.
+   * Whatsmiau runs on whatsmeow, whose buttons WhatsApp renders, so the buttons message carries no
+   * text instruction (the person can still answer by text); a 4xx from that endpoint falls back to
+   * the text-only message, instruction included.
    */
   buttons?: boolean;
 }
@@ -27,9 +28,16 @@ function whatsmiauBase(url: string): string {
  * server built on whatsmeow (verbeux-ai's fork). The same webhook, routes and options as
  * `evolutionApi()`, with two differences: the route prefix (`/v1`) is added to `url`, and reply
  * buttons are on by default — Whatsmiau's render on the phone, where Evolution's (Baileys) did not in
- * our test. Point the instance's webhook (`POST /v1/webhook/set/{instance}`, event
+ * our test (so the buttons card carries no text instruction; the text fallback does). Point the
+ * instance's webhook (`POST /v1/webhook/set/{instance}`, event
  * `MESSAGES_UPSERT`) at the route, with the token.
  */
 export function whatsmiau(options: WhatsmiauOptions): ChannelAdapter {
-  return evolutionFormatAdapter({ ...options, url: whatsmiauBase(options.url) }, { buttons: true });
+  return evolutionFormatAdapter(
+    { ...options, url: whatsmiauBase(options.url) },
+    {
+      buttons: true,
+      instructionWithButtons: false,
+    },
+  );
 }

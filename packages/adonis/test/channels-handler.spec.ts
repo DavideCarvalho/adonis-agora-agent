@@ -7,11 +7,13 @@ import {
   proposalButtonIds,
   ptBrChannelTexts,
   telegram,
+  whatsmiau,
 } from '../src/channels/index.js';
 import {
   ActionProposalWorker,
   DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY,
   defineTool,
+  parseTextActionProposalCommand,
   ptBrActionProposalText,
 } from '../src/index.js';
 import type { StreamFrame } from '../src/spi/token-stream-sink.js';
@@ -23,6 +25,68 @@ import { actor, fakeAdapter, fakeService, inbound, makeCtx, texts } from './help
 // ── the route ──────────────────────────────────────────────────────────────────
 
 describe('channels.handle', () => {
+  it('logs a webhook that carried no message — event and reason, never the content', async () => {
+    const logs: { level: string; bindings: Record<string, unknown>; message: string }[] = [];
+    const logger = {
+      debug: (bindings: Record<string, unknown>, message: string) =>
+        logs.push({ level: 'debug', bindings, message }),
+      warn: (bindings: Record<string, unknown>, message: string) =>
+        logs.push({ level: 'warn', bindings, message }),
+    };
+    const handle = channels.handle(
+      whatsmiau({
+        url: 'http://whatsmiau:8080',
+        instance: 'main',
+        apiKey: 'k',
+        webhookToken: false,
+      }),
+      { service: fakeService(async function* () {}), actor: () => actor, thread: () => 't' },
+    );
+    const upsert = (key: Record<string, unknown>, status: string) => ({
+      event: 'messages.upsert',
+      instance: 'main',
+      data: { key, status, message: { conversation: 'secret text' } },
+    });
+    const pending = makeCtx(
+      upsert({ remoteJid: '5511999990000@s.whatsapp.net', id: 'a' }, 'PENDING'),
+      { logger },
+    );
+    await handle(pending.ctx);
+    const own = upsert(
+      { remoteJid: '5511999990000@s.whatsapp.net', id: 'b', fromMe: true },
+      'SERVER_ACK',
+    );
+    await handle(makeCtx(own, { logger }).ctx);
+    await handle(makeCtx({ event: 'connection.update', instance: 'main' }, { logger }).ctx);
+    expect(pending.sent).toEqual({ status: 200, body: { ok: true } });
+    expect(logs).toEqual([
+      {
+        level: 'warn',
+        bindings: {
+          channel: 'whatsapp',
+          event: 'messages.upsert',
+          reason: 'fromMe missing and status PENDING',
+        },
+        message: 'channels: webhook ignored',
+      },
+      {
+        level: 'debug',
+        bindings: { channel: 'whatsapp', event: 'messages.upsert', reason: 'own message' },
+        message: 'channels: webhook ignored',
+      },
+      {
+        level: 'debug',
+        bindings: {
+          channel: 'whatsapp',
+          event: 'connection.update',
+          reason: 'not a messages.upsert event',
+        },
+        message: 'channels: webhook ignored',
+      },
+    ]);
+    expect(JSON.stringify(logs)).not.toContain('secret');
+  });
+
   it('refuses an unverified request and acknowledges a verified one before the turn ends', async () => {
     const { adapter, outbox } = fakeAdapter();
     let release!: () => void;
@@ -196,6 +260,104 @@ describe('channels.handle', () => {
     ]);
     // Telegram's callback_data holds 64 bytes.
     expect(Buffer.byteLength(ids.approve)).toBeLessThanOrEqual(64);
+  });
+
+  it('maps a press that lost its button id (only the label) to the one pending card it can be from', async () => {
+    const carded = `proposal-${'a'.repeat(64)}`;
+    const setup = (pending: string[]) => {
+      const { adapter, outbox } = fakeAdapter({ buttons: 3 });
+      const service = fakeService(proposalFrames, {
+        listActionProposals: (async () =>
+          pending.map((id) => ({ id, decision: 'pending' }))) as never,
+        decideActionProposal: (async (...args: unknown[]) => {
+          service.decided.push(args);
+          return { status: 'applied' };
+        }) as never,
+      });
+      const handle = channels.handle(adapter, {
+        service,
+        actor: () => actor,
+        thread: () => 't',
+        outcomeTimeoutMs: 0,
+      });
+      return { handle, service, outbox };
+    };
+    // A proposal made elsewhere is pending too: the label alone would be ambiguous as text.
+    const one = setup([carded, 'proposal-from-the-web']);
+    await one.handle(makeCtx(inbound('refund A-1')).ctx);
+    await one.handle.drain();
+    await one.handle(makeCtx(inbound(' confirm ', { buttonWithoutId: true })).ctx);
+    await one.handle.drain();
+    expect(one.service.decided).toEqual([[actor, 't', carded, 'approved', {}, 'test']]);
+    expect(one.service.sends.map((send) => send.message)).toEqual(['refund A-1']);
+
+    // Not a label of ours, or no card remembered: the text goes on as a message (text decisions).
+    const other = setup([carded]);
+    await other.handle(makeCtx(inbound('Confirm', { buttonWithoutId: true })).ctx);
+    await other.handle.drain();
+    await other.handle(makeCtx(inbound('refund A-1')).ctx);
+    await other.handle.drain();
+    await other.handle(makeCtx(inbound('Maybe', { buttonWithoutId: true })).ctx);
+    await other.handle.drain();
+    expect(other.service.decided).toEqual([]);
+    expect(other.service.sends.map((send) => send.message)).toEqual([
+      'Confirm',
+      'refund A-1',
+      'Maybe',
+    ]);
+  });
+
+  it('reads its own button labels as decisions in the matching vocabulary', () => {
+    for (const [texts, vocabulary] of [
+      [DEFAULT_CHANNEL_TEXTS, DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY],
+      [
+        ptBrChannelTexts,
+        { ...DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY, ...ptBrActionProposalText.vocabulary },
+      ],
+    ] as const) {
+      expect(parseTextActionProposalCommand(texts.approve, vocabulary)).toMatchObject({
+        status: 'command',
+        decision: 'approved',
+      });
+      expect(parseTextActionProposalCommand(texts.reject, vocabulary)).toMatchObject({
+        status: 'command',
+        decision: 'rejected',
+      });
+    }
+  });
+
+  it('never guesses between two pending cards for a press without its id', async () => {
+    const { adapter, outbox } = fakeAdapter({ buttons: 3 });
+    const second = `proposal-${'c'.repeat(64)}`;
+    const service = fakeService(
+      [
+        ...proposalFrames,
+        {
+          ...(proposalFrames[1] as object),
+          id: 'call-2',
+          target: { kind: 'proposal', proposalId: second },
+        },
+      ] as StreamFrame[],
+      {
+        listActionProposals: (async () => [
+          { id: `proposal-${'a'.repeat(64)}`, decision: 'pending' },
+          { id: second, decision: 'pending' },
+        ]) as never,
+        decideActionProposal: (async (...args: unknown[]) => {
+          service.decided.push(args);
+          return { status: 'applied' };
+        }) as never,
+      },
+    );
+    const handle = channels.handle(adapter, { service, actor: () => actor, thread: () => 't' });
+    await handle(makeCtx(inbound('two refunds')).ctx);
+    await handle.drain();
+    expect(outbox.filter((item) => item.message.buttons !== undefined)).toHaveLength(2);
+    await handle(makeCtx(inbound('Cancel', { buttonWithoutId: true })).ctx);
+    await handle.drain();
+    expect(service.decided).toEqual([]);
+    // It goes on as text, where the vocabulary's decision asks which proposal (#id).
+    expect(service.sends.map((send) => send.message)).toEqual(['two refunds', 'Cancel']);
   });
 
   it('without buttons, tells the person what to reply — in the configured vocabulary', async () => {
