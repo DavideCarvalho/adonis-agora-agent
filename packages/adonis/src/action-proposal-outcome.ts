@@ -116,10 +116,12 @@ export function actionProposalOutcomeScope(outcome: ActionProposalOutcome): Acti
  * are written as their JSON escapes, the way the JSON summary already carries them.
  */
 function storableText(text: string): string {
-  return text.replace(
-    /\u0000|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g,
-    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`,
-  );
+  return text
+    .replaceAll(String.fromCharCode(0), '\\u0000')
+    .replace(
+      /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g,
+      (char) => `\\u${char.charCodeAt(0).toString(16)}`,
+    );
 }
 
 /**
