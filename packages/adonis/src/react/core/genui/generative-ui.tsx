@@ -3,13 +3,16 @@ import {
   type Context,
   createContext,
   type ErrorInfo,
+  memo,
   type ReactNode,
   useCallback,
   useContext,
   useMemo,
+  useRef,
 } from 'react';
 import { AmbientRenderUiContext, sharedContext } from '../components/ambient-ui.js';
 import type { TranscriptUiBlock } from '../transcript/model.js';
+import { shareStructure } from './share-structure.js';
 import type {
   GenerativeUIElement,
   GenerativeUIItem,
@@ -30,14 +33,25 @@ import {
 /** What to draw instead of a component that did not render. Default: nothing. */
 export type GenerativeUIFallback = ReactNode | ((problem: GenerativeUIProblem) => ReactNode);
 
-interface TreeScope {
-  fallbackText?: string;
-  componentVersions?: Record<string, number>;
-  options: GenerativeUIOptions;
+/** How a tree draws what is not a node: read when a node renders, never a reason to re-render one. */
+interface TreeLook {
   fallback: GenerativeUIFallback | undefined;
   loading: ReactNode;
   placeholder: GenuiPlaceholder | undefined;
   onError: ((error: unknown, item: GenerativeUIItem) => void) | undefined;
+}
+
+interface TreeScope {
+  fallbackText?: string;
+  componentVersions?: Record<string, number>;
+  options: GenerativeUIOptions;
+  /** A fallback was given: a failing node draws it rather than failing the whole tree. */
+  hasFallback: boolean;
+  /**
+   * The latest fallback, loading, placeholder and onError. Behind a ref so an inline element or
+   * callback from a host that re-renders on every token does not re-render every node with it.
+   */
+  look: { readonly current: TreeLook };
 }
 
 const TreeScopeContext = createContext<TreeScope | null>(null);
@@ -64,10 +78,10 @@ export function useGenuiNode(): GenuiNodeState | null {
   return useContext(GenuiNodeContext);
 }
 
-function renderPlaceholder(scope: TreeScope, node: GenuiNodeState): ReactNode {
-  const { placeholder } = scope;
+function renderPlaceholder(look: TreeLook, node: GenuiNodeState): ReactNode {
+  const { placeholder } = look;
   if (typeof placeholder === 'function') return placeholder(node);
-  return placeholder !== undefined ? placeholder : scope.loading;
+  return placeholder !== undefined ? placeholder : look.loading;
 }
 
 function renderFallback(fallback: GenerativeUIFallback | undefined, problem: GenerativeUIProblem) {
@@ -120,10 +134,55 @@ function nodeItem(node: GenerativeUIElement, id: string): GenerativeUIItem {
   return { id, component: node.type, props: node.props ?? {}, version: null, toolCallId: null };
 }
 
-/** One tree node: resolved and validated like a top-level item, children rendered as its `children`. */
-function TreeNode({ node, id }: { node: GenerativeUIElement; id: string }) {
+/** A failing node takes the whole tree to the item's fallback text — no fallback of its own given. */
+function failsWhole(scope: TreeScope): boolean {
+  return !scope.hasFallback && scope.fallbackText !== undefined;
+}
+
+interface TreeNodeProps {
+  node: GenerativeUIElement;
+  id: string;
+  /** Wrap the node in its own error boundary (every node but the root, which its item's has). */
+  bounded: boolean;
+}
+
+/**
+ * One tree node, re-rendered only when its node is a different object (or the scope changed).
+ * {@link GenuiTree} keeps an unchanged node the same object from frame to frame, so as a preview
+ * streams in only the nodes that grew — and their ancestors — render again; a node turning from
+ * `incomplete`/`held` to final is a changed node and renders.
+ */
+const TreeNode = memo(
+  function TreeNode({ node, id, bounded }: TreeNodeProps) {
+    const scope = useContext(TreeScopeContext);
+    const item = useMemo(() => nodeItem(node, id), [node, id]);
+    if (scope === null) return null;
+    if (!bounded || failsWhole(scope)) return <TreeNodeBody node={node} id={id} item={item} />;
+    return (
+      <ItemBoundary
+        item={item}
+        fallback={scope.look.current.fallback}
+        onError={scope.look.current.onError}
+      >
+        <TreeNodeBody node={node} id={id} item={item} />
+      </ItemBoundary>
+    );
+  },
+  (previous, next) =>
+    previous.node === next.node && previous.id === next.id && previous.bounded === next.bounded,
+);
+
+/** A tree node resolved and validated like a top-level item, children rendered as its `children`. */
+function TreeNodeBody({
+  node,
+  id,
+  item,
+}: {
+  node: GenerativeUIElement;
+  id: string;
+  item: GenerativeUIItem;
+}) {
   const scope = useContext(TreeScopeContext);
-  const item = useMemo(() => nodeItem(node, id), [node, id]);
   // A node of a preview the model is still writing: its props are half there, so they are not
   // validated (the final frame is) — the renderer is told instead, through `useGenuiNode`.
   const incomplete = node.incomplete === true;
@@ -150,27 +209,26 @@ function TreeNode({ node, id }: { node: GenerativeUIElement; id: string }) {
     item.props,
   );
   if (scope === null) return null;
+  const look = scope.look.current;
   if (held) {
     return (
       <GenuiNodeContext.Provider value={state}>
-        {renderPlaceholder(scope, state)}
+        {renderPlaceholder(look, state)}
       </GenuiNodeContext.Provider>
     );
   }
-  if (resolution.status === 'loading' || validation.status === 'pending') return scope.loading;
+  if (resolution.status === 'loading' || validation.status === 'pending') return look.loading;
   if (resolution.status === 'unknown') {
-    if (scope.fallback === undefined && scope.fallbackText !== undefined)
-      throw new Error('Unknown tree component');
-    return renderFallback(scope.fallback, { reason: 'unknown', item });
+    if (failsWhole(scope)) throw new Error('Unknown tree component');
+    return renderFallback(look.fallback, { reason: 'unknown', item });
   }
   if (resolution.status === 'error') {
-    if (scope.fallback === undefined && scope.fallbackText !== undefined) throw resolution.error;
-    return renderFallback(scope.fallback, { reason: 'error', item, error: resolution.error });
+    if (failsWhole(scope)) throw resolution.error;
+    return renderFallback(look.fallback, { reason: 'error', item, error: resolution.error });
   }
   if (validation.status === 'invalid') {
-    if (scope.fallback === undefined && scope.fallbackText !== undefined)
-      throw new Error('Invalid tree component');
-    return renderFallback(scope.fallback, { reason: 'invalid', item, issues: validation.issues });
+    if (failsWhole(scope)) throw new Error('Invalid tree component');
+    return renderFallback(look.fallback, { reason: 'invalid', item, issues: validation.issues });
   }
   const Renderer = resolution.Component;
   const children = Array.isArray(node.children) ? node.children : [];
@@ -180,18 +238,7 @@ function TreeNode({ node, id }: { node: GenerativeUIElement; id: string }) {
         {children.length > 0
           ? children.map((child, index) => {
               const childId = `${id}.${index}`;
-              if (scope.fallback === undefined && scope.fallbackText !== undefined)
-                return <TreeNode key={childId} node={child} id={childId} />;
-              return (
-                <ItemBoundary
-                  key={childId}
-                  item={nodeItem(child, childId)}
-                  fallback={scope.fallback}
-                  onError={scope.onError}
-                >
-                  <TreeNode node={child} id={childId} />
-                </ItemBoundary>
-              );
+              return <TreeNode key={childId} node={child} id={childId} bounded />;
             })
           : undefined}
       </Renderer>
@@ -203,10 +250,17 @@ function TreeNode({ node, id }: { node: GenerativeUIElement; id: string }) {
  * Renders a `genui:tree` frame's `{ root }` node by node through the same registry, catalog and
  * resolver as top-level components. Used automatically for tree frames unless a `treeRenderer`
  * (e.g. the json-render one) or a registry entry for `genui:tree` takes over.
+ *
+ * Each frame's tree is structurally shared with the previous one: a node equal to the one before
+ * keeps that object, and its renderer does not run again.
  */
 export function GenuiTree({ root }: { root?: GenerativeUIElement }) {
-  if (root === undefined || root === null || typeof root.type !== 'string') return null;
-  return <TreeNode node={root} id="root" />;
+  const previous = useRef<GenerativeUIElement | undefined>(undefined);
+  const valid = root !== undefined && root !== null && typeof root.type === 'string';
+  const shared = valid ? shareStructure(previous.current, root) : undefined;
+  previous.current = shared;
+  if (shared === undefined) return null;
+  return <TreeNode node={shared} id="root" bounded={false} />;
 }
 
 export interface GenerativeUIScopeProps extends GenerativeUIOptions {
@@ -236,6 +290,13 @@ export function GenerativeUIScope({
   onError,
   children,
 }: GenerativeUIScopeProps) {
+  // Read afresh from every frame of the item that carries them: kept the same object while equal.
+  const versionsRef = useRef<Record<string, number> | undefined>(undefined);
+  const versions = shareStructure(versionsRef.current, componentVersions);
+  versionsRef.current = versions;
+  const look = useRef<TreeLook>({ fallback, loading, placeholder, onError });
+  look.current = { fallback, loading, placeholder, onError };
+  const hasFallback = fallback !== undefined;
   const scope = useMemo<TreeScope>(
     () => ({
       options: {
@@ -243,24 +304,12 @@ export function GenerativeUIScope({
         ...(catalog !== undefined ? { catalog } : {}),
         ...(resolveComponent !== undefined ? { resolveComponent } : {}),
       },
-      fallback,
-      ...(componentVersions !== undefined ? { componentVersions } : {}),
+      hasFallback,
+      ...(versions !== undefined ? { componentVersions: versions } : {}),
       ...(fallbackText !== undefined ? { fallbackText } : {}),
-      loading,
-      placeholder,
-      onError,
+      look,
     }),
-    [
-      registry,
-      catalog,
-      resolveComponent,
-      fallback,
-      fallbackText,
-      componentVersions,
-      loading,
-      placeholder,
-      onError,
-    ],
+    [registry, catalog, resolveComponent, hasFallback, fallbackText, versions],
   );
   return <TreeScopeContext.Provider value={scope}>{children}</TreeScopeContext.Provider>;
 }
