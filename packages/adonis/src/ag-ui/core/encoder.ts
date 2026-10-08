@@ -261,7 +261,11 @@ export class AgUiEncoder {
           ...(proposal !== undefined ? { proposalId: proposal.proposalId } : {}),
           interrupt: {
             reason: 'tool_approval',
-            message: event.reason ?? (toolName.length > 0 ? `Approve ${toolName}?` : 'Approve?'),
+            // The tool's own wording ("Refund order #7?"), as the CUSTOM event's `confirmation`.
+            message:
+              event.reason ??
+              event.confirmation?.title ??
+              (toolName.length > 0 ? `Approve ${toolName}?` : 'Approve?'),
             toolCallId: event.id,
             responseSchema: APPROVAL_SCHEMA,
             ...(event.expiresAt !== undefined ? { expiresAt: event.expiresAt } : {}),

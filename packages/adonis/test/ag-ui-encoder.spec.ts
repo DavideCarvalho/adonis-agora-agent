@@ -441,6 +441,29 @@ describe('interrupts', () => {
     );
   });
 
+  it("words the interrupt with the tool's confirmation title, else a generic question", async () => {
+    const worded = await collect(
+      parked([
+        ...upToApproval.slice(0, 3),
+        {
+          ...approval,
+          confirmation: { title: 'Refund order #7?', verb: 'Refund', detail: 'Money goes back.' },
+        } as StreamFrame,
+      ]),
+      { quietMs: 60_000 },
+    );
+    const finished = worded.at(-1) as Extract<AgUiEvent, { type: 'RUN_FINISHED' }>;
+    expect(finished.outcome).toMatchObject({
+      type: 'interrupt',
+      interrupts: [{ reason: 'tool_approval', message: 'Refund order #7?' }],
+    });
+
+    const plain = await collect(parked(upToApproval), { quietMs: 60_000 });
+    expect((plain.at(-1) as Extract<AgUiEvent, { type: 'RUN_FINISHED' }>).outcome).toMatchObject({
+      interrupts: [{ message: 'Approve refund?' }],
+    });
+  });
+
   it('waits out the quiet window while other announced work is still in flight', async () => {
     const frames = [
       ...upToApproval.slice(0, 2),
