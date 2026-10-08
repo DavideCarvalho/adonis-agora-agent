@@ -57,6 +57,13 @@ export function observeTurnFrames(
       return;
     }
     closeBurst();
+    // A preview of a call's streaming input is shown, never kept: the call's own push is.
+    if (
+      (frame.t === 'component' && frame.partial === true) ||
+      (frame.t === 'event' && frame.event.kind === 'ui' && frame.event.partial === true)
+    ) {
+      return;
+    }
     // A repeat id replaces the props but keeps the component where it first appeared, exactly as
     // the client's data part does.
     if (frame.t === 'event' && frame.event.kind === 'ui') {

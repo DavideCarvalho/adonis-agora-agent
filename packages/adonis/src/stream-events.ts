@@ -32,6 +32,13 @@ export interface AgentUiComponent {
   componentVersions?: Record<string, number>;
   /** The tool call that pushed the component, when one did. */
   toolCallId?: string;
+  /**
+   * A PREVIEW, drawn from a tool call's arguments while the model is still writing them (genui
+   * `streaming: 'partial'`): unvalidated, never persisted, and replaced in place by the final push
+   * under the same `id` — or withdrawn by a partial frame with empty `props`, which a client renders
+   * as nothing. A text surface skips it. Absent on every final frame.
+   */
+  partial?: true;
 }
 
 /** Who has to settle an action tool call, and until when. Metadata: the call still settles by id. */

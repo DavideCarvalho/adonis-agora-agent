@@ -460,6 +460,14 @@ const replyList = <T>(value: T | T[] | null | undefined): T[] =>
 
 /** The component a frame carries (a live one, or a replayed `ui` event), else `null`. */
 function componentOf(frame: StreamFrame, position: number): ChannelComponent | null {
+  // A preview of a layout the model is still writing: a channel gets the final component (or its
+  // fallback text) and nothing before it.
+  if (
+    (frame.t === 'component' && frame.partial === true) ||
+    (frame.t === 'event' && frame.event.kind === 'ui' && frame.event.partial === true)
+  ) {
+    return null;
+  }
   if (frame.t === 'component') {
     return {
       id: frame.id ?? `ui:${position}`,

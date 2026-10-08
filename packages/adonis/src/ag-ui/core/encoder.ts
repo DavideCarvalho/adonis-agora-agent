@@ -245,6 +245,8 @@ export class AgUiEncoder {
               ? { componentVersions: event.componentVersions }
               : {}),
             ...(event.toolCallId !== undefined ? { toolCallId: event.toolCallId } : {}),
+            // A preview of a call's streaming input: a repeat of this id replaces it in place.
+            ...(event.partial === true ? { partial: true } : {}),
           }),
         ];
       case 'approval-requested': {

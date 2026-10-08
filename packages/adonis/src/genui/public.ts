@@ -14,9 +14,16 @@ export {
   type ComponentDefinition,
   defineCatalog,
   defineComponent,
+  type GenuiStreaming,
   toolNameFor,
   toSnakeCase,
 } from './catalog.js';
+export {
+  type GenuiPartialElement,
+  type PartialTreeOptions,
+  partialTree,
+  treeNodeId,
+} from './progressive.js';
 export {
   type ChartProps,
   type ComponentFactory,

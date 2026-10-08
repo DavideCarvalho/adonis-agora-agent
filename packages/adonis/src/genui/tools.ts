@@ -1,14 +1,23 @@
 import type { StandardJSONSchemaV1, StandardSchemaV1 } from '@standard-schema/spec';
-import type { AiToolCtx, ToolDescribeScope, ToolDescription, ToolHandler } from '../spi/tool.js';
+import type {
+  AiToolCtx,
+  ToolDescribeScope,
+  ToolDescription,
+  ToolHandler,
+  ToolInputPreview,
+  ToolInputPreviewScope,
+} from '../spi/tool.js';
 import type { ToolPresentation } from '../tool-presentation.js';
 import type { Actor, ToolSpec } from '../types.js';
 import { negotiateCatalog } from './capabilities.js';
 import {
   type Catalog,
   type ComponentDefinition,
+  type GenuiStreaming,
   standaloneComponents,
   toolNameFor,
 } from './catalog.js';
+import { partialTree } from './progressive.js';
 import {
   formatIssues,
   type GenuiIssue,
@@ -73,6 +82,21 @@ export interface GenuiToolsOptions {
   treeInstructions?: string;
   /** Size limits for `tree`. */
   treeLimits?: TreeLimits;
+  /**
+   * Tree mode: whether the layout is drawn WHILE the model writes it.
+   *
+   * - `'complete'` (default): nothing is drawn until the call has run; then the validated tree
+   *   appears whole.
+   * - `'partial'`: the server parses the streaming `ui__render` arguments and pushes the tree so far
+   *   as `partial` `ui` frames under the id the final push replaces — throttled, unvalidated, never
+   *   persisted, never sent to a text channel. Nodes still being written are flagged `incomplete`; a
+   *   component declared `streaming: 'complete'` is a `held` placeholder until its subtree closes.
+   *
+   * A component's own {@link ComponentDefinition.streaming} overrides this per component.
+   */
+  streaming?: GenuiStreaming;
+  /** Least time between two partial tree frames of one call, in ms. Default 100. */
+  streamingThrottleMs?: number;
   /**
    * Also offer ONE generic tool taking `{ component, props }`, validated against the (resolved)
    * catalog — how a model reaches components that only exist per request (a tenant's own), which a
@@ -261,6 +285,35 @@ function treeTool(catalog: Catalog, options: GenuiToolsOptions): GenuiTool {
       available: resolved.modelComponents().length > 0,
       description: describeFor(resolved),
       inputSchema: permissiveSchema(treeJsonSchema(resolved)),
+    };
+  };
+  handler.previewInput = async (
+    scope: ToolInputPreviewScope,
+  ): Promise<ToolInputPreview | undefined> => {
+    // What THIS client draws: a node it cannot would make the final push degrade to text, so the
+    // preview stops there instead of showing a layout the message will not have.
+    const resolved = negotiateCatalog(
+      await catalogFor(catalog, options, scopeOf(scope)),
+      scope.uiCapabilities,
+    );
+    const streaming = options.streaming ?? 'complete';
+    // Nothing streams partial: the tree appears when the call has run, as it always did.
+    if (!resolved.modelComponents().some((each) => (each.streaming ?? streaming) === 'partial')) {
+      return undefined;
+    }
+    return {
+      ...(options.streamingThrottleMs !== undefined
+        ? { throttleMs: options.streamingThrottleMs }
+        : {}),
+      render(input) {
+        const tree = partialTree(resolved, input, {
+          streaming,
+          ...(options.treeLimits !== undefined ? { limits: options.treeLimits } : {}),
+        });
+        if (tree === null) return null;
+        if (tree.root === null) return undefined;
+        return { component: GENUI_TREE_COMPONENT, props: { root: tree.root }, version: 1 };
+      },
     };
   };
   return {

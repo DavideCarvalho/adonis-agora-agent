@@ -49,7 +49,21 @@ export interface ComponentDefinition<P = Record<string, unknown>> {
    * client can keep rendering messages persisted under an older shape.
    */
   version?: number;
+  /**
+   * How this component appears in a tree the model is still writing (tree mode with streaming
+   * previews — see `GenuiToolsOptions.streaming`). Absent → the tree's default.
+   *
+   * - `'partial'`: drawn as soon as its type is known, its props filling in as they arrive (the
+   *   node is flagged `incomplete` until its object closes).
+   * - `'complete'`: held back until its whole subtree has arrived — the node is sent as a
+   *   placeholder (`held`, no props, no children) and drawn once it closes. For a component that
+   *   cannot draw half its data: a chart, a map.
+   */
+  streaming?: GenuiStreaming;
 }
+
+/** How a tree node appears while the model writes it ({@link ComponentDefinition.streaming}). */
+export type GenuiStreaming = 'partial' | 'complete';
 
 /** Component names: an identifier a registry key, a tool name and a snake_case slug can all be derived from. */
 export const COMPONENT_NAME = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
@@ -70,6 +84,12 @@ export function defineComponent<P = Record<string, unknown>>(
     throw new RangeError('genui: component version must be a positive safe integer');
   if (definition.fallbackText !== undefined && typeof definition.fallbackText !== 'function')
     throw new TypeError('genui: fallbackText must be a function');
+  if (
+    definition.streaming !== undefined &&
+    definition.streaming !== 'partial' &&
+    definition.streaming !== 'complete'
+  )
+    throw new TypeError("genui: streaming must be 'partial' or 'complete'");
   return definition;
 }
 
