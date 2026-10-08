@@ -1,0 +1,382 @@
+---
+title: Loading states and skeletons
+description: "Show the shape of a component before its data or its props exist: a tool-driven skeleton replaced in place by the same ctx.emitUi id, and progressive ui__render trees whose renderers draw skeletons through useGenuiNode()."
+icon: Loader
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A component in a reply can be waiting on one of two things, and each has its own pattern:
+
+| What is still missing | Who knows the component | Pattern |
+| --- | --- | --- |
+| **The data.** A tool is reading it (a query, an API). | Your tool, before it reads — the tool's name says what it will show. | [A tool-driven skeleton](#a-tool-driven-skeleton): push a `loading` state, then the data under the same `id`. |
+| **The props.** The model is still writing the `ui__render` call. | Nobody yet: the model picks the components as it writes. | [Progressive trees](#progressive-trees): `streaming: 'partial'`, and renderers that draw a skeleton while their node is `incomplete`. |
+
+Both end the same way: the final component replaces the placeholder **in place**, with the same footprint, and only the final component is kept on the message. The two combine freely: a tool can push a skeleton while the model composes a layout elsewhere in the turn.
+
+## A tool-driven skeleton
+
+A tool that knows which component it will push can show that component's skeleton the moment it starts, and replace it with the data when the read finishes. The mechanism is [`ctx.emitUi`](/docs/agent/generative-ui#ctxemituicomponent-props-options)'s `id`: a second push with the same `id` replaces the first, live and on the persisted message.
+
+### 1. Let the component carry a loading state
+
+With a [catalog](/docs/agent/generative-ui#a-component-catalog--adonis-agoraagentgenui), every push is validated against the component's props schema, so the placeholder has to be a shape the schema accepts. Keep it a separate, strict variant: the real data stays validated by its own schema, and a placeholder can never pass for data.
+
+```ts title="app/genui/catalog.ts"
+import { defineCatalog, defineComponent } from '@adonis-agora/agent/genui'
+import { z } from 'zod'
+
+/** A component's state while its data is not there: loading, or the end without data. */
+const placeholder = z
+  .object({
+    state: z.enum(['loading', 'empty', 'error']),
+    title: z.string().max(200).optional(),
+    // What is known before the data, so the skeleton has the final footprint.
+    columns: z.array(z.string()).max(12).optional(),
+  })
+  .strict()
+type Placeholder = z.infer<typeof placeholder>
+const isPlaceholder = (props: unknown): props is Placeholder =>
+  placeholder.safeParse(props).success
+
+const ordersTable = z.object({
+  title: z.string(),
+  columns: z.array(z.string()),
+  rows: z.array(z.array(z.string())),
+})
+
+const PLACEHOLDER_TEXT = { loading: 'loading…', empty: 'nothing to show.', error: 'could not load.' }
+
+export const OrdersTable = defineComponent({
+  name: 'OrdersTable',
+  title: 'Orders table',
+  description: 'Recent orders.',
+  version: 1,
+  internal: true, // pushed by your tools only: the model never sees the placeholder variant
+  props: z.union([placeholder, ordersTable]),
+  // A placeholder's text is a sentence, never the JSON of its props.
+  fallbackText: (props: Placeholder | z.infer<typeof ordersTable>) =>
+    isPlaceholder(props)
+      ? `${props.title ?? 'Orders'}: ${PLACEHOLDER_TEXT[props.state]}`
+      : `${props.title}\n${props.rows.map((row) => row.join(' · ')).join('\n')}`,
+})
+
+export const catalog = defineCatalog([OrdersTable /* , … */])
+```
+
+`internal: true` matters: a component the model can also call (in tree or per-component mode) would show it the `state` variant in its tool schema. A placeholder is your tool's business; the model composes with data. For model-composed UI, see [progressive trees](#progressive-trees).
+
+What goes in the loading state is **what you know before the read**: the title, a table's columns, how many action buttons the card will have. Never a number or a row: those are the data, and only the tool's result carries them.
+
+### 2. Push the skeleton, then the data under the same id
+
+```ts title="app/agent_tools/list_orders.ts"
+import { defineTool } from '@adonis-agora/agent'
+import { z } from 'zod'
+
+const COLUMNS = ['Order', 'Customer', 'Total']
+
+export const listOrders = defineTool(
+  { name: 'list_orders', kind: 'read', description: 'List recent orders.', input: z.object({}) },
+  async (_input, ctx) => {
+    const slot = await openSlot(ctx, 'OrdersTable', { title: 'Recent orders', columns: COLUMNS })
+    try {
+      const orders = await Order.query().where('customerId', ctx.actor.id).limit(20)
+      if (orders.length === 0) {
+        await slot.settle('empty') // the place closes as "nothing to show", never a stuck skeleton
+        return { count: 0 }
+      }
+      await slot.show({
+        title: 'Recent orders',
+        columns: COLUMNS,
+        rows: orders.map((o) => [`#${o.id}`, o.customer, o.total]),
+      })
+      return { count: orders.length } // what the model reads
+    } catch (error) {
+      await slot.settle('error').catch(() => {})
+      throw error
+    }
+  },
+)
+```
+
+The helper is a few lines, written once for all your tools:
+
+```ts title="app/agent/ui_slot.ts"
+import type { AiToolCtx } from '@adonis-agora/agent'
+
+/**
+ * Does this turn's client draw `component` live? Only when it DECLARED it in its UI capabilities,
+ * and the turn is not a text channel (those deliver the reply when the turn ends).
+ */
+export function drawsLive(ctx: AiToolCtx, component: string): boolean {
+  if (ctx.pageContext?.channel) return false
+  return ctx.uiCapabilities?.components.some((c) => c.name === component) ?? false
+}
+
+export async function openSlot(
+  ctx: AiToolCtx,
+  component: string,
+  known: { title?: string; columns?: string[] },
+) {
+  let id: string | undefined
+  let settled = false
+  if (drawsLive(ctx, component)) {
+    ;({ id } = await ctx.emitUi(component, { state: 'loading', ...known }))
+  }
+  return {
+    /** The data, in the skeleton's place (or a plain push when there was none). */
+    async show(props: Record<string, unknown>) {
+      await ctx.emitUi(component, props, id === undefined ? {} : { id })
+      settled = true
+    },
+    /** End without data: `empty` (nothing to show) or `error` (the read failed). */
+    async settle(state: 'empty' | 'error') {
+      if (settled || id === undefined) return
+      settled = true
+      await ctx.emitUi(component, { state, title: known.title }, { id })
+    },
+  }
+}
+```
+
+The rules the helper encodes:
+
+- **Never leave a skeleton standing.** Every path ends on the same `id`: the data, `empty`, or `error`. A skeleton that outlives its tool reads as "still loading" forever, including after a reload.
+- **Never send a skeleton to a surface that cannot replace it.** A component the client did not declare in its [UI capabilities](/docs/agent/surfaces#ui-capabilities) is streamed as its `fallbackText`, and text cannot be replaced: the reader would get "loading…" followed by the table. A [text channel](/docs/agent/channels) turn carries `pageContext.channel` and delivers the reply when the turn ends, so a skeleton there is noise at best. A client that sends no capabilities at all (an MCP client, an older app) may not know your placeholder variant either. So push the skeleton only when the component is declared, and skip it on channels; `show` still pushes the data everywhere.
+- **The persisted message keeps the final component only.** Pushes are kept per `id`, last one wins, so a reloaded thread draws the table (or the `empty` state), never the skeleton.
+- **A tool that throws persists nothing it pushed.** The `error` push above reaches the live stream only; reopened, the thread shows the failed call and no component. If the failure should stay on the message, catch it and **return** a result (`{ error: 'unavailable' }`) after settling `error`, instead of rethrowing.
+- **Retries reuse the ids.** A [transiently retried](/docs/agent/authoring/transient-retry) call re-pushes under the same default ids (`<toolCallId>:ui:<n>`), so the second attempt's skeleton lands where the first one's was.
+- **A stopped run.** Pass [`ctx.abortSignal`](/docs/agent/authoring/tools#the-tool-context) to the read: the Stop then fails it at once, through the same `catch`, instead of leaving the skeleton up until the query returns.
+
+<Callout type="info" title="Progress, not just loading">
+The same `id` can be pushed any number of times: a chart with the first month, then again as each month arrives, a list that grows as pages load. Each push is validated and replaces the last; the message keeps the last one.
+</Callout>
+
+### 3. Draw the states
+
+The renderer checks the placeholder first, and draws the real component otherwise:
+
+```tsx title="inertia/genui/orders_table.tsx"
+export function OrdersTable(props: OrdersTableProps | Placeholder) {
+  if ('state' in props) {
+    if (props.state === 'loading') return <TableSkeleton title={props.title} columns={props.columns} />
+    return <EndedNotice state={props.state} title={props.title} />
+  }
+  return <Table {...props} />
+}
+
+function EndedNotice({ state, title }: { state: 'empty' | 'error'; title?: string }) {
+  return (
+    <div role={state === 'error' ? 'alert' : 'status'} className="genui-ended">
+      {title ? <strong>{title}: </strong> : null}
+      {state === 'empty' ? 'Nothing to show.' : 'Could not load this.'}
+    </div>
+  )
+}
+```
+
+The end without data is a compact notice, not the full-size empty frame: the skeleton reserved room for rows that are not coming. See [Drawing skeletons that hold up](#drawing-skeletons-that-hold-up) for `TableSkeleton`.
+
+## Progressive trees
+
+A layout the model composes is one [`ui__render`](/docs/agent/generative-ui#a-component-catalog--adonis-agoraagentgenui) call, written for as long as the model writes its arguments. With `streaming: 'partial'` the server pushes the tree so far while it is written, and each final node replaces its preview in place (see [Drawing a tree while the model writes it](/docs/agent/generative-ui#drawing-a-tree-while-the-model-writes-it) for the wire format):
+
+```ts title="config/agent.ts"
+genui: genui({ catalog, streaming: 'partial' }) // tree mode is the default
+```
+
+`'complete'` (the default) draws nothing until the call has run, then the validated tree at once. Turn `partial` on when your renderers can draw half-written props; until then they would receive props a catalog would refuse.
+
+### Per component
+
+A component that cannot draw half its data (a chart whose scale depends on every point, a map) opts out on its definition, and is held back until its subtree is complete:
+
+```ts title="app/genui/catalog.ts"
+import { defineCatalog, defineComponent } from '@adonis-agora/agent/genui'
+import { BUILTIN_COMPONENTS, Chart, LAYOUT_COMPONENTS } from '@adonis-agora/agent/genui/builtins'
+
+export const catalog = defineCatalog([
+  ...LAYOUT_COMPONENTS,
+  ...BUILTIN_COMPONENTS.filter((c) => c.name !== 'Chart'),
+  defineComponent({ ...Chart, streaming: 'complete' }), // drawn whole, once its props pass the schema
+])
+```
+
+The opposite also works: with the tree on `complete`, a definition with `streaming: 'partial'` previews that one component, as long as no `complete` layout above it holds it back.
+
+### What a renderer learns: `useGenuiNode()`
+
+Inside a tree, `useGenuiNode()` from `@adonis-agora/agent/react/genui` answers `{ id, type, incomplete, held }` (`null` outside a tree):
+
+- **`incomplete`** — the model has not finished writing this node. Its props may be missing or half-built: an array still growing, its last item partial, a string cut mid-word. The renderer is not validated against the catalog while it is `true`, so it defaults what it reads.
+- **`held`** — a `streaming: 'complete'` node waiting for its subtree. It never reaches its renderer: `<GenerativeUI>` draws `placeholder` instead.
+- **`id`** — the node's position (`root`, `root.1`, `root.1.0`), stable from the first preview to the final frame, so React keeps the node mounted while it fills in and when the final tree arrives. No flash, no remount.
+
+`incomplete` only ever means "still being written". It is not a data-loading state: that is the [tool-driven skeleton](#a-tool-driven-skeleton) above.
+
+```tsx title="inertia/genui/renderers.tsx"
+import { useGenuiNode, type GenuiRegistry } from '@adonis-agora/agent/react/genui'
+
+function KpiCards({ items = [] }: { items?: Array<{ label?: string; value?: string | number }> }) {
+  const node = useGenuiNode()
+  // Only items whose label has arrived; the last one may still be half-written.
+  const ready = items.filter((item) => item?.label)
+  if (node?.incomplete && ready.length === 0) return <KpiSkeleton count={2} />
+  return (
+    <div className="kpis">
+      {ready.map((item, index) => (
+        <div key={index} className="kpi">
+          <span>{item.label}</span>
+          {item.value === undefined ? <Bar className="kpi-value" /> : <strong>{item.value}</strong>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function DataTable({ title, columns = [], rows = [] }: Partial<DataTableProps>) {
+  const node = useGenuiNode()
+  const cols = columns.filter((column) => column?.key)
+  if (node?.incomplete && cols.length === 0) return <TableSkeleton title={title} />
+  return (
+    <TableShell title={title} columns={cols} busy={node?.incomplete}>
+      {rows.map((row, index) => (
+        <tr key={index}>{cols.map((c) => <td key={c.key}>{String(row?.[c.key] ?? '')}</td>)}</tr>
+      ))}
+      {/* While rows are still arriving, one skeleton row keeps the table's bottom edge steady. */}
+      {node?.incomplete ? <SkeletonRow columns={cols.length} /> : null}
+    </TableShell>
+  )
+}
+
+function Card({ title, children }: { title?: string; children?: React.ReactNode }) {
+  // A layout draws its frame at once; its children fill in on their own.
+  return (
+    <section className="card">
+      {title ? <h3>{title}</h3> : <Bar className="card-title" />}
+      {children}
+    </section>
+  )
+}
+
+export const registry: GenuiRegistry = { KpiCards, DataTable, Card /* , Chart, … */ }
+```
+
+Held nodes get the provider's `placeholder` — a node, or a function of the node state, so each type can have its own skeleton:
+
+```tsx title="inertia/app.tsx"
+<AgentProvider
+  genui={{
+    registry,
+    catalog,
+    placeholder: (node) => (node.type === 'Chart' ? <ChartSkeleton /> : <BlockSkeleton />),
+  }}
+>
+```
+
+`<GenerativeUI placeholder={…}>` overrides it for one block. A preview the final call does not replace (the tree was invalid, or degraded to text for this client) is withdrawn, and the transcript drops it: the model's retry draws a new one. Previews are never persisted, never sent to text channels, and never sent to a client whose capabilities leave a node of the tree out.
+
+## Drawing skeletons that hold up
+
+The library never styles anything; these are the rules that made skeletons work in production apps.
+
+- **Same footprint as the final component.** Same card, same paddings, same header height, a table's real header row when you know the columns, a chart's axes and plot height. The data then lands without moving anything below it. Size the skeleton for a typical result, not the largest: three rows reads as "a table is coming" without promising twenty.
+- **Readable in both themes.** A skeleton block on a card surface needs contrast with *that* surface: the page-level skeleton color often disappears on a card. Pick a block color one step stronger than the card's background, and check dark mode separately (a white shimmer lights a dark block up; use a faint foreground tint there).
+- **Motion only when it is welcome.** Animate the shimmer under `prefers-reduced-motion: no-preference` only; otherwise the block stays still.
+- **Busy for assistive tech, once.** Mark the skeleton's container `aria-busy="true"`, announce one visually hidden "Loading…" inside it, and hide the decorative blocks (`aria-hidden`). When the data replaces it, the container's content changes and `aria-busy` goes away with the skeleton.
+- **End states are small.** `empty` and `error` are a one-line notice in the component's place, `role="status"` / `role="alert"`, not a full-size frame.
+
+```tsx title="inertia/genui/skeleton.tsx"
+export function Bar({ className = '' }: { className?: string }) {
+  return <span aria-hidden="true" className={`genui-bar ${className}`} />
+}
+
+export function SkeletonShell({ children }: { children: React.ReactNode }) {
+  return (
+    <section className="card" aria-busy="true" data-genui-skeleton>
+      <span className="sr-only">Loading…</span>
+      {children}
+    </section>
+  )
+}
+
+export function TableSkeleton({ title, columns, rows = 3 }: { title?: string; columns?: string[]; rows?: number }) {
+  const count = columns?.length ?? 3
+  return (
+    <SkeletonShell>
+      {title ? <h3>{title}</h3> : <Bar className="card-title" />}
+      <table>
+        <thead>
+          <tr>{columns ? columns.map((c) => <th key={c}>{c}</th>) : Array.from({ length: count }, (_, i) => <th key={i}><Bar /></th>)}</tr>
+        </thead>
+        <tbody>
+          {Array.from({ length: rows }, (_, r) => <SkeletonRow key={r} columns={count} />)}
+        </tbody>
+      </table>
+    </SkeletonShell>
+  )
+}
+
+export function SkeletonRow({ columns }: { columns: number }) {
+  return <tr aria-hidden="true">{Array.from({ length: columns }, (_, c) => <td key={c}><Bar /></td>)}</tr>
+}
+```
+
+```css title="inertia/css/genui.css"
+.genui-bar {
+  --shimmer: color-mix(in oklab, white 70%, transparent);
+  display: block;
+  height: 0.75rem;
+  border-radius: 0.25rem;
+  background: var(--skeleton-on-card); /* one step stronger than the card surface */
+  position: relative;
+  overflow: hidden;
+}
+/* A white shimmer would light a dark block up: a faint foreground tint instead. */
+.dark .genui-bar { --shimmer: color-mix(in oklab, var(--foreground) 8%, transparent); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .genui-bar::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, var(--shimmer), transparent);
+    transform: translateX(-100%);
+    animation: genui-shimmer 1.6s ease-in-out infinite;
+  }
+}
+@keyframes genui-shimmer { to { transform: translateX(100%); } }
+```
+
+## Testing it
+
+The pushes of one call are what you assert: the skeleton, then the data, under one `id`. Drain the run's sink, or collect what `ctx.emitUi` received in a direct handler test:
+
+```ts
+const pushes: Array<{ component: string; props: Record<string, unknown>; id?: string }> = []
+const ctx = {
+  ...baseCtx,
+  uiCapabilities: { components: [{ name: 'OrdersTable', version: 1 }] },
+  emitUi: async (component, props, options) => {
+    const id = options?.id ?? `call-1:ui:${pushes.length}`
+    pushes.push({ component, props, id })
+    return { id }
+  },
+}
+await listOrders.handler.execute({}, ctx) // a defineTool's handler
+expect(pushes.map((p) => [p.id, p.props.state ?? 'data'])).toEqual([
+  ['call-1:ui:0', 'loading'],
+  ['call-1:ui:0', 'data'],
+])
+```
+
+Cover the other paths the same way: no orders ends on `empty`, a failing query on `error`, a turn with `pageContext.channel` or without the component declared pushes no skeleton. For progressive trees, a test that renders `<GenerativeUI>` with a `partial` item whose nodes carry `incomplete: true` checks your skeletons, and the same item without `partial` checks the final drawing.
+
+## See also
+
+- [Generative UI](/docs/agent/generative-ui) — `ctx.emitUi`, the catalog, tree mode and the wire format of partial frames.
+- [Builtin components](/docs/agent/genui-builtins) — the props each builtin renderer receives, and what can be missing while it streams.
+- [One output, many surfaces](/docs/agent/surfaces) — UI capabilities, and what a client that cannot draw a component receives.
+- [Text channels](/docs/agent/channels) — why a channel turn gets the final component only.

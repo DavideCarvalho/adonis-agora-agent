@@ -81,6 +81,7 @@ defineTool(
 - It streams at once as a `ui` event (`{ kind: 'ui', id, component, props, version?, fallbackText?, toolCallId }`).
 - `id` defaults to `<toolCallId>:ui:<n>`; pushing an `id` again replaces that component rather than adding one. `props` must be a JSON object (it is snapshotted at the push). `version` names the props' schema version, so a client can keep rendering components an older server persisted. `fallbackText` is the text a client shows when it cannot draw the component.
 - With `genui` configured, the push is checked against the catalog resolved for the request: the component must be defined there, a given `version` must be the definition's, and the props must pass its schema — otherwise `emitUi` throws. The server then stamps the definition's `version` and generates `fallbackText` from it (any `fallbackText` option is replaced). A component the client did not declare in its [UI capabilities](/docs/agent/surfaces#ui-capabilities) is streamed and persisted as text instead, and `emitUi` still resolves with its `id`.
+- A placeholder first, then the data under the same `id`, is how a tool shows a skeleton while it reads — with the empty and error ends, and when not to send one, in [Loading states and skeletons](/docs/agent/genui-loading-states#a-tool-driven-skeleton).
 - Once the step's tools have settled, every component they pushed is **persisted on the assistant message** (`StoredMessage.ui`, after what the model turn itself streamed), so `GET /agent/threads/:id` returns what the live stream showed. The pushes ride the tool step's journaled result, so a durable replay neither re-streams nor re-persists them. A custom `AgentStore` opts in with `setMessageUi` (optional).
 
 ### A component catalog — `@adonis-agora/agent/genui`
@@ -196,6 +197,8 @@ defineComponent({ ...Chart, streaming: 'complete' })
 ```
 
 While the model writes it, such a node is sent as a placeholder, `{ id, type, props: {}, incomplete: true, held: true }`, without its children; it is drawn once its whole subtree has arrived and its props pass its schema. `streaming: 'partial'` on a definition does the opposite — previews a component in a tree that defaults to `complete`, though a `complete` layout above it still holds it back. The default stays `complete` because a renderer written for validated props would be handed half-written ones: opting in is saying your renderers cope (see [In React](#in-react)).
+
+How renderers draw skeletons for incomplete and held nodes is in [Loading states and skeletons](/docs/agent/genui-loading-states#progressive-trees).
 
 The mechanism is a hook any tool can implement: `ToolHandler.previewInput(scope)` answers how to preview a streamed call (`render(partialInput)` → a frame, `undefined` for nothing new, `null` to withdraw), and the loop does the parsing (`parsePartialJson`, exported), the throttling and the withdrawal.
 
@@ -504,6 +507,7 @@ frameToEvents({ t: 'component', name: 'card', data: { a: 1 } }, 0)
 
 - [React](/docs/agent/react) — the provider and `useAgentChat`, whose transcript carries these components as `ui` blocks.
 - [Browser client](/docs/agent/browser-client) — the framework-free SSE client that decodes the same frames.
+- [Loading states and skeletons](/docs/agent/genui-loading-states) — tool-driven skeletons, progressive trees and skeleton renderers.
 - [Tools](/docs/agent/authoring/tools) — how to author the tool that calls `emitUi`, and the full `AiToolCtx`.
 - [Builtin components](/docs/agent/genui-builtins) — `BUILTIN_COMPONENTS` and `LAYOUT_COMPONENTS`, their props and text fallbacks.
 - [One output, many surfaces](/docs/agent/surfaces) — UI capabilities, text fallbacks, and what AG-UI, text channels and MCP receive.
