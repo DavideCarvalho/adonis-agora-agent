@@ -1,5 +1,13 @@
 # @adonis-agora/agent
 
+## 0.66.1
+
+### Patch Changes
+
+- [#329](https://github.com/DavideCarvalho/adonis-agora-agent/pull/329) [`610351a`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/610351a87e6cbe2d7a008ec078295c9a6cd474d8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - The native genui tree renderer (`@adonis-agora/agent/react/genui`) re-renders only the nodes that changed. The transcript keeps a pushed component's block, and the tree renderer keeps each node, the same object while it is structurally equal to the previous frame's, and tree nodes are memoized on that identity. Before, every node rendered again on each chat update (every token, every partial frame), and a renderer that set state in a layout effect (a chart that measures itself) could drive a fast stream into "Maximum update depth exceeded". A node whose props grew, or whose `incomplete`/`held` flag flipped, still renders.
+
+- [#329](https://github.com/DavideCarvalho/adonis-agora-agent/pull/329) [`610351a`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/610351a87e6cbe2d7a008ec078295c9a6cd474d8) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `useAgentChat` stops reading action proposals from a server that does not serve them. The first `404`, `405` or `501` from `GET threads/:id/action-proposals` (other than the library's own "unknown thread") marks proposals unsupported for that client: no more polling or refetching, and `chat.proposals.unsupported` is `true`. Transient failures keep polling, with a wait that doubles per failure up to 30 s.
+
 ## 0.66.0
 
 ### Minor Changes
