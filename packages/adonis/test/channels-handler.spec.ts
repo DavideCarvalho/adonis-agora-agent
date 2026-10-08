@@ -291,7 +291,8 @@ describe('channels.handle', () => {
     expect(one.service.decided).toEqual([[actor, 't', carded, 'approved', {}, 'test']]);
     expect(one.service.sends.map((send) => send.message)).toEqual(['refund A-1']);
 
-    // Not a label of ours, or no card remembered: the text goes on as a message (text decisions).
+    // No card remembered: the label is a text decision with nothing of this conversation to
+    // decide (the pending proposal was never sent here). Not a label of ours: a message.
     const other = setup([carded]);
     await other.handle(makeCtx(inbound('Confirm', { buttonWithoutId: true })).ctx);
     await other.handle.drain();
@@ -300,11 +301,8 @@ describe('channels.handle', () => {
     await other.handle(makeCtx(inbound('Maybe', { buttonWithoutId: true })).ctx);
     await other.handle.drain();
     expect(other.service.decided).toEqual([]);
-    expect(other.service.sends.map((send) => send.message)).toEqual([
-      'Confirm',
-      'refund A-1',
-      'Maybe',
-    ]);
+    expect(other.service.sends.map((send) => send.message)).toEqual(['refund A-1', 'Maybe']);
+    expect(texts(other.outbox)[0]).toBe('There is nothing waiting for your confirmation here.');
   });
 
   it('reads its own button labels as decisions in the matching vocabulary', () => {
@@ -356,8 +354,11 @@ describe('channels.handle', () => {
     await handle(makeCtx(inbound('Cancel', { buttonWithoutId: true })).ctx);
     await handle.drain();
     expect(service.decided).toEqual([]);
-    // It goes on as text, where the vocabulary's decision asks which proposal (#id).
-    expect(service.sends.map((send) => send.message)).toEqual(['two refunds', 'Cancel']);
+    // It goes on as a text decision, which asks which of this conversation's cards (#id).
+    expect(service.sends.map((send) => send.message)).toEqual(['two refunds']);
+    expect(texts(outbox).at(-1)).toBe(
+      `Which one? Reply *yes #ID* or *no #ID*: #proposal-${'a'.repeat(64)}, #${second}`,
+    );
   });
 
   it('without buttons, tells the person what to reply — in the configured vocabulary', async () => {

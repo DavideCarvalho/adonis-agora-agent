@@ -3,6 +3,8 @@ import {
   type ChannelFetch,
   ChannelMediaTooLargeError,
   fetchBytes,
+  mediaFilename,
+  postForm,
   postJson,
   record,
   safeEqual,
@@ -15,8 +17,18 @@ import type {
   ChannelRequest,
   InboundMedia,
   InboundMessage,
+  OutboundMedia,
   OutboundMessage,
 } from '../types.js';
+
+const FILE_METHODS: Record<OutboundMedia['kind'], [string, string]> = {
+  image: ['sendPhoto', 'photo'],
+  document: ['sendDocument', 'document'],
+  audio: ['sendAudio', 'audio'],
+  video: ['sendVideo', 'video'],
+};
+/** The longest caption Telegram takes. */
+const MAX_CAPTION = 1024;
 
 export interface TelegramOptions {
   /** The bot's token from @BotFather. */
@@ -105,7 +117,8 @@ function pressedLabel(message: Record<string, unknown> | undefined, data: string
  * with `getFile`, which serves up to 20 MB) and inline-keyboard presses (`callback_query`, answered with
  * `answerCallbackQuery` and the keyboard removed so it cannot be pressed twice); ignores bots and
  * (unless `groups`) group chats. Sends `sendMessage` in MarkdownV2 — when Telegram refuses the
- * formatting, the same text goes again as plain text.
+ * formatting, the same text goes again as plain text. Files go with `sendPhoto` / `sendDocument` /
+ * `sendAudio` / `sendVideo` (by URL, or uploaded as `multipart/form-data` when given as bytes).
  */
 export function telegram(options: TelegramOptions): ChannelAdapter {
   const name = options.name ?? 'telegram';
@@ -116,6 +129,43 @@ export function telegram(options: TelegramOptions): ChannelAdapter {
   const api = `${origin}/bot${options.botToken}`;
   const call = (method: string, body: unknown) =>
     postJson(name, fetcher, `${api}/${method}`, {}, body, timeoutMs);
+  /** `sendPhoto` / `sendDocument` / `sendAudio` / `sendVideo`, by URL or uploaded. */
+  const sendFile = async (chatId: string, media: OutboundMedia, caption: string) => {
+    const [method, field] = FILE_METHODS[media.kind];
+    const formatted = caption !== '' && markdown ? { parse_mode: 'MarkdownV2' } : {};
+    const send = (text: string, format: Record<string, string>) => {
+      if (media.url !== undefined)
+        return call(method, {
+          chat_id: chatId,
+          [field]: media.url,
+          ...(text !== '' ? { caption: text, ...format } : {}),
+        });
+      if (media.data === undefined) throw new Error(`${name}: a file needs a url or its data`);
+      return postForm(
+        name,
+        fetcher,
+        `${api}/${method}`,
+        {},
+        {
+          chat_id: chatId,
+          ...(text !== '' ? { caption: text, ...format } : {}),
+          [field]: {
+            data: media.data,
+            contentType: media.contentType ?? 'application/octet-stream',
+            filename: mediaFilename(media),
+          },
+        },
+        timeoutMs,
+      );
+    };
+    try {
+      await send(caption, formatted);
+    } catch (error) {
+      if (!('parse_mode' in formatted)) throw error;
+      if (!(error instanceof ChannelDeliveryError) || error.status !== 400) throw error;
+      await send(unescapeTelegramMarkdown(caption), {});
+    }
+  };
   const privateOnly = (chat: Record<string, unknown> | undefined) =>
     options.groups === true || chat?.type === 'private';
 
@@ -125,6 +175,8 @@ export function telegram(options: TelegramOptions): ChannelAdapter {
       buttons: MAX_BUTTONS,
       markdown: markdown ? 'telegram' : 'none',
       maxLength: MAX_TEXT,
+      media: true,
+      maxCaptionLength: MAX_CAPTION,
     },
 
     verify(request: ChannelRequest) {
@@ -213,9 +265,18 @@ export function telegram(options: TelegramOptions): ChannelAdapter {
     },
 
     async send(conversation: string, message: OutboundMessage) {
+      if (message.media !== undefined) {
+        await sendFile(conversation, message.media, message.text.slice(0, MAX_CAPTION));
+        return;
+      }
+      // Telegram has no footer: it goes under the text.
+      const text =
+        message.footer !== undefined && message.footer.trim() !== ''
+          ? `${message.text}\n\n${message.footer}`
+          : message.text;
       const body = {
         chat_id: conversation,
-        text: message.text,
+        text,
         link_preview_options: { is_disabled: true },
         ...(message.buttons !== undefined && message.buttons.length > 0
           ? {
@@ -238,7 +299,7 @@ export function telegram(options: TelegramOptions): ChannelAdapter {
       } catch (error) {
         // "can't parse entities": the same words, unformatted, beat no answer.
         if (!(error instanceof ChannelDeliveryError) || error.status !== 400) throw error;
-        await call('sendMessage', { ...body, text: unescapeTelegramMarkdown(message.text) });
+        await call('sendMessage', { ...body, text: unescapeTelegramMarkdown(text) });
       }
     },
   };

@@ -1,6 +1,6 @@
 ---
 title: Text channels
-description: Put the agent on WhatsApp (Evolution API or the Cloud API) and Telegram — one webhook route per channel that verifies, deduplicates, answers in the background, converts markdown, splits long replies, attaches media, asks questions as text, turns proposals into Confirm/Cancel buttons and relays their outcomes.
+description: Put the agent on WhatsApp (Evolution API, Whatsmiau or the Cloud API) and Telegram — one webhook route per channel that verifies, deduplicates, answers durably and in order, converts markdown, splits long replies, attaches media, sends files, asks questions as text, turns proposals into Confirm/Cancel buttons and relays their outcomes — with hooks for the app's own flows.
 icon: MessageCircle
 ---
 
@@ -17,12 +17,13 @@ For every webhook the handler:
 1. **Verifies** it is the provider's (a shared token, a signature) — `401` otherwise.
 2. **Parses** the person's message; delivery receipts, the bot's own messages and groups are ignored.
 3. **Deduplicates** by the provider's message id, so a retried webhook starts one turn.
-4. **Answers `200` at once.** The turn runs after the response, so a slow model never makes the provider time out and retry.
-5. **Attaches media** — an image, a voice note, a document — after downloading it and staging it in the [attachment store](/docs/agent/authoring/attachments), or answers why it cannot.
-6. Sends the message to the agent with **text-only capabilities**: every component arrives as its `fallbackText` ([Surfaces](/docs/agent/surfaces#ui-capabilities)). A [text decision](/docs/agent/independent-approvals#text-decisions) ("yes", "confirm #ID") is answered with its reply instead of starting a turn.
-7. Collects the reply, **converts its markdown** to the channel's dialect, **splits** it at the channel's length limit (on paragraph, line or sentence boundaries) and sends it.
-8. Sends a **question** the turn asks (the `ask` tool, an intake) as text with numbered options, and reads the person's next messages as the answers.
-9. Puts any **proposal** the turn left pending to the person — with Confirm/Cancel **buttons** where the channel has them, else with a text instruction in the configured vocabulary — and, once one is approved and executed, relays its outcome.
+4. **Takes the message and answers `200` at once.** With a [durable engine](#durable-processing) the message is persisted as a run before the `200`; the turn runs after the response, so a slow model never makes the provider time out and retry. Messages of one conversation are handled **one at a time, in order**; each step is retried, and every outgoing message is sent **at most once**, even when the work runs again after a crash.
+5. Runs the app's [hooks](#hooks): `unknownSender` for a sender `actor()` does not know, `beforeTurn` for the app's own flows (terms, onboarding, a quota).
+6. **Attaches media** — an image, a voice note, a document — after downloading it (`prepareMedia` may turn a voice note into text) and staging it in the [attachment store](/docs/agent/authoring/attachments), or answers why it cannot.
+7. Sends the message to the agent with **text-only capabilities** by default: every component arrives as its `fallbackText` ([Surfaces](/docs/agent/surfaces#ui-capabilities)) — or as a file `renderComponent` makes of it. A [text decision](/docs/agent/independent-approvals#text-decisions) ("yes", "confirm #ID") decides a card **delivered to this conversation** and is answered with its reply instead of starting a turn.
+8. Collects the reply, **converts its markdown** to the channel's dialect, **splits** it at the channel's length limit (on paragraph, line or sentence boundaries) and sends it — every message checked by `canDeliver` first.
+9. Sends a **question** the turn asks (the `ask` tool, an intake) as text with numbered options, and reads the person's next messages as the answers.
+10. Puts any **proposal** the turn left pending to the person — with Confirm/Cancel **buttons** where the channel has them, else with a text instruction in the configured vocabulary — and, once one is approved and executed, relays its outcome.
 
 <Callout type="warn" title="Use independent approvals">
 A text channel wants [`actionApprovalMode: 'independent'`](/docs/agent/independent-approvals). In the default blocking mode an `action` call holds its turn open until someone decides it, which a text channel cannot do: the handler sends the text produced so far plus `texts.blockingApproval` ("This action needs an approval that can only be given in the app.") and stops reading the run, which stays parked until it is decided in the app or expires. Buttons and text decisions work only on independent proposals.
@@ -248,9 +249,37 @@ Markdown conversion reads the model's markdown and the components' Slack-style f
 When a turn leaves a proposal pending, the handler sends its confirmation (the tool's `presentation.confirm` title and detail) after the reply:
 
 - **With buttons** — `Confirm` and `Cancel` (`texts.approve` / `texts.reject`), whose ids are `agora:approve:<ref>` / `agora:reject:<ref>` (`ref` is the proposal id's last 32 characters, so it fits Telegram's 64-byte `callback_data`). A press is matched against the thread's proposals and decided through `AgentService.decideActionProposal` — the same scoped, policy-checked decision a [text decision](/docs/agent/independent-approvals#text-decisions) makes — recorded with `via` set to the adapter's name (`'whatsapp'`, `'telegram'`). The reply is the configured `actionProposalText.replies` text.
-- **Without buttons** — the confirmation plus `texts.instruction({ approve, reject })`, where `approve`/`reject` are the first words of the configured vocabulary (`yes`/`no`, or `sim`/`não` with `ptBrActionProposalText`), with `#<proposalId>` appended when the turn left more than one. The person's reply goes through `AgentService.send` like any message and is recognized as a text decision there.
+- **Without buttons** — the confirmation plus `texts.instruction({ approve, reject })`, where `approve`/`reject` are the first words of the configured vocabulary (`yes`/`no`, or `sim`/`não` with `ptBrActionProposalText`), with `#<proposalId>` appended when the turn left more than one.
+
+`texts.footer` (a string, or a function of the proposal) adds a short line to every card — "Valid for 5 minutes." — as the provider's footer where it has one (Evolution/Whatsmiau `sendButtons`, the Cloud API's interactive message), else under the text; the text fallback ends with it too.
+
+### Text decisions are scoped to the conversation
+
+A text decision on a channel — "yes", "no #ID", a button label typed or forwarded without its id — only decides a proposal whose **card was delivered to that conversation** (the handler remembers the cards it sent to each conversation in the channel store, 24 h, up to 20). The channel reads the decision itself and starts turns with `AgentService.send(params, { textDecisions: false })`, so the agent's own text decisions — which would reach any pending proposal of the thread — never run on a channel:
+
+- one delivered card pending → it is decided (`via` = the adapter's name), with the configured reply;
+- several → `texts.ambiguousDecision(ids, commands)` asks for the `#ID`;
+- a proposal pending in the thread that was **not** delivered here (made in the web app, say), or an `#ID` naming one → `texts.noPendingConfirmation` ("There is nothing waiting for your confirmation here."), and nothing is decided;
+- nothing pending at all → "yes" is an ordinary message, and starts a turn.
+
+`allowRemember: false` refuses "always in this conversation" (`texts.rememberRefused`): every action needs its own confirmation on that channel. Decisions are read from the message after `prepareMedia` and `transformInbound`, so a transcribed voice note decides like typed text.
 
 After an approval (by button or text) the handler waits up to `outcomeTimeoutMs` (default 60 s; `0` turns it off) for the [worker](/docs/agent/independent-approvals#execution) to execute it, then sends what the tool's presentation said, else `texts.actionSucceeded` ("Done."), or `texts.actionFailed`.
+
+`formatOutcome(proposal, { text, texts })` decides what an executed proposal says, as a list sent in order — the outcome, then follow-ups. A reply `{ text, raw: true }` goes exactly as given, alone in its message (no markdown conversion): a message the person forwards as is.
+
+```ts
+channels.handle(whatsapp, {
+  // …
+  formatOutcome(proposal, { text }) {
+    const forward = (proposal.execution?.result as { forward?: string } | undefined)?.forward
+    if (!forward) return null // the default: [text]
+    return ['Done! Forward the message below:', { text: forward, raw: true }]
+  },
+})
+```
+
+The whole list is relayed once (the handler's wait and `channels.onSettled` share one claim), and `canDeliver` is asked for each message with `kind: 'outcome'` and the proposal's `actorRef`.
 
 ### Outcomes that settle later
 
@@ -283,6 +312,29 @@ export default defineConfig({
 })
 ```
 
+Two hooks shape it:
+
+- `mediaLimits(limits, media)` — the limits for one file: let `audio/ogg` through for a hook that transcribes it.
+- `prepareMedia(file, media, context)` — after the download: `{ text }` reads the file as text (a voice note's transcript — added to the message, not attached), `{ file }` attaches another file (converted, resized), `{ refuse: reason }` refuses it; nothing attaches it as is.
+
+Then `transformInbound({ text, attachments }, context)` sees the message as it goes to the agent — add a note about the attachments, or a default question for an image sent without a caption.
+
+```ts
+channels.handle(whatsapp, {
+  // …
+  mediaLimits: (limits, media) =>
+    media.kind === 'audio' && limits
+      ? { maxBytes: Math.max(limits.maxBytes, 16 * 1024 * 1024), allowedContentTypes: [...limits.allowedContentTypes, 'audio/ogg'] }
+      : limits,
+  prepareMedia: async (file, media) =>
+    media.kind === 'audio' ? { text: await transcribe(file.data) } : undefined,
+  transformInbound: ({ text, attachments }) => ({
+    text: attachments.length > 0 && text === '' ? 'What is in this file?' : text,
+    attachments,
+  }),
+})
+```
+
 What cannot be attached gets a short answer instead (`texts.mediaRefused(reason, media, limits)`): no attachment store (`'disabled'`), a type outside the allowlist (`'type'` — a WhatsApp voice note is `audio/ogg`, which the default allowlist does not take, so the person is asked to type), a file past the size limit (`'size'`), or a failed download (`'failed'`). A caption still reaches the agent without its file; a file with no caption that could not be attached starts no turn.
 
 ## Questions
@@ -301,7 +353,7 @@ Reply with the number of your choice.
 Reply *skip* to keep: Small.
 ```
 
-The person's next message is the answer, not a new turn: a number or an option's label (several, separated by commas, for a multiple choice), a typed value for a typed question or one that allows free text, or `skip` (`pular` in Portuguese) to keep the pre-picked answers. An answer that does not fit is refused with the reason and the question is asked again. After the last one the handler resumes the run with `AgentService.answer` (`answeredVia` = the adapter's name), and the turn's reply arrives as usual. A question nobody answers within `questionTimeoutMs` (default 30 minutes) is skipped, and the agent proceeds on its own assumptions. The question in progress lives in the channel's store, so the answer may land on another replica. Wording: `texts.questions` (`pickOne`, `pickMany`, `orWrite`, `skipWord`, `keep`, `invalid`, `counter`).
+While a question waits, the conversation is not held: the turn is parked, the next message is read as the answer, and the last answer resumes the run, whose reply is then read from its stream. The person's next message is the answer, not a new turn: a number or an option's label (several, separated by commas, for a multiple choice), a typed value for a typed question or one that allows free text, or `skip` (`pular` in Portuguese) to keep the pre-picked answers. An answer that does not fit is refused with the reason and the question is asked again. After the last one the handler resumes the run with `AgentService.answer` (`answeredVia` = the adapter's name), and the turn's reply arrives as usual. A question nobody answers within `questionTimeoutMs` (default 30 minutes) is skipped, and the agent proceeds on its own assumptions. The question in progress lives in the channel's store, so the answer may land on another replica. Wording: `texts.questions` (`pickOne`, `pickMany`, `orWrite`, `skipWord`, `keep`, `invalid`, `counter`).
 
 ## Language
 
@@ -321,6 +373,86 @@ channels.handle(whatsapp, {
 })
 ```
 
+## Durable processing
+
+When the agent runs on [`@adonis-agora/durable`](/docs/agent/durability/durable-runner) (`durable: true` in `config/agent.ts`), the channels run on the same engine — nothing to configure (`durable: false` opts out; `durable: engine` names one):
+
+- **Persisted before the `200`.** Each message is started as a run of the `agora.channel.job` workflow under an id derived from the provider's message id (`agora.channel:<channel>:message:<id>`) before the webhook is acknowledged. An engine (or store) that cannot take it answers `500`, the message id is released, and the provider retries.
+- **One at a time per conversation.** The workflow is a singleton per `<channel>:<conversation>`: a second message waits (durably, in order) until the first one's reply was sent — the per-conversation lock a queue job used to need. A question the turn asks does not hold it: the answer is the next message.
+- **Phases as steps, retried.** A job is three checkpointed steps — `prepare` (the sender, `unknownSender`, `beforeTurn`, the thread), `act` (an answer, a press, a decision, or the turn: media, `transformInbound`, `AgentService.send`) and `read` (the turn's stream, delivered). Each is retried with backoff (`retry: { attempts, backoffMs, maxBackoffMs, retryable }` — 3 attempts from 1 s by default; a refusal that retrying cannot change, such as a `QuotaBlockedError` or a provider `4xx`, is not retried). What still fails goes to `onError`.
+- **Recovered after a crash.** A process that dies mid-message leaves its run to the engine's recovery, which resumes it on another process (or the restarted one): completed steps are not run again, the turn is never started twice (its run id is kept under the message id), and the reply of a turn that finished while the process was down is read from the run's stream (which [replays from its start](/docs/agent/redis-streaming)) and sent.
+- **Never answered twice.** Every outgoing message takes a numbered slot in the channel store before it is sent, so a step that runs again skips what already went; a send that fails frees its slot for the retry. The outcome of a proposal is claimed once, as before.
+
+The recovering process must know the channel: create the handlers at boot, in every process that runs durable work (a preload file, or `start/routes.ts` when the web process runs the engine) — not lazily on the first webhook. A process that has not registered a channel leaves its runs for one that has.
+
+What can still be lost is a message whose send was in flight when the process died (sent at most once: it is not repeated). Hooks before the reply (`actor`, `unknownSender`, `beforeTurn`, `prepareMedia`, `transformInbound`, `onTurnStarted`) may run again when a step is retried or recovered — make their side effects idempotent (key them by `message.id`).
+
+**Without a durable engine** the same pipeline runs in the web process after the `200`: in order per conversation, with retries and the same at-most-once sends, but nothing survives a restart — a process that stops mid-turn loses that reply (the provider will not retry an acknowledged webhook). `await handler.drain()` from a shutdown hook waits for what is in flight.
+
+## Hooks
+
+Generic hooks for what an app does around the conversation — each optional:
+
+| Hook | When | Returns |
+| --- | --- | --- |
+| `unknownSender(message, context)` | `actor()` mapped the sender to nobody | replies to send (an onboarding step, a "link your number" link), or nothing. Default: `texts.unknownSender`. |
+| `beforeTurn(message, actor, context)` | before anything else for a known sender — answers, presses, decisions, turns | `'continue'` (or nothing), `'stop'`, `{ reply }` or `{ replies }` (sent, then stop). Terms to accept, an account to finish, a quota. |
+| `canDeliver(delivery)` | before **every** message sent — replies, cards, questions, relayed outcomes | `false` drops it. `delivery` has the `conversation`, the `outbound` message, `kind` (`reply`, `card`, `question`, `outcome`, `gate`, `notice`), the `actor` / `actorRef`, the inbound `message` and the `proposal`. Re-check that the number still belongs to the account. |
+| `texts` as a function | per message (and per relayed outcome) | the texts for `{ actor, message, proposal }` — the actor's locale. |
+| `onTurnStarted({ runId, threadId, actor, message, queued })` | a message started (or queued) a turn | — record its channel, start a meter. |
+| `uiCapabilities` + `renderComponent(component, context)` | a component the turn drew | a file (a chart as an image), text, several, or nothing for its `fallbackText`. |
+| `mediaLimits`, `prepareMedia`, `transformInbound` | an inbound file / the message going to the agent | see [Media](#media). |
+| `formatOutcome(proposal, { text, texts })` | an executed proposal | the outcome and its follow-ups, in order. See [Outcomes](#proposals-buttons-and-text). |
+| `onWebhook(event)` | every webhook request | — `{ status: 'accepted' \| 'duplicate' \| 'ignored' \| 'unauthorized' \| 'challenge' \| 'method_not_allowed' \| 'failed', reason, event, accepted, duplicates, messages }`: counters and logs without parsing the body again. |
+
+A hook's reply (`ChannelReply`) is a string in the model's markdown (converted and split), `{ text, raw: true }` (sent exactly as given), or `{ media, caption?, fallbackText? }` — a file.
+
+```ts
+channels.handle(whatsapp, {
+  actor: (message) => accountActor(message.from), // null → unknownSender
+  unknownSender: async (message) =>
+    (await isLead(message.from)) ? await onboardingStep(message) : `Link your number: ${linkUrl()}`,
+  beforeTurn: async (message, actor) =>
+    (await termsAccepted(actor)) ? 'continue' : { reply: termsText(actor) },
+  canDeliver: async ({ conversation, actor, actorRef }) =>
+    (await accountActor(phoneOf(conversation)))?.id === (actor?.id ?? actorRef),
+  texts: ({ actor }) => textsIn(localeOf(actor)),
+  onTurnStarted: ({ runId }) => recordRunChannel(runId, 'whatsapp'),
+  onWebhook: ({ status, reason }) => recordWebhookOutcome(status, reason),
+  // …
+})
+```
+
+### Components as files
+
+The turn negotiates components with `uiCapabilities` (default `{ components: [] }`: all arrive as their `fallbackText`). `renderComponent` turns one into what the channel sends — an image of a chart, say — or returns nothing for its `fallbackText`:
+
+```ts
+channels.handle(whatsapp, {
+  // …
+  uiCapabilities: { components: [{ name: 'GrowthChart', versions: [1] }] },
+  renderComponent: async (component, { rendered }) =>
+    rendered < 3 && drawable(component.name)
+      ? { media: { kind: 'image', url: await chartImageUrl(component), contentType: 'image/png' } }
+      : null,
+  texts: { componentsOnly: () => 'Here is the chart.' },
+})
+```
+
+Rendered components are sent when the turn ends (or asks a question), before its text; a later frame with the same id replaces the earlier one; a failed turn sends none of them. `texts.componentsOnly(components)` is said after them when the turn wrote no text.
+
+### Sending files
+
+`OutboundMessage` may carry a file: `{ text: caption, media: { kind: 'image' | 'document' | 'audio' | 'video', url?, data?, contentType?, filename? } }`. The built-in adapters declare `capabilities.media` and send it:
+
+| | by URL | by bytes |
+| --- | --- | --- |
+| `evolutionApi` / `whatsmiau` | `POST /message/sendMedia/{instance}` (`media: url`) | the same, `media` as base64 |
+| `whatsappCloud` | `{ type, [type]: { link, caption } }` | uploaded first (`POST /{phone-number-id}/media`), then by id |
+| `telegram` | `sendPhoto` / `sendDocument` / `sendAudio` / `sendVideo` with the URL | the same, `multipart/form-data` |
+
+A channel without `capabilities.media` gets the reply's `fallbackText` (or caption) as text instead.
+
 ## Options
 
 `channels.handle(adapter, options)`:
@@ -330,22 +462,27 @@ channels.handle(whatsapp, {
 | `actor(message)` | — | The sender's `Actor`, or `null` to not answer. This is the authentication of every message. |
 | `thread(actor, message)` | — | The thread to continue, or `null`/`undefined` for a new one. |
 | `onThreadCreated(threadId, actor, message)` | — | A new thread was created for the conversation. |
+| `unknownSender`, `beforeTurn`, `canDeliver`, `onTurnStarted`, `renderComponent`, `mediaLimits`, `prepareMedia`, `transformInbound`, `formatOutcome`, `onWebhook` | — | See [Hooks](#hooks). |
+| `durable` | the agent's engine when it runs durably | `false` → in this process; an engine → that one. See [Durable processing](#durable-processing). |
+| `retry` | 3 attempts, from 1 s | `{ attempts, backoffMs, maxBackoffMs, retryable(error) }` per phase. |
+| `allowRemember` | `true` | `false` refuses "always in this conversation" in text decisions. |
+| `uiCapabilities` | `{ components: [] }` | What the turn may draw (with `renderComponent`). |
 | `pageContext` | `{ kind: adapter.name }` | An object, or a function of the message. `channel: { name, conversation }` is added to it. |
 | `agentName` | the thread's, else the default | The agent that answers. |
 | `service` | `AgentService` from the container | Anything with the same `send`/`subscribe`/… methods (`ChannelTurnService`). |
-| `store` | `lucidChannelStore()` when the agent store is Lucid, else in-process memory | Where message ids, questions in progress and relayed outcomes are kept (`ChannelStore`). |
-| `dedupeTtlMs` | 24 h | How long a message id is remembered. |
+| `store` | `lucidChannelStore()` when the agent store is Lucid, else in-process memory | Where message ids, sent messages, cards, questions in progress and relayed outcomes are kept (`ChannelStore`). |
+| `dedupeTtlMs` | 24 h | How long a message id (and what was sent for it) is remembered. |
 | `timeoutMs` | 5 min | Stop waiting for a turn, cancel it and send what it produced. |
 | `outcomeTimeoutMs` | 60 s | How long to wait for an approved proposal to execute. |
 | `questionTimeoutMs` | 30 min | How long a question waits for its answer. |
-| `texts` | English, or Brazilian Portuguese with `ptBrActionProposalText` | `approve`, `reject`, `proposal(p)`, `instruction(commands)`, `blockingApproval`, `failed`, `actionSucceeded`, `actionFailed`, `mediaRefused(reason, media, limits)`, `questions`, `unknownSender`. |
-| `onError(error, message)` | `console.error` | A message whose handling threw (after the `200`). |
+| `texts` | English, or Brazilian Portuguese with `ptBrActionProposalText` | An object, or a function of `{ actor, message, proposal }`: `approve`, `reject`, `proposal(p)`, `footer`, `instruction(commands)`, `blockingApproval`, `failed`, `actionSucceeded`, `actionFailed`, `noPendingConfirmation`, `ambiguousDecision(ids, commands)`, `rememberRefused`, `mediaRefused(reason, media, limits)`, `questions`, `unknownSender`, `componentsOnly(components)`. |
+| `onError(error, message)` | `console.error` | A message whose handling failed (after its retries). |
 
-A run that fails sends what it produced and `texts.failed`. A message that arrives while the conversation's previous turn is still running is [queued](/docs/agent/streaming-and-http#message-queue) and answered when its turn runs.
+A run that fails sends what it produced and `texts.failed`. A message that arrives while the conversation's previous message is still being handled waits for it (one at a time per conversation).
 
 ### The channel store and several replicas
 
-The handler keeps three short-lived things: the provider message ids it took (a retried webhook starts one turn), the question a conversation is answering, and the outcomes it relayed. Each entry expires.
+The handler keeps short-lived things: the provider message ids it took (a retried webhook starts one turn), the turn each message started, the messages it sent (one slot each), the cards sent to each conversation, the question a conversation is answering, and the outcomes it relayed. Each entry expires.
 
 - **Lucid store (the default with `stores.lucid()`).** When the agent's own store is Lucid, the handler uses `lucidChannelStore()` over the same database: one row per key in `agent_channel_state` (`key` primary key, `value`, `expires_at`). A claim is a single `INSERT … ON CONFLICT DO NOTHING` (`INSERT IGNORE` on MySQL), so the primary key is the lock across replicas; expired rows are deleted as claims come in. The table is created on first use and by `createAgentTables` / the published migration, like the other agent tables. Chosen because an app on the Lucid store already has a database every replica shares, and needs nothing else.
 - **In memory** otherwise — one process only.
@@ -360,10 +497,10 @@ channels.handle(adapter, { …, store: redisChannelStore(redis) }) // SET … PX
 channels.handle(adapter, { …, store: lucidChannelStore(db, { connection: 'pg', table: 'wa_state' }) })
 ```
 
-`lucidChannelStore(db, { connection?, table?, autoCreateTables?, purgeEveryMs? })`; anything implementing `ChannelStore` (`claim`, `get`, `set`, `delete`, with TTLs) works. The turn itself runs on the replica that took the webhook; its frames reach it through whatever [token sink](/docs/agent/redis-streaming) is configured.
+`lucidChannelStore(db, { connection?, table?, autoCreateTables?, purgeEveryMs? })`; anything implementing `ChannelStore` (`claim`, `get`, `set`, `delete`, with TTLs) works. Without a durable engine the turn runs on the replica that took the webhook; with one, on whichever process the engine runs the job. Its frames reach it through whatever [token sink](/docs/agent/redis-streaming) is configured — a shared one (Redis, Lucid) for a job resumed on another process.
 
 <Callout type="info" title="Background work and deploys">
-The handler answers `200` before the turn runs, so a process that stops mid-turn loses that answer (the provider will not retry an acknowledged webhook). `await handler.drain()` waits for every turn the handler started — call it from a shutdown hook, and in tests.
+Without a durable engine the handler answers `200` before the turn runs, so a process that stops mid-turn loses that answer (the provider will not retry an acknowledged webhook). `await handler.drain()` waits for every message the handler took — call it from a shutdown hook, and in tests. With a durable engine nothing is lost on a restart: the engine resumes the job ([Durable processing](#durable-processing)).
 </Callout>
 
 ## Writing an adapter
@@ -385,7 +522,9 @@ export const sms: ChannelAdapter = {
   async send(conversation, message) {
     // `message.buttons` only arrives when `capabilities.buttons` is 2 or more;
     // `message.fallbackText` is the same message as text, for when the buttons are refused;
-    // `message.instruction` the reply instruction alone, for buttons that may not render.
+    // `message.instruction` the reply instruction alone, for buttons that may not render;
+    // `message.footer` a card's footer line (already at the end of `fallbackText`);
+    // `message.media` a file (with `message.text` as its caption) — only with `capabilities.media`.
     await smsApi.send(conversation, message.buttons ? message.fallbackText : message.text)
   },
 }
@@ -396,11 +535,12 @@ export const sms: ChannelAdapter = {
 - `challenge(request)` (optional) answers a request that is not a message, such as a subscription check, before `verify`.
 - `acknowledge(message)` (optional) runs in the background before the turn — Telegram's `answerCallbackQuery`.
 - `parse` may put files on `message.media` (`{ kind, contentType?, filename?, sizeBytes?, ref }`); `download(media, { maxBytes })` (optional) fetches one and throws `ChannelMediaTooLargeError` past `maxBytes` without reading the rest. Without `download`, media is answered with `texts.mediaRefused('disabled', …)`.
+- `handler.handleRequest(request)` runs the same flow for a `ChannelRequest` built by hand, answering `{ status, body }`.
 - `send(conversation, message)` throws when the provider refused. `ChannelDeliveryError` (exported) carries the status, and `definite` is true for a `400`/`403`/`404`/`422`, when sending something else instead cannot duplicate the message.
 
 ## Testing
 
-`handler.drain()` resolves once every turn the handler started has finished, so a test can post a webhook, drain, and look at what was sent. Every built-in adapter takes a `fetch` option for a fake:
+`handler.drain()` resolves once every message the handler took has been handled (with a durable engine: once their runs ended), so a test can post a webhook, drain, and look at what was sent. Every built-in adapter takes a `fetch` option for a fake:
 
 ```ts title="tests/functional/telegram_webhook.spec.ts"
 const sent: unknown[] = []

@@ -1039,3 +1039,134 @@ describe('media', () => {
     ]);
   });
 });
+
+describe('outbound files and card footers', () => {
+  /** A `fetch` that records JSON and multipart bodies alike. */
+  function recordingFetch(answers: unknown[] = []) {
+    const calls: { url: string; body: any; form?: FormData }[] = [];
+    const fetch = (async (url: string, init: RequestInit) => {
+      if (init.body instanceof FormData) calls.push({ url, body: null, form: init.body });
+      else calls.push({ url, body: JSON.parse(String(init.body)) });
+      return new Response(JSON.stringify(answers.shift() ?? { ok: true }), { status: 200 });
+    }) as typeof globalThis.fetch;
+    return { fetch, calls };
+  }
+  const image = {
+    kind: 'image' as const,
+    url: 'https://img.example.com/c.png',
+    contentType: 'image/png',
+  };
+  const pdf = {
+    kind: 'document' as const,
+    data: Buffer.from('%PDF'),
+    contentType: 'application/pdf',
+    filename: 'report.pdf',
+  };
+
+  it('evolutionApi / whatsmiau: sendMedia by URL or base64, with the caption; footer on sendButtons', async () => {
+    const { fetch, calls } = recordingFetch();
+    const adapter = whatsmiau({
+      url: 'https://api.whatsmiau.dev/v2',
+      instance: 'main',
+      apiKey: 'k',
+      webhookToken: false,
+      fetch,
+    });
+    expect(adapter.capabilities.media).toBe(true);
+    await adapter.send('5511999990000@s.whatsapp.net', { text: 'Your *chart*', media: image });
+    await adapter.send('5511999990000', { text: '', media: pdf });
+    await adapter.send('5511999990000', {
+      text: '*Save the exam?*\nCBC, 2026-10-01',
+      buttons: [
+        { id: 'agora:approve:x', label: 'Confirmar' },
+        { id: 'agora:reject:x', label: 'Cancelar' },
+      ],
+      fallbackText: 'x',
+      footer: 'Valid for *5 minutes*.',
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      'https://api.whatsmiau.dev/v2/message/sendMedia/main',
+      'https://api.whatsmiau.dev/v2/message/sendMedia/main',
+      'https://api.whatsmiau.dev/v2/message/sendButtons/main',
+    ]);
+    expect(calls[0]!.body).toEqual({
+      number: '5511999990000',
+      mediatype: 'image',
+      media: 'https://img.example.com/c.png',
+      mimetype: 'image/png',
+      caption: 'Your *chart*',
+    });
+    expect(calls[1]!.body).toEqual({
+      number: '5511999990000',
+      mediatype: 'document',
+      media: Buffer.from('%PDF').toString('base64'),
+      mimetype: 'application/pdf',
+      fileName: 'report.pdf',
+    });
+    expect(calls[2]!.body.footer).toBe('Valid for 5 minutes.');
+  });
+
+  it('whatsappCloud: a link, or the bytes uploaded first; footer on the interactive card', async () => {
+    const { fetch, calls } = recordingFetch([{ messages: [] }, { id: 'MEDIA-1' }]);
+    const adapter = whatsappCloud({
+      phoneNumberId: '1061',
+      accessToken: 'EAAG',
+      appSecret: 's',
+      verifyToken: 'v',
+      fetch,
+    });
+    await adapter.send('5511999990000', { text: 'Your chart', media: image });
+    await adapter.send('5511999990000', { text: 'The report', media: pdf });
+    await adapter.send('5511999990000', {
+      text: '*Save?*',
+      buttons: [
+        { id: 'a', label: 'Confirm' },
+        { id: 'r', label: 'Cancel' },
+      ],
+      fallbackText: 'x',
+      footer: 'Valid for 5 minutes.',
+    });
+    expect(calls[0]!.body).toMatchObject({
+      to: '5511999990000',
+      type: 'image',
+      image: { link: 'https://img.example.com/c.png', caption: 'Your chart' },
+    });
+    expect(calls[1]!.url).toBe('https://graph.facebook.com/v23.0/1061/media');
+    expect(calls[1]!.form?.get('messaging_product')).toBe('whatsapp');
+    expect((calls[1]!.form!.get('file') as File).name).toBe('report.pdf');
+    expect(calls[2]!.body).toMatchObject({
+      type: 'document',
+      document: { id: 'MEDIA-1', caption: 'The report', filename: 'report.pdf' },
+    });
+    expect(calls[3]!.body.interactive.footer).toEqual({ text: 'Valid for 5 minutes.' });
+  });
+
+  it('telegram: sendPhoto by URL, sendDocument uploaded; the footer goes under the text', async () => {
+    const { fetch, calls } = recordingFetch();
+    const adapter = telegram({ botToken: '1:x', secretToken: 's', fetch });
+    await adapter.send('42', { text: 'Your *chart*', media: image });
+    await adapter.send('42', { text: '', media: pdf });
+    await adapter.send('42', {
+      text: 'Save?',
+      buttons: [
+        { id: 'a', label: 'Confirm' },
+        { id: 'r', label: 'Cancel' },
+      ],
+      fallbackText: 'x',
+      footer: 'Valid for 5 minutes\\.',
+    });
+    expect(calls[0]).toMatchObject({
+      url: 'https://api.telegram.org/bot1:x/sendPhoto',
+      body: {
+        chat_id: '42',
+        photo: 'https://img.example.com/c.png',
+        caption: 'Your *chart*',
+        parse_mode: 'MarkdownV2',
+      },
+    });
+    expect(calls[1]!.url).toBe('https://api.telegram.org/bot1:x/sendDocument');
+    expect(calls[1]!.form?.get('chat_id')).toBe('42');
+    expect((calls[1]!.form!.get('document') as File).name).toBe('report.pdf');
+    expect(calls[2]!.body.text).toBe('Save?\n\nValid for 5 minutes\\.');
+  });
+});

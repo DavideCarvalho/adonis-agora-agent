@@ -4,6 +4,8 @@ import {
   type ChannelFetch,
   ChannelMediaTooLargeError,
   fetchBytes,
+  mediaFilename,
+  postForm,
   postJson,
   queryParam,
   record,
@@ -16,6 +18,7 @@ import type {
   ChannelRequest,
   InboundMedia,
   InboundMessage,
+  OutboundMedia,
   OutboundMessage,
 } from '../types.js';
 
@@ -42,6 +45,8 @@ const MAX_TEXT = 4096;
 const MAX_INTERACTIVE_BODY = 1024;
 const MAX_BUTTON_TITLE = 20;
 const MAX_BUTTONS = 3;
+const MAX_CAPTION = 1024;
+const MAX_FOOTER = 60;
 
 const MEDIA_TYPES = ['image', 'audio', 'video', 'document', 'sticker'] as const;
 
@@ -98,8 +103,9 @@ function parseMessage(message: Record<string, unknown>): InboundMessage | null {
  *
  * Verifies `X-Hub-Signature-256` over the raw body; reads text, interactive button/list replies,
  * template quick replies and media (image, audio, video, document, sticker — downloaded through the
- * Graph API media endpoint) addressed to `phoneNumberId` (status updates are ignored); sends text and
- * interactive reply buttons (at most 3, 20-character titles).
+ * Graph API media endpoint) addressed to `phoneNumberId` (status updates are ignored); sends text,
+ * interactive reply buttons (at most 3, 20-character titles, with a footer) and files (image,
+ * document, audio, video — by link, or uploaded first when given as bytes).
  */
 export function whatsappCloud(options: WhatsappCloudOptions): ChannelAdapter {
   const name = options.name ?? 'whatsapp';
@@ -118,10 +124,40 @@ export function whatsappCloud(options: WhatsappCloudOptions): ChannelAdapter {
     );
   const sendText = (to: string, body: string) =>
     post({ to, type: 'text', text: { body, preview_url: false } });
+  /** Bytes are uploaded first (`POST /{phone-number-id}/media`); the message names the upload. */
+  const upload = async (media: OutboundMedia & { data: Buffer }) => {
+    const answer = record(
+      await postForm(
+        name,
+        fetcher,
+        endpoint.replace(/\/messages$/, '/media'),
+        { authorization: `Bearer ${options.accessToken}` },
+        {
+          messaging_product: 'whatsapp',
+          type: media.contentType ?? 'application/octet-stream',
+          file: {
+            data: media.data,
+            contentType: media.contentType ?? 'application/octet-stream',
+            filename: mediaFilename(media),
+          },
+        },
+        timeoutMs,
+      ),
+    );
+    const id = str(answer?.id);
+    if (id === undefined) throw new ChannelDeliveryError(name, null, `${name}: upload failed`);
+    return id;
+  };
 
   return {
     name,
-    capabilities: { buttons: MAX_BUTTONS, markdown: 'whatsapp', maxLength: MAX_TEXT },
+    capabilities: {
+      buttons: MAX_BUTTONS,
+      markdown: 'whatsapp',
+      maxLength: MAX_TEXT,
+      media: true,
+      maxCaptionLength: MAX_CAPTION,
+    },
 
     challenge(request: ChannelRequest) {
       if (request.method !== 'GET') return null;
@@ -199,6 +235,29 @@ export function whatsappCloud(options: WhatsappCloudOptions): ChannelAdapter {
     },
 
     async send(conversation: string, message: OutboundMessage) {
+      if (message.media !== undefined) {
+        const { media } = message;
+        const source =
+          media.url !== undefined
+            ? { link: media.url }
+            : media.data !== undefined
+              ? { id: await upload({ ...media, data: media.data }) }
+              : undefined;
+        if (source === undefined) throw new Error(`${name}: a file needs a url or its data`);
+        await post({
+          to: conversation,
+          type: media.kind,
+          [media.kind]: {
+            ...source,
+            // Audio carries no caption on WhatsApp.
+            ...(message.text !== '' && media.kind !== 'audio'
+              ? { caption: message.text.slice(0, MAX_CAPTION) }
+              : {}),
+            ...(media.kind === 'document' ? { filename: mediaFilename(media) } : {}),
+          },
+        });
+        return;
+      }
       if (message.buttons === undefined || message.buttons.length === 0) {
         await sendText(
           conversation,
@@ -222,6 +281,9 @@ export function whatsappCloud(options: WhatsappCloudOptions): ChannelAdapter {
         interactive: {
           type: 'button',
           body: { text: body },
+          ...(message.footer !== undefined && message.footer.trim() !== ''
+            ? { footer: { text: message.footer.replace(/[*_~]/g, '').trim().slice(0, MAX_FOOTER) } }
+            : {}),
           action: {
             buttons: message.buttons.slice(0, MAX_BUTTONS).map((button) => ({
               type: 'reply',

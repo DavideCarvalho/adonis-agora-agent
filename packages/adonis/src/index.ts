@@ -61,6 +61,7 @@ export {
   AttachmentRefusedError,
   ChatQueueError,
   type ChatSendMode,
+  type ChatSendOptions,
   type ChatSendResult,
   type QueuedSend,
   RegenerateNeedsThreadError,

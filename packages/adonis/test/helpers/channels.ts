@@ -87,7 +87,8 @@ export function fakeService(
     subscribed: [],
     send: async (params) => {
       service.sends.push(params);
-      return { runId: 'run-1', threadId: params.threadId ?? 'thread-new' };
+      // Every turn its own run, as the agent does: `run-1`, `run-2`…
+      return { runId: `run-${service.sends.length}`, threadId: params.threadId ?? 'thread-new' };
     },
     subscribe: (runId) => {
       service.subscribed.push(runId);

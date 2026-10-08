@@ -286,7 +286,14 @@ router.post(
 ```
 
 The handler verifies the webhook (token / HMAC / secret header), dedupes by provider message id,
-answers `200` at once and runs the turn in the background (`await handler.drain()` in tests).
+answers `200` at once and runs the turn in the background (`await handler.drain()` in tests) — one
+message at a time per conversation, each phase retried, each outgoing message sent at most once.
+With `durable: true` in `config/agent.ts` the message is persisted as an `agora.channel.job` run
+before the `200` and resumed after a crash (create the handler at boot in every process that runs
+durable work). Text decisions only decide cards delivered to that conversation. Hooks for the app's
+own flows: `unknownSender`, `beforeTurn`, `canDeliver`, `texts` as a function, `onTurnStarted`,
+`renderComponent` (components as files), `prepareMedia` / `mediaLimits` / `transformInbound`,
+`formatOutcome`, `onWebhook`, `allowRemember: false`.
 Replies are text-only (components → `fallbackText`), converted to the channel's markdown and split
 at its length limit. Media is downloaded and attached when `attachments` is configured (else the
 person is told why not). `ask` questions go out as numbered text, one at a time; the next messages
