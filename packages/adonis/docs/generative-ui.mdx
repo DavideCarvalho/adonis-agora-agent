@@ -126,6 +126,8 @@ That registers a `ui__show_<snake_case name>` tool per model-facing component (`
 | `presentation` | `(component) => ToolPresentation \| undefined`, overriding the generated chat copy per tool. |
 | `namePrefix` | Prefix of the per-component tools. Default `ui__show_`. |
 | `treeToolName`, `treeInstructions`, `treeLimits` | The tree tool's name (default `ui__render`), extra description, and size limits. |
+| `streaming` | Tree mode: `'complete'` (default) draws the tree once the call has run; `'partial'` draws it while the model writes it. See [Drawing a tree while the model writes it](#drawing-a-tree-while-the-model-writes-it). |
+| `streamingThrottleMs` | Least time between two partial tree frames of one call. Default `100`. |
 | `showInstructions` | Extra description for the show tool. |
 
 When a turn carries [UI capabilities](/docs/agent/surfaces#ui-capabilities), each tool describes only what the client can draw, and a component's tool is hidden from the model when it cannot. The catalog is bound in the container — `@inject() constructor(private genui: AgentGenui)` → `this.genui.catalog`.
@@ -146,6 +148,39 @@ genui: genui({ catalog, resolver: TenantCatalogs, showTool: true })
 ```
 
 A resolver class is built through the container (so it can `@inject()`); an instance or a plain `(scope) => catalog` works too. Calls validate against the resolved catalog, and each turn's tool descriptions come from it — through `ToolHandler.describe`, a hook any tool can implement to vary what the model is told per actor, thread or agent.
+
+### Drawing a tree while the model writes it
+
+A model-composed layout is one `ui__render` call, and its arguments stream for as long as the model writes them — seconds, for a dashboard. By default nothing is drawn until the call has run; then the validated tree appears whole. With `streaming: 'partial'` the layout fills in as it is written:
+
+```ts title="config/agent.ts"
+genui: genui({ catalog, mode: 'tree', streaming: 'partial' })
+```
+
+The server reads the streaming arguments (`tool-input-delta`) as far as they go and pushes the tree so far as `ui` frames marked `partial: true`, under the id the final push uses (`<toolCallId>:ui:0`). Each one replaces the last in place; the call's own push, validated as always, replaces the last preview. What a partial frame is, and is not:
+
+- **Not validated.** A preview's props are whatever the model has written so far. Only the final tree goes through the catalog, and an invalid one is refused to the model as before (it retries under a new call). A preview the call does not replace — the tree was invalid, or degrades to text for this client — is **withdrawn** with a partial frame whose `props` are `{}`, before the call's outcome.
+- **Not persisted.** The message keeps the final tree only; a reloaded thread draws it. A re-attach (`GET /agent/chat/:runId/stream?after=<seq>`) replays the previews still buffered and ends on the final frame.
+- **Not for text.** A preview carries no `fallbackText`, a [text channel](/docs/agent/channels) skips it, and a turn whose client cannot draw the tree (its [UI capabilities](/docs/agent/surfaces#ui-capabilities) leave a node out) gets no previews at all — only the final text.
+- **Throttled.** At most one preview every `streamingThrottleMs` (100 ms) per call, and only when it changed, so a long tree costs the stream (and the Redis or SQL sink buffering it) a bounded number of snapshots.
+
+A node appears once its `type` has arrived and names a component this client draws. Every node of a partial tree carries its position as `id` (`root`, `root.0`, `root.1.2`, the same rule that names the final tree's nodes, so a renderer keyed on it never remounts), and `incomplete: true` while the model is still writing it:
+
+```json
+{ "kind": "ui", "id": "c1:ui:0", "component": "genui:tree", "partial": true, "version": 1,
+  "props": { "root": { "id": "root", "type": "Card", "props": { "title": "Sales" }, "incomplete": true,
+    "children": [{ "id": "root.0", "type": "KpiCards", "props": { "items": [{ "label": "Rev" }] }, "incomplete": true }] } } }
+```
+
+**Per component.** A component that cannot draw half its data opts out on its definition:
+
+```ts
+defineComponent({ ...Chart, streaming: 'complete' })
+```
+
+While the model writes it, such a node is sent as a placeholder, `{ id, type, props: {}, incomplete: true, held: true }`, without its children; it is drawn once its whole subtree has arrived and its props pass its schema. `streaming: 'partial'` on a definition does the opposite — previews a component in a tree that defaults to `complete`, though a `complete` layout above it still holds it back. The default stays `complete` because a renderer written for validated props would be handed half-written ones: opting in is saying your renderers cope (see [In React](#in-react)).
+
+The mechanism is a hook any tool can implement: `ToolHandler.previewInput(scope)` answers how to preview a streamed call (`render(partialInput)` → a frame, `undefined` for nothing new, `null` to withdraw), and the loop does the parsing (`parsePartialJson`, exported), the throttling and the withdrawal.
 
 ### Terminal tools
 
@@ -246,6 +281,7 @@ export type StreamFrame =
       version?: number
       fallbackText?: string
       componentVersions?: Record<string, number> // per node type, on a `genui:tree` push
+      partial?: true // a preview of a tree the model is still writing — never persisted
     }
   | { t: 'event'; event: AgentStreamEvent } // …and the error, elicitation and approval frames
 ```
@@ -282,6 +318,7 @@ The key facts a client relies on:
 
 - **Every frame is an `AgentStreamEvent`** dispatched on `kind` — `text`, `ui`, and the rest of the shared vocabulary. A reader skips kinds it does not know.
 - **A `ui` event carries `{ id, component, props }`**, plus `version` and `fallbackText` when a catalog is configured; a second `ui` with the same `id` replaces the first in place.
+- **`partial: true` marks a preview** ([streaming trees](#drawing-a-tree-while-the-model-writes-it)): draw it, never keep it. One with empty `props` withdraws it. AG-UI carries the same frames as repeated `agora.ui` events with the same `id`.
 - **Order is preserved** — the event lands exactly where `emitUi`/`emitComponent` was called relative to the surrounding text.
 
 ## Client side
@@ -323,6 +360,20 @@ function Chat() {
 }
 ```
 
+**Streaming trees.** A partial tree frame renders node by node like a final one, keyed by node position, so nodes stay mounted while they fill in and when the final frame replaces the preview. A node the model is still writing is not validated against the catalog (its props are half there); its renderer can ask with `useGenuiNode()`, which answers `{ id, type, incomplete, held }` inside a tree and `null` outside one:
+
+```tsx
+import { useGenuiNode } from '@adonis-agora/agent/react/genui'
+
+function KpiCards({ items = [] }: { items?: Kpi[] }) {
+  const node = useGenuiNode()
+  if (node?.incomplete && items.length === 0) return <KpiSkeleton />
+  return <Kpis items={items.filter((item) => item?.label)} />
+}
+```
+
+Props of an incomplete node can be missing or half-built (an array still growing, its last item partial), so a renderer opted into previews defaults what it reads. A `held` node (`streaming: 'complete'`) never reaches its renderer: `<GenerativeUI>` draws `placeholder` instead — a node, or `(node) => ReactNode` — defaulting to `loading`, and settable once on `<GenuiProvider>`. A withdrawn preview draws nothing, and the transcript drops a preview whose call settled without replacing it. `incomplete` only ever means "the model has not finished writing this node"; it is not a loading state for data.
+
 A component the registry does not know, props the catalog refuses, or a renderer that throws renders your `fallback` — or, without one, the item's `fallbackText` (nothing when it has none). A name is a lookup, never something to evaluate. A repeated `id` replaces the component in place, and a reloaded thread draws the same components from the message's persisted `ui` list. To tell the server what this registry can draw, pass `uiCapabilities` to `<AgentProvider>` — see [One output, many surfaces](/docs/agent/surfaces#web--react-over-the-native-stream). See [React](/docs/agent/react) for the rest of the hook.
 
 ### Without React
@@ -348,7 +399,7 @@ function paint(parts: ChatPart[]) {
 }
 ```
 
-`onParts` fires on every frame with the message rebuilt from scratch, so `paint` can be a plain re-render rather than a diff. A re-attach after a dropped connection replays the run from its first frame — including every component frame — so the rebuilt transcript is always complete.
+`onParts` fires on every frame with the message rebuilt from scratch, so `paint` can be a plain re-render rather than a diff. A component part with `partial: true` is a preview of a tree the model is still writing: `foldPart` replaces it in place, removes it when it is withdrawn, and the client drops any left standing when the stream ends (`settleParts`). A re-attach after a dropped connection replays the run from its first frame — including every component frame — so the rebuilt transcript is always complete.
 
 ## Interleaving with text
 
