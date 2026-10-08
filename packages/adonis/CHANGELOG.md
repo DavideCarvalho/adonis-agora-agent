@@ -1,5 +1,50 @@
 # @adonis-agora/agent
 
+## 0.66.0
+
+### Minor Changes
+
+- [#322](https://github.com/DavideCarvalho/adonis-agora-agent/pull/322) [`5c651c6`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/5c651c6c14247e9652390711119abcee5ff1c727) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Fixes found while building the frontends comparison example:
+  
+  - **Hidden tools no longer run.** A tool whose `describe()` answers `available: false` for the turn (a genui `ui__render` or `ui__show_*` tool that `uiCapabilities` rule out) was left out of the tools offered to the model, but still ran when the model called it anyway. `ToolRegistry.invoke` now asks `describe()` again with the call's actor, thread, agent and `uiCapabilities`, and refuses the call as an unknown tool (`ToolNotFoundError`). The other offer filters (allow-list, `isEnabled`, roles, `canUse`) were already checked again on invoke.
+  - **No 501 from the proposals list in blocking mode.** `GET <path>/threads/:id/action-proposals` (and `AgentService.listActionProposals` / `listActionProposalsPage`) answer an empty list when `actionApprovalMode` is not `'independent'`, instead of `501`. `useAgentChat` reads that list by default, so every chat logged a failed request unless it passed `proposals: false`. Approving or rejecting a proposal still answers `501` there.
+  - **AG-UI approval interrupt wording.** The `tool_approval` interrupt's `message` is now the tool's `confirmation.title` when the call has one, the same wording the `agora.approval-requested` event carries. Before, it was always `Approve <tool>?`.
+  - **Config stub.** `config/agent.stub` (and the JSDoc on `defineConfig`, `retrievers`, `tokenSinks` and `AuthzToolAuthorizer`) showed `aiSdkModel({ model: … })`. The function takes the model itself: `aiSdkModel(openai('gpt-4o-mini'))`.
+  - **`FakeModelProvider` tool call ids are unique.** Ids were `call-<turnIndex>-<name>`, so the same tool on the same turn of two threads got the same id. On the Lucid store, where `agent_tool_call.id` is the primary key, the second run failed. The first call still gets `call-<turnIndex>-<name>`. A repeat from the same provider instance gets the first free `-2`, `-3`… suffix.
+  - **A Stop aborts what the run is in.** Under the inline runner, cancelling a run aborts the in-flight model call (`ModelTurnArgs.abortSignal`, which `aiSdkModel` passes to the AI SDK) and hands tools the signal as the new `AiToolCtx.abortSignal`. Before, the model kept streaming to the end of the step. The run still ends `cancelled`, and the step the Stop cut short is still not persisted. Custom runners can pass the signal through the new `AgentLoopHooks.abortSignal`. The durable runner is unchanged.
+
+- [#323](https://github.com/DavideCarvalho/adonis-agora-agent/pull/323) [`cbc1f78`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/cbc1f78cd72cdc37bc78723bdfbf8ce7c29aef48) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Generative UI: draw a `ui__render` tree while the model writes it.
+  
+  - **`genui({ streaming: 'partial' })`** (tree mode). The server parses the streaming `ui__render` arguments and pushes the tree so far as `ui` frames marked `partial: true`, under the id the final push replaces (`<toolCallId>:ui:0`). Previews are throttled (`streamingThrottleMs`, default 100 ms, and only when changed), never validated, never persisted, carry no `fallbackText` and are skipped by text channels; they only hold components the client declared, and stop at the first node it cannot draw. Only the final tree goes through the catalog; a preview the call does not replace (an invalid tree, a text fallback) is withdrawn with a partial frame whose `props` are `{}`. AG-UI sends the previews as repeated `agora.ui` events with the same id. The default stays `streaming: 'complete'` (today's behaviour), since renderers written for validated props would otherwise receive half-written ones.
+  - **Per component:** `defineComponent({ …, streaming: 'complete' })` holds a component back while its subtree is written — the node is a `{ held: true, props: {} }` placeholder until it closes — and `streaming: 'partial'` opts one in.
+  - **Stable nodes:** every node of a partial tree carries its position as `id` (`root`, `root.0`, …), the same rule that names the final tree's nodes, and `incomplete: true` while it is being written.
+  - **React:** `<GenerativeUI>` renders partial trees without remounting nodes, skips prop validation for incomplete nodes, exposes `useGenuiNode()` (`{ id, type, incomplete, held }`) for skeletons, and draws `placeholder` (new prop on `<GenerativeUI>` / `<GenuiProvider>`, default `loading`) for held nodes. The transcript drops withdrawn previews and those whose call settled without replacing them.
+  - **Framework-free client:** component parts carry `partial`; `foldPart` removes a withdrawn preview, and a finished stream drops leftovers (`settleParts`, exported).
+  - **Tool SPI:** `ToolHandler.previewInput(scope)` lets any tool preview its streaming input; `parsePartialJson` is exported.
+
+- [#323](https://github.com/DavideCarvalho/adonis-agora-agent/pull/323) [`cbc1f78`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/cbc1f78cd72cdc37bc78723bdfbf8ce7c29aef48) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Generative UI: tree mode is the default, with an exact `ui__render` schema.
+  
+  **BREAKING:** `genui({ catalog })` (and `genuiTools`) now default to `mode: 'tree'`. An app that relied on the default gets ONE model tool, `ui__render`, instead of a `ui__show_<component>` tool per component:
+  
+  - the model-facing tool names change (prompts, allow-lists, evals or approval policies naming `ui__show_*` must follow);
+  - the client needs a renderer for every layout component it lets the model use (`Stack`, `Card`, … from `LAYOUT_COMPONENTS`), since composed layouts now arrive as `genui:tree` frames;
+  - threads persisted before the upgrade keep rendering: their stored per-component `ui` parts are drawn by the same registry as before.
+  
+  **Migration:** to keep the old behaviour, pass `mode: 'per-component'` — still fully supported, and the better fit for small models or when each tool should carry its own exact schema.
+  
+  - **Exact schema.** `ui__render`'s input schema is now a recursive union by `type` (through `$defs` / `$ref`): each node variant carries its component's own props schema, and only components that take children have `children`. The root stays a plain object (OpenAI and Anthropic refuse a top-level union in tool parameters) listing every type and props schema. It follows the negotiated and per-request catalogs. A props schema that is not self-contained (a recursive Zod schema) is described as a plain object. `treeSchema: 'loose'` restores the previous generic node shape for a provider that refuses `$ref`. `validateTree` remains the check every call goes through.
+  - **Single-node trees.** `{ type: 'DataTable', props }` is a valid tree and is pushed exactly as `ui__show_data_table` would push it (same component frame, version and `fallbackText`), so tree mode covers the one-component case.
+  - The `node ace configure` config stub suggests `genui({ catalog: defineCatalog([...BUILTIN_COMPONENTS, ...LAYOUT_COMPONENTS]) })`.
+
+### Patch Changes
+
+- [#326](https://github.com/DavideCarvalho/adonis-agora-agent/pull/326) [`d052013`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/d052013dd13b462a25586d04610b92b5fd5094e3) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - An empty assistant message no longer poisons a thread. When the model ended a step with no text (Claude does this right after a tool whose result is the answer, such as `renderResult`), the loop stored an assistant message with empty content and replayed it on the next turn. Anthropic and Bedrock refuse the whole request for it ("The content field in the Message object at messages.N is empty"), so every later message on that thread failed.
+  
+  - The loop no longer stores a step that has no text and nothing else on it (no tool call, pushed UI or reasoning). A tool-call-only assistant message is still stored and replayed as before. The `persist:assistant:<step>` checkpoint stays (it records `null`) and still ends the step on the stream, so runs in flight replay unchanged.
+  - History building drops every assistant message whose text is empty or whitespace-only and that has no tool calls or results, so a thread that already stored one heals on its next turn.
+  - `aiSdkModel` never sends an empty assistant message or a whitespace-only text part next to tool calls.
+  - A detached run that ended on a blank step delivers no empty message to the delegating thread.
+
 ## 0.65.1
 
 ### Patch Changes
