@@ -328,6 +328,52 @@ describe('aiSdkModel', () => {
     ]);
   });
 
+  it('never sends an empty assistant message or a blank text part', async () => {
+    // Anthropic and Bedrock refuse the whole request for either ("content … is empty").
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'ask' },
+      {
+        role: 'assistant',
+        content: ' \n ',
+        toolCalls: [{ id: 'c1', name: 'search', input: { q: 'x' } }],
+        toolResults: [{ id: 'c1', name: 'search', output: { hits: 2 } }],
+      },
+      { role: 'assistant', content: '' },
+      { role: 'user', content: 'and now?' },
+      { role: 'assistant', content: '  \n' },
+      { role: 'user', content: 'again' },
+    ];
+
+    await aiSdkModel('openai/gpt-4o').runTurn({
+      system: '',
+      messages,
+      tools: [],
+      sink: createSink(),
+    });
+
+    const passed = streamTextMock.mock.calls[0]?.[0].messages;
+    expect(passed).toEqual([
+      { role: 'user', content: 'ask' },
+      {
+        role: 'assistant',
+        content: [{ type: 'tool-call', toolCallId: 'c1', toolName: 'search', input: { q: 'x' } }],
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'search',
+            output: { type: 'text', value: '{"hits":2}' },
+          },
+        ],
+      },
+      { role: 'user', content: 'and now?' },
+      { role: 'user', content: 'again' },
+    ]);
+  });
+
   it('maps a user-role tool-result carrier (agent loop feedback) to a `tool` message immediately following the assistant tool-call, with no empty user message in between', async () => {
     // This mirrors what `agent-loop.ts` pushes after executing a tool call: NOT an assistant
     // message (the assistant tool-call message already went in on a prior turn) — a synthetic

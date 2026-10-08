@@ -14,6 +14,7 @@ const LUCID_STORE_SPECS = [
   'test/action-proposal-worker-store.spec.ts',
   'test/attachment-inventory.spec.ts',
   'test/attachment-references.spec.ts',
+  'test/blank-assistant-history.spec.ts',
   'test/channels-store-lucid.spec.ts',
   'test/chat-queue-store.spec.ts',
   'test/delegation-cycle.spec.ts',
