@@ -400,6 +400,7 @@ Generic hooks for what an app does around the conversation — each optional:
 | `canDeliver(delivery)` | before **every** message sent — replies, cards, questions, relayed outcomes | `false` drops it. `delivery` has the `conversation`, the `outbound` message, `kind` (`reply`, `card`, `question`, `outcome`, `gate`, `notice`), the `actor` / `actorRef`, the inbound `message` and the `proposal`. Re-check that the number still belongs to the account. |
 | `texts` as a function | per message (and per relayed outcome) | the texts for `{ actor, message, proposal }` — the actor's locale. |
 | `onTurnStarted({ runId, threadId, actor, message, queued })` | a message started (or queued) a turn | — record its channel, start a meter. |
+| `onTurnEnded({ channel, conversation, actor, message, runId, threadId, outcome, error })` | **always**, once this process is done with a message (or with a run resumed after its question), whatever it came to | — stop what you started for it (a "typing…" presence, a meter). `outcome`: `replied` (the stream ended — possibly having sent nothing), `failed` (a failed turn, or the job failed after its retries: `error` set), `timeout`, `blocked`, `parked` (waits for an answer; the resumed run ends with its own call, `message: null`), `stopped` (unknown sender or `beforeTurn` — no turn), `handled` (an answer, a press, a decision — no turn to read), `interrupted` (a durable engine took the job away mid-way). Per attempt: a durable job that runs again (a crash, a lease taken over) tells each process that ran it. Not called for a question's timer itself. What it throws is logged and ignored. |
 | `uiCapabilities` + `renderComponent(component, context)` | a component the turn drew | a file (a chart as an image), text, several, or nothing for its `fallbackText`. |
 | `mediaLimits`, `prepareMedia`, `transformInbound` | an inbound file / the message going to the agent | see [Media](#media). |
 | `formatOutcome(proposal, { text, texts })` | an executed proposal | the outcome and its follow-ups, in order. See [Outcomes](#proposals-buttons-and-text). |
@@ -418,6 +419,7 @@ channels.handle(whatsapp, {
     (await accountActor(phoneOf(conversation)))?.id === (actor?.id ?? actorRef),
   texts: ({ actor }) => textsIn(localeOf(actor)),
   onTurnStarted: ({ runId }) => recordRunChannel(runId, 'whatsapp'),
+  onTurnEnded: ({ conversation }) => stopTyping(conversation), // started in the adapter's acknowledge
   onWebhook: ({ status, reason }) => recordWebhookOutcome(status, reason),
   // …
 })
@@ -533,7 +535,7 @@ export const sms: ChannelAdapter = {
 - `verify(request)` sees `method`, `url` (with the query string), `header(name)`, `params`, the parsed `body` and the `rawBody` string. Compare secrets in constant time.
 - `parse(body)` returns one `InboundMessage`, an array, or `null`. `id` must be the provider's id for the message — retries carry the same one. A button press sets `buttonId` to the pressed button's id.
 - `challenge(request)` (optional) answers a request that is not a message, such as a subscription check, before `verify`.
-- `acknowledge(message)` (optional) runs in the background before the turn — Telegram's `answerCallbackQuery`.
+- `acknowledge(message)` (optional) runs in the background before the turn — Telegram's `answerCallbackQuery`, or a "typing…" presence (stop it in the handler's `onTurnEnded`, which is called however the message's handling ends).
 - `parse` may put files on `message.media` (`{ kind, contentType?, filename?, sizeBytes?, ref }`); `download(media, { maxBytes })` (optional) fetches one and throws `ChannelMediaTooLargeError` past `maxBytes` without reading the rest. Without `download`, media is answered with `texts.mediaRefused('disabled', …)`.
 - `handler.handleRequest(request)` runs the same flow for a `ChannelRequest` built by hand, answering `{ status, body }`.
 - `send(conversation, message)` throws when the provider refused. `ChannelDeliveryError` (exported) carries the status, and `definite` is true for a `400`/`403`/`404`/`422`, when sending something else instead cannot duplicate the message.
