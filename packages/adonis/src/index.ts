@@ -7,7 +7,7 @@ export * from './action-proposal-text.js';
 export * from './action-proposal-worker.js';
 export * from './spi/action-proposal-outcome-store.js';
 export * from './spi/background-actor-resolver.js';
-export const VERSION = '0.65.1';
+export const VERSION = '0.66.0';
 
 // Re-export the configure hook from the package root so `node ace configure` finds it.
 // AdonisJS imports the package MAIN and reads `configure` off the module namespace —
