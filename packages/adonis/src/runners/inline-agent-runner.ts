@@ -61,6 +61,11 @@ export class InlineAgentRunner implements AgentRunner {
   private readonly live = new Map<string, AgentRunInput>();
   /** Runs someone asked to stop; the loop observes it at its next safe point. */
   private readonly cancelled = new Set<string>();
+  /**
+   * Aborted by {@link cancel}: what cuts short the model call or tool a stopped run is in (the
+   * loop's `abortSignal` hook). Keyed like {@link cancelled}, and dropped with it.
+   */
+  private readonly aborts = new Map<string, AbortController>();
   /** The detached delegates this process is running, by runId — what a Stop on one settles. */
   private readonly detached = new Map<string, AgentRunInput>();
 
@@ -159,7 +164,7 @@ export class InlineAgentRunner implements AgentRunner {
       })
       .finally(() => {
         this.live.delete(runId);
-        this.cancelled.delete(runId);
+        this.forgetCancel(runId);
       });
 
     return { runId };
@@ -233,10 +238,28 @@ export class InlineAgentRunner implements AgentRunner {
     parked.resolve(reply);
   }
 
+  /** The signal {@link cancel} aborts for `runId` — one per run, shared by its awaited delegates. */
+  private abortSignalFor(runId: string): AbortSignal {
+    let controller = this.aborts.get(runId);
+    if (controller === undefined) {
+      controller = new AbortController();
+      this.aborts.set(runId, controller);
+    }
+    return controller.signal;
+  }
+
+  /** Drop a settled run's Stop: its flag and its abort controller. */
+  private forgetCancel(runId: string): void {
+    this.cancelled.delete(runId);
+    this.aborts.delete(runId);
+  }
+
   async cancel(runId: string): Promise<void> {
     // The loop stops at its next safe point (between steps, or once the model call it is in has
-    // answered); a turn parked on a human is unwound now.
+    // answered, which the abort below makes now); a turn parked on a human is unwound now.
     this.cancelled.add(runId);
+    // The model call or tool the run is in, cut short now rather than at the end of its step.
+    this.aborts.get(runId)?.abort(new RunCancelledError());
     for (const [key, parked] of this.pending) {
       if (key.startsWith(`${runId}:`)) {
         this.pending.delete(key);
@@ -268,7 +291,7 @@ export class InlineAgentRunner implements AgentRunner {
     } else if (detached === undefined) {
       // Nothing of this process's is running under it; a detached run keeps the flag until it
       // unwinds (its own `finally` clears it), or a Stop mid model call would be forgotten.
-      this.cancelled.delete(runId);
+      this.forgetCancel(runId);
     }
     // The last frame before a normal end: without it a reader cannot tell a truncated answer from
     // a complete one. Not an error — a client that retries a failed stream must not retry this.
@@ -307,6 +330,7 @@ export class InlineAgentRunner implements AgentRunner {
             };
       },
       cancelled: async () => this.cancelled.has(runId),
+      abortSignal: this.abortSignalFor(runId),
       ...this.humanHooks(runId),
       step: (_name, fn) => fn(),
       // Nothing here records a position, so a turn's read tools can simply overlap.
@@ -426,6 +450,7 @@ export class InlineAgentRunner implements AgentRunner {
       openSink: () => deps.sink.open(runId),
       ...this.humanHooks(runId),
       cancelled: async () => this.cancelled.has(runId),
+      abortSignal: this.abortSignalFor(runId),
       step: (_name, fn) => fn(),
       parallel: settleAll,
       runAgent: (childName, childTask) =>
@@ -493,7 +518,7 @@ export class InlineAgentRunner implements AgentRunner {
       })
       .finally(() => {
         this.detached.delete(runId);
-        this.cancelled.delete(runId);
+        this.forgetCancel(runId);
       });
     return { runId };
   }
@@ -528,6 +553,7 @@ export class InlineAgentRunner implements AgentRunner {
       ...this.humanHooks(runId),
       // A child stops when the run a human is actually watching is stopped.
       cancelled: async () => this.cancelled.has(sinkRunId),
+      abortSignal: this.abortSignalFor(sinkRunId),
       step: (_name, fn) => fn(),
       parallel: settleAll,
       runAgent: (childName, childTask) =>

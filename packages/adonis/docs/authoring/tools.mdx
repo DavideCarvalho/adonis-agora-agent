@@ -286,6 +286,7 @@ interface AiToolCtx {
   pageContext?: PageContext // free-form, from the send (`{ kind?, …anything }`)
   uiCapabilities?: UiCapabilities // what the client can draw — see Generative UI
   host?: unknown // optional host handle (e.g. an ORM manager)
+  abortSignal?: AbortSignal // aborted when the run is stopped (inline runner); pass it to fetch, queries…
   onPresentationError?(error: unknown, details: { toolName: string; toolCallId?: string; runId?: string; threadId?: string }): void | Promise<void>
   emitUi(
     component: string,
