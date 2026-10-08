@@ -168,6 +168,49 @@ export interface ChannelTurnStarted {
   queued: boolean;
 }
 
+/**
+ * How a message's (or a resumed run's) handling ended in this process —
+ * {@link ChannelTurnEnded.outcome}:
+ * - `replied`: the turn's stream ended and what it said was delivered (possibly nothing — a turn
+ *   that said nothing, or whose messages `canDeliver` dropped);
+ * - `failed`: the turn failed (`texts.failed` was sent), or the job itself failed after its retries
+ *   (`error` is set; `onError` is told too);
+ * - `timeout`: the turn ran past `timeoutMs` and was cancelled (what it said so far was delivered);
+ * - `blocked`: the turn waits for a decision a text channel cannot make (blocking approvals);
+ * - `parked`: the turn asked a question and waits for the answer — a later message (or the question's
+ *   timeout) resumes it, and that one ends with its own call;
+ * - `stopped`: no turn — the sender is unknown (`unknownSender`) or `beforeTurn` stopped it;
+ * - `handled`: no turn to read — an answer, a button press, a text decision, or nothing left to answer;
+ * - `interrupted`: the durable engine took the job away from this process mid-way (it goes on
+ *   elsewhere, or later); this process will not deliver anything more for it.
+ */
+export type ChannelTurnOutcome =
+  | 'replied'
+  | 'failed'
+  | 'timeout'
+  | 'blocked'
+  | 'parked'
+  | 'stopped'
+  | 'handled'
+  | 'interrupted';
+
+/** This process is done with a message (or a resumed run) — {@link ChannelHandleOptions.onTurnEnded}. */
+export interface ChannelTurnEnded {
+  /** The adapter's name. */
+  channel: string;
+  conversation: string;
+  /** Who the conversation was answered as — `null` for an unknown sender, or before it was known. */
+  actor: Actor | null;
+  /** The message handled — `null` when a run is resumed after its question (answered or timed out). */
+  message: InboundMessage | null;
+  /** The run read, when a turn was read (or resumed). */
+  runId: string | null;
+  threadId: string | null;
+  outcome: ChannelTurnOutcome;
+  /** What failed, for `outcome: 'failed'` from an error (after its retries). */
+  error?: unknown;
+}
+
 /** What {@link ChannelHandleOptions.prepareMedia} makes of a downloaded file. */
 export type ChannelPreparedMedia =
   | undefined
@@ -227,6 +270,17 @@ export interface ChannelHandleOptions {
   onThreadCreated?(threadId: string, actor: Actor, message: InboundMessage): void | Promise<void>;
   /** A turn started (or was queued) for a message — record where it came from, start a meter. */
   onTurnStarted?(turn: ChannelTurnStarted): void | Promise<void>;
+  /**
+   * This process is done handling a message, or a run resumed after its question — called ALWAYS,
+   * once per job this process ran, whatever it came to ({@link ChannelTurnOutcome}): a reply, a
+   * failure, a timeout, a turn that sent nothing, a sender stopped before any turn (after
+   * `adapter.acknowledge`), a durable job taken away mid-way. For what a process started for the
+   * message and must stop — a "typing…" presence, a meter. Per attempt: when a durable job runs
+   * again (a crash, a lease taken over by another process) each process that ran it is told. Not
+   * called for a question's timeout itself (the resumed run it starts is). Errors it throws are
+   * logged and ignored.
+   */
+  onTurnEnded?(turn: ChannelTurnEnded): void | Promise<void>;
   /**
    * Checked before EVERY message the channel sends — replies, cards, questions, relayed outcomes.
    * `false` → that message is dropped (e.g. the number was unlinked from the account mid-turn).
@@ -1163,7 +1217,7 @@ export function handleChannel(
     threadId: string | null,
     conversation: string,
     message: InboundMessage | null,
-  ) => {
+  ): Promise<ChannelTurnOutcome> => {
     const texts = await textsFor(service, { actor, message });
     const out = outbox(store, `${name}:out:${runId}`, conversation, { actor, message });
     const parts: string[] = [];
@@ -1175,6 +1229,7 @@ export function handleChannel(
     let failed = false;
     let blocked = false;
     let parked = false;
+    let timedOut = false;
     let position = 0;
     const deadlineAt = Date.now() + timeoutMs;
     const flush = async (end: boolean) => {
@@ -1203,6 +1258,7 @@ export function handleChannel(
           clearTimeout(timer),
         );
         if (next === 'timeout') {
+          timedOut = true;
           failed = parts.length === 0 && rendered.size === 0 && !wroteText;
           await service.cancel(runId).catch(() => {});
           break;
@@ -1319,13 +1375,14 @@ export function handleChannel(
       stopDriving?.();
       void stream.return?.();
     }
-    if (parked) return;
+    if (parked) return 'parked';
     await flush(true);
     if (failed) await out.text(texts.failed, 'notice');
     if (blocked) await out.text(texts.blockingApproval, 'notice');
     const left = [...proposals.values()];
     for (const proposal of left)
       await sendProposal(service, store, texts, out, conversation, proposal, left.length > 1);
+    return timedOut ? 'timeout' : failed ? 'failed' : blocked ? 'blocked' : 'replied';
   };
 
   const hookContext = (message: InboundMessage): ChannelHookContext => ({
@@ -1337,7 +1394,9 @@ export function handleChannel(
   /** Before the turn: who is talking, and whether the app lets them through. */
   const prepare = async (
     message: InboundMessage,
-  ): Promise<{ stop: true } | { stop: false; actor: Actor; threadId: string | null }> => {
+  ): Promise<
+    { stop: true; actor?: Actor | null } | { stop: false; actor: Actor; threadId: string | null }
+  > => {
     const service = await serviceFor();
     const store = await storeFor(service);
     await adapter.acknowledge?.(message).catch(() => {});
@@ -1351,10 +1410,10 @@ export function handleChannel(
         ? replyList(await options.unknownSender(message, hookContext(message)))
         : replyList((await textsFor(service, { actor: null, message })).unknownSender);
       for (const reply of replies) await out.reply(reply, 'gate');
-      return { stop: true };
+      return { stop: true, actor: null };
     }
     const gate = await options.beforeTurn?.(message, actor, hookContext(message));
-    if (gate === 'stop') return { stop: true };
+    if (gate === 'stop') return { stop: true, actor };
     if (gate !== undefined && gate !== 'continue') {
       const out = outbox(store, `${name}:out:msg:${message.id}:gate`, message.conversation, {
         actor,
@@ -1362,7 +1421,7 @@ export function handleChannel(
       });
       for (const reply of 'replies' in gate ? gate.replies : [gate.reply])
         await out.reply(reply, 'gate');
-      return { stop: true };
+      return { stop: true, actor };
     }
     const threadId = (await options.thread(actor, message)) ?? null;
     return { stop: false, actor, threadId };
@@ -1505,9 +1564,33 @@ export function handleChannel(
       });
   };
 
+  /** Tell `onTurnEnded` — never failing the job. */
+  const turnEnded = async (turn: ChannelTurnEnded) => {
+    if (!options.onTurnEnded) return;
+    try {
+      await options.onTurnEnded(turn);
+    } catch (error) {
+      console.error('[@adonis-agora/agent] Channel onTurnEnded failed', {
+        channel: name,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   /** One job, phase by phase — each phase a checkpoint under a durable engine. */
   const run = async (job: ChannelJob, step: ChannelStepRunner): Promise<void> => {
     const message = job.kind === 'message' ? job.message : null;
+    /** What `onTurnEnded` is told — a question's timeout is not a turn (the resume it starts is). */
+    const ended: ChannelTurnEnded = {
+      channel: name,
+      conversation: job.conversation,
+      actor: job.kind === 'resume' ? job.actor : null,
+      message,
+      runId: job.kind === 'resume' ? job.runId : null,
+      threadId: job.kind === 'resume' ? job.threadId : null,
+      // A step a durable engine had checkpointed before is not run again here: what it came to.
+      outcome: 'replied',
+    };
     try {
       if (job.kind === 'timeout') {
         await step('timeout', () =>
@@ -1550,7 +1633,7 @@ export function handleChannel(
         await step('read', () =>
           retry(async () => {
             const service = await serviceFor();
-            await readTurn(
+            ended.outcome = await readTurn(
               service,
               await storeFor(service),
               job.actor,
@@ -1566,15 +1649,25 @@ export function handleChannel(
       }
       const received = job.message;
       const prepared = await step('prepare', () => retry(() => prepare(received)));
-      if (prepared.stop) return;
+      ended.actor = prepared.actor ?? null;
+      if (prepared.stop) {
+        ended.outcome = 'stopped';
+        return;
+      }
+      ended.threadId = prepared.threadId;
       const turn = await step('act', () =>
         retry(() => act(received, prepared.actor, prepared.threadId)),
       );
-      if (turn === null) return;
+      if (turn === null) {
+        ended.outcome = 'handled';
+        return;
+      }
+      ended.runId = turn.runId;
+      ended.threadId = turn.threadId;
       await step('read', () =>
         retry(async () => {
           const service = await serviceFor();
-          await readTurn(
+          ended.outcome = await readTurn(
             service,
             await storeFor(service),
             prepared.actor,
@@ -1587,8 +1680,15 @@ export function handleChannel(
         }),
       );
     } catch (error) {
-      if ((error as { name?: unknown } | null)?.name === 'WorkflowSuspended') throw error;
+      if ((error as { name?: unknown } | null)?.name === 'WorkflowSuspended') {
+        ended.outcome = 'interrupted';
+        throw error;
+      }
+      ended.outcome = 'failed';
+      ended.error = error;
       report(error, message);
+    } finally {
+      if (job.kind !== 'timeout') await turnEnded(ended);
     }
   };
 

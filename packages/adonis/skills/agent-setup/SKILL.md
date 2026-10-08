@@ -292,6 +292,8 @@ With `durable: true` in `config/agent.ts` the message is persisted as an `agora.
 before the `200` and resumed after a crash (create the handler at boot in every process that runs
 durable work). Text decisions only decide cards delivered to that conversation. Hooks for the app's
 own flows: `unknownSender`, `beforeTurn`, `canDeliver`, `texts` as a function, `onTurnStarted`,
+`onTurnEnded` (always, once this process is done with a message — reply, failure, timeout, no turn;
+stop a "typing…" presence there),
 `renderComponent` (components as files), `prepareMedia` / `mediaLimits` / `transformInbound`,
 `formatOutcome`, `onWebhook`, `allowRemember: false`.
 Replies are text-only by default (components → `fallbackText`), or files `renderComponent` makes of them (`OutboundMessage.media` where the adapter declares `capabilities.media`), converted to the channel's markdown and split

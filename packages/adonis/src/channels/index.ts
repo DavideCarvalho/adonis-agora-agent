@@ -26,6 +26,8 @@ export {
   type ChannelPreparedMedia,
   type ChannelReply,
   type ChannelRouteHandler,
+  type ChannelTurnEnded,
+  type ChannelTurnOutcome,
   type ChannelTurnService,
   type ChannelTurnStarted,
   type ChannelWebhookEvent,
