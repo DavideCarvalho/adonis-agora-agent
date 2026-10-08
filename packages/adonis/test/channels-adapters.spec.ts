@@ -506,6 +506,23 @@ describe('whatsmiau', () => {
     ).toMatchObject([{ from: '239611947270000@lid', conversation: '239611947270000@lid' }]);
   });
 
+  it('marks a button press Whatsmiau forwards with only its label', () => {
+    const adapter = whatsmiau({ ...options, instance: 'agora-test', url: 'http://whatsmiau:8080' });
+    const pressed = adapter.parse(
+      whatsmiauIncoming({
+        key: { remoteJid: '5513981450000@s.whatsapp.net', id: '3EB0B1' },
+        messageType: 'buttonsResponseMessage',
+        message: { conversation: 'Confirmar' },
+      }),
+    ) as InboundMessage[];
+    expect(pressed).toMatchObject([{ text: 'Confirmar', buttonWithoutId: true }]);
+    expect(pressed[0]?.buttonId).toBeUndefined();
+    // A typed message is not a press.
+    expect(
+      (adapter.parse(whatsmiauIncoming()) as InboundMessage[])[0]?.buttonWithoutId,
+    ).toBeUndefined();
+  });
+
   it('never takes a message without fromMe for incoming unless its status is received', () => {
     const adapter = whatsmiau({ ...options, instance: 'agora-test', url: 'http://whatsmiau:8080' });
     for (const status of ['SERVER_ACK', 'PENDING', 'DELIVERY_ACK', undefined]) {

@@ -156,6 +156,8 @@ Everything else — the options, the webhook token, what is parsed (LID chats in
 
 Whatsmiau (Go, `omitempty`) leaves `fromMe` out of an incoming message instead of sending `false`, so its messages are taken as incoming by `data.status: 'received'` (the phone in `key.remoteJid`, the LID in `key.remoteLid`). A webhook that carries no message to answer is logged on the request's logger with the event and the reason, never the content — at `warn` when it looked like a person's message that could not be read (no `fromMe` and another status), at `debug` otherwise (the instance's own messages, other events, groups). A custom adapter gives its reason through the optional `ignored(body)`.
 
+Whatsmiau also forwards a button press without the button's id: `messageType: 'buttonsResponseMessage'` with only the label in `message.conversation`. The adapter marks it `buttonWithoutId`, and the handler maps the label (`texts.approve` / `texts.reject`) to the proposal card it can only have come from: the handler remembers the cards it sent to each conversation (in the channel store, 24 h), and when exactly one of them is still pending, the press decides it — even with other proposals pending in the thread. With several such cards it never guesses: the label goes on as a text decision, which asks for the `#id`. The default labels are words of the matching vocabulary (*Confirm*/*Cancel*, *Confirmar*/*Cancelar*), so a typed label decides as well.
+
 ```ts
 import { whatsmiau } from '@adonis-agora/agent/channels'
 import env from '#start/env'

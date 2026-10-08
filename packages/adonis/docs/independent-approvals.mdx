@@ -138,7 +138,7 @@ A remembered approval becomes a grant for later calls of the same tool in the sa
 
 ## Outcomes
 
-Every terminal proposal — succeeded, failed, rejected or expired — records an outcome, and the worker admits it into the thread as one assistant message: a one-line summary of what happened (including the result, or the error or rejection reason), the text of any component the recorded capabilities could not draw, the drawable components on its `ui` list, and the outcome itself as `actionProposalOutcome`. Admission waits while a turn holds the thread, is deduplicated across retries, and is discarded when the thread no longer exists. It does not start a model turn.
+Every terminal proposal — succeeded, failed, rejected or expired — records an outcome, and the worker admits it into the thread as one assistant message: the text of its presentation first, when it has one (`present` / `emitUi` — what a person reads in the history), then a one-line summary of what happened for the model (`Action "refund" completed. Result: {…}`, or the error or rejection reason; no proposal id — the outcome itself carries it), the drawable components on its `ui` list, and the outcome itself as `actionProposalOutcome`. Admission waits while a turn holds the thread, is deduplicated across retries, and is discarded when the thread no longer exists. It does not start a model turn.
 
 A channel delivers outcomes by reading them: React merges them as above; a text channel reads the thread (`GET <path>/threads/:id`, or `AgentService.getThread`) after the proposal list shows the outcome `admitted`, and relays the new message. There is no push to the channel. See [One output, many surfaces](/docs/agent/surfaces#outcomes-that-arrive-later).
 

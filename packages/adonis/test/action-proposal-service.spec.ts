@@ -171,7 +171,7 @@ describe('text decisions', () => {
     const service = new ActionProposalService(store, undefined, ptBrActionProposalText);
     expect(await service.handleTextDecision(actor, thread.id, 'Sim!')).toMatchObject({
       proposalDecision: { status: 'applied' },
-      text: 'Proposta aprovada e enfileirada para execução.',
+      text: 'Confirmado! Já estou cuidando disso.',
     });
   });
 

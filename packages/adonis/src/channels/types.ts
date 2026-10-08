@@ -56,6 +56,12 @@ export interface InboundMessage {
   media?: InboundMedia[];
   /** The id of the reply button the person pressed, when the message is a button press. */
   buttonId?: string;
+  /**
+   * A button press whose id the provider did not forward — only its label, in {@link text}
+   * (Whatsmiau). The handler maps it to the proposal card it can only have come from, if there is
+   * exactly one.
+   */
+  buttonWithoutId?: boolean;
   /** The provider's payload, untouched. */
   raw: unknown;
 }

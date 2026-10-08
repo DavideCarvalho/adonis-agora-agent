@@ -185,9 +185,9 @@ export const ptBrActionProposalText: Required<TextActionProposalConfig> = {
     remember: ['sempre nesta conversa', ...DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY.remember],
   },
   replies: {
-    approved: 'Proposta aprovada e enfileirada para execução.',
-    rejected: 'Proposta rejeitada; nenhuma ação foi executada.',
-    expired: 'A proposta expirou; nenhuma ação foi executada.',
+    approved: 'Confirmado! Já estou cuidando disso.',
+    rejected: 'Tudo bem, cancelado. Nada foi feito.',
+    expired: 'Esse pedido expirou; nada foi feito.',
     unchanged:
       'Não foi possível alterar esta proposta; atualize a lista para consultar seu estado.',
     ambiguous: (ids) => `Qual proposta? Responda confirmar #ID ou cancelar #ID: ${ids.join(', ')}`,

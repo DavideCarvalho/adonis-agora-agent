@@ -150,6 +150,14 @@ interface Skipped {
 
 const LID_JID = /@lid$/;
 
+/** The message types of a button or list reply. */
+const REPLY_TYPES = new Set([
+  'buttonsResponseMessage',
+  'templateButtonReplyMessage',
+  'listResponseMessage',
+  'interactiveResponseMessage',
+]);
+
 /**
  * Is the message from the person (not sent by the instance itself)? Explicit `fromMe: false` → yes,
  * `fromMe: true` → no. Absent from both the key and the data — Whatsmiau (Go, `omitempty`) drops a
@@ -207,6 +215,9 @@ function parseOne(
   if (text === undefined || (text.trim() === '' && !file)) {
     return { skipped: 'unsupported message type' };
   }
+  // Whatsmiau forwards a button press as `messageType: 'buttonsResponseMessage'` with only the
+  // label in `message.conversation` — the button's id is lost.
+  const pressWithoutId = !button && !file && REPLY_TYPES.has(str(data.messageType) ?? '');
   return {
     id,
     from: addressOf(sender),
@@ -215,6 +226,7 @@ function parseOne(
     conversation: group ? remoteJid : chat,
     text: text.trim(),
     ...(button ? { buttonId: button.id } : {}),
+    ...(pressWithoutId ? { buttonWithoutId: true } : {}),
     ...(file ? { media: [file.media] } : {}),
     raw: data,
   };

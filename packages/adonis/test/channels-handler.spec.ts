@@ -13,6 +13,7 @@ import {
   ActionProposalWorker,
   DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY,
   defineTool,
+  parseTextActionProposalCommand,
   ptBrActionProposalText,
 } from '../src/index.js';
 import type { StreamFrame } from '../src/spi/token-stream-sink.js';
@@ -259,6 +260,104 @@ describe('channels.handle', () => {
     ]);
     // Telegram's callback_data holds 64 bytes.
     expect(Buffer.byteLength(ids.approve)).toBeLessThanOrEqual(64);
+  });
+
+  it('maps a press that lost its button id (only the label) to the one pending card it can be from', async () => {
+    const carded = `proposal-${'a'.repeat(64)}`;
+    const setup = (pending: string[]) => {
+      const { adapter, outbox } = fakeAdapter({ buttons: 3 });
+      const service = fakeService(proposalFrames, {
+        listActionProposals: (async () =>
+          pending.map((id) => ({ id, decision: 'pending' }))) as never,
+        decideActionProposal: (async (...args: unknown[]) => {
+          service.decided.push(args);
+          return { status: 'applied' };
+        }) as never,
+      });
+      const handle = channels.handle(adapter, {
+        service,
+        actor: () => actor,
+        thread: () => 't',
+        outcomeTimeoutMs: 0,
+      });
+      return { handle, service, outbox };
+    };
+    // A proposal made elsewhere is pending too: the label alone would be ambiguous as text.
+    const one = setup([carded, 'proposal-from-the-web']);
+    await one.handle(makeCtx(inbound('refund A-1')).ctx);
+    await one.handle.drain();
+    await one.handle(makeCtx(inbound(' confirm ', { buttonWithoutId: true })).ctx);
+    await one.handle.drain();
+    expect(one.service.decided).toEqual([[actor, 't', carded, 'approved', {}, 'test']]);
+    expect(one.service.sends.map((send) => send.message)).toEqual(['refund A-1']);
+
+    // Not a label of ours, or no card remembered: the text goes on as a message (text decisions).
+    const other = setup([carded]);
+    await other.handle(makeCtx(inbound('Confirm', { buttonWithoutId: true })).ctx);
+    await other.handle.drain();
+    await other.handle(makeCtx(inbound('refund A-1')).ctx);
+    await other.handle.drain();
+    await other.handle(makeCtx(inbound('Maybe', { buttonWithoutId: true })).ctx);
+    await other.handle.drain();
+    expect(other.service.decided).toEqual([]);
+    expect(other.service.sends.map((send) => send.message)).toEqual([
+      'Confirm',
+      'refund A-1',
+      'Maybe',
+    ]);
+  });
+
+  it('reads its own button labels as decisions in the matching vocabulary', () => {
+    for (const [texts, vocabulary] of [
+      [DEFAULT_CHANNEL_TEXTS, DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY],
+      [
+        ptBrChannelTexts,
+        { ...DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY, ...ptBrActionProposalText.vocabulary },
+      ],
+    ] as const) {
+      expect(parseTextActionProposalCommand(texts.approve, vocabulary)).toMatchObject({
+        status: 'command',
+        decision: 'approved',
+      });
+      expect(parseTextActionProposalCommand(texts.reject, vocabulary)).toMatchObject({
+        status: 'command',
+        decision: 'rejected',
+      });
+    }
+  });
+
+  it('never guesses between two pending cards for a press without its id', async () => {
+    const { adapter, outbox } = fakeAdapter({ buttons: 3 });
+    const second = `proposal-${'c'.repeat(64)}`;
+    const service = fakeService(
+      [
+        ...proposalFrames,
+        {
+          ...(proposalFrames[1] as object),
+          id: 'call-2',
+          target: { kind: 'proposal', proposalId: second },
+        },
+      ] as StreamFrame[],
+      {
+        listActionProposals: (async () => [
+          { id: `proposal-${'a'.repeat(64)}`, decision: 'pending' },
+          { id: second, decision: 'pending' },
+        ]) as never,
+        decideActionProposal: (async (...args: unknown[]) => {
+          service.decided.push(args);
+          return { status: 'applied' };
+        }) as never,
+      },
+    );
+    const handle = channels.handle(adapter, { service, actor: () => actor, thread: () => 't' });
+    await handle(makeCtx(inbound('two refunds')).ctx);
+    await handle.drain();
+    expect(outbox.filter((item) => item.message.buttons !== undefined)).toHaveLength(2);
+    await handle(makeCtx(inbound('Cancel', { buttonWithoutId: true })).ctx);
+    await handle.drain();
+    expect(service.decided).toEqual([]);
+    // It goes on as text, where the vocabulary's decision asks which proposal (#id).
+    expect(service.sends.map((send) => send.message)).toEqual(['two refunds', 'Cancel']);
   });
 
   it('without buttons, tells the person what to reply — in the configured vocabulary', async () => {
