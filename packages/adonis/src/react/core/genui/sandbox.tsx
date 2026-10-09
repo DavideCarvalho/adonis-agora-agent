@@ -27,6 +27,12 @@ import {
 } from '../../../genui/sandbox.js';
 import type { JsonSchema } from '../../../genui/schema.js';
 import { GenuiActionContext, useGenuiNode, useGenuiProvider } from './generative-ui.js';
+import {
+  type SandboxConfigSource,
+  useHostTheme,
+  useSandboxAsset,
+  useSandboxClientConfig,
+} from './sandbox-assets.js';
 import type { GenuiRenderer } from './types.js';
 
 /** What a drawn component calls to hand an action back to the agent (the next user turn). */
@@ -83,6 +89,14 @@ export interface SandboxRendererOptions {
   onRefused?: (refusal: SandboxRefusal) => void;
   /** An uncaught error in the generated code. */
   onError?: (message: string) => void;
+  /**
+   * Where the theme, Tailwind and kit settings come from: default the agent's `GET /config`
+   * (`genui.sandbox`, through the enclosing `AgentProvider`, else same-origin `/agent`); a url, an
+   * object, or `false` (theme only).
+   */
+  config?: SandboxConfigSource;
+  /** Pass the host's theme in (CSS custom properties, light/dark). Default: the config's, else on. */
+  theme?: boolean;
   /** What to draw while nothing is drawable yet. Default: a busy box of `initialHeight` with the placeholder lines. */
   placeholder?: (state: { height: number; messages: string[]; title?: string }) => ReactNode;
   className?: string;
@@ -158,6 +172,21 @@ export function createSandboxRenderer(
     const definition = provided?.catalog?.get?.(node?.type ?? 'Sandbox');
     const policy = useMemo(() => options.policy ?? sandboxPolicyOf(definition) ?? {}, [definition]);
     const incomplete = node?.incomplete === true;
+    const client = useSandboxClientConfig(options.config);
+    const view = (definition as { sandboxView?: { theme?: boolean } } | undefined)?.sandboxView;
+    const themeOn = options.theme ?? client.config?.theme ?? view?.theme ?? true;
+    const hostTheme = useHostTheme(themeOn);
+    const jsxMode = typeof props.jsx === 'string';
+    const tailwindText = useSandboxAsset(client.config?.tailwind?.url);
+    const kitText = useSandboxAsset(jsxMode ? client.config?.kit?.url : undefined, { kit: true });
+    // Assets still on their way: the frame waits for them rather than drawing twice.
+    // A plain view does not wait for the config (it is redrawn if Tailwind turns out to be on); a
+    // view that needs Tailwind or the kit waits for them.
+    const assetsPending =
+      (client.config?.tailwind !== undefined && tailwindText === undefined) ||
+      (jsxMode && (client.loading || kitText === undefined));
+    const themeRef = useRef(hostTheme);
+    themeRef.current = hostTheme;
     // The server drops half-written code from what it previews (`sandboxPartialProps`); props
     // from anywhere else may hold it, so their code waits for the whole view.
     const trimmed = incomplete && node?.streamSafe === true;
@@ -176,26 +205,84 @@ export function createSandboxRenderer(
     const hasMarkup = typeof props.html === 'string' && props.html.length > 0;
     const markupDone =
       !incomplete || props.jsFunctions !== undefined || props.jsExpressions !== undefined;
-    const phase: 'placeholder' | 'preview' | 'live' = !incomplete
-      ? 'live'
-      : markupDone && hasMarkup && trimmed
-        ? 'live'
-        : props.css !== undefined || hasMarkup
-          ? 'preview'
-          : 'placeholder';
+    const hasJsx = jsxMode && (props.jsx as string).trim().length > 0;
+    const phase: 'placeholder' | 'preview' | 'live' = assetsPending
+      ? 'placeholder'
+      : jsxMode
+        ? !hasJsx
+          ? 'placeholder'
+          : incomplete
+            ? 'preview'
+            : 'live'
+        : !incomplete
+          ? 'live'
+          : markupDone && hasMarkup && trimmed
+            ? 'live'
+            : props.css !== undefined || hasMarkup
+              ? 'preview'
+              : 'placeholder';
     const hostOrigin = typeof window === 'undefined' ? '' : window.location.origin;
     const inlineJs = !streamedIn.current;
     const css = props.css;
     const html = props.html;
+    const tailwind =
+      typeof tailwindText === 'string'
+        ? {
+            runtime: tailwindText,
+            theme: [themeRef.current?.tailwind ?? '', client.config?.tailwind?.css ?? '']
+              .filter((part) => part !== '')
+              .join('\n'),
+          }
+        : undefined;
+    const kit = jsxMode && typeof kitText === 'string' ? kitText : undefined;
+    // A JSX view is one document from its first line to its last: what streams in is posted.
+    const documentPhase = jsxMode && phase !== 'placeholder' ? 'jsx' : phase;
     // The live document is built once per markup: code that arrives later is posted in, so the
-    // frame (and what the user did in it) stays.
+    // frame (and what the user did in it) stays. A JSX view is built once, its code posted.
     // biome-ignore lint/correctness/useExhaustiveDependencies: rebuilt on the markup only, see above
     const srcDoc = useMemo(() => {
       if (phase === 'placeholder' || hostOrigin === '') return '';
+      const look = {
+        ...(themeRef.current !== null
+          ? { theme: { css: themeRef.current.css, dark: themeRef.current.dark } }
+          : {}),
+        ...(tailwind !== undefined ? { tailwind } : {}),
+      };
+      if (jsxMode) {
+        return buildSandboxDocument(
+          { css: css ?? '' },
+          {
+            token,
+            hostOrigin,
+            policy,
+            mode: 'live',
+            inlineJs: false,
+            ...look,
+            ...(kit !== undefined ? { kit } : {}),
+          },
+        );
+      }
       return phase === 'preview'
-        ? buildSandboxDocument({}, { token, hostOrigin, policy, mode: 'preview' })
-        : buildSandboxDocument(props, { token, hostOrigin, policy, mode: 'live', inlineJs });
-    }, [phase, token, hostOrigin, css, html, inlineJs, policy]);
+        ? buildSandboxDocument({}, { token, hostOrigin, policy, mode: 'preview', ...look })
+        : buildSandboxDocument(props, {
+            token,
+            hostOrigin,
+            policy,
+            mode: 'live',
+            inlineJs,
+            ...look,
+          });
+    }, [
+      documentPhase,
+      token,
+      hostOrigin,
+      jsxMode ? '' : css,
+      html,
+      inlineJs,
+      policy,
+      tailwindText,
+      kit,
+    ]);
 
     const post = useCallback(
       (message: Record<string, unknown>) => {
@@ -204,8 +291,9 @@ export function createSandboxRenderer(
       [token],
     );
 
+    // biome-ignore lint/correctness/useExhaustiveDependencies: jsxMode only gates it off
     const runPending = useCallback(() => {
-      if (!ready.current || inlineJs || phase !== 'live') return;
+      if (!ready.current || inlineJs || phase !== 'live' || jsxMode) return;
       if (!trimmed && incomplete) return;
       const done = ran.current;
       if (!done.functions && typeof props.jsFunctions === 'string') {
@@ -224,9 +312,21 @@ export function createSandboxRenderer(
     }, [inlineJs, phase, trimmed, incomplete, props.jsFunctions, props.jsExpressions, post]);
 
     const preview = useCallback(() => {
-      if (!ready.current || phase !== 'preview') return;
+      if (!ready.current) return;
+      if (jsxMode) {
+        if (phase !== 'placeholder')
+          post({ type: SANDBOX_MESSAGE.jsx, code: props.jsx ?? '', final: phase === 'live' });
+        return;
+      }
+      if (phase !== 'preview') return;
       post({ type: SANDBOX_MESSAGE.render, css: css ?? '', html: previewHtml(html ?? '') });
-    }, [phase, css, html, post]);
+    }, [jsxMode, phase, props.jsx, css, html, post]);
+
+    // The host's theme changed (light/dark, a stylesheet): the frame follows, without reloading.
+    useEffect(() => {
+      if (hostTheme === null || !ready.current) return;
+      post({ type: SANDBOX_MESSAGE.theme, css: hostTheme.css, dark: hostTheme.dark });
+    }, [hostTheme, post]);
 
     // biome-ignore lint/correctness/useExhaustiveDependencies: a new document starts from nothing
     useEffect(() => {
@@ -244,6 +344,8 @@ export function createSandboxRenderer(
     const nodeId = node?.id;
     const send = useCallback(
       async (payload: unknown) => {
+        // A view still being written is a preview: what it sends is not the user's yet.
+        if (incomplete) return options.onRefused?.({ reason: 'declined' });
         const limits = sends.current;
         const maxSends = policy.maxSends ?? SANDBOX_DEFAULTS.maxSends;
         if (limits.count >= maxSends)
@@ -279,7 +381,7 @@ export function createSandboxRenderer(
         limits.count += 1;
         onAction(action);
       },
-      [policy, nodeId, title, onAction],
+      [policy, nodeId, title, onAction, incomplete],
     );
 
     useEffect(() => {
@@ -293,6 +395,12 @@ export function createSandboxRenderer(
         switch (data.type) {
           case SANDBOX_MESSAGE.ready:
             ready.current = true;
+            if (themeRef.current !== null)
+              post({
+                type: SANDBOX_MESSAGE.theme,
+                css: themeRef.current.css,
+                dark: themeRef.current.dark,
+              });
             preview();
             runPending();
             return;
@@ -313,11 +421,24 @@ export function createSandboxRenderer(
       };
       window.addEventListener('message', listener);
       return () => window.removeEventListener('message', listener);
-    }, [phase, token, policy, preview, runPending, send]);
+    }, [phase, token, policy, preview, runPending, send, post]);
 
     const messages = (props.placeholderMessages ?? []).filter(
       (line): line is string => typeof line === 'string',
     );
+    if (jsxMode && kitText === null && !assetsPending) {
+      // JSX needs the app's kit, and this page has none (no `sandbox({ kit })`, or it did not load).
+      return (
+        <div
+          role="note"
+          data-testid="sandbox-no-kit"
+          style={{ padding: 12, border: '1px dashed rgba(127,127,127,.35)', borderRadius: 8 }}
+        >
+          {title !== undefined ? <strong>{title}</strong> : null}
+          <div>{props.summary ?? "An interactive view that needs the app's components."}</div>
+        </div>
+      );
+    }
     if (phase === 'placeholder' || hostOrigin === '') {
       const state = { height: initial, messages, ...(title !== undefined ? { title } : {}) };
       return (
@@ -327,7 +448,7 @@ export function createSandboxRenderer(
     return (
       <iframe
         ref={frame}
-        key={phase}
+        key={documentPhase}
         title={title ?? 'Interactive view'}
         srcDoc={srcDoc}
         sandbox={SANDBOX_IFRAME_FLAGS}
@@ -335,6 +456,7 @@ export function createSandboxRenderer(
         allow=""
         data-testid="sandbox-frame"
         data-sandbox-phase={phase}
+        data-sandbox-kit={jsxMode ? '' : undefined}
         aria-busy={incomplete || undefined}
         className={options.className}
         style={{

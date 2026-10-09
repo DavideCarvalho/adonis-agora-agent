@@ -168,6 +168,11 @@
       "import": "./dist/src/hooks/tools.js",
       "default": "./dist/src/hooks/tools.js"
     },
+    "./hooks/genui_kit": {
+      "types": "./dist/src/hooks/genui_kit.d.ts",
+      "import": "./dist/src/hooks/genui_kit.js",
+      "default": "./dist/src/hooks/genui_kit.js"
+    },
     "./telescope": {
       "types": "./dist/src/telescope/index.d.ts",
       "import": "./dist/src/telescope/index.js",
@@ -213,6 +218,21 @@
       "import": "./dist/src/genui/builtins.js",
       "default": "./dist/src/genui/builtins.js"
     },
+    "./genui/chart-image": {
+      "types": "./dist/src/genui/chart-image.d.ts",
+      "import": "./dist/src/genui/chart-image.js",
+      "default": "./dist/src/genui/chart-image.js"
+    },
+    "./genui/kit": {
+      "types": "./dist/src/genui/kit/index.d.ts",
+      "import": "./dist/src/genui/kit/index.js",
+      "default": "./dist/src/genui/kit/index.js"
+    },
+    "./vite": {
+      "types": "./dist/src/vite/index.d.ts",
+      "import": "./dist/src/vite/index.js",
+      "default": "./dist/src/vite/index.js"
+    },
     "./media": {
       "types": "./dist/src/media/index.d.ts",
       "import": "./dist/src/media/index.js",
@@ -250,7 +270,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.31.0",
-    "@standard-schema/spec": "1.1.0"
+    "@standard-schema/spec": "1.1.0",
+    "@tailwindcss/browser": "4.3.3"
   },
   "peerDependencies": {
     "@adonis-agora/authz": ">=0.4.2 <1.0.0",
@@ -265,6 +286,7 @@
     "@ai-sdk/react": "^4.0.0",
     "@json-render/react": ">=0.21.0 <1.0.0",
     "@qdrant/js-client-rest": "^1.11.0",
+    "@resvg/resvg-js": "^2.6.0",
     "@streamdown/code": "^1.1.1",
     "@streamdown/math": "^1.0.2",
     "@streamdown/mermaid": "^1.0.2",
@@ -281,7 +303,9 @@
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "streamdown": "^2.5.0",
+    "typescript": ">=5",
     "unist-util-visit": "^5.1.0",
+    "vite": ">=5",
     "zod": "^4.0.0"
   },
   "peerDependenciesMeta": {
@@ -374,6 +398,15 @@
     },
     "playwright-core": {
       "optional": true
+    },
+    "@resvg/resvg-js": {
+      "optional": true
+    },
+    "vite": {
+      "optional": true
+    },
+    "typescript": {
+      "optional": true
     }
   },
   "devDependencies": {
@@ -394,6 +427,7 @@
     "@json-render/react": "0.21.0",
     "@opencode/client": "2.0.18",
     "@qdrant/js-client-rest": "1.19.0",
+    "@resvg/resvg-js": "^2.6.2",
     "@streamdown/code": "1.1.1",
     "@streamdown/math": "1.0.3",
     "@streamdown/mermaid": "1.0.3",
@@ -431,7 +465,9 @@
     "streamdown": "2.6.0",
     "testcontainers": "12.2.0",
     "typescript": "7.0.2",
+    "typescript5": "npm:typescript@5.9.3",
     "unist-util-visit": "5.1.0",
+    "vite": "8.3.2",
     "vitest": "5.0.3",
     "zod": "4.6.5"
   },

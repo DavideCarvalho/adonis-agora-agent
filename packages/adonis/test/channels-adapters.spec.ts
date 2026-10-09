@@ -1170,3 +1170,97 @@ describe('outbound files and card footers', () => {
     expect(calls[2]!.body.text).toBe('Save?\n\nValid for 5 minutes\\.');
   });
 });
+
+describe('list messages (genui channels)', () => {
+  const list = {
+    text: 'Pick an order',
+    list: {
+      button: 'Orders',
+      title: 'Your orders',
+      rows: Array.from({ length: 12 }, (_, index) => ({
+        id: `ui:ref${index}`,
+        title: `Order number ${index} with a long title`,
+        description: 'd'.repeat(100),
+      })),
+    },
+    fallbackText: '1. Order 0',
+  };
+
+  it('whatsappCloud: an interactive list within the Cloud API limits', async () => {
+    const { fetch, calls } = fakeFetch();
+    const adapter = whatsappCloud({
+      phoneNumberId: '1061',
+      accessToken: 'EAAG',
+      appSecret: 's',
+      verifyToken: 'v',
+      fetch,
+    });
+    expect(adapter.kind).toBe('whatsapp');
+    expect(adapter.capabilities.lists).toBe(10);
+    await adapter.send('5511', list);
+    const interactive = calls[0]!.body.interactive;
+    expect(interactive.type).toBe('list');
+    expect(interactive.header).toEqual({ type: 'text', text: 'Your orders' });
+    expect(interactive.action.button).toBe('Orders');
+    const rows = interactive.action.sections[0].rows;
+    expect(rows).toHaveLength(10);
+    expect(rows[0]).toEqual({
+      id: 'ui:ref0',
+      title: 'Order number 0 with a lo',
+      description: 'd'.repeat(72),
+    });
+  });
+
+  it('telegram: an inline keyboard of one row per entry, ids as callback data', async () => {
+    const calls: any[] = [];
+    const adapter = telegram({
+      botToken: '1:x',
+      secretToken: 't',
+      fetch: (async (url: string, init: RequestInit) => {
+        calls.push({ url, body: JSON.parse(String(init.body)) });
+        return new Response('{"ok":true}', { status: 200 });
+      }) as typeof globalThis.fetch,
+    });
+    expect(adapter.kind).toBe('telegram');
+    await adapter.send('42', list);
+    const keyboard = calls[0].body.reply_markup.inline_keyboard;
+    expect(keyboard).toHaveLength(12);
+    expect(keyboard[0]).toEqual([
+      {
+        text: `Order number 0 with a long title — ${'d'.repeat(100)}`.slice(0, 64),
+        callback_data: 'ui:ref0',
+      },
+    ]);
+  });
+
+  it('evolutionApi: lists only where buttons render; the numbered text otherwise', async () => {
+    const plain = fakeFetch();
+    const evolution = evolutionApi({
+      url: 'https://evo.test',
+      instance: 'i',
+      apiKey: 'k',
+      webhookToken: false,
+      fetch: plain.fetch,
+    });
+    expect(evolution.capabilities.lists).toBeUndefined();
+    await evolution.send('5511', list);
+    expect(plain.calls[0]!.url).toContain('/message/sendText/');
+    expect(plain.calls[0]!.body.text).toBe('1. Order 0');
+
+    const withButtons = fakeFetch();
+    const miau = whatsmiau({
+      url: 'http://miau',
+      instance: 'i',
+      apiKey: 'k',
+      webhookToken: false,
+      fetch: withButtons.fetch,
+    });
+    await miau.send('5511', list);
+    expect(withButtons.calls[0]!.url).toContain('/message/sendList/');
+    expect(withButtons.calls[0]!.body.sections[0].rows[0]).toEqual({
+      title: 'Order number 0 with a lo',
+      description: 'd'.repeat(72),
+      rowId: 'ui:ref0',
+    });
+  });
+});

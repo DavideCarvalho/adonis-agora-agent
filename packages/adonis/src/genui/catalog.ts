@@ -1,3 +1,4 @@
+import type { ComponentChannels } from './channels.js';
 import {
   builtinJsonSchemaValidator,
   type GenuiValidation,
@@ -69,6 +70,17 @@ export interface ComponentDefinition<P = Record<string, unknown>> {
     props: Record<string, unknown>,
     input: { isOpen(container: object): boolean; pendingMember(container: object): unknown },
   ): Record<string, unknown>;
+  /**
+   * What the component is on a channel the server draws for, by channel name: `whatsapp: (props) =>
+   * ({ text, buttons })`, `telegram: …`, `email: (props) => ({ html })` (see `ChannelNativeMessage`).
+   * Without one the channel sends {@link fallbackText}. `false` → never offered on that channel.
+   */
+  channels?: ComponentChannels<P>;
+}
+
+/** The second argument of {@link defineComponent}: what a component is on each channel. */
+export interface DefineComponentExtras<P> {
+  channels?: ComponentChannels<P>;
 }
 
 /** How a tree node appears while the model writes it ({@link ComponentDefinition.streaming}). */
@@ -80,7 +92,11 @@ export const COMPONENT_NAME = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
 /** Declare a component. Validates the name and returns the definition unchanged (typed). */
 export function defineComponent<P = Record<string, unknown>>(
   definition: ComponentDefinition<P>,
+  extras?: DefineComponentExtras<P>,
 ): ComponentDefinition<P> {
+  if (extras?.channels !== undefined) {
+    definition = { ...definition, channels: { ...definition.channels, ...extras.channels } };
+  }
   if (!COMPONENT_NAME.test(definition.name)) {
     throw new Error(
       `genui: component name "${definition.name}" must be letters and digits, starting with a letter (e.g. DataTable)`,
@@ -101,6 +117,14 @@ export function defineComponent<P = Record<string, unknown>>(
     throw new TypeError("genui: streaming must be 'partial' or 'complete'");
   if (definition.partialProps !== undefined && typeof definition.partialProps !== 'function')
     throw new TypeError('genui: partialProps must be a function');
+  if (definition.channels !== undefined) {
+    if (typeof definition.channels !== 'object' || definition.channels === null)
+      throw new TypeError('genui: channels must be an object of conversions');
+    for (const [channel, conversion] of Object.entries(definition.channels)) {
+      if (conversion !== undefined && conversion !== false && typeof conversion !== 'function')
+        throw new TypeError(`genui: channels.${channel} must be a function or false`);
+    }
+  }
   return definition;
 }
 

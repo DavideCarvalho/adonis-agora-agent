@@ -266,6 +266,8 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
           });
         }
         const context = readContext(input.context);
+        // An AG-UI client is a web page: no channel stamped (`turnChannel` reads none as `web`),
+        // unless its page context names one.
         const pageContext: PageContext | undefined =
           forwarded.pageContext !== undefined || context !== undefined
             ? {

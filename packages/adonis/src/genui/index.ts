@@ -3,7 +3,9 @@
  * renderers and UI tools. The same local definitions can be imported by browser code.
  */
 
+import { assertGenuiChannels, type GenuiChannels } from './channels.js';
 import { type GenuiFactory, type GenuiFactoryContext } from './factory.js';
+import type { SandboxKitDiscovery } from './kit/discover.js';
 import {
   type Catalog,
   defineCatalog,
@@ -11,7 +13,13 @@ import {
   type GenuiToolsOptions,
   genuiTools,
 } from './public.js';
-import { type DefineSandboxOptions, defineSandbox } from './sandbox.js';
+import {
+  type DefineSandboxOptions,
+  defineSandbox,
+  type SandboxDefinition,
+  sandboxPolicyOf,
+} from './sandbox.js';
+import type { SandboxClientConfig } from './sandbox-kit.js';
 
 export {
   AgentGenui,
@@ -57,6 +65,18 @@ export interface GenuiOptions extends Omit<GenuiToolsOptions, 'resolveCatalog'> 
   sandbox?: boolean | DefineSandboxOptions;
 }
 
+/** What every configured sandbox (top level and channels) needs from the browser, together. */
+function mergeSandboxClients(clients: Array<() => SandboxClientConfig>): SandboxClientConfig {
+  const merged: SandboxClientConfig = { theme: false };
+  for (const client of clients) {
+    const one = client();
+    merged.theme ||= one.theme;
+    if (one.tailwind !== undefined) merged.tailwind ??= one.tailwind;
+    if (one.kit !== undefined) merged.kit ??= one.kit;
+  }
+  return merged;
+}
+
 function isResolverClass(
   value: ResolverOption,
 ): value is abstract new (
@@ -96,21 +116,71 @@ async function resolveCatalogFn(
  */
 export function genui(options: GenuiOptions = {}): GenuiFactory {
   return async (ctx) => {
-    const { catalog: given, resolver, sandbox, ...rest } = options;
+    const { catalog: given, resolver, sandbox: asked, channels: askedChannels, ...rest } = options;
+    assertGenuiChannels(askedChannels);
     const base = given ?? defineCatalog([]);
+    // A sandbox's kit, Tailwind and theme names are found through the app's Vite setup.
+    const clients: Array<() => SandboxClientConfig> = [];
+    let discovery: SandboxKitDiscovery | undefined;
+    const resolveSandbox = async (
+      value: boolean | DefineSandboxOptions | undefined,
+    ): Promise<boolean | DefineSandboxOptions | undefined> => {
+      if (value === undefined || value === false) return value;
+      // Node-only, and only with a sandbox: kept out of a browser bundle of this module.
+      const [{ adonisSandboxKitDiscovery }, { resolveSandboxServer }] = await Promise.all([
+        import('./kit/adonis.js'),
+        import('./kit/discover.js'),
+      ]);
+      discovery ??= await adonisSandboxKitDiscovery(ctx.app);
+      const resolved = resolveSandboxServer(value, discovery);
+      clients.push(resolved.client);
+      return resolved.define;
+    };
+    const sandbox = await resolveSandbox(asked);
+    // A kit or Tailwind sandbox defined in the (shared) catalog itself: found the same way, and put
+    // back under its own name, so the browser's copy of the catalog validates what the model writes.
+    const own = base.components.find((each) => sandboxPolicyOf(each) !== undefined) as
+      | SandboxDefinition
+      | undefined;
+    const ownOptions =
+      asked === undefined &&
+      own?.sandboxOptions !== undefined &&
+      (own.sandboxView?.kit === true || own.sandboxView?.tailwind === true)
+        ? await resolveSandbox({ ...own.sandboxOptions, name: own.name })
+        : undefined;
+    let channels: GenuiChannels | undefined;
+    if (askedChannels !== undefined) {
+      channels = {};
+      for (const [name, entry] of Object.entries(askedChannels)) {
+        if (entry === undefined) continue;
+        const own = await resolveSandbox(entry.sandbox);
+        channels[name] = { ...entry, ...(own !== undefined ? { sandbox: own } : {}) };
+      }
+    }
     const catalog =
       sandbox === undefined || sandbox === false
-        ? base
+        ? typeof ownOptions === 'object'
+          ? base.extend([defineSandbox(ownOptions)])
+          : base
         : base.extend([defineSandbox(sandbox === true ? {} : sandbox)]);
     const resolveCatalog = await resolveCatalogFn(resolver, ctx);
     const tools = genuiTools(catalog, {
       ...rest,
+      ...(channels !== undefined ? { channels } : {}),
+      ...(sandbox !== undefined ? { sandbox } : {}),
       ...(resolveCatalog !== undefined ? { resolveCatalog } : {}),
     });
     return {
       catalog,
       ...(resolveCatalog === undefined ? {} : { resolveCatalog }),
       tools,
+      ...(channels !== undefined ? { channels } : {}),
+      ...(clients.length > 0 ? { sandboxClient: () => mergeSandboxClients(clients) } : {}),
+      base: {
+        ...(options.mode !== undefined ? { mode: options.mode } : {}),
+        ...(options.streaming !== undefined ? { streaming: options.streaming } : {}),
+        ...(sandbox !== undefined ? { sandbox } : {}),
+      },
     };
   };
 }

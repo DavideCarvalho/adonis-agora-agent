@@ -1,4 +1,5 @@
 import { snapshotActionProposal } from './action-proposal-transitions.js';
+import { turnChannel } from './genui/channels.js';
 import { createNegotiatedUiCollector, type ResolveToolUiCatalog } from './negotiated-tool-ui.js';
 import type { ActionProposal } from './spi/action-proposal-store.js';
 import type { BackgroundActorResolver } from './spi/background-actor-resolver.js';
@@ -57,6 +58,7 @@ export class ActionProposalExecutor {
           ...(context?.uiCapabilities !== undefined
             ? { uiCapabilities: context.uiCapabilities }
             : {}),
+          channel: turnChannel(context?.pageContext),
         },
         deps.resolveUiCatalog,
       );
@@ -78,6 +80,7 @@ export class ActionProposalExecutor {
           ...(context?.uiCapabilities !== undefined
             ? { uiCapabilities: context.uiCapabilities }
             : {}),
+          channel: turnChannel(context?.pageContext),
           ...(deps.host !== undefined ? { host: deps.host } : {}),
           ...(deps.onPresentationError !== undefined
             ? {

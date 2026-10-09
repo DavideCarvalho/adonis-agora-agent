@@ -10,6 +10,8 @@
     "generative-ui",
     "genui-loading-states",
     "genui-sandbox",
+    "genui-sandbox-kit",
+    "genui-channels",
     "genui-builtins",
     "frontends",
     "surfaces",

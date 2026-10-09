@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { HttpContext } from '@adonisjs/core/http';
 import {
   DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY,
@@ -7,7 +8,20 @@ import { AgentService, AttachmentRefusedError, type ChatSendOptions } from '../a
 import type { AttachmentLimits } from '../attachment-limits.js';
 import { onAgentEngine, registeredAgentEngine } from '../durable/agent-run-context.js';
 import type { ElicitationQuestion } from '../elicitation.js';
+import { uiActionText } from '../genui/actions.js';
 import type { UiCapabilities } from '../genui/capabilities.js';
+import type { Catalog } from '../genui/catalog.js';
+import {
+  type ChannelNativeButton,
+  type ChannelRenderedMessage,
+  channelButtonAction,
+  type GenuiChannelBase,
+  type GenuiChannels,
+  type ResolvedGenuiChannel,
+  renderChannelMessages,
+  resolveGenuiChannel,
+} from '../genui/channels.js';
+import { AgentGenui } from '../genui/factory.js';
 import type { ActionProposal } from '../spi/action-proposal-store.js';
 import type { AttachmentRef } from '../spi/attachment-staging.js';
 import type { StreamFrame } from '../spi/token-stream-sink.js';
@@ -40,6 +54,7 @@ import {
 } from './texts.js';
 import type {
   ChannelAdapter,
+  ChannelListRow,
   ChannelMediaFile,
   ChannelRequest,
   InboundMedia,
@@ -341,9 +356,19 @@ export interface ChannelHandleOptions {
   allowRemember?: boolean;
   /**
    * What the turn may draw. Default `{ components: [] }`: every component arrives as its
-   * `fallbackText`. Allow some with {@link renderComponent} to send them as files.
+   * `fallbackText`. Allow some with {@link renderComponent} to send them as files. With
+   * `genui({ channels })` configured for this channel ({@link ChannelAdapter.kind}, else `default`)
+   * the default is the channel's own: the components it can draw, delivered natively.
    */
   uiCapabilities?: UiCapabilities;
+  /**
+   * The genui setup this channel draws with — default: the app's (`AgentGenui` from the container).
+   * With `channels` configured for this channel, components arrive natively (their `channels`
+   * conversion: text, reply buttons, lists, images; their text summary otherwise), and a pressed
+   * button is the user's next turn, as a UI action. `false` → never (every component as its text).
+   * With a `service` handed in, the container is not read: pass `genui` too.
+   */
+  genui?: ChannelGenui | false;
   /**
    * A component the turn drew: what to send for it — a file (a chart as an image), text, several —
    * or `null`/`undefined` for its `fallbackText`. Rendered components are sent when the turn ends (or
@@ -396,6 +421,13 @@ export interface ChannelHandleOptions {
   onError?(error: unknown, message: InboundMessage): void;
 }
 
+/** What a channel draws generative UI with — `AgentGenui` is one. */
+export interface ChannelGenui {
+  catalog: Catalog;
+  channels?: GenuiChannels;
+  base?: GenuiChannelBase;
+}
+
 /** The route handler `channels.handle()` returns. */
 export interface ChannelRouteHandler {
   (ctx: HttpContext): Promise<void>;
@@ -411,6 +443,11 @@ export interface ChannelRouteHandler {
 }
 
 const BUTTON_ID = /^agora:(approve|reject):([^\s]+)$/;
+/** A component's button (or list entry): `ui:<ref>`, short enough for Telegram's 64-byte callback data. */
+const UI_BUTTON_ID = /^ui:([A-Za-z0-9_-]{6,32})$/;
+/** How long a component's buttons stay pressable, and how many per conversation are remembered by label. */
+const UI_BUTTON_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_UI_BUTTONS = 40;
 /** The tail of a proposal id a button carries — Telegram's `callback_data` holds 64 bytes. */
 const BUTTON_REF_LENGTH = 32;
 const OUTCOME_POLL_MS = 500;
@@ -435,6 +472,8 @@ export function proposalButtonIds(proposalId: string): { approve: string; reject
 export interface ChannelAddress {
   name: string;
   conversation: string;
+  /** The adapter's {@link ChannelAdapter.kind}, when it has one — what `turnChannel` reads first. */
+  kind?: string;
 }
 
 /** A question set waiting for the person's answer, one question at a time. */
@@ -511,6 +550,9 @@ function record(value: unknown): Record<string, unknown> | undefined {
 /** `image/jpeg` → `jpeg`, for a file that arrives without a name. */
 const extensionOf = (contentType: string) =>
   (contentType.split('/')[1] ?? 'bin').split(/[;+]/)[0] ?? 'bin';
+
+/** Where a natively drawn component sits in a turn's text, until it is sent. */
+const NATIVE_MARK = '\u0000agora-native\u0000';
 
 const replyList = <T>(value: T | T[] | null | undefined): T[] =>
   value === null || value === undefined ? [] : Array.isArray(value) ? value : [value];
@@ -605,6 +647,31 @@ export function handleChannel(
   const { capabilities } = adapter;
   const buttons = (capabilities.buttons ?? 0) >= 2;
   const name = adapter.name;
+  /** What the channel is (`whatsapp`, `telegram`) — the turn's channel, whatever it is named. */
+  const kind = adapter.kind ?? adapter.name;
+
+  let resolvedGenui: Promise<ChannelGenui | null> | undefined;
+  /** The genui setup, and this channel's options in it — `null` when it draws nothing natively. */
+  const genuiFor = (): Promise<{ genui: ChannelGenui; channel: ResolvedGenuiChannel } | null> => {
+    resolvedGenui ??= (async (): Promise<ChannelGenui | null> => {
+      if (options.genui === false) return null;
+      if (options.genui !== undefined) return options.genui;
+      // A service handed in (a test, another framework): no container to read the app's genui from.
+      if (options.service !== undefined) return null;
+      try {
+        const { default: app } = await import('@adonisjs/core/services/app');
+        if (!app.container.hasBinding(AgentGenui)) return null;
+        return (await app.container.make(AgentGenui)) as ChannelGenui;
+      } catch {
+        return null;
+      }
+    })();
+    return resolvedGenui.then((genui) => {
+      if (genui === null || genui.channels === undefined) return null;
+      const channel = resolveGenuiChannel(genui.base ?? {}, genui.channels, kind);
+      return channel.configured ? { genui, channel } : null;
+    });
+  };
 
   let resolvedService: Promise<ChannelTurnService> | undefined;
   const serviceFor = (given?: ChannelTurnService): Promise<ChannelTurnService> => {
@@ -767,6 +834,174 @@ export function handleChannel(
   const cardsOf = async (store: ChannelStore, conversation: string): Promise<Set<string>> => {
     const saved = await store.get(cardsKey(conversation));
     return new Set(saved === null ? [] : (JSON.parse(saved) as string[]));
+  };
+
+  const uiButtonKey = (ref: string) => `${name}:ui:${ref}`;
+  const uiButtonsKey = (conversation: string) => `${name}:uibuttons:${conversation}`;
+
+  /** What a pressed component button stands for, kept until it is pressed (or expires). */
+  interface UiButton {
+    conversation: string;
+    button: ChannelNativeButton;
+    componentId?: string;
+    title?: string;
+  }
+
+  /**
+   * Remember a component's buttons — by id for the press, and by label for a provider that forwards
+   * only the label (Whatsmiau). Each id is derived from the run, the component and its place, so a
+   * phase that runs again names the same buttons.
+   */
+  const rememberUiButtons = async (
+    store: ChannelStore,
+    conversation: string,
+    seed: string,
+    message: ChannelRenderedMessage,
+    entries: ChannelNativeButton[],
+  ): Promise<string[]> => {
+    const ids: string[] = [];
+    const index = await store.get(uiButtonsKey(conversation));
+    const known = index === null ? [] : (JSON.parse(index) as string[]);
+    for (const [position, button] of entries.entries()) {
+      const ref = createHash('sha256')
+        .update(`${seed}:${position}`)
+        .digest('base64url')
+        .slice(0, 16);
+      const saved: UiButton = {
+        conversation,
+        button,
+        ...(message.componentId !== undefined ? { componentId: message.componentId } : {}),
+        ...(message.title !== undefined ? { title: message.title } : {}),
+      };
+      await store.set(uiButtonKey(ref), JSON.stringify(saved), UI_BUTTON_TTL_MS);
+      ids.push(`ui:${ref}`);
+      known.push(ref);
+    }
+    await store.set(
+      uiButtonsKey(conversation),
+      JSON.stringify([...new Set(known)].slice(-MAX_UI_BUTTONS)),
+      UI_BUTTON_TTL_MS,
+    );
+    return ids;
+  };
+
+  /** The component button a press (or, for a provider without ids, its label) names, if any. */
+  const pressedUiButton = async (
+    store: ChannelStore,
+    message: InboundMessage,
+  ): Promise<UiButton | null> => {
+    const match = message.buttonId === undefined ? null : UI_BUTTON_ID.exec(message.buttonId);
+    if (match !== null) {
+      const saved = await store.get(uiButtonKey(match[1] ?? ''));
+      const button = saved === null ? null : (JSON.parse(saved) as UiButton);
+      return button !== null && button.conversation === message.conversation ? button : null;
+    }
+    if (message.buttonId !== undefined || message.buttonWithoutId !== true) return null;
+    const index = await store.get(uiButtonsKey(message.conversation));
+    const label = foldLabel(message.text);
+    for (const ref of (index === null ? [] : (JSON.parse(index) as string[])).reverse()) {
+      const saved = await store.get(uiButtonKey(ref));
+      const button = saved === null ? null : (JSON.parse(saved) as UiButton);
+      if (button !== null && foldLabel(button.button.label) === label) return button;
+    }
+    return null;
+  };
+
+  /**
+   * One natively drawn message out: an image with its caption, text with reply buttons, a list (as
+   * reply buttons when it fits and the channel has no lists, as numbered text when neither does), or
+   * text — in the channel's markdown and limits.
+   */
+  const sendNative = async (
+    store: ChannelStore,
+    out: Outbox,
+    conversation: string,
+    seed: string,
+    message: ChannelRenderedMessage,
+  ) => {
+    const markdown = (text: string) => toChannelMarkdown(text, capabilities.markdown);
+    const text = message.text ?? '';
+    if (message.image !== undefined) {
+      const { image } = message;
+      await out.reply(
+        {
+          media: {
+            kind: 'image',
+            ...(image.url !== undefined ? { url: image.url } : {}),
+            ...(image.data !== undefined ? { data: Buffer.from(image.data) } : {}),
+            contentType: image.contentType ?? 'image/png',
+          },
+          caption: text,
+          fallbackText: text,
+        },
+        'reply',
+      );
+    }
+    const choices: Array<ChannelNativeButton & { description?: string }> =
+      message.list?.items ?? message.buttons ?? [];
+    if (choices.length === 0) {
+      if (message.image === undefined && text.trim() !== '') await out.text(text, 'reply');
+      return;
+    }
+    const body = message.image === undefined ? text : '';
+    const numbered = [
+      body,
+      ...(message.list?.title !== undefined ? [`*${message.list.title}*`] : []),
+      choices
+        .map(
+          (choice, index) =>
+            `${index + 1}. ${choice.label}${choice.description ? ` — ${choice.description}` : ''}`,
+        )
+        .join('\n'),
+    ]
+      .filter((part) => part.trim() !== '')
+      .join('\n\n');
+    const maxButtons = capabilities.buttons ?? 0;
+    const asButtons = message.list === undefined || (capabilities.lists ?? 0) === 0;
+    if (asButtons && choices.length <= maxButtons) {
+      const ids = await rememberUiButtons(store, conversation, seed, message, choices);
+      await out.send(
+        {
+          text: markdown(body.trim() === '' ? (message.title ?? '…') : body).slice(
+            0,
+            capabilities.maxLength,
+          ),
+          buttons: choices.map((choice, index) => ({ id: ids[index] ?? '', label: choice.label })),
+          fallbackText: markdown(numbered).slice(0, capabilities.maxLength),
+        },
+        'reply',
+      );
+      return;
+    }
+    const maxRows = capabilities.lists ?? 0;
+    if (maxRows > 0) {
+      const rows = choices.slice(0, maxRows);
+      const ids = await rememberUiButtons(store, conversation, seed, message, rows);
+      await out.send(
+        {
+          text: markdown(body.trim() === '' ? (message.title ?? '…') : body).slice(
+            0,
+            capabilities.maxLength,
+          ),
+          list: {
+            button: message.list?.button ?? 'Options',
+            ...(message.list?.title !== undefined ? { title: message.list.title } : {}),
+            rows: rows.map(
+              (row, index): ChannelListRow => ({
+                id: ids[index] ?? '',
+                title: row.label,
+                ...(row.description !== undefined ? { description: row.description } : {}),
+              }),
+            ),
+          },
+          fallbackText: markdown(numbered).slice(0, capabilities.maxLength),
+        },
+        'reply',
+      );
+      return;
+    }
+    // Neither buttons nor lists: the choices as numbered text.
+    await out.text(numbered, 'reply');
   };
 
   const sendProposal = async (
@@ -1224,6 +1459,9 @@ export function handleChannel(
     const proposals = new Map<string, ChannelProposal>();
     /** Components rendered as files, by id (a later one replaces), sent before the text. */
     const rendered = new Map<string, { component: ChannelComponent; replies: ChannelReply[] }>();
+    /** Components drawn natively (genui channels), by id, sent where they came in the text. */
+    const natives = new Map<string, ChannelRenderedMessage[]>();
+    const native = await genuiFor();
     const asText = new Set<string>();
     let wroteText = false;
     let failed = false;
@@ -1236,9 +1474,19 @@ export function handleChannel(
       const batch = [...rendered.values()];
       rendered.clear();
       for (const { replies } of batch) for (const reply of replies) await out.reply(reply, 'reply');
-      const text = parts.join('').trim();
+      // Text and natively drawn components, in the order the turn produced them.
+      const segments = parts.join('').split(NATIVE_MARK);
       parts.length = 0;
-      if (text !== '') await out.text(text, 'reply');
+      for (const [index, segment] of segments.entries()) {
+        if (index % 2 === 0) {
+          if (segment.trim() !== '') await out.text(segment.trim(), 'reply');
+          continue;
+        }
+        const messages = natives.get(segment) ?? [];
+        for (const [position, message] of messages.entries())
+          await sendNative(store, out, conversation, `${runId}:${segment}:${position}`, message);
+      }
+      natives.clear();
       if (end && !wroteText && batch.length > 0) {
         const after = texts.componentsOnly?.(batch.map(({ component }) => component));
         if (after !== undefined && after !== '') await out.text(after, 'reply');
@@ -1266,7 +1514,36 @@ export function handleChannel(
         if (next.done) break;
         const frame: StreamFrame = next.value;
         const component = componentOf(frame, position++);
-        if (component !== null) {
+        if (component !== null && native !== null) {
+          // A genui channel: the component as this channel draws it, where it came in the text.
+          const replies = options.renderComponent
+            ? replyList(
+                await options.renderComponent(component, {
+                  actor,
+                  conversation,
+                  runId,
+                  rendered: rendered.size,
+                }),
+              )
+            : [];
+          if (replies.length > 0) {
+            rendered.set(component.id, { component, replies });
+            continue;
+          }
+          const drawn = await renderChannelMessages(
+            native.genui.catalog,
+            {
+              id: component.id,
+              name: component.name,
+              props: (component.data ?? {}) as Record<string, unknown>,
+            },
+            native.channel,
+          );
+          if (drawn.length === 0) continue;
+          wroteText = true;
+          if (!natives.has(component.id)) parts.push(`${NATIVE_MARK}${component.id}${NATIVE_MARK}`);
+          natives.set(component.id, drawn);
+        } else if (component !== null) {
           const replies = options.renderComponent
             ? replyList(
                 await options.renderComponent(component, {
@@ -1369,6 +1646,7 @@ export function handleChannel(
           failed = true;
           // A failed turn shows none of what it drew before failing.
           rendered.clear();
+          natives.clear();
         }
       }
     } finally {
@@ -1468,10 +1746,25 @@ export function handleChannel(
       }
     }
     if (await pressButton(service, out, actor, threadId, message)) return done(null);
-    const media = await attachMedia(service, texts, out, actor, message);
+    // A component's button (or list entry): the user's next turn, as a UI action — the same thing a
+    // sandbox's `agent.send` and an A2UI button become.
+    const uiButton = await pressedUiButton(store, message);
+    const media = uiButton === null ? await attachMedia(service, texts, out, actor, message) : null;
     let inbound: ChannelInbound = {
-      text: [message.text, ...media.extra].filter((part) => part.trim() !== '').join('\n\n'),
-      attachments: media.refs,
+      text:
+        uiButton !== null
+          ? uiActionText(
+              channelButtonAction(uiButton.button, {
+                ...(uiButton.componentId !== undefined
+                  ? { componentId: uiButton.componentId }
+                  : {}),
+                ...(uiButton.title !== undefined ? { title: uiButton.title } : {}),
+              }),
+            )
+          : [message.text, ...(media?.extra ?? [])]
+              .filter((part) => part.trim() !== '')
+              .join('\n\n'),
+      attachments: media?.refs ?? [],
     };
     if (options.transformInbound)
       inbound = await options.transformInbound(inbound, {
@@ -1500,7 +1793,14 @@ export function handleChannel(
       typeof options.pageContext === 'function'
         ? options.pageContext(message)
         : (options.pageContext ?? { kind: name });
-    const channel: ChannelAddress = { name, conversation: message.conversation };
+    const channel: ChannelAddress = {
+      name,
+      conversation: message.conversation,
+      ...(adapter.kind !== undefined ? { kind: adapter.kind } : {}),
+    };
+    // A channel genui draws for: the turn may push whatever this channel can draw (the tools are
+    // narrowed to it), and the components arrive whole, for the history and for native delivery.
+    const drawsNatively = options.uiCapabilities === undefined && (await genuiFor()) !== null;
     const sendOptions: ChatSendOptions = { textDecisions: false };
     let sent: Awaited<ReturnType<ChannelTurnService['send']>>;
     try {
@@ -1511,7 +1811,9 @@ export function handleChannel(
           ...(threadId !== null ? { threadId } : {}),
           ...(options.agentName !== undefined ? { agentName: options.agentName } : {}),
           ...(inbound.attachments.length > 0 ? { attachments: inbound.attachments } : {}),
-          uiCapabilities: options.uiCapabilities ?? { components: [] },
+          ...(drawsNatively
+            ? {}
+            : { uiCapabilities: options.uiCapabilities ?? { components: [] } }),
           pageContext: { ...pageContext, channel },
           hostContext: {
             channel: name,

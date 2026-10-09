@@ -560,3 +560,7 @@ await webhook.drain()
 ```
 
 With a [`FakeModelProvider`](/docs/agent/testing) the whole flow runs without a model.
+
+## Components on a channel
+
+By default a channel gets each component as its text summary. With `genui({ channels: { whatsapp: { … } } })` the turn is offered only the tools WhatsApp can draw, and components arrive natively — reply buttons, list messages, chart images — with a pressed button coming back as the next turn. See [Generative UI per channel](/docs/agent/genui-channels).

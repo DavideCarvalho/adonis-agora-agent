@@ -47,6 +47,12 @@ const MAX_BUTTON_TITLE = 20;
 const MAX_BUTTONS = 3;
 const MAX_CAPTION = 1024;
 const MAX_FOOTER = 60;
+/** List messages: 10 rows, 20-character button, 24-character row titles, 72-character descriptions. */
+const MAX_LIST_ROWS = 10;
+const MAX_LIST_BUTTON = 20;
+const MAX_ROW_TITLE = 24;
+const MAX_ROW_DESCRIPTION = 72;
+const MAX_HEADER = 60;
 
 const MEDIA_TYPES = ['image', 'audio', 'video', 'document', 'sticker'] as const;
 
@@ -151,12 +157,14 @@ export function whatsappCloud(options: WhatsappCloudOptions): ChannelAdapter {
 
   return {
     name,
+    kind: 'whatsapp',
     capabilities: {
       buttons: MAX_BUTTONS,
       markdown: 'whatsapp',
       maxLength: MAX_TEXT,
       media: true,
       maxCaptionLength: MAX_CAPTION,
+      lists: MAX_LIST_ROWS,
     },
 
     challenge(request: ChannelRequest) {
@@ -254,6 +262,45 @@ export function whatsappCloud(options: WhatsappCloudOptions): ChannelAdapter {
               ? { caption: message.text.slice(0, MAX_CAPTION) }
               : {}),
             ...(media.kind === 'document' ? { filename: mediaFilename(media) } : {}),
+          },
+        });
+        return;
+      }
+      if (message.list !== undefined) {
+        const { list } = message;
+        await post({
+          to: conversation,
+          type: 'interactive',
+          interactive: {
+            type: 'list',
+            ...(list.title !== undefined && list.title.trim() !== ''
+              ? {
+                  header: {
+                    type: 'text',
+                    text: list.title.replace(/[*_~]/g, '').slice(0, MAX_HEADER),
+                  },
+                }
+              : {}),
+            body: {
+              text: (message.text.trim() === '' ? '…' : message.text).slice(
+                0,
+                MAX_INTERACTIVE_BODY,
+              ),
+            },
+            action: {
+              button: list.button.slice(0, MAX_LIST_BUTTON),
+              sections: [
+                {
+                  rows: list.rows.slice(0, MAX_LIST_ROWS).map((row) => ({
+                    id: row.id,
+                    title: row.title.slice(0, MAX_ROW_TITLE),
+                    ...(row.description !== undefined && row.description !== ''
+                      ? { description: row.description.slice(0, MAX_ROW_DESCRIPTION) }
+                      : {}),
+                  })),
+                },
+              ],
+            },
           },
         });
         return;

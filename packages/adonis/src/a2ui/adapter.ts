@@ -255,6 +255,7 @@ export function a2uiAdapter(options: A2uiAdapterOptions = {}): ProtocolAdapter {
                 ? { threadId }
                 : { newThreadId: threadId }),
             ...(agentName !== undefined ? { agentName } : {}),
+            // An A2UI client draws like a web page: no channel stamped, which `turnChannel` reads as `web`.
             ...(dataModel !== undefined ? { pageContext: { a2uiDataModel: dataModel } } : {}),
             ...(Object.hasOwn(body, 'uiCapabilities')
               ? { uiCapabilities: validateUiCapabilities(body.uiCapabilities) }

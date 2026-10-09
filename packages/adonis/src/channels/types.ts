@@ -25,6 +25,12 @@ export interface ChannelCapabilities {
   media?: boolean;
   /** The longest caption a file may carry. Default: {@link maxLength}. */
   maxCaptionLength?: number;
+  /**
+   * The most entries a list message can carry (a WhatsApp list, a Telegram keyboard of one row per
+   * entry). Omitted → no lists: a component's list goes out as reply buttons when it fits, else as
+   * numbered text.
+   */
+  lists?: number;
 }
 
 /** One webhook request, as an adapter sees it. */
@@ -99,6 +105,23 @@ export interface ChannelButton {
   label: string;
 }
 
+/** One entry of a list message. */
+export interface ChannelListRow {
+  /** What comes back as {@link InboundMessage.buttonId} when it is picked. */
+  id: string;
+  title: string;
+  description?: string;
+}
+
+/** A list to pick one entry from — see {@link ChannelCapabilities.lists}. */
+export interface OutboundList {
+  /** The label of the button that opens the list (WhatsApp). */
+  button: string;
+  /** A heading over the entries. */
+  title?: string;
+  rows: ChannelListRow[];
+}
+
 /** A file to send: by a URL the provider downloads it from, or by its bytes. */
 export interface OutboundMedia {
   kind: 'image' | 'document' | 'audio' | 'video';
@@ -125,6 +148,7 @@ export type OutboundMessage =
       instruction?: undefined;
       footer?: undefined;
       media?: undefined;
+      list?: undefined;
     }
   | {
       text: string;
@@ -148,6 +172,18 @@ export type OutboundMessage =
        */
       footer?: string;
       media?: undefined;
+      list?: undefined;
+    }
+  | {
+      /** The body over the list, already in the channel's markdown. */
+      text: string;
+      list: OutboundList;
+      /** The same message as numbered text — what an adapter sends when the list is refused. */
+      fallbackText: string;
+      buttons?: undefined;
+      instruction?: undefined;
+      footer?: undefined;
+      media?: undefined;
     }
   | {
       /** The caption, already in the channel's markdown — `''` for none. */
@@ -157,6 +193,7 @@ export type OutboundMessage =
       fallbackText?: undefined;
       instruction?: undefined;
       footer?: undefined;
+      list?: undefined;
     };
 
 /** A reply the adapter answers the webhook with instead of acknowledging it (a verification GET). */
@@ -183,6 +220,12 @@ export interface ChannelIgnored {
 export interface ChannelAdapter {
   /** Names the channel: the dedupe key's prefix, and `via` on a decision made with its buttons. */
   readonly name: string;
+  /**
+   * What the channel is — `whatsapp`, `telegram` — whatever it is named: the turn's channel
+   * (`turnChannel`), so `genui({ channels: { whatsapp } })` applies to every WhatsApp adapter.
+   * Default: {@link name}.
+   */
+  readonly kind?: string;
   readonly capabilities: ChannelCapabilities;
   /**
    * Answer a request that is not a message — WhatsApp Cloud's `GET ?hub.challenge=…` subscription

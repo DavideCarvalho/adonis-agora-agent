@@ -17,7 +17,15 @@ import {
   standaloneComponents,
   toolNameFor,
 } from './catalog.js';
+import {
+  channelCatalog,
+  channelInstructions,
+  type GenuiChannels,
+  type ResolvedGenuiChannel,
+  resolveGenuiChannel,
+} from './channels.js';
 import { partialTree } from './progressive.js';
+import type { DefineSandboxOptions } from './sandbox.js';
 import {
   formatIssues,
   type GenuiIssue,
@@ -57,6 +65,8 @@ export interface GenuiCatalogScope {
   threadId?: string;
   tenant?: string;
   agentName?: string;
+  /** The channel the turn runs on (`web`, `whatsapp`, …), when known. */
+  channel?: string;
 }
 
 /** Answers which catalog applies to a request — a tenant's own, versioned components. */
@@ -125,6 +135,19 @@ export interface GenuiToolsOptions {
    * `catalog` argument serves every request.
    */
   resolveCatalog?: ResolveGenuiCatalog;
+  /**
+   * Per-channel generative UI (see {@link GenuiChannels}): each entry sets the mode, streaming,
+   * sandbox and rendering of one channel (`web`, `mobile`, `whatsapp`, `telegram`, `email`, or
+   * `default` for the rest), over the top-level options. The tools of every mode in use are
+   * registered; each turn is offered only those of its channel's mode, described with what that
+   * channel can draw. Omitted → every channel is served by the top-level options, as before.
+   */
+  channels?: GenuiChannels;
+  /**
+   * The sandbox setting a channel without its own falls back to (`genui({ sandbox })` passes it).
+   * Only read with {@link channels}: the sandbox itself is a component of `catalog`.
+   */
+  sandbox?: boolean | DefineSandboxOptions;
 }
 
 /** The default name of the generic show tool ({@link GenuiToolsOptions.showTool}). */
@@ -137,10 +160,17 @@ export const GENUI_SHOW_TOOL = 'ui__show';
  * assistant message.
  */
 export function genuiTools(catalog: Catalog, options: GenuiToolsOptions = {}): GenuiTool[] {
-  const tools =
-    options.mode === 'per-component'
-      ? standaloneComponents(catalog).map((component) => componentTool(catalog, component, options))
-      : [treeTool(catalog, options)];
+  // Without `channels`, the one top-level mode. With them, every mode some channel runs in: each
+  // tool is then offered only on the channels of its mode.
+  const modes = new Set<string>([options.mode === 'per-component' ? 'per-component' : 'tree']);
+  for (const name of Object.keys(options.channels ?? {})) modes.add(channelFor(options, name).mode);
+  const tools: GenuiTool[] = [];
+  if (modes.has('tree')) tools.push(treeTool(catalog, options));
+  if (modes.has('per-component')) {
+    for (const component of standaloneComponents(catalog)) {
+      tools.push(componentTool(catalog, component, options));
+    }
+  }
   if (options.showTool !== undefined && options.showTool !== false) {
     tools.push(showTool(catalog, options));
   }
@@ -151,21 +181,67 @@ function scopeOf(input: {
   actor: Actor;
   threadId?: string;
   agentName?: string;
+  channel?: string;
 }): GenuiCatalogScope {
   return {
     actor: input.actor,
     ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
     ...(input.actor.tenantRef !== undefined ? { tenant: input.actor.tenantRef } : {}),
     ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+    ...(input.channel !== undefined ? { channel: input.channel } : {}),
   };
 }
 
-function catalogFor(
+/** The turn's channel with every default applied. */
+function channelFor(options: GenuiToolsOptions, channel: string | undefined): ResolvedGenuiChannel {
+  return resolveGenuiChannel(
+    {
+      ...(options.mode !== undefined ? { mode: options.mode } : {}),
+      ...(options.streaming !== undefined ? { streaming: options.streaming } : {}),
+      ...(options.sandbox !== undefined ? { sandbox: options.sandbox } : {}),
+    },
+    options.channels,
+    channel,
+  );
+}
+
+/** Is a tool of `mode` offered on this turn's channel? Always, without `channels`. */
+function offeredOn(
+  options: GenuiToolsOptions,
+  channel: string | undefined,
+  mode: 'tree' | 'per-component' | 'show',
+): boolean {
+  if (options.channels === undefined) return true;
+  const resolved = channelFor(options, channel).mode;
+  return mode === 'show' ? resolved !== 'text' : resolved === mode;
+}
+
+const NOT_ON_CHANNEL: ToolDescription = {
+  available: false,
+  description: 'Not available on this channel — do not call this tool.',
+};
+
+/** Words for the model about the turn's channel, after a tool's own description. */
+function withChannel(
+  description: string,
+  options: GenuiToolsOptions,
+  channel: string | undefined,
+): string {
+  if (options.channels === undefined) return description;
+  const extra = channelInstructions(channelFor(options, channel));
+  return extra === undefined ? description : `${description}\n${extra}`;
+}
+
+async function catalogFor(
   catalog: Catalog,
   options: GenuiToolsOptions,
   scope: GenuiCatalogScope,
-): Catalog | Promise<Catalog> {
-  return options.resolveCatalog === undefined ? catalog : options.resolveCatalog(scope);
+): Promise<Catalog> {
+  const resolved =
+    options.resolveCatalog === undefined ? catalog : await options.resolveCatalog(scope);
+  return options.channels === undefined
+    ? resolved
+    : channelCatalog(resolved, channelFor(options, scope.channel));
 }
 
 function common(options: GenuiToolsOptions): Pick<ToolSpec, 'roles'> & { terminal?: boolean } {
@@ -224,6 +300,7 @@ function componentTool(
     },
   };
   handler.describe = async (scope: ToolDescribeScope): Promise<ToolDescription> => {
+    if (!offeredOn(options, scope.channel, 'per-component')) return NOT_ON_CHANNEL;
     const resolved = negotiateCatalog(
       await catalogFor(catalog, options, scopeOf(scope)),
       scope.uiCapabilities,
@@ -236,7 +313,7 @@ function componentTool(
       };
     }
     return {
-      description: describeFor(definition),
+      description: withChannel(describeFor(definition), options, scope.channel),
       inputSchema: permissiveSchema(toJsonSchema(definition.props) ?? { type: 'object' }),
     };
   };
@@ -330,13 +407,14 @@ function treeTool(catalog: Catalog, options: GenuiToolsOptions): GenuiTool {
     },
   };
   handler.describe = async (scope: ToolDescribeScope): Promise<ToolDescription> => {
+    if (!offeredOn(options, scope.channel, 'tree')) return NOT_ON_CHANNEL;
     const resolved = negotiateCatalog(
       await catalogFor(catalog, options, scopeOf(scope)),
       scope.uiCapabilities,
     );
     return {
       available: resolved.modelComponents().length > 0,
-      description: describeFor(resolved),
+      description: withChannel(describeFor(resolved), options, scope.channel),
       inputSchema: permissiveSchema(treeJsonSchema(resolved, treeSchemaOptions)),
     };
   };
@@ -345,11 +423,15 @@ function treeTool(catalog: Catalog, options: GenuiToolsOptions): GenuiTool {
   ): Promise<ToolInputPreview | undefined> => {
     // What THIS client draws: a node it cannot would make the final push degrade to text, so the
     // preview stops there instead of showing a layout the message will not have.
+    if (!offeredOn(options, scope.channel, 'tree')) return undefined;
     const resolved = negotiateCatalog(
       await catalogFor(catalog, options, scopeOf(scope)),
       scope.uiCapabilities,
     );
-    const streaming = options.streaming ?? 'complete';
+    const streaming =
+      (options.channels === undefined
+        ? options.streaming
+        : channelFor(options, scope.channel).streaming) ?? 'complete';
     // Nothing streams partial: the tree appears when the call has run, as it always did.
     if (!resolved.modelComponents().some((each) => (each.streaming ?? streaming) === 'partial')) {
       return undefined;
@@ -472,13 +554,14 @@ function showTool(catalog: Catalog, options: GenuiToolsOptions): GenuiTool {
     },
   };
   handler.describe = async (scope: ToolDescribeScope): Promise<ToolDescription> => {
+    if (!offeredOn(options, scope.channel, 'show')) return NOT_ON_CHANNEL;
     const resolved = negotiateCatalog(
       await catalogFor(catalog, options, scopeOf(scope)),
       scope.uiCapabilities,
     );
     return {
       available: standaloneComponents(resolved).length > 0,
-      description: describeFor(resolved),
+      description: withChannel(describeFor(resolved), options, scope.channel),
       inputSchema: permissiveSchema(showToolJsonSchema(resolved)),
     };
   };

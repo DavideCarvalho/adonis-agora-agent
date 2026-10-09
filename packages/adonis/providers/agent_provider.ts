@@ -14,6 +14,7 @@ import {
 } from '../src/attachment-limits.js';
 import { type AgentEngine, assertRunnable, engineOnlyModel } from '../src/engine.js';
 import type { Catalog } from '../src/genui/index.js';
+import type { SandboxClientConfig } from '../src/genui/sandbox-kit.js';
 import {
   ActionProposalExecutor,
   ActionProposalWorker,
@@ -254,6 +255,7 @@ export default class AgentProvider {
   /** The engine running the turns instead of the loop (`engine` in the config), when there is one. */
   #engine: AgentEngine | undefined;
   #genuiCatalog: Catalog | undefined;
+  #sandboxClient: (() => SandboxClientConfig) | undefined;
 
   constructor(protected app: ApplicationService) {}
 
@@ -314,6 +316,7 @@ export default class AgentProvider {
     if (config.genui !== undefined) {
       const setup = await config.genui({
         make: (klass) => this.app.container.make(klass as never),
+        app: this.app,
       });
       resolveUiCatalog = async (scope) => {
         const serverScope = {
@@ -325,8 +328,18 @@ export default class AgentProvider {
       for (const tool of setup.tools) {
         registerFunctionalTool(registry, tool, defaultRoles);
       }
-      this.app.container.bindValue(AgentGenui, new AgentGenui(setup.catalog, setup.resolveCatalog));
+      this.app.container.bindValue(
+        AgentGenui,
+        new AgentGenui(
+          setup.catalog,
+          setup.resolveCatalog,
+          setup.channels,
+          setup.base ?? {},
+          setup.sandboxClient,
+        ),
+      );
       this.#genuiCatalog = setup.catalog as Catalog;
+      this.#sandboxClient = setup.sandboxClient;
     }
 
     // ── Runtime graph ──
@@ -1552,6 +1565,7 @@ export default class AgentProvider {
         models: { enabled: service.hasModelCatalog() },
         quota: { enforced: config.quota !== undefined },
         identity: { anonymous: actorResolver instanceof AnonymousActorResolver },
+        ...(this.#sandboxClient !== undefined ? { genui: { sandbox: this.#sandboxClient() } } : {}),
       };
       return ctx.response.json(clientConfig);
     });
