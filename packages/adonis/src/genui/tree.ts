@@ -42,8 +42,8 @@ export interface TreeLimits {
  * `children: true` may have children. Returns the tree with each node's props as its schema
  * produced them (defaults applied by a Standard Schema, for instance).
  *
- * Lenient about one thing models get wrong: a `children` array sent as a JSON STRING (sometimes
- * with a stray trailing `}`) is parsed back into the array the model plainly meant.
+ * Lenient about one thing models get wrong: a `children` array — or the whole tree — sent as a
+ * JSON STRING (sometimes with a stray trailing `}`) is parsed back into what the model plainly meant.
  */
 export async function validateTree(
   catalog: Catalog,
@@ -138,7 +138,7 @@ export async function validateTree(
       : { type: element.type, props };
   };
 
-  const root = await visit(tree, [], 1);
+  const root = await visit(parseRootIfStringified(tree), [], 1);
   return issues.length > 0 || root === undefined
     ? { ok: false, issues: issues.length > 0 ? issues : [{ path: [], message: 'is invalid' }] }
     : { ok: true, value: root };
@@ -289,11 +289,26 @@ function parseChildrenIfStringified(value: unknown): unknown {
   return leadingJsonArray(trimmed) ?? value;
 }
 
+/** A whole tree sent as a JSON string (`"{\"type\": …}"`): the element it spells. */
+function parseRootIfStringified(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{')) return value;
+  const parsed = leadingJson(trimmed);
+  return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed : value;
+}
+
 /**
  * The array `text` opens with, ignoring what follows: a model that stringifies `children` tends to
  * carry the enclosing object's `}` along, which `JSON.parse` refuses whole.
  */
 function leadingJsonArray(text: string): unknown[] | undefined {
+  const parsed = leadingJson(text);
+  return Array.isArray(parsed) ? parsed : undefined;
+}
+
+/** The JSON value (an array or object) `text` opens with, ignoring what follows. */
+function leadingJson(text: string): unknown {
   let depth = 0;
   let inString = false;
   let escaped = false;
@@ -311,8 +326,7 @@ function leadingJsonArray(text: string): unknown[] | undefined {
       depth -= 1;
       if (depth === 0) {
         try {
-          const parsed: unknown = JSON.parse(text.slice(0, index + 1));
-          return Array.isArray(parsed) ? parsed : undefined;
+          return JSON.parse(text.slice(0, index + 1)) as unknown;
         } catch {
           return undefined;
         }
