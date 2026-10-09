@@ -222,6 +222,118 @@ describe('OpenCode turns: cost and usage', () => {
   });
 });
 
+describe('OpenCode turns: what the session spent besides the steps', () => {
+  let h: Harness | undefined;
+  afterEach(async () => {
+    await h?.close();
+    h = undefined;
+  });
+
+  /** A session that had spent `before`, then a step and the title OpenCode generated, unstreamed. */
+  function titledTurn(titleCost: number): FakeScript {
+    return async (t) => {
+      const fake = (h as Harness).fake;
+      const before = fake.usage.get(t.sessionId) ?? {
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      };
+      const step = { input: 3, output: 5, reasoning: 0, cache: { read: 0, write: 8077 } };
+      bedrockStep(t, 0.0364473, step);
+      // OpenCode records the title call on the session; the event stream does not carry it.
+      fake.usage.set(t.sessionId, {
+        cost: before.cost + 0.0364473 + titleCost,
+        tokens: {
+          input: before.tokens.input + 3 + 574,
+          output: before.tokens.output + 5 + 5,
+          reasoning: 0,
+          cache: {
+            read: before.tokens.cache?.read ?? 0,
+            write: (before.tokens.cache?.write ?? 0) + 8077,
+          },
+        },
+      });
+      t.succeed();
+    };
+  }
+
+  async function bootTitled(titleCost: number, settled: OpenCodeRunResult[]) {
+    h = await bootEngine({
+      engine: (host) =>
+        openCode({
+          host: Object.assign(host, {
+            onSettled: async (r: OpenCodeRunResult) => {
+              settled.push(r);
+            },
+          }),
+        }),
+      script: titledTurn(titleCost),
+      priceCatalog: GOV_CATALOG,
+    });
+    return h;
+  }
+
+  it("records the title call as a usage row of its own, at OpenCode's figure", async () => {
+    const settled: OpenCodeRunResult[] = [];
+    const h = await bootTitled(0.0021564, settled);
+    const rows = ledger(h);
+    const { runId, threadId } = await h.service.chat({ actor, message: 'hi' });
+    await frames(h.service, runId);
+    await eventually(() => settled.length === 1, 'settled');
+    expect(rows.map((r) => r.purpose)).toEqual(['chat', 'title']);
+    expect(rows[1]).toMatchObject({
+      modelId: `amazon-bedrock/${GOV_SONNET}`,
+      usage: { inputTokens: 574, outputTokens: 5 },
+      costUsd: expect.closeTo(0.0021564, 12),
+      costSource: 'provider',
+    });
+    expect(settled[0]?.usage.costUsd).toBeCloseTo(0.0364473 + 0.0021564, 12);
+    const answer = (await h.store.getThread(threadId))?.messages.at(-1);
+    expect(answer?.usage?.inputTokens).toBe(3 + 8077 + 574);
+  });
+
+  it('estimates the title call at the GovCloud price when OpenCode priced it at 0', async () => {
+    const settled: OpenCodeRunResult[] = [];
+    const h = await bootTitled(0, settled);
+    const rows = ledger(h);
+    const { runId } = await h.service.chat({ actor, message: 'hi' });
+    await frames(h.service, runId);
+    await eventually(() => settled.length === 1, 'settled');
+    expect(rows[1]).toMatchObject({
+      purpose: 'title',
+      costSource: 'estimate',
+      costUsd: expect.closeTo((574 * 3.6 + 5 * 18) / 1_000_000, 12),
+    });
+  });
+
+  it('only counts what the session spent since this turn prompted it', async () => {
+    const settled: OpenCodeRunResult[] = [];
+    const h = await bootTitled(0.0021564, settled);
+    const rows = ledger(h);
+    const first = await h.service.chat({ actor, message: 'hi' });
+    await frames(h.service, first.runId);
+    await eventually(() => settled.length === 1, 'first settled');
+    // A second turn on the same session: no title this time.
+    h.fake.script = async (t) => {
+      const before = h.fake.usage.get(t.sessionId);
+      bedrockStep(t, 0.01, { input: 10, output: 2, reasoning: 0, cache: { read: 0, write: 0 } });
+      if (before)
+        h.fake.usage.set(t.sessionId, {
+          cost: before.cost + 0.01,
+          tokens: {
+            ...before.tokens,
+            input: before.tokens.input + 10,
+            output: before.tokens.output + 2,
+          },
+        });
+      t.succeed();
+    };
+    const second = await h.service.chat({ actor, message: 'again', threadId: first.threadId });
+    await frames(h.service, second.runId);
+    await eventually(() => settled.length === 2, 'second settled');
+    expect(rows.map((r) => r.purpose)).toEqual(['chat', 'title', 'chat']);
+  });
+});
+
 describe('OpenCode turns: usage across a durable resume', () => {
   let h: Harness | undefined;
   afterEach(async () => {

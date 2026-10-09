@@ -23,6 +23,9 @@ export interface OpenCodeClient {
     get?(args: { sessionID: string }): Promise<{
       id: string;
       metadata?: { readonly [key: string]: OpenCodeJson };
+      /** What the session spent so far, every model call OpenCode made for it (the title too). */
+      cost?: number;
+      tokens?: OpenCodeTokens;
     }>;
     /** Resolves when the session goes idle. Optional: a safety net for a missed terminal event. */
     wait?(args: { sessionID: string }): Promise<unknown>;
@@ -167,4 +170,12 @@ export interface OpenCodeFormField {
   options?: Array<{ value: string; label?: string; description?: string }>;
   /** The user may type their own answer instead of picking one of `options`. */
   custom?: boolean;
+}
+
+/** A token count as OpenCode reports it: `input` is the uncached input, the cache beside it. */
+export interface OpenCodeTokens {
+  input: number;
+  output: number;
+  reasoning?: number;
+  cache?: { read: number; write: number };
 }

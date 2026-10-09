@@ -22,6 +22,7 @@ import type {
   OpenCodeEvent,
   OpenCodeForm,
   OpenCodePermissionRequest,
+  OpenCodeTokens,
 } from './client.js';
 import { toElicitation, toFormAnswer } from './forms.js';
 import { errorText, openCodeLog } from './log.js';
@@ -237,6 +238,10 @@ export class OpenCodeTurn {
   private reported = emptyUsage();
   private priced = false;
   private model: StepModel | undefined;
+  /** What the session had spent when this turn prompted it; what OpenCode reported since. */
+  private baseline: { cost: number; tokens: OpenCodeTokens } | undefined;
+  private readonly seen = { cost: 0, input: 0, output: 0, reasoning: 0, read: 0, write: 0 };
+  private compacted = false;
   private stepOpen = false;
   private sawText = false;
   private separator = false;
@@ -247,6 +252,17 @@ export class OpenCodeTurn {
 
   constructor(private readonly a: OpenCodeTurnArgs) {
     this.model = modelOfLabel(a.input.model);
+  }
+
+  /**
+   * What the session had spent before this turn prompted it (`session.get`). When the execution
+   * ends, what the session spent since that this turn's events did not report — the title OpenCode
+   * generates, a compaction: OpenCode records those calls on the session without streaming them — is
+   * recorded as a usage row of its own.
+   */
+  setBaseline(info: { cost?: number; tokens?: OpenCodeTokens } | undefined): void {
+    if (info?.tokens === undefined) return;
+    this.baseline = { cost: Number(info.cost) || 0, tokens: info.tokens };
   }
 
   /** What the run spent so far: carried from before this turn object, plus what it saw. */
@@ -504,6 +520,10 @@ export class OpenCodeTurn {
     }
     if (this.ended) return;
     switch (e.type) {
+      case 'session.compaction.started':
+      case 'session.compaction.ended':
+        this.compacted = true;
+        return;
       case 'session.step.started':
       case 'session.model.selected': {
         const model = d.model as Partial<StepModel> | undefined;
@@ -647,6 +667,13 @@ export class OpenCodeTurn {
     const usage = usageOf(d.tokens);
     const reportedCostUsd =
       typeof d.cost === 'number' && Number.isFinite(d.cost) && d.cost >= 0 ? d.cost : undefined;
+    const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+    this.seen.cost += reportedCostUsd ?? 0;
+    this.seen.input += n(d.tokens?.input);
+    this.seen.output += n(d.tokens?.output);
+    this.seen.reasoning += n(d.tokens?.reasoning);
+    this.seen.read += n(d.tokens?.cache?.read);
+    this.seen.write += n(d.tokens?.cache?.write);
     const fallback: StepCost =
       reportedCostUsd !== undefined ? { costUsd: reportedCostUsd, costSource: 'provider' } : {};
     let cost = fallback;
@@ -1013,9 +1040,47 @@ export class OpenCodeTurn {
     await this.a.store.setMessageToolResults(messageId, results);
   }
 
+  /** What the session spent since the baseline that no event of this turn reported. */
+  private async unreported(): Promise<void> {
+    const baseline = this.baseline;
+    if (baseline === undefined) return;
+    this.baseline = undefined;
+    const info = await this.a.client.session
+      .get?.({ sessionID: this.a.sessionId })
+      .catch(() => undefined);
+    const after = info?.tokens;
+    if (after === undefined) return;
+    const before = baseline.tokens;
+    const left = (now: unknown, then: unknown, seen: number) =>
+      Math.max(0, (Number(now) || 0) - (Number(then) || 0) - seen);
+    const tokens = {
+      input: left(after.input, before.input, this.seen.input),
+      output: left(after.output, before.output, this.seen.output),
+      reasoning: left(after.reasoning, before.reasoning, this.seen.reasoning),
+      cache: {
+        read: left(after.cache?.read, before.cache?.read, this.seen.read),
+        write: left(after.cache?.write, before.cache?.write, this.seen.write),
+      },
+    };
+    const total =
+      tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write;
+    if (total === 0) return;
+    // Below a millionth of a cent is float noise from the subtraction, not a price.
+    const cost = left(info?.cost, baseline.cost, this.seen.cost);
+    await this.spend(
+      { tokens, cost: cost < 1e-9 ? 0 : cost },
+      this.compacted ? 'summary' : 'title',
+    );
+  }
+
   private async end(outcome: TurnOutcome): Promise<void> {
     if (this.ended) return;
     this.ended = true;
+    await this.unreported().catch((error: unknown) =>
+      openCodeLog.warn(
+        `run ${this.a.runId}: ${errorText(error, 'could not read the session usage')}`,
+      ),
+    );
     if (
       outcome.status !== 'failed' ||
       this.segment.text ||
