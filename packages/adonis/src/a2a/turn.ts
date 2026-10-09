@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { AgentService } from '../agent-service.js';
-import type { Actor } from '../types.js';
+import type { StreamFrame } from '../spi/token-stream-sink.js';
+import type { Actor, PageContext } from '../types.js';
 import { SCOPE_ROLE_PREFIX, scopeRole } from './gate.js';
 import { PERMISSION_COMPONENT } from './permission-tool.js';
 
@@ -18,7 +19,8 @@ export type A2aActionPolicy = 'approve-delegated' | 'reject';
 export interface A2aTurnInput {
   actor: Actor;
   text: string;
-  agentName: string;
+  /** The registered agent that answers. Omitted → the service's default. */
+  agentName?: string;
   /** Continue this thread; omitted → a new (transient) one. */
   threadId?: string;
   /** Scopes the caller's delegation grants; `null` without a delegation. */
@@ -27,7 +29,20 @@ export interface A2aTurnInput {
   /** Give up (and cancel the run) after this long. */
   timeoutMs: number;
   /** Called once the run started, with the thread it runs in — before its frames are read. */
-  onStarted?: (threadId: string) => Promise<void>;
+  onStarted?: (threadId: string, runId: string) => Promise<void>;
+  /** The page context the turn runs with. Default `{ channel: 'a2a' }`. */
+  pageContext?: PageContext;
+  /** What approvals and answers are recorded as coming through. Default `'a2a'`. */
+  via?: string;
+  /** Each piece of the reply's text as it streams — for a surface that relays it live. */
+  onText?: (delta: string) => void | Promise<void>;
+  /** Each component frame other than a permission request, as it arrives. */
+  onComponent?: (frame: Extract<StreamFrame, { t: 'component' }>) => void | Promise<void>;
+  /**
+   * Execute, in this process, what of the run waits for a worker (`AgentService.drive`) while the
+   * turn is read — for a durable runner whose dispatcher only persists a started run.
+   */
+  drive?: (runId: string) => Promise<void>;
 }
 
 export interface A2aTurnAction {
@@ -79,6 +94,30 @@ export interface A2aTurnService
 /** How often a turn looks at an approved proposal while it waits for it to execute. */
 const PROPOSAL_POLL_MS = 250;
 
+/** How often a driven turn looks for work of its run left waiting for a worker. */
+const DRIVE_POLL_MS = 100;
+
+/**
+ * Keep executing, in this process, what of `runId` waits for a worker until stopped — the same
+ * loop the channels run (`channels/handler.ts`): a run a persisting-only dispatcher left `pending`
+ * (or a delegate it started) would otherwise wait for a worker that may be the caller itself.
+ */
+function keepDriving(drive: (runId: string) => Promise<void>, runId: string): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const pass = async () => {
+    await drive(runId).catch(() => {});
+    if (stopped) return;
+    timer = setTimeout(() => void pass(), DRIVE_POLL_MS);
+    timer.unref?.();
+  };
+  void pass();
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+  };
+}
+
 function argsHash(input: unknown): string {
   return createHash('sha256')
     .update(JSON.stringify(input ?? null))
@@ -101,9 +140,9 @@ export async function runA2aTurn(
   const { runId, threadId } = await service.chat({
     actor: input.actor,
     message: input.text,
-    agentName: input.agentName,
+    ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
     // A prompt can tell it is answering a personal agent, not the person in the app.
-    pageContext: { channel: 'a2a' },
+    pageContext: input.pageContext ?? { channel: 'a2a' },
     ...(input.threadId !== undefined ? { threadId: input.threadId } : { transient: true }),
   });
 
@@ -128,6 +167,7 @@ export async function runA2aTurn(
   // Set once the turn answered (or gave up): a wait still polling stops there.
   let finished = false;
   const cancel = () => service.cancel(runId).catch(() => {});
+  const via = input.via ?? 'a2a';
 
   /**
    * Decide the proposals by {@link A2aActionPolicy} and wait for the approved ones to execute. One
@@ -152,7 +192,7 @@ export async function runA2aTurn(
                 reason:
                   'A personal agent may not run this action without a delegated permission for it.',
               },
-          'a2a',
+          via,
         );
       } catch {
         continue;
@@ -200,9 +240,10 @@ export async function runA2aTurn(
     timer = setTimeout(() => resolve('timeout'), input.timeoutMs);
   });
   const stream = service.subscribe(runId)[Symbol.asyncIterator]();
+  const stopDriving = input.drive ? keepDriving(input.drive, runId) : undefined;
 
   try {
-    await input.onStarted?.(threadId);
+    await input.onStarted?.(threadId, runId);
     for (;;) {
       const next = await Promise.race([stream.next(), deadline]);
       if (next === 'timeout') {
@@ -214,11 +255,14 @@ export async function runA2aTurn(
       const frame = next.value;
       if (frame.t === 'text') {
         result.text += frame.v;
+        if (frame.v !== '') await input.onText?.(frame.v);
       } else if (frame.t === 'component' && frame.name === PERMISSION_COMPONENT) {
         const scopes = (frame.data as { scopes?: unknown } | null)?.scopes;
         if (Array.isArray(scopes)) {
           result.permission = [...new Set([...(result.permission ?? []), ...scopes.map(String)])];
         }
+      } else if (frame.t === 'component') {
+        await input.onComponent?.(frame);
       } else if (frame.t === 'event') {
         const event = frame.event;
         if (event.kind === 'tool-input-available') {
@@ -253,14 +297,14 @@ export async function runA2aTurn(
         if (input.actions === 'approve-delegated' && scopesOf(frame.toolName).length > 0) {
           await service.approve(frame.runId, frame.id, {
             executedByRef: input.actor.id,
-            via: 'a2a',
+            via,
           });
         } else {
           await service.reject(
             frame.runId,
             frame.id,
             'A personal agent may not run this action without a delegated permission for it.',
-            { executedByRef: input.actor.id, via: 'a2a' },
+            { executedByRef: input.actor.id, via },
           );
         }
       } else if (frame.t === 'elicitation') {
@@ -268,7 +312,7 @@ export async function runA2aTurn(
           runId: frame.runId,
           toolCallId: frame.id,
           answeredByRef: input.actor.id,
-          answeredVia: 'a2a',
+          answeredVia: via,
         });
       } else if (frame.t === 'error') {
         result.error = frame.message;
@@ -285,6 +329,7 @@ export async function runA2aTurn(
     throw error;
   } finally {
     finished = true;
+    stopDriving?.();
     clearTimeout(timer);
     void stream.return?.();
   }
