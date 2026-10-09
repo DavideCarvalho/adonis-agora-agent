@@ -113,7 +113,7 @@ export default defineConfig({
 })
 ```
 
-Spend (`usd`) is the provider-reported cost the ledger recorded. A budget of your own is a
+Spend (`usd`) is what the ledger recorded: provider-reported cost plus the loop's estimate for a provider that reports none (marked `cost_source = 'estimate'`); `quota: { limits, countEstimatedCost: false }` budgets on provider-reported cost only. A budget of your own is a
 `QuotaProvider` (`report({ actor })`) passed as `quota`. `quotas.ledger` / `quotas.memory`,
 `LedgerQuotaStore` and `GET /agent/quota/today` were removed in 0.46.
 
