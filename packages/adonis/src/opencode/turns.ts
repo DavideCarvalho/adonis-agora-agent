@@ -1029,16 +1029,12 @@ export class OpenCodeTurns {
   }
 
   /**
-   * What the run spent: the runner's sum of its milestones, or what the turn this process follows
-   * saw (which starts from that sum) when it saw more — a run that failed or was cancelled between
-   * two milestones.
+   * What the run spent. The turn this process follows starts from the runner's sum of the earlier
+   * milestones and adds every call it saw since, so it is never behind that sum — and ahead of it for
+   * a run that failed or was cancelled between two milestones. Without one, the runner's sum.
    */
   private spentBy(runId: string, spent: OpenCodeUsage | undefined): OpenCodeUsage {
-    const seen = this.live.get(runId)?.turn.totalUsage();
-    if (spent === undefined) return seen ?? emptyUsage();
-    if (seen === undefined) return spent;
-    const tokens = (u: OpenCodeUsage) => u.inputTokens + u.outputTokens;
-    return tokens(seen) > tokens(spent) ? seen : spent;
+    return this.live.get(runId)?.turn.totalUsage() ?? spent ?? emptyUsage();
   }
 
   /**
