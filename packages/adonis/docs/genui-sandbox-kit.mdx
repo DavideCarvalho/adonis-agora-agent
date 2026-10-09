@@ -30,6 +30,8 @@ genui: genui({ catalog, sandbox: { tailwind: true } })
 
 The Tailwind runtime is served by the Vite plugin below (`genuiSandboxKit()` — Tailwind is on in it by default). The renderer builds an `@theme inline` from your variables (colors become `--color-*`, bare shadcn v3 `H S% L%` channels are wrapped in `hsl()`, `--radius` gives `rounded-sm`…`rounded-xl`, `--font-*` stay fonts) and a `dark` variant matching both `.dark` and `[data-theme=dark]`.
 
+Your own Tailwind setup — custom variants (shadcn's `data-open:`, `data-horizontal:`, a `dark` variant on `data-theme`), `@utility`s, `@theme` keys — reaches the frame with `genuiSandboxKit({ tailwindCss: ['shadcn/tailwind.css', 'resources/css/app.css'] })`: the plugin keeps those directives (never `@import`s, `@source`s or base styles) and the renderer adds them to the frame's Tailwind.
+
 ## 3. The kit
 
 ```ts title="vite.config.ts"
@@ -119,7 +121,7 @@ Theme injection costs nothing measurable. Tailwind (≈280 KB) and the kit (≈2
 
 | Export | From | |
 | --- | --- | --- |
-| `genuiSandboxKit(options)` | `@adonis-agora/agent/vite` | The Vite plugin: `entry`, `include`, `tailwind` (default `true`), `descriptor`, `tsconfig`, `typescript`, `plugins` |
+| `genuiSandboxKit(options)` | `@adonis-agora/agent/vite` | The Vite plugin: `entry`, `include`, `tailwind` (default `true`), `tailwindCss`, `descriptor`, `tsconfig`, `typescript`, `plugins` |
 | `defineSandbox({ theme, tailwind, kit })` | `@adonis-agora/agent/genui` | `kit` also takes docs (or a function returning them) |
 | `createSandboxRenderer({ config, theme })` | `@adonis-agora/agent/react/genui` | `config`: an object, a url, or `false`; default the agent's `/config` |
 | `generateSandboxKitDocs`, `writeSandboxKitDocs`, `buildSandboxKitBundle`, `sandboxKitDiscovery` | `@adonis-agora/agent/genui/kit` | The Node half, for your own tooling |
