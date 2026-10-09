@@ -78,7 +78,12 @@ export async function validateTree(
     }
     const element = node as Record<string, unknown>;
     if (typeof element.type !== 'string') {
-      issues.push({ path: [...path, 'type'], message: 'must be a component name' });
+      // Models that write a big component (a sandbox) tend to drop the envelope: say what it is.
+      issues.push({
+        path: [...path, 'type'],
+        message:
+          'must be a component name: every element is { "type": "<component>", "props": { … }, "children"?: [ … ] }, with the props inside "props"',
+      });
       return undefined;
     }
     const definition = catalog.get(element.type);
