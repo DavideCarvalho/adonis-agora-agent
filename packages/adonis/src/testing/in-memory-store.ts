@@ -8,6 +8,7 @@ import type {
   AgentRunStatus,
   AgentStore,
   AppendMessageInput,
+  CostSource,
   CreateThreadInput,
   MessageFeedback,
   RecordRunEndInput,
@@ -27,6 +28,7 @@ import type {
   ActionProposalOutcomeLease,
   ActionProposalOutcomeStore,
 } from '../spi/action-proposal-outcome-store.js';
+import { sumUsage, type UsageTotals } from '../spi/agent-store.js';
 import { type ToolCallApprovalState, toolCallApprovalFromRow } from '../spi/approval-policy.js';
 import type {
   ChatQueueStore,
@@ -79,6 +81,7 @@ interface UsageRow {
   cacheWriteTokens?: number;
   cacheReadTokens?: number;
   costUsd?: number;
+  costSource?: CostSource;
   day: string;
   createdAt: string;
 }
@@ -115,8 +118,10 @@ export interface GovernanceUsageRow {
   cacheWriteTokens?: number;
   /** Subset of `inputTokens` served from the prompt cache this turn; undefined when not reported. */
   cacheReadTokens?: number;
-  /** Provider-reported actual cost for the turn, when known; undefined → estimate from pricing. */
+  /** The turn's cost as recorded (reported, or estimated at write time); undefined → estimate from pricing. */
   costUsd?: number;
+  /** Where `costUsd` came from; undefined with a `costUsd` → a row from before estimates were stored (reported). */
+  costSource?: CostSource;
   day: string;
   createdAt: string;
 }
@@ -806,6 +811,9 @@ export class InMemoryAgentStore
         ? { cacheReadTokens: input.usage.cacheReadTokens }
         : {}),
       ...(input.costUsd !== undefined ? { costUsd: input.costUsd } : {}),
+      ...(input.costUsd !== undefined && input.costSource !== undefined
+        ? { costSource: input.costSource }
+        : {}),
     });
   }
 
@@ -846,20 +854,12 @@ export class InMemoryAgentStore
     if (input.error !== undefined) row.error = input.error;
   }
 
-  async usageBetween(
-    actorRef: string,
-    fromDay: string,
-    toDay: string,
-  ): Promise<{ usedTokens: number; costUsd: number }> {
-    let usedTokens = 0;
-    let costUsd = 0;
-    for (const row of this.usage) {
-      if (row.actorRef === actorRef && row.day >= fromDay && row.day <= toDay) {
-        usedTokens += row.inputTokens + row.outputTokens;
-        costUsd += row.costUsd ?? 0;
-      }
-    }
-    return { usedTokens, costUsd };
+  async usageBetween(actorRef: string, fromDay: string, toDay: string): Promise<UsageTotals> {
+    return sumUsage(
+      this.usage.filter(
+        (row) => row.actorRef === actorRef && row.day >= fromDay && row.day <= toDay,
+      ),
+    );
   }
 
   async quotaToday(actorRef: string, day: string): Promise<{ usedTokens: number }> {
@@ -894,6 +894,7 @@ export class InMemoryAgentStore
       ...(row.cacheWriteTokens !== undefined ? { cacheWriteTokens: row.cacheWriteTokens } : {}),
       ...(row.cacheReadTokens !== undefined ? { cacheReadTokens: row.cacheReadTokens } : {}),
       ...(row.costUsd !== undefined ? { costUsd: row.costUsd } : {}),
+      ...(row.costSource !== undefined ? { costSource: row.costSource } : {}),
     }));
   }
 

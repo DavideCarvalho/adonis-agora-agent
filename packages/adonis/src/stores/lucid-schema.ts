@@ -209,6 +209,7 @@ export function createTableStatements(): string[] {
       "cache_write_tokens" INTEGER NULL,
       "cache_read_tokens" INTEGER NULL,
       "cost_usd" DOUBLE PRECISION NULL,
+      "cost_source" VARCHAR(16) NULL,
       "run_id" VARCHAR(255) NULL,
       "created_at" BIGINT NOT NULL,
       FOREIGN KEY ("thread_id") REFERENCES "${t.threads}" ("id") ON DELETE CASCADE
@@ -336,6 +337,9 @@ const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }
   { table: AGENT_TABLES.toolCalls, column: 'expires_at', type: 'BIGINT NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'remember', type: 'INTEGER NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'decided_via', type: 'VARCHAR(64) NULL' },
+  // Where a usage row's `cost_usd` came from: 'provider' | 'estimate'. NULL on rows from before it
+  // existed, which only ever held a provider-reported cost.
+  { table: AGENT_TABLES.tokenUsage, column: 'cost_source', type: 'VARCHAR(16) NULL' },
 ];
 
 /**

@@ -77,7 +77,7 @@ import type {
   ActionProposalStore,
   ActionProposalSupersessionStore,
 } from './spi/action-proposal-store.js';
-import type { AgentStore, ThreadTurnReader } from './spi/agent-store.js';
+import type { AgentStore, CostSource, ThreadTurnReader } from './spi/agent-store.js';
 import { type ApprovalPolicy, DefaultApprovalPolicy } from './spi/approval-policy.js';
 import type { HistoryWindow, HistoryWindowContext } from './spi/history-window.js';
 import { withSelectedModel } from './spi/model-catalog.js';
@@ -896,6 +896,22 @@ function resolveCostUsd(
     return reportedCostUsd;
   }
   return price === undefined ? null : estimateCost(usage, price);
+}
+
+/**
+ * The cost a usage row persists: the provider's figure (`'provider'`), else the estimate off the
+ * turn's price row (`'estimate'`), else nothing (`cost_usd` NULL). Persisting the estimate is what lets
+ * a USD quota and any reader of the ledger see the spend of a provider that reports no cost (Bedrock,
+ * OpenAI, Anthropic direct); `cost_source` keeps it distinguishable from a reported figure.
+ */
+function usageCost(
+  usage: MessageUsage,
+  reportedCostUsd: number | undefined,
+  price: CurrentModelPrice | undefined,
+): { costUsd?: number; costSource?: CostSource } {
+  if (reportedCostUsd !== undefined) return { costUsd: reportedCostUsd, costSource: 'provider' };
+  if (price === undefined) return {};
+  return { costUsd: estimateCost(usage, price), costSource: 'estimate' };
 }
 
 /** Renders a folded-history summary as the leading `system` message of a windowed turn. */
@@ -2687,8 +2703,11 @@ async function structureAnswer<TOutput>(args: {
   messages: ModelMessage[];
   step: number;
   ctx: ProcessorContext;
+  /** The run's price list, so the restatement's usage row carries its estimate. */
+  priceByModel?: ReadonlyMap<string, CurrentModelPrice>;
 }): Promise<TOutput> {
   const { schema, deps, input, hooks, messages, step, ctx } = args;
+  const priceByModel = args.priceByModel ?? new Map<string, CurrentModelPrice>();
   const instruction = deps.outputInstruction ?? DEFAULT_STRUCTURED_OUTPUT_INSTRUCTION;
   const maxAttempts = 1 + (deps.outputRepairAttempts ?? 1);
   const outputProcessors = deps.outputProcessors ?? [];
@@ -2728,6 +2747,11 @@ async function structureAnswer<TOutput>(args: {
         modelId: reply.modelId ?? deps.modelId ?? 'unknown',
         purpose: 'structured_output',
         usage: reply.usage,
+        ...usageCost(
+          reply.usage,
+          undefined,
+          resolveModelPrice(priceByModel, reply.modelId ?? deps.modelId ?? 'unknown'),
+        ),
       }),
     );
     text = reply.text;
@@ -3418,8 +3442,9 @@ export async function runAgentLoop<TOutput = unknown>(
         modelId: resolvedModelId,
         purpose: 'chat',
         usage: turn.usage,
-        // persist the provider's actual cost when reported; the read-model prefers it over pricing
-        ...(turn.costUsd !== undefined ? { costUsd: turn.costUsd } : {}),
+        // The provider's cost when reported, else the estimate (marked `costSource: 'estimate'`), so
+        // the ledger, the quota's USD windows, the run and the message all carry the same figure.
+        ...usageCost(turn.usage, turn.costUsd, resolveModelPrice(priceByModel, resolvedModelId)),
       }),
     );
     if (costUsd !== null) {
@@ -3458,6 +3483,7 @@ export async function runAgentLoop<TOutput = unknown>(
           fromTranscript: deps.outputFromTranscript === true,
         }),
         step: i,
+        priceByModel,
         ctx: processorContext(i),
       });
     }

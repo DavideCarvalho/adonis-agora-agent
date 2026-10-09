@@ -173,6 +173,50 @@ describe('LucidAgentStore', () => {
     expect(await store.quotaToday(actor.id, '2000-01-01')).toEqual({ usedTokens: 0 });
   });
 
+  it('persists an estimated cost with its source, and usageBetween splits it out', async () => {
+    const thread = await store.createThread({ actor, persona: 'default' });
+    await store.recordUsage({
+      threadId: thread.id,
+      actorRef: actor.id,
+      modelId: 'bedrock',
+      purpose: 'chat',
+      usage: { inputTokens: 10_605, outputTokens: 5 },
+      costUsd: 0.038268,
+      costSource: 'estimate',
+    });
+    // A reported cost without a source is stamped 'provider'.
+    await store.recordUsage({
+      threadId: thread.id,
+      actorRef: actor.id,
+      modelId: 'gateway',
+      purpose: 'chat',
+      usage: { inputTokens: 1, outputTokens: 1 },
+      costUsd: 0.01,
+    });
+    // Unpriced: no cost, no source.
+    await store.recordUsage({
+      threadId: thread.id,
+      actorRef: actor.id,
+      modelId: 'unpriced',
+      purpose: 'chat',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+    const rows = await db
+      .from('agent_token_usage')
+      .select('model_id', 'cost_usd', 'cost_source')
+      .orderBy('model_id');
+    expect(rows.map((row) => [row.model_id, row.cost_source])).toEqual([
+      ['bedrock', 'estimate'],
+      ['gateway', 'provider'],
+      ['unpriced', null],
+    ]);
+    const day = new Date().toISOString().slice(0, 10);
+    const totals = await store.usageBetween(actor.id, day, day);
+    expect(totals.usedTokens).toBe(10_614);
+    expect(totals.costUsd).toBeCloseTo(0.048268, 9);
+    expect(totals.estimatedCostUsd).toBeCloseTo(0.038268, 9);
+  });
+
   it('pins a persona on a thread, reads it back, clears it, and forks it', async () => {
     const unpinned = await store.createThread({ actor });
     expect(unpinned.persona).toBeNull();

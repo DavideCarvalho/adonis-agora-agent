@@ -113,7 +113,7 @@ export default defineConfig({
 })
 ```
 
-Spend (`usd`) is the provider-reported cost the ledger recorded. A budget of your own is a
+Spend (`usd`) is what the ledger recorded: provider-reported cost plus the loop's estimate for a provider that reports none (marked `cost_source = 'estimate'`); `quota: { limits, countEstimatedCost: false }` budgets on provider-reported cost only. A budget of your own is a
 `QuotaProvider` (`report({ actor })`) passed as `quota`. `quotas.ledger` / `quotas.memory`,
 `LedgerQuotaStore` and `GET /agent/quota/today` were removed in 0.46.
 
@@ -131,10 +131,14 @@ Gateways report the real cost: OpenRouter via the official `@openrouter/ai-sdk-p
 OpenRouter call themselves unless you set your own `openrouter.usage`) and the Vercel AI Gateway (`providerMetadata.gateway.cost`). OpenRouter
 reached through `@ai-sdk/openai` with a custom `baseURL` reports no cost — use the official provider.
 
-At boot, any configured model with no price row gets the models.dev list price written as
-its row (never overwriting one; `priceCatalog: false` turns the fetch off, skipped under
-`NODE_ENV=test` unless `priceCatalog` is set explicitly), and a model that still has no price and no gateway cost is named in one
-boot warning. To set your own prices (e.g. from an Ace command):
+At boot, any configured model with no price row gets one (never overwriting one) from
+`priceCatalog.prices` (your own `{ model, input, output, cacheRead?, cacheWrite? }` rows, USD per
+1M tokens), the built-in GovCloud Bedrock table, or the models.dev list price (commercial only:
+never for a GovCloud / China Bedrock model; Bedrock ARNs and `us.`/`us-gov.` profile ids are
+normalized). `priceCatalog: false` turns the fetch off; it is skipped under `NODE_ENV=test` unless
+`priceCatalog` is set explicitly. A model that still has no price and no gateway cost is named in one
+boot warning, with the reason and the `priceCatalog.prices` entry that fixes it. GovCloud example:
+`priceCatalog: { region: 'us-gov-west-1', prices: [{ model: 'us-gov.anthropic.claude-sonnet-4-5-20250929-v1:0', input: 3.6, output: 18, cacheRead: 0.36, cacheWrite: 4.5 }] }`. To set your own prices (e.g. from an Ace command):
 
 ```ts
 import db from '@adonisjs/lucid/services/db'

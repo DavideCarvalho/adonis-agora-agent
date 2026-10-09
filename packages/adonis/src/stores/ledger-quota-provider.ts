@@ -1,4 +1,4 @@
-import type { AgentStore } from '../spi/agent-store.js';
+import type { AgentStore, UsageTotals } from '../spi/agent-store.js';
 import {
   exhaustedWindow,
   type QuotaPeriod,
@@ -30,6 +30,13 @@ export interface LedgerQuotaOptions {
    * Stamped on every window that has a ceiling. Omit → no warnings.
    */
   warnAt?: number;
+  /**
+   * Whether the USD windows count ESTIMATED cost (tokens × the price row, for a provider that reports
+   * none, e.g. Bedrock, OpenAI or Anthropic direct) as well as provider-reported cost. Default `true`:
+   * a USD ceiling that ignored estimates would read $0 and never block for every such provider, which
+   * is a budget that does not enforce. Set `false` to budget on provider-reported (gateway) cost only.
+   */
+  countEstimatedCost?: boolean;
 }
 
 /**
@@ -38,8 +45,8 @@ export interface LedgerQuotaOptions {
  * `usageBetween`. Ceilings come from `limits`; a {@link QuotaStore} passed alongside lends the day
  * window its own token ceiling when `limits.day.tokens` does not set one.
  *
- * Spend is what the usage rows recorded — the provider-reported cost of a gateway — so a USD ceiling
- * only binds where the provider reports cost.
+ * Spend is what the usage rows recorded: the provider-reported cost of a gateway, plus the loop's
+ * estimate for a provider that reports none (unless `countEstimatedCost: false`).
  */
 export class LedgerQuotaProvider implements QuotaProvider {
   constructor(
@@ -56,7 +63,7 @@ export class LedgerQuotaProvider implements QuotaProvider {
     if (this.store.usageBetween !== undefined) {
       const range = quotaPeriodRange('month', now);
       const used = await this.store.usageBetween(actorRef, range.fromDay, range.toDay);
-      windows.push(this.window('month', used.usedTokens, used.costUsd, range.resetsAt));
+      windows.push(this.window('month', used.usedTokens, this.usd(used), range.resetsAt));
     }
     const blocked = exhaustedWindow(windows);
     const warning = quotaWarning(windows);
@@ -69,15 +76,23 @@ export class LedgerQuotaProvider implements QuotaProvider {
 
   private async dayWindow(actorRef: string, now: Date): Promise<QuotaWindow> {
     const range = quotaPeriodRange('day', now);
-    const used =
+    const used: UsageTotals =
       this.store.usageBetween !== undefined
         ? await this.store.usageBetween(actorRef, range.fromDay, range.toDay)
         : { ...(await this.store.quotaToday(actorRef, range.fromDay)), costUsd: 0 };
-    const window = this.window('day', used.usedTokens, used.costUsd, range.resetsAt);
+    const window = this.window('day', used.usedTokens, this.usd(used), range.resetsAt);
     if (this.quota !== undefined && window.limitTokens === undefined) {
       window.limitTokens = (await this.quota.check(actorRef, range.fromDay)).limitTokens;
     }
     return window;
+  }
+
+  /** The window's USD: every priced row, or (with `countEstimatedCost: false`) reported cost only. */
+  private usd(used: UsageTotals): number {
+    if (this.options.countEstimatedCost === false) {
+      return Math.max(0, used.costUsd - (used.estimatedCostUsd ?? 0));
+    }
+    return used.costUsd;
   }
 
   private window(
