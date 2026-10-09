@@ -158,6 +158,13 @@ describe('channel tool filtering', () => {
     expect(described?.description).toContain('This conversation is on WhatsApp');
   });
 
+  it('componentTools: the flat ui__sandbox is offered where the tree is, not on per-component channels', async () => {
+    const withOwn = genuiTools(catalog, { channels, sandbox: true, componentTools: ['Sandbox'] });
+    expect(await offered(withOwn, 'web')).toEqual(['ui__render', 'ui__sandbox']);
+    expect(await offered(withOwn, 'whatsapp')).not.toContain('ui__sandbox');
+    expect(await offered(withOwn, 'email')).toEqual([]);
+  });
+
   it('a text-mode channel gets no UI tools', async () => {
     expect(await offered(tools, 'email')).toEqual([]);
   });
