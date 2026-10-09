@@ -1,0 +1,108 @@
+---
+title: Generative UI per channel
+description: "One catalog, drawn the way each channel can: trees and sandboxes on the web, reply buttons, lists and chart images on WhatsApp and Telegram, HTML in an email — with only the tools that channel supports offered to the model."
+icon: Split
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The same agent answers on a web page, in a mobile app, on WhatsApp and on Telegram. A web page draws any component of your [catalog](/docs/agent/generative-ui), nested, plus a [sandbox](/docs/agent/genui-sandbox). WhatsApp draws text, up to three reply buttons, a list, an image. `genui({ channels })` tells the agent what each channel can draw:
+
+```ts title="config/agent.ts"
+import { genui } from '@adonis-agora/agent/genui'
+import { chartImages } from '@adonis-agora/agent/genui/chart-image'
+
+genui: genui({
+  catalog,
+  streaming: 'partial',            // top-level options: the default (and what an unlisted channel gets)
+  sandbox: true,
+  channels: {
+    web: { mode: 'tree', streaming: 'partial', sandbox: { kit: true, tailwind: true } },
+    mobile: { mode: 'tree', sandbox: false },
+    whatsapp: { mode: 'per-component', render: 'native', chartImages: chartImages() },
+    telegram: { mode: 'per-component' },
+    email: { mode: 'per-component', render: 'html' },
+    default: { mode: 'text' },
+  },
+})
+```
+
+Each entry may set:
+
+| Option | Values | Default |
+| --- | --- | --- |
+| `mode` | `'tree'` (one `ui__render` tool, the sandbox in it) · `'per-component'` (a `ui__show_<component>` tool per component that can be drawn there) · `'text'` (no UI tools) | the top-level `mode` on a web channel, `'per-component'` on WhatsApp / Telegram / email |
+| `streaming` | `'partial'` · `'complete'` | the top-level `streaming` |
+| `sandbox` | `false` · `true` · a sandbox config | the top-level `sandbox` on a web channel; never on WhatsApp / Telegram / email |
+| `render` | `'native'` · `'text'` · `'html'` | `'native'` (`'html'` for `email`) |
+| `chartImages` | a chart renderer (see below) | none |
+| `instructions` | extra words for the model on that channel | none |
+
+A channel without an entry uses `default`, and without `default` the top-level options. **Without `channels`, nothing changes**: text channels keep answering with each component's text summary, as before.
+
+## Which channel a turn is on
+
+One rule, `turnChannel(pageContext)`, decides it:
+
+- AG-UI, the HTTP chat (`POST /agent/chat`) and A2UI stamp `web` (an A2UI client is web-like);
+- the [text channels](/docs/agent/channels) stamp their adapter's `kind` — `whatsapp` for `whatsappCloud()`, `evolutionApi()` and `whatsmiau()`, `telegram` for `telegram()` — whatever the adapter is named;
+- a client may name its own (`pageContext: { channel: 'mobile' }`), and server code may too (`service.send({ …, channel: 'mobile' })`);
+- tools read it as `ctx.channel`, `describe`/`previewInput` as `scope.channel`, a prompt builder as `ctx.channel`.
+
+## Only what the channel can draw
+
+Each turn is offered only the tools of its channel's mode, and their descriptions describe only what it can draw. On WhatsApp in `per-component` mode, a component gets a tool when it can be drawn there: it has a WhatsApp conversion, a chart renderer draws it, or it has a text summary (`fallbackText`). A component with none of these would arrive as a JSON dump, so it is not offered; a sandbox never is; and `channels: { whatsapp: false }` on a component opts it out.
+
+## Native conversions
+
+Say what a component is on a channel, next to its definition:
+
+```ts title="app/genui/catalog.ts"
+export const OrderList = defineComponent(
+  { name: 'OrderList', title: 'Orders', description: 'Orders with their status.', props, fallbackText },
+  {
+    channels: {
+      whatsapp: (props) => ({
+        text: `You have ${props.orders.length} orders.`,
+        buttons: props.orders.map((order) => ({
+          label: `Refund ${order.id}`,
+          action: 'refund',
+          value: { orderId: order.id },
+        })),
+      }),
+      telegram: (props) => ({ text: 'Your orders', list: { button: 'Pick one', items: props.orders.map((o) => ({ label: o.id, description: o.status, value: { orderId: o.id } })) } }),
+      email: (props) => ({ html: `<ul>${props.orders.map((o) => `<li>${escape(o.id)}</li>`).join('')}</ul>` }),
+    },
+  },
+)
+```
+
+A conversion returns `{ text?, buttons?, list?, image?, html? }` (or several). The channel handler maps it onto the adapter, within the provider's real limits:
+
+- **buttons** → reply buttons (WhatsApp: at most 3, 20-character titles; Telegram: an inline keyboard). More choices than the channel's buttons → a **list**;
+- **list** → a WhatsApp list message (at most 10 rows, 24-character titles, 72-character descriptions, a 20-character button) — on Evolution/Whatsmiau where interactive messages render — or a Telegram keyboard of one row per entry; a channel with neither gets the choices as numbered text;
+- **image** → a media message with the text as its caption;
+- without a conversion, the component's text summary, as before. A conversion that throws falls back to the summary too.
+
+A tree (`ui__render`) is flattened in order: each node's conversion or summary, consecutive text joined.
+
+## Clicks come back as turns
+
+A pressed button (a WhatsApp `button_reply`/`list_reply`, a Telegram `callback_query`) becomes the user's next turn through the same path as a sandbox's `agent.send` and an A2UI `userAction`: a UI action (`source: 'component'`, the button's `action`, its `value` as context, its label as what the user said). Buttons carry short ids (`ui:<ref>`) kept in the channel store for 7 days; a provider that forwards only the label (Whatsmiau) is matched by label.
+
+## Charts as images
+
+```ts
+import { chartImages } from '@adonis-agora/agent/genui/chart-image'
+channels: { whatsapp: { chartImages: chartImages({ width: 800, height: 450 }) } }
+```
+
+The builtin `Chart` (bar or line) is drawn as SVG on the server and converted to PNG with [`@resvg/resvg-js`](https://github.com/yisibl/resvg-js) — an **optional** peer dependency (`npm i @resvg/resvg-js`), loaded only when a chart is drawn — and sent as an image with the chart's title as caption. `components` names other components taking the same props. Without resvg (or for a chart it cannot draw) the text summary is sent.
+
+## History follows the conversation
+
+On a configured channel the turn pushes the **structured** component (validated, versioned) and history stores it like on the web; each channel draws it its own way. A thread started on the web and continued on WhatsApp keeps its components; the web shows them as components, WhatsApp got them as messages, and the model sees the same history on both.
+
+<Callout type="info" title="Email">
+There is no email adapter in the library: `renderChannelMessages(catalog, component, resolveGenuiChannel(base, channels, 'email'))` gives you each component's `html` (and text) for your own mailer.
+</Callout>
