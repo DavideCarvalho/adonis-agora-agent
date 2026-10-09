@@ -1,0 +1,1 @@
+@utility kit-card { border-radius: var(--radius); }

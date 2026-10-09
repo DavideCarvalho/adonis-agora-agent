@@ -40,7 +40,8 @@ export interface SandboxKitDocs {
  */
 export interface SandboxKitDescriptor extends SandboxKitDocs {
   kit: { url: string; hash?: string } | null;
-  tailwind: { url: string } | null;
+  /** The runtime's url, and the app's own Tailwind directives (custom variants, utilities). */
+  tailwind: { url: string; css?: string } | null;
 }
 
 /**
@@ -49,7 +50,7 @@ export interface SandboxKitDescriptor extends SandboxKitDocs {
  */
 export interface SandboxClientConfig {
   theme: boolean;
-  tailwind?: { url: string };
+  tailwind?: { url: string; css?: string };
   kit?: { url: string; hash?: string };
 }
 

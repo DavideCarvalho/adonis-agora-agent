@@ -15,7 +15,7 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import type { Plugin } from 'vite';
 import type { SandboxKitComponentDoc, SandboxKitDescriptor } from '../sandbox-kit.js';
-import { themeVarsFromCss } from '../sandbox-theme.js';
+import { tailwindDirectivesFromCss, themeVarsFromCss } from '../sandbox-theme.js';
 import { buildSandboxKitBundle, type SandboxKitBundle } from './bundle.js';
 import { generateSandboxKitDocs } from './docs.js';
 import {
@@ -35,6 +35,12 @@ export interface GenuiSandboxKitOptions extends SandboxKitSourceOptions {
   typescript?: unknown;
   /** Extra Vite plugins for the kit build. */
   plugins?: unknown[];
+  /**
+   * Stylesheets whose Tailwind directives (`@custom-variant`, `@utility`, `@theme`) the sandbox's
+   * Tailwind gets too — the variants a kit's classes use (shadcn's `data-open:`…). Paths relative to
+   * the root, absolute paths, or package specifiers (`shadcn/tailwind.css`).
+   */
+  tailwindCss?: string | readonly string[];
 }
 
 /** The library-specific defaults the shared plugin is built with. */
@@ -71,6 +77,33 @@ function tailwindRuntimePath(): string | null {
   } catch {
     return null;
   }
+}
+
+/** The Tailwind directives of `tailwindCss`, read now (they may change in dev). */
+function tailwindCssOf(
+  root: string,
+  specs: string | readonly string[] | undefined,
+): string | undefined {
+  if (specs === undefined) return undefined;
+  const require = createRequire(resolve(root, 'package.json'));
+  const parts: string[] = [];
+  for (const spec of typeof specs === 'string' ? [specs] : specs) {
+    let path = resolve(root, spec);
+    if (!existsSync(path)) {
+      try {
+        path = require.resolve(spec);
+      } catch {
+        continue;
+      }
+    }
+    try {
+      parts.push(tailwindDirectivesFromCss(readFileSync(path, 'utf8')));
+    } catch {
+      /* unreadable: skipped */
+    }
+  }
+  const css = parts.filter((part) => part !== '').join('\n');
+  return css === '' ? undefined : css;
 }
 
 function fallbackDocs(bundle: SandboxKitBundle | null): SandboxKitComponentDoc[] {
@@ -122,8 +155,15 @@ export function createGenuiSandboxKitPlugin(
     components: docs,
     ...(Object.keys(themeVars).length > 0 ? { theme: { vars: { ...themeVars } } } : {}),
     kit: bundle === null ? null : { url: devUrl('kit.js', bundle.hash), hash: bundle.hash },
-    tailwind: tailwindOn && tailwindRuntimePath() !== null ? { url: devUrl('tailwind.js') } : null,
+    tailwind:
+      tailwindOn && tailwindRuntimePath() !== null
+        ? {
+            url: devUrl('tailwind.js'),
+            ...withCss(tailwindCssOf(config?.root ?? process.cwd(), options.tailwindCss)),
+          }
+        : null,
   });
+  const withCss = (css: string | undefined) => (css === undefined ? {} : { css });
 
   const writeDescriptor = () => {
     if (config === undefined) return;
@@ -323,7 +363,10 @@ export function createGenuiSandboxKitPlugin(
           originalFileName: SANDBOX_KIT_MANIFEST_KEYS.tailwind,
           source: readFileSync(runtime, 'utf8'),
         });
-        tailwind = { url: `${base}${this.getFileName(ref)}` };
+        tailwind = {
+          url: `${base}${this.getFileName(ref)}`,
+          ...withCss(tailwindCssOf(config.root, options.tailwindCss)),
+        };
         emitted.tailwind = this.getFileName(ref);
       }
       descriptor = {

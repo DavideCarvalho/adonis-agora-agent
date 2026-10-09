@@ -227,7 +227,12 @@ export function createSandboxRenderer(
     const html = props.html;
     const tailwind =
       typeof tailwindText === 'string'
-        ? { runtime: tailwindText, theme: themeRef.current?.tailwind ?? '' }
+        ? {
+            runtime: tailwindText,
+            theme: [themeRef.current?.tailwind ?? '', client.config?.tailwind?.css ?? '']
+              .filter((part) => part !== '')
+              .join('\n'),
+          }
         : undefined;
     const kit = jsxMode && typeof kitText === 'string' ? kitText : undefined;
     // A JSX view is one document from its first line to its last: what streams in is posted.
