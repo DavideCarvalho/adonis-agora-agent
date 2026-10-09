@@ -204,7 +204,7 @@ export const catalog = defineCatalog([
 ])
 ```
 
-The opposite also works: with the tree on `complete`, a definition with `streaming: 'partial'` previews that one component, as long as no `complete` layout above it holds it back.
+The opposite also works: with the tree on `complete`, a definition with `streaming: 'partial'` previews that one component, nested or not: a `complete` layout around it is drawn once its own props are whole (flagged `incomplete`, its children so far), while one with nothing streaming inside stays held until it closes.
 
 ### What a renderer learns: `useGenuiNode()`
 

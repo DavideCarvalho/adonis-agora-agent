@@ -5,14 +5,22 @@
  * AG-UI, pass `a2ui: true` to `agUiAdapter()`.
  */
 
-export { type UiAction, uiActionText } from '../genui/actions.js';
+export {
+  readUiActionText,
+  type UiAction,
+  type UiActionMessage,
+  uiActionSummary,
+  uiActionText,
+} from '../genui/actions.js';
 export { type A2uiAdapterOptions, a2uiAdapter } from './adapter.js';
 export {
   A2UI_ACTIVITY_TYPE,
   A2UI_APPROVE_ACTION,
   A2UI_BASIC_CATALOG_ID,
+  A2UI_BASIC_CATALOG_IDS,
   A2UI_BASIC_COMPONENTS,
   A2UI_BUILTIN_MAPPERS,
+  A2UI_LEGACY_BASIC_CATALOG_ID,
   A2UI_OPERATIONS_KEY,
   A2UI_REJECT_ACTION,
   A2UI_VERSION,
@@ -21,13 +29,20 @@ export {
   type A2uiMapper,
   type A2uiOptions,
   A2uiProjector,
+  type A2uiReplayEntry,
   type A2uiServerMessage,
+  type A2uiStoredMessage,
   type A2uiStreamOptions,
   a2uiActivityEvent,
   a2uiApprovalComponents,
   a2uiCatalog,
   a2uiSurfaceId,
   a2uiSurfaceMessages,
+  a2uiThreadReplay,
+  isA2uiBasicCatalogId,
+  negotiateA2uiCatalog,
   readA2uiAction,
+  readA2uiClientCapabilities,
+  readAgUiA2uiCatalogIds,
   toA2uiComponents,
 } from './core.js';

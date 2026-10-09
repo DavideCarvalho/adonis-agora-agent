@@ -173,3 +173,89 @@ export function uiActionText(action: UiAction): string {
     ...(values ? ['```json', JSON.stringify(action.context, null, 2), '```'] : []),
   ].join('\n');
 }
+
+/** A user message {@link uiActionText} wrote, read back: what a transcript shows instead of its text. */
+export interface UiActionMessage {
+  /** What the user said (the action's `text`, or the sentence naming it). */
+  text: string;
+  /** The action's name. */
+  name: string;
+  source: UiActionSource;
+  /** The view's title, when the action named one. */
+  title?: string;
+  /** The values the model read. */
+  context: Record<string, unknown>;
+}
+
+const ACTION_LINE = /^\[UI action "([A-Za-z0-9_.:-]{1,64})" from ([^\n]*?)\]( \(no values\))?$/;
+
+/**
+ * The inverse of {@link uiActionText}: a user message that is a UI action, as its parts — or `null`
+ * for any other message. The message itself stays what it was (the model reads it whole); this is
+ * for drawing it: the user's sentence as a chip, the values out of sight.
+ */
+export function readUiActionText(message: string): UiActionMessage | null {
+  const marker = message.lastIndexOf('\n\n[UI action "');
+  if (marker < 0) return null;
+  const said = message.slice(0, marker).trim();
+  const rest = message.slice(marker + 2).replace(/\s+$/, '');
+  const newline = rest.indexOf('\n');
+  const header = newline < 0 ? rest : rest.slice(0, newline);
+  const match = ACTION_LINE.exec(header);
+  if (match === null || said.length === 0) return null;
+  const [, name, origin, noValues] = match as unknown as [string, string, string, string?];
+  let context: Record<string, unknown> = {};
+  const body = newline < 0 ? '' : rest.slice(newline + 1);
+  if (noValues !== undefined) {
+    if (body.length > 0) return null;
+  } else {
+    const block = /^```json\n([\s\S]*)\n```$/.exec(body);
+    if (block === null) return null;
+    try {
+      const parsed: unknown = JSON.parse(block[1] as string);
+      if (!isRecord(parsed)) return null;
+      context = parsed;
+    } catch {
+      return null;
+    }
+  }
+  const source: UiActionSource = origin.startsWith('interactive view')
+    ? 'sandbox'
+    : origin.startsWith('A2UI')
+      ? 'a2ui'
+      : 'component';
+  const title = /^[^"]*"([^"]*)"/.exec(origin)?.[1];
+  return {
+    text: said,
+    name,
+    source,
+    ...(title !== undefined && title.length > 0 ? { title } : {}),
+    context,
+  };
+}
+
+function shortValue(value: unknown): string | undefined {
+  if (typeof value === 'string') return value.length > 24 ? `${value.slice(0, 23)}…` : value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return undefined;
+}
+
+/**
+ * One line for a UI action — what a chip says: the user's sentence, then up to `maxValues` of its
+ * plain values (`"Recalculate · people: 4, tip: 15"`). Nested values are left out (the model has
+ * them; a chip has no room).
+ */
+export function uiActionSummary(
+  action: Pick<UiActionMessage, 'text' | 'context'> | Pick<UiAction, 'name' | 'text' | 'context'>,
+  options: { maxValues?: number } = {},
+): string {
+  const label = action.text ?? ('name' in action ? action.name : '');
+  const max = options.maxValues ?? 3;
+  const values = Object.entries(action.context).flatMap(([key, value]) => {
+    const short = shortValue(value);
+    return short === undefined ? [] : [`${key}: ${short}`];
+  });
+  if (values.length === 0 || max <= 0) return label;
+  const shown = values.slice(0, max).join(', ');
+  return `${label} · ${shown}${values.length > max ? `, +${values.length - max}` : ''}`;
+}

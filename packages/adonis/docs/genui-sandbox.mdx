@@ -105,7 +105,7 @@ The order is what makes the view usable before it is finished: a box of the righ
 
 **Code never runs half written.** On the server, the sandbox definition's `partialProps` hook drops what must not be shown or run before it is whole: `css`, `title`, `summary` and `jsFunctions` until their string closes, a `jsExpressions` entry or a placeholder line until it closes, an `initialHeight` until its number ends. Only `html` streams as it is, and the preview strips it. `partialProps` is a general `ComponentDefinition` hook — any component can say what of its half-written props may be drawn.
 
-**Where it previews.** The sandbox definition is `streaming: 'partial'`, so it previews even when `genui(...)` keeps the default `streaming: 'complete'` — as long as nothing above it holds it back. Nested in a layout (a `Card` around it), that layout must stream `partial` too (`genui({ catalog, streaming: 'partial' })`, or `streaming: 'partial'` on the layout's definition); a `complete` layout holds its whole subtree back and the sandbox appears at once when the call ends. In `mode: 'per-component'`, `ui__show_sandbox` previews as well: a component with a `partialProps` hook is drawn while the call is written, as a one-node tree. See [Drawing a tree while the model writes it](/docs/agent/generative-ui#drawing-a-tree-while-the-model-writes-it) for partial frames in general.
+**Where it previews.** The sandbox definition is `streaming: 'partial'`, so it previews even when `genui(...)` keeps the default `streaming: 'complete'`. Nested in a layout (a `Card` around it), it previews too: a `complete` layout that holds a component which streams `partial` of its own accord is not held back once its **own** props are whole — it is drawn `incomplete`, with its children so far, and each child follows its own mode (a `complete` chart beside the sandbox is still a placeholder until it closes). A `complete` layout with nothing like that inside is held until its whole subtree closes, as before. The layout's props must be written before its `children` (models do) for it to open early. In `mode: 'per-component'`, `ui__show_sandbox` previews as well: a component with a `partialProps` hook is drawn while the call is written, as a one-node tree. See [Drawing a tree while the model writes it](/docs/agent/generative-ui#drawing-a-tree-while-the-model-writes-it) for partial frames in general.
 
 ## Drawing it in React
 
@@ -190,6 +190,21 @@ Split it 3 ways
 }
 ```
 ````
+
+### What the user sees
+
+The message keeps that whole text — the model reads it, and a reloaded thread has it — but a chat should not show the user a JSON block they never typed. `readUiActionText(text)` reads a message `uiActionText` wrote back into its parts (`{ text, name, source, title?, context }`, or `null` for any other message), and `uiActionSummary(action)` makes the one line a chip shows: the sentence, then up to three plain values (`Split it 3 ways · total: 120, people: 3`).
+
+`@adonis-agora/agent/react` does it for you: a user message that is a UI action has `uiAction` on its transcript text block (and on the `TranscriptItem`), and `MessageItem` draws it as a `<UiActionChip>` (from `@adonis-agora/agent/react/genui`; unstyled, `[data-ui-action]` is the hook; its `title` lists every value). A page that draws its own blocks does the same:
+
+```tsx title="resources/js/pages/chat.tsx (frontend)"
+import { UiActionChip } from '@adonis-agora/agent/react/genui'
+
+case 'text':
+  return block.uiAction ? <UiActionChip action={block.uiAction} /> : <p>{block.text}</p>
+```
+
+`UiActionChip` also takes the raw message text (`<UiActionChip action={message.content} />`) — what a page on another chat framework renders for its user messages.
 
 ## Over AG-UI and CopilotKit
 

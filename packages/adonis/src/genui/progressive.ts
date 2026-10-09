@@ -19,7 +19,9 @@ export interface GenuiPartialElement {
   incomplete?: true;
   /**
    * The node's component streams `complete`: its props and children are held back until its whole
-   * subtree has arrived (`props` is `{}`). Draw a placeholder, never the component.
+   * subtree has arrived (`props` is `{}`). Draw a placeholder, never the component. (A `complete`
+   * layout holding a component that streams `partial` itself — a `Sandbox` — is not held once its
+   * own props are whole: it is drawn `incomplete`, with its children so far.)
    */
   held?: true;
 }
@@ -88,10 +90,15 @@ export function partialTree(
     const mode = definition.streaming ?? fallback;
     if (mode === 'complete') {
       // Drawn only whole — and only once its props would pass (a display gate; the final tree is
-      // validated on its own, as every tree is).
-      const checked = open
-        ? undefined
-        : validatePropsSync(definition.props, value.props ?? {}, catalog.validator);
+      // validated on its own, as every tree is). One exception: a layout around a component that
+      // streams `partial` of its own accord (a sandbox) is drawn as soon as ITS props are whole, so
+      // what it holds can stream — its children each follow their own mode.
+      const opens =
+        open && definition.children === true && propsSettled(value) && streamsWithin(value, depth);
+      const checked =
+        open && !opens
+          ? undefined
+          : validatePropsSync(definition.props, value.props ?? {}, catalog.validator);
       if (checked === undefined || !checked.ok) {
         return { id, type, props: {}, incomplete: true, held: true };
       }
@@ -101,6 +108,7 @@ export function partialTree(
         type,
         props: checked.value as Record<string, unknown>,
         ...(children !== undefined && children.length > 0 ? { children } : {}),
+        ...(open ? { incomplete: true as const } : {}),
       };
     }
     const raw = isRecord(value.props) ? value.props : {};
@@ -116,6 +124,23 @@ export function partialTree(
       ...(children !== undefined && children.length > 0 ? { children } : {}),
       ...(open ? { incomplete: true as const } : {}),
     };
+  };
+
+  // A node's own props will not change any more: written and closed, or never written while its
+  // children already are (a model writes `props` before `children`).
+  const propsSettled = (value: Record<string, unknown>): boolean =>
+    isRecord(value.props)
+      ? !input.isOpen(value.props)
+      : value.props === undefined && Array.isArray(value.children);
+
+  // Somewhere under `value` (as written so far) is a component that streams `partial` itself.
+  const streamsWithin = (value: Record<string, unknown>, depth: number): boolean => {
+    if (depth >= maxDepth || !Array.isArray(value.children)) return false;
+    return value.children.some((child) => {
+      if (!isRecord(child) || typeof child.type !== 'string') return false;
+      if (input.isOpen(child) && input.pendingMember(child) === 'type') return false;
+      return catalog.get(child.type)?.streaming === 'partial' || streamsWithin(child, depth + 1);
+    });
   };
 
   const childrenOf = (

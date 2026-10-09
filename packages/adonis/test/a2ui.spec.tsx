@@ -5,12 +5,17 @@ import { act, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import {
   A2UI_BASIC_CATALOG_ID,
+  A2UI_LEGACY_BASIC_CATALOG_ID,
   A2uiProjector,
   type A2uiServerMessage,
   a2uiActivityEvent,
   a2uiCatalog,
   a2uiSurfaceMessages,
+  a2uiThreadReplay,
+  negotiateA2uiCatalog,
   readA2uiAction,
+  readA2uiClientCapabilities,
+  readAgUiA2uiCatalogIds,
   toA2uiComponents,
 } from '../src/a2ui/index.js';
 import { AgUiEncoder } from '../src/ag-ui/core/index.js';
@@ -26,7 +31,14 @@ import {
   Stack,
   Text,
 } from '../src/genui/builtins.js';
-import { defineCatalog, Sandbox } from '../src/genui/index.js';
+import {
+  defineCatalog,
+  readUiActionText,
+  Sandbox,
+  sandboxAction,
+  uiActionSummary,
+  uiActionText,
+} from '../src/genui/index.js';
 
 const catalog = defineCatalog([
   Stack,
@@ -392,5 +404,137 @@ describe('the A2UI stream projection', () => {
     });
     expect(readA2uiAction({ name: 'go' })).toMatchObject({ name: 'go' });
     expect(readA2uiAction({ action: {} })).toMatch(/name/);
+  });
+});
+
+describe('the basic catalog under the id the client knows', () => {
+  it('reads the catalogs a client advertises', () => {
+    expect(
+      readA2uiClientCapabilities({ 'v0.9': { supportedCatalogIds: ['https://x/c.json'] } }),
+    ).toEqual(['https://x/c.json']);
+    expect(readA2uiClientCapabilities({ supportedCatalogIds: ['a', 7] })).toEqual(['a']);
+    expect(readA2uiClientCapabilities('nope')).toBeUndefined();
+    // CopilotKit's A2UI provider: an AG-UI context entry listing them.
+    expect(
+      readAgUiA2uiCatalogIds({
+        context: [
+          {
+            description:
+              'A2UI catalog capabilities: available catalog IDs and custom component definitions the client can render.',
+            value: `Available A2UI catalog:\n- ${A2UI_LEGACY_BASIC_CATALOG_ID} (basic catalog)`,
+          },
+        ],
+      }),
+    ).toEqual([A2UI_LEGACY_BASIC_CATALOG_ID]);
+    expect(
+      readAgUiA2uiCatalogIds({
+        forwardedProps: {
+          a2uiClientCapabilities: { 'v0.9': { supportedCatalogIds: [A2UI_BASIC_CATALOG_ID] } },
+        },
+      }),
+    ).toEqual([A2UI_BASIC_CATALOG_ID]);
+  });
+
+  it('negotiates: advertised id, then configured, then the transport default', () => {
+    expect(negotiateA2uiCatalog({}, undefined)).toMatchObject({
+      catalogId: A2UI_BASIC_CATALOG_ID,
+      basicCatalogId: A2UI_BASIC_CATALOG_ID,
+    });
+    expect(negotiateA2uiCatalog({}, undefined, A2UI_LEGACY_BASIC_CATALOG_ID)).toMatchObject({
+      catalogId: A2UI_LEGACY_BASIC_CATALOG_ID,
+    });
+    // The client says which id it knows the basic catalog by: that wins over a configured basic id.
+    expect(
+      negotiateA2uiCatalog({ catalogId: A2UI_BASIC_CATALOG_ID }, [A2UI_LEGACY_BASIC_CATALOG_ID]),
+    ).toMatchObject({
+      catalogId: A2UI_LEGACY_BASIC_CATALOG_ID,
+      basicCatalogId: A2UI_LEGACY_BASIC_CATALOG_ID,
+    });
+    // An app catalog stays; text surfaces still take the client's basic id.
+    expect(
+      negotiateA2uiCatalog({ catalogId: 'https://app/c.json' }, [
+        'https://app/c.json',
+        A2UI_LEGACY_BASIC_CATALOG_ID,
+      ]),
+    ).toMatchObject({
+      catalogId: 'https://app/c.json',
+      basicCatalogId: A2UI_LEGACY_BASIC_CATALOG_ID,
+    });
+    const projector = new A2uiProjector(
+      negotiateA2uiCatalog({ catalogId: 'https://app/c.json' }, [A2UI_LEGACY_BASIC_CATALOG_ID]),
+    );
+    const text = projector.project({
+      type: 'TEXT_MESSAGE_START',
+      messageId: 'm',
+      role: 'assistant',
+    });
+    expect(text[0]).toMatchObject({ createSurface: { catalogId: A2UI_LEGACY_BASIC_CATALOG_ID } });
+  });
+
+  it('marks surfaces sendDataModel when asked', () => {
+    const event = a2uiActivityEvent(
+      { id: 'c1:ui:0', component: 'Heading', props: { text: 'Hi' } },
+      { catalog, sendDataModel: true },
+    ) as unknown as { content: { a2ui_operations: Record<string, Record<string, unknown>>[] } };
+    expect(event.content.a2ui_operations[0]?.createSurface).toMatchObject({ sendDataModel: true });
+  });
+});
+
+describe('UI action messages, read back', () => {
+  it('reads what uiActionText wrote, and nothing else', () => {
+    const action = sandboxAction(
+      { text: 'Recalculate', people: 4, tip: 15, total: 120, note: { nested: true } },
+      { surfaceId: 's1', title: 'Bill splitter' },
+    );
+    const message = uiActionText(action);
+    expect(readUiActionText(message)).toEqual({
+      text: 'Recalculate',
+      name: 'send',
+      source: 'sandbox',
+      title: 'Bill splitter',
+      context: { people: 4, tip: 15, total: 120, note: { nested: true } },
+    });
+    expect(uiActionSummary(readUiActionText(message) as never)).toBe(
+      'Recalculate · people: 4, tip: 15, total: 120',
+    );
+    expect(uiActionSummary(action, { maxValues: 1 })).toBe('Recalculate · people: 4, +2');
+    expect(
+      readUiActionText(uiActionText({ source: 'a2ui', name: 'refund', context: {} })),
+    ).toMatchObject({ text: 'I used "refund".', name: 'refund', source: 'a2ui', context: {} });
+    expect(readUiActionText('just a message')).toBeNull();
+    expect(readUiActionText('hi\n\n[UI action "x" from UI]\n```json\nnot json\n```')).toBeNull();
+  });
+});
+
+describe('a stored thread, replayed as A2UI', () => {
+  it("gives the user lines and each step's surfaces, under the live ids", () => {
+    const action = uiActionText(sandboxAction({ text: 'Split it', people: 3 }));
+    const entries = a2uiThreadReplay(
+      [
+        { id: 'u1', role: 'user', content: 'dashboard please' },
+        {
+          id: 'a1',
+          role: 'assistant',
+          content: 'Here it is.',
+          ui: [
+            { id: 'c1:ui:0', component: 'genui:tree', props: { root: dashboard } },
+            { id: 'c1:ui:1', component: 'Heading', props: { text: 'x' }, partial: true },
+          ],
+        },
+        { id: 'u2', role: 'user', content: action },
+        { id: 't1', role: 'tool', content: '{}' },
+      ],
+      { catalog },
+    );
+    expect(entries.map((entry) => entry.role)).toEqual(['user', 'assistant', 'user']);
+    expect(entries[2]).toMatchObject({ text: 'Split it', action: { context: { people: 3 } } });
+    const step = entries[1] as { messages: A2uiServerMessage[] };
+    assertValid(step.messages);
+    const created = step.messages.flatMap((m) =>
+      'createSurface' in m ? [m.createSurface.surfaceId] : [],
+    );
+    expect(created).toEqual(['text-a1', 'c1:ui:0']);
+    const { surface } = surfaceOf(step.messages, 'c1:ui:0');
+    expect(surface.componentsModel.get('root')).toBeDefined();
   });
 });

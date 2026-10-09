@@ -1,5 +1,6 @@
 import type { UIMessage } from 'ai';
 import React from 'react';
+import { UiActionChip } from '../genui/ui-action-chip.js';
 import type {
   AnyToolUIPart,
   MessageUsageInfo,
@@ -226,9 +227,13 @@ function renderBlocks(item: TranscriptItem, slots: MessageRenderSlots): React.Re
     if (block.kind === 'text') {
       nodes.push(
         <div key={block.key} className={slots.classNames?.text}>
-          {slots.renderText
-            ? slots.renderText(block.text, { isStreaming: item.isStreaming })
-            : block.text}
+          {block.uiAction !== undefined ? (
+            <UiActionChip action={block.uiAction} />
+          ) : slots.renderText ? (
+            slots.renderText(block.text, { isStreaming: item.isStreaming })
+          ) : (
+            block.text
+          )}
         </div>,
       );
       continue;
@@ -356,6 +361,18 @@ interface EditableUserBubbleProps {
 function EditableUserBubble({ item, slots, actions }: EditableUserBubbleProps) {
   const { classNames } = slots;
   const { edit } = item;
+
+  // A UI action is a chip, not prose: nothing to edit.
+  if (item.uiAction !== null) {
+    return (
+      <div className={joinClasses(classNames?.root, classNames?.byRole?.user)} data-role="user">
+        <div className={classNames?.text}>
+          <UiActionChip action={item.uiAction} />
+        </div>
+        {actions}
+      </div>
+    );
+  }
 
   if (!edit.isEditing) {
     return (

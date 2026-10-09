@@ -201,7 +201,7 @@ A node appears once its `type` has arrived and names a component this client dra
 defineComponent({ ...Chart, streaming: 'complete' })
 ```
 
-While the model writes it, such a node is sent as a placeholder, `{ id, type, props: {}, incomplete: true, held: true }`, without its children; it is drawn once its whole subtree has arrived and its props pass its schema. `streaming: 'partial'` on a definition does the opposite — previews a component in a tree that defaults to `complete`, though a `complete` layout above it still holds it back. The default stays `complete` because a renderer written for validated props would be handed half-written ones: opting in is saying your renderers cope (see [In React](#in-react)).
+While the model writes it, such a node is sent as a placeholder, `{ id, type, props: {}, incomplete: true, held: true }`, without its children; it is drawn once its whole subtree has arrived and its props pass its schema. `streaming: 'partial'` on a definition does the opposite — previews a component in a tree that defaults to `complete` — and a `complete` layout above it is drawn (`incomplete`, its children so far) once its own props are whole, instead of holding it back. The default stays `complete` because a renderer written for validated props would be handed half-written ones: opting in is saying your renderers cope (see [In React](#in-react)).
 
 How renderers draw skeletons for incomplete and held nodes is in [Loading states and skeletons](/docs/agent/genui-loading-states#progressive-trees).
 
@@ -447,7 +447,7 @@ function RefundButton({ orderId }: { orderId: number }) {
 }
 ```
 
-`<GenuiProvider onAction>` does the same for its whole tree. An action is only a user message: the model decides what to do with it, and any `action` tool it calls still asks for approval. Over AG-UI, send it as `forwardedProps.uiAction` ([AG-UI](/docs/agent/ag-ui#what-the-input-means-here)).
+`<GenuiProvider onAction>` does the same for its whole tree. An action is only a user message: the model decides what to do with it, and any `action` tool it calls still asks for approval. Over AG-UI, send it as `forwardedProps.uiAction` ([AG-UI](/docs/agent/ag-ui#what-the-input-means-here)). The transcript draws such a message as a chip — the user's sentence and a few values — not as its JSON ([what the user sees](/docs/agent/genui-sandbox#what-the-user-sees)).
 
 ### Over A2UI
 
