@@ -1,5 +1,14 @@
 # @adonis-agora/agent
 
+## 0.71.0
+
+### Minor Changes
+
+- [#341](https://github.com/DavideCarvalho/adonis-agora-agent/pull/341) [`28bc7e9`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/28bc7e944304da36a3c95a6af70a729d6a56a15e) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Generative UI: sandboxed generated UI and an A2UI adapter.
+  
+  - **Sandbox** (opt-in): `genui({ sandbox: true })` (or `Sandbox` / `defineSandbox({ policy })` in a catalog) lets the model write HTML, CSS and JS for a one-off interactive answer when no catalog component fits — described to the model as a last resort. It streams in field order (`initialHeight → placeholderMessages → css → html → jsFunctions → jsExpressions`): a placeholder of the declared height, a script-free preview of the markup, then the live view, with half-written CSS and code never shown or run (`ComponentDefinition.partialProps`). The React renderer (`SandboxView`, `createSandboxRenderer` from `/react/genui`) draws it in a `srcdoc` iframe with `sandbox="allow-scripts"` (no `allow-same-origin`), a strict CSP (no network unless the policy lists origins) and auto-resize. Code inside calls `agent.send({ … })`; the host accepts it only from its own frame, opaque origin and token, within size / rate / count limits and an optional schema, and sends it as the next user turn (`GenuiActionProvider`, `useAgentChat().sendUiAction`, `uiActionText`). Text channels get its `summary`.
+  - **A2UI** (v0.9): `a2uiAdapter()` from `/a2ui` serves `POST <path>/a2ui` as JSON Lines of A2UI messages (`createSurface`, `updateComponents`, `updateDataModel`, `deleteSurface`) — builtins mapped onto A2UI's basic catalog, app components through a mapping or as custom components, previews streamed into the same surface, approvals as Approve/Reject buttons. A2UI `action` / `userAction` messages become the next turn. `agUiAdapter({ a2ui: true })` adds A2UI over AG-UI: an `a2ui-surface` `ACTIVITY_SNAPSHOT` per UI frame, and `forwardedProps.a2uiAction` (or `forwardedProps.uiAction`) as the turn.
+
 ## 0.70.1
 
 ### Patch Changes
