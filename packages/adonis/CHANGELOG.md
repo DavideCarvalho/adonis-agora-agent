@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.70.1
+
+### Patch Changes
+
+- [#339](https://github.com/DavideCarvalho/adonis-agora-agent/pull/339) [`7e8fc23`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/7e8fc23302d1fabda69c9ff2d8241a9d5841b8b7) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - OpenCode: record the title OpenCode generates (and a compaction) even though OpenCode 2.0 does not stream those calls. A turn reads the session's spend (`session.get`) before it prompts and, when the execution ends, records what the session spent that its steps did not report as a `title` (or `summary`) usage row, counted in the run's usage.
+
 ## 0.70.0
 
 ### Minor Changes
