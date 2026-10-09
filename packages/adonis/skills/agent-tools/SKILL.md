@@ -247,7 +247,7 @@ A tool that knows its component before it reads can push a skeleton first: `ctx.
 { state: 'loading', … })`, then the data with `{ id }` from that push (the component's props
 schema must accept the placeholder variant; mark it `internal: true`). Always end on that id
 (data, `empty` or `error`), and only push the skeleton when the component is declared in
-`ctx.uiCapabilities` and `ctx.pageContext.channel` is unset. A tool that throws persists none
+`ctx.uiCapabilities` and the turn's channel (`ctx.channel`) is not a messaging channel. A tool that throws persists none
 of its pushes. See `packages/adonis/docs/genui-loading-states.mdx`.
 Use `createComponent` for custom definitions and one `createComponentRegistry` per app
 or tenant. Input `props` may transform; if the transform changes shape or is not
