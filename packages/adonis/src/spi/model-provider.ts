@@ -41,7 +41,7 @@ export interface ModelTurnResult {
   modelId?: string;
   /**
    * The ACTUAL USD cost of this turn, when the provider knows it — a gateway (Vercel AI Gateway
-   * `providerMetadata.gateway.cost`, OpenRouter `total_cost`) reports real spend; a direct provider
+   * `providerMetadata.gateway.cost`, OpenRouter `providerMetadata.openrouter.usage.cost`) reports real spend; a direct provider
    * (Anthropic/OpenAI/Bedrock) reports only tokens and leaves this undefined. When set, the
    * governance read-model uses it verbatim; otherwise it estimates from tokens × the pricing table.
    */
@@ -75,4 +75,20 @@ export interface ModelTurnResult {
  */
 export interface ModelProvider {
   runTurn(args: ModelTurnArgs): Promise<ModelTurnResult>;
+  /**
+   * The models this provider can run, for boot-time pricing: the provider seeds a missing price row
+   * from models.dev and warns about a model that would record no cost at all. Optional — a provider
+   * without it is simply not checked. `aiSdkModel` / `aiSdkModels` implement it.
+   */
+  describeModels?(): DescribedModel[];
+}
+
+/** One model a {@link ModelProvider} runs, as boot-time pricing sees it. */
+export interface DescribedModel {
+  /** The id the model is called with (`deepseek/deepseek-v4.1-flash`, `gpt-4o-mini`). */
+  modelId: string;
+  /** Its provider family as models.dev names it (`openrouter`, `openai`, `anthropic`, `vercel`). */
+  provider?: string;
+  /** The provider reports each call's real USD cost (a gateway), so no price row is needed. */
+  reportsCost: boolean;
 }

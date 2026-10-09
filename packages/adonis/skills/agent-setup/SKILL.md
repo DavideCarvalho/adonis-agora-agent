@@ -124,7 +124,17 @@ Source: `packages/adonis/docs/governance/quota-and-cost.mdx`.
 With a Lucid main store, pricing mirrors the same connection automatically (table
 auto-created) — no extra config. Cost per turn resolves in order: provider-reported
 (a gateway) wins, else an estimate from the current price rows fetched once per run,
-else `null` — never a fabricated `0`. Seed prices once (e.g. from an Ace command):
+else `null` — never a fabricated `0`.
+
+Gateways report the real cost: OpenRouter via the official `@openrouter/ai-sdk-provider`
+(`providerMetadata.openrouter.usage.cost` — `aiSdkModel` requests usage accounting on every
+OpenRouter call itself) and the Vercel AI Gateway (`providerMetadata.gateway.cost`). OpenRouter
+reached through `@ai-sdk/openai` with a custom `baseURL` reports no cost — use the official provider.
+
+At boot, any configured model with no price row gets the models.dev list price written as
+its row (never overwriting one; `priceCatalog: false` turns the fetch off, skipped under
+`NODE_ENV=test`), and a model that still has no price and no gateway cost is named in one
+boot warning. To set your own prices (e.g. from an Ace command):
 
 ```ts
 import db from '@adonisjs/lucid/services/db'

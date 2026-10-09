@@ -51,7 +51,22 @@ Reasoning tokens, when reported, are a subset of `output_tokens` — observabili
 
 There are two ways a turn gets a dollar figure:
 
-1. **The provider reports it.** A gateway knows the real spend. The AI SDK adapter reads the [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) shape (`providerMetadata.gateway.cost`) and OpenRouter (`total_cost`), and persists it verbatim as `cost_usd`. The governance read-model uses this figure as-is.
+1. **The provider reports it.** A gateway knows the real spend. The AI SDK adapter reads the [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) shape (`providerMetadata.gateway.cost`) and [OpenRouter](https://openrouter.ai/docs/use-cases/usage-accounting)'s (`providerMetadata.openrouter.usage.cost`, from the official `@openrouter/ai-sdk-provider`), and persists it verbatim as `cost_usd` — on the usage row, the assistant message and the run. The quota's `usd` windows and the governance read-model use this figure as-is. For OpenRouter it is what the account was actually charged for the provider the call was routed to, which can differ several-fold between identical calls; no list price gets that right.
+
+   OpenRouter only reports cost when usage accounting is requested, so `aiSdkModel` / `aiSdkModels` add `providerOptions.openrouter.usage = { include: true }` to every OpenRouter call (an `openrouter.usage` of your own wins). Nothing to configure:
+
+   ```ts title="config/agent.ts"
+   import { createOpenRouter } from '@openrouter/ai-sdk-provider'
+   const openrouter = createOpenRouter({ apiKey: env.get('OPENROUTER_API_KEY') })
+
+   model: () => aiSdkModel(openrouter.chat('deepseek/deepseek-v4.1-flash')),
+   ```
+
+   OpenRouter reached through `@ai-sdk/openai` with a custom `baseURL` reports **no** cost — that SDK drops the field. If an OpenRouter model returns no cost the adapter warns once per model, and the turn falls back to the pricing table.
+
+<Callout type="info" title="Before 0.68: OpenRouter cost was never read">
+Up to 0.67 the adapter read `total_cost`, a key the OpenRouter provider does not emit, so every OpenRouter turn recorded `cost_usd = NULL` even with usage accounting on. Rows recorded then stay NULL in the ledger; the read-model still estimates them from the pricing table, which boot now seeds (below).
+</Callout>
 
 2. **Estimated from the pricing table.** A direct provider (Anthropic / OpenAI / Bedrock) reports only tokens. When you configure a `pricingStore` (`pricingStores.lucid()`), cost is estimated from the `agent_model_pricing` table (the current price rows are fetched once per run and folded into `usage.costUsd`):
 
@@ -71,8 +86,18 @@ There are two ways a turn gets a dollar figure:
    cached tokens at zero. Reasoning tokens are a subset of `outputTokens` and are already billed at the
    output rate, so they never change the estimate.
 
-   Seed prices once with `seedPricesFromModelsDev(store, [...])`, or by hand with
-   `seedModelPrices(store, [...])`.
+   At boot, a configured model with no price row gets the [models.dev](https://models.dev) list
+   price written as its row (see [Prices from models.dev](#prices-from-modelsdev)); seed your own
+   with `seedPricesFromModelsDev(store, [...])`, or by hand with `seedModelPrices(store, [...])`.
+   A store price is an **estimate**: it is what a direct provider's tokens cost at list price, and a
+   provider-reported cost always replaces it.
+
+When neither exists — no gateway cost and no price row — `cost_usd` stays `null`. The provider says
+so at boot, in one line naming the model:
+
+```text
+[@adonis-agora/agent] No cost will be recorded for gpt-4o-mini: the provider reports no cost and the pricing table has no row for it. …
+```
 
 <Callout type="warn" title="`null` in the ledger, `0` in the rollups">
 An unpriced turn — no `pricingStore` bound, or no price row for that model — leaves `cost_usd`
@@ -121,7 +146,17 @@ from its alias still works.
 
 ### Prices from models.dev
 
-`seedPricesFromModelsDev` fills the table from the open [models.dev](https://models.dev) catalog
+**Automatically, at boot.** Once the tables exist, the provider asks the `model` provider which
+models it runs (`aiSdkModel` / `aiSdkModels` describe theirs) and, for each one the pricing table
+does not price, writes the current models.dev list price — looked up as `<provider>/<model>` (the AI
+SDK provider: `openrouter.chat` → `openrouter`, `openai.chat` → `openai`), and for an
+OpenRouter-style id (`deepseek/deepseek-v4.1-flash`) also as OpenRouter's list price. It runs in the
+background, never blocks the boot, never overwrites a row that exists (so your own prices win), and
+logs one line saying what it seeded. It is skipped under `NODE_ENV=test` and for ace commands.
+`priceCatalog` in `config/agent.ts` points it at a mirror (`{ url, fetch }`) or turns the fetch off
+(`false`); the unpriced-model warning runs either way.
+
+**By hand.** `seedPricesFromModelsDev` fills the table from the open [models.dev](https://models.dev) catalog
 instead of numbers hand-copied off a rate card:
 
 ```ts
@@ -136,7 +171,8 @@ different prices, and guessing there would be guessing at a bill. A model missin
 or listed without a price, **throws** — a silently skipped row would come back later as `$0.00` in a
 panel, far from its cause. Nothing is written unless every requested model resolved.
 
-Run it from a command or a deploy step, not on a request path. Prices change monthly, not per second,
+Run it from a command or a deploy step, not on a request path — boot seeding is the same: it runs
+once at start, never while a turn is being charged. Prices change monthly, not per second,
 and fetching one at charge time would trade a table you control for a third party in the middle of
 your accounting.
 

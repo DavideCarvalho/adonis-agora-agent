@@ -7,6 +7,7 @@ import type { GenuiFactory } from './genui/factory.js';
 import type { AgentGovernanceAuthorize } from './governance-gate.js';
 import type { McpServerConfig } from './mcp-client/options.js';
 import type { MemoryConfig } from './memory.js';
+import type { ModelsDevOptions } from './pricing/models-dev.js';
 import type { SkillsConfig } from './skills.js';
 import type { ActionProposal } from './spi/action-proposal-store.js';
 import type { ActorDirectory } from './spi/actor-directory.js';
@@ -178,6 +179,18 @@ export interface AgentConfig {
    * When the main store is not Lucid, pricing is off unless set explicitly.
    */
   pricingStore?: AgentPricingStore | PricingFactory | false;
+  /**
+   * Where a configured model with no price row gets one, at boot. On start the provider checks every
+   * model the `model` provider describes (`aiSdkModel` / `aiSdkModels`): one the pricing table does not
+   * price gets the current [models.dev](https://models.dev) list price written as its row — only when it
+   * has none, so a price you set is never overwritten. A model that still has no price, and whose
+   * provider reports no cost (anything but OpenRouter / the Vercel AI Gateway), is named in one boot
+   * warning, because it would record `cost_usd = NULL` on every turn.
+   *
+   * Omit → models.dev, except under `NODE_ENV=test` (no network from a test suite unless asked). Pass
+   * `{ url, fetch }` to point at a mirror, or `false` to never fetch (the warning still runs).
+   */
+  priceCatalog?: ModelsDevOptions | false;
   /**
    * The governance read-model the `/agent/governance/*` read routes serve from — per-model / per-actor
    * cost & usage rollups, the daily usage trend, and recent tool-call / thread activity over the
