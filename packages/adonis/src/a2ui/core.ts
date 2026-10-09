@@ -607,12 +607,29 @@ export function a2uiApprovalComponents(interrupt: AgUiInterrupt): A2uiComponent[
     },
     text(`${id}~label`, label),
   ];
+  // The tool's own prompt, filled on the server: its title is the message, its verb the button.
+  const confirmation = interrupt.metadata?.['agora.confirmation'] as
+    | { title?: unknown; verb?: unknown; detail?: unknown }
+    | undefined;
+  const detail =
+    typeof confirmation?.detail === 'string' && confirmation.detail.length > 0
+      ? confirmation.detail
+      : undefined;
+  const verb =
+    typeof confirmation?.verb === 'string' && confirmation.verb.length > 0
+      ? confirmation.verb
+      : 'Approve';
   return [
     { id: 'root', component: 'Card', child: 'body' },
-    { id: 'body', component: 'Column', children: ['message', 'buttons'] },
+    {
+      id: 'body',
+      component: 'Column',
+      children: detail !== undefined ? ['message', 'detail', 'buttons'] : ['message', 'buttons'],
+    },
     text('message', interrupt.message ?? 'Approve?', 'body'),
+    ...(detail !== undefined ? [text('detail', detail, 'caption')] : []),
     { id: 'buttons', component: 'Row', children: ['approve', 'reject'] },
-    ...button('approve', 'Approve', A2UI_APPROVE_ACTION, 'primary'),
+    ...button('approve', verb, A2UI_APPROVE_ACTION, 'primary'),
     ...button('reject', 'Reject', A2UI_REJECT_ACTION, 'default'),
   ];
 }

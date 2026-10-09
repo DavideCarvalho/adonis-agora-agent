@@ -514,7 +514,12 @@ export type {
   ToolResultField,
   ToolResultView,
 } from './tool-presentation.js';
-export { ALL_AGENTS } from './tool-presentation.js';
+export {
+  ALL_AGENTS,
+  fillPresentationTemplate,
+  fillToolConfirmation,
+  readPresentationPath,
+} from './tool-presentation.js';
 export {
   ClosedRolesPolicy,
   DefaultRolesPolicy,

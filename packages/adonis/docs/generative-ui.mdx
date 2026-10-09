@@ -134,6 +134,10 @@ A tree of a single component is just that component — `{ "type": "OrderCard", 
 
 The tool's input schema is exact: below the root, every node is a union by `type` whose variants carry their component's own props schema, and only components that take children have `children` (recursive through `$defs` / `$ref`). The root itself is a plain object listing every `type` and every props schema, because OpenAI and Anthropic both refuse a union at the top level of a tool's parameters. A component whose props schema is not self-contained (a recursive Zod schema carries its own references) is described as a plain object. A provider that refuses `$ref` in tool parameters at all takes `treeSchema: 'loose'` — one generic node shape, props described in the tool's text only. Whichever schema the model sees, the server validates every call.
 
+**When the model gets the shape wrong.** Where what it meant is unambiguous, the server takes it as meant rather than refusing the call (`validateTree`): a tree, `children` or `props` sent as a JSON string (with a stray trailing `}`, or `>` written for a key's `:`); an element that left out its envelope — `{ "props": { "html": … } }` or the bare props `{ "html": …, "css": … }` — when exactly ONE component's props schema fits those keys (every key one of its properties, every required one present); props written beside the `type`; a whole element wrapped in one more key (`{ "props": { "type": …, "props": … } }`, `{ "root": "{…}" }`), or the component named under `component` / `root`. Anything else is refused with a message naming the shape. A client that draws a call from its arguments (CopilotKit renders tool calls; an OpenUI artifact renderer reads them) applies the same reading with `normalizeTreeInput(catalog, args)` from `@adonis-agora/agent/genui`, so it draws what the server accepted. The tool's description also shows the envelope with an example built from your catalog.
+
+**A component with a tool of its own.** `componentTools: ['Sandbox']` keeps tree mode and ALSO registers a flat tool for each named standalone component — `ui__sandbox`, whose input IS the sandbox's props (prefix: `componentToolPrefix`, default `ui__`). A big component a model writes on its own has no envelope to leave out there; it streams as it does in a tree, may still be nested in a `ui__render` tree, and the tree tool's description points the model at it.
+
 **Per-component mode.** `mode: 'per-component'` registers a `ui__show_<snake_case name>` tool per model-facing standalone component instead (`OrderCard` → `ui__show_order_card`), each taking that component's props directly. Reach for it with small models that compose trees poorly, when each tool should carry its exact schema on its own, or when the catalog only has standalone components to show one at a time. Layouts get no tool there (they could only push an empty box).
 
 Options, all optional:
@@ -147,6 +151,7 @@ Options, all optional:
 | `roles` | Roles allowed to call the tools; omitted → `defaultRoles`. |
 | `presentation` | `(component) => ToolPresentation \| undefined`, overriding the generated chat copy per tool. |
 | `namePrefix` | Prefix of the per-component tools (`mode: 'per-component'`). Default `ui__show_`. |
+| `componentTools`, `componentToolPrefix` | Tree mode: standalone components that also get a flat tool of their own (`['Sandbox']` → `ui__sandbox`). See above. |
 | `treeToolName`, `treeInstructions`, `treeLimits` | The tree tool's name (default `ui__render`), extra description, and size limits. |
 | `streaming` | Tree mode: `'complete'` (default) draws the tree once the call has run; `'partial'` draws it while the model writes it. See [Drawing a tree while the model writes it](#drawing-a-tree-while-the-model-writes-it). |
 | `streamingThrottleMs` | Least time between two partial tree frames of one call. Default `100`. |
@@ -220,6 +225,10 @@ defineTool({ name: 'showChart', kind: 'read', description: '…', input, termina
 ```
 
 `ctx.emitComponent(name, data)` below is the older form. It still works — and now goes through the same path, so its components are validated, negotiated and persisted too.
+
+### Money and units in what a tool returns
+
+A tool's output is what the model reads, and a model handed `totalCents: 12999` sometimes says "$12,999". Return the amount already formatted for people, beside the raw value a component takes — `{ total: '$129.99', totalCents: 12999 }` — and push the raw value to the component (its props are typed). The same goes for any unit a model could misread (bytes, basis points, milliseconds): format it in the data, not in a prompt line the model may skip. The [frontends example](https://github.com/DavideCarvalho/agora/tree/main/examples/frontends)'s `list_orders` does exactly that.
 
 ### `ctx.emitComponent(name, data)`
 
@@ -404,6 +413,8 @@ Props of an incomplete node can be missing or half-built (an array still growing
 Only the nodes that changed render again. The chat reaches React as a fresh copy on every update (each token, each partial frame), so the transcript and the tree renderer share structure with the previous frame: a node, a pushed component or a props object equal to the one before keeps that object, and its renderer does not run. A node that grew, or whose `incomplete` or `held` flag changed, is a new object, and so are its ancestors. A heavy renderer (a chart that measures itself, a table) therefore needs no `memo` of its own to keep up with a fast stream. Inline `fallback`, `loading`, `placeholder` and `onError` values are read when a node renders, so passing new ones does not re-render the tree either.
 
 A component the registry does not know, props the catalog refuses, or a renderer that throws renders your `fallback` — or, without one, the item's `fallbackText` (nothing when it has none). A name is a lookup, never something to evaluate. A repeated `id` replaces the component in place, and a reloaded thread draws the same components from the message's persisted `ui` list. To tell the server what this registry can draw, pass `uiCapabilities` to `<AgentProvider>` — see [One output, many surfaces](/docs/agent/surfaces#web--react-over-the-native-stream). See [React](/docs/agent/react) for the rest of the hook.
+
+**A refused call the model fixed.** When a `ui__render` (or any tool) call fails and the model's next tool call is the same tool and does not fail, the transcript leaves the failed one out (`retriedCallIds`) — while the retry runs and once it succeeds — so the person sees the view, not the refusal before it. A failure the model moved on from, or whose retry failed too, stays. `useChatTranscript({ hideRetriedFailures: false })` (or `buildTranscriptBlocks`'s option) keeps every attempt, for an operator's view.
 
 ### Without React
 

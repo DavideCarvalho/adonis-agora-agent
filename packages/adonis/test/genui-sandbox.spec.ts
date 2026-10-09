@@ -101,7 +101,11 @@ describe('the sandbox definition', () => {
     });
     expect(setup.catalog.modelComponents().map((c) => c.name)).toEqual(['Chart', 'Sandbox']);
     const description = setup.tools[0]?.spec.description ?? '';
-    expect(description.indexOf('Chart')).toBeLessThan(description.indexOf('Sandbox'));
+    expect(description.indexOf('- Chart:')).toBeLessThan(description.indexOf('- Sandbox:'));
+    // The sandbox is the example of a wrapped element: the envelope models drop on it.
+    expect(description).toContain(
+      'Example, one component: { "type": "Sandbox", "props": { "html": … } }',
+    );
     const off = await genui({ catalog: defineCatalog([Chart]) })({
       make: async () => ({}) as never,
     });

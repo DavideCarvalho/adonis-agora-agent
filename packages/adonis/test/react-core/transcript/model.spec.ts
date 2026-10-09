@@ -41,6 +41,68 @@ describe('buildTranscriptBlocks', () => {
     ]);
   });
 
+  describe('a failed call retried at once', () => {
+    const call = (id: string, name: string, state: 'ok' | 'failed' | 'running') =>
+      ({
+        type: `tool-${name}`,
+        toolCallId: id,
+        state:
+          state === 'ok'
+            ? 'output-available'
+            : state === 'failed'
+              ? 'output-error'
+              : 'input-streaming',
+        input: {},
+        ...(state === 'ok' ? { output: {} } : {}),
+        ...(state === 'failed' ? { errorText: 'invalid UI tree' } : {}),
+      }) as AnyToolUIPart;
+    const ids = (parts: UIMessage['parts'], options = {}) =>
+      buildTranscriptBlocks(message(parts), { ...openAll, ...options }).flatMap((block) =>
+        block.kind === 'tools' ? block.calls.map((each) => each.toolCallId) : [],
+      );
+
+    it('is left out when the same tool then succeeds — across a step boundary too', () => {
+      expect(
+        ids([
+          call('a', 'ui__render', 'failed'),
+          { type: 'step-start' },
+          call('b', 'ui__render', 'failed'),
+          { type: 'step-start' },
+          call('c', 'ui__render', 'ok'),
+        ]),
+      ).toEqual(['c']);
+    });
+
+    it('is left out while the retry is still running', () => {
+      expect(
+        ids([
+          call('a', 'ui__render', 'failed'),
+          { type: 'step-start' },
+          call('b', 'ui__render', 'running'),
+        ]),
+      ).toEqual(['b']);
+    });
+
+    it('stays when the retry failed too, another tool came next, or hiding is off', () => {
+      expect(ids([call('a', 'ui__render', 'failed'), call('b', 'ui__render', 'failed')])).toEqual([
+        'a',
+        'b',
+      ]);
+      expect(
+        ids([
+          call('a', 'ui__render', 'failed'),
+          call('b', 'search', 'ok'),
+          call('c', 'ui__render', 'ok'),
+        ]),
+      ).toEqual(['a', 'b', 'c']);
+      expect(
+        ids([call('a', 'ui__render', 'failed'), call('b', 'ui__render', 'ok')], {
+          hideRetriedFailures: false,
+        }),
+      ).toEqual(['a', 'b']);
+    });
+  });
+
   it('splits a tool run when text comes between the calls', () => {
     const blocks = buildTranscriptBlocks(
       message([tool('a'), { type: 'text', text: 'thinking out loud' }, tool('b')]),

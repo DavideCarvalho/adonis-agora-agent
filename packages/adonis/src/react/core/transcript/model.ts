@@ -24,6 +24,7 @@ import type { ToolCatalog } from '../presentation/phrasing.js';
 import {
   describeToolCall,
   groupToolActivity,
+  retriedCallIds,
   type ToolActivityGroup,
   type ToolCallDescription,
 } from '../presentation/tool-activity.js';
@@ -436,6 +437,12 @@ export interface BuildBlocksOptions {
   approval?: ApprovalBlockOptions;
   /** Server-declared tool presentations (`useToolCatalog`), for each call's `description`. */
   toolCatalog?: ToolCatalog;
+  /**
+   * Leave out a failed call the model retried at once with the same tool ({@link retriedCallIds}):
+   * the person sees the view the retry drew, not the refusal before it. Default `true`; `false`
+   * keeps every attempt (an operator's view).
+   */
+  hideRetriedFailures?: boolean;
 }
 
 /**
@@ -519,6 +526,10 @@ export function buildTranscriptBlocks(
     flushFiles();
   }
 
+  const retried =
+    options.hideRetriedFailures === false
+      ? new Set<string>()
+      : retriedCallIds((message.parts ?? []).filter(isToolUIPart));
   const settledCalls = new Set<string>();
   for (const part of message.parts ?? []) {
     if (
@@ -533,6 +544,7 @@ export function buildTranscriptBlocks(
 
   for (const part of message.parts ?? []) {
     if (isToolUIPart(part)) {
+      if (retried.has(part.toolCallId)) continue;
       const elicitation = options.elicitation;
       if (elicitation !== undefined) {
         const request = readElicitationRequest(part);

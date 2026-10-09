@@ -176,6 +176,7 @@ export {
   type GroupToolActivityOptions,
   groupToolActivity,
   isActionCall,
+  retriedCallIds,
   type ToolActivityGroup,
   type ToolCallDescription,
   type ToolCallState,

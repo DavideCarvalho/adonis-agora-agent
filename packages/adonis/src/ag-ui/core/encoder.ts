@@ -296,6 +296,9 @@ export class AgUiEncoder {
               'agora.toolName': toolName,
               'agora.input': input,
               'agora.approver': event.approver,
+              ...(event.confirmation !== undefined
+                ? { 'agora.confirmation': event.confirmation }
+                : {}),
               ...(event.target !== undefined ? { 'agora.target': event.target } : {}),
             },
           },
