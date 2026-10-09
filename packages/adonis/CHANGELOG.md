@@ -1,5 +1,25 @@
 # @adonis-agora/agent
 
+## 0.69.0
+
+### Minor Changes
+
+- [#335](https://github.com/DavideCarvalho/adonis-agora-agent/pull/335) [`8eb7ef0`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/8eb7ef0d7956095873e142fd9c3ce32b1057d879) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Bedrock is priced correctly at boot, GovCloud is never seeded at commercial prices, and apps can supply their own price rows.
+  
+  - **Bedrock ids are normalized.** Inference-profile, foundation-model and application-inference-profile ARNs (`arn:aws[-us-gov|-cn]:bedrock:…`) and geo-prefixed profiles (`us.`, `eu.`, `apac.`, `us-gov.`, `global.`, …) are looked up as the full id, then the profile id, then the base id. The seeded row is keyed by the configured id, so a turn reporting the full ARN finds it. An ARN is no longer looked up as an `openrouter/arn:…` ref.
+  - **No silent commercial prices outside the commercial partition.** A Bedrock model in GovCloud or China, detected from the ARN, a `us-gov.` prefix, `priceCatalog.region` or `AWS_REGION` / `AWS_DEFAULT_REGION`, is never seeded from models.dev. GovCloud gets a built-in table (`BEDROCK_BUILTIN_PRICES`, from the AWS Price List for us-gov-west-1; Claude Sonnet 4.5 is $3.60 / $18 / $0.36 / $4.50 per 1M tokens). Anything else is left unpriced and warned about.
+  - **`priceCatalog.prices`.** This is a list of app-supplied `{ model, input, output, cacheRead?, cacheWrite?, currency?: 'USD', unit?: '1M tokens' | '1K tokens' }` rows, seeded before the built-in table and models.dev, and never over an existing row. Also new: `priceCatalog.region` and `priceCatalog.modelsDev: false`. The option type is now `PriceCatalogOptions` (a superset of `ModelsDevOptions`).
+  - **The boot warning says why and how to fix it.** It now groups unpriced models by reason (no price for partition/region, unknown to models.dev, models.dev unreachable or off) and shows the `priceCatalog.prices` entry to add.
+  - New exports: `parseBedrockModelId`, `bedrockPriceCandidates`, `isBedrockModel`, `awsPartitionOfRegion`, `builtinBedrockPrice`, `BEDROCK_BUILTIN_PRICES`, `normalizePriceEntries`, `lookupModelsDevPricesEach` and the `PriceCatalogOptions` / `PriceCatalogEntry` types.
+
+- [#335](https://github.com/DavideCarvalho/adonis-agora-agent/pull/335) [`8eb7ef0`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/8eb7ef0d7956095873e142fd9c3ce32b1057d879) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - The estimated cost now reaches the usage ledger, and the quota counts it.
+  
+  For a provider that reports no cost (Bedrock, or OpenAI and Anthropic called directly), the loop's estimate (tokens times the price row) reached the message and the run, but `agent_token_usage.cost_usd` stayed NULL. The quota's USD windows read $0.
+  
+  - **The ledger stores the estimate.** `agent_token_usage.cost_usd` now holds it, marked by the new `cost_source` column (`'provider' | 'estimate'`). `createAgentTables` adds the column to an existing table (schema repair), so no app migration is needed. A provider-reported cost is unchanged, still wins, and is stamped `'provider'`. An unpriced turn keeps both columns NULL. Chat and structured-output usage rows are covered.
+  - **SPI.** `RecordUsageInput.costSource` and `CostSource` are new. `usageBetween` returns `UsageTotals` (`{ usedTokens, costUsd, estimatedCostUsd? }`), where `costUsd` includes estimates. `sumUsage` is new.
+  - **Quota.** The USD windows count estimates by default, because a USD ceiling on a provider that reports no cost would otherwise never block. `quota: { limits, countEstimatedCost: false }` counts provider-reported cost only.
+
 ## 0.68.0
 
 ### Minor Changes
