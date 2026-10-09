@@ -58,6 +58,9 @@ Malformed input is an HTTP `400` and no stream: an action that is not one, or la
 | `components`, `unmapped`, `catalogId`, `theme` | How components become A2UI — see [your own components](#your-own-components). `theme` is `createSurface.theme` (basic catalog: `primaryColor`, `agentDisplayName`, `iconUrl`). |
 | `catalog` | The catalog unmapped components' text comes from. Default: the app's `genui` catalog. |
 | `maxActionBytes` | Largest inbound action, as JSON. Default 8192. |
+| `basicCatalogId` | The id the client knows the basic catalog by. Normally unset: it is [negotiated](#which-catalog-id) per request. |
+| `sendDataModel` | Create every surface with `sendDataModel: true` — see [the data model](#the-data-model-round-trip). |
+| `maxDataModelBytes` | Largest inbound `a2uiClientDataModel`, as JSON. Default 32768. |
 | `quietMs` | As on `agUiAdapter`: how long a run waiting on a person may stay silent before the stream ends. Default 750. |
 
 ## What the stream carries
@@ -73,6 +76,50 @@ Malformed input is an HTTP `400` and no stream: an action that is not one, or la
 | An error | A text surface `error-<n>` with the message. |
 
 Node ids are positions — `root`, `root.0`, `root.1.2` — and the extra components a mapping needs take derived ids (`root.0~title`), so ids are stable from the first preview to the final frame and a streamed surface only ever grows. Text, approval and error surfaces always use the basic catalog, whatever `catalogId` your UI surfaces use.
+
+## Which catalog id
+
+A2UI v0.9's basic catalog has gone by two ids: the current `https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json` (`A2UI_BASIC_CATALOG_ID`, what `@a2ui/react` 0.12 and `@a2ui/web_core` 0.12 register) and the earlier `https://a2ui.org/specification/v0_9/basic_catalog.json` (`A2UI_LEGACY_BASIC_CATALOG_ID`, what AG-UI's A2UI middleware and toolkit, and CopilotKit 1.77's renderer on `@a2ui/web_core` 0.10, register). A renderer refuses a surface whose catalog it does not have, so each request picks the id **its client** uses:
+
+1. the basic-catalog id among the catalogs the client advertises — `a2uiClientCapabilities` in the body or its `metadata` on the A2UI route (`{ 'v0.9': { supportedCatalogIds } }`, what `MessageProcessor.getRendererCapabilities({ versions: ['v0.9'] })` builds); over AG-UI, `forwardedProps.a2uiClientCapabilities`, or the "A2UI catalog capabilities" context entry CopilotKit's provider sends when it is given an A2UI catalog;
+2. else the configured `basicCatalogId`, or a `catalogId` that is either basic id;
+3. else the transport's default: the current id on the A2UI route, **the earlier id over AG-UI** — the one AG-UI's binding and CopilotKit use.
+
+An app catalog (`catalogId` that is not a basic id) is kept as configured; text, approval and error surfaces still take the negotiated basic id. `isA2uiBasicCatalogId`, `negotiateA2uiCatalog`, `readA2uiClientCapabilities` and `readAgUiA2uiCatalogIds` are exported for a transport of your own.
+
+```ts title="A client on @a2ui/web_core 0.12 that says what it draws"
+body: JSON.stringify({
+  message,
+  a2uiClientCapabilities: processor.getRendererCapabilities({ versions: ['v0.9'] }),
+})
+```
+
+## Reopening a thread
+
+`GET <path>/a2ui/threads/:threadId` answers a stored thread as JSON, for a client that reloads: `{ threadId, entries }`, where each entry is the user's line (`{ role: 'user', id, text, action? }` — `action` when the message was a UI action, `text` then being what the user said, see [chips](/docs/agent/genui-sandbox#what-the-user-sees)) or an assistant step's surfaces (`{ role: 'assistant', id, messages }`: its text as one `Text`, then each `ui` frame it kept, mapped as the stream maps them and under the same surface ids). Hand `messages` to the processor as they come. Owner-scoped like `threads/:id`; a thread nobody has answers `{ entries: [] }`. `?catalog=<id>` names the client's basic catalog id when it is not the route's default. An approval the thread still waits on is not redrawn — a new message asks again. `a2uiThreadReplay(messages, options)` is the same conversion, framework-free.
+
+```ts title="resources/js/pages/a2ui.tsx (frontend)"
+const { entries } = await (await fetch(`/agent/a2ui/threads/${threadId}`)).json()
+for (const entry of entries) {
+  if (entry.role === 'user') lines.push(entry.text)
+  else processor.processMessages(entry.messages)
+}
+```
+
+## The data-model round trip
+
+With `sendDataModel: true`, every surface is created with `sendDataModel: true`, and an A2UI client sends the data models of those surfaces back with its next message as `a2uiClientDataModel` (`{ version: 'v0.9', surfaces: { <surfaceId>: model } }` — `MessageProcessor.getRendererDataModel()`), in the body or its `metadata`. The route checks it (an object of surfaces, at most `maxDataModelBytes`; otherwise `400 { code: 'invalid_data_model' }`) and hands it to the turn's prompt builder as `pageContext.a2uiDataModel` — your `systemPrompt(ctx)` decides what the model is told of it:
+
+```ts title="config/agent.ts (backend)"
+defaultAgent: {
+  systemPrompt: (ctx) =>
+    ctx.pageContext?.a2uiDataModel
+      ? `${base}\n\nWhat the user has entered so far: ${JSON.stringify(ctx.pageContext.a2uiDataModel)}`
+      : base,
+},
+```
+
+An action's `context` already carries the values its bindings resolve to; the data model is for the rest of a surface's state (inputs no button reads).
 
 ## How the builtins map
 
@@ -249,12 +296,12 @@ import { agUiAdapter } from '@adonis-agora/agent/ag-ui'
 adapters: [agUiAdapter({ a2ui: true })] // or a2ui: { components: { OrderList }, catalogId, theme }
 ```
 
-After each `agora.ui` custom event, the stream carries an `ACTIVITY_SNAPSHOT` with `activityType: 'a2ui-surface'`, `messageId: 'a2ui-surface-<frame id>'` and `replace: true`, whose `content.a2ui_operations` is the whole surface — `createSurface` and `updateComponents`. Each preview of a streaming tree repaints the same activity in place, the final frame replaces the last preview, and a withdrawn preview repaints it with a single `deleteSurface`. `true` maps the builtins onto the basic catalog; an object takes the same `components`, `unmapped`, `catalogId`, `theme` and `catalog` options as the route.
+After each `agora.ui` custom event, the stream carries an `ACTIVITY_SNAPSHOT` with `activityType: 'a2ui-surface'`, `messageId: 'a2ui-surface-<frame id>'` and `replace: true`, whose `content.a2ui_operations` is the whole surface — `createSurface` and `updateComponents`. Each preview of a streaming tree repaints the same activity in place, the final frame replaces the last preview, and a withdrawn preview repaints it with a single `deleteSurface`. `true` maps the builtins onto the basic catalog; an object takes the same `components`, `unmapped`, `catalogId`, `basicCatalogId`, `sendDataModel`, `theme` and `catalog` options as the route. The basic catalog travels under the id the client advertises, else under the earlier id AG-UI's binding and CopilotKit 1.77 use — so CopilotKit's renderer draws it with no configuration ([which catalog id](#which-catalog-id)).
 
 ```json
 { "type": "ACTIVITY_SNAPSHOT", "messageId": "a2ui-surface-call_1:ui:0", "activityType": "a2ui-surface", "replace": true,
   "content": { "a2ui_operations": [
-    { "version": "v0.9", "createSurface": { "surfaceId": "call_1:ui:0", "catalogId": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json" } },
+    { "version": "v0.9", "createSurface": { "surfaceId": "call_1:ui:0", "catalogId": "https://a2ui.org/specification/v0_9/basic_catalog.json" } },
     { "version": "v0.9", "updateComponents": { "surfaceId": "call_1:ui:0", "components": [ … ] } } ] } }
 ```
 
@@ -262,7 +309,8 @@ Inbound, `forwardedProps.a2uiAction` — `{ userAction: { name, surfaceId, sourc
 
 ## Known gaps
 
-- **No data-model round trip.** Surfaces are never created with `sendDataModel`, so input components (`TextField`, `Slider`, …) in your mappings report their values only through an action's `context`, not through A2UI's data-model sync.
+- **The data model reaches the prompt builder, not the model.** `a2uiClientDataModel` arrives as `pageContext.a2uiDataModel`; it is your `systemPrompt` that tells the model about it. Over AG-UI it is not read.
+- **A reopened thread does not redraw a pending approval.** Ask again by sending a message.
 - **No client functions** beyond the basic catalog's `openUrl` (used for `Link`), and no v1.0 `callAgentFunction`.
 - **No A2A transport.** The route is plain HTTP with JSON Lines, and AG-UI activities; A2UI over [A2A](/docs/agent/a2a) is not provided.
 - **Only approvals become buttons.** A question set, or any other interrupt, is a text surface saying to answer it in the app. An [independent proposal](/docs/agent/independent-approvals)'s approval gets the same buttons; its `agora.approve` / `agora.reject` is decided through the proposal service (as the AG-UI resume does) and answered with the configured reply.

@@ -1,6 +1,7 @@
 import type { UIMessage } from 'ai';
 import type React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { readUiActionText, uiActionSummary } from '../../../genui/actions.js';
 import type { QueuePause } from '../../../index.js';
 import type { ApprovalTarget } from '../approvals/proposals.js';
 import { attachmentFile, type MessageFile } from '../attachments/files.js';
@@ -22,6 +23,7 @@ import {
   type TimestampInfo,
   type TranscriptBlock,
   type TranscriptFile,
+  type TranscriptUiAction,
   type UsageSummary,
 } from './model.js';
 import { type StickToBottom, useStickToBottom } from './use-stick-to-bottom.js';
@@ -75,6 +77,11 @@ export interface TranscriptItem {
   blocks: TranscriptBlock[];
   /** The prose alone — what `copy` puts on the clipboard and what an edit starts from. */
   text: string;
+  /**
+   * A user message that is a UI action: its parts (see `TranscriptTextBlock.uiAction`). `null` on
+   * every other message.
+   */
+  uiAction: TranscriptUiAction | null;
   usage: UsageSummary | null;
   timestamp: TimestampInfo | null;
   copy: TranscriptCopyState;
@@ -631,7 +638,11 @@ function useTranscriptItems({
       extractMessageText(latest.current.messages.find((message) => message.id === id)?.parts);
     const created: ItemCallbacks = {
       copy: () => {
-        const text = textFor();
+        // A UI action copies as what its chip says, not as the JSON block the model reads.
+        const raw = textFor();
+        const message = latest.current.messages.find((candidate) => candidate.id === id);
+        const action = message?.role === 'user' ? readUiActionText(raw) : null;
+        const text = action !== null ? uiActionSummary(action) : raw;
         if (!text) {
           return;
         }
@@ -739,6 +750,7 @@ function useTranscriptItems({
     const text = extractMessageText(message.parts);
     const usage = (options.getUsage ?? usageFromMetadata)(message);
     const isUser = message.role === 'user';
+    const uiAction = isUser ? readUiActionText(text) : null;
     const isAssistant = message.role === 'assistant';
     const isLastAssistant = isAssistant && message.id === lastAssistantId;
 
@@ -751,6 +763,7 @@ function useTranscriptItems({
       isAssistant,
       isLastAssistant,
       isStreaming: message.id === streamingMessageId,
+      uiAction,
       blocks: keepUiIdentity(
         buildTranscriptBlocks(message, {
           isReasoningOpen: (key, isStreamingRun) => openReasoning.get(key) ?? isStreamingRun,

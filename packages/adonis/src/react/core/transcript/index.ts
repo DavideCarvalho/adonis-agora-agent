@@ -30,6 +30,7 @@ export {
   type TranscriptTextBlock,
   type TranscriptToolBlock,
   type TranscriptToolCall,
+  type TranscriptUiAction,
   type TranscriptUiBlock,
   type UsageSummary,
 } from './model.js';

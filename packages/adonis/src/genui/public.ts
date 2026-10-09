@@ -4,10 +4,13 @@ export {
   jsonByteLength,
   type ReadUiActionOptions,
   readUiAction,
+  readUiActionText,
   sandboxAction,
   UI_ACTION_MAX_BYTES,
   type UiAction,
+  type UiActionMessage,
   type UiActionSource,
+  uiActionSummary,
   uiActionText,
   validateUiActionContext,
 } from './actions.js';

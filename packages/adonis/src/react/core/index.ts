@@ -267,6 +267,7 @@ export {
   type TranscriptTextBlock,
   type TranscriptToolBlock,
   type TranscriptToolCall,
+  type TranscriptUiAction,
   type TranscriptUiBlock,
   type TranscriptWindow,
   type UsageSummary,

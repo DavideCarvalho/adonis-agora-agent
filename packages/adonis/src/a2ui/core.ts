@@ -13,7 +13,12 @@
  *    user turn.
  */
 import type { AgUiEvent, AgUiInterrupt } from '../ag-ui/core/types.js';
-import { readUiAction, type UiAction } from '../genui/actions.js';
+import {
+  readUiAction,
+  readUiActionText,
+  type UiAction,
+  type UiActionMessage,
+} from '../genui/actions.js';
 import type { Catalog } from '../genui/catalog.js';
 import { toJsonSchema } from '../genui/schema.js';
 import { componentToText } from '../genui/text.js';
@@ -25,6 +30,25 @@ export const A2UI_VERSION = 'v0.9';
 /** The catalog id of A2UI v0.9's basic catalog (what `@a2ui/react`'s `basicCatalog.id` is). */
 export const A2UI_BASIC_CATALOG_ID =
   'https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json';
+
+/**
+ * The id the AG-UI A2UI binding knows the basic catalog by: `@ag-ui/a2ui-middleware`,
+ * `@ag-ui/a2ui-toolkit` and CopilotKit's A2UI renderer (1.77, on `@a2ui/web_core` 0.10) register it
+ * under this earlier v0.9 id, not {@link A2UI_BASIC_CATALOG_ID}. The AG-UI transport's default.
+ */
+export const A2UI_LEGACY_BASIC_CATALOG_ID =
+  'https://a2ui.org/specification/v0_9/basic_catalog.json';
+
+/** Every id the basic catalog goes by: the current one first. */
+export const A2UI_BASIC_CATALOG_IDS: readonly string[] = Object.freeze([
+  A2UI_BASIC_CATALOG_ID,
+  A2UI_LEGACY_BASIC_CATALOG_ID,
+]);
+
+/** Whether a catalog id names A2UI v0.9's basic catalog (under either of its ids). */
+export function isA2uiBasicCatalogId(id: unknown): id is string {
+  return typeof id === 'string' && A2UI_BASIC_CATALOG_IDS.includes(id);
+}
 
 /** The components of A2UI v0.9's basic catalog. */
 export const A2UI_BASIC_COMPONENTS = [
@@ -103,9 +127,25 @@ export type A2uiMapper = (props: Record<string, unknown>, ctx: A2uiMapContext) =
 export interface A2uiOptions {
   /**
    * The A2UI catalog surfaces are created with. Default the basic catalog. An app that registers
-   * its own components on the client names its catalog here (and lists them in `custom`).
+   * its own components on the client names its catalog here (and lists them in `custom`). Either id
+   * of the basic catalog ({@link A2UI_BASIC_CATALOG_IDS}) means "the basic catalog": the id the
+   * client advertises for it wins.
    */
   catalogId?: string;
+  /**
+   * The id the client knows the basic catalog by — what text, approval and error surfaces (always
+   * basic) are created with, and `catalogId`'s default. Normally left unset: each transport picks
+   * it from the catalogs the client advertises (`a2uiClientCapabilities`), else uses its own
+   * default ({@link A2UI_BASIC_CATALOG_ID} on the A2UI route, {@link A2UI_LEGACY_BASIC_CATALOG_ID}
+   * over AG-UI).
+   */
+  basicCatalogId?: string;
+  /**
+   * Create every surface with `sendDataModel: true`: the client sends the surface's data model back
+   * with its next message (`a2uiClientDataModel`), which the A2UI route hands the prompt builder as
+   * `pageContext.a2uiDataModel`.
+   */
+  sendDataModel?: boolean;
   /** Per component: a mapping to A2UI (overrides a builtin's), or `'custom'` to send it as is. */
   components?: Record<string, A2uiMapper | 'custom'>;
   /**
@@ -438,7 +478,7 @@ export function a2uiSurfaceMessages(
       version: A2UI_VERSION,
       createSurface: {
         surfaceId,
-        catalogId: options.catalogId ?? A2UI_BASIC_CATALOG_ID,
+        catalogId: options.catalogId ?? options.basicCatalogId ?? A2UI_BASIC_CATALOG_ID,
         ...(options.theme !== undefined ? { theme: options.theme } : {}),
         ...(options.sendDataModel === true ? { sendDataModel: true } : {}),
       },
@@ -652,7 +692,7 @@ export class A2uiProjector {
     return a2uiSurfaceMessages(surfaceId, components, {
       ...this.options,
       // Text, approvals and errors are basic-catalog components whatever the app's catalog is.
-      catalogId: A2UI_BASIC_CATALOG_ID,
+      catalogId: this.options.basicCatalogId ?? A2UI_BASIC_CATALOG_ID,
       create,
     });
   }
@@ -676,4 +716,144 @@ export class A2uiProjector {
     this.surfaces.add(surfaceId);
     return a2uiSurfaceMessages(surfaceId, components, { ...this.options, create });
   }
+}
+
+function catalogIdsOf(value: unknown): string[] | undefined {
+  if (!isRecord(value) || !Array.isArray(value.supportedCatalogIds)) return undefined;
+  return value.supportedCatalogIds.filter((id): id is string => typeof id === 'string');
+}
+
+/**
+ * The catalog ids a client says it draws, from its `a2uiClientCapabilities`: v0.9's
+ * `{ 'v0.9': { supportedCatalogIds } }` (what `MessageProcessor.getRendererCapabilities()` builds),
+ * a `v0.9.1` entry, or a flat `{ supportedCatalogIds }`. `undefined` when it names none.
+ */
+export function readA2uiClientCapabilities(raw: unknown): string[] | undefined {
+  if (!isRecord(raw)) return undefined;
+  const ids = [
+    ...(catalogIdsOf(raw['v0.9']) ?? []),
+    ...(catalogIdsOf(raw['v0.9.1']) ?? []),
+    ...(catalogIdsOf(raw) ?? []),
+  ];
+  return ids.length > 0 ? [...new Set(ids)] : undefined;
+}
+
+/** The AG-UI context entry CopilotKit's A2UI provider sends ("A2UI catalog capabilities: …"). */
+const AG_UI_CATALOG_CONTEXT = /^A2UI catalog capabilities/i;
+
+/**
+ * The catalog ids an AG-UI client advertises: `forwardedProps.a2uiClientCapabilities`, or the
+ * `context` entry CopilotKit's A2UI provider adds (its value lists the ids, one `- <id>` per line).
+ */
+export function readAgUiA2uiCatalogIds(input: {
+  forwardedProps?: unknown;
+  context?: readonly unknown[];
+}): string[] | undefined {
+  const forwarded = isRecord(input.forwardedProps)
+    ? readA2uiClientCapabilities(input.forwardedProps.a2uiClientCapabilities)
+    : undefined;
+  if (forwarded !== undefined) return forwarded;
+  const ids: string[] = [];
+  for (const entry of input.context ?? []) {
+    if (!isRecord(entry) || typeof entry.description !== 'string') continue;
+    if (!AG_UI_CATALOG_CONTEXT.test(entry.description) || typeof entry.value !== 'string') continue;
+    for (const line of entry.value.split('\n')) {
+      const id = /^\s*-\s+(\S+:\/\/\S+)/.exec(line)?.[1];
+      if (id !== undefined) ids.push(id);
+    }
+  }
+  return ids.length > 0 ? [...new Set(ids)] : undefined;
+}
+
+/**
+ * Options for one client: the basic catalog under the id the client advertises (else the
+ * configured `basicCatalogId`, a basic `catalogId`, or the transport's `fallback`), and `catalogId`
+ * resolved — an app catalog stays as configured; the basic catalog takes the negotiated id.
+ */
+export function negotiateA2uiCatalog(
+  options: A2uiOptions,
+  supported: readonly string[] | undefined,
+  fallback: string = A2UI_BASIC_CATALOG_ID,
+): A2uiOptions {
+  const advertised = (supported ?? []).filter(isA2uiBasicCatalogId);
+  const preferred = [options.basicCatalogId, options.catalogId].find(
+    (id) => id !== undefined && advertised.includes(id),
+  );
+  const basic =
+    preferred ??
+    advertised[0] ??
+    options.basicCatalogId ??
+    (isA2uiBasicCatalogId(options.catalogId) ? options.catalogId : undefined) ??
+    fallback;
+  const catalogId =
+    options.catalogId === undefined || isA2uiBasicCatalogId(options.catalogId)
+      ? basic
+      : options.catalogId;
+  return { ...options, basicCatalogId: basic, catalogId };
+}
+
+/** One stored message, as much of it as a replay reads. */
+export interface A2uiStoredMessage {
+  id: string;
+  role: string;
+  content: string;
+  ui?: readonly { id: string; component: string; props: unknown; partial?: true }[];
+}
+
+/** One entry of a replayed thread: the user's line, or an assistant step's surfaces. */
+export type A2uiReplayEntry =
+  | {
+      role: 'user';
+      id: string;
+      text: string;
+      /** The message was a UI action: its parts (draw `action.text`; the values are the model's). */
+      action?: UiActionMessage;
+    }
+  | { role: 'assistant'; id: string; messages: A2uiServerMessage[] };
+
+/**
+ * A stored thread as A2UI, for a client that reopens it: each user message as its line, each
+ * assistant step as the surfaces the live stream drew — its text (one `Text`), then every `ui`
+ * frame it kept (the last props per id), mapped exactly as the stream maps them, under the same
+ * surface ids. An approval the thread is still waiting on is not redrawn: ask again by sending.
+ */
+export function a2uiThreadReplay(
+  messages: readonly A2uiStoredMessage[],
+  options: A2uiStreamOptions = {},
+): A2uiReplayEntry[] {
+  const out: A2uiReplayEntry[] = [];
+  const basic = options.basicCatalogId ?? A2UI_BASIC_CATALOG_ID;
+  for (const message of messages) {
+    if (message.role === 'user') {
+      const action = readUiActionText(message.content);
+      out.push({
+        role: 'user',
+        id: message.id,
+        text: action?.text ?? message.content,
+        ...(action !== null ? { action } : {}),
+      });
+      continue;
+    }
+    if (message.role !== 'assistant') continue;
+    const surfaces: A2uiServerMessage[] = [];
+    if (options.text !== 'omit' && message.content.trim().length > 0) {
+      surfaces.push(
+        ...a2uiSurfaceMessages(`text-${message.id}`, [text('root', message.content)], {
+          ...options,
+          catalogId: basic,
+          create: true,
+        }),
+      );
+    }
+    for (const frame of message.ui ?? []) {
+      if (frame.partial === true) continue;
+      const components = safeComponents(frame, options);
+      if (components.length === 0) continue;
+      surfaces.push(
+        ...a2uiSurfaceMessages(a2uiSurfaceId(frame.id), components, { ...options, create: true }),
+      );
+    }
+    if (surfaces.length > 0) out.push({ role: 'assistant', id: message.id, messages: surfaces });
+  }
+  return out;
 }

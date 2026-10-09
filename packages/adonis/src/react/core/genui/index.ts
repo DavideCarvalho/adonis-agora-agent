@@ -1,4 +1,9 @@
-export type { UiAction } from '../../../genui/actions.js';
+export {
+  readUiActionText,
+  type UiAction,
+  type UiActionMessage,
+  uiActionSummary,
+} from '../../../genui/actions.js';
 export {
   GenerativeUI,
   type GenerativeUIFallback,
@@ -43,4 +48,5 @@ export {
   type GenuiRenderer,
   type ResolveComponent,
 } from './types.js';
+export { UiActionChip, type UiActionChipProps } from './ui-action-chip.js';
 export { toGenerativeUIItem } from './use-generative-ui.js';

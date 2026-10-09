@@ -1,5 +1,10 @@
 import type { HttpContext } from '@adonisjs/core/http';
-import type { A2uiOptions } from '../a2ui/core.js';
+import {
+  A2UI_LEGACY_BASIC_CATALOG_ID,
+  type A2uiOptions,
+  negotiateA2uiCatalog,
+  readAgUiA2uiCatalogIds,
+} from '../a2ui/core.js';
 import type { AgentService } from '../agent-service.js';
 import { uiActionText } from '../genui/actions.js';
 import type { ProtocolAdapter, ProtocolAdapterHost } from '../spi/protocol-adapter.js';
@@ -33,6 +38,11 @@ export interface AgUiAdapterOptions {
    * any client of AG-UI's A2UI binding — draws it. `true` maps the library builtins onto A2UI's
    * basic catalog; pass {@link A2uiOptions} for the app's own mappings or catalog. Inbound,
    * `forwardedProps.a2uiAction.userAction` is always read: the action becomes the user's turn.
+   *
+   * The basic catalog goes under the id the client advertises — `forwardedProps
+   * .a2uiClientCapabilities`, or the "A2UI catalog capabilities" context entry CopilotKit sends —
+   * and, when it advertises none, under the id AG-UI's A2UI binding uses
+   * (`A2UI_LEGACY_BASIC_CATALOG_ID`: CopilotKit 1.77, `@ag-ui/a2ui-middleware`).
    */
   a2ui?: boolean | A2uiOptions;
 }
@@ -143,7 +153,7 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
               skip: first.address.position,
               answered: plan.decisions.map((decision) => decision.address.toolCallId),
               ...(quietMs !== undefined ? { quietMs } : {}),
-              ...(a2ui !== undefined ? { a2ui: withCatalog(a2ui, host) } : {}),
+              ...(a2ui !== undefined ? { a2ui: forClient(withCatalog(a2ui, host), input) } : {}),
               preamble: warningEvents(warnings),
             });
             return;
@@ -290,7 +300,7 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
           streamRunId: started.runId,
           streamThreadId: started.threadId,
           ...(quietMs !== undefined ? { quietMs } : {}),
-          ...(a2ui !== undefined ? { a2ui: withCatalog(a2ui, host) } : {}),
+          ...(a2ui !== undefined ? { a2ui: forClient(withCatalog(a2ui, host), input) } : {}),
           preamble: warningEvents(warnings),
         });
       });
@@ -516,6 +526,14 @@ async function pipe(
     }
   }
   raw.end();
+}
+
+/** The A2UI options for this request's client: the basic catalog under the id it advertises. */
+function forClient(
+  options: A2uiOptions,
+  input: { forwardedProps?: unknown; context?: readonly unknown[] },
+): A2uiOptions {
+  return negotiateA2uiCatalog(options, readAgUiA2uiCatalogIds(input), A2UI_LEGACY_BASIC_CATALOG_ID);
 }
 
 /** The app's genui catalog under the A2UI options, for the text of components nothing maps. */

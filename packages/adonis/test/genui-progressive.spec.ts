@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { Card, Chart, DataTable, KpiCards, Stack } from '../src/genui/builtins.js';
-import { defineCatalog, defineComponent, genuiTools, partialTree } from '../src/genui/index.js';
+import {
+  defineCatalog,
+  defineComponent,
+  genuiTools,
+  partialTree,
+  Sandbox,
+} from '../src/genui/index.js';
 import { parsePartialJson } from '../src/partial-json.js';
 import type { SinkWriter, StreamFrame } from '../src/spi/token-stream-sink.js';
 import type { PartialToolInput, ToolInputPreview } from '../src/spi/tool.js';
@@ -123,6 +129,61 @@ describe('partialTree', () => {
       id: 'root.1',
       type: 'Chart',
       props: dashboard.children[1]?.props,
+    });
+  });
+
+  it('lets a component that streams partial itself stream inside a complete layout', () => {
+    const nested = defineCatalog([Stack, Card, Sandbox]);
+    const layout = {
+      type: 'Stack',
+      props: { direction: 'column' },
+      children: [
+        {
+          type: 'Card',
+          props: { title: 'Split the bill' },
+          children: [
+            {
+              type: 'Sandbox',
+              props: {
+                title: 'Bill splitter',
+                initialHeight: 240,
+                html: '<form id="f"><input name="total"></form>',
+                js: 'document.getElementById("f")',
+              },
+            },
+          ],
+        },
+      ],
+    };
+    // The layout (complete, by default) is drawn once its own props are whole; the sandbox streams.
+    const writing = partialTree(nested, partial(prefix(layout, '<input')));
+    expect(writing?.root).toMatchObject({
+      id: 'root',
+      type: 'Stack',
+      props: { direction: 'column' },
+      incomplete: true,
+      children: [
+        {
+          id: 'root.0',
+          type: 'Card',
+          props: { title: 'Split the bill' },
+          incomplete: true,
+          children: [{ id: 'root.0.0', type: 'Sandbox', incomplete: true }],
+        },
+      ],
+    });
+    expect(writing?.root?.held).toBeUndefined();
+    const sandbox = writing?.root?.children?.[0]?.children?.[0];
+    expect(sandbox?.props.title).toBe('Bill splitter');
+    // Before the layout's props have closed, it is held as before.
+    expect(partialTree(nested, partial(prefix(layout, '"direction":"col')))?.root).toMatchObject({
+      held: true,
+    });
+    // A complete layout with nothing streaming inside is still held until it closes.
+    const plain = defineCatalog([Stack, Card, KpiCards]);
+    expect(partialTree(plain, partial(prefix(dashboard, '"label":"Rev')))?.root).toMatchObject({
+      held: true,
+      props: {},
     });
   });
 

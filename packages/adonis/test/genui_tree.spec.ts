@@ -64,6 +64,14 @@ describe('validateTree', () => {
     });
   });
 
+  it('parses a whole tree the model sent as a JSON string', async () => {
+    const result = await validateTree(catalog, JSON.stringify(tree, null, 1));
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.value.type).toBe('Card');
+    expect((await validateTree(catalog, 'not a tree')).ok).toBe(false);
+    expect((await validateTree(catalog, '[1]')).ok).toBe(false);
+  });
+
   it('enforces size limits', async () => {
     const wide = {
       type: 'Stack',

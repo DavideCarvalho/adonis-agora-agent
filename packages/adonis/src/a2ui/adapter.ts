@@ -10,7 +10,10 @@ import {
   A2uiProjector,
   type A2uiServerMessage,
   type A2uiStreamOptions,
+  a2uiThreadReplay,
+  negotiateA2uiCatalog,
   readA2uiAction,
+  readA2uiClientCapabilities,
 } from './core.js';
 
 export interface A2uiAdapterOptions extends A2uiStreamOptions {
@@ -20,12 +23,41 @@ export interface A2uiAdapterOptions extends A2uiStreamOptions {
   quietMs?: number;
   /** Largest action accepted, as JSON, in bytes. Default 8192. */
   maxActionBytes?: number;
+  /** Largest `a2uiClientDataModel` accepted, as JSON, in bytes. Default 32768. */
+  maxDataModelBytes?: number;
 }
 
 const VIA = 'a2ui';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A field of the body, or of its A2A-style `metadata` (where A2UI puts client capabilities). */
+function bodyField(body: Record<string, unknown>, key: string): unknown {
+  if (body[key] !== undefined) return body[key];
+  return isRecord(body.metadata) ? body.metadata[key] : undefined;
+}
+
+/** `a2uiClientDataModel` (`{ version, surfaces: { <surfaceId>: model } }`): its surfaces, or why not. */
+function readDataModel(
+  raw: unknown,
+  maxBytes: number,
+): Record<string, unknown> | undefined | string {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw) || !isRecord(raw.surfaces)) {
+    return 'a2uiClientDataModel carries { version, surfaces }';
+  }
+  let size: number;
+  try {
+    size = new TextEncoder().encode(JSON.stringify(raw.surfaces)).length;
+  } catch {
+    return 'a2uiClientDataModel must be JSON';
+  }
+  if (size > maxBytes) {
+    return `a2uiClientDataModel may be at most ${maxBytes} bytes (this one is ${size})`;
+  }
+  return Object.keys(raw.surfaces).length > 0 ? raw.surfaces : undefined;
 }
 
 /**
@@ -39,30 +71,77 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * export default defineConfig({ adapters: [a2uiAdapter()] })
  * ```
  *
- * The body is `{ threadId?, message?, action?, uiCapabilities?, agent? }`:
+ * The body is `{ threadId?, message?, action?, uiCapabilities?, a2uiClientCapabilities?,
+ * a2uiClientDataModel?, agent? }` (the two A2UI fields also read from `metadata`, A2A-style):
  *  - `message` — the user's text;
  *  - `action` — an A2UI client message (`{ version: 'v0.9', action: { name, surfaceId,
  *    sourceComponentId, timestamp, context } }`, or v0.8's `{ userAction }`): it becomes the turn
  *    (`uiActionText`). `agora.approve` / `agora.reject` with `context.interruptId` decide the
  *    approval a previous stream ended on, and stream the rest of that run;
- *  - `threadId` — continue that thread (its owner is checked), or start one under that id.
+ *  - `threadId` — continue that thread (its owner is checked), or start one under that id;
+ *  - `a2uiClientCapabilities` — the catalogs the client draws (`{ 'v0.9': { supportedCatalogIds } }`,
+ *    what `MessageProcessor.getRendererCapabilities()` builds): the basic catalog is sent under the
+ *    id the client lists for it;
+ *  - `a2uiClientDataModel` — the data models of surfaces created with `sendDataModel`, handed to the
+ *    prompt builder as `pageContext.a2uiDataModel`.
+ *
+ * `GET <path>/a2ui/threads/:threadId` answers a stored thread as `{ threadId, entries }`
+ * ({@link a2uiThreadReplay}): what a client draws again after a reload.
  *
  * Response headers name the library's ids: `X-Agent-Thread-Id`, `X-Agent-Run-Id`. Authenticated and
  * owner-scoped exactly as `chat` is.
  */
 export function a2uiAdapter(options: A2uiAdapterOptions = {}): ProtocolAdapter {
   const path = (options.path ?? 'a2ui').replace(/^\/+|\/+$/g, '');
-  const { path: _path, quietMs, maxActionBytes, ...projection } = options;
+  const { path: _path, quietMs, maxActionBytes, maxDataModelBytes, ...configured } = options;
   return {
     name: 'a2ui',
     mount(host) {
       const { service } = host;
+      host.get(`${path}/threads/:threadId`, async (ctx: HttpContext) => {
+        const query = ctx.request.qs() as Record<string, unknown>;
+        const agentName =
+          typeof query.agent === 'string' && query.agent.length > 0 ? query.agent : undefined;
+        const actor = await host.resolveActor(ctx, agentName ?? host.defaultAgentName);
+        if (actor === null) return;
+        const threadId = String(ctx.params.threadId);
+        const owner = await service.threadOwner(threadId);
+        if (owner === null) return ctx.response.json({ threadId, entries: [] });
+        if (!(await host.assertOwner(ctx, actor, owner, 'thread'))) return;
+        const thread = await service.getThread(threadId, actor);
+        const supported =
+          typeof query.catalog === 'string'
+            ? [query.catalog]
+            : Array.isArray(query.catalog)
+              ? query.catalog.filter((id): id is string => typeof id === 'string')
+              : undefined;
+        return ctx.response.json({
+          threadId,
+          entries: a2uiThreadReplay(thread?.messages ?? [], {
+            ...negotiateA2uiCatalog(configured, supported),
+            ...(configured.catalog === undefined && host.genuiCatalog !== undefined
+              ? { catalog: host.genuiCatalog }
+              : {}),
+          }),
+        });
+      });
       host.post(path, async (ctx: HttpContext) => {
         const body = ctx.request.body() as Record<string, unknown>;
         const agentName =
           typeof body.agent === 'string' && body.agent.length > 0 ? body.agent : undefined;
         const actor = await host.resolveActor(ctx, agentName ?? host.defaultAgentName);
         if (actor === null) return;
+        const projection = negotiateA2uiCatalog(
+          configured,
+          readA2uiClientCapabilities(bodyField(body, 'a2uiClientCapabilities')),
+        );
+        const dataModel = readDataModel(
+          bodyField(body, 'a2uiClientDataModel'),
+          maxDataModelBytes ?? 32768,
+        );
+        if (typeof dataModel === 'string') {
+          return ctx.response.badRequest({ message: dataModel, code: 'invalid_data_model' });
+        }
 
         let action: UiAction | undefined;
         if (body.action !== undefined) {
@@ -176,6 +255,7 @@ export function a2uiAdapter(options: A2uiAdapterOptions = {}): ProtocolAdapter {
                 ? { threadId }
                 : { newThreadId: threadId }),
             ...(agentName !== undefined ? { agentName } : {}),
+            ...(dataModel !== undefined ? { pageContext: { a2uiDataModel: dataModel } } : {}),
             ...(Object.hasOwn(body, 'uiCapabilities')
               ? { uiCapabilities: validateUiCapabilities(body.uiCapabilities) }
               : {}),
