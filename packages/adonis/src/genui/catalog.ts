@@ -60,6 +60,15 @@ export interface ComponentDefinition<P = Record<string, unknown>> {
    *   cannot draw half its data: a chart, a map.
    */
   streaming?: GenuiStreaming;
+  /**
+   * What a preview may show of props the model is still writing (a `streaming: 'partial'` node, or
+   * a per-component call being previewed): drop what must not be drawn or run half written. Called
+   * with the raw partial props and the parser's view of them. Absent → the props as they are.
+   */
+  partialProps?(
+    props: Record<string, unknown>,
+    input: { isOpen(container: object): boolean; pendingMember(container: object): unknown },
+  ): Record<string, unknown>;
 }
 
 /** How a tree node appears while the model writes it ({@link ComponentDefinition.streaming}). */
@@ -90,6 +99,8 @@ export function defineComponent<P = Record<string, unknown>>(
     definition.streaming !== 'complete'
   )
     throw new TypeError("genui: streaming must be 'partial' or 'complete'");
+  if (definition.partialProps !== undefined && typeof definition.partialProps !== 'function')
+    throw new TypeError('genui: partialProps must be a function');
   return definition;
 }
 

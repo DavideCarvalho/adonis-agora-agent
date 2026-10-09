@@ -240,6 +240,45 @@ function componentTool(
       inputSchema: permissiveSchema(toJsonSchema(definition.props) ?? { type: 'object' }),
     };
   };
+  if (component.partialProps !== undefined) {
+    // A component that says what of its half-written props may be shown (the sandbox) is drawn
+    // while the model writes the call: as a one-node tree, the shape every partial frame takes.
+    handler.previewInput = async (
+      scope: ToolInputPreviewScope,
+    ): Promise<ToolInputPreview | undefined> => {
+      const resolved = negotiateCatalog(
+        await catalogFor(catalog, options, scopeOf(scope)),
+        scope.uiCapabilities,
+      );
+      const definition = modelComponent(resolved, component.name);
+      if (definition?.partialProps === undefined) return undefined;
+      const trim = definition.partialProps;
+      return {
+        ...(options.streamingThrottleMs !== undefined
+          ? { throttleMs: options.streamingThrottleMs }
+          : {}),
+        render(input) {
+          const value = input.value;
+          if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+          const props = input.done
+            ? (value as Record<string, unknown>)
+            : trim(value as Record<string, unknown>, input);
+          return {
+            component: GENUI_TREE_COMPONENT,
+            props: {
+              root: {
+                id: 'root',
+                type: component.name,
+                props,
+                ...(input.done ? {} : { incomplete: true }),
+              },
+            },
+            version: 1,
+          };
+        },
+      };
+    };
+  }
   return {
     spec: {
       name: toolNameFor(component.name, options.namePrefix),

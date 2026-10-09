@@ -89,7 +89,15 @@ export type AgUiEvent =
       content: string;
       role: 'tool';
     })
-  | (Base & { type: 'CUSTOM'; name: string; value: unknown });
+  | (Base & { type: 'CUSTOM'; name: string; value: unknown })
+  /** A2UI over AG-UI (`a2ui-surface` activities): written only when the route was asked for A2UI. */
+  | (Base & {
+      type: 'ACTIVITY_SNAPSHOT';
+      messageId: string;
+      activityType: string;
+      content: Record<string, unknown>;
+      replace?: boolean;
+    });
 
 /** Where a media part's bytes are. Closed set: an unknown `type` is malformed input. */
 export type AgUiPartSource =

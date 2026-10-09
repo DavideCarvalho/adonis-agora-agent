@@ -48,6 +48,12 @@ export interface GenuiNodeState {
   incomplete: boolean;
   /** The node is a placeholder for a component that is only drawn whole (`streaming: 'complete'`). */
   held: boolean;
+  /**
+   * The node came from a server preview (a partial `genui:tree` frame): the server already dropped
+   * what its component must not show half written (`partialProps`). Unset for props from anywhere
+   * else (a client parsing tool arguments itself), which a renderer should treat as raw.
+   */
+  streamSafe?: boolean;
 }
 
 /**

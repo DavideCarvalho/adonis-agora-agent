@@ -1,0 +1,229 @@
+import { A2uiMessageSchema } from '@a2ui/web_core/v0_9';
+import { HttpAgent } from '@ag-ui/client';
+import type { BaseEvent } from '@ag-ui/core';
+import { afterEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
+import { a2uiAdapter } from '../src/a2ui/index.js';
+import { agUiAdapter } from '../src/ag-ui/index.js';
+import { Card, KpiCards } from '../src/genui/builtins.js';
+import { defineCatalog, genui } from '../src/genui/index.js';
+import { type AgentConfig, defineTool } from '../src/index.js';
+import { FakeModelProvider, type FakeScript } from '../src/testing/fake-model-provider.js';
+import { assertConforms } from './helpers/ag-ui.js';
+import { type BootedApp, bootAgentApp } from './helpers/boot-agent-app.js';
+
+/**
+ * `POST /agent/a2ui` over real HTTP: a JSON Lines stream of A2UI v0.9 messages (checked against the
+ * official schema of `@a2ui/web_core`), actions in, approvals decided by an A2UI button. And the
+ * AG-UI route with `a2ui: true`, read by AG-UI's own client.
+ */
+
+let booted: BootedApp | null = null;
+afterEach(async () => {
+  await booted?.close();
+  booted = null;
+});
+
+const catalog = defineCatalog([Card, KpiCards]);
+const tree = {
+  type: 'Card',
+  props: { title: 'Sales' },
+  children: [{ type: 'KpiCards', props: { items: [{ label: 'Revenue', value: '$9k' }] } }],
+};
+
+const refund = defineTool(
+  {
+    name: 'refund',
+    kind: 'action',
+    description: 'refund an order',
+    input: z.object({ id: z.number() }),
+    roles: ['ADMIN'],
+  },
+  () => ({ refunded: true }),
+);
+
+/** The last user message, as the model sees it. */
+function lastUser(args: Parameters<FakeScript>[0]): string {
+  const user = [...args.messages].reverse().find((message) => message.role === 'user');
+  return typeof user?.content === 'string' ? user.content : JSON.stringify(user?.content ?? '');
+}
+
+function boot(script: FakeScript, extra: Partial<AgentConfig> = {}): Promise<BootedApp> {
+  return bootAgentApp({
+    model: new FakeModelProvider(script),
+    genui: genui({ catalog }),
+    adapters: [a2uiAdapter({ quietMs: 80 }), agUiAdapter({ quietMs: 80, a2ui: true })],
+    ...extra,
+  });
+}
+
+async function a2ui(url: string, body: unknown, actor = 'u1') {
+  const response = await fetch(`${url}/agent/a2ui`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-actor-id': actor },
+    body: JSON.stringify(body),
+  });
+  const raw = await response.text();
+  const messages =
+    response.status === 200
+      ? raw
+          .split('\n')
+          .filter((line) => line.length > 0)
+          .map((line) => JSON.parse(line) as Record<string, Record<string, unknown>>)
+      : [];
+  for (const message of messages) {
+    const result = A2uiMessageSchema.safeParse(message);
+    if (!result.success) throw new Error(`invalid A2UI message: ${JSON.stringify(message)}`);
+  }
+  return { response, messages, raw };
+}
+
+describe('a2uiAdapter()', () => {
+  it('streams a turn as A2UI JSON Lines: the UI as a surface, the text as a bound one', async () => {
+    booted = await boot((_args, turn) =>
+      turn === 0
+        ? { text: '', toolCall: { name: 'ui__render', input: tree } }
+        : { text: 'There you go.' },
+    );
+    const { response, messages } = await a2ui(booted.url, { message: 'dashboard please' });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('application/jsonl');
+    expect(response.headers.get('x-agent-thread-id')).toBeTruthy();
+    const ui = messages.filter(
+      (message) =>
+        (message.createSurface ?? message.updateComponents)?.surfaceId === 'call-0-ui__render:ui:0',
+    );
+    expect(ui.map((message) => Object.keys(message)[1])).toEqual([
+      'createSurface',
+      'updateComponents',
+    ]);
+    const components = ui[1]?.updateComponents?.components as { id: string; component: string }[];
+    expect(components[0]).toMatchObject({ id: 'root', component: 'Card' });
+    expect(JSON.stringify(components)).toContain('Revenue');
+    const text = messages.filter((message) => message.updateDataModel !== undefined).at(-1);
+    expect(text?.updateDataModel).toMatchObject({ path: '/text', value: 'There you go.' });
+  });
+
+  it('takes an A2UI action as the next turn, on the same thread', async () => {
+    booted = await boot((args) => ({ text: `heard: ${lastUser(args)}` }));
+    const first = await a2ui(booted.url, { message: 'hi' });
+    const threadId = first.response.headers.get('x-agent-thread-id') as string;
+    const { messages } = await a2ui(booted.url, {
+      threadId,
+      action: {
+        version: 'v0.9',
+        action: {
+          name: 'refund',
+          surfaceId: 's1',
+          sourceComponentId: 'root.0',
+          timestamp: new Date().toISOString(),
+          context: { orderId: '7' },
+        },
+      },
+    });
+    const said = String(messages.filter((m) => m.updateDataModel).at(-1)?.updateDataModel?.value);
+    expect(said).toContain('UI action "refund"');
+    expect(said).toContain('"orderId": "7"');
+
+    const bad = await a2ui(booted.url, {
+      action: { action: { name: 'x', context: { blob: 'y'.repeat(9000) } } },
+    });
+    expect(bad.response.status).toBe(400);
+    const intruder = await a2ui(booted.url, { threadId, message: 'mine now' }, 'u2');
+    expect([403, 404]).toContain(intruder.response.status);
+  });
+
+  it('ends on an approval with Approve / Reject buttons, and the Approve action continues the run', async () => {
+    booted = await boot(
+      (_args, turn) =>
+        turn === 0
+          ? { text: '', toolCall: { name: 'refund', input: { id: 7 } } }
+          : { text: 'Refunded.' },
+      { tools: [refund] },
+    );
+    const first = await a2ui(booted.url, { message: 'refund 7' });
+    const buttons = first.messages
+      .flatMap(
+        (message) => (message.updateComponents?.components as Record<string, unknown>[]) ?? [],
+      )
+      .filter((component) => component.component === 'Button');
+    expect(buttons).toHaveLength(2);
+    const approve = buttons[0]?.action as {
+      event: { name: string; context: { interruptId: string } };
+    };
+    expect(approve.event.name).toBe('agora.approve');
+
+    const second = await a2ui(booted.url, {
+      action: {
+        version: 'v0.9',
+        action: {
+          name: 'agora.approve',
+          surfaceId: 'x',
+          sourceComponentId: 'approve',
+          timestamp: new Date().toISOString(),
+          context: approve.event.context,
+        },
+      },
+    });
+    expect(second.response.status).toBe(200);
+    const said = second.messages.filter((m) => m.updateDataModel).at(-1)?.updateDataModel?.value;
+    expect(said).toBe('Refunded.');
+    // Someone else's approval is not theirs to decide.
+    const again = await a2ui(
+      booted.url,
+      { action: { name: 'agora.approve', context: approve.event.context } },
+      'u2',
+    );
+    expect(again.response.status).toBeGreaterThanOrEqual(400);
+  });
+});
+
+describe('agUiAdapter({ a2ui: true })', () => {
+  async function run(client: HttpAgent, parameters: Parameters<HttpAgent['runAgent']>[0] = {}) {
+    const events: BaseEvent[] = [];
+    await client.runAgent(parameters, { onEvent: ({ event }) => void events.push(event) });
+    return events;
+  }
+
+  it('sends each ui frame as an a2ui-surface activity too, and conforms', async () => {
+    booted = await boot((_args, turn) =>
+      turn === 0 ? { text: '', toolCall: { name: 'ui__render', input: tree } } : { text: 'Done.' },
+    );
+    const client = new HttpAgent({
+      url: `${booted.url}/agent/ag-ui`,
+      headers: { 'x-actor-id': 'u1' },
+    });
+    client.addMessage({ id: 'm1', role: 'user', content: 'dashboard' });
+    const events = await run(client);
+    await assertConforms(events as never);
+    const activity = events.find((event) => event.type === 'ACTIVITY_SNAPSHOT') as unknown as {
+      activityType: string;
+      content: { a2ui_operations: unknown[] };
+    };
+    expect(activity.activityType).toBe('a2ui-surface');
+    for (const message of activity.content.a2ui_operations) {
+      expect(A2uiMessageSchema.safeParse(message).success).toBe(true);
+    }
+  });
+
+  it('starts a turn from forwardedProps.a2uiAction, without a new user message', async () => {
+    booted = await boot((args) => ({ text: `heard: ${lastUser(args)}` }));
+    const client = new HttpAgent({
+      url: `${booted.url}/agent/ag-ui`,
+      headers: { 'x-actor-id': 'u1' },
+    });
+    client.addMessage({ id: 'm1', role: 'user', content: 'hello' });
+    await run(client);
+    const events = await run(client, {
+      forwardedProps: {
+        a2uiAction: { userAction: { name: 'split', surfaceId: 's', context: { people: 3 } } },
+      },
+    });
+    const said = events
+      .filter((event) => event.type === 'TEXT_MESSAGE_CONTENT')
+      .map((event) => (event as unknown as { delta: string }).delta)
+      .join('');
+    expect(said).toContain('UI action "split"');
+    expect(said).toContain('"people": 3');
+  });
+});

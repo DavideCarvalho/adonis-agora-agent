@@ -1,3 +1,4 @@
+import { type A2uiOptions, a2uiActivityEvent } from '../../a2ui/core.js';
 import type { ElicitationRequest } from '../../elicitation.js';
 import type { MessageUsage } from '../../types.js';
 import { encodeInterruptId } from './interrupt-id.js';
@@ -31,6 +32,12 @@ export interface AgUiEncoderOptions {
   answered?: readonly string[];
   /** Model id for the usage entry when the step frames carry none. */
   model?: string;
+  /**
+   * Also project every `ui` frame onto A2UI (https://a2ui.org) — an `ACTIVITY_SNAPSHOT` of type
+   * `a2ui-surface` after its `agora.ui` event, the shape AG-UI's A2UI middleware and CopilotKit's
+   * A2UI renderer read. Off by default.
+   */
+  a2ui?: A2uiOptions;
 }
 
 interface OpenCall {
@@ -232,7 +239,19 @@ export class AgUiEncoder {
           },
         ];
       }
-      case 'ui':
+      case 'ui': {
+        const a2ui =
+          this.options.a2ui === undefined
+            ? null
+            : a2uiActivityEvent(
+                {
+                  id: event.id ?? `ui:${position}`,
+                  component: event.component,
+                  props: event.props,
+                  ...(event.partial === true ? { partial: true } : {}),
+                },
+                this.options.a2ui,
+              );
         return [
           this.custom(AG_UI_CUSTOM.ui, {
             id: event.id ?? `ui:${position}`,
@@ -248,7 +267,9 @@ export class AgUiEncoder {
             // A preview of a call's streaming input: a repeat of this id replaces it in place.
             ...(event.partial === true ? { partial: true } : {}),
           }),
+          ...(a2ui !== null ? [a2ui] : []),
         ];
+      }
       case 'approval-requested': {
         const call = this.calls.get(event.id);
         const parked = event.runId ?? this.options.streamRunId;

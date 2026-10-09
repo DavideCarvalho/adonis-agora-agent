@@ -103,7 +103,11 @@ export function partialTree(
         ...(children !== undefined && children.length > 0 ? { children } : {}),
       };
     }
-    const props = isRecord(value.props) ? value.props : {};
+    const raw = isRecord(value.props) ? value.props : {};
+    const props =
+      definition.partialProps !== undefined && (open || input.isOpen(raw))
+        ? definition.partialProps(raw, input)
+        : raw;
     const children = childrenOf(value, id, depth, definition.children === true);
     return {
       id,

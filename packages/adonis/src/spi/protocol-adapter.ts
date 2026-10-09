@@ -1,5 +1,6 @@
 import type { HttpContext } from '@adonisjs/core/http';
 import type { AgentService } from '../agent-service.js';
+import type { Catalog } from '../genui/catalog.js';
 import type { Actor } from '../types.js';
 import type { AttachmentStagingStore } from './attachment-staging.js';
 
@@ -27,6 +28,8 @@ type RouteHandler = (ctx: HttpContext) => unknown;
 export interface ProtocolAdapterHost {
   service: AgentService;
   defaultAgentName: string;
+  /** The genui catalog the app booted with (`genui` in the config), when it has one. */
+  genuiCatalog?: Catalog;
   /** Mount `POST <path>/<suffix>`, under the agent's configured path. */
   post(suffix: string, handler: RouteHandler): void;
   /** Mount `GET <path>/<suffix>`. */
