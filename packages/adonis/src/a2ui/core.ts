@@ -408,6 +408,24 @@ function withRoot(components: A2uiComponent[], ctx: A2uiMapContext, type: string
   return components;
 }
 
+/**
+ * {@link toA2uiComponents} that never throws: a mapping that fails (an app mapper that throws or
+ * forgets the root id) draws the component's text instead of breaking the stream it rides on.
+ */
+function safeComponents(
+  frame: { component: string; props: unknown },
+  options: A2uiOptions,
+): A2uiComponent[] {
+  try {
+    return toA2uiComponents(frame, options);
+  } catch {
+    const props = isRecord(frame.props) ? frame.props : {};
+    const words =
+      options.catalog !== undefined ? componentToText(options.catalog, frame.component, props) : '';
+    return words.length > 0 ? [text('root', words)] : [];
+  }
+}
+
 /** The messages that draw (or redraw) a surface: `createSurface` the first time, then its components. */
 export function a2uiSurfaceMessages(
   surfaceId: string,
@@ -451,7 +469,7 @@ export function a2uiActivityEvent(
   // A withdrawn preview: nothing to paint.
   if (frame.partial === true && Object.keys(props).length === 0) return null;
   const surfaceId = a2uiSurfaceId(frame.id);
-  const components = toA2uiComponents(frame, options);
+  const components = safeComponents(frame, options);
   if (components.length === 0) return null;
   return {
     type: 'ACTIVITY_SNAPSHOT',
@@ -641,7 +659,7 @@ export class A2uiProjector {
       if (!this.surfaces.delete(surfaceId)) return [];
       return [{ version: A2UI_VERSION, deleteSurface: { surfaceId } }];
     }
-    const components = toA2uiComponents(
+    const components = safeComponents(
       { component: value.component, props: props as Record<string, unknown> },
       this.options,
     );

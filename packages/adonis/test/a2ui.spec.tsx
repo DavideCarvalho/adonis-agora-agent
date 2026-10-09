@@ -256,6 +256,23 @@ describe('outbound: ui frames as A2UI v0.9', () => {
     );
     expect(only).toMatchObject({ id: 'root', component: 'Text' });
     expect(String(only?.text)).toContain('A calculator.');
+    // A mapping that breaks draws the text instead of breaking the stream.
+    const event = a2uiActivityEvent(
+      { id: 'u1', component: 'Text', props: { text: 'still here' } },
+      {
+        catalog,
+        components: {
+          Text: () => {
+            throw new Error('boom');
+          },
+        },
+      },
+    ) as unknown as {
+      content: { a2ui_operations: { updateComponents?: { components: unknown[] } }[] };
+    };
+    expect(event.content.a2ui_operations[1]?.updateComponents?.components).toEqual([
+      { id: 'root', component: 'Text', text: 'still here' },
+    ]);
   });
 });
 
@@ -282,7 +299,9 @@ describe('A2UI over AG-UI', () => {
       activityType: 'a2ui-surface',
       replace: true,
     });
-    assertValid((activity as unknown as { content: { a2ui_operations: unknown[] } }).content.a2ui_operations);
+    assertValid(
+      (activity as unknown as { content: { a2ui_operations: unknown[] } }).content.a2ui_operations,
+    );
     expect(
       a2uiActivityEvent({ id: 'x', component: 'genui:tree', props: {}, partial: true }),
     ).toBeNull();

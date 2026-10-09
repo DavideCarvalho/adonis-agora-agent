@@ -167,7 +167,9 @@ export function createSandboxRenderer(
     const ran = useRef({ functions: false, expressions: 0 });
     const sends = useRef({ count: 0, last: 0 });
     const initial = clampHeight(props.initialHeight ?? SANDBOX_DEFAULTS.initialHeight, policy);
-    const [height, setHeight] = useState(initial);
+    // The content's own height once the frame has reported it; the declared one until then.
+    const [measured, setMeasured] = useState<number | null>(null);
+    const height = measured ?? initial;
     // Mounted while the model was still writing: code arrives by message, never inlined.
     const streamedIn = useRef(incomplete);
 
@@ -296,7 +298,7 @@ export function createSandboxRenderer(
             return;
           case SANDBOX_MESSAGE.resize:
             if (typeof data.height === 'number' && Number.isFinite(data.height)) {
-              setHeight(clampHeight(data.height, policy));
+              setMeasured(clampHeight(data.height, policy));
             }
             return;
           case SANDBOX_MESSAGE.send:
