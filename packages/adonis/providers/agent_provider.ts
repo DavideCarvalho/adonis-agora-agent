@@ -13,7 +13,6 @@ import {
   DEFAULT_MAX_ATTACHMENT_BYTES,
 } from '../src/attachment-limits.js';
 import { type AgentEngine, assertRunnable, engineOnlyModel } from '../src/engine.js';
-import { stampChannel, WEB_CHANNEL } from '../src/genui/channels.js';
 import type { Catalog } from '../src/genui/index.js';
 import type { SandboxClientConfig } from '../src/genui/sandbox-kit.js';
 import {
@@ -901,8 +900,7 @@ export default class AgentProvider {
           ...(typeof body.persona === 'string' && body.persona.length > 0
             ? { personaId: body.persona }
             : {}),
-          // The HTTP chat serves a web page, unless the client's page context names its channel.
-          pageContext: stampChannel(body.pageContext, WEB_CHANNEL),
+          ...(body.pageContext !== undefined ? { pageContext: body.pageContext } : {}),
           ...(uiCapabilities !== undefined ? { uiCapabilities } : {}),
           ...(refs.length > 0 ? { attachments: refs } : {}),
         });

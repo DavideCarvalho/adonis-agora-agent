@@ -3,7 +3,6 @@ import { decodeInterruptId } from '../ag-ui/core/interrupt-id.js';
 import { agUiEvents } from '../ag-ui/stream.js';
 import { type UiAction, uiActionText } from '../genui/actions.js';
 import { validateUiCapabilities } from '../genui/capabilities.js';
-import { WEB_CHANNEL } from '../genui/channels.js';
 import type { ProtocolAdapter, ProtocolAdapterHost } from '../spi/protocol-adapter.js';
 import {
   A2UI_APPROVE_ACTION,
@@ -256,11 +255,8 @@ export function a2uiAdapter(options: A2uiAdapterOptions = {}): ProtocolAdapter {
                 ? { threadId }
                 : { newThreadId: threadId }),
             ...(agentName !== undefined ? { agentName } : {}),
-            // An A2UI client draws like a web page.
-            pageContext: {
-              channel: WEB_CHANNEL,
-              ...(dataModel !== undefined ? { a2uiDataModel: dataModel } : {}),
-            },
+            // An A2UI client draws like a web page: no channel stamped, which `turnChannel` reads as `web`.
+            ...(dataModel !== undefined ? { pageContext: { a2uiDataModel: dataModel } } : {}),
             ...(Object.hasOwn(body, 'uiCapabilities')
               ? { uiCapabilities: validateUiCapabilities(body.uiCapabilities) }
               : {}),

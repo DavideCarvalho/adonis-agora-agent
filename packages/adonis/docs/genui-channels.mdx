@@ -44,7 +44,7 @@ A channel without an entry uses `default`, and without `default` the top-level o
 
 One rule, `turnChannel(pageContext)`, decides it:
 
-- AG-UI, the HTTP chat (`POST /agent/chat`) and A2UI stamp `web` (an A2UI client is web-like);
+- AG-UI, the HTTP chat (`POST /agent/chat`) and A2UI are `web` (they stamp nothing: no channel means `web`; an A2UI client is web-like);
 - the [text channels](/docs/agent/channels) stamp their adapter's `kind` — `whatsapp` for `whatsappCloud()`, `evolutionApi()` and `whatsmiau()`, `telegram` for `telegram()` — whatever the adapter is named;
 - a client may name its own (`pageContext: { channel: 'mobile' }`), and server code may too (`service.send({ …, channel: 'mobile' })`);
 - tools read it as `ctx.channel`, `describe`/`previewInput` as `scope.channel`, a prompt builder as `ctx.channel`.

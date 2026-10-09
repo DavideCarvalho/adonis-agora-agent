@@ -7,7 +7,6 @@ import {
 } from '../a2ui/core.js';
 import type { AgentService } from '../agent-service.js';
 import { uiActionText } from '../genui/actions.js';
-import { stampChannel, WEB_CHANNEL } from '../genui/channels.js';
 import type { ProtocolAdapter, ProtocolAdapterHost } from '../spi/protocol-adapter.js';
 import type { Actor, PageContext } from '../types.js';
 import {
@@ -267,14 +266,15 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
           });
         }
         const context = readContext(input.context);
-        // An AG-UI client is a web page, unless its page context names another channel.
-        const pageContext: PageContext = stampChannel(
-          {
-            ...forwarded.pageContext,
-            ...(context !== undefined ? { agUiContext: context } : {}),
-          },
-          WEB_CHANNEL,
-        );
+        // An AG-UI client is a web page: no channel stamped (`turnChannel` reads none as `web`),
+        // unless its page context names one.
+        const pageContext: PageContext | undefined =
+          forwarded.pageContext !== undefined || context !== undefined
+            ? {
+                ...forwarded.pageContext,
+                ...(context !== undefined ? { agUiContext: context } : {}),
+              }
+            : undefined;
         let started: { runId: string; threadId: string };
         try {
           started = await service.chat({
@@ -289,7 +289,7 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
               ? { uiCapabilities: forwarded.uiCapabilities }
               : {}),
             ...(forwarded.persona !== undefined ? { personaId: forwarded.persona } : {}),
-            pageContext,
+            ...(pageContext !== undefined ? { pageContext } : {}),
             ...(refs.length > 0 ? { attachments: refs } : {}),
           });
         } catch (error) {

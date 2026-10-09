@@ -9,7 +9,6 @@ import {
   type GenuiChannels,
   renderChannelMessages,
   resolveGenuiChannel,
-  stampChannel,
   turnChannel,
 } from '../src/genui/channels.js';
 import { chartImages, chartSvg } from '../src/genui/chart-image.js';
@@ -107,12 +106,6 @@ describe('turnChannel — the one rule for which channel a turn runs on', () => 
     expect(turnChannel({ channel: { name: 'telegram', conversation: 'c' } })).toBe('telegram');
     expect(turnChannel(undefined)).toBe('web');
     expect(turnChannel({ kind: 'page' })).toBe('web');
-  });
-
-  it('stampChannel keeps a channel the client named and adds web otherwise', () => {
-    expect(stampChannel({ channel: 'mobile' }, 'web')).toEqual({ channel: 'mobile' });
-    expect(stampChannel({ page: 'x' }, 'web')).toEqual({ page: 'x', channel: 'web' });
-    expect(stampChannel(undefined, 'web')).toEqual({ channel: 'web' });
   });
 
   it('resolves a channel: its entry over default over the top level', () => {

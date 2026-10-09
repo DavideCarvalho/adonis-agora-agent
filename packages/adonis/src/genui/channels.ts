@@ -110,7 +110,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  *   mobile client posting `pageContext: { channel: 'mobile' }`);
  * - `pageContext.channel` is the address a text-channel adapter stamps (`{ name, conversation,
  *   kind? }`) → its `kind` (`whatsapp`, `telegram`), else its `name`;
- * - nothing → `web`: what AG-UI, the HTTP chat and A2UI serve (they stamp `web` themselves too).
+ * - nothing → `web`: what AG-UI, the HTTP chat and A2UI serve (they stamp nothing, so a tool that
+ *   skips skeletons when `pageContext.channel` is set keeps working).
  */
 export function turnChannel(pageContext: { [key: string]: unknown } | undefined): string {
   const value = pageContext?.channel;
@@ -120,20 +121,6 @@ export function turnChannel(pageContext: { [key: string]: unknown } | undefined)
     if (typeof value.name === 'string' && value.name.length > 0) return value.name;
   }
   return WEB_CHANNEL;
-}
-
-/**
- * `pageContext` naming `channel` unless it already names one — what a transport stamps: AG-UI, the
- * HTTP chat and A2UI stamp `web`, and a client that says `pageContext: { channel: 'mobile' }` keeps
- * its own.
- */
-export function stampChannel<T extends { [key: string]: unknown }>(
-  pageContext: T | undefined,
-  channel: string,
-): T & { channel: unknown } {
-  return pageContext?.channel !== undefined && pageContext.channel !== null
-    ? (pageContext as T & { channel: unknown })
-    : ({ ...pageContext, channel } as T & { channel: unknown });
 }
 
 /** WhatsApp, Telegram and email are drawn by the server; every other channel by a client. */
