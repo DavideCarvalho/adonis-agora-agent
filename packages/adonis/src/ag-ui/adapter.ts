@@ -1,5 +1,7 @@
 import type { HttpContext } from '@adonisjs/core/http';
+import type { A2uiOptions } from '../a2ui/core.js';
 import type { AgentService } from '../agent-service.js';
+import { uiActionText } from '../genui/actions.js';
 import type { ProtocolAdapter, ProtocolAdapterHost } from '../spi/protocol-adapter.js';
 import type { Actor, PageContext } from '../types.js';
 import {
@@ -25,6 +27,14 @@ export interface AgUiAdapterOptions {
    * before it is reported interrupted. Default 750 ms.
    */
   quietMs?: number;
+  /**
+   * A2UI over AG-UI: every generative-UI frame is also sent as an `ACTIVITY_SNAPSHOT` of type
+   * `a2ui-surface` (the A2UI messages under `a2ui_operations`), so CopilotKit's A2UI renderer — or
+   * any client of AG-UI's A2UI binding — draws it. `true` maps the library builtins onto A2UI's
+   * basic catalog; pass {@link A2uiOptions} for the app's own mappings or catalog. Inbound,
+   * `forwardedProps.a2uiAction.userAction` is always read: the action becomes the user's turn.
+   */
+  a2ui?: boolean | A2uiOptions;
 }
 
 /** The surface an AG-UI resume decision is recorded as having come through. */
@@ -56,6 +66,12 @@ function warningEvents(warnings: readonly string[]): AgUiEvent[] {
 export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
   const path = (options.path ?? 'ag-ui').replace(/^\/+|\/+$/g, '');
   const quietMs = options.quietMs;
+  const a2ui =
+    options.a2ui === undefined || options.a2ui === false
+      ? undefined
+      : options.a2ui === true
+        ? {}
+        : options.a2ui;
   return {
     name: 'ag-ui',
     mount(host) {
@@ -127,13 +143,23 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
               skip: first.address.position,
               answered: plan.decisions.map((decision) => decision.address.toolCallId),
               ...(quietMs !== undefined ? { quietMs } : {}),
+              ...(a2ui !== undefined ? { a2ui: withCatalog(a2ui, host) } : {}),
               preamble: warningEvents(warnings),
             });
             return;
           }
         }
 
-        const turn = readUserTurn(input.messages);
+        // A UI action (a sandbox's `agent.send`, an A2UI button) IS the turn: the messages only
+        // restate the conversation so far.
+        const action = forwarded.uiAction;
+        if (typeof action === 'string') {
+          return ctx.response.badRequest({ message: action, code: 'invalid_ui_action' });
+        }
+        const turn =
+          action !== undefined
+            ? { text: uiActionText(action), media: [], staged: [], dropped: [] }
+            : readUserTurn(input.messages);
         if (turn === null) {
           return ctx.response.badRequest({
             message: 'messages carries no user message to answer',
@@ -156,7 +182,13 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
             code: 'thread_required',
           });
         }
-        if (owner !== null && !regenerate && turn.media.length === 0 && turn.staged.length === 0) {
+        if (
+          owner !== null &&
+          !regenerate &&
+          action === undefined &&
+          turn.media.length === 0 &&
+          turn.staged.length === 0
+        ) {
           try {
             const decision = await service.handleTextDecision(actor, input.threadId, turn.text);
             if ('proposalDecision' in decision) {
@@ -258,6 +290,7 @@ export function agUiAdapter(options: AgUiAdapterOptions = {}): ProtocolAdapter {
           streamRunId: started.runId,
           streamThreadId: started.threadId,
           ...(quietMs !== undefined ? { quietMs } : {}),
+          ...(a2ui !== undefined ? { a2ui: withCatalog(a2ui, host) } : {}),
           preamble: warningEvents(warnings),
         });
       });
@@ -483,4 +516,11 @@ async function pipe(
     }
   }
   raw.end();
+}
+
+/** The app's genui catalog under the A2UI options, for the text of components nothing maps. */
+function withCatalog(options: A2uiOptions, host: ProtocolAdapterHost): A2uiOptions {
+  if (options.catalog !== undefined) return options;
+  const catalog = host.genuiCatalog;
+  return catalog !== undefined ? { ...options, catalog } : options;
 }

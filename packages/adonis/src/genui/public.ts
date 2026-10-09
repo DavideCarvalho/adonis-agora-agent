@@ -1,6 +1,17 @@
 /** Isomorphic public GenUI contracts and implementation. */
 
 export {
+  jsonByteLength,
+  type ReadUiActionOptions,
+  readUiAction,
+  sandboxAction,
+  UI_ACTION_MAX_BYTES,
+  type UiAction,
+  type UiActionSource,
+  uiActionText,
+  validateUiActionContext,
+} from './actions.js';
+export {
   negotiateCatalog,
   type PreparedUiEmission,
   prepareUiEmission,
@@ -40,6 +51,26 @@ export {
   table,
   validatePresentationBatch,
 } from './registry.js';
+export {
+  assertSandboxPolicy,
+  buildSandboxDocument,
+  type DefineSandboxOptions,
+  defineSandbox,
+  previewHtml,
+  SANDBOX_COMPONENT,
+  SANDBOX_DEFAULTS,
+  SANDBOX_FIELD_ORDER,
+  SANDBOX_IFRAME_FLAGS,
+  SANDBOX_MESSAGE,
+  Sandbox,
+  type SandboxDefinition,
+  type SandboxDocumentOptions,
+  type SandboxPolicy,
+  type SandboxProps,
+  sandboxCsp,
+  sandboxPartialProps,
+  sandboxPolicyOf,
+} from './sandbox.js';
 export {
   type AjvLike,
   ajvValidator,

@@ -10,7 +10,7 @@ import { agUiAdapter } from '@adonis-agora/agent/ag-ui'
 
 export default defineConfig({
   // …
-  adapters: [agUiAdapter()], // or agUiAdapter({ path: 'ag-ui', quietMs: 750 })
+  adapters: [agUiAdapter()], // or agUiAdapter({ path: 'ag-ui', quietMs: 750, a2ui: true })
 })
 ```
 
@@ -26,7 +26,7 @@ agent.addMessage({ id: crypto.randomUUID(), role: 'user', content: 'Refund order
 await agent.runAgent()
 ```
 
-Two third-party frontends are set up against this route, and compared with the native client for generative UI, in [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends): CopilotKit ([setup](/docs/agent/frontends#setting-up-copilotkit)) and OpenUI ([setup](/docs/agent/openui)).
+Two third-party frontends are set up against this route, and compared with the native client for generative UI, in [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends): CopilotKit ([setup](/docs/agent/frontends#setting-up-copilotkit)) and OpenUI ([setup](/docs/agent/openui)). The same UI can also reach A2UI renderers, as [A2UI surfaces](#a2ui-surfaces--a2ui) in this stream or on [a route of its own](/docs/agent/a2ui).
 
 ## From React — `useAgentChat` over AG-UI
 
@@ -53,6 +53,8 @@ When the run stops on an approval or a question set the chat already shows, the 
 | `resume` | Answers to the interrupts of the previous run — see below. |
 | `context` | Rides in the turn's page context as `agUiContext`, where a `PromptBuilder` and the tools read it. |
 | `forwardedProps` | `agent`, `model`, `persona`, `pageContext` and `uiCapabilities` are read as the matching fields of a native send. A malformed `uiCapabilities` is a `400`; see [UI capabilities](/docs/agent/surfaces#ui-capabilities). |
+| `forwardedProps.uiAction` | A UI action that **is** the turn — a [sandbox](/docs/agent/genui-sandbox#over-ag-ui-and-copilotkit)'s `agent.send`, a button of yours: `{ name, context, text?, source?, surfaceId?, componentId?, title? }`. The run answers its text (`uiActionText`: what the user said, then the action and its values as JSON); `messages` then only restate the conversation. A plain object with a short `name`, a JSON object `context`, at most 8192 bytes — else a `400 { code: 'invalid_ui_action' }`. It is a user message, nothing more. |
+| `forwardedProps.a2uiAction` | The same, from A2UI's AG-UI binding: `{ userAction: { name, surfaceId, sourceComponentId, context } }` as AG-UI's A2UI middleware and CopilotKit send it, or the v0.9 `{ action }`. Read when `uiAction` is absent, whether or not `a2ui` is on. See [A2UI](/docs/agent/a2ui#a2ui-over-ag-ui). |
 | `tools` | Frontend tools are not supported: the list is ignored, with a warning. |
 | `state` | Ignored; this producer emits no state events. |
 
@@ -86,6 +88,10 @@ What AG-UI has no event for travels as `CUSTOM` events, which a client that does
 | `agora.approval-requested`, `agora.approval-settled`, `agora.elicitation` | the native frames, for a client that renders them live |
 | `agora.queue` | the thread's message queue |
 | `agora.warning` | `{ message }` — input this producer could not use |
+
+### A2UI surfaces — `a2ui`
+
+`agUiAdapter({ a2ui: true })` also sends every generative-UI frame as [A2UI](/docs/agent/a2ui) v0.9: after each `agora.ui` event, an `ACTIVITY_SNAPSHOT` with `activityType: 'a2ui-surface'`, `messageId: 'a2ui-surface-<frame id>'` and `replace: true`, whose `content.a2ui_operations` holds the surface's `createSurface` and `updateComponents` messages — the shape AG-UI's A2UI middleware and CopilotKit's A2UI renderer read. Previews of a streaming tree repaint the same activity; a withdrawn preview repaints it with a `deleteSurface`. `true` maps the builtins onto A2UI's basic catalog; pass an object (`{ components, unmapped, catalogId, theme }`) for your own mappings or catalog. Off by default; the `agora.ui` events are sent either way.
 
 Sub-agent attribution (`subagentRunId`) is not written: a delegated agent's work appears in the stream unattributed.
 

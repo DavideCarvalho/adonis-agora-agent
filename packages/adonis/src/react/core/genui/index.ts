@@ -1,9 +1,11 @@
+export type { UiAction } from '../../../genui/actions.js';
 export {
   GenerativeUI,
   type GenerativeUIFallback,
   type GenerativeUIProps,
   GenerativeUIScope,
   type GenerativeUIScopeProps,
+  GenuiNodeScope,
   GenuiProvider,
   type GenuiProviderProps,
   type GenuiProviderValue,
@@ -17,6 +19,15 @@ export {
   type ReactComponentRegistry,
   type ReactComponentRenderers,
 } from './react-registry.js';
+export {
+  createSandboxRenderer,
+  type GenuiActionHandler,
+  GenuiActionProvider,
+  type SandboxRefusal,
+  type SandboxRendererOptions,
+  SandboxView,
+  useGenuiAction,
+} from './sandbox.js';
 export {
   GENUI_TREE_COMPONENT,
   type GenerativeUIElement,

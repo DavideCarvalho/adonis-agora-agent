@@ -11,6 +11,7 @@ import {
   type GenuiToolsOptions,
   genuiTools,
 } from './public.js';
+import { type DefineSandboxOptions, defineSandbox } from './sandbox.js';
 
 export {
   AgentGenui,
@@ -46,6 +47,14 @@ export interface GenuiOptions extends Omit<GenuiToolsOptions, 'resolveCatalog'> 
    * resolved catalog and each turn's tool descriptions come from it (`ToolHandler.describe`).
    */
   resolver?: ResolverOption;
+  /**
+   * Add the sandbox component (`Sandbox`): the model may write HTML, CSS and JS for a one-off
+   * interactive answer when no catalog component fits. `true` for the defaults (no network), or
+   * the {@link DefineSandboxOptions} (a policy listing origins, extra instructions). Off by default.
+   * The browser's catalog should carry the same definition (`defineSandbox(...)` in the shared
+   * catalog file) so the renderer enforces the same policy.
+   */
+  sandbox?: boolean | DefineSandboxOptions;
 }
 
 function isResolverClass(
@@ -87,8 +96,12 @@ async function resolveCatalogFn(
  */
 export function genui(options: GenuiOptions = {}): GenuiFactory {
   return async (ctx) => {
-    const { catalog: given, resolver, ...rest } = options;
-    const catalog = given ?? defineCatalog([]);
+    const { catalog: given, resolver, sandbox, ...rest } = options;
+    const base = given ?? defineCatalog([]);
+    const catalog =
+      sandbox === undefined || sandbox === false
+        ? base
+        : base.extend([defineSandbox(sandbox === true ? {} : sandbox)]);
     const resolveCatalog = await resolveCatalogFn(resolver, ctx);
     const tools = genuiTools(catalog, {
       ...rest,

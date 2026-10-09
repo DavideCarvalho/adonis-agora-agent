@@ -10,6 +10,7 @@ import {
   useMemo,
   useRef,
 } from 'react';
+import type { UiAction } from '../../../genui/actions.js';
 import { AmbientRenderUiContext, sharedContext } from '../components/ambient-ui.js';
 import type { TranscriptUiBlock } from '../transcript/model.js';
 import { shareStructure } from './share-structure.js';
@@ -56,6 +57,11 @@ interface TreeScope {
 
 const TreeScopeContext = createContext<TreeScope | null>(null);
 
+/** Where UI actions go — `GenuiActionProvider` (sandbox.tsx) and `GenuiProvider`'s `onAction`. */
+export const GenuiActionContext: Context<((action: UiAction) => void) | null> = sharedContext<
+  (action: UiAction) => void
+>('@adonis-agora/agent/react:genui-action');
+
 // Shared by key, like the provider's: a renderer imports the hook from `/genui` while the tree may
 // be drawn by the `/genui/json-render` bundle's copy of this module.
 const GenuiNodeContext: Context<GenuiNodeState | null> = sharedContext<GenuiNodeState>(
@@ -76,6 +82,21 @@ const GenuiNodeContext: Context<GenuiNodeState | null> = sharedContext<GenuiNode
  */
 export function useGenuiNode(): GenuiNodeState | null {
   return useContext(GenuiNodeContext);
+}
+
+/**
+ * Set the node a renderer sees through {@link useGenuiNode} — for glue that draws components outside
+ * a `genui:tree` frame (a framework's own tool-call renderer) and knows the call is still streaming:
+ * `<GenuiNodeScope node={{ id: 'root', type: 'Sandbox', incomplete: true, held: false }}>`.
+ */
+export function GenuiNodeScope({
+  node,
+  children,
+}: {
+  node: GenuiNodeState | null;
+  children?: ReactNode;
+}) {
+  return <GenuiNodeContext.Provider value={node}>{children}</GenuiNodeContext.Provider>;
 }
 
 function renderPlaceholder(look: TreeLook, node: GenuiNodeState): ReactNode {
@@ -188,7 +209,7 @@ function TreeNodeBody({
   const incomplete = node.incomplete === true;
   const held = node.held === true;
   const state = useMemo<GenuiNodeState>(
-    () => ({ id, type: node.type, incomplete, held }),
+    () => ({ id, type: node.type, incomplete, held, ...(incomplete ? { streamSafe: true } : {}) }),
     [id, node.type, incomplete, held],
   );
   const storedVersion = scope?.componentVersions?.[node.type];
@@ -321,6 +342,11 @@ export interface GenuiProviderValue extends Partial<GenerativeUIOptions> {
   /** Drawn for a tree node held back while the model writes it (`streaming: 'complete'`). */
   placeholder?: GenuiPlaceholder;
   onError?: (error: unknown, item: GenerativeUIItem) => void;
+  /**
+   * Where UI actions go (a sandbox's `agent.send`, an A2UI button): typically the chat's
+   * `sendUiAction`. Same as wrapping the tree in a `GenuiActionProvider`.
+   */
+  onAction?: (action: UiAction) => void;
 }
 
 // Shared by key: `/genui` and `/genui/json-render` are separate bundles, and a provider from one
@@ -359,6 +385,7 @@ export function GenuiProvider({
   loading,
   placeholder,
   onError,
+  onAction,
   children,
 }: GenuiProviderProps) {
   const value = useMemo<GenuiProviderValue>(
@@ -375,9 +402,16 @@ export function GenuiProvider({
     [registry, catalog, resolveComponent, treeRenderer, fallback, loading, placeholder, onError],
   );
   const renderUi = useCallback((block: TranscriptUiBlock) => <GenerativeUI part={block} />, []);
+  const inner = (
+    <AmbientRenderUiContext.Provider value={renderUi}>{children}</AmbientRenderUiContext.Provider>
+  );
   return (
     <GenuiContext.Provider value={value}>
-      <AmbientRenderUiContext.Provider value={renderUi}>{children}</AmbientRenderUiContext.Provider>
+      {onAction !== undefined ? (
+        <GenuiActionContext.Provider value={onAction}>{inner}</GenuiActionContext.Provider>
+      ) : (
+        inner
+      )}
     </GenuiContext.Provider>
   );
 }

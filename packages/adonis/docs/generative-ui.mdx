@@ -9,7 +9,7 @@ import { Steps, Step } from 'fumadocs-ui/components/steps';
 
 A tool does not have to answer only in prose. It can push a **typed UI component frame** into the run's live stream — a weather card, a chart, a confirmation form — and the frontend renders your real React component in the transcript, right where the text would have gone. A client that cannot draw it declares so, and receives the component's text instead — see [One output, many surfaces](/docs/agent/surfaces).
 
-Drawing the same components through CopilotKit or OpenUI instead of the native client is compared, row by row, in [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends).
+Drawing the same components through CopilotKit or OpenUI instead of the native client is compared, row by row, in [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends). The same UI can also ship as [A2UI](/docs/agent/a2ui) surfaces, to any A2UI renderer.
 
 For result-driven UI, use the tool’s optional `present` hook. See [Component registries and server rendering](/docs/agent/authoring/component-rendering) for functional/class tools, custom components, shared React renderers, and WhatsApp image/PDF delivery.
 
@@ -23,6 +23,8 @@ The split is deliberate:
 - **The client decides *how* to render it** — it owns the `WeatherCard` React component and the styling. The server's `name` is just a key into that registry.
 
 That keeps the trust boundary clean (no server-authored HTML executing in the browser) and lets the same run drive a rich web UI, a terminal renderer, or a mobile app from one stream.
+
+There is one opt-in exception: the [sandbox](/docs/agent/genui-sandbox), a catalog component whose props are HTML, CSS and JavaScript the model writes for a one-off interactive answer no catalog component fits (a calculator, a small simulation). It is offered to the model as a last resort, and the browser runs it in an isolated iframe under a strict CSP. Off unless you turn it on.
 
 <Callout type="info" title="Emit alongside text, not only instead of it">
 A push doesn't replace the tool's return value or the model's prose. A tool can emit a component **and** return a text result to the model (so the model can keep reasoning about it) **and** the model can keep streaming text after. Component and text frames interleave in emission order — see [Interleaving](#interleaving-with-text).
@@ -149,6 +151,7 @@ Options, all optional:
 | `streaming` | Tree mode: `'complete'` (default) draws the tree once the call has run; `'partial'` draws it while the model writes it. See [Drawing a tree while the model writes it](#drawing-a-tree-while-the-model-writes-it). |
 | `streamingThrottleMs` | Least time between two partial tree frames of one call. Default `100`. |
 | `showInstructions` | Extra description for the show tool. |
+| `sandbox` | `true`, or `defineSandbox` options (`{ policy, instructions }`), adds the [sandbox](/docs/agent/genui-sandbox) component — model-written HTML, CSS and JS in an isolated frame, described as a last resort. Off by default. |
 
 When a turn carries [UI capabilities](/docs/agent/surfaces#ui-capabilities), each tool describes only what the client can draw, and a component's tool is hidden from the model when it cannot. The catalog is bound in the container — `@inject() constructor(private genui: AgentGenui)` → `this.genui.catalog`.
 
@@ -427,6 +430,29 @@ function paint(parts: ChatPart[]) {
 
 `onParts` fires on every frame with the message rebuilt from scratch, so `paint` can be a plain re-render rather than a diff. A component part with `partial: true` is a preview of a tree the model is still writing: `foldPart` replaces it in place, removes it when it is withdrawn, and the client drops any left standing when the stream ends (`settleParts`). A re-attach after a dropped connection replays the run from its first frame — including every component frame — so the rebuilt transcript is always complete.
 
+### Actions back to the agent
+
+A drawn component can hand something back to the conversation — a button in your `OrderCard`, a [sandbox](/docs/agent/genui-sandbox)'s `agent.send`, an A2UI button. Each is a `UiAction` (`{ source, name, context, text? }`), and each becomes the same thing: the next user message, whose text (`uiActionText`) says what was done and carries the values as JSON. In React, give the tree a handler — usually the chat's `sendUiAction` — and read it in your components with `useGenuiAction()`:
+
+```tsx
+import { useAgentChat } from '@adonis-agora/agent/react'
+import { GenuiActionProvider, useGenuiAction } from '@adonis-agora/agent/react/genui'
+
+const chat = useAgentChat()
+<GenuiActionProvider onAction={chat.sendUiAction}>{/* the transcript */}</GenuiActionProvider>
+
+function RefundButton({ orderId }: { orderId: number }) {
+  const act = useGenuiAction()
+  return <button onClick={() => act?.({ source: 'component', name: 'refund', context: { orderId }, text: `Refund #${orderId}` })}>Refund</button>
+}
+```
+
+`<GenuiProvider onAction>` does the same for its whole tree. An action is only a user message: the model decides what to do with it, and any `action` tool it calls still asks for approval. Over AG-UI, send it as `forwardedProps.uiAction` ([AG-UI](/docs/agent/ag-ui#what-the-input-means-here)).
+
+### Over A2UI
+
+The same `ui` frames can be served as [A2UI](/docs/agent/a2ui) v0.9 surfaces — `a2uiAdapter()` for a JSON Lines route, or `agUiAdapter({ a2ui: true })` inside the AG-UI stream — so any A2UI renderer (`@a2ui/react`, Lit, Angular, Flutter) draws them. The builtins map onto A2UI's basic catalog; your components take a mapping function, or travel as custom components of your own A2UI catalog.
+
 ## Interleaving with text
 
 Component and text frames land in **emission order**. A tool that emits a card between two sentences streams `text → component → text`, and the sink preserves that exact ordering through buffering, replay, and the Redis multi-replica transport. A quick end-to-end shape:
@@ -516,6 +542,8 @@ frameToEvents({ t: 'component', name: 'card', data: { a: 1 } }, 0)
 - [Loading states and skeletons](/docs/agent/genui-loading-states) — tool-driven skeletons, progressive trees and skeleton renderers.
 - [Tools](/docs/agent/authoring/tools) — how to author the tool that calls `emitUi`, and the full `AiToolCtx`.
 - [Builtin components](/docs/agent/genui-builtins) — `BUILTIN_COMPONENTS` and `LAYOUT_COMPONENTS`, their props and text fallbacks.
+- [Sandboxed generated UI](/docs/agent/genui-sandbox) — the opt-in, last-resort component the model writes in HTML, CSS and JS, and its security model.
+- [A2UI](/docs/agent/a2ui) — the same components as A2UI v0.9 surfaces, over JSON Lines or AG-UI.
 - [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends) — the same components through three frontends, verified.
 - [One output, many surfaces](/docs/agent/surfaces) — UI capabilities, text fallbacks, and what AG-UI, text channels and MCP receive.
 - [Component registries and server rendering](/docs/agent/authoring/component-rendering) — `present`, custom components, and image/PDF export.

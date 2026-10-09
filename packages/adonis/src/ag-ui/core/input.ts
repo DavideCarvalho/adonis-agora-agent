@@ -1,3 +1,5 @@
+import { readA2uiAction } from '../../a2ui/core.js';
+import { readUiAction, type UiAction } from '../../genui/actions.js';
 import { type UiCapabilities, validateUiCapabilities } from '../../genui/capabilities.js';
 import { decodeInterruptId, type InterruptAddress } from './interrupt-id.js';
 import type {
@@ -216,6 +218,12 @@ export interface ForwardedOptions {
   model?: string;
   persona?: string;
   pageContext?: Record<string, unknown>;
+  /**
+   * A UI action that IS this turn: `forwardedProps.uiAction` (a `UiAction` — a sandbox's
+   * `agent.send`) or `forwardedProps.a2uiAction.userAction` (A2UI's AG-UI binding). A string when
+   * one was sent but refused.
+   */
+  uiAction?: UiAction | string;
 }
 
 export function readForwardedProps(forwarded: unknown): ForwardedOptions {
@@ -236,6 +244,11 @@ export function readForwardedProps(forwarded: unknown): ForwardedOptions {
     ...(persona !== undefined ? { persona } : {}),
     ...(forwarded.regenerate === true ? { regenerate: true } : {}),
     ...(isRecord(forwarded.pageContext) ? { pageContext: forwarded.pageContext } : {}),
+    ...(forwarded.uiAction !== undefined
+      ? { uiAction: readUiAction(forwarded.uiAction) }
+      : isRecord(forwarded.a2uiAction)
+        ? { uiAction: readA2uiAction(forwarded.a2uiAction) }
+        : {}),
   };
 }
 

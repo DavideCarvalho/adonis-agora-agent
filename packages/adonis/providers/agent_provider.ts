@@ -253,6 +253,7 @@ export default class AgentProvider {
   #pricingCheckRun: Promise<unknown> | null = null;
   /** The engine running the turns instead of the loop (`engine` in the config), when there is one. */
   #engine: AgentEngine | undefined;
+  #genuiCatalog: Catalog | undefined;
 
   constructor(protected app: ApplicationService) {}
 
@@ -325,6 +326,7 @@ export default class AgentProvider {
         registerFunctionalTool(registry, tool, defaultRoles);
       }
       this.app.container.bindValue(AgentGenui, new AgentGenui(setup.catalog, setup.resolveCatalog));
+      this.#genuiCatalog = setup.catalog as Catalog;
     }
 
     // ── Runtime graph ──
@@ -969,6 +971,7 @@ export default class AgentProvider {
       await adapter.mount({
         service,
         defaultAgentName,
+        ...(this.#genuiCatalog !== undefined ? { genuiCatalog: this.#genuiCatalog } : {}),
         post: (suffix, handler) => void router.post(p(suffix), handler),
         get: (suffix, handler) => void router.get(p(suffix), handler),
         resolveActor: (ctx, agentName) =>

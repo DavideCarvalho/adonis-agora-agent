@@ -1,6 +1,7 @@
 import { useChat } from '@ai-sdk/react';
 import type { DataUIPart, UIDataTypes, UIMessage } from 'ai';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type UiAction, uiActionText } from '../../genui/actions.js';
 import type { UiCapabilities } from '../../genui/index.js';
 import type {
   ChatQueueState,
@@ -893,6 +894,15 @@ export function useAgentChat<B extends AgentBackend = AgentBackend>(
     [isTurnInFlight, enqueue],
   );
 
+  /**
+   * Send a UI action (a sandbox's `agent.send`, an A2UI button) as the next user message: what the
+   * user said, then the action and its values (`uiActionText`). Hand it to `GenuiActionProvider`.
+   */
+  const sendUiAction = useCallback(
+    (action: UiAction): Promise<void> => sendMessage({ text: uiActionText(action) }),
+    [sendMessage],
+  );
+
   const removeQueued = useCallback(
     async (id: string): Promise<void> => {
       const previous = queueStateRef.current;
@@ -1480,6 +1490,8 @@ export function useAgentChat<B extends AgentBackend = AgentBackend>(
     /** Where the live stream stands — see {@link StreamConnectionState}. */
     connection,
     sendMessage,
+    /** Send a UI action as the next user message (see `GenuiActionProvider`). */
+    sendUiAction,
     addToolResult,
     /** Sub-agents this conversation started and did not wait for. */
     background,
