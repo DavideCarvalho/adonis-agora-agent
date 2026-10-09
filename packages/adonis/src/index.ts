@@ -302,6 +302,7 @@ export * from './personas.js';
 export * from './pricing/bedrock.js';
 export * from './pricing/boot-pricing.js';
 export * from './pricing/models-dev.js';
+export * from './pricing/resolve.js';
 export {
   createFrameBuffer,
   createIncrementalGate,

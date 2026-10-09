@@ -85,7 +85,8 @@ is refused at boot unless the engine is durable itself (`openCodeDurable()`, bel
 | OpenCode | The library's stream and store |
 | --- | --- |
 | `session.text.delta` / `session.reasoning.delta` | `text` / `reasoning` |
-| a step (`session.step.ended`) | `step-start` … `step-finish` with usage; a `chat` usage row per step |
+| a step (`session.step.ended`) | `step-start` … `step-finish` with usage and cost; a `chat` usage row per step (see [Cost and usage](#cost-and-usage)) |
+| `session.usage.recorded` (the title, a compaction) | a `title` / `summary` usage row |
 | tools (`session.tool.*`) | `tool-input-*` / `tool-output*`; code-mode inner calls nested by `parentId` |
 | `permission.asked` | an `action` call + `approval-requested`, recorded `pending_approval`; approve / reject → `permission.reply` |
 | `form.created` (the `question` tool) | `elicitation`; answer / skip → `session.form.reply` / `cancel` |
@@ -118,6 +119,30 @@ tool on your own MCP server (a `ui__show_*` component tool, say) is not a tool c
 the model writes it, and the MCP server only ever receives the complete arguments in `tools/call`.
 Even with the deltas published, an MCP tool would preview only if it were registered with
 `codemode: false`, which offers it to the model directly as `<server>_<tool>`.
+
+## Cost and usage
+
+Every model call OpenCode makes for a turn — each step, the title it gives the session, a
+compaction — goes to the same token-usage ledger the loop writes (`agent_token_usage`, with
+`cost_usd` and `cost_source`), so the quota, the governance views and `GET <path>/quota` see an
+OpenCode turn like any other.
+
+- **Tokens.** OpenCode reports the uncached input in `tokens.input` and the cache beside it; the row
+  counts the whole input side in `inputTokens`, with `cacheReadTokens` / `cacheWriteTokens` as
+  subsets. The row's model is the one OpenCode names for the step (`<providerID>/<model id>`).
+- **Cost.** A call OpenCode priced (`cost > 0`, off its model catalog) is recorded at that figure,
+  `cost_source: 'provider'`. A call it priced at 0 — no price for the model in its catalog — is
+  estimated from the library's price, `cost_source: 'estimate'`: the `pricingStore` row, else
+  (seeded into the store once, as at boot) `priceCatalog.prices`, the built-in GovCloud Bedrock table
+  (`priceCatalog.region` / `AWS_REGION`, or a `us-gov.` id) and models.dev. A model the library
+  cannot price keeps OpenCode's 0.
+- `openCode({ cost: 'estimate' })` prefers the library's price whenever it has one — for models
+  OpenCode would price at a list price that is not yours (models.dev lists commercial Bedrock prices,
+  so Bedrock in GovCloud is priced too low unless OpenCode's config declares the model's `cost`).
+- **The run's total** (`OpenCodeRunResult.usage`, the run row's tokens, cost and step count, and the
+  usage on the turn's last message) is added up from the turn's own calls, not read back from the
+  store: each milestone carries what was spent since the last one, and a durable run journals it,
+  so a run resumed in another process still reports the whole run, cache tokens included.
 
 ## The library's seams under OpenCode
 

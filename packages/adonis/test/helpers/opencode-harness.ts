@@ -1,4 +1,4 @@
-import { engineOnlyModel } from '../../src/engine.js';
+import { type AgentEngineContext, engineOnlyModel } from '../../src/engine.js';
 import {
   type Actor,
   type AgentConfig,
@@ -68,6 +68,8 @@ export async function bootEngine(args: {
   };
   register?: (registry: ToolRegistry) => void;
   appKey?: string;
+  pricingStore?: AgentEngineContext['pricingStore'];
+  priceCatalog?: AgentEngineContext['priceCatalog'];
 }): Promise<Harness> {
   const fake = new FakeOpenCode(args.script);
   const host = new TestHost(fake);
@@ -100,6 +102,8 @@ export async function bootEngine(args: {
     registry,
     queue,
     ...(args.appKey !== undefined ? { appKey: args.appKey } : {}),
+    ...(args.pricingStore !== undefined ? { pricingStore: args.pricingStore } : {}),
+    priceCatalog: args.priceCatalog ?? { modelsDev: false },
   });
   const service = new AgentService(runner, store, factory, { queue });
   return {

@@ -1,8 +1,10 @@
 import type { AgentDepsFactory } from './agent-deps-factory.js';
 import type { ChatQueueService } from './chat-queue-service.js';
+import type { PriceCatalogOptions } from './pricing/boot-pricing.js';
 import type { AgentRunner } from './spi/agent-runner.js';
 import type { AgentStore } from './spi/agent-store.js';
 import type { ModelProvider } from './spi/model-provider.js';
+import type { AgentPricingStore } from './spi/pricing-store.js';
 import type { ProtocolAdapter } from './spi/protocol-adapter.js';
 import type { TokenStreamSink } from './spi/token-stream-sink.js';
 import type { ToolRegistry } from './tool-registry.js';
@@ -27,6 +29,10 @@ export interface AgentEngineContext {
   make?: <T = unknown>(binding: unknown) => Promise<T>;
   /** The app's `APP_KEY`, when there is one — a stable secret for whatever the engine signs. */
   appKey?: string;
+  /** The configured pricing store, so an engine prices the calls it reports like the loop does. */
+  pricingStore?: AgentPricingStore;
+  /** `priceCatalog` from `config/agent.ts`. */
+  priceCatalog?: PriceCatalogOptions | false;
 }
 
 /**

@@ -98,7 +98,7 @@ export function bedrockPriceCandidates(modelId: string): string[] {
 
 /** Where the built-in prices below come from, for the log and the docs. */
 export const BEDROCK_BUILTIN_PRICES_SOURCE =
-  'AWS Price List, AmazonBedrockFoundationModels, us-gov-west-1, published 2026-10-08 (on-demand, standard context)';
+  'AWS Price List, us-gov-west-1: AmazonBedrockFoundationModels published 2026-10-08 (Anthropic), AmazonBedrock published 2026-10-06 (Amazon, Meta, OpenAI, NVIDIA, xAI) — on-demand, standard (in-region) tier, standard context';
 
 /**
  * Built-in Bedrock prices (USD per 1M tokens) for partitions models.dev does not cover, keyed by base
@@ -167,6 +167,37 @@ export const BEDROCK_BUILTIN_PRICES: Readonly<
       cacheReadPricePer1m: 0.3,
       cacheWritePricePer1m: 15,
     },
+    // Amazon. Nova lists a cache-read price only (no cache-write price on the standard tier).
+    'amazon.nova-micro-v1:0': {
+      inputPricePer1m: 0.042,
+      outputPricePer1m: 0.168,
+      cacheReadPricePer1m: 0.0105,
+    },
+    'amazon.nova-lite-v1:0': {
+      inputPricePer1m: 0.072,
+      outputPricePer1m: 0.288,
+      cacheReadPricePer1m: 0.018,
+    },
+    'amazon.nova-pro-v1:0': {
+      inputPricePer1m: 0.96,
+      outputPricePer1m: 3.84,
+      cacheReadPricePer1m: 0.24,
+    },
+    // An embedding model: input tokens only.
+    'amazon.titan-embed-text-v2:0': { inputPricePer1m: 0.11, outputPricePer1m: 0 },
+    // Meta.
+    'meta.llama3-8b-instruct-v1:0': { inputPricePer1m: 0.3, outputPricePer1m: 0.6 },
+    'meta.llama3-70b-instruct-v1:0': { inputPricePer1m: 2.65, outputPricePer1m: 3.5 },
+    // OpenAI open-weight.
+    'openai.gpt-oss-20b-1:0': { inputPricePer1m: 0.084, outputPricePer1m: 0.36 },
+    'openai.gpt-oss-120b-1:0': { inputPricePer1m: 0.18, outputPricePer1m: 0.72 },
+    // NVIDIA.
+    'nvidia.nemotron-nano-9b-v2': { inputPricePer1m: 0.072, outputPricePer1m: 0.276 },
+    'nvidia.nemotron-nano-12b-v2': { inputPricePer1m: 0.24, outputPricePer1m: 0.72 },
+    'nvidia.nemotron-nano-3-30b': { inputPricePer1m: 0.072, outputPricePer1m: 0.288 },
+    'nvidia.nemotron-super-3-120b': { inputPricePer1m: 0.18, outputPricePer1m: 0.78 },
+    // xAI, in-region (`us-gov.`) tier.
+    'xai.grok-4.6': { inputPricePer1m: 2.64, outputPricePer1m: 7.92, cacheReadPricePer1m: 0.66 },
   },
 };
 

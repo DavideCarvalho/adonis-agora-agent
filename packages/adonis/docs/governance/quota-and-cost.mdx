@@ -215,8 +215,10 @@ model is configured with (an ARN stays an ARN). An ARN is never looked up as an 
 models.dev lists **commercial** Bedrock prices. For a model in **GovCloud** (`aws-us-gov`) or
 **China** (`aws-cn`) they are never seeded. The partition comes from the id (the ARN, or a `us-gov.`
 prefix), else `priceCatalog.region`, else `AWS_REGION` / `AWS_DEFAULT_REGION`. GovCloud models get
-a built-in table instead (`BEDROCK_BUILTIN_PRICES`: common Anthropic models, from the AWS Price List
-for us-gov-west-1). Any other model in those partitions is left unpriced, and the boot warning names
+a built-in table instead (`BEDROCK_BUILTIN_PRICES`, from the AWS Price List for us-gov-west-1:
+the Anthropic models, Amazon Nova Micro/Lite/Pro and Titan Text Embeddings V2, Meta Llama 3 8B/70B,
+OpenAI gpt-oss-20b/120b, NVIDIA Nemotron, and xAI Grok 4.6 — with cache-read and cache-write prices
+where AWS publishes them). Any other model in those partitions is left unpriced, and the boot warning names
 the partition and the fix.
 
 `priceCatalog.prices` is your own rate card. Each entry seeds a row for its model, and for any

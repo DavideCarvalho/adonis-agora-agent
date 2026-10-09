@@ -2,7 +2,7 @@ import { BaseWorkflow, type WorkflowCtx, type WorkflowEngine } from '@adonis-ago
 import type { HumanReply } from '../../elicitation.js';
 import type { AgentRunInput, Decision } from '../../types.js';
 import { errorText } from '../log.js';
-import type { Milestone } from '../turn.js';
+import { addUsage, emptyUsage, type Milestone } from '../turn.js';
 import type { OpenCodeTurns, SessionHandle } from '../turns.js';
 
 export const OPENCODE_RUN_WORKFLOW = 'agora.agent.opencode.run';
@@ -56,6 +56,9 @@ export class OpenCodeRunWorkflow extends BaseWorkflow {
     // `@adonis-agora/durable` >= 0.43.3 never runs one run twice at once in a process, so a step
     // that talks to OpenCode (a `reply`, an `observe`) runs once per execution of the run.
     const step = <T>(name: string, body: () => Promise<T>): Promise<T> => ctx.localStep(name, body);
+    // What the run spent: every milestone carries its share, journaled with it, so a run resumed in
+    // another process adds up the same figure (a milestone journaled before usage travelled adds 0).
+    let spent = emptyUsage();
     try {
       const begun = await step('begin', async () => ({
         handle: await turns.begin(ctx.runId, input, true),
@@ -63,19 +66,28 @@ export class OpenCodeRunWorkflow extends BaseWorkflow {
       }));
       let handle: SessionHandle = begun.handle;
       await step('prompt', async () => {
-        await turns.prompt(ctx.runId, input, handle);
+        await turns.prompt(ctx.runId, input, handle, spent);
         return true;
       });
       for (let n = 0; ; n += 1) {
+        const before = spent;
         const milestone: Milestone = await step(`observe:${n}`, () =>
-          turns.observe(ctx.runId, input, handle),
+          turns.observe(ctx.runId, input, handle, before),
         );
+        spent = addUsage(spent, milestone.usage);
+        const total = spent;
         if (milestone.kind === 'finished') {
           await step('finish', async () => {
             // A cancel settles the run itself (it may be parked where no step runs again).
             if (await this.cancelled(ctx.runId)) turns.drop(ctx.runId);
             else {
-              await turns.settle(ctx.runId, input, milestone.outcome, Date.now() - begun.startedAt);
+              await turns.settle(
+                ctx.runId,
+                input,
+                milestone.outcome,
+                Date.now() - begun.startedAt,
+                total,
+              );
             }
             return true;
           });
@@ -92,12 +104,14 @@ export class OpenCodeRunWorkflow extends BaseWorkflow {
           reply = { approved: false, expired: true } satisfies Decision;
         }
         const ask = milestone.ask;
-        handle = await step(`reply:${n}`, () => turns.reply(ctx.runId, input, handle, ask, reply));
+        handle = await step(`reply:${n}`, () =>
+          turns.reply(ctx.runId, input, handle, ask, reply, total),
+        );
       }
     } catch (error) {
       if (isControlFlowSignal(error)) throw error;
       await step('fail', async () => {
-        await turns.settleFailed(ctx.runId, input, errorText(error, 'the turn failed'));
+        await turns.settleFailed(ctx.runId, input, errorText(error, 'the turn failed'), 0, spent);
         return true;
       });
       return { outcome: 'failed' };
