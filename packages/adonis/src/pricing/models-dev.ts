@@ -1,4 +1,5 @@
 import type { AgentPricingStore, ModelPriceInput } from '../spi/pricing-store.js';
+import { bedrockPriceCandidates, isBedrockModel, parseBedrockModelId } from './bedrock.js';
 
 /** O endereço do catálogo. Aberto, sem chave, JSON único. */
 export const MODELS_DEV_URL = 'https://models.dev/api.json';
@@ -104,24 +105,51 @@ export async function lookupModelsDevPrices(
   refs: readonly (readonly ModelsDevRef[])[],
   options: ModelsDevOptions = {},
 ): Promise<ModelsDevLookup> {
-  if (refs.length === 0) return { prices: [], missing: [] };
-  const catalog = await loadCatalog(options);
+  const found = await lookupModelsDevPricesEach(refs, options);
   const prices: ModelPriceInput[] = [];
   const missing: ModelsDevRef[] = [];
-  for (const candidates of refs) {
-    const price = candidates.map((ref) => priceOf(catalog, ref)).find((p) => p !== undefined);
+  found.forEach((price, i) => {
     if (price !== undefined) prices.push(price);
-    else if (candidates[0] !== undefined) missing.push(candidates[0]);
-  }
+    else if (refs[i]?.[0] !== undefined) missing.push(refs[i][0] as ModelsDevRef);
+  });
   return { prices, missing };
 }
+
+/**
+ * {@link lookupModelsDevPrices}, one result per element of `refs` (in order): the price the first
+ * pricing candidate yields, or `undefined`. For callers that key the row themselves.
+ */
+export async function lookupModelsDevPricesEach(
+  refs: readonly (readonly ModelsDevRef[])[],
+  options: ModelsDevOptions = {},
+): Promise<(ModelPriceInput | undefined)[]> {
+  if (refs.every((candidates) => candidates.length === 0)) return refs.map(() => undefined);
+  const catalog = await loadCatalog(options);
+  return refs.map((candidates) =>
+    candidates.map((ref) => priceOf(catalog, ref)).find((p) => p !== undefined),
+  );
+}
+
+/** models.dev's name for AWS Bedrock. */
+const MODELS_DEV_BEDROCK = 'amazon-bedrock';
 
 /**
  * The models.dev refs to try for a model, most specific first: `<provider>/<modelId>`, then — for an
  * OpenRouter-style id (`deepseek/deepseek-v4.1-flash`) reached through another SDK — the OpenRouter
  * list price. `provider` is the AI SDK provider family (`openrouter`, `openai`, `vercel`, …).
+ *
+ * A Bedrock id is normalized first (see `parseBedrockModelId`): an ARN or a geo-prefixed inference
+ * profile is tried as the full id, the profile id, then the base foundation-model id — all under
+ * `amazon-bedrock`. An ARN is never tried as an OpenRouter id (its `/` is not a vendor separator), nor
+ * looked up verbatim (models.dev lists no ARNs).
  */
 export function modelsDevRefsFor(modelId: string, provider: string | undefined): ModelsDevRef[] {
+  if (isBedrockModel(modelId, provider)) {
+    const ids = bedrockPriceCandidates(modelId).filter(
+      (id) => parseBedrockModelId(id)?.isArn !== true,
+    );
+    return ids.map((id) => `${MODELS_DEV_BEDROCK}/${id}`);
+  }
   const refs: ModelsDevRef[] = [];
   if (provider !== undefined && provider.length > 0) refs.push(`${provider}/${modelId}`);
   // A gateway id names its own provider (`openai/gpt-4o-mini` through the Vercel AI Gateway).
