@@ -1062,7 +1062,9 @@ export class OpenCodeTurn {
         write: left(after.cache?.write, before.cache?.write, this.seen.write),
       },
     };
-    if (tokens.input + tokens.output + tokens.cache.read + tokens.cache.write === 0) return;
+    const total =
+      tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write;
+    if (total === 0) return;
     // Below a millionth of a cent is float noise from the subtraction, not a price.
     const cost = left(info?.cost, baseline.cost, this.seen.cost);
     await this.spend(
