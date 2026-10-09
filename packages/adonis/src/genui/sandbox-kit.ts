@@ -104,6 +104,7 @@ export function tailwindInstructions(): string {
  * React's hooks, and renders `App` into `#agora-sandbox-root`. A partial program is drawn only once
  * it closes into code that parses and renders; until then — and whenever a later version fails —
  * the last good one stays on screen. Errors are reported (to the host) only for the final program.
+ * A partial program is not tried before its JSX has begun (nothing to draw before then).
  */
 export function sandboxJsxRuntime(options: {
   token: string;
@@ -120,6 +121,7 @@ if(window.__GENUI_KIT_CSS__){var ks=document.createElement('style');ks.textConte
 var kitNames=Object.keys(K).filter(function(k){return /^[A-Z][\\w$]*$/.test(k)});
 var hookNames=['useState','useEffect','useMemo','useRef','useCallback','useReducer','useId','useLayoutEffect','Fragment'].filter(function(k){return R&&R[k]!==undefined});
 var root=null,lastGood=null,seq=0,lastCode=null;
+window.addEventListener('error',function(e){if(window.__agoraQuiet){e.preventDefault();e.stopImmediatePropagation()}},true);
 function report(e){window.__agoraQuiet=false;try{window.dispatchEvent(new ErrorEvent('error',{message:String(e&&e.message||e)}))}catch(_){}}
 var Boundary=R?(function(){function B(p){R.Component.call(this,p);this.state={failed:false}}
 B.prototype=Object.create(R.Component.prototype);B.prototype.constructor=B;
@@ -128,7 +130,8 @@ B.prototype.componentDidCatch=function(e){if(this.props.final)report(e)};
 B.prototype.componentDidMount=function(){if(!this.state.failed)lastGood=this.props.app};
 B.prototype.render=function(){if(this.state.failed)return this.props.keep?R.createElement(this.props.keep):null;return this.props.children};
 return B})():null;
-function draw(code,final){if(!R||!D)return false;if(code===lastCode&&!final)return true;var js;
+function draw(code,final){if(!R||!D)return false;if(code===lastCode&&!final)return true;
+if(!final&&!/(return|=>)\\s*\\(?\\s*</.test(code))return false;var js;
 try{js=transpileJsx(prepareSandboxJsx(code),{partial:!final})}catch(e){if(final)report(e);return false}
 window.__genuiApp=undefined;window.__genuiOk=false;window.__agoraQuiet=!final;
 var s=document.createElement('script');

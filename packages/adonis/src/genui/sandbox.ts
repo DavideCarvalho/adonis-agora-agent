@@ -449,6 +449,8 @@ export type SandboxDefinition = ComponentDefinition<SandboxProps> & {
   readonly sandbox: SandboxPolicy;
   /** Theme, Tailwind and kit, as the definition was given them. */
   readonly sandboxView?: SandboxView;
+  /** The options it was defined with — what a server resolves the kit and Tailwind for. */
+  readonly sandboxOptions?: Readonly<DefineSandboxOptions>;
 };
 
 function resolveSource<T>(source: T | (() => T | undefined) | undefined): T | undefined {
@@ -538,7 +540,12 @@ export function defineSandbox(options: DefineSandboxOptions = {}): SandboxDefini
     tailwind: options.tailwind === true,
     kit: kitOn,
   };
-  const result = { ...definition, sandbox: Object.freeze({ ...policy }), sandboxView };
+  const result = {
+    ...definition,
+    sandbox: Object.freeze({ ...policy }),
+    sandboxView,
+    sandboxOptions: Object.freeze({ ...options }),
+  };
   // Read each time: the kit's docs (and the theme's names) may change while the app runs (dev).
   Object.defineProperty(result, 'description', {
     enumerable: true,

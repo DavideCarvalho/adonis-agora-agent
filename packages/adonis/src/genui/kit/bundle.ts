@@ -65,12 +65,22 @@ export async function buildSandboxKitBundle(
     logLevel: 'silent',
     mode: 'production',
     publicDir: false,
-    ...(options.resolve !== undefined ? { resolve: options.resolve as never } : {}),
+    // One React: components living outside the app (a workspace package, another repo) resolve
+    // `react` from the app root too, never a second copy that would break their hooks.
+    resolve: {
+      ...(options.resolve ?? {}),
+      dedupe: [
+        ...(((options.resolve as { dedupe?: string[] } | undefined)?.dedupe ?? []) as string[]),
+        'react',
+        'react-dom',
+      ],
+    } as never,
     define: { 'process.env.NODE_ENV': JSON.stringify('production') },
     // Vite 8 compiles with Oxc, earlier versions with esbuild: the automatic JSX runtime on both.
+    // Production JSX (`jsx`, never `jsxDEV`) whatever NODE_ENV the dev server runs under.
     ...(major >= 8
-      ? ({ oxc: { jsx: { runtime: 'automatic' } } } as Record<string, unknown>)
-      : { esbuild: { jsx: 'automatic' } }),
+      ? ({ oxc: { jsx: { runtime: 'automatic', development: false } } } as Record<string, unknown>)
+      : { esbuild: { jsx: 'automatic', jsxDev: false } }),
     plugins: [
       {
         name: 'genui-sandbox-kit-entry',

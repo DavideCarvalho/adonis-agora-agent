@@ -10,7 +10,7 @@ import { globToRegExp, resolveSandboxKitFiles } from '../src/genui/kit/files.js'
 import { writeSandboxKitDocs } from '../src/genui/kit/write.js';
 import { buildSandboxDocument, defineSandbox, sandboxPartialProps } from '../src/genui/sandbox.js';
 import { prepareSandboxJsx, transpileJsx } from '../src/genui/sandbox-jsx.js';
-import { kitDocsToModelText } from '../src/genui/sandbox-kit.js';
+import { kitDocsToModelText, sandboxJsxRuntime } from '../src/genui/sandbox-kit.js';
 import {
   hostThemeCss,
   tailwindThemeCss,
@@ -34,6 +34,8 @@ export default function App() {
         <Slider min={1} max={10} value={[people]} onValueChange={(v) => setPeople(v[0])} />
         <Input type="number" value={total} onChange={(e) => setTotal(Number(e.target.value))} />
         {people > 5 && <p className="text-muted-foreground">Big group!</p>}
+        <p id="each">{people > 0 ? each.toFixed(2) : '—'}</p>
+        <span title={total ?? 0}>{people?.toString()}</span>
         <Button onClick={() => agent.send({ text: 'Settle it', people, total })}>Settle</Button>
       </CardContent>
     </Card>
@@ -119,6 +121,12 @@ describe('sandbox JSX — transpiler and partial gating', () => {
     );
   });
 
+  it('the frame runtime is valid JavaScript (its regular expressions intact)', () => {
+    const runtime = sandboxJsxRuntime({ token: 't', jsxMessage: 'agora:sandbox:jsx' });
+    expect(() => new Function(runtime)).not.toThrow();
+    expect(runtime).toContain('/(return|=>)\\s*\\(?\\s*</');
+  });
+
   it('the server streams the jsx field as it is written', () => {
     const props = { title: 'Split', jsx: '<Card>' };
     const out = sandboxPartialProps(props, { isOpen: () => true, pendingMember: () => 'jsx' });
@@ -147,8 +155,12 @@ describe('theme', () => {
   });
 
   it('puts the values on the frame root with its color scheme, and tells the model the names', () => {
-    expect(hostThemeCss({ '--primary': 'red' }, true)).toBe(
+    expect(hostThemeCss({ '--primary': 'red' }, { colorScheme: 'dark' })).toBe(
       ':root{color-scheme:dark;--primary:red}',
+    );
+    // A host without a color-scheme: none on the frame either (it would paint it opaque).
+    expect(hostThemeCss({ '--primary': 'red' }, { colorScheme: 'normal' })).toBe(
+      ':root{--primary:red}',
     );
     const text = themeToModelText(themeVarsFromCss(css), { tailwind: true });
     expect(text).toContain('var(--primary)');
@@ -404,5 +416,20 @@ describe('the Vite plugin', () => {
       resolve(root, 'page.tsx'),
     );
     expect(out?.code).toContain('import.meta.hot.on("genui-sandbox-kit:update"');
+  });
+});
+
+describe('genui() with a kit sandbox in the catalog', () => {
+  it('resolves it like `sandbox: { kit, tailwind }`: the client config, and the name kept', async () => {
+    const { genui } = await import('../src/genui/index.js');
+    const { defineCatalog } = await import('../src/genui/catalog.js');
+    const setup = await genui({
+      catalog: defineCatalog([defineSandbox({ name: 'MiniApp', kit: true, tailwind: true })]),
+    })({ make: async () => ({}) as never, app: undefined });
+    expect(setup.sandboxClient?.()).toEqual({ theme: true });
+    const sandbox = setup.catalog.get('MiniApp');
+    const props = sandbox?.props as { properties: Record<string, unknown> } | undefined;
+    expect(props?.properties.jsx).toBeDefined();
+    expect(setup.catalog.components).toHaveLength(1);
   });
 });

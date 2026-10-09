@@ -89,7 +89,7 @@ export function chartSvg(props: ChartProps, options: ChartSvgOptions = {}): stri
   ];
   if (props.title) {
     out.push(
-      `<text x="${left}" y="34" font-size="20" font-weight="600" fill="${fg}">${escapeXml(props.title)}</text>`,
+      `<text x="${left}" y="34" font-size="26" font-weight="600" fill="${fg}">${escapeXml(props.title)}</text>`,
     );
   }
   for (let i = 0; i <= 4; i++) {
@@ -97,7 +97,7 @@ export function chartSvg(props: ChartProps, options: ChartSvgOptions = {}): stri
     const gy = y(v);
     out.push(
       `<line x1="${left}" x2="${left + plotW}" y1="${gy}" y2="${gy}" stroke="${fg}" stroke-opacity="0.12"/>`,
-      `<text x="${left - 8}" y="${gy + 4}" font-size="12" text-anchor="end" fill="${fg}" fill-opacity="0.7">${escapeXml(formatNumber(v))}${props.unit ? escapeXml(` ${props.unit}`) : ''}</text>`,
+      `<text x="${left - 8}" y="${gy + 4}" font-size="15" text-anchor="end" fill="${fg}" fill-opacity="0.7">${escapeXml(formatNumber(v))}${props.unit ? escapeXml(` ${props.unit}`) : ''}</text>`,
     );
   }
   const n = Math.max(1, data.length);
@@ -107,7 +107,7 @@ export function chartSvg(props: ChartProps, options: ChartSvgOptions = {}): stri
     if (index % labelEvery !== 0) return;
     const label = cell(point[props.xKey]).slice(0, 14);
     out.push(
-      `<text x="${left + slot * index + slot / 2}" y="${top + plotH + 20}" font-size="12" text-anchor="middle" fill="${fg}" fill-opacity="0.8">${escapeXml(label)}</text>`,
+      `<text x="${left + slot * index + slot / 2}" y="${top + plotH + 20}" font-size="15" text-anchor="middle" fill="${fg}" fill-opacity="0.8">${escapeXml(label)}</text>`,
     );
   });
   if (props.type === 'line') {
@@ -149,9 +149,9 @@ export function chartSvg(props: ChartProps, options: ChartSvgOptions = {}): stri
       const label = escapeXml(each.label || each.key);
       out.push(
         `<rect x="${x}" y="${ly - 10}" width="12" height="12" rx="2" fill="${colors[s % colors.length]}"/>`,
-        `<text x="${x + 18}" y="${ly}" font-size="12" fill="${fg}">${label}</text>`,
+        `<text x="${x + 18}" y="${ly}" font-size="15" fill="${fg}">${label}</text>`,
       );
-      x += 30 + label.length * 7;
+      x += 34 + label.length * 9;
     });
   }
   out.push('</svg>');

@@ -12,6 +12,12 @@ function frame(): HTMLIFrameElement {
   return screen.getByTestId('sandbox-frame') as HTMLIFrameElement;
 }
 
+/** jsdom loads a srcdoc asynchronously, and the frame's window is replaced when it has. */
+async function loaded(target: HTMLIFrameElement) {
+  await waitFor(() => expect(target.contentWindow?.document.readyState).toBe('complete'));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+
 function ready(target: HTMLIFrameElement) {
   const token = /var T="([0-9a-f]+)"/.exec(target.srcdoc)?.[1];
   window.dispatchEvent(
@@ -46,10 +52,11 @@ describe('theme injection', () => {
     const View = createSandboxRenderer({ config: { theme: true } });
     render(<View html="<p>hi</p>" title="Split" />);
     const iframe = frame();
-    expect(iframe.srcdoc).toContain('<style id="agora-sandbox-theme">:root{color-scheme:light;');
+    expect(iframe.srcdoc).toContain('<style id="agora-sandbox-theme">:root{');
     expect(iframe.srcdoc).toContain('--primary:oklch(0.7 0.15 80)');
     expect(iframe.srcdoc).toContain('data-theme="light"');
 
+    await loaded(iframe);
     const posted: unknown[] = [];
     vi.spyOn(iframe.contentWindow as Window, 'postMessage').mockImplementation((message) => {
       posted.push(message);
@@ -68,7 +75,7 @@ describe('theme injection', () => {
       .at(-1) as {
       css: string;
     };
-    expect(last.css).toContain('color-scheme:dark');
+    expect(last.css).toContain('--primary:');
     // The frame was not rebuilt for it.
     expect(frame()).toBe(iframe);
   });
@@ -131,6 +138,7 @@ describe('Tailwind and the kit', () => {
     expect(iframe.srcdoc).toContain('window.Kit={Button');
     expect(iframe.srcdoc).toContain('id="agora-sandbox-root"');
     expect(iframe.srcdoc).toContain('function transpileJsx');
+    await loaded(iframe);
     const posted: unknown[] = [];
     vi.spyOn(iframe.contentWindow as Window, 'postMessage').mockImplementation((message) => {
       posted.push(message);

@@ -440,10 +440,12 @@ export function transpileJsx(source: string, options?: { partial?: boolean }): s
     const stack: string[] = [];
     let safeLength = 0;
     let safeStack: string[] = [];
+    /** Conditional operators (`a ? b`) still waiting for their `:`, per bracket depth. */
+    const ternaries: number[] = [0];
     /** The code may end right here (closing what is open). */
     let whole = true;
     const mark = (ok = true) => {
-      whole = ok && complete();
+      whole = ok && complete() && ternaries.every((count) => count === 0);
       if (whole) {
         safeLength = out.length;
         safeStack = stack.slice();
@@ -557,6 +559,20 @@ export function transpileJsx(source: string, options?: { partial?: boolean }): s
         mark();
         continue;
       }
+      if (
+        c === '?' &&
+        (src[i + 1] === '?' || (src[i + 1] === '.' && !/[0-9]/.test(src[i + 2] ?? '')))
+      ) {
+        // `??` and `?.`: one token, no conditional to close.
+        out += src.slice(i, i + 2);
+        i += 2;
+        last = '?';
+        mark(false);
+        continue;
+      }
+      if (c === '?') ternaries[stack.length] = (ternaries[stack.length] ?? 0) + 1;
+      else if (c === ':' && (ternaries[stack.length] ?? 0) > 0)
+        ternaries[stack.length] = (ternaries[stack.length] ?? 0) - 1;
       // Whether the code may end right after this bracket: `[` opening an array literal and `(`
       // opening a call may (`[]`, `f()`); `v[`, a grouping `(`, `if (` and an empty `()` (arrow
       // parameters still to come) may not.
@@ -568,8 +584,13 @@ export function transpileJsx(source: string, options?: { partial?: boolean }): s
           !exprStart() &&
           ['if', 'for', 'while', 'switch', 'catch', 'function', 'with'].indexOf(keyword) < 0;
       } else if (c === ')') ok = last !== '(';
-      if (c === '{' || c === '(' || c === '[') stack.push(c);
-      else if (c === '}' || c === ')' || c === ']') stack.pop();
+      if (c === '{' || c === '(' || c === '[') {
+        stack.push(c);
+        ternaries[stack.length] = 0;
+      } else if (c === '}' || c === ')' || c === ']') {
+        ternaries.length = stack.length;
+        stack.pop();
+      }
       out += c;
       i++;
       last = c;

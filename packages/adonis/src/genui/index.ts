@@ -13,7 +13,12 @@ import {
   type GenuiToolsOptions,
   genuiTools,
 } from './public.js';
-import { type DefineSandboxOptions, defineSandbox } from './sandbox.js';
+import {
+  type DefineSandboxOptions,
+  defineSandbox,
+  type SandboxDefinition,
+  sandboxPolicyOf,
+} from './sandbox.js';
 import type { SandboxClientConfig } from './sandbox-kit.js';
 
 export {
@@ -132,6 +137,17 @@ export function genui(options: GenuiOptions = {}): GenuiFactory {
       return resolved.define;
     };
     const sandbox = await resolveSandbox(asked);
+    // A kit or Tailwind sandbox defined in the (shared) catalog itself: found the same way, and put
+    // back under its own name, so the browser's copy of the catalog validates what the model writes.
+    const own = base.components.find((each) => sandboxPolicyOf(each) !== undefined) as
+      | SandboxDefinition
+      | undefined;
+    const ownOptions =
+      asked === undefined &&
+      own?.sandboxOptions !== undefined &&
+      (own.sandboxView?.kit === true || own.sandboxView?.tailwind === true)
+        ? await resolveSandbox({ ...own.sandboxOptions, name: own.name })
+        : undefined;
     let channels: GenuiChannels | undefined;
     if (askedChannels !== undefined) {
       channels = {};
@@ -143,7 +159,9 @@ export function genui(options: GenuiOptions = {}): GenuiFactory {
     }
     const catalog =
       sandbox === undefined || sandbox === false
-        ? base
+        ? typeof ownOptions === 'object'
+          ? base.extend([defineSandbox(ownOptions)])
+          : base
         : base.extend([defineSandbox(sandbox === true ? {} : sandbox)]);
     const resolveCatalog = await resolveCatalogFn(resolver, ctx);
     const tools = genuiTools(catalog, {

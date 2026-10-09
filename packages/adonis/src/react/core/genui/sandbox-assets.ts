@@ -63,12 +63,22 @@ export function useSandboxClientConfig(source: SandboxConfigSource | undefined):
       cancelled = true;
     };
   }, [source]);
+  // The agent's config is pending until it answers or fails — or, for a backend that never will
+  // (no `getConfig`), for a few seconds.
+  const [gaveUp, setGaveUp] = useState(false);
+  const pending = source === undefined && agent.config === undefined && agent.error === null;
+  useEffect(() => {
+    if (!pending) return;
+    const timer = setTimeout(() => setGaveUp(true), 4000);
+    return () => clearTimeout(timer);
+  }, [pending]);
   if (source === false) return { config: { theme: true }, loading: false };
   if (typeof source === 'object') return { config: source, loading: false };
   if (typeof source === 'string') return { config: fromSource, loading: loadingUrl };
+  const loading = pending && !gaveUp;
   return {
-    config: agent.config?.genui?.sandbox ?? (agent.isLoading ? undefined : { theme: true }),
-    loading: agent.isLoading,
+    config: agent.config?.genui?.sandbox ?? (loading ? undefined : { theme: true }),
+    loading,
   };
 }
 
@@ -154,7 +164,12 @@ function readHostTheme(): HostTheme | null {
   if (typeof document === 'undefined') return null;
   const vars = collectHostThemeVars(document);
   const dark = isHostDark(document);
-  return { css: hostThemeCss(vars, dark), dark, tailwind: tailwindThemeCss(vars) };
+  const colorScheme = document.defaultView?.getComputedStyle(document.documentElement).colorScheme;
+  return {
+    css: hostThemeCss(vars, colorScheme !== undefined ? { colorScheme } : {}),
+    dark,
+    tailwind: tailwindThemeCss(vars),
+  };
 }
 
 /** The host's theme, kept current (class / `data-theme` / color-scheme changes). `null` when off. */

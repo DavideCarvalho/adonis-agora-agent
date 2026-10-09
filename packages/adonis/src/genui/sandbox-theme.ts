@@ -107,13 +107,21 @@ export function themeToModelText(
   return parts.join(' ');
 }
 
-/** `:root { color-scheme; --x: value; … }` — the theme as the frame gets it. */
-export function hostThemeCss(vars: Record<string, string>, dark: boolean): string {
+/**
+ * `:root { --x: value; … }` — the theme as the frame gets it. `colorScheme` is the host root's
+ * computed `color-scheme`: mirrored when the host sets one (a frame whose scheme differs from its
+ * page's is painted opaque), left out when it is `normal`.
+ */
+export function hostThemeCss(
+  vars: Record<string, string>,
+  options: { colorScheme?: string } = {},
+): string {
   const body = Object.entries(vars)
     .filter(([name, value]) => !INTERNAL_VAR.test(name) && value.trim() !== '')
     .map(([name, value]) => `${name}:${value.replace(/[<>{}]/g, '')}`)
     .join(';');
-  return `:root{color-scheme:${dark ? 'dark' : 'light'};${body}}`;
+  const scheme = options.colorScheme?.trim();
+  return `:root{${scheme && scheme !== 'normal' ? `color-scheme:${scheme.replace(/[<>{};]/g, '')};` : ''}${body}}`;
 }
 
 /**
