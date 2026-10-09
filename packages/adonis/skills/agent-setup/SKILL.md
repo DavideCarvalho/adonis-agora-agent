@@ -127,13 +127,13 @@ auto-created) — no extra config. Cost per turn resolves in order: provider-rep
 else `null` — never a fabricated `0`.
 
 Gateways report the real cost: OpenRouter via the official `@openrouter/ai-sdk-provider`
-(`providerMetadata.openrouter.usage.cost` — `aiSdkModel` requests usage accounting on every
-OpenRouter call itself) and the Vercel AI Gateway (`providerMetadata.gateway.cost`). OpenRouter
+(`providerMetadata.openrouter.usage.cost` — `aiSdkModel` / `aiSdkModels` request usage accounting on every
+OpenRouter call themselves unless you set your own `openrouter.usage`) and the Vercel AI Gateway (`providerMetadata.gateway.cost`). OpenRouter
 reached through `@ai-sdk/openai` with a custom `baseURL` reports no cost — use the official provider.
 
 At boot, any configured model with no price row gets the models.dev list price written as
 its row (never overwriting one; `priceCatalog: false` turns the fetch off, skipped under
-`NODE_ENV=test`), and a model that still has no price and no gateway cost is named in one
+`NODE_ENV=test` unless `priceCatalog` is set explicitly), and a model that still has no price and no gateway cost is named in one
 boot warning. To set your own prices (e.g. from an Ace command):
 
 ```ts
