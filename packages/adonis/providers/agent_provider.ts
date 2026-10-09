@@ -85,7 +85,9 @@ import {
 } from '../src/index.js';
 import { McpToolImporter } from '../src/mcp-client/index.js';
 import type { ResolveToolUiCatalog } from '../src/negotiated-tool-ui.js';
+import { ensureModelPricing } from '../src/pricing/boot-pricing.js';
 import type { ListActionProposals } from '../src/spi/action-proposal-store.js';
+import type { DescribedModel } from '../src/spi/model-provider.js';
 import type { PresentationErrorHandler } from '../src/spi/tool.js';
 import { setTelescopeGovernanceQueries } from '../src/telescope/governance-registry.js';
 import type { UiCapabilities } from '../src/ui-capabilities.js';
@@ -129,6 +131,19 @@ function sendMode(body: ChatBody): ChatSendMode | null {
   return body.mode === 'auto' || body.mode === 'queue' || body.mode === 'interrupt'
     ? body.mode
     : null;
+}
+
+/**
+ * The models a provider describes for boot pricing — none when it describes none, or when its
+ * `describeModels` throws: pricing is bookkeeping, never a reason for the app to stay down.
+ */
+function describedModels(model: ModelProvider): DescribedModel[] {
+  try {
+    return model.describeModels?.() ?? [];
+  } catch (error) {
+    console.warn('[@adonis-agora/agent] describeModels() threw; boot pricing skipped.', error);
+    return [];
+  }
 }
 
 /** The catalog a model provider carries (`aiSdkModels(…).catalog`), if it carries one. */
@@ -228,6 +243,14 @@ export default class AgentProvider {
   #mcpTools: McpToolImporter | null = null;
   /** Whatever was built at boot that may own a schema: the store, the pricing store, the read-model. */
   #schemaOwners: unknown[] = [];
+  /** What boot pricing checks once the tables exist (see `start`); `null` once it ran. */
+  #pricingCheck: {
+    models: DescribedModel[];
+    pricingStore: AgentPricingStore | undefined;
+    config: AgentConfig;
+  } | null = null;
+  /** The boot pricing check in flight (awaited by `shutdown` so a test never leaks it). */
+  #pricingCheckRun: Promise<unknown> | null = null;
   /** The engine running the turns instead of the loop (`engine` in the config), when there is one. */
   #engine: AgentEngine | undefined;
 
@@ -356,6 +379,7 @@ export default class AgentProvider {
     this.#sink = sink;
     this.#actorDirectory = actorDirectory;
     this.#schemaOwners = [store, pricingStore, governance, sink];
+    this.#pricingCheck = { models: describedModels(model), pricingStore, config };
     const onPresentationError = config.onPresentationError ?? (await this.#logPresentationErrors());
 
     const factory = new AgentDepsFactory({
@@ -538,9 +562,35 @@ export default class AgentProvider {
       }
     }
     this.#actionProposalWorker?.start();
+    this.#pricingCheckRun = this.#checkPricing();
+  }
+
+  /**
+   * Seed a configured model's missing price row from models.dev and warn about one that would record
+   * no cost (see `priceCatalog`). In the background: a slow catalog must not hold the boot up. Skipped
+   * under `NODE_ENV=test` unless `priceCatalog` is set explicitly.
+   */
+  async #checkPricing(): Promise<void> {
+    const check = this.#pricingCheck;
+    this.#pricingCheck = null;
+    if (check === null || check.models.length === 0) return;
+    const catalogConfig = check.config.priceCatalog;
+    if (catalogConfig === undefined && this.app.getEnvironment() === 'test') return;
+    await ensureModelPricing({
+      models: check.models,
+      pricingStore: check.pricingStore,
+      catalog: catalogConfig ?? {},
+      log: {
+        info: (message) => console.info(message),
+        warn: (message) => console.warn(message),
+      },
+    }).catch(() => undefined);
   }
 
   async shutdown() {
+    await this.#pricingCheckRun;
+    this.#pricingCheckRun = null;
+    this.#pricingCheck = null;
     await this.#engine?.shutdown?.();
     this.#engine = undefined;
     await this.#actionProposalWorker?.stop();

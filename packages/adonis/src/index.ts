@@ -299,6 +299,7 @@ export { evaluateOwnership } from './ownership.js';
 export type { CursorPage, CursorParams } from './pagination.js';
 export { type PartialJson, parsePartialJson } from './partial-json.js';
 export * from './personas.js';
+export * from './pricing/boot-pricing.js';
 export * from './pricing/models-dev.js';
 export {
   createFrameBuffer,

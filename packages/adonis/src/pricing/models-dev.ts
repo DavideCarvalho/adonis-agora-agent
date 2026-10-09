@@ -57,44 +57,100 @@ function parseRef(ref: ModelsDevRef): { provider: string; model: string } {
  * FALHA ALTO. Um modelo pedido que não existe no catálogo, ou existe sem preço, vira erro — e não
  * uma linha faltando em silêncio, que reapareceria depois como `$0.00` num painel.
  */
+async function loadCatalog(options: ModelsDevOptions): Promise<ModelsDevCatalog> {
+  const doFetch = options.fetch ?? globalThis.fetch;
+  if (typeof doFetch !== 'function') {
+    throw new Error('models.dev: nenhum `fetch` disponível — passe `options.fetch`.');
+  }
+  const url = options.url ?? MODELS_DEV_URL;
+  const response = await doFetch(url, options.signal ? { signal: options.signal } : {});
+  if (!response.ok) {
+    throw new Error(`models.dev: ${url} respondeu ${response.status}`);
+  }
+  return (await response.json()) as ModelsDevCatalog;
+}
+
+/** The price row a catalog entry yields, keyed by the model name — or `undefined` when it has none. */
+function priceOf(catalog: ModelsDevCatalog, ref: ModelsDevRef): ModelPriceInput | undefined {
+  const { provider, model } = parseRef(ref);
+  const cost = catalog[provider]?.models?.[model]?.cost;
+  if (cost === undefined || typeof cost.input !== 'number' || typeof cost.output !== 'number') {
+    return undefined;
+  }
+  return {
+    modelId: model,
+    inputPricePer1m: cost.input,
+    outputPricePer1m: cost.output,
+    ...(typeof cost.cache_write === 'number' ? { cacheWritePricePer1m: cost.cache_write } : {}),
+    ...(typeof cost.cache_read === 'number' ? { cacheReadPricePer1m: cost.cache_read } : {}),
+  };
+}
+
+/** The result of a lenient lookup: what the catalog priced, and what it did not. */
+export interface ModelsDevLookup {
+  prices: ModelPriceInput[];
+  /** Refs with no entry, or an entry without an input/output price. */
+  missing: ModelsDevRef[];
+}
+
+/**
+ * The lenient twin of {@link fetchModelsDevPrices}, for boot-time seeding: a model the catalog does
+ * not price is reported in `missing` instead of failing the whole batch, so one unknown model does
+ * not leave every other one unpriced. Throws only when the catalog itself cannot be read.
+ *
+ * Each ref is a LIST of candidates, tried in order — the first one the catalog prices wins.
+ */
+export async function lookupModelsDevPrices(
+  refs: readonly (readonly ModelsDevRef[])[],
+  options: ModelsDevOptions = {},
+): Promise<ModelsDevLookup> {
+  if (refs.length === 0) return { prices: [], missing: [] };
+  const catalog = await loadCatalog(options);
+  const prices: ModelPriceInput[] = [];
+  const missing: ModelsDevRef[] = [];
+  for (const candidates of refs) {
+    const price = candidates.map((ref) => priceOf(catalog, ref)).find((p) => p !== undefined);
+    if (price !== undefined) prices.push(price);
+    else if (candidates[0] !== undefined) missing.push(candidates[0]);
+  }
+  return { prices, missing };
+}
+
+/**
+ * The models.dev refs to try for a model, most specific first: `<provider>/<modelId>`, then — for an
+ * OpenRouter-style id (`deepseek/deepseek-v4.1-flash`) reached through another SDK — the OpenRouter
+ * list price. `provider` is the AI SDK provider family (`openrouter`, `openai`, `vercel`, …).
+ */
+export function modelsDevRefsFor(modelId: string, provider: string | undefined): ModelsDevRef[] {
+  const refs: ModelsDevRef[] = [];
+  if (provider !== undefined && provider.length > 0) refs.push(`${provider}/${modelId}`);
+  // A gateway id names its own provider (`openai/gpt-4o-mini` through the Vercel AI Gateway).
+  if (provider === 'vercel' && modelId.includes('/')) refs.push(modelId);
+  if (modelId.includes('/') && provider !== 'openrouter') refs.push(`openrouter/${modelId}`);
+  return refs;
+}
+
 export async function fetchModelsDevPrices(
   models: readonly ModelsDevRef[],
   options: ModelsDevOptions = {},
 ): Promise<ModelPriceInput[]> {
   if (models.length === 0) return [];
 
-  const doFetch = options.fetch ?? globalThis.fetch;
-  if (typeof doFetch !== 'function') {
-    throw new Error('models.dev: nenhum `fetch` disponível — passe `options.fetch`.');
-  }
-
-  const url = options.url ?? MODELS_DEV_URL;
-  const response = await doFetch(url, options.signal ? { signal: options.signal } : {});
-  if (!response.ok) {
-    throw new Error(`models.dev: ${url} respondeu ${response.status}`);
-  }
-  const catalog = (await response.json()) as ModelsDevCatalog;
+  const catalog = await loadCatalog(options);
 
   const prices: ModelPriceInput[] = [];
   for (const ref of models) {
     const { provider, model } = parseRef(ref);
-    const entry = catalog[provider]?.models?.[model];
-    if (entry === undefined) {
+    if (catalog[provider]?.models?.[model] === undefined) {
       throw new Error(`models.dev: não achei "${model}" em "${provider}".`);
     }
-    const cost = entry.cost;
-    if (cost === undefined || typeof cost.input !== 'number' || typeof cost.output !== 'number') {
+    const price = priceOf(catalog, ref);
+    if (price === undefined) {
       throw new Error(
         `models.dev: "${ref}" existe no catálogo mas não publica preço de input/output.`,
       );
     }
-    prices.push({
-      modelId: model,
-      inputPricePer1m: cost.input,
-      outputPricePer1m: cost.output,
-      ...(typeof cost.cache_write === 'number' ? { cacheWritePricePer1m: cost.cache_write } : {}),
-      ...(typeof cost.cache_read === 'number' ? { cacheReadPricePer1m: cost.cache_read } : {}),
-    });
+    prices.push(price);
   }
   return prices;
 }
