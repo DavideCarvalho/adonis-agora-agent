@@ -1,6 +1,7 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { ClaimedActionApproval } from './action-proposal-approval.js';
 import type { AgentIntake } from './elicitation.js';
+import type { SandboxClientConfig } from './genui/sandbox-kit.js';
 import type { ActionProposalOutcome } from './spi/action-proposal-outcome-store.js';
 import type { ActorResolver } from './spi/actor-resolver.js';
 import type { ChatQueueState } from './spi/chat-queue.js';
@@ -284,6 +285,8 @@ export interface PromptContext {
   persona?: Persona;
   pageContext?: PageContext;
   uiCapabilities?: UiCapabilities;
+  /** The channel the turn runs on (`web`, `whatsapp`, …) — see `turnChannel`. */
+  channel?: string;
   basePrompt: string;
 }
 
@@ -727,4 +730,9 @@ export interface AgentClientConfig {
   quota: { enforced: boolean };
   /** No `actorResolver`: every browser is its own anonymous actor. */
   identity: { anonymous: boolean };
+  /**
+   * Generative UI facts a renderer needs: the sandbox's theme, Tailwind runtime and kit bundle
+   * (same-origin urls). Absent without a configured sandbox.
+   */
+  genui?: { sandbox?: SandboxClientConfig };
 }

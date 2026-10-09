@@ -54,6 +54,8 @@ export interface TelegramOptions {
 /** Telegram's limits: message text, buttons we put in one keyboard. */
 const MAX_TEXT = 4096;
 const MAX_BUTTONS = 8;
+/** Entries of a list, as an inline keyboard of one button per row. */
+const MAX_LIST_ROWS = 30;
 
 /** The file a message carries: the largest photo size, a document, a voice note, audio, video, a sticker. */
 function mediaOf(message: Record<string, unknown>): InboundMedia | undefined {
@@ -171,8 +173,10 @@ export function telegram(options: TelegramOptions): ChannelAdapter {
 
   return {
     name,
+    kind: 'telegram',
     capabilities: {
       buttons: MAX_BUTTONS,
+      lists: MAX_LIST_ROWS,
       markdown: markdown ? 'telegram' : 'none',
       maxLength: MAX_TEXT,
       media: true,
@@ -278,17 +282,32 @@ export function telegram(options: TelegramOptions): ChannelAdapter {
         chat_id: conversation,
         text,
         link_preview_options: { is_disabled: true },
-        ...(message.buttons !== undefined && message.buttons.length > 0
+        ...(message.list !== undefined
           ? {
+              // A list is a keyboard of one button per entry (Telegram has no list message).
               reply_markup: {
-                inline_keyboard: [
-                  message.buttons
-                    .slice(0, MAX_BUTTONS)
-                    .map((button) => ({ text: button.label, callback_data: button.id })),
-                ],
+                inline_keyboard: message.list.rows.slice(0, MAX_LIST_ROWS).map((row) => [
+                  {
+                    text:
+                      row.description !== undefined && row.description !== ''
+                        ? `${row.title} — ${row.description}`.slice(0, 64)
+                        : row.title.slice(0, 64),
+                    callback_data: row.id,
+                  },
+                ]),
               },
             }
-          : {}),
+          : message.buttons !== undefined && message.buttons.length > 0
+            ? {
+                reply_markup: {
+                  inline_keyboard: [
+                    message.buttons
+                      .slice(0, MAX_BUTTONS)
+                      .map((button) => ({ text: button.label, callback_data: button.id })),
+                  ],
+                },
+              }
+            : {}),
       };
       if (!markdown) {
         await call('sendMessage', body);

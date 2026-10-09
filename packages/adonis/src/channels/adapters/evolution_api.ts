@@ -317,8 +317,11 @@ export function evolutionFormatAdapter(
 
   return {
     name,
+    kind: 'whatsapp',
     capabilities: {
       ...(buttons ? { buttons: MAX_BUTTONS } : {}),
+      // Lists ride the same interactive messages as the buttons: only where those render.
+      ...(buttons ? { lists: 10 } : {}),
       markdown: 'whatsapp',
       maxLength: options.maxLength ?? 4096,
       media: true,
@@ -404,6 +407,36 @@ export function evolutionFormatAdapter(
           ...(message.text !== '' ? { caption: message.text.slice(0, MAX_CAPTION) } : {}),
           ...(media.kind === 'document' ? { fileName: mediaFilename(media) } : {}),
         });
+        return;
+      }
+      if (message.list !== undefined) {
+        if (buttons) {
+          try {
+            await post('/message/sendList', {
+              number,
+              title: (message.list.title ?? '').replace(/[*_~]/g, '').trim().slice(0, 60),
+              description: message.text.trim() === '' ? '…' : message.text.slice(0, 1024),
+              buttonText: message.list.button.slice(0, 20),
+              footerText: '',
+              sections: [
+                {
+                  title: (message.list.title ?? message.list.button)
+                    .replace(/[*_~]/g, '')
+                    .slice(0, 24),
+                  rows: message.list.rows.slice(0, 10).map((row) => ({
+                    title: row.title.slice(0, 24),
+                    description: (row.description ?? '').slice(0, 72),
+                    rowId: row.id,
+                  })),
+                },
+              ],
+            });
+            return;
+          } catch (error) {
+            if (!(error instanceof ChannelDeliveryError) || !error.definite) throw error;
+          }
+        }
+        await post('/message/sendText', { number, text: message.fallbackText });
         return;
       }
       if (message.buttons !== undefined && buttons) {

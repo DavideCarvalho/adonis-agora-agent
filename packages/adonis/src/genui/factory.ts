@@ -1,6 +1,8 @@
 /** Framework-independent wiring for the local Adonis GenUI catalog and provider. */
 import type { FunctionalTool } from '../ai-tool-ref.js';
 import type { Catalog } from './catalog.js';
+import type { GenuiChannelBase, GenuiChannels } from './channels.js';
+import type { SandboxClientConfig } from './sandbox-kit.js';
 import type { GenuiCatalogScope } from './tools.js';
 
 /** What the provider hands a {@link GenuiFactory} at boot. */
@@ -10,6 +12,8 @@ export interface GenuiFactoryContext {
    * dependencies). The provider passes `app.container.make`.
    */
   make<T>(klass: abstract new (...args: never[]) => T): Promise<T>;
+  /** The Adonis application — where the sandbox kit is looked up (its Vite setup). */
+  app?: unknown;
 }
 
 /** What a {@link GenuiFactory} produces: the tools to register, and the boot-time catalog. */
@@ -18,6 +22,12 @@ export interface GenuiSetup {
   tools: FunctionalTool[];
   /** The boot-time catalog, bound in the container as `AgentGenui`. */
   catalog: Catalog;
+  /** `genui({ channels })` — what text channels read to draw natively. */
+  channels?: GenuiChannels;
+  /** The top-level mode, streaming and sandbox a channel falls back to. */
+  base?: GenuiChannelBase;
+  /** What the sandbox renderer is told (`GET <agent>/config` → `genui.sandbox`). */
+  sandboxClient?: () => SandboxClientConfig;
 }
 
 /**
@@ -34,5 +44,11 @@ export class AgentGenui {
   constructor(
     readonly catalog: Catalog,
     readonly resolveCatalog?: GenuiSetup['resolveCatalog'],
+    /** `genui({ channels })`, when configured. */
+    readonly channels?: GenuiChannels,
+    /** The top-level options a channel falls back to. */
+    readonly base: GenuiChannelBase = {},
+    /** What the sandbox renderer is told, when a sandbox is configured. */
+    readonly sandboxClient?: () => SandboxClientConfig,
   ) {}
 }

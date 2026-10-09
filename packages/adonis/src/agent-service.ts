@@ -78,6 +78,12 @@ export interface ChatParams {
   pageContext?: PageContext;
   uiCapabilities?: UiCapabilities;
   /**
+   * The channel this turn runs on — `web`, `mobile`, `whatsapp`… — over whatever its page context
+   * says. Stamped as `pageContext.channel`, which is what decides (`turnChannel`) which genui tools
+   * the turn is offered (`genui({ channels })`). Omitted → the page context's, else `web`.
+   */
+  channel?: string;
+  /**
    * Uploads to attach to this message, named by id (`POST <path>/attachments` answered it). The
    * configured attachment store resolves each — the url the model fetches is never taken from here.
    */
@@ -1558,7 +1564,10 @@ export class AgentService {
 
 /** `params` with its `uiCapabilities` validated (a `TypeError` when malformed). */
 function withValidCapabilities(params: ChatParams): ChatParams {
-  return params.uiCapabilities === undefined
-    ? params
-    : { ...params, uiCapabilities: validateUiCapabilities(params.uiCapabilities) };
+  const { channel, ...rest } = params;
+  const stamped: ChatParams =
+    channel === undefined ? params : { ...rest, pageContext: { ...params.pageContext, channel } };
+  return stamped.uiCapabilities === undefined
+    ? stamped
+    : { ...stamped, uiCapabilities: validateUiCapabilities(stamped.uiCapabilities) };
 }

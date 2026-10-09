@@ -13,13 +13,14 @@ import { stubsRoot } from './stubs/main.js';
  * 3. registers the Assembler `init` hook that generates the typed `app/agent_tools` barrel at
  *    build/dev time (the provider imports it instead of scanning at runtime; it falls back to the
  *    runtime scan when the barrel is absent);
- * 4. publishes `config/agent.ts`;
- * 5. publishes `config/mcp.ts` (the MCP endpoint config; the MCP provider is separate);
- * 6. publishes the Lucid migrations for the agent tables — the base tables plus the two forward-only
+ * 4. registers the Assembler `init` hook that writes the sandbox kit docs (see `hooks/genui_kit`);
+ * 5. publishes `config/agent.ts`;
+ * 6. publishes `config/mcp.ts` (the MCP endpoint config; the MCP provider is separate);
+ * 7. publishes the Lucid migrations for the agent tables — the base tables plus the two forward-only
  *    action-proposal upgrades (run `node ace migration:run`; delete them if you only use the
  *    in-memory store). They delegate to `createAgentTables`, so they are idempotent and safe to run
  *    against a database the library already auto-created;
- * 7. publishes the Postgres migrations for the RAG chunk table (pgvector; delete it unless you use
+ * 8. publishes the Postgres migrations for the RAG chunk table (pgvector; delete it unless you use
  *    `retrievers.pgvector({...})`) and the document-tree tables (delete it unless you use
  *    `PgDocumentTreeStore`).
  */
@@ -31,6 +32,9 @@ export async function configure(command: Configure) {
     rcFile.addProvider('@adonis-agora/agent/dashboard_provider');
     // Generate the typed app/agent_tools barrel at build/dev time (replaces the runtime readdir scan).
     rcFile.addAssemblerHook('init', '@adonis-agora/agent/hooks/tools');
+    // Write the sandbox kit's docs (components and props, from their types) on serve/build, for an
+    // app whose Vite is not in-process. A no-op without a kit (`components/ui`).
+    rcFile.addAssemblerHook('init', '@adonis-agora/agent/hooks/genui_kit');
   });
 
   await codemods.makeUsingStub(stubsRoot, 'config/agent.stub', {});

@@ -1,3 +1,4 @@
+import { turnChannel } from './genui/channels.js';
 import { DEFAULT_REFUSAL_REASON } from './refusal.js';
 
 export { DEFAULT_REFUSAL_REASON } from './refusal.js';
@@ -611,6 +612,7 @@ function promptContext(
     ...(persona !== undefined ? { persona: personaFromTurn(persona) } : {}),
     ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
     ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
+    channel: turnChannel(input.pageContext),
   };
 }
 
@@ -1342,6 +1344,7 @@ function elicitationContext(
     ...personaContext(input),
     ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
     ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
+    channel: turnChannel(input.pageContext),
     ...(deps.host !== undefined ? { host: deps.host } : {}),
   };
 }
@@ -1468,6 +1471,7 @@ async function claimToolCall(
     ...(persona !== undefined ? { persona } : {}),
     ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
     ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
+    channel: turnChannel(input.pageContext),
     ...(deps.host !== undefined ? { host: deps.host } : {}),
   };
   const persisted = (await hooks.step(
@@ -1823,6 +1827,7 @@ async function invokeClaimedTool(
           threadId: ctx.threadId,
           ...(ctx.agentName !== undefined ? { agentName: ctx.agentName } : {}),
           ...(ctx.uiCapabilities !== undefined ? { uiCapabilities: ctx.uiCapabilities } : {}),
+          channel: ctx.channel ?? turnChannel(ctx.pageContext),
         },
         deps.resolveUiCatalog,
         turn.writer,
@@ -2118,6 +2123,7 @@ async function stampToolKinds<T extends { toolCalls: ToolCallRequest[] }>(
               ...(input.uiCapabilities !== undefined
                 ? { uiCapabilities: input.uiCapabilities }
                 : {}),
+              channel: turnChannel(input.pageContext),
               ...(deps.host !== undefined ? { host: deps.host } : {}),
             },
             deps.rolesPolicy,
@@ -2142,6 +2148,7 @@ async function stampToolKinds<T extends { toolCalls: ToolCallRequest[] }>(
               ...(input.uiCapabilities !== undefined
                 ? { uiCapabilities: input.uiCapabilities }
                 : {}),
+              channel: turnChannel(input.pageContext),
               ...(deps.host !== undefined ? { host: deps.host } : {}),
             },
             deps.rolesPolicy,
@@ -3254,6 +3261,7 @@ export async function runAgentLoop<TOutput = unknown>(
         {
           threadId: input.threadId,
           ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
+          channel: turnChannel(input.pageContext),
           ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
         },
       ),
@@ -3312,6 +3320,7 @@ export async function runAgentLoop<TOutput = unknown>(
                     ...(input.uiCapabilities !== undefined
                       ? { uiCapabilities: input.uiCapabilities }
                       : {}),
+                    channel: turnChannel(input.pageContext),
                   })
                 : undefined,
             );
