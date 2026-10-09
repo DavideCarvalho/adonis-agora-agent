@@ -6,6 +6,9 @@ import {
 } from '../spi/pricing-store.js';
 import { lookupModelsDevPrices, type ModelsDevOptions, modelsDevRefsFor } from './models-dev.js';
 
+/** How long the boot check waits for the models.dev catalog when no `signal` is given. */
+export const CATALOG_TIMEOUT_MS = 15_000;
+
 /** Where boot pricing logs. Both are one line each, at most once per boot. */
 export interface BootPricingLog {
   info(message: string): void;
@@ -67,7 +70,10 @@ export async function ensureModelPricing(
       try {
         const { prices } = await lookupModelsDevPrices(
           needing.map((model) => modelsDevRefsFor(model.modelId, model.provider)),
-          args.catalog,
+          // Bounded: a hung catalog must not hold a shutdown (which awaits this) open forever.
+          args.catalog.signal !== undefined
+            ? args.catalog
+            : { ...args.catalog, signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS) },
         );
         const effectiveFrom = new Date().toISOString();
         for (const price of prices) {

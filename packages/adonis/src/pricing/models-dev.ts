@@ -124,6 +124,8 @@ export async function lookupModelsDevPrices(
 export function modelsDevRefsFor(modelId: string, provider: string | undefined): ModelsDevRef[] {
   const refs: ModelsDevRef[] = [];
   if (provider !== undefined && provider.length > 0) refs.push(`${provider}/${modelId}`);
+  // A gateway id names its own provider (`openai/gpt-4o-mini` through the Vercel AI Gateway).
+  if (provider === 'vercel' && modelId.includes('/')) refs.push(modelId);
   if (modelId.includes('/') && provider !== 'openrouter') refs.push(`openrouter/${modelId}`);
   return refs;
 }

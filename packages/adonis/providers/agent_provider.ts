@@ -133,6 +133,19 @@ function sendMode(body: ChatBody): ChatSendMode | null {
     : null;
 }
 
+/**
+ * The models a provider describes for boot pricing — none when it describes none, or when its
+ * `describeModels` throws: pricing is bookkeeping, never a reason for the app to stay down.
+ */
+function describedModels(model: ModelProvider): DescribedModel[] {
+  try {
+    return model.describeModels?.() ?? [];
+  } catch (error) {
+    console.warn('[@adonis-agora/agent] describeModels() threw; boot pricing skipped.', error);
+    return [];
+  }
+}
+
 /** The catalog a model provider carries (`aiSdkModels(…).catalog`), if it carries one. */
 function catalogOf(model: unknown): ModelCatalog | undefined {
   const catalog = (model as { catalog?: unknown } | null)?.catalog;
@@ -366,7 +379,7 @@ export default class AgentProvider {
     this.#sink = sink;
     this.#actorDirectory = actorDirectory;
     this.#schemaOwners = [store, pricingStore, governance, sink];
-    this.#pricingCheck = { models: model.describeModels?.() ?? [], pricingStore, config };
+    this.#pricingCheck = { models: describedModels(model), pricingStore, config };
     const onPresentationError = config.onPresentationError ?? (await this.#logPresentationErrors());
 
     const factory = new AgentDepsFactory({

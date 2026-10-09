@@ -568,12 +568,6 @@ function mapUsage(usage: LanguageModelUsage): MessageUsage {
 }
 
 /**
- * A gateway reports the ACTUAL spend for the turn; a direct provider (Anthropic/OpenAI/Bedrock)
- * doesn't, leaving this undefined so the governance read-model estimates from tokens. We read the
- * Vercel AI Gateway shape (`gateway.cost`) first, then OpenRouter (`openrouter.total_cost`, also
- * nested under `openrouter.usage.total_cost`).
- */
-/**
  * OpenRouter only bills what it reports, and reports cost in the response only when usage accounting
  * is asked for (`usage: { include: true }`). The OpenRouter provider forwards
  * `providerOptions.openrouter` into the request body, so the adapter asks on every OpenRouter call —

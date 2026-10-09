@@ -40,6 +40,12 @@ describe('modelsDevRefsFor', () => {
       'openrouter/deepseek/deepseek-v4.1-flash',
     ]);
     // OpenRouter reached through `@ai-sdk/openai` with a custom baseURL.
+    // A Vercel AI Gateway id carries its own provider.
+    expect(modelsDevRefsFor('openai/gpt-4o-mini', 'vercel')).toEqual([
+      'vercel/openai/gpt-4o-mini',
+      'openai/gpt-4o-mini',
+      'openrouter/openai/gpt-4o-mini',
+    ]);
     expect(modelsDevRefsFor('deepseek/deepseek-v4.1-flash', 'openai')).toEqual([
       'openai/deepseek/deepseek-v4.1-flash',
       'openrouter/deepseek/deepseek-v4.1-flash',
@@ -125,6 +131,18 @@ describe('ensureModelPricing', () => {
     });
     expect(result).toEqual({ seeded: [], unpriced: ['gpt-4o-mini'] });
     expect(l.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('bounds the catalog fetch with a timeout signal when none is given', async () => {
+    const fetch = fakeFetch();
+    await ensureModelPricing({
+      models: [openAi],
+      pricingStore: new InMemoryPricingStore(),
+      catalog: { fetch },
+      log: log(),
+    });
+    const init = (fetch.mock.calls[0] as unknown[] | undefined)?.[1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it('with `catalog: false` fetches nothing and still warns', async () => {
