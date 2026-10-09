@@ -1,0 +1,336 @@
+---
+title: Sandboxed generated UI
+description: "An opt-in catalog component the model fills with its own HTML, CSS and JavaScript for a one-off interactive answer — streamed in field order, drawn in an isolated iframe under a strict CSP, with a checked agent.send bridge back to the conversation."
+icon: AppWindow
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+A [catalog](/docs/agent/generative-ui#a-component-catalog--adonis-agoraagentgenui) covers the answers you planned for: tables, charts, KPI cards, your own `OrderCard`. Some answers are one-offs nobody planned a component for — a tip calculator for this dinner, a loan amortization slider, a small simulation, a chart of a shape your `Chart` does not draw. The **sandbox** is the component for those: the model writes the view itself, in HTML, CSS and JavaScript, and the browser runs it in an isolated frame. It is the idea CopilotKit calls *Open Generative UI*, on this library's catalog, stream and security model.
+
+It is a last resort, and it is described to the model as one. The component's description tells the model to use it **only when no other component of the catalog can present the answer**, and that tables, charts, KPIs and text always go in the catalog components. With `genui({ sandbox: true })` it is also added last, after every other component the model is shown.
+
+<Callout type="warn" title="Opt-in">
+Nothing here is on by default. Without `sandbox` in `genui(...)` (or a `Sandbox` definition in your catalog) the model is never offered it, and a catalog that does not know it refuses it like any unknown component. Read the [security model](#security-model) before you turn it on.
+</Callout>
+
+## Enabling it
+
+The quickest way is one option on the server:
+
+```ts title="config/agent.ts"
+import { genui } from '@adonis-agora/agent/genui'
+import { catalog } from '#genui/catalog'
+
+export default defineConfig({
+  model,
+  genui: genui({ catalog, sandbox: true }), // no network, default limits
+})
+```
+
+`sandbox: true` adds the builtin definition (`Sandbox`). Pass options instead of `true` to tune it — the same options `defineSandbox` takes.
+
+When the browser draws with a catalog too (it should: it validates props before drawing), put the definition in the **shared catalog file** instead, so the server tells the model and the browser enforces the very same policy:
+
+```ts title="app/genui/catalog.ts"
+import { defineCatalog } from '@adonis-agora/agent/genui'
+import { BUILTIN_COMPONENTS, LAYOUT_COMPONENTS, defineSandbox } from '@adonis-agora/agent/genui/builtins'
+
+export const catalog = defineCatalog([
+  ...BUILTIN_COMPONENTS,
+  ...LAYOUT_COMPONENTS,
+  defineSandbox({
+    policy: { allow: { images: ['https://tile.openstreetmap.org'] } },
+    instructions: 'Use the brand color #4f46e5 for primary buttons.',
+  }),
+])
+```
+
+```ts title="config/agent.ts"
+genui: genui({ catalog }) // the catalog already has the sandbox: no `sandbox` option
+```
+
+Use one or the other. `genui({ sandbox })` replaces a definition of the same name, so `sandbox: true` next to a catalog that already has `defineSandbox({ policy })` would swap your policy for the default one on the server only.
+
+`defineSandbox(options)`, also exported from `@adonis-agora/agent/genui`:
+
+| Option | Meaning |
+| --- | --- |
+| `policy` | What the frame may reach and how much it may send back — see [the policy](#the-policy). Origins are validated when the definition is built. Default: no network, the [default limits](#defaults). |
+| `instructions` | Extra rules appended to the model-facing description (house style, what the app wants from it). |
+| `description` | Replaces the model-facing description altogether. Keep the "last resort" rule in it. |
+| `name` | The component name. Default `Sandbox`. |
+| `version` | The component version. |
+
+The generated description tells the model, besides the last-resort rule: the order to write the fields in, exactly which network the policy opens (or that there is none — inline SVG and `data:` URLs only), that there is no `<form>` submission and no top-level `await`, to validate numeric input and label units, and to call `agent.send(...)` from an explicit button click only — never on load, on a timer or on input.
+
+## What the model writes
+
+The sandbox's props are the view, and the model writes them **in this order** (`SANDBOX_FIELD_ORDER`):
+
+| Prop | What it is | Limit |
+| --- | --- | --- |
+| `initialHeight` | Height in CSS pixels to reserve while the code streams. The frame then sizes to its content. | 40 – 2000, default 240 |
+| `placeholderMessages` | One to three short lines shown while the code streams ("Setting up the calculator…"). | 5 lines of 120 characters |
+| `title` | Short title: the frame's accessible name, and what text-only clients print. | 120 characters |
+| `summary` | One or two sentences on what the view shows — what a client that cannot run it prints. | 600 characters |
+| `css` | Styles, injected in a `<style>` before the markup. | 60 000 characters |
+| `html` | The body markup (required). Inline SVG for graphics; no `<script src>`, no form submission. | 120 000 characters |
+| `jsFunctions` | Function declarations, run once as one classic script after the markup. | 120 000 characters |
+| `jsExpressions` | Statements run in order after `jsFunctions`, each as its own classic script: wiring listeners, the first render. | 50 entries of 20 000 characters |
+
+```json
+{
+  "initialHeight": 320,
+  "placeholderMessages": ["Setting up the splitter…", "Wiring the buttons…"],
+  "title": "Bill splitter",
+  "summary": "Splits a bill between people, with tip.",
+  "css": ".total{font-weight:600}",
+  "html": "<div class=\"total\" id=\"out\">$0.00</div><button id=\"go\">Split it</button>",
+  "jsFunctions": "function split(t,n){return t/n}",
+  "jsExpressions": [
+    "document.getElementById('out').textContent = split(120, 3)",
+    "document.getElementById('go').onclick = () => agent.send({ text: 'Split it 3 ways', total: 120, people: 3 })"
+  ]
+}
+```
+
+## While the model writes it
+
+The order is what makes the view usable before it is finished: a box of the right size first, then styles before markup (so nothing ever draws unstyled), then behavior last. The definition streams as `partial`, and the server trims what it previews (`partialProps`, see below), so the user sees:
+
+1. **A placeholder** as soon as `initialHeight` has arrived: a busy box of that height, rotating through the `placeholderMessages` (prefixed with the `title` once it is there). Nothing below it moves when the view replaces it.
+2. **A preview** once `css` or `html` starts: the styled markup as it is written, with every `<script>` (whole or cut off) and the half-written tag at the end removed. No code runs in a preview.
+3. **The live view** once the markup is complete (the model has moved on to `jsFunctions` or `jsExpressions`). The frame is built once from the finished markup; then `jsFunctions` runs when its string closes, and each `jsExpressions` entry runs as soon as it closes, in order. What the user did in the frame stays: later code is posted in, the frame is not rebuilt.
+
+**Code never runs half written.** On the server, the sandbox definition's `partialProps` hook drops what must not be shown or run before it is whole: `css`, `title`, `summary` and `jsFunctions` until their string closes, a `jsExpressions` entry or a placeholder line until it closes, an `initialHeight` until its number ends. Only `html` streams as it is, and the preview strips it. `partialProps` is a general `ComponentDefinition` hook — any component can say what of its half-written props may be drawn.
+
+**Where it previews.** The sandbox definition is `streaming: 'partial'`, so it previews even when `genui(...)` keeps the default `streaming: 'complete'` — as long as nothing above it holds it back. Nested in a layout (a `Card` around it), that layout must stream `partial` too (`genui({ catalog, streaming: 'partial' })`, or `streaming: 'partial'` on the layout's definition); a `complete` layout holds its whole subtree back and the sandbox appears at once when the call ends. In `mode: 'per-component'`, `ui__show_sandbox` previews as well: a component with a `partialProps` hook is drawn while the call is written, as a one-node tree. See [Drawing a tree while the model writes it](/docs/agent/generative-ui#drawing-a-tree-while-the-model-writes-it) for partial frames in general.
+
+## Drawing it in React
+
+Register the renderer under the component's name, from `@adonis-agora/agent/react/genui`:
+
+```tsx title="inertia/genui/renderers.tsx"
+import { SandboxView, type GenuiRegistry } from '@adonis-agora/agent/react/genui'
+
+export const registry: GenuiRegistry = {
+  // …your renderers
+  Sandbox: SandboxView,
+}
+```
+
+`SandboxView` draws the frame, the placeholder and the preview, sizes the frame to its content (between 24 px and the policy's `maxHeight`), and takes its policy from the catalog definition of the enclosing `GenuiProvider` — the `defineSandbox({ policy })` in your shared catalog. For anything else, build your own with `createSandboxRenderer(options)`:
+
+```tsx
+import { createSandboxRenderer } from '@adonis-agora/agent/react/genui'
+import { z } from 'zod'
+
+const Sandbox = createSandboxRenderer({
+  schema: z.object({ total: z.number().positive(), people: z.number().int().min(1).max(50) }),
+  confirm: (action) => window.confirm(action.text ?? 'Send this to the assistant?'),
+  onRefused: (refusal) => console.warn('sandbox send refused', refusal),
+  onError: (message) => console.warn('sandbox error', message),
+  placeholder: ({ height, messages }) => <ViewSkeleton height={height} line={messages[0]} />,
+})
+```
+
+| Option | Meaning |
+| --- | --- |
+| `policy` | The policy the frame runs under. Default: the catalog definition's (`defineSandbox({ policy })`), else none — no network, default limits. |
+| `schema` | Checks the values of every `agent.send(...)`: a Zod object, any Standard Schema, or a JSON Schema. A failing send is refused (`reason: 'invalid'`); a passing one carries the parsed values. |
+| `confirm` | `(action) => boolean \| Promise<boolean>` — the last word before an action is sent, e.g. a dialog. Falsy → dropped (`reason: 'declined'`). |
+| `onAction` | Where actions go. Default: the enclosing [`GenuiActionProvider`](#the-bridge-back-to-the-agent). |
+| `onRefused` | Something the frame sent was refused: `too-large`, `too-soon`, `too-many`, `not-json`, `invalid` (with the issues), `declined`, or `no-handler`. |
+| `onError` | An uncaught error (or unhandled rejection) in the generated code, as a message of at most 500 characters. |
+| `placeholder` | `({ height, messages, title }) => ReactNode` — what to draw before anything is drawable. Default: a dashed busy box with the rotating messages. |
+| `className`, `style` | On the `<iframe>`. |
+
+## The bridge back to the agent
+
+Code inside the frame has exactly one way out: `agent.send(values)`. It starts a new turn, as if the user had written it:
+
+```js
+// inside the generated code, from a click handler
+agent.send({ text: 'Split it 3 ways', action: 'split', total: 120, people: 3 })
+```
+
+- `text` is what the user says by clicking — shown as their message. Optional.
+- `action` names the action (letters, digits, `_ . : -`, up to 64). Default `send`.
+- Every other field is a value. The payload must be JSON (`agent.send` throws a `TypeError` otherwise).
+
+The host turns it into a `UiAction` (`{ source: 'sandbox', name, context, text?, componentId?, title?, timestamp }`) after [its checks](#the-bridge), and hands it to whatever handles actions. The usual handler is the chat's `sendUiAction`, which sends it as the next user message:
+
+```tsx title="inertia/pages/chat.tsx"
+import { useAgentChat } from '@adonis-agora/agent/react'
+import { GenerativeUI, GenuiActionProvider } from '@adonis-agora/agent/react/genui'
+
+function Chat() {
+  const chat = useAgentChat()
+  return (
+    <GenuiActionProvider onAction={chat.sendUiAction}>
+      {chat.transcript.items.map((item) => /* … <GenerativeUI part={block} /> … */ null)}
+    </GenuiActionProvider>
+  )
+}
+```
+
+`<GenuiProvider onAction={…}>` does the same for its whole tree. `useGenuiAction()` reads the handler, so your own components (a button in an `OrderCard`) can send actions the same way. Without a handler, a send is refused with `no-handler`.
+
+What the model receives is plain user text, built by `uiActionText(action)` (exported from `@adonis-agora/agent/genui`): what the user said — or `I used "<name>" in <title>.` when the payload had no `text` — then where it came from, then the values as a JSON block:
+
+````text
+Split it 3 ways
+
+[UI action "split" from interactive view, "Bill splitter", component root.0]
+```json
+{
+  "total": 120,
+  "people": 3
+}
+```
+````
+
+## Over AG-UI and CopilotKit
+
+The sandbox is an ordinary catalog component, so it travels over [AG-UI](/docs/agent/ag-ui) like any other: in the `agora.ui` custom event, and in the tool call's arguments (`ui__render`, or `ui__show_sandbox` in per-component mode). A client that draws the tool call itself — CopilotKit's `useRenderTool` — renders the node with `SandboxView`, and must say whether the call is still streaming. Arguments parsed on the client are raw (the server's trim never touched them), so wrap the view in `GenuiNodeScope` with `incomplete: true` until the call is complete: the renderer then shows the preview and runs no code until the props are whole.
+
+```tsx title="resources/js/pages/copilotkit.tsx (frontend)"
+import { GenuiActionProvider, GenuiNodeScope, SandboxView } from '@adonis-agora/agent/react/genui'
+
+useRenderTool({
+  name: 'ui__show_sandbox', // per-component mode; in tree mode, draw the Sandbox node of ui__render
+  parameters: z.any(),
+  render: ({ parameters, status }) => (
+    <GenuiNodeScope node={{ id: 'root', type: 'Sandbox', incomplete: status !== 'complete', held: false }}>
+      <SandboxView {...parameters} />
+    </GenuiNodeScope>
+  ),
+})
+```
+
+Send its actions back as the next run. Either put the action in `forwardedProps.uiAction` — it **is** the turn, and the `messages` only restate the conversation:
+
+```tsx
+<GenuiActionProvider onAction={(action) => agent.runAgent({ forwardedProps: { uiAction: action } })}>
+```
+
+or add a user message whose content is `uiActionText(action)` and run as usual. `forwardedProps.uiAction` is checked like any untrusted input: a plain object, a valid `name`, a JSON object `context`, at most 8192 bytes; anything else is a `400 { code: 'invalid_ui_action' }`.
+
+## On text channels
+
+[Text channels](/docs/agent/channels) (WhatsApp, Telegram, e-mail) and every client that did not declare `Sandbox` in its [UI capabilities](/docs/agent/surfaces#ui-capabilities) receive the component's text fallback — its `title` and `summary`, never its code:
+
+```text
+*Bill splitter*
+Splits a bill between people, with tip. (interactive — open the app to use it)
+```
+
+Over [A2UI](/docs/agent/a2ui), the sandbox has no basic-catalog equivalent and is drawn as that same text, unless you send it through as a custom component of your own catalog.
+
+## Security model
+
+The sandbox runs code a model wrote, in your users' browsers. It is built so that this code can draw inside its box and say something to the conversation — and nothing else.
+
+### The frame
+
+The view is an `<iframe srcdoc>` with `sandbox="allow-scripts"` and **never `allow-same-origin`**. Its origin is therefore opaque (`null`):
+
+- **No access to the host page.** No cookies, no `localStorage` / `sessionStorage` / IndexedDB of your origin, no `window.parent.document`, no calls to your API with the user's session.
+- **No navigation, no popups, no forms.** Without `allow-top-navigation`, `allow-popups` and `allow-forms`, it cannot navigate the page, open windows, or submit a form anywhere.
+- **No device features.** `allow=""` grants no Permissions Policy feature (camera, microphone, geolocation, …), and `referrerpolicy="no-referrer"` leaks no URL.
+
+### The CSP
+
+A Content-Security-Policy `<meta>` is the **first** element of the frame's document, before the bridge and before any generated byte:
+
+```text
+default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';
+img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none';
+frame-src 'none'; worker-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'
+```
+
+- **Inline script and style only.** They are the generated UI; nothing is loaded from anywhere. There is no `'unsafe-eval'`: `eval` and `new Function` are blocked.
+- **No network.** `connect-src 'none'` blocks `fetch`, `XMLHttpRequest`, `WebSocket` and `EventSource`; images, fonts and media come only from `data:` and `blob:` URLs. Nothing the user types in the frame can be sent anywhere but through `agent.send`.
+- **No nested frames, workers or plugins; no form posts; no `<base>` tricks.**
+- Generated code cannot close the element it is inlined in: `</script` and `</style` inside it are escaped.
+
+#### The policy
+
+`policy.allow` opens origins **per kind**, and only those:
+
+| Kind | Directive | For |
+| --- | --- | --- |
+| `images` | `img-src` | map tiles, photos |
+| `connect` | `connect-src` | `fetch`, `XMLHttpRequest`, `WebSocket` |
+| `scripts` | `script-src` | a charting library from a CDN |
+| `styles` | `style-src` | a stylesheet |
+| `fonts` | `font-src` | web fonts |
+| `media` | `media-src` | audio, video |
+
+Every entry must be a bare **https** origin — `https://host`, `https://host:port` or `https://*.host` — no path, no scheme other than https, no `*` alone; anything else throws when the definition (or the CSP) is built. The model's description lists exactly what is open, so it does not try the rest. A map that draws OpenStreetMap tiles needs images from the tile servers and nothing else:
+
+```ts title="app/genui/catalog.ts"
+defineSandbox({
+  policy: {
+    allow: { images: ['https://tile.openstreetmap.org', 'https://*.tile.openstreetmap.org'] },
+  },
+  instructions: 'Draw maps with <img> tiles from tile.openstreetmap.org; credit "© OpenStreetMap contributors".',
+})
+```
+
+Each origin you open is a place generated code can load from — and, for `connect` and to a degree `images`, send to. Open as little as you can: `images` from a tile server is cheap; `connect` to your own API hands the generated code a way to call it (without the user's cookies, but still).
+
+<Callout type="info" title="Your page's CSP applies too">
+Browsers apply the embedding page's Content-Security-Policy to `srcdoc` documents as well, on top of the frame's own. Both must allow something for it to happen: if your page forbids inline scripts (a nonce- or hash-based `script-src`), the frame's code is blocked too, and the view never comes alive. A page CSP can only make the sandbox stricter, never looser.
+</Callout>
+
+### The bridge
+
+`agent.send`, content-height reports and error reports are `postMessage`s to the parent, addressed to the host page's origin. The host accepts a message only when **all** of these hold:
+
+- `event.source` is **that** iframe's window — not another frame, not another tab;
+- `event.origin` is `'null'` — the opaque origin of a sandboxed frame;
+- it carries the frame's **token** — 16 random bytes, new for every frame;
+- the payload is **JSON** (the frame JSON-clones it; the host measures it again);
+- it is at most `maxPayloadBytes` (default **8192**) as JSON;
+- at least `minSendIntervalMs` (default **1000**) since the last accepted send of this view;
+- this view has made fewer than `maxSends` (default **20**) sends;
+- it passes the renderer's `schema`, when you gave one (Zod, any Standard Schema, or a JSON Schema);
+- `confirm`, when you gave one, said yes.
+
+The host's own messages into the frame (preview redraws, the code that arrives while the model writes) carry the token too, and the frame only listens to its parent. A reported height is clamped to `maxHeight`.
+
+### What an action can do
+
+**An action is only a user message.** It reaches the server as the text of the next user turn — the same path as typing — and has no more power than typing it would. It does not call a tool, does not approve anything, and is not trusted by the server in any way. The model reads it, and whatever it decides to do next goes through the usual gates: [roles](/docs/agent/authoring/tools), and the human approval every `action` tool requires. A sandbox cannot approve its own refund.
+
+### What remains
+
+The isolation above keeps generated code away from the page, the user's session and the network. It does not make what the model draws true. Plan for:
+
+- **Convincing fake content inside the box.** A generated view can draw anything within its frame: a fake login form, a fake "approved" badge, a fake system message. It cannot leave its box, but the user may not know where the box ends. Keep the frame visually framed as generated content, and keep real confirmations (approvals, payments) in your own UI, never inside generated views.
+- **Spam within the limits.** A view may send up to `maxSends` actions, one per `minSendIntervalMs`. The model is told to send only from explicit clicks, but a bad view can still send on a timer. Lower the limits, or add `confirm`, if a stray turn costs you.
+- **Prompt injection.** Content the model read (a web page, a document, an e-mail) can steer it into building a view that asks the user for something — a password, a card number — and sends it back through `agent.send`, where it lands in the transcript and in the model's context. Never put secrets or personal data into a sandbox's props; tell users the views are generated; treat every action's values as untrusted user input on the server; and keep approvals on every side-effecting tool, so nothing a view sends can act on its own.
+
+### Defaults
+
+| Setting | Default | Where |
+| --- | --- | --- |
+| Network | none — inline code, `data:` / `blob:` only | `policy.allow` |
+| `iframe` flags | `allow-scripts` (no `allow-same-origin`, forms, popups or navigation) | fixed |
+| `initialHeight` | 240 px | the model's prop |
+| `maxHeight` | 1600 px | `policy.maxHeight` |
+| `maxPayloadBytes` | 8192 | `policy.maxPayloadBytes` |
+| `minSendIntervalMs` | 1000 | `policy.minSendIntervalMs` |
+| `maxSends` | 20 per view | `policy.maxSends` |
+| `forwardedProps.uiAction` size (AG-UI) | 8192 bytes | fixed |
+| Schema, confirmation | none | `createSandboxRenderer({ schema, confirm })` |
+
+## See also
+
+- [Generative UI](/docs/agent/generative-ui) — the catalog, tree mode and partial frames the sandbox is built on.
+- [Loading states and skeletons](/docs/agent/genui-loading-states) — progressive trees, and how layouts around a sandbox stream.
+- [A2UI](/docs/agent/a2ui) — the same UI frames as A2UI surfaces, and A2UI actions as turns.
+- [AG-UI](/docs/agent/ag-ui) — `forwardedProps.uiAction` and the `agora.ui` event.
+- [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends) — the comparison example, which has a sandbox scenario.

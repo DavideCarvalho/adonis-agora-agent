@@ -82,11 +82,50 @@ export function a2uiAdapter(options: A2uiAdapterOptions = {}): ProtocolAdapter {
           const interruptId = action.context.interruptId;
           const address =
             typeof interruptId === 'string' ? decodeInterruptId(interruptId) : undefined;
-          if (address === undefined || address === null || address.kind !== 'approval') {
+          if (address === undefined || address === null || address.kind === 'elicitation') {
             return ctx.response.badRequest({
               message: 'an approval action carries the interruptId it decides',
               code: 'invalid_action',
             });
+          }
+          // An independent proposal: decided through the proposal service (its own run is not
+          // waiting), answered with the configured reply.
+          if (address.kind === 'proposal') {
+            if (address.proposalId === undefined || address.threadId === undefined) {
+              return ctx.response.badRequest({
+                message: 'the interruptId names no proposal',
+                code: 'invalid_action',
+              });
+            }
+            const decision = action.name === A2UI_APPROVE_ACTION ? 'approved' : 'rejected';
+            let reply: string;
+            try {
+              const result = await service.decideActionProposal(
+                actor,
+                address.threadId,
+                address.proposalId,
+                decision,
+                {},
+                VIA,
+              );
+              reply = service.actionProposalReply(result, decision);
+            } catch (error) {
+              if (host.refuseSend(ctx, error)) return;
+              throw error;
+            }
+            writeHead(ctx, { 'X-Agent-Thread-Id': address.threadId });
+            const projector = new A2uiProjector(projection);
+            const messageId = `proposal-${address.proposalId}`;
+            for (const event of [
+              { type: 'TEXT_MESSAGE_START' as const, messageId, role: 'assistant' as const },
+              { type: 'TEXT_MESSAGE_CONTENT' as const, messageId, delta: reply },
+            ]) {
+              for (const message of projector.project(event)) {
+                ctx.response.response.write(`${JSON.stringify(message)}\n`);
+              }
+            }
+            ctx.response.response.end();
+            return;
           }
           if (!(await host.mayDecide(ctx, actor, address.parked, address.toolCallId))) return;
           try {
@@ -169,19 +208,10 @@ async function stream(
   },
 ): Promise<void> {
   const raw = ctx.response.response;
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/jsonl; charset=utf-8',
-    'Cache-Control': 'no-cache, no-transform',
-    Connection: 'keep-alive',
-    'X-Accel-Buffering': 'no',
+  writeHead(ctx, {
     'X-Agent-Run-Id': runId,
     ...(options.threadId !== undefined ? { 'X-Agent-Thread-Id': options.threadId } : {}),
-  };
-  const pending = ctx.response.getHeaders();
-  for (const [name, value] of Object.entries(pending)) {
-    if (value !== undefined && !(name in headers)) raw.setHeader(name, value as string | string[]);
-  }
-  raw.writeHead(200, headers);
+  });
   const projector = new A2uiProjector({
     ...options.projection,
     ...(options.projection.catalog === undefined && host.genuiCatalog !== undefined
@@ -207,4 +237,21 @@ async function stream(
     write(projector.project({ type: 'RUN_ERROR', message: 'The run could not be followed.' }));
   }
   raw.end();
+}
+
+/** Open the JSON Lines response, carrying over the headers already set on the context (cookies). */
+function writeHead(ctx: HttpContext, extra: Record<string, string>): void {
+  const raw = ctx.response.response;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/jsonl; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+    ...extra,
+  };
+  const pending = ctx.response.getHeaders();
+  for (const [name, value] of Object.entries(pending)) {
+    if (value !== undefined && !(name in headers)) raw.setHeader(name, value as string | string[]);
+  }
+  raw.writeHead(200, headers);
 }

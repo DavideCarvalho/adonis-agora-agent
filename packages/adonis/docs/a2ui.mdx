@@ -1,0 +1,278 @@
+---
+title: A2UI
+description: "Serve the agent's generative UI as A2UI v0.9 — a JSON Lines route any A2UI renderer draws, builtins mapped onto the basic catalog, your components mapped or sent as custom ones, A2UI actions and approvals as turns, and A2UI over AG-UI."
+icon: Shapes
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+[A2UI](https://a2ui.org) is Google's open, declarative protocol for agent-generated UI. An agent sends **surfaces** — flat lists of components from a catalog, referenced by id — as JSON messages, and a renderer the client owns (Lit, Angular, Flutter, React) draws them with its own native widgets. No code crosses the wire; a click comes back as an `action` message.
+
+The same `ui` frames the [native stream](/docs/agent/generative-ui) carries — a tool's `ctx.emitUi`, a `present` hook, a model-composed `ui__render` tree — can be served as A2UI: on a route of their own, or inside the [AG-UI](/docs/agent/ag-ui) stream. It is another way to ship the same UI, to clients that already speak A2UI; the catalog, validation, capabilities and persistence stay what they are.
+
+<Callout type="info" title="Which A2UI">
+This targets **A2UI v0.9**: every message is stamped `"version": "v0.9"`, and surfaces use the v0.9 basic catalog. v0.9.1 is the current production patch of the v0.9 family (same messages); v1.0 is a release candidate and is not targeted yet; v0.8 is legacy — an inbound v0.8 `userAction` is still accepted. Everything below is tested against the official `@a2ui/web_core` v0.9 schemas and the official React renderer (`@a2ui/react/v0_9`, 0.12.0).
+</Callout>
+
+## The route — `a2uiAdapter()`
+
+```ts title="config/agent.ts (backend)"
+import { a2uiAdapter } from '@adonis-agora/agent/a2ui'
+import { genui } from '@adonis-agora/agent/genui'
+
+export default defineConfig({
+  // …
+  genui: genui({ catalog }),
+  adapters: [a2uiAdapter()], // next to agUiAdapter() if you serve AG-UI too
+})
+```
+
+That mounts `POST <path>/a2ui`. The route resolves the actor and checks ownership exactly as `chat` does. The body:
+
+| Field | Meaning |
+| --- | --- |
+| `message` | The user's text. |
+| `action` | An A2UI client message — v0.9 `{ version: 'v0.9', action: { name, surfaceId, sourceComponentId, timestamp, context } }`, v0.8 `{ userAction: { … } }`, or the bare action object. It becomes the turn ([inbound actions](#inbound-actions)). One of `message` or `action` is required. |
+| `threadId` | Continue that thread (its owner is checked), or start one under that id. Omitted → a new thread. |
+| `uiCapabilities` | What the client can draw, as on a native send ([UI capabilities](/docs/agent/surfaces#ui-capabilities)). |
+| `agent` | A named agent, as on a native send. |
+
+The answer is **JSON Lines** (`Content-Type: application/jsonl`): one A2UI server-to-client message per line, written as the run streams, until the run ends or stops to ask a person. The headers name the library's ids: `X-Agent-Thread-Id` (send it back as `threadId` to continue) and `X-Agent-Run-Id`.
+
+```jsonl
+{"version":"v0.9","createSurface":{"surfaceId":"call-0-ui__render:ui:0","catalogId":"https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"}}
+{"version":"v0.9","updateComponents":{"surfaceId":"call-0-ui__render:ui:0","components":[{"id":"root","component":"Card","child":"root~body"}, …]}}
+{"version":"v0.9","createSurface":{"surfaceId":"text-m1","catalogId":"https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"}}
+{"version":"v0.9","updateComponents":{"surfaceId":"text-m1","components":[{"id":"root","component":"Text","text":{"path":"/text"}}]}}
+{"version":"v0.9","updateDataModel":{"surfaceId":"text-m1","path":"/text","value":"There you go."}}
+```
+
+Malformed input is an HTTP `400` and no stream: an action that is not one, or larger than `maxActionBytes` (`code: 'invalid_action'`), neither message nor action (`no_user_message`). Another actor's thread is refused as on `chat`.
+
+`a2uiAdapter(options)`:
+
+| Option | Meaning |
+| --- | --- |
+| `path` | Where the route mounts under the agent's path. Default `'a2ui'`. |
+| `text` | Assistant text: `'surface'` (default) streams it into a surface of its own; `'omit'` leaves it out (UI only). |
+| `components`, `unmapped`, `catalogId`, `theme` | How components become A2UI — see [your own components](#your-own-components). `theme` is `createSurface.theme` (basic catalog: `primaryColor`, `agentDisplayName`, `iconUrl`). |
+| `catalog` | The catalog unmapped components' text comes from. Default: the app's `genui` catalog. |
+| `maxActionBytes` | Largest inbound action, as JSON. Default 8192. |
+| `quietMs` | As on `agUiAdapter`: how long a run waiting on a person may stay silent before the stream ends. Default 750. |
+
+## What the stream carries
+
+| In the run | A2UI |
+| --- | --- |
+| A `ui` frame (a push, a `present`, a `ui__render` tree) | A surface keyed by the frame id (`<toolCallId>:ui:<n>`): `createSurface` the first time, then `updateComponents`. A repeat push with the same id upserts the same surface. |
+| A preview of a tree the model is still writing (`streaming: 'partial'`) | The same surface, growing: each preview is an `updateComponents` that upserts what arrived, and the final frame lands in place. A node still held back (`streaming: 'complete'`) is left out — its parent references an id that arrives later, which A2UI renderers draw as a placeholder. |
+| A withdrawn preview (the tree was refused, or degraded to text) | `deleteSurface`. |
+| Assistant text | A surface `text-<messageId>` whose one `Text` is bound to `/text` in the data model; each delta is an `updateDataModel` of the text so far. |
+| An approval the run parks on | A surface `interrupt-<id>`: a `Card` with the approval's message and **Approve** / **Reject** buttons, whose actions are `agora.approve` / `agora.reject` with `context.interruptId`. The stream then ends. |
+| A question set (elicitation), or any other interrupt | A text surface with its message and "(answer it in the app)". |
+| An error | A text surface `error-<n>` with the message. |
+
+Node ids are positions — `root`, `root.0`, `root.1.2` — and the extra components a mapping needs take derived ids (`root.0~title`), so ids are stable from the first preview to the final frame and a streamed surface only ever grows. Text, approval and error surfaces always use the basic catalog, whatever `catalogId` your UI surfaces use.
+
+## How the builtins map
+
+The [builtin components](/docs/agent/genui-builtins) map onto A2UI's v0.9 **basic catalog**:
+
+| Builtin | Basic catalog |
+| --- | --- |
+| `Stack` | `Row` (`direction: 'row'`) or `Column`, its children in order |
+| `Card` | `Card` whose child is a `Column`: the title (`Text` h4), the subtitle (`Text` caption), then the children |
+| `Heading` | `Text`, variant `h3` |
+| `Text` | `Text`, variant `body` (`caption` when `muted`) |
+| `Badge` | `Text`, variant `caption` |
+| `Callout` | `Card` with a `Column`: the title (`Text` h4) and the text |
+| `Link` | `Button` (borderless) labelled by a `Text`, whose action is the basic catalog's `openUrl` function call |
+| `Image` | `Image` (`url`, `alt` as `description`) |
+| `CodeBlock` | `Text` holding the code in a fenced block |
+| `KpiCards` | A `Row` of `Card`s: label (caption), value (h3), delta (caption) |
+| `SourceCards` | A `Row` of `Card`s: title (h5), snippet (body), source (caption) |
+| `DataTable` | A `Column`: the title, a header `Row` of captions, then one `Row` of `Text` cells per row |
+| `Chart` | The basic catalog has no chart: the table of its points (the `xKey` column, then one per series) |
+| anything else | A `Text` of its `fallbackText` (a `Column` of that text and its children when it has any) |
+
+So without a line of mapping code, any A2UI renderer draws a dashboard the model composed from the builtins. `A2UI_BUILTIN_MAPPERS` exports the mappings, to reuse or wrap.
+
+## Your own components
+
+An app component has two ways onto A2UI.
+
+**Map it onto the basic catalog** with a function: it receives the props and a context, and returns A2UI components — one of which must have the id `ctx.id` (its parent references it):
+
+```ts title="config/agent.ts"
+import { a2uiAdapter, type A2uiMapper } from '@adonis-agora/agent/a2ui'
+
+const OrderList: A2uiMapper = (props, ctx) => {
+  const orders = (props.orders as { id: string; customer: string }[] | undefined) ?? []
+  return [
+    { id: ctx.id, component: 'Column', children: orders.map((_, i) => ctx.derive(`order${i}`)) },
+    ...orders.flatMap((order, i) => [
+      {
+        id: ctx.derive(`order${i}`),
+        component: 'Button',
+        child: ctx.derive(`order${i}label`),
+        action: { event: { name: 'refund', context: { orderId: order.id } } },
+      },
+      { id: ctx.derive(`order${i}label`), component: 'Text', text: `Refund #${order.id} (${order.customer})` },
+    ]),
+  ]
+}
+
+adapters: [a2uiAdapter({ components: { OrderList } })]
+```
+
+| `ctx` | |
+| --- | --- |
+| `id` | The id the node's root component must take. |
+| `children` | The ids of the node's children, already converted — a layout lists them. |
+| `derive(suffix)` | A fresh id derived from the node's (`<id>~<suffix>`), for the extra components the mapping needs. |
+| `incomplete` | The node is a preview the model is still writing: props may be missing, default them. |
+| `text()` | The component's `fallbackText`, for a mapping that only has text. |
+
+A mapping in `components` also overrides a builtin's. A `Button` whose action is an `event` comes back as an [action](#inbound-actions) when clicked.
+
+**Send it as a custom component** of your own A2UI catalog: `components: { OrderList: 'custom' }` for one, or `unmapped: 'custom'` for every component without a mapping. It is sent under its own name with its props flat (`{ id, component: 'OrderList', orders: […] }`) and its children's ids, and UI surfaces are created with your `catalogId`, so the client's catalog must implement it — and the basic components your mapped builtins use, if both share surfaces. `a2uiCatalog` builds the catalog definition from your genui catalog, to register on the client or hand to an A2UI-aware runtime (`a2uiClientCapabilities.inlineCatalogs`):
+
+```ts
+import { a2uiAdapter, a2uiCatalog } from '@adonis-agora/agent/a2ui'
+
+const catalogId = 'https://shop.example/a2ui/catalog.json'
+a2uiAdapter({ catalogId, components: { OrderList: 'custom' } })
+
+a2uiCatalog(catalog, { catalogId, only: ['OrderList'] })
+// → { catalogId, components: { OrderList: { type: 'object', description, properties: { component: { const: 'OrderList' }, … }, required: [...] } } }
+```
+
+The same pieces are exported for your own transport: `toA2uiComponents(frame, options)` (a `ui` frame as flat components, root `root`), `a2uiSurfaceMessages(surfaceId, components, { create })`, and `A2uiProjector` — the stateful projection the route runs, fed the run's AG-UI events in order.
+
+## Rendering with `@a2ui/react`
+
+The official React renderer draws the surfaces. `MessageProcessor` (from `@a2ui/web_core/v0_9`) holds them; `A2uiSurface` (from `@a2ui/react/v0_9`) draws one; `basicCatalog` implements the basic catalog. Read the route's JSON Lines into the processor, and post its actions back:
+
+```tsx title="resources/js/pages/a2ui.tsx (frontend)"
+import { A2uiSurface, basicCatalog } from '@a2ui/react/v0_9'
+import { MessageProcessor } from '@a2ui/web_core/v0_9'
+import { useEffect, useMemo, useRef, useState } from 'react'
+
+function csrfHeaders(): HeadersInit {
+  const token = document.cookie.match(/(?:^|; )XSRF-TOKEN=([^;]*)/)?.[1]
+  return { 'content-type': 'application/json', ...(token ? { 'X-XSRF-TOKEN': decodeURIComponent(token) } : {}) }
+}
+
+export default function A2uiChat() {
+  const threadId = useRef<string | undefined>(undefined)
+  const [surfaceIds, setSurfaceIds] = useState<string[]>([])
+  const processor = useMemo(
+    () =>
+      // A button's `event` action: send it back as the next turn.
+      new MessageProcessor([basicCatalog], (action) => void send({ action: { version: 'v0.9', action } })),
+    [],
+  )
+
+  useEffect(() => {
+    const created = processor.model.onSurfaceCreated.subscribe((surface) =>
+      setSurfaceIds((ids) => [...ids, surface.id]),
+    )
+    const deleted = processor.model.onSurfaceDeleted.subscribe((id) =>
+      setSurfaceIds((ids) => ids.filter((each) => each !== id)),
+    )
+    return () => {
+      created.unsubscribe()
+      deleted.unsubscribe()
+    }
+  }, [processor])
+
+  async function send(body: { message?: string; action?: unknown }) {
+    const response = await fetch('/agent/a2ui', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: csrfHeaders(),
+      body: JSON.stringify({ threadId: threadId.current, ...body }),
+    })
+    threadId.current = response.headers.get('X-Agent-Thread-Id') ?? threadId.current
+    if (!response.ok || !response.body) return
+    // JSON Lines: one A2UI message per line, applied as it arrives.
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader()
+    let buffer = ''
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += value
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) if (line.trim()) processor.processMessages([JSON.parse(line)])
+    }
+  }
+
+  return (
+    <>
+      {surfaceIds.map((id) => {
+        const surface = processor.model.getSurface(id)
+        return surface ? <A2uiSurface key={id} surface={surface} /> : null
+      })}
+      <Composer onSend={(message) => send({ message })} />
+    </>
+  )
+}
+```
+
+Clicking **Approve** on an approval surface goes through the same handler: the route recognizes `agora.approve` / `agora.reject`, decides the approval (only the run's owner, or the approver the [approval policy](/docs/agent/streaming-and-http#approval-policy) names, may), and streams the rest of the parked run on that response — the tool's outcome and the model's answer. A request that lapsed or was already decided is refused as on the native decision routes.
+
+## Inbound actions
+
+An A2UI `action` — v0.9 `{ version, action: { name, surfaceId, sourceComponentId, timestamp, context } }`, v0.8 `{ userAction }`, or the bare action — is read as a `UiAction` (`readA2uiAction`): `name` of 1–64 letters, digits, `_ . : -`; `context` a JSON object; at most `maxActionBytes` (8192) in all. It then **becomes the user's turn**: its text is `uiActionText(action)` — a sentence naming the action, where it came from, and the values as JSON — the same format a [sandbox's `agent.send`](/docs/agent/genui-sandbox#the-bridge-back-to-the-agent) produces:
+
+````text
+I used "refund".
+
+[UI action "refund" from A2UI, surface s1, component root.0]
+```json
+{
+  "orderId": "7"
+}
+```
+````
+
+An action is only a user message: it calls no tool and approves nothing by itself, and the model's response to it goes through the usual roles and approvals. Only `agora.approve` / `agora.reject` are answered by the transport, and only through the approval checks above.
+
+## A2UI over AG-UI
+
+AG-UI has a binding for A2UI — its A2UI middleware, and the A2UI renderer CopilotKit ships — that carries surfaces as **activities**. `agUiAdapter({ a2ui })` writes them next to the usual events:
+
+```ts title="config/agent.ts (backend)"
+import { agUiAdapter } from '@adonis-agora/agent/ag-ui'
+
+adapters: [agUiAdapter({ a2ui: true })] // or a2ui: { components: { OrderList }, catalogId, theme }
+```
+
+After each `agora.ui` custom event, the stream carries an `ACTIVITY_SNAPSHOT` with `activityType: 'a2ui-surface'`, `messageId: 'a2ui-surface-<frame id>'` and `replace: true`, whose `content.a2ui_operations` is the whole surface — `createSurface` and `updateComponents`. Each preview of a streaming tree repaints the same activity in place, the final frame replaces the last preview, and a withdrawn preview repaints it with a single `deleteSurface`. `true` maps the builtins onto the basic catalog; an object takes the same `components`, `unmapped`, `catalogId`, `theme` and `catalog` options as the route.
+
+```json
+{ "type": "ACTIVITY_SNAPSHOT", "messageId": "a2ui-surface-call_1:ui:0", "activityType": "a2ui-surface", "replace": true,
+  "content": { "a2ui_operations": [
+    { "version": "v0.9", "createSurface": { "surfaceId": "call_1:ui:0", "catalogId": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json" } },
+    { "version": "v0.9", "updateComponents": { "surfaceId": "call_1:ui:0", "components": [ … ] } } ] } }
+```
+
+Inbound, `forwardedProps.a2uiAction` — `{ userAction: { name, surfaceId, sourceComponentId, context } }` as AG-UI's A2UI middleware and CopilotKit send it, or the v0.9 `{ action }` shape — is the turn: the run answers it, and the `messages` only restate the conversation. It is read whether or not `a2ui` is on, with the same checks as the route; one that fails them is a `400 { code: 'invalid_ui_action' }`. (`forwardedProps.uiAction`, a plain `UiAction`, works the same way — see [AG-UI](/docs/agent/ag-ui#what-the-input-means-here).) Approvals over AG-UI stay AG-UI interrupts, answered with `resume`.
+
+## Known gaps
+
+- **No data-model round trip.** Surfaces are never created with `sendDataModel`, so input components (`TextField`, `Slider`, …) in your mappings report their values only through an action's `context`, not through A2UI's data-model sync.
+- **No client functions** beyond the basic catalog's `openUrl` (used for `Link`), and no v1.0 `callAgentFunction`.
+- **No A2A transport.** The route is plain HTTP with JSON Lines, and AG-UI activities; A2UI over [A2A](/docs/agent/a2a) is not provided.
+- **Only approvals become buttons.** A question set, or any other interrupt, is a text surface saying to answer it in the app. An [independent proposal](/docs/agent/independent-approvals)'s approval gets the same buttons; its `agora.approve` / `agora.reject` is decided through the proposal service (as the AG-UI resume does) and answered with the configured reply.
+- **Components that disappear between previews are not deleted.** A later preview (or the final frame) that no longer has a node leaves its components in the surface, unreferenced — A2UI renderers draw only what the root reaches, so they do not show.
+- **The sandbox is text.** The [sandbox](/docs/agent/genui-sandbox) has no A2UI equivalent and is drawn as its `title` and `summary`, unless you send it as a custom component of your own catalog.
+
+## See also
+
+- [Generative UI](/docs/agent/generative-ui) — the catalog and the `ui` frames A2UI surfaces are made from.
+- [AG-UI](/docs/agent/ag-ui) — the route the A2UI activities ride on, and its interrupt and resume contract.
+- [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends) — the comparison example, whose A2UI page draws this route with `@a2ui/react`.
+- [Builtin components](/docs/agent/genui-builtins) — the props each builtin carries into its A2UI mapping.
+- [One output, many surfaces](/docs/agent/surfaces) — UI capabilities and text fallbacks, which still apply.

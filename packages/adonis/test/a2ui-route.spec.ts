@@ -4,11 +4,12 @@ import type { BaseEvent } from '@ag-ui/core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { a2uiAdapter } from '../src/a2ui/index.js';
-import { agUiAdapter } from '../src/ag-ui/index.js';
+import { agUiAdapter, encodeInterruptId } from '../src/ag-ui/index.js';
 import { Card, KpiCards } from '../src/genui/builtins.js';
 import { defineCatalog, genui } from '../src/genui/index.js';
 import { type AgentConfig, defineTool } from '../src/index.js';
 import { FakeModelProvider, type FakeScript } from '../src/testing/fake-model-provider.js';
+import { InMemoryAgentStore } from '../src/testing/in-memory-store.js';
 import { assertConforms } from './helpers/ag-ui.js';
 import { type BootedApp, bootAgentApp } from './helpers/boot-agent-app.js';
 
@@ -175,6 +176,70 @@ describe('a2uiAdapter()', () => {
       'u2',
     );
     expect(again.response.status).toBeGreaterThanOrEqual(400);
+  });
+});
+
+describe('a2uiAdapter() and independent proposals', () => {
+  it('decides a proposal through the proposal service and answers with its reply', async () => {
+    const store = new InMemoryAgentStore();
+    const actor = { id: 'u1', roles: ['ADMIN'] };
+    const thread = await store.createThread({ id: 'a2ui-proposal-thread', actor });
+    await store.createActionProposal({
+      id: 'proposal-a2ui',
+      threadId: thread.id,
+      actorRef: actor.id,
+      tenantRef: null,
+      originRunId: 'finished-origin',
+      originMessageId: 'origin-message',
+      originToolCallId: 'origin-call',
+      toolName: 'refund',
+      input: { id: 11 },
+      confirmation: { title: 'Refund?', verb: 'Refund' },
+      approver: 'requester',
+      expiresAt: null,
+      idempotencyKey: 'a2ui',
+    });
+    let modelCalls = 0;
+    booted = await boot(
+      () => {
+        modelCalls++;
+        return { text: 'Unexpected model run' };
+      },
+      {
+        store: 'test',
+        stores: { test: async () => store },
+        actionApprovalMode: 'independent',
+        backgroundActorResolver: { resolve: async () => actor },
+        tools: [refund],
+      },
+    );
+    const interruptId = encodeInterruptId({
+      kind: 'proposal',
+      parked: 'finished-origin',
+      stream: 'finished-origin',
+      toolCallId: 'origin-call',
+      position: 4,
+      proposalId: 'proposal-a2ui',
+      threadId: thread.id,
+    });
+    const intruder = await a2ui(
+      booted.url,
+      { action: { name: 'agora.reject', context: { interruptId } } },
+      'u2',
+    );
+    expect(intruder.response.status).toBeGreaterThanOrEqual(400);
+    const { response, messages } = await a2ui(booted.url, {
+      action: { name: 'agora.reject', context: { interruptId } },
+    });
+    expect(response.status).toBe(200);
+    expect(modelCalls).toBe(0);
+    expect(messages.some((message) => message.updateDataModel !== undefined)).toBe(true);
+    const decided = await store.getActionProposal(
+      { threadId: thread.id, actorRef: actor.id, tenantRef: null },
+      'proposal-a2ui',
+    );
+    expect(decided?.decision).toBe('rejected');
+    expect(decided?.decisionAudit?.via).toBe('a2ui');
   });
 });
 

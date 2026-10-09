@@ -466,9 +466,17 @@ export function a2uiActivityEvent(
   options: A2uiOptions = {},
 ): AgUiEvent | null {
   const props = isRecord(frame.props) ? frame.props : {};
-  // A withdrawn preview: nothing to paint.
-  if (frame.partial === true && Object.keys(props).length === 0) return null;
   const surfaceId = a2uiSurfaceId(frame.id);
+  // A withdrawn preview: the surface it painted goes.
+  if (frame.partial === true && Object.keys(props).length === 0) {
+    return {
+      type: 'ACTIVITY_SNAPSHOT',
+      messageId: `a2ui-surface-${surfaceId}`,
+      activityType: A2UI_ACTIVITY_TYPE,
+      content: { [A2UI_OPERATIONS_KEY]: [{ version: A2UI_VERSION, deleteSurface: { surfaceId } }] },
+      replace: true,
+    };
+  }
   const components = safeComponents(frame, options);
   if (components.length === 0) return null;
   return {

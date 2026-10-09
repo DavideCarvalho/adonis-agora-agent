@@ -302,9 +302,13 @@ describe('A2UI over AG-UI', () => {
     assertValid(
       (activity as unknown as { content: { a2ui_operations: unknown[] } }).content.a2ui_operations,
     );
+    // A withdrawn preview takes its surface away.
     expect(
       a2uiActivityEvent({ id: 'x', component: 'genui:tree', props: {}, partial: true }),
-    ).toBeNull();
+    ).toMatchObject({
+      messageId: 'a2ui-surface-x',
+      content: { a2ui_operations: [{ version: 'v0.9', deleteSurface: { surfaceId: 'x' } }] },
+    });
   });
 
   it('reads an A2UI user action from forwardedProps', () => {
