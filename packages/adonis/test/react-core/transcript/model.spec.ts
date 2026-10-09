@@ -41,6 +41,98 @@ describe('buildTranscriptBlocks', () => {
     ]);
   });
 
+  it("fills the approval prompt's verb from the input, as the server does", () => {
+    const blocks = buildTranscriptBlocks(
+      message([
+        {
+          type: 'tool-purge',
+          toolCallId: 'p',
+          state: 'approval-requested',
+          input: { key: 'sessions' },
+        } as unknown as AnyToolUIPart,
+      ]),
+      {
+        ...openAll,
+        toolCatalog: {
+          purge: {
+            label: 'Cache purge',
+            running: 'Purging {key}',
+            done: 'Purged {key}',
+            confirm: { title: 'Purge {key}?', verb: 'Purge {key}' },
+          },
+        },
+      },
+    );
+    const call = blocks[0]?.kind === 'tools' ? blocks[0].calls[0] : undefined;
+    expect(call?.description.confirm).toEqual({
+      title: 'Purge sessions?',
+      verb: 'Purge sessions',
+      detail: null,
+    });
+  });
+
+  describe('a failed call retried at once', () => {
+    const call = (id: string, name: string, state: 'ok' | 'failed' | 'running') =>
+      ({
+        type: `tool-${name}`,
+        toolCallId: id,
+        state:
+          state === 'ok'
+            ? 'output-available'
+            : state === 'failed'
+              ? 'output-error'
+              : 'input-streaming',
+        input: {},
+        ...(state === 'ok' ? { output: {} } : {}),
+        ...(state === 'failed' ? { errorText: 'invalid UI tree' } : {}),
+      }) as AnyToolUIPart;
+    const ids = (parts: UIMessage['parts'], options = {}) =>
+      buildTranscriptBlocks(message(parts), { ...openAll, ...options }).flatMap((block) =>
+        block.kind === 'tools' ? block.calls.map((each) => each.toolCallId) : [],
+      );
+
+    it('is left out when the same tool then succeeds — across a step boundary too', () => {
+      expect(
+        ids([
+          call('a', 'ui__render', 'failed'),
+          { type: 'step-start' },
+          call('b', 'ui__render', 'failed'),
+          { type: 'step-start' },
+          call('c', 'ui__render', 'ok'),
+        ]),
+      ).toEqual(['c']);
+    });
+
+    it('is left out while the retry is still running', () => {
+      expect(
+        ids([
+          call('a', 'ui__render', 'failed'),
+          { type: 'step-start' },
+          call('b', 'ui__render', 'running'),
+        ]),
+      ).toEqual(['b']);
+    });
+
+    it('stays when the retry failed too, another tool came next, or hiding is off', () => {
+      expect(ids([call('a', 'ui__render', 'failed'), call('b', 'ui__render', 'failed')])).toEqual([
+        'a',
+        'b',
+      ]);
+      expect(
+        ids([
+          call('a', 'ui__render', 'failed'),
+          call('b', 'search', 'ok'),
+          call('c', 'ui__render', 'ok'),
+        ]),
+      ).toEqual(['a', 'b', 'c']);
+      expect(
+        ids([call('a', 'ui__render', 'failed'), call('b', 'ui__render', 'ok')], {
+          hideRetriedFailures: false,
+        }),
+      ).toEqual(['a', 'b']);
+    });
+  });
+
   it('splits a tool run when text comes between the calls', () => {
     const blocks = buildTranscriptBlocks(
       message([tool('a'), { type: 'text', text: 'thinking out loud' }, tool('b')]),

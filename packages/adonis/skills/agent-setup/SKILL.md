@@ -330,12 +330,14 @@ Agora owns its catalog (`@adonis-agora/agent/genui`), browser rendering
 (`@adonis-agora/agent/react/media`). Protocol compatibility does not require installing
 Aviary packages.
 
-`genui({ catalog })` in `config/agent.ts` registers ONE model tool, `ui__render`, taking a
+`genui({ catalog })` in `config/agent.ts` registers a model tool, `ui__render`, taking a
 component tree (`{ type, props, children? }`; a single node is a valid tree and is pushed as
 that component). Its input schema is exact per component. Put `LAYOUT_COMPONENTS` (`Stack`,
 `Card`, …) in the catalog next to `BUILTIN_COMPONENTS` and register a React renderer for each
 layout you use. `mode: 'per-component'` instead registers one `ui__show_<component>` tool per
 standalone component — for small models or when each tool should carry its own exact schema.
+In tree mode, `componentTools: ['Sandbox']` also registers a flat `ui__sandbox` tool per named
+standalone component whose input IS that component's props (prefix `componentToolPrefix`, default `ui__`).
 `streaming: 'partial'` draws the tree while the model writes it; renderers then read
 `useGenuiNode()?.incomplete` and must tolerate half-written props. Source:
 `packages/adonis/docs/generative-ui.mdx`.

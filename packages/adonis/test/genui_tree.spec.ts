@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { BUILTIN_COMPONENTS, KpiCards, LAYOUT_COMPONENTS } from '../src/genui/builtins.js';
 import { defineCatalog } from '../src/genui/catalog.js';
+import { defineSandbox } from '../src/genui/sandbox.js';
 import { catalogToModelText, componentToText, treeToText } from '../src/genui/text.js';
 import {
   GENUI_TREE_COMPONENT,
+  normalizeTreeInput,
   treeJsonSchema,
   treeToFlatSpec,
   validateTree,
@@ -70,6 +72,102 @@ describe('validateTree', () => {
     expect(result.ok && result.value.type).toBe('Card');
     expect((await validateTree(catalog, 'not a tree')).ok).toBe(false);
     expect((await validateTree(catalog, '[1]')).ok).toBe(false);
+  });
+
+  describe('a node that left out its envelope', () => {
+    const withSandbox = catalog.extend([defineSandbox()]);
+    const sandboxProps = { title: 'Bill splitter', html: '<p>hi</p>', css: 'p{}' };
+
+    it('wraps bare sandbox props into { type: Sandbox, props }', async () => {
+      await expect(validateTree(withSandbox, sandboxProps)).resolves.toMatchObject({
+        ok: true,
+        value: { type: 'Sandbox', props: sandboxProps },
+      });
+    });
+
+    it('infers the type of { props } alone, and of a stringified one', async () => {
+      await expect(validateTree(withSandbox, { props: sandboxProps })).resolves.toMatchObject({
+        ok: true,
+        value: { type: 'Sandbox', props: sandboxProps },
+      });
+      await expect(
+        validateTree(withSandbox, JSON.stringify({ props: sandboxProps })),
+      ).resolves.toMatchObject({ ok: true, value: { type: 'Sandbox' } });
+    });
+
+    it('moves props written beside the type under it, and parses stringified props', async () => {
+      await expect(
+        validateTree(withSandbox, { type: 'Sandbox', ...sandboxProps }),
+      ).resolves.toMatchObject({ ok: true, value: { type: 'Sandbox', props: sandboxProps } });
+      await expect(
+        validateTree(withSandbox, { type: 'Sandbox', props: JSON.stringify(sandboxProps) }),
+      ).resolves.toMatchObject({ ok: true, value: { type: 'Sandbox', props: sandboxProps } });
+    });
+
+    it('unwraps a whole element wrapped in one more key', async () => {
+      const element = { type: 'Sandbox', props: sandboxProps };
+      for (const wrapped of [
+        { props: element },
+        { root: JSON.stringify(element) },
+        { tree: { props: element } },
+        // Stray keys beside it are left behind; the component named under another key is read.
+        { props: element, show: 'true' },
+        { props: sandboxProps, show: 'true' },
+        { root: 'Sandbox', props: sandboxProps },
+        { component: 'Sandbox', props: sandboxProps },
+      ]) {
+        await expect(validateTree(withSandbox, wrapped)).resolves.toMatchObject({
+          ok: true,
+          value: element,
+        });
+      }
+      // Not an element inside: still refused.
+      expect((await validateTree(withSandbox, { root: { type: 'Nope', props: {} } })).ok).toBe(
+        false,
+      );
+    });
+
+    it('repairs a stringified call that wrote `>` for a key colon, and leaves strings alone', async () => {
+      const raw = '{"props": {"title">"A > B", "html">"<p class=\\"x\\">hi</p>"}}';
+      await expect(validateTree(withSandbox, raw)).resolves.toMatchObject({
+        ok: true,
+        value: { type: 'Sandbox', props: { title: 'A > B', html: '<p class="x">hi</p>' } },
+      });
+    });
+
+    it('normalizes call arguments for a client that draws them, without validating', () => {
+      expect(
+        normalizeTreeInput(
+          withSandbox,
+          JSON.stringify({ type: 'Stack', props: {}, children: [{ props: sandboxProps }] }),
+        ),
+      ).toEqual({ type: 'Stack', props: {}, children: [{ type: 'Sandbox', props: sandboxProps }] });
+      // Half-streamed: nothing to infer from yet, so it is left as it came.
+      expect(normalizeTreeInput(withSandbox, { props: { title: 'Bill' } })).toEqual({
+        props: { title: 'Bill' },
+      });
+    });
+
+    it('infers a child too', async () => {
+      const result = await validateTree(withSandbox, {
+        type: 'Stack',
+        props: {},
+        children: [{ props: sandboxProps }],
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        value: { children: [{ type: 'Sandbox', props: sandboxProps }] },
+      });
+    });
+
+    it('still refuses what fits no component, or more than one', async () => {
+      expect((await validateTree(withSandbox, {})).ok).toBe(false);
+      expect((await validateTree(withSandbox, { props: {} })).ok).toBe(false);
+      // `title` alone is half the catalog's; `text` fits Text and Heading alike.
+      expect((await validateTree(withSandbox, { title: 'x' })).ok).toBe(false);
+      expect((await validateTree(withSandbox, { props: { text: 'x' } })).ok).toBe(false);
+      expect((await validateTree(withSandbox, { html: '<p/>', nope: 1 })).ok).toBe(false);
+    });
   });
 
   it('enforces size limits', async () => {
@@ -199,6 +297,9 @@ describe('text', () => {
     expect(catalogToModelText(small, { mode: 'tree' })).toMatchInlineSnapshot(`
       "Compose the UI as ONE tree of elements: { "type": <component>, "props": { … }, "children"?: [ … ] }.
       Only components marked "takes children" accept children; \`children\` is a literal JSON array, never a string.
+      Every element starts with "type", then "props" — a single component is { "type": …, "props": { … } } too, never its props alone. A component's own field order (if its description gives one) is the order of the keys INSIDE its "props".
+      Example, one component: { "type": "KpiCards", "props": { "items": … } }
+      Example, nested: { "type": "Stack", "props": { … }, "children": [ { "type": "KpiCards", "props": { "items": … } } ] }
       Components:
       - Stack: Lays its children out vertically (or horizontally with direction=row).
         props: { direction?: "column" | "row", gap?: number }

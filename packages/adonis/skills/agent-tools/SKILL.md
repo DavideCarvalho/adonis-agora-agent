@@ -241,8 +241,10 @@ export const listRecords = defineTool({
 `table` and `chart` present the builtin `DataTable` and `Chart` definitions: put them in the
 genui catalog (`BUILTIN_COMPONENTS` from `@adonis-agora/agent/genui/builtins`, or the two
 definitions) and register app renderers under those names. Builtins carry no visuals.
-`genui({ catalog })` also offers the model one `ui__render` tree tool over that catalog (the
-default mode; `mode: 'per-component'` gives `ui__show_*` tools instead).
+`genui({ catalog })` also offers the model a `ui__render` tree tool over that catalog (the
+default mode; `mode: 'per-component'` gives `ui__show_*` tools instead). In tree mode,
+`componentTools: ['Sandbox']` also registers a flat `ui__sandbox` tool per named standalone
+component whose input IS that component's props (prefix `componentToolPrefix`, default `ui__`).
 A tool that knows its component before it reads can push a skeleton first: `ctx.emitUi(name,
 { state: 'loading', … })`, then the data with `{ id }` from that push (the component's props
 schema must accept the placeholder variant; mark it `internal: true`). Always end on that id

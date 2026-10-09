@@ -85,6 +85,8 @@ export function catalogToModelText(catalog: Catalog, options: CatalogTextOptions
     lines.push(
       'Compose the UI as ONE tree of elements: { "type": <component>, "props": { … }, "children"?: [ … ] }.',
       'Only components marked "takes children" accept children; `children` is a literal JSON array, never a string.',
+      'Every element starts with "type", then "props" — a single component is { "type": …, "props": { … } } too, never its props alone. A component\'s own field order (if its description gives one) is the order of the keys INSIDE its "props".',
+      ...treeExamples(catalog),
       'Components:',
     );
   } else if (mode === 'show') {
@@ -109,6 +111,41 @@ export function catalogToModelText(catalog: Catalog, options: CatalogTextOptions
     }
   }
   return lines.join('\n');
+}
+
+/**
+ * One or two literal calls built from the catalog's own components — the envelope shown rather
+ * than described: a one-component tree, and a layout holding it when the catalog has one.
+ */
+function treeExamples(catalog: Catalog): string[] {
+  const components = catalog.modelComponents();
+  const leaves = components.filter(
+    (component) => component.children !== true && requiredKeys(component).length > 0,
+  );
+  // A component drawn while it is written (the sandbox) is the one a model most often sends as
+  // bare props — long, written field by field — so it is the one worth showing wrapped.
+  const leaf = leaves.find((component) => component.partialProps !== undefined) ?? leaves[0];
+  if (leaf === undefined) return [];
+  const props = `{ ${requiredKeys(leaf)
+    .map((key) => `"${key}": …`)
+    .join(', ')} }`;
+  const element = `{ "type": "${leaf.name}", "props": ${props} }`;
+  const layout = components.find((component) => component.children === true);
+  return [
+    `Example, one component: ${element}`,
+    ...(layout !== undefined
+      ? [
+          `Example, nested: { "type": "${layout.name}", "props": { … }, "children": [ ${element} ] }`,
+        ]
+      : []),
+  ];
+}
+
+function requiredKeys(component: { props: unknown }): string[] {
+  const schema = toJsonSchema(component.props as never) as { required?: unknown } | undefined;
+  return Array.isArray(schema?.required)
+    ? (schema.required as unknown[]).filter((key): key is string => typeof key === 'string')
+    : [];
 }
 
 /** A JSON Schema as a one-line TypeScript-like type, e.g. `{ title?: string, rows: object[] }`. */

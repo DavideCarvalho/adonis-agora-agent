@@ -15,6 +15,7 @@ import {
   InProcessTokenStreamSink,
   type StreamFrame,
   type ToolHandler,
+  type ToolPresentation,
   ToolRegistry,
 } from '../src/index.js';
 import { FakeModelProvider, type FakeScript, InMemoryAgentStore } from '../src/testing/index.js';
@@ -33,6 +34,7 @@ const refundOnce: FakeScript = (args) => {
 function build(
   approvalPolicy?: ApprovalPolicy,
   handler: ToolHandler = { execute: async () => ({ refunded: true }) },
+  presentation?: ToolPresentation,
 ) {
   const store = new InMemoryAgentStore();
   const sink = new InProcessTokenStreamSink();
@@ -44,6 +46,7 @@ function build(
       description: 'refund an order',
       inputSchema: z.object({ id: z.number() }),
       roles: ['ADMIN'],
+      ...(presentation !== undefined ? { presentation } : {}),
     },
     handler,
   );
@@ -305,6 +308,25 @@ describe('action domain preflight in approval loop', () => {
       );
     },
   );
+  it("fills the tool's confirm template on the server for an ordinary approval", async () => {
+    const g = build(undefined, undefined, {
+      label: 'Refund',
+      running: 'Refunding order #{id}',
+      done: 'Refunded order #{id}',
+      confirm: { title: 'Refund order #{id}?', verb: 'Refund', detail: 'Order {id} {missing}' },
+    });
+    const { events, threadId } = await turn(g, 'refund 7', (frame, runId) =>
+      g.service.approve(runId, frame.id, { executedByRef: 'u1' }),
+    );
+    const confirmation = { title: 'Refund order #7?', verb: 'Refund', detail: 'Order 7' };
+    expect(events).toContainEqual(
+      expect.objectContaining({ kind: 'approval-requested', confirmation }),
+    );
+    expect(
+      (await g.store.getThread(threadId))?.messages.flatMap((message) => message.approvals ?? []),
+    ).toEqual([expect.objectContaining({ status: 'approved', confirmation })]);
+  });
+
   it('streams and persists resolved confirmation, then refuses stale state without changing approval', async () => {
     let ready = true;
     let effects = 0;

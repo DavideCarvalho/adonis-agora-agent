@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { BUILTIN_COMPONENTS, LAYOUT_COMPONENTS } from '../src/genui/builtins.js';
 import { defineCatalog, defineComponent } from '../src/genui/catalog.js';
+import { defineSandbox } from '../src/genui/sandbox.js';
 import { type GenuiCatalogScope, genuiTools } from '../src/genui/tools.js';
 import { GENUI_TREE_COMPONENT } from '../src/genui/tree.js';
 import type { AiToolCtx } from '../src/spi/tool.js';
@@ -146,6 +147,41 @@ describe('genuiTools tree', () => {
       id: 'call-1:ui:0',
     });
     expect(emitUi).toHaveBeenCalledWith(GENUI_TREE_COMPONENT, { root }, {});
+  });
+});
+
+describe('genuiTools tree with componentTools', () => {
+  const withSandbox = catalog.extend([defineSandbox()]);
+  const tools = genuiTools(withSandbox, { componentTools: ['Sandbox'] });
+
+  it('adds a flat tool per listed component beside ui__render, and points the tree at it', () => {
+    expect(tools.map((tool) => tool.spec.name)).toEqual(['ui__render', 'ui__sandbox']);
+    expect(tools[0]?.spec.description).toContain(
+      'a Sandbox has its own tool, `ui__sandbox`, taking its props directly',
+    );
+    // Still a catalog component: it may be nested in a tree.
+    expect(tools[0]?.spec.description).toContain('- Sandbox:');
+  });
+
+  it('pushes the sandbox from its bare props and streams it', async () => {
+    const sandbox = tools[1];
+    const { ctx, emitUi } = ctxWithEmit();
+    const props = { title: 'Calc', html: '<p>1</p>' };
+    await expect(sandbox?.handler.execute(props, ctx)).resolves.toMatchObject({
+      shown: 'Sandbox',
+    });
+    expect(emitUi).toHaveBeenCalledWith('Sandbox', props, expect.anything());
+    expect(sandbox?.handler.previewInput).toBeTypeOf('function');
+  });
+
+  it('honours a prefix and refuses a layout or an unknown component', () => {
+    expect(
+      genuiTools(withSandbox, { componentTools: ['Sandbox'], componentToolPrefix: 'show_' }).map(
+        (tool) => tool.spec.name,
+      ),
+    ).toEqual(['ui__render', 'show_sandbox']);
+    expect(() => genuiTools(withSandbox, { componentTools: ['Stack'] })).toThrow(/Stack/);
+    expect(() => genuiTools(withSandbox, { componentTools: ['Nope'] })).toThrow(/Nope/);
   });
 });
 

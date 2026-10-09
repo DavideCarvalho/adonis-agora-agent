@@ -383,6 +383,41 @@ describe('the A2UI stream projection', () => {
     });
   });
 
+  it("words an approval with the tool's confirmation: its title, and its detail under it", async () => {
+    const projector = new A2uiProjector();
+    const messages = projector.project({
+      type: 'RUN_FINISHED',
+      threadId: 't',
+      runId: 'r',
+      outcome: {
+        type: 'interrupt',
+        interrupts: [
+          {
+            id: 'agora_y',
+            reason: 'tool_approval',
+            message: 'Refund order #1002?',
+            metadata: {
+              'agora.confirmation': {
+                title: 'Refund order #1002?',
+                verb: 'Refund',
+                detail: '$129.99 goes back to the card.',
+              },
+            },
+          },
+        ],
+      },
+    } as never);
+    assertValid(messages);
+    const processor = new MessageProcessor([basicCatalog], () => undefined);
+    processor.processMessages(messages as never);
+    const approval = processor.model.surfacesMap.get('interrupt-agora_y');
+    if (approval === undefined) throw new Error('missing surface');
+    render(<A2uiSurface surface={approval as never} />);
+    expect(await screen.findByText('Refund order #1002?')).toBeTruthy();
+    expect(screen.getByText('$129.99 goes back to the card.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy();
+  });
+
   it('accepts the v0.9 client message, v0.8 userAction and the bare action', () => {
     const v09 = {
       version: 'v0.9',

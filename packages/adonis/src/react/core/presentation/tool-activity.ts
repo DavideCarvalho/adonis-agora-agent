@@ -108,6 +108,33 @@ export function correctedCallIds(parts: readonly AnyToolUIPart[]): Set<string> {
   return corrected;
 }
 
+/**
+ * Which failed calls the model retried AT ONCE, by call id: a failure whose next tool call (in
+ * message order) is the same tool and has not failed — it succeeded, or is still running. A chain
+ * of failures that ends in a success is retried whole. What a person should not see: the model
+ * fixing its own malformed call (a `ui__render` it left the envelope out of) before the view it
+ * then drew. A failure the model moved on from, or that the retry failed too, stays.
+ */
+export function retriedCallIds(parts: readonly AnyToolUIPart[]): Set<string> {
+  const retried = new Set<string>();
+  let next: { name: string; ok: boolean } | undefined;
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index] as AnyToolUIPart;
+    const name = getToolName(part);
+    const state = toolCallState(part);
+    if (state.isFailed) {
+      if (next?.name === name && next.ok) {
+        retried.add(part.toolCallId);
+        continue;
+      }
+      next = { name, ok: false };
+    } else {
+      next = { name, ok: !state.isDenied };
+    }
+  }
+  return retried;
+}
+
 /** Everything a surface needs to talk about one call without naming it. */
 export interface ToolCallDescription {
   status: ToolCallStatus;
@@ -162,7 +189,7 @@ export function describeToolCall(
           ? null
           : {
               title: fillTemplate(confirm.title, input),
-              verb: confirm.verb,
+              verb: fillTemplate(confirm.verb, input),
               detail: confirm.detail !== undefined ? fillTemplate(confirm.detail, input) : null,
             },
     result:

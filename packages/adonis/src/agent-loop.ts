@@ -119,6 +119,7 @@ import {
   type ShownPreview,
   withdrawPreviewFrame,
 } from './tool-input-preview.js';
+import { fillToolConfirmation } from './tool-presentation.js';
 import {
   ToolForbiddenError,
   ToolInputInvalidError,
@@ -1638,6 +1639,13 @@ async function claimToolCall(
         if (created.status === 'conflict')
           throw new Error('Action proposal replay payload conflict');
         confirmation = created.proposal?.confirmation ?? confirmation;
+      }
+      // An ordinary approval carries the tool's own prompt ("Refund order #1002?") filled from the
+      // call's input on the server, so a transport whose client has no tool catalog (AG-UI, A2UI,
+      // A2A) words it as the native page does instead of naming the tool.
+      if (approval?.mode === 'ask' && proposalId === undefined && confirmation === undefined) {
+        const declared = deps.registry.spec(call.name)?.presentation?.confirm;
+        if (declared !== undefined) confirmation = fillToolConfirmation(declared, call.input);
       }
       const parks = kind === 'ask' || (approval?.mode === 'ask' && proposalId === undefined);
       await deps.store.recordToolCall({

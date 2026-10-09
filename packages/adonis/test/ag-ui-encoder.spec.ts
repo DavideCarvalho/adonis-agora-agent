@@ -455,7 +455,20 @@ describe('interrupts', () => {
     const finished = worded.at(-1) as Extract<AgUiEvent, { type: 'RUN_FINISHED' }>;
     expect(finished.outcome).toMatchObject({
       type: 'interrupt',
-      interrupts: [{ reason: 'tool_approval', message: 'Refund order #7?' }],
+      interrupts: [
+        {
+          reason: 'tool_approval',
+          message: 'Refund order #7?',
+          // The whole prompt rides along, for a surface that draws more than the title (A2UI).
+          metadata: {
+            'agora.confirmation': {
+              title: 'Refund order #7?',
+              verb: 'Refund',
+              detail: 'Money goes back.',
+            },
+          },
+        },
+      ],
     });
 
     const plain = await collect(parked(upToApproval), { quietMs: 60_000 });

@@ -42,8 +42,16 @@ export interface TreeLimits {
  * `children: true` may have children. Returns the tree with each node's props as its schema
  * produced them (defaults applied by a Standard Schema, for instance).
  *
- * Lenient about one thing models get wrong: a `children` array — or the whole tree — sent as a
- * JSON STRING (sometimes with a stray trailing `}`) is parsed back into what the model plainly meant.
+ * Lenient where what the model meant is unambiguous ({@link normalizeElement}):
+ *  - a `children` array, a node's `props` — or the whole tree — sent as a JSON STRING (sometimes
+ *    with a stray trailing `}`, or `>` for a key's `:` — {@link repairKeyArrows}) is parsed back;
+ *  - a node that left out its `type` (`{ props: { html, css } }`, or the bare props `{ html, css }`)
+ *    is the ONE component whose props schema those keys fit — every key one of its properties,
+ *    every required one present; with two candidates (or none) it is still refused;
+ *  - a node whose props sit beside its `type` (`{ type: 'Sandbox', html }`) gets them as `props`;
+ *  - a whole element wrapped in one more key (`{ props: { type, props } }`, `{ root: "{…}" }`) is
+ *    unwrapped when what it wraps names a component, and a component named under `component` or
+ *    `root` instead of `type` is read from there.
  */
 export async function validateTree(
   catalog: Catalog,
@@ -76,7 +84,7 @@ export async function validateTree(
       issues.push({ path, message: 'must be an element object { type, props, children? }' });
       return undefined;
     }
-    const element = node as Record<string, unknown>;
+    const element = normalizeElement(catalog, node as Record<string, unknown>);
     if (typeof element.type !== 'string') {
       // Models that write a big component (a sandbox) tend to drop the envelope: say what it is.
       issues.push({
@@ -287,6 +295,121 @@ export function treeToFlatSpec(root: GenuiElement): FlatSpec {
   return { root: visit(root), elements };
 }
 
+/**
+ * A node as the model plainly meant it (see {@link validateTree}): `props` parsed from a string,
+ * props written beside `type` moved under it, and a missing `type` inferred from the props when
+ * exactly one component's schema fits them. Anything else is returned as it came, to be refused.
+ */
+export function normalizeElement(
+  catalog: Catalog,
+  node: Record<string, unknown>,
+  depth = 0,
+): Record<string, unknown> {
+  if (typeof node.type === 'string') {
+    const { type, props: rawProps, children, ...rest } = node;
+    const props = parseObjectIfStringified(rawProps);
+    // `{ type: 'Sandbox', html, css }`: the props written beside the type.
+    if (props === undefined && Object.keys(rest).length > 0) {
+      return { type, props: rest, ...(children !== undefined ? { children } : {}) };
+    }
+    return props === rawProps ? node : { ...node, props };
+  }
+  if (node.type !== undefined || depth > 3) return node;
+  // The component named under another key: `{ root: 'Sandbox', props }`, or the show tool's
+  // `{ component: 'Sandbox', props }`.
+  for (const key of TYPE_ALIASES) {
+    const named = node[key];
+    if (typeof named === 'string' && isComponentName(catalog, named) && 'props' in node) {
+      const { [key]: _named, ...others } = node;
+      return normalizeElement(catalog, { ...others, type: named }, depth + 1);
+    }
+  }
+  // A whole element (or its bare props) wrapped in one more key — `{ props: { type, props } }`,
+  // `{ root: "{…}" }`, `{ props: { html, css } }` — stray keys beside it left behind.
+  for (const key of WRAPPER_KEYS) {
+    const inner = parseObjectIfStringified(node[key]);
+    if (!isPlainObject(inner)) continue;
+    const unwrapped = normalizeElement(catalog, inner, depth + 1);
+    if (!isComponentName(catalog, unwrapped.type)) continue;
+    return node.children !== undefined && unwrapped.children === undefined
+      ? { ...unwrapped, children: node.children }
+      : unwrapped;
+  }
+  // The bare props themselves: `{ html, css }`.
+  const { children, ...props } = node;
+  const inferred = inferComponent(catalog, props);
+  return inferred === undefined
+    ? node
+    : { type: inferred, props, ...(children !== undefined ? { children } : {}) };
+}
+
+/**
+ * A tree-mode call's arguments as the model meant them — the leniency {@link validateTree} applies
+ * (a stringified tree, a dropped envelope, a wrapper key; see {@link normalizeElement}), all the way
+ * down, WITHOUT validating anything. For a client that draws a call from its arguments (CopilotKit
+ * renders tool calls, an OpenUI artifact renderer reads them), so it draws the element the server
+ * accepted rather than nothing. Safe on half-streamed arguments: what cannot be read yet is left as
+ * it came.
+ */
+export function normalizeTreeInput(catalog: Catalog, input: unknown): unknown {
+  const visit = (node: unknown, depth: number): unknown => {
+    if (depth > 32) return node;
+    const value = depth === 0 ? parseRootIfStringified(node) : node;
+    if (!isPlainObject(value)) return value;
+    const element = normalizeElement(catalog, value);
+    const children = parseChildrenIfStringified(element.children);
+    return Array.isArray(children)
+      ? { ...element, children: children.map((child) => visit(child, depth + 1)) }
+      : element;
+  };
+  return visit(input, 0);
+}
+
+/** Keys a model wraps a whole element in: `{ props: <element> }`, `{ root: <element> }`. */
+const WRAPPER_KEYS = ['props', 'root', 'tree', 'element', 'ui'];
+
+/** Keys a model names the component under instead of `type`. */
+const TYPE_ALIASES = ['component', 'root'];
+
+function isComponentName(catalog: Catalog, name: unknown): name is string {
+  if (typeof name !== 'string') return false;
+  const definition = catalog.get(name);
+  return definition !== undefined && definition.internal !== true;
+}
+
+/** The one model-facing component whose props schema `props` fits by its keys, if exactly one. */
+function inferComponent(catalog: Catalog, props: Record<string, unknown>): string | undefined {
+  const keys = Object.keys(props);
+  if (keys.length === 0) return undefined;
+  const fits = catalog.modelComponents().filter((component) => {
+    const schema = toJsonSchema(component.props) as
+      | { properties?: Record<string, unknown>; required?: unknown }
+      | undefined;
+    const properties = schema?.properties;
+    if (properties === undefined || typeof properties !== 'object') return false;
+    const required = Array.isArray(schema?.required) ? (schema.required as string[]) : [];
+    // A schema with nothing required fits too much ({ title } is half the catalog).
+    if (required.length === 0) return false;
+    return (
+      keys.every((key) => Object.hasOwn(properties, key)) &&
+      required.every((key) => Object.hasOwn(props, key))
+    );
+  });
+  return fits.length === 1 ? fits[0]?.name : undefined;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseObjectIfStringified(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{')) return value;
+  const parsed = leadingJson(trimmed);
+  return isPlainObject(parsed) ? parsed : value;
+}
+
 function parseChildrenIfStringified(value: unknown): unknown {
   if (typeof value !== 'string') return value;
   const trimmed = value.trim();
@@ -299,8 +422,44 @@ function parseRootIfStringified(value: unknown): unknown {
   if (typeof value !== 'string') return value;
   const trimmed = value.trim();
   if (!trimmed.startsWith('{')) return value;
-  const parsed = leadingJson(trimmed);
+  const parsed = leadingJson(trimmed) ?? leadingJson(repairKeyArrows(trimmed));
   return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed : value;
+}
+
+/**
+ * Arguments a model wrote with `>` for the `:` after a key (`{"title">"Calc"}`) — seen from
+ * Anthropic models on long tool calls; the provider then hands over the text it could not parse.
+ * Outside a string a `>` is never JSON, so one right after a closing quote can only be that colon.
+ */
+function repairKeyArrows(text: string): string {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  let afterString = false;
+  for (const char of text) {
+    if (inString) {
+      out += char;
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') {
+        inString = false;
+        afterString = true;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      afterString = false;
+    } else if (char === '>' && afterString) {
+      out += ':';
+      afterString = false;
+      continue;
+    } else if (char !== ' ' && char !== '\n' && char !== '\t' && char !== '\r') {
+      afterString = false;
+    }
+    out += char;
+  }
+  return out;
 }
 
 /**

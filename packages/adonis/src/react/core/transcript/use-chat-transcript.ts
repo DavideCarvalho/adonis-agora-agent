@@ -169,6 +169,11 @@ export interface TranscriptItemOptions {
    */
   toolCatalog?: ToolCatalog;
   /**
+   * Leave out a failed tool call the model retried at once with the same tool (`retriedCallIds`).
+   * Default `true`; `false` keeps every attempt.
+   */
+  hideRetriedFailures?: boolean;
+  /**
    * Settle a parked question set. Default: the in-scope backend's `answerToolCall` (the enclosing
    * `<AgentProvider>`'s), so a question set is an `elicitation` block the user can act on without
    * any wiring. `null` turns question sets back into plain tool calls.
@@ -770,6 +775,9 @@ function useTranscriptItems({
           toggleReasoning: (key, open) => stableToggle(key)(open),
           ...(options.sources !== undefined ? { sources: options.sources } : {}),
           ...(options.toolCatalog !== undefined ? { toolCatalog: options.toolCatalog } : {}),
+          ...(options.hideRetriedFailures !== undefined
+            ? { hideRetriedFailures: options.hideRetriedFailures }
+            : {}),
           // Read-only still lifts question sets into their block, so the outcome shows.
           ...(handlers.onAnswer !== undefined ||
           (options.readOnly === true && options.onAnswer !== null)

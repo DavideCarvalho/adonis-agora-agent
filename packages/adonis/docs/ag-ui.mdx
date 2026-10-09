@@ -108,7 +108,7 @@ AG-UI has no channel into a running run. A run that needs an approval or an answ
     "metadata": { "agora.toolName": "refund", "agora.input": { "id": 7 } } }] } }
 ```
 
-An approval's `message` is the tool's `confirmation.title` when it declares one (the same wording `agora.approval-requested` carries), else `Approve <tool>?`.
+An approval's `message` is the tool's confirmation title — its `presentation.confirm.title` template filled from the call's input on the server (`'Refund order #{orderId}?'` → `Refund order #1002?`, the same words the native page shows), or what a `preflight` resolved — else `Approve <tool>?`. The whole confirmation (`title`, `verb`, `detail`) rides as `metadata['agora.confirmation']` and on `agora.approval-requested`.
 
 The next `RunAgentInput` answers each interrupt in `resume`:
 
