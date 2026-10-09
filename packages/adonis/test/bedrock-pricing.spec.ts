@@ -264,55 +264,103 @@ describe('ensureModelPricing on Bedrock', () => {
   });
 });
 
-describe('a Bedrock turn reporting the full ARN', () => {
-  it('records a non-NULL, plausible cost through the seeded row', async () => {
-    const pricingStore = new InMemoryPricingStore();
+/** One loop turn on `GOV_ARN`, priced off a store seeded the way boot seeds it. */
+async function bedrockTurn(
+  usage: { inputTokens: number; outputTokens: number; cacheReadTokens?: number },
+  options: { reportedCostUsd?: number; priced?: boolean } = {},
+) {
+  const pricingStore = new InMemoryPricingStore();
+  if (options.priced !== false) {
     await ensureModelPricing({
       models: [bedrock(GOV_ARN)],
       pricingStore,
       catalog: { prices: [GOV_SONNET_45], modelsDev: false },
       log: log(),
     });
-
-    const model: ModelProvider = {
-      async runTurn() {
-        return {
-          text: 'ok',
-          toolCalls: [],
-          modelId: GOV_ARN,
-          usage: { inputTokens: 1_000_000, outputTokens: 100_000, cacheReadTokens: 200_000 },
-        };
-      },
-    };
-    const store = new InMemoryAgentStore();
-    const sink = new InMemoryTokenStreamSink();
-    const actor = { id: 'u1', roles: ['ADMIN'] };
-    const thread = await store.createThread({ actor, persona: 'default' });
-    await runAgentLoop(
-      {
-        model,
-        store,
-        registry: new ToolRegistry(),
-        rolesPolicy: new DefaultRolesPolicy(),
+  }
+  const model: ModelProvider = {
+    async runTurn() {
+      return {
+        text: 'ok',
+        toolCalls: [],
         modelId: GOV_ARN,
-        day: '2026-10-08',
-        systemPrompt: 'test',
-        pricingStore,
-      },
-      { threadId: thread.id, actor, userText: 'hi' },
-      {
-        runId: 'run-1',
-        openSink: () => sink.open('run-1'),
-        awaitApproval: async () => ({ approved: true }),
-        step: (_name, fn) => fn(),
-      },
-    );
-    for await (const _ of sink.subscribe('run-1')) {
-      // drain
-    }
-    const detail = await store.getThread(thread.id);
-    const assistant = detail?.messages.find((m) => m.role === 'assistant');
+        usage,
+        ...(options.reportedCostUsd !== undefined ? { costUsd: options.reportedCostUsd } : {}),
+      };
+    },
+  };
+  const store = new InMemoryAgentStore();
+  const sink = new InMemoryTokenStreamSink();
+  const actor = { id: 'u1', roles: ['ADMIN'] };
+  const thread = await store.createThread({ actor, persona: 'default' });
+  await runAgentLoop(
+    {
+      model,
+      store,
+      registry: new ToolRegistry(),
+      rolesPolicy: new DefaultRolesPolicy(),
+      modelId: GOV_ARN,
+      day: '2026-10-08',
+      systemPrompt: 'test',
+      pricingStore,
+    },
+    { threadId: thread.id, actor, userText: 'hi' },
+    {
+      runId: 'run-1',
+      openSink: () => sink.open('run-1'),
+      awaitApproval: async () => ({ approved: true }),
+      step: (_name, fn) => fn(),
+    },
+  );
+  for await (const _ of sink.subscribe('run-1')) {
+    // drain
+  }
+  const detail = await store.getThread(thread.id);
+  const assistant = detail?.messages.find((m) => m.role === 'assistant');
+  const [row] = store.governanceUsage();
+  const day = new Date().toISOString().slice(0, 10);
+  const totals = await store.usageBetween('u1', day, day);
+  return { assistant, row, totals };
+}
+
+describe('a Bedrock turn reporting the full ARN', () => {
+  it('records a non-NULL, plausible cost through the seeded row', async () => {
+    const { assistant } = await bedrockTurn({
+      inputTokens: 1_000_000,
+      outputTokens: 100_000,
+      cacheReadTokens: 200_000,
+    });
     // 0.8M uncached × $3.60 + 0.2M cache-read × $0.36 + 0.1M output × $18 = $2.88 + $0.072 + $1.80
     expect(assistant?.usage?.costUsd).toBeCloseTo(4.752, 6);
+  });
+
+  it('persists the estimate to the usage ledger, marked as one, and the quota totals count it', async () => {
+    // squid-nestjs#35: 10,605 in / 5 out on the GovCloud ARN.
+    const { assistant, row, totals } = await bedrockTurn({ inputTokens: 10_605, outputTokens: 5 });
+    expect(assistant?.usage?.costUsd).toBeCloseTo(0.038268, 9);
+    expect(row).toMatchObject({ modelId: GOV_ARN, costSource: 'estimate' });
+    expect(row?.costUsd).toBeCloseTo(0.038268, 9);
+    expect(totals.costUsd).toBeCloseTo(0.038268, 9);
+    expect(totals.estimatedCostUsd).toBeCloseTo(0.038268, 9);
+  });
+
+  it('a provider-reported cost still wins, marked provider, and is not counted as an estimate', async () => {
+    const { row, totals } = await bedrockTurn(
+      { inputTokens: 10_605, outputTokens: 5 },
+      { reportedCostUsd: 0.05 },
+    );
+    expect(row).toMatchObject({ costUsd: 0.05, costSource: 'provider' });
+    expect(totals).toEqual({ usedTokens: 10_610, costUsd: 0.05, estimatedCostUsd: 0 });
+  });
+
+  it('an unpriced turn persists no cost and no source (never a fabricated 0)', async () => {
+    const { assistant, row, totals } = await bedrockTurn(
+      { inputTokens: 10_605, outputTokens: 5 },
+      { priced: false },
+    );
+    expect(assistant?.usage?.costUsd).toBeNull();
+    expect(row?.costUsd).toBeUndefined();
+    expect(row?.costSource).toBeUndefined();
+    expect(totals.costUsd).toBe(0);
   });
 });

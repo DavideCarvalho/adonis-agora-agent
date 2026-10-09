@@ -27,7 +27,7 @@ Without `quota`, `GET /agent/quota` still reports the day and month windows off 
 
 A budget of your own — an AI-gateway spend cap, a plan's allowance — is a `QuotaProvider` (`report({ actor, now? })`) passed as `quota`; its `blocked` gates sends the same way. A USD-only budget leaves `usedTokens` (and `limitTokens`) out of its windows rather than sending `0`; `exhaustedWindow` reads a missing `usedTokens` as `0`.
 
-Spend is what the usage rows recorded, i.e. the provider-reported cost (a gateway): a `usd` ceiling only binds where cost is reported. The month window needs a store with `usageBetween` (Lucid and in-memory have it).
+Spend is what the usage rows recorded: the provider-reported cost of a gateway, **plus the loop's estimate** for a provider that reports none (Bedrock, or OpenAI and Anthropic called directly, priced off the [pricing table](#the-pricing-table)). So a `usd` ceiling binds on those too. Estimates are counted by default because otherwise a USD ceiling on a provider that reports no cost would read $0 and never block: the budget would exist but never enforce. To budget on provider-reported cost only, set `quota: { limits, countEstimatedCost: false }`. The month window needs a store with `usageBetween` (Lucid and in-memory have it). See [Estimated cost is persisted](#estimated-cost-is-persisted-and-the-quota-counts-it).
 
 <Callout type="info" title="Migrating from quotas.ledger / quotas.memory">
 The `quotas.*` factories, `LedgerQuotaStore` and `GET /agent/quota/today` are gone (0.46). `quota: quotas.ledger({ limitTokens: N })` becomes `quota: { limits: { day: { tokens: N } } }`. The check moved from inside the turn to the send: a request over budget is refused with `429` instead of a run that fails with `quota_exceeded`. Drain in-flight durable runs started under the old option before upgrading — their journals hold the loop's quota checkpoints.
@@ -43,7 +43,8 @@ Every model turn is recorded to the `agent_token_usage` table via `store.recordU
 - `purpose` — `chat` for a turn's model steps, `embedding` for inject-mode retrieval, `summary` for a
   [history window](/docs/agent/concepts/agent-loop#bounding-the-history)'s fold (the SPI also allows
   `title` / `follow_ups`).
-- `cost_usd` — the provider's **actual** cost when a gateway reports it (see below), else null.
+- `cost_usd` is the turn's cost: the provider's **actual** cost when a gateway reports it, else the estimate from the pricing table, else null (see below).
+- `cost_source` says where `cost_usd` came from: `'provider'` or `'estimate'`. It is NULL on an unpriced row, and on rows from before the column existed, which only ever held a reported cost.
 
 Reasoning tokens, when reported, are a subset of `output_tokens` — observability only, billed at the output rate.
 
@@ -111,6 +112,31 @@ exactly like a free model. If a rollup total looks implausibly low, check the pr
 believe it. The per-run and per-usage rows (`GET /agent/governance/runs`, a run's `usage` ledger) keep
 their `null`s and are where you can tell the two apart.
 </Callout>
+
+### Estimated cost is persisted, and the quota counts it
+
+A provider that reports no cost, such as Bedrock or OpenAI and Anthropic called directly, still gets
+a cost for every turn: its tokens times the model's price row. That estimate is written to the usage
+ledger: `agent_token_usage.cost_usd`, with `cost_source = 'estimate'`. Before this, the estimate
+reached only the message and the run, so the ledger held NULL and the quota's USD windows
+read $0. A cost the provider reports (OpenRouter, the Vercel AI Gateway) is written as before, with
+`cost_source = 'provider'`. That reported figure always wins over an estimate. A turn with neither
+keeps `cost_usd` NULL and `cost_source` NULL.
+
+- **Schema.** `cost_source` is a nullable column that the boot schema heal adds to an existing
+  `agent_token_usage`, with no app migration. Rows written before it existed keep `cost_source`
+  NULL. They only ever held a reported cost.
+- **Frozen at write time.** An estimate uses the price row in effect for that turn. Changing a price
+  later does not rewrite history. A row with NULL `cost_usd` is still estimated at read time by the
+  governance read-model, as before.
+- **Quota.** The USD windows (`limits.day.usd`, `limits.month.usd`) sum every priced row, estimates
+  included. That is the default because otherwise a USD ceiling on a provider that reports no cost
+  would read $0 and never block: the budget would exist but never enforce. To budget on
+  provider-reported (gateway) cost only, set `quota: { limits, countEstimatedCost: false }`.
+  `usageBetween` returns `{ usedTokens, costUsd, estimatedCostUsd }`, where
+  `costUsd` includes the estimated share.
+- History-summary and embedding usage rows are written before the run reads its price list, so
+  they stay unpriced in the ledger. The governance read-model still estimates them.
 
 ### The pricing table
 

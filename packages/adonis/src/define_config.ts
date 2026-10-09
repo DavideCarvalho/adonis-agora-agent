@@ -165,8 +165,13 @@ export interface AgentConfig {
    * before the turn starts. Omit → reported (usage off the ledger), never enforced — for a public
    * (anonymous) deployment that means unbounded model spend, so set limits there; they apply per
    * actor, which is per browser in anonymous mode.
+   *
+   * The USD windows sum the ledger's `cost_usd`: provider-reported cost AND the loop's estimate for a
+   * provider that reports none (marked `cost_source = 'estimate'`). `countEstimatedCost: false` counts
+   * reported cost only. The default (`true`) is there because otherwise a USD ceiling on Bedrock /
+   * OpenAI / Anthropic direct would read $0 and never block.
    */
-  quota?: { limits: QuotaLimits; warnAt?: number } | QuotaProvider;
+  quota?: { limits: QuotaLimits; warnAt?: number; countEstimatedCost?: boolean } | QuotaProvider;
   /**
    * Prices each turn's tokens into the assistant message's `usage.costUsd`. A provider-reported cost
    * (a gateway) always wins; otherwise the loop estimates from this store's current price rows (fetched

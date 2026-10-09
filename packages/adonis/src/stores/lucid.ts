@@ -5,19 +5,21 @@ import {
 import type { ToolCallOutcome } from '../dangling-tool-calls.js';
 import type { ActionProposalOutcome } from '../spi/action-proposal-outcome-store.js';
 import type { ActionProposalStoreOptions } from '../spi/action-proposal-store.js';
-import type {
-  AgentStore,
-  AppendMessageInput,
-  CreateThreadInput,
-  RecordRunEndInput,
-  RecordRunStartInput,
-  RecordToolCallInput,
-  RecordUsageInput,
-  ThreadTurnPage,
-  ThreadTurnQuery,
-  ThreadTurnReader,
-  UpdateThreadInput,
-  UpdateToolCallInput,
+import {
+  type AgentStore,
+  type AppendMessageInput,
+  type CreateThreadInput,
+  type RecordRunEndInput,
+  type RecordRunStartInput,
+  type RecordToolCallInput,
+  type RecordUsageInput,
+  sumUsage,
+  type ThreadTurnPage,
+  type ThreadTurnQuery,
+  type ThreadTurnReader,
+  type UpdateThreadInput,
+  type UpdateToolCallInput,
+  type UsageTotals,
 } from '../spi/agent-store.js';
 import {
   type ToolCallApprovalColumns,
@@ -1050,6 +1052,7 @@ export class LucidAgentStore
       cache_write_tokens: input.usage.cacheWriteTokens ?? null,
       cache_read_tokens: input.usage.cacheReadTokens ?? null,
       cost_usd: input.costUsd ?? null,
+      cost_source: input.costUsd !== undefined ? (input.costSource ?? 'provider') : null,
       run_id: input.runId ?? null,
       created_at: Date.now(),
     });
@@ -1103,25 +1106,22 @@ export class LucidAgentStore
       .update(patch);
   }
 
-  async usageBetween(
-    actorRef: string,
-    fromDay: string,
-    toDay: string,
-  ): Promise<{ usedTokens: number; costUsd: number }> {
+  async usageBetween(actorRef: string, fromDay: string, toDay: string): Promise<UsageTotals> {
     await this.init();
     const rows = await this.db
       .from(AGENT_TABLES.tokenUsage)
       .where('actor_ref', actorRef)
       .where('created_at', '>=', Date.parse(`${fromDay}T00:00:00.000Z`))
       .where('created_at', '<=', Date.parse(`${toDay}T23:59:59.999Z`))
-      .select('input_tokens', 'output_tokens', 'cost_usd');
-    let usedTokens = 0;
-    let costUsd = 0;
-    for (const row of rows) {
-      usedTokens += toInt(row.input_tokens) + toInt(row.output_tokens);
-      costUsd += row.cost_usd === null || row.cost_usd === undefined ? 0 : Number(row.cost_usd);
-    }
-    return { usedTokens, costUsd };
+      .select('input_tokens', 'output_tokens', 'cost_usd', 'cost_source');
+    return sumUsage(
+      rows.map((row) => ({
+        inputTokens: toInt(row.input_tokens),
+        outputTokens: toInt(row.output_tokens),
+        costUsd: row.cost_usd === null || row.cost_usd === undefined ? null : Number(row.cost_usd),
+        costSource: typeof row.cost_source === 'string' ? row.cost_source : null,
+      })),
+    );
   }
 
   async quotaToday(actorRef: string, day: string): Promise<{ usedTokens: number }> {

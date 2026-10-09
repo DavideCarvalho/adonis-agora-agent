@@ -346,12 +346,12 @@ export default class AgentProvider {
         ? undefined
         : isQuotaProvider(config.quota)
           ? config.quota
-          : new LedgerQuotaProvider(
-              store,
-              undefined,
-              config.quota.limits,
-              config.quota.warnAt !== undefined ? { warnAt: config.quota.warnAt } : {},
-            );
+          : new LedgerQuotaProvider(store, undefined, config.quota.limits, {
+              ...(config.quota.warnAt !== undefined ? { warnAt: config.quota.warnAt } : {}),
+              ...(config.quota.countEstimatedCost !== undefined
+                ? { countEstimatedCost: config.quota.countEstimatedCost }
+                : {}),
+            });
     const pricingStore = await this.#resolvePricing(config);
     // Governance read-model is resolved after pricing so the Lucid read-model prices its rollups
     // against the same live prices the loop's cost fold uses.
