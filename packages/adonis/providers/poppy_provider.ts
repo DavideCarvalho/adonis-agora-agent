@@ -4,6 +4,7 @@ import { AgentService } from '../src/agent-service.js';
 import { globalPoppyAuthenticate } from '../src/poppy/auth.js';
 import { PoppyConversations } from '../src/poppy/conversations.js';
 import type { PoppyConfig } from '../src/poppy/define_config.js';
+import { announcePoppyEndpoints, poppyConversationsUrl } from '../src/poppy/endpoints.js';
 import { adonisExchange, createPoppyHandler } from '../src/poppy/handler.js';
 import { type PoppyRequestHandler, setPoppyHandler } from '../src/poppy/runtime.js';
 import { InMemoryPoppyStore, LucidPoppyStore, type PoppyStore } from '../src/poppy/store.js';
@@ -60,6 +61,12 @@ export default class PoppyProvider {
 
     const path = normalizePath(config.path);
     const prefix = `/${path}`;
+
+    // Tell an authorization server in this process (authkit) where conversations are, for
+    // `poppy.json`. Only with `baseUrl`: an absolute URL cannot be known before a request.
+    if (config.baseUrl !== undefined) {
+      announcePoppyEndpoints({ conversations: poppyConversationsUrl(config.baseUrl, path) });
+    }
     const isPoppy = (url: string) => url === prefix || url.startsWith(`${prefix}/`);
 
     // Built on the first Poppy request: the agent provider binds `AgentService` in its own boot.

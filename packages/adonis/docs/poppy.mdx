@@ -43,11 +43,17 @@ export default definePoppyConfig({
 })
 ```
 
-Advertise it in `poppy.json` (AuthKit builds that document):
+It is advertised in `poppy.json` (AuthKit builds that document) as:
 
 ```json
 "agent": { "protocols": [{ "type": "poppy", "endpoint": "https://api.acme.com/poppy/conversations" }] }
 ```
+
+With `baseUrl` set, the provider announces that URL at boot in the global slot
+`Symbol.for('@adonis-agora/poppy:endpoints')` (`{ conversations: '<baseUrl>/<path>' }`, merged with what
+is already there — the pattern MCP uses for its OAuth resource), and AuthKit in the same process reads it:
+no URL repeated in its config. **`baseUrl` is required for this**: without it nothing is announced, and
+you give AuthKit the endpoint yourself.
 
 | Request | |
 | --- | --- |
@@ -187,7 +193,7 @@ gets the complete message only (the spec makes deltas optional).
 | Field | Default | |
 | --- | --- | --- |
 | `path` | `'poppy/conversations'` | The endpoint. |
-| `baseUrl` | request origin | Public origin — what the resolver checks DPoP `htu` against. |
+| `baseUrl` | request origin | Public origin — what the resolver checks DPoP `htu` against. Required to announce the endpoint for `poppy.json`. |
 | `agent` | default agent | The registered agent that answers. |
 | `authenticate` | global slot | Your own Session Token resolver. |
 | `actorFor` | `poppy:<hash>` | `(principal, defaults) => Actor` when the resolver gave no `actor`. |

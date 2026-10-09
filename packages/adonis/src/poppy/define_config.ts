@@ -31,7 +31,9 @@ export interface PoppyConfig {
   path?: string;
   /**
    * Public origin of this app — the URL a DPoP proof is checked against. Set it in production
-   * (behind a proxy); the fallback is the request's own protocol and Host.
+   * (behind a proxy); the fallback is the request's own protocol and Host. Also REQUIRED for the
+   * provider to announce `{baseUrl}/{path}` in `Symbol.for('@adonis-agora/poppy:endpoints')`, where
+   * authkit reads it for `poppy.json` — without it the endpoint is not announced.
    */
   baseUrl?: string;
   /** The registered agent that answers. Default: the agent provider's default agent. */

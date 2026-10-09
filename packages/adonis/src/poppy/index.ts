@@ -19,6 +19,13 @@ export type {
 export { DEFAULT_POPPY_TEXTS, PoppyConversations, poppyActorId } from './conversations.js';
 export type { PoppyConfig } from './define_config.js';
 export { definePoppyConfig } from './define_config.js';
+export type { PoppyEndpoints } from './endpoints.js';
+export {
+  announcedPoppyEndpoints,
+  announcePoppyEndpoints,
+  POPPY_ENDPOINTS_SLOT,
+  poppyConversationsUrl,
+} from './endpoints.js';
 export type { PoppyExchange, PoppyHandlerOptions, PoppyStreamWriter } from './handler.js';
 export { adonisExchange, createPoppyHandler, nodeExchange } from './handler.js';
 export type {
