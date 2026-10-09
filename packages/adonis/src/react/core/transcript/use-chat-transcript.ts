@@ -1,7 +1,7 @@
 import type { UIMessage } from 'ai';
 import type React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { readUiActionText } from '../../../genui/actions.js';
+import { readUiActionText, uiActionSummary } from '../../../genui/actions.js';
 import type { QueuePause } from '../../../index.js';
 import type { ApprovalTarget } from '../approvals/proposals.js';
 import { attachmentFile, type MessageFile } from '../attachments/files.js';
@@ -638,7 +638,11 @@ function useTranscriptItems({
       extractMessageText(latest.current.messages.find((message) => message.id === id)?.parts);
     const created: ItemCallbacks = {
       copy: () => {
-        const text = textFor();
+        // A UI action copies as what its chip says, not as the JSON block the model reads.
+        const raw = textFor();
+        const message = latest.current.messages.find((candidate) => candidate.id === id);
+        const action = message?.role === 'user' ? readUiActionText(raw) : null;
+        const text = action !== null ? uiActionSummary(action) : raw;
         if (!text) {
           return;
         }
