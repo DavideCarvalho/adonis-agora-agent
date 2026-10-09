@@ -189,7 +189,7 @@ export function describeToolCall(
           ? null
           : {
               title: fillTemplate(confirm.title, input),
-              verb: confirm.verb,
+              verb: fillTemplate(confirm.verb, input),
               detail: confirm.detail !== undefined ? fillTemplate(confirm.detail, input) : null,
             },
     result:

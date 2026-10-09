@@ -41,6 +41,36 @@ describe('buildTranscriptBlocks', () => {
     ]);
   });
 
+  it("fills the approval prompt's verb from the input, as the server does", () => {
+    const blocks = buildTranscriptBlocks(
+      message([
+        {
+          type: 'tool-purge',
+          toolCallId: 'p',
+          state: 'approval-requested',
+          input: { key: 'sessions' },
+        } as unknown as AnyToolUIPart,
+      ]),
+      {
+        ...openAll,
+        toolCatalog: {
+          purge: {
+            label: 'Cache purge',
+            running: 'Purging {key}',
+            done: 'Purged {key}',
+            confirm: { title: 'Purge {key}?', verb: 'Purge {key}' },
+          },
+        },
+      },
+    );
+    const call = blocks[0]?.kind === 'tools' ? blocks[0].calls[0] : undefined;
+    expect(call?.description.confirm).toEqual({
+      title: 'Purge sessions?',
+      verb: 'Purge sessions',
+      detail: null,
+    });
+  });
+
   describe('a failed call retried at once', () => {
     const call = (id: string, name: string, state: 'ok' | 'failed' | 'running') =>
       ({
