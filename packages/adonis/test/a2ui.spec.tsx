@@ -383,7 +383,7 @@ describe('the A2UI stream projection', () => {
     });
   });
 
-  it("words an approval with the tool's confirmation: its detail, and its verb on the button", async () => {
+  it("words an approval with the tool's confirmation: its title, and its detail under it", async () => {
     const projector = new A2uiProjector();
     const messages = projector.project({
       type: 'RUN_FINISHED',
@@ -415,7 +415,7 @@ describe('the A2UI stream projection', () => {
     render(<A2uiSurface surface={approval as never} />);
     expect(await screen.findByText('Refund order #1002?')).toBeTruthy();
     expect(screen.getByText('$129.99 goes back to the card.')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Refund' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy();
   });
 
   it('accepts the v0.9 client message, v0.8 userAction and the bare action', () => {

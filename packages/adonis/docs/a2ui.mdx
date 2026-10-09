@@ -71,7 +71,7 @@ Malformed input is an HTTP `400` and no stream: an action that is not one, or la
 | A preview of a tree the model is still writing (`streaming: 'partial'`) | The same surface, growing: each preview is an `updateComponents` that upserts what arrived, and the final frame lands in place. A node still held back (`streaming: 'complete'`) is left out — its parent references an id that arrives later, which A2UI renderers draw as a placeholder. |
 | A withdrawn preview (the tree was refused, or degraded to text) | `deleteSurface`. |
 | Assistant text | A surface `text-<messageId>` whose one `Text` is bound to `/text` in the data model; each delta is an `updateDataModel` of the text so far. |
-| An approval the run parks on | A surface `interrupt-<id>`: a `Card` with the tool's confirmation (its `presentation.confirm`, filled from the call's input on the server: "Refund order #1002?", its `detail` under it) and **Approve** / **Reject** buttons — **Approve** worded with the confirmation's `verb` — whose actions are `agora.approve` / `agora.reject` with `context.interruptId`. The stream then ends. |
+| An approval the run parks on | A surface `interrupt-<id>`: a `Card` with the tool's confirmation (its `presentation.confirm`, filled from the call's input on the server: "Refund order #1002?", its `detail` under it) and **Approve** / **Reject** buttons, whose actions are `agora.approve` / `agora.reject` with `context.interruptId`. The stream then ends. |
 | A question set (elicitation), or any other interrupt | A text surface with its message and "(answer it in the app)". |
 | An error | A text surface `error-<n>` with the message. |
 
