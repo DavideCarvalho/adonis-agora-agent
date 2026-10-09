@@ -4,6 +4,7 @@ import type { AgentRunner, AgentRunStartOptions } from '../spi/agent-runner.js';
 import type { AgentStore } from '../spi/agent-store.js';
 import type { AgentRunInput, Decision } from '../types.js';
 import { errorText } from './log.js';
+import { addUsage, emptyUsage } from './turn.js';
 import type { OpenCodeTurns } from './turns.js';
 
 interface Parked {
@@ -92,14 +93,17 @@ export class OpenCodeAgentRunner implements AgentRunner {
 
   private async run(runId: string, input: AgentRunInput): Promise<void> {
     const started = Date.now();
+    // What the run spent, milestone by milestone.
+    let spent = emptyUsage();
     try {
       let handle = await this.turns.begin(runId, input);
       if (this.cancelled.has(runId)) throw new RunCancelledError();
-      await this.turns.prompt(runId, input, handle);
+      await this.turns.prompt(runId, input, handle, spent);
       for (;;) {
-        const milestone = await this.turns.observe(runId, input, handle);
+        const milestone = await this.turns.observe(runId, input, handle, spent);
+        spent = addUsage(spent, milestone.usage);
         if (milestone.kind === 'finished') {
-          await this.turns.settle(runId, input, milestone.outcome, Date.now() - started);
+          await this.turns.settle(runId, input, milestone.outcome, Date.now() - started, spent);
           return;
         }
         const reply = await this.park(
@@ -108,7 +112,7 @@ export class OpenCodeAgentRunner implements AgentRunner {
           milestone.ask.kind === 'approval' ? 'approval' : 'answers',
           milestone.timeoutMs,
         );
-        handle = await this.turns.reply(runId, input, handle, milestone.ask, reply);
+        handle = await this.turns.reply(runId, input, handle, milestone.ask, reply, spent);
       }
     } catch (error) {
       if (error instanceof RunCancelledError) {
@@ -116,7 +120,13 @@ export class OpenCodeAgentRunner implements AgentRunner {
         await this.turns.settle(runId, input, { status: 'interrupted' }, Date.now() - started);
         return;
       }
-      await this.turns.settleFailed(runId, input, errorText(error, 'the turn failed'));
+      await this.turns.settleFailed(
+        runId,
+        input,
+        errorText(error, 'the turn failed'),
+        Date.now() - started,
+        spent,
+      );
     }
   }
 

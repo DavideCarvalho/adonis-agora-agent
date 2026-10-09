@@ -115,6 +115,8 @@ export class OpenCodeEngine implements AgentEngine {
       sink: context.sink,
       registry: context.registry,
       queue: context.queue,
+      ...(context.pricingStore !== undefined ? { pricingStore: context.pricingStore } : {}),
+      ...(context.priceCatalog !== undefined ? { priceCatalog: context.priceCatalog } : {}),
       ...(tokens !== undefined
         ? { mintToolsToken: (actor, serverKey) => tokens.mint(actor, serverKey) }
         : {}),

@@ -38,7 +38,18 @@ export {
 } from './host.js';
 export { OpenCodeMcpEndpoint, type OpenCodeToolsClaims, OpenCodeToolsTokens } from './mcp.js';
 export { OpenCodeAgentRunner } from './runner.js';
-export { type Milestone, OpenCodeTurn, type PendingAsk, type TurnOutcome } from './turn.js';
+export {
+  addUsage,
+  emptyUsage,
+  type Milestone,
+  OpenCodeTurn,
+  type OpenCodeUsage,
+  type PendingAsk,
+  type StepCost,
+  type StepModel,
+  type TurnOutcome,
+  usageOf,
+} from './turn.js';
 export {
   type OpenCodeCallContext,
   type OpenCodeEngineSettings,

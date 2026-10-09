@@ -484,6 +484,12 @@ export default class AgentProvider {
             queue,
             make: (binding) => this.app.container.make(binding as never),
             ...this.#appKey(),
+            ...(pricingStore !== undefined ? { pricingStore } : {}),
+            ...(config.priceCatalog !== undefined
+              ? { priceCatalog: config.priceCatalog }
+              : this.app.getEnvironment() === 'test'
+                ? { priceCatalog: { modelsDev: false } }
+                : {}),
           })
         : config.durable === true
           ? ((await this.#resolveDurableRunner(factory, store, queue, sink)) ??

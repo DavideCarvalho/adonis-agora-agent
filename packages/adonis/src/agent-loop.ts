@@ -50,6 +50,7 @@ import {
 import type { ResolveToolUiCatalog } from './negotiated-tool-ui.js';
 import { createNegotiatedUiCollector } from './negotiated-tool-ui.js';
 import { personaFromTurn } from './personas.js';
+import { resolveUsageCost } from './pricing/resolve.js';
 import {
   createFrameBuffer,
   createIncrementalGate,
@@ -77,7 +78,7 @@ import type {
   ActionProposalStore,
   ActionProposalSupersessionStore,
 } from './spi/action-proposal-store.js';
-import type { AgentStore, CostSource, ThreadTurnReader } from './spi/agent-store.js';
+import type { AgentStore, ThreadTurnReader } from './spi/agent-store.js';
 import { type ApprovalPolicy, DefaultApprovalPolicy } from './spi/approval-policy.js';
 import type { HistoryWindow, HistoryWindowContext } from './spi/history-window.js';
 import { withSelectedModel } from './spi/model-catalog.js';
@@ -898,21 +899,8 @@ function resolveCostUsd(
   return price === undefined ? null : estimateCost(usage, price);
 }
 
-/**
- * The cost a usage row persists: the provider's figure (`'provider'`), else the estimate off the
- * turn's price row (`'estimate'`), else nothing (`cost_usd` NULL). Persisting the estimate is what lets
- * a USD quota and any reader of the ledger see the spend of a provider that reports no cost (Bedrock,
- * OpenAI, Anthropic direct); `cost_source` keeps it distinguishable from a reported figure.
- */
-function usageCost(
-  usage: MessageUsage,
-  reportedCostUsd: number | undefined,
-  price: CurrentModelPrice | undefined,
-): { costUsd?: number; costSource?: CostSource } {
-  if (reportedCostUsd !== undefined) return { costUsd: reportedCostUsd, costSource: 'provider' };
-  if (price === undefined) return {};
-  return { costUsd: estimateCost(usage, price), costSource: 'estimate' };
-}
+/** The cost a usage row persists — see {@link resolveUsageCost}, the rule every engine records by. */
+const usageCost = resolveUsageCost;
 
 /** Renders a folded-history summary as the leading `system` message of a windowed turn. */
 function buildSummaryBlock(summary: string): string {
