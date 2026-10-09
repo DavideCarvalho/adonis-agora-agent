@@ -349,3 +349,7 @@ The isolation above keeps generated code away from the page, the user's session 
 - [A2UI](/docs/agent/a2ui) — the same UI frames as A2UI surfaces, and A2UI actions as turns.
 - [AG-UI](/docs/agent/ag-ui) — `forwardedProps.uiAction` and the `agora.ui` event.
 - [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends) — the comparison example, which has a sandbox scenario.
+
+## Your design system in the sandbox
+
+The frame inherits your page's theme (CSS variables, light and dark) by default, and can take Tailwind and your own components as a kit the model writes JSX with — see [Your design system in the sandbox](/docs/agent/genui-sandbox-kit). On channels the server draws for (WhatsApp, Telegram, email) there is no sandbox: see [Generative UI per channel](/docs/agent/genui-channels).
