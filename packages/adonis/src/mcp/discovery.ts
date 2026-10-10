@@ -98,6 +98,8 @@ export interface WwwAuthenticateOptions {
   error?: 'invalid_token' | 'insufficient_scope';
   /** The metadata URL (RFC 9728 §5.1). Set only when the auth strategy exposes OAuth metadata. */
   resourceMetadataUrl?: string;
+  /** With `insufficient_scope`: the scopes the request needs (RFC 6750 §3), space-separated. */
+  scope?: string;
 }
 
 /**
@@ -108,6 +110,7 @@ export interface WwwAuthenticateOptions {
 export function wwwAuthenticateChallenge(options: WwwAuthenticateOptions = {}): string {
   const params: string[] = [];
   if (options.error !== undefined) params.push(`error="${options.error}"`);
+  if (options.scope !== undefined) params.push(`scope="${quote(options.scope)}"`);
   if (options.resourceMetadataUrl !== undefined) {
     params.push(`resource_metadata="${quote(options.resourceMetadataUrl)}"`);
   }

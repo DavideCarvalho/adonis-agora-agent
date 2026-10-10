@@ -6,6 +6,7 @@ import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { personalAgentGate } from '../src/a2a/gate.js';
 import { DefaultToolAuthorizer } from '../src/authorizer.js';
 import { actorFromAuthInfo } from '../src/mcp/actor.js';
 import type { McpAuth, McpAuthInfo } from '../src/mcp/auth.js';
@@ -20,7 +21,8 @@ import {
   wwwAuthenticateChallenge,
 } from '../src/mcp/discovery.js';
 import { registerOAuthResource } from '../src/mcp/oauth-resource.js';
-import { createMcpServer } from '../src/mcp/server.js';
+import { missingScopes } from '../src/mcp/scope.js';
+import { createMcpServer, isExposable } from '../src/mcp/server.js';
 import type { RolesPolicy } from '../src/spi/roles-policy.js';
 import { ToolRegistry } from '../src/tool-registry.js';
 
@@ -56,9 +58,12 @@ export default class McpProvider {
   async boot() {
     const config = this.app.config.get<McpConfig>('mcp', {} as McpConfig);
     const defaultRoles = config.defaultRoles ?? ['ADMIN'];
-    const authorizer =
+    // Personal agents (a Poppy session's token, see `authKitAuth`) reach only the tools of the scopes
+    // their user granted — the same gate as the agent loop. A no-op for every other actor.
+    const authorizer = personalAgentGate(
       config.authorizer ??
-      new DefaultToolAuthorizer(defaultRoles, { emptyRoles: config.emptyRoles ?? 'allow' });
+        new DefaultToolAuthorizer(defaultRoles, { emptyRoles: config.emptyRoles ?? 'allow' }),
+    );
     const ctx = { app: this.app };
     const auth = config.auth !== undefined ? await resolveMcpAuth(config.auth, ctx) : undefined;
     this.#publicOrigin =
@@ -166,10 +171,11 @@ export default class McpProvider {
     status: 401 | 403,
     message: string,
     hadToken: boolean,
+    scope?: string,
   ): null {
     const challenge = wwwAuthenticateChallenge({
       ...(status === 403
-        ? { error: 'insufficient_scope' as const }
+        ? { error: 'insufficient_scope' as const, ...(scope !== undefined ? { scope } : {}) }
         : hadToken
           ? { error: 'invalid_token' as const }
           : {}),
@@ -217,6 +223,44 @@ export default class McpProvider {
     );
   }
 
+  /**
+   * A personal agent calling a tool it is offered but whose scope its user did not grant: `403` with
+   * `WWW-Authenticate: Bearer error="insufficient_scope", scope="…"` (RFC 6750 §3.1, the MCP scope
+   * step-up, Poppy §4.3) instead of a tool error — the client asks the user for that scope. Returns
+   * `true` once it has replied.
+   */
+  async #refuseMissingScope(
+    ctx: HttpContext,
+    endpoint: Endpoint,
+    authInfo: McpAuthInfo,
+    body: unknown,
+  ): Promise<boolean> {
+    const messages = Array.isArray(body) ? body : [body];
+    const actor = authInfo.extra.actor;
+    for (const message of messages) {
+      const call = message as { method?: unknown; params?: { name?: unknown } } | null;
+      if (call?.method !== 'tools/call' || typeof call.params?.name !== 'string') continue;
+      const spec = endpoint.registry.spec(call.params.name);
+      // Only a tool this server serves: anything else stays the server's "unknown tool".
+      if (!isExposable(spec, endpoint.actions ?? 'refuse') || spec === undefined) continue;
+      if (endpoint.allowedTools !== undefined && !endpoint.allowedTools.includes(spec.name))
+        continue;
+      const missing = await missingScopes(actor, spec, endpoint.authorizer);
+      if (missing !== null) {
+        this.#refuse(
+          ctx,
+          endpoint,
+          403,
+          `insufficient_scope: "${spec.name}" needs the scope "${missing.join(' ')}"`,
+          true,
+          missing.join(' '),
+        );
+        return true;
+      }
+    }
+    return false;
+  }
+
   // ── route handlers ────────────────────────────────────────────────────────
 
   #newServer(endpoint: Endpoint) {
@@ -242,6 +286,7 @@ export default class McpProvider {
     const authInfo = await this.#authenticate(ctx, endpoint);
     if (authInfo === null) return;
     req.auth = authInfo;
+    if (await this.#refuseMissingScope(ctx, endpoint, authInfo, body)) return;
 
     try {
       let transport: StreamableHTTPServerTransport | undefined;

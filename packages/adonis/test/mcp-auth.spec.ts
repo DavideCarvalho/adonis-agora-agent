@@ -18,6 +18,7 @@ interface FakeToken {
   scope?: string;
   exp?: number;
   extra?: Record<string, unknown>;
+  gty?: string;
   isExpired: boolean;
 }
 
@@ -181,6 +182,56 @@ describe('authKitAuth() → toActor', () => {
     expect(unknown).not.toBeInstanceOf(McpAuthError);
 
     await expect(auth.verify('old')).rejects.toBeInstanceOf(McpAuthError);
+  });
+});
+
+describe('authKitAuth() → a personal agent (Poppy) token', () => {
+  const poppyToken: FakeToken = {
+    accountId: 'acc-1',
+    clientId: 'https://agent.example/agent.json',
+    grantId: 'pgrant_1',
+    scope: 'poppy:read orders:read',
+    gty: 'poppy',
+    isExpired: false,
+  };
+
+  it('puts the actor behind the personal agent gate: personal_agent + one scope: role per scope', async () => {
+    const { app } = fakeAuthKit({ tokens: { p1: poppyToken }, grants: { pgrant_1: {} } });
+    const seen: AuthKitActorInfo[] = [];
+    const auth = await resolveMcpAuth(
+      authKitAuth({
+        toActor: (info) => {
+          seen.push(info);
+          return { id: `profile-of-${info.accountId}`, roles: ['account:acc-1'] };
+        },
+      }),
+      { app },
+    );
+    const actor = (await auth.verify('p1')).extra.actor;
+    expect(seen[0]?.personalAgent).toBe(true);
+    expect(actor.id).toBe('profile-of-acc-1');
+    expect(actor.roles).toEqual([
+      'account:acc-1',
+      'personal_agent',
+      'scope:poppy:read',
+      'scope:orders:read',
+    ]);
+  });
+
+  it('leaves an MCP client login alone', async () => {
+    const { app } = fakeAuthKit({ tokens: { t1: validToken }, grants: { 'grant-1': {} } });
+    const seen: AuthKitActorInfo[] = [];
+    const auth = await resolveMcpAuth(
+      authKitAuth({
+        toActor: (info) => {
+          seen.push(info);
+          return { id: info.accountId };
+        },
+      }),
+      { app },
+    );
+    expect((await auth.verify('t1')).extra.actor).toEqual({ id: 'acc-1' });
+    expect(seen[0]?.personalAgent).toBe(false);
   });
 });
 

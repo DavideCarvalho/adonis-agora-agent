@@ -455,3 +455,84 @@ describe('mcp_provider: more than one endpoint', () => {
     expect(authed.status).toBe(405);
   });
 });
+
+describe('mcp_provider: a personal agent reaches only the tools of its scopes', () => {
+  /** `pa-read` is a personal agent granted `r`; `admin` is a regular login. */
+  const personalAuth: McpAuth = {
+    oauth: async () => oauthMeta,
+    async verify(token) {
+      const actor =
+        token === 'pa-read'
+          ? { id: 'acc-1', roles: ['personal_agent', 'scope:r'] }
+          : token === 'admin'
+            ? { id: 'acc-1', roles: ['ADMIN'] }
+            : null;
+      if (actor === null) throw new Error('invalid or expired access token');
+      return { token, clientId: 'c', scopes: [], extra: { actor } };
+    },
+  };
+  const registry = async () => {
+    const { ToolRegistry } = await import('../src/tool-registry.js');
+    const { z } = await import('zod');
+    const r = new ToolRegistry();
+    const tool = (name: string, kind: 'read' | 'action', roles?: string[]) =>
+      r.register(
+        {
+          name,
+          kind,
+          description: name,
+          inputSchema: z.object({}),
+          ...(roles ? { roles } : {}),
+        } as never,
+        { execute: async () => ({ ran: name }) },
+      );
+    tool('read_orders', 'read', ['scope:r']);
+    tool('cancel_order', 'action', ['scope:w']);
+    tool('internal_tool', 'action');
+    return r;
+  };
+  const call = (booted: BootedApp, token: string, name: string) =>
+    fetch(`${booted.url}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: {} },
+      }),
+    });
+
+  it('runs a granted tool, answers 403 insufficient_scope with the scope for an offered one, hides the rest', async () => {
+    booted = await bootApp(
+      { auth: personalAuth, stateless: true, actions: 'execute', defaultRoles: ['ADMIN'] },
+      { bodyParser: true, registry: await registry() },
+    );
+
+    const read = await call(booted, 'pa-read', 'read_orders');
+    expect(read.status).toBe(200);
+    expect(JSON.stringify(await read.json())).toContain('ran');
+
+    const write = await call(booted, 'pa-read', 'cancel_order');
+    expect(write.status).toBe(403);
+    expect(write.headers.get('www-authenticate')).toContain('error="insufficient_scope"');
+    expect(write.headers.get('www-authenticate')).toContain('scope="w"');
+    expect(await write.json()).toMatchObject({
+      error: expect.stringContaining('insufficient_scope'),
+    });
+
+    // Not written for personal agents: never offered, so the server's own refusal (not a step-up).
+    const internal = await call(booted, 'pa-read', 'internal_tool');
+    expect(internal.status).toBe(200);
+    expect(await internal.json()).toMatchObject({ result: { isError: true } });
+
+    // A regular login is untouched by the gate (a tool with no roles is anyone's by default).
+    const admin = await call(booted, 'admin', 'internal_tool');
+    expect(admin.status).toBe(200);
+    expect(JSON.stringify(await admin.json())).toContain('ran');
+  });
+});

@@ -1,5 +1,7 @@
 import type { ApplicationService } from '@adonisjs/core/types';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
+import { scopeRole } from '../a2a/gate.js';
+import { PERSONAL_AGENT_ROLE } from '../a2a/permission-tool.js';
 import type { Actor } from '../types.js';
 
 /**
@@ -142,8 +144,13 @@ interface AuthKitAccessTokenLike {
   scope?: string;
   exp?: number;
   extra?: Record<string, unknown>;
+  /** Grant type the token was minted by — authkit sets `'poppy'` for a Personal Agent session. */
+  gty?: string;
   isExpired: boolean;
 }
+
+/** The `gty` authkit-server gives the access tokens it mints for a Poppy session (§6, MCP). */
+export const POPPY_GRANT_TYPE = 'poppy';
 
 /**
  * The organization authkit bound to a grant at consent time (the active org of the session that
@@ -183,6 +190,13 @@ export interface AuthKitActorInfo {
   activeOrg: AuthKitActiveOrg | undefined;
   /** Extra claims stored on the access token (`extraTokenClaims`), if any. */
   extra: Record<string, unknown> | undefined;
+  /**
+   * The token belongs to a **personal agent** — authkit minted it for a Personal Agent Protocol
+   * (Poppy) session (`gty: 'poppy'`), not for an MCP client the user logged into. Whatever `toActor`
+   * returns, the actor then also gets `personal_agent` and one `scope:<id>` role per granted scope,
+   * so the personal agent gate applies: only the tools of its scopes run.
+   */
+  personalAgent: boolean;
 }
 
 /**
@@ -271,7 +285,8 @@ export function authKitAuth(options: AuthKitMcpAuthOptions = {}): McpAuthFactory
           }
         }
         const tokenScopes = (at.scope ?? '').split(' ').filter(Boolean);
-        const actor = await toActor({
+        const personalAgent = at.gty === POPPY_GRANT_TYPE;
+        const resolved = await toActor({
           accountId: at.accountId,
           scopes: tokenScopes,
           clientId: at.clientId,
@@ -279,7 +294,23 @@ export function authKitAuth(options: AuthKitMcpAuthOptions = {}): McpAuthFactory
           grant,
           activeOrg: readActiveOrg(grant?.activeOrg),
           extra: at.extra,
+          personalAgent,
         });
+        // A personal agent's token carries the user's account but only the scopes they granted: the
+        // roles below put it behind `personalAgentGate` (the MCP provider wraps its authorizer in it),
+        // as a Poppy conversation or a PACT delegation does.
+        const actor: Actor = personalAgent
+          ? {
+              ...resolved,
+              roles: [
+                ...new Set([
+                  ...(resolved.roles ?? []),
+                  PERSONAL_AGENT_ROLE,
+                  ...tokenScopes.map(scopeRole),
+                ]),
+              ],
+            }
+          : resolved;
         return {
           token,
           clientId: at.clientId ?? '',

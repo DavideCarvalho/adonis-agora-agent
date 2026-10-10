@@ -189,6 +189,14 @@ Poppy §6 requires a listed MCP server's protected-resource metadata to name the
 [MCP provider](/docs/agent/mcp) adds it to its `/.well-known/oauth-protected-resource/…` document,
 next to the configured issuer.
 
+A personal agent's MCP token is scoped like its conversations. AuthKit mints it with `gty: 'poppy'`,
+and `authKitAuth()` gives the actor `personal_agent` plus one `scope:<id>` role per granted scope
+(after your `toActor`, which sees `personalAgent: true`), and the MCP authorizer is wrapped in
+`personalAgentGate`. So `tools/list` offers the tools written for personal agents, a granted one
+runs, and a call to one whose scope was not granted is refused **before it runs** with `403` and
+`WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"` — the agent asks its user for
+that scope and signs in again.
+
 ## Durability
 
 Conversations, events and message receipts live in `agent_poppy_conversation`, `agent_poppy_event` and
