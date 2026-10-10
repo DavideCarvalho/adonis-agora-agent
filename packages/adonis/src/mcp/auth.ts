@@ -2,6 +2,7 @@ import type { ApplicationService } from '@adonisjs/core/types';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { scopeRole } from '../a2a/gate.js';
 import { PERSONAL_AGENT_ROLE } from '../a2a/permission-tool.js';
+import { globalPoppyAuthenticate } from '../poppy/auth.js';
 import type { Actor } from '../types.js';
 
 /**
@@ -91,13 +92,25 @@ export interface McpVerifyContext {
 export class McpAuthError extends Error {
   /** HTTP status of the refusal: `401` (the token does not authenticate) or `403` (it does, but may not do this). */
   readonly status: 401 | 403;
+  /**
+   * The `WWW-Authenticate` error code, when not the status' default (`invalid_token` for 401,
+   * `insufficient_scope` for 403) — e.g. Poppy's `sign_in_required` (§4.3).
+   */
+  readonly error?: McpChallengeError;
 
-  constructor(message: string, options: { status?: 401 | 403; cause?: unknown } = {}) {
+  constructor(
+    message: string,
+    options: { status?: 401 | 403; error?: McpChallengeError; cause?: unknown } = {},
+  ) {
     super(message, options.cause !== undefined ? { cause: options.cause } : undefined);
     this.name = 'McpAuthError';
     this.status = options.status ?? 401;
+    if (options.error !== undefined) this.error = options.error;
   }
 }
+
+/** Error codes the MCP endpoint can put in its `WWW-Authenticate` challenge. */
+export type McpChallengeError = 'invalid_token' | 'insufficient_scope' | 'sign_in_required';
 
 /**
  * A configured MCP auth strategy, as a lazy thunk the provider calls at boot. Each factory lazily
@@ -263,6 +276,15 @@ export function authKitAuth(options: AuthKitMcpAuthOptions = {}): McpAuthFactory
         const service = await getService();
         const at = await service.provider.AccessToken.find(token);
         if (!at) {
+          // A signed-out Poppy Session's MCP token lives only in authkit's Poppy store: it is valid,
+          // but this server needs an account — Poppy's `sign_in_required` (§4.3), not `invalid_token`
+          // (which would only make the agent mint the same kind of token again).
+          if (context !== undefined && (await isSignedOutPoppyToken(token, context.resource))) {
+            throw new McpAuthError('sign in to use this server', {
+              status: 403,
+              error: 'sign_in_required',
+            });
+          }
           // Not an access token this issuer knows — plain `Error`, so `anyOf` tries the next strategy.
           throw new Error('invalid or expired access token');
         }
@@ -321,6 +343,22 @@ export function authKitAuth(options: AuthKitMcpAuthOptions = {}): McpAuthFactory
       },
     };
   };
+}
+
+/** A Bearer token authkit issued for `resource` to a Poppy Session that is not signed in. */
+async function isSignedOutPoppyToken(token: string, resource: string): Promise<boolean> {
+  const authenticate = globalPoppyAuthenticate();
+  if (authenticate === undefined) return false;
+  try {
+    const result = await authenticate({
+      method: 'POST',
+      url: resource,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    return result.ok && !result.principal.signedIn;
+  } catch {
+    return false;
+  }
 }
 
 /** Whether a token's `aud` names `resource` (a trailing slash on either side is tolerated). */

@@ -195,7 +195,8 @@ and `authKitAuth()` gives the actor `personal_agent` plus one `scope:<id>` role 
 `personalAgentGate`. So `tools/list` offers the tools written for personal agents, a granted one
 runs, and a call to one whose scope was not granted is refused **before it runs** with `403` and
 `WWW-Authenticate: Bearer error="insufficient_scope", scope="<missing>"` — the agent asks its user for
-that scope and signs in again.
+that scope and signs in again. A **signed-out** Session's MCP token (it lives only in AuthKit's Poppy
+store) is answered `403` `error="sign_in_required"`, not `invalid_token`.
 
 ## Durability
 

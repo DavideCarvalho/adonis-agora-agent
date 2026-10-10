@@ -95,7 +95,7 @@ export interface WwwAuthenticateOptions {
    * The RFC 6750 error code. `invalid_token` when the request carried a token that was refused,
    * `insufficient_scope` for a `403`, omitted when no token was sent at all (RFC 6750 §3.1).
    */
-  error?: 'invalid_token' | 'insufficient_scope';
+  error?: 'invalid_token' | 'insufficient_scope' | 'sign_in_required';
   /** The metadata URL (RFC 9728 §5.1). Set only when the auth strategy exposes OAuth metadata. */
   resourceMetadataUrl?: string;
   /** With `insufficient_scope`: the scopes the request needs (RFC 6750 §3), space-separated. */

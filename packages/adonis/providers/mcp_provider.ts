@@ -10,7 +10,7 @@ import { personalAgentGate } from '../src/a2a/gate.js';
 import { DefaultToolAuthorizer } from '../src/authorizer.js';
 import { actorFromAuthInfo } from '../src/mcp/actor.js';
 import type { McpAuth, McpAuthInfo } from '../src/mcp/auth.js';
-import { McpAuthError, resolveMcpAuth } from '../src/mcp/auth.js';
+import { McpAuthError, type McpChallengeError, resolveMcpAuth } from '../src/mcp/auth.js';
 import type { McpConfig, McpToolDescriber } from '../src/mcp/define_config.js';
 import {
   mcpResourceUrl,
@@ -172,13 +172,16 @@ export default class McpProvider {
     message: string,
     hadToken: boolean,
     scope?: string,
+    error?: McpChallengeError,
   ): null {
     const challenge = wwwAuthenticateChallenge({
-      ...(status === 403
-        ? { error: 'insufficient_scope' as const, ...(scope !== undefined ? { scope } : {}) }
-        : hadToken
-          ? { error: 'invalid_token' as const }
-          : {}),
+      ...(error !== undefined
+        ? { error }
+        : status === 403
+          ? { error: 'insufficient_scope' as const, ...(scope !== undefined ? { scope } : {}) }
+          : hadToken
+            ? { error: 'invalid_token' as const }
+            : {}),
       ...(endpoint.auth?.oauth !== undefined
         ? { resourceMetadataUrl: protectedResourceMetadataUrl(this.#origin(ctx), endpoint.path) }
         : {}),
@@ -208,7 +211,8 @@ export default class McpProvider {
       } catch (error) {
         const status = error instanceof McpAuthError ? error.status : 401;
         const message = error instanceof Error ? error.message : 'unauthorized';
-        return this.#refuse(ctx, endpoint, status, message, true);
+        const code = error instanceof McpAuthError ? error.error : undefined;
+        return this.#refuse(ctx, endpoint, status, message, true, undefined, code);
       }
     }
     if (endpoint.openActor !== undefined) {

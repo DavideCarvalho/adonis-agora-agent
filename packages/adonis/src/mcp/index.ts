@@ -11,6 +11,7 @@ export type {
   McpAuthContext,
   McpAuthFactory,
   McpAuthInfo,
+  McpChallengeError,
   McpOAuthMetadata,
 } from './auth.js';
 export { anyOf, apiKeyAuth, authKitAuth, McpAuthError, resolveMcpAuth } from './auth.js';
