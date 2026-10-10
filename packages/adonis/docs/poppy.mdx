@@ -74,13 +74,24 @@ session or CSRF. With no resolver in the slot and no `authenticate` in the confi
 
 ## Who is talking
 
-The resolver answers a **principal**: the personal agent (`clientId`), its User (`userId`, pairwise),
-the Session, whether it is `signedIn`, the token's `scopes` and, when signed in, the account's `actor`.
-A refusal (`invalid_token` 401, `sign_in_required` / `insufficient_scope` 403) is answered as the
-resolver wrote it, `WWW-Authenticate` included.
+Each request goes to the resolver as `{ method, url, headers }`: `url` is the full **public** URL
+(from `baseUrl`, else the request's protocol and host — `X-Forwarded-*` from trusted proxies — upgraded
+to `https` when the Poppy issuer is), since the DPoP proof's `htu` names it; `headers` are the raw ones,
+`authorization` and `dpop` included. No options are passed: a turn's scopes are decided per tool, and
+the `resource` a token must carry is the resolver's to derive from the URL — AuthKit requires one only
+when the `poppy` protocol entry declares a `resource`.
 
-A turn runs as `principal.actor`, else your `actorFor(principal, defaults)`, else `poppy:<hash>`
-(stable per personal agent and User, never an account). Whatever the source, the actor gets the role
+It answers a **principal**: the personal agent (`clientId`), its User (`userId`, opaque and pairwise),
+the app account when signed in (`accountId`, else `null`), the Session, `signedIn`, the token's
+`scopes`, `resource`, `tokenType` and — only when the app configures `personalAgents.poppy.toActor`
+in AuthKit — an `actor`. A refusal (`invalid_token`, `invalid_dpop_proof`, `use_dpop_nonce`,
+`sign_in_required`, `insufficient_scope`) is answered with the resolver's status, its
+`WWW-Authenticate`, its extra headers (`DPoP-Nonce`) and its description as `error_description`.
+
+A turn runs as `principal.actor`, else your `actorFor(principal, defaults)`, else the default: signed
+in, **the account** — `{ id: accountId }`, as a PACT delegation runs as the account; signed out,
+`poppy:<hash>` (stable per personal agent and User, never an account). A conversation used signed in is
+bound to `accountId`. Whatever the source, the actor gets the role
 **`personal_agent`** and one **`scope:<id>`** role per scope of a signed-in token — the same roles a
 PACT delegation gives. So the [personal agent gate](/docs/agent/a2a#what-a-personal-agent-can-reach)
 applies unchanged: a personal agent reaches only tools that declare one of its roles, and memory and
@@ -171,6 +182,13 @@ agent thread**, so the Company Agent knows what was said in either. While it is 
 (409, naming it); closing it adds `direct_closed`; closing the parent closes it. A Direct Conversation
 cannot be a parent. `direct.opened` / `direct.closed` hooks tell your app.
 
+## MCP and the Poppy issuer
+
+Poppy §6 requires a listed MCP server's protected-resource metadata to name the Poppy issuer in
+`authorization_servers`. When AuthKit announces it (`Symbol.for('@adonis-agora/poppy:issuer')`), the
+[MCP provider](/docs/agent/mcp) adds it to its `/.well-known/oauth-protected-resource/…` document,
+next to the configured issuer.
+
 ## Durability
 
 Conversations, events and message receipts live in `agent_poppy_conversation`, `agent_poppy_event` and
@@ -196,7 +214,7 @@ gets the complete message only (the spec makes deltas optional).
 | `baseUrl` | request origin | Public origin — what the resolver checks DPoP `htu` against. Required to announce the endpoint for `poppy.json`. |
 | `agent` | default agent | The registered agent that answers. |
 | `authenticate` | global slot | Your own Session Token resolver. |
-| `actorFor` | `poppy:<hash>` | `(principal, defaults) => Actor` when the resolver gave no `actor`. |
+| `actorFor` | `{ id: accountId }` / `poppy:<hash>` | `(principal, defaults) => Actor` when the resolver gave no `actor`. |
 | `store` | `'lucid'` | `'memory'`, or a `PoppyStore` (`redisPoppyStore`). `connection`, `autoCreateTables`. |
 | `actions` | `'approve-delegated'` | Or `'reject'`. |
 | `handoff`, `direct` | — | Hooks above. |

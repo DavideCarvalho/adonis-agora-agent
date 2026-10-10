@@ -31,6 +31,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const principal: PoppyPrincipal = {
   userId: 'u1',
+  accountId: null,
   clientId: 'https://pa.example',
   scopes: [],
   sessionId: 's1',

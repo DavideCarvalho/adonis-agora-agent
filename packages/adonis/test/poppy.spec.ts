@@ -23,6 +23,8 @@ import {
   type PoppyConversationsOptions,
   type PoppyEvent,
   type PoppyStore,
+  poppyActorId,
+  publicOrigin,
 } from '../src/poppy/index.js';
 import type { ModelProvider, ModelTurnArgs, ModelTurnResult } from '../src/spi/model-provider.js';
 import { InMemoryAgentStore } from '../src/testing/index.js';
@@ -31,12 +33,21 @@ import { InMemoryAgentStore } from '../src/testing/index.js';
 
 const CLIENT = 'https://pa.example';
 
+/** What the resolver was last asked: the request and the options. */
+const seen: { request: Parameters<PoppyAuthenticate>[0] | null; options: unknown } = {
+  request: null,
+  options: undefined,
+};
+
 /**
- * `DPoP <user>|<scopes,comma>|<in|out>|<account>` — anything else is `invalid_token`; user
- * `forbidden` is an `insufficient_scope` refusal from the resolver itself.
+ * `DPoP <user>|<scopes,comma>|<in|out>|<account>[|<toActor id>]` — anything else is
+ * `invalid_token`; user `forbidden` is an `insufficient_scope` refusal, `nonce` a `use_dpop_nonce`.
  */
-const fakeResolver: PoppyAuthenticate = async (request) => {
-  const match = /^DPoP (.+)$/.exec(request.headers.authorization ?? '');
+const fakeResolver: PoppyAuthenticate = async (request, options) => {
+  seen.request = request;
+  seen.options = options;
+  const header = request.headers.authorization;
+  const match = /^DPoP (.+)$/.exec(typeof header === 'string' ? header : '');
   if (!match?.[1]) {
     return {
       ok: false,
@@ -45,7 +56,7 @@ const fakeResolver: PoppyAuthenticate = async (request) => {
       wwwAuthenticate: 'DPoP error="invalid_token"',
     };
   }
-  const [user = '', scopes = '', state = 'out', account] = match[1].split('|');
+  const [user = '', scopes = '', state = 'out', account, toActor] = match[1].split('|');
   if (user === 'forbidden') {
     return {
       ok: false,
@@ -55,15 +66,29 @@ const fakeResolver: PoppyAuthenticate = async (request) => {
       wwwAuthenticate: 'DPoP error="insufficient_scope", scope="poppy:read"',
     };
   }
+  if (user === 'nonce') {
+    return {
+      ok: false,
+      status: 401,
+      error: 'use_dpop_nonce',
+      description: 'Use the DPoP nonce',
+      wwwAuthenticate: 'DPoP error="use_dpop_nonce"',
+      headers: { 'DPoP-Nonce': 'n-123' },
+    };
+  }
+  const signedIn = state === 'in';
   return {
     ok: true,
     principal: {
       userId: user,
+      accountId: signedIn ? (account ?? null) : null,
       clientId: CLIENT,
       scopes: scopes === '' ? [] : scopes.split(','),
       sessionId: 's1',
-      signedIn: state === 'in',
-      ...(account ? { actor: { id: account, roles: ['USER'] } } : {}),
+      signedIn,
+      resource: null,
+      tokenType: 'DPoP',
+      ...(toActor ? { actor: { id: toActor, roles: ['USER'] } } : {}),
     },
   };
 };
@@ -269,6 +294,29 @@ describe('Poppy routing and auth', () => {
     );
     const res = await post(harness, '', msg('hi'));
     expect(res.headers.get('www-authenticate')).toContain('custom');
+  });
+
+  it('passes the resolver the full public URL, the raw headers, and no options', async () => {
+    harness = await setup(() => ({ text: 'hi' }));
+    await fetch(`${harness.url}/poppy/conversations/cnv_x/events?cursor=evt_1&wait=0`, {
+      headers: { ...U1, DPoP: 'proof.jwt' },
+    });
+    expect(seen.request).toMatchObject({
+      method: 'GET',
+      url: `${harness.url}/poppy/conversations/cnv_x/events?cursor=evt_1&wait=0`,
+      headers: { authorization: 'DPoP u1||out', dpop: 'proof.jwt' },
+    });
+    expect(seen.options).toBeUndefined();
+  });
+
+  it('forwards a refusal headers (DPoP-Nonce) and description, under its status', async () => {
+    harness = await setup(() => ({ text: 'hi' }));
+    const res = await post(harness, '', msg('hi'), auth('nonce'));
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: 'use_dpop_nonce', error_description: 'Use the DPoP nonce' });
+    expect(res.headers.get('dpop-nonce')).toBe('n-123');
+    expect(res.headers.get('www-authenticate')).toBe('DPoP error="use_dpop_nonce"');
+    expect(res.headers.get('cache-control')).toBe('no-store');
   });
 
   it('answers the resolver refusal with its status, error and challenge — before reading the body', async () => {
@@ -764,6 +812,38 @@ describe('Poppy scopes (§7.11)', () => {
     expect(events.some((e) => e.type === 'authorization')).toBe(false);
   });
 
+  it('runs as the account when signed in, as toActor when given, and poppy:<hash> signed out', async () => {
+    const actors: { id: string; roles?: string[] }[] = [];
+    const h = await setup(callThen('whoami'));
+    harness = h;
+    h.agent.registry.register(
+      {
+        name: 'whoami',
+        kind: 'read',
+        description: 'x',
+        inputSchema: z.object({}),
+        roles: [PERSONAL_AGENT_ROLE],
+      },
+      {
+        execute: async (_input, ctx) => {
+          actors.push(ctx.actor);
+          return {};
+        },
+      },
+    );
+    for (const token of [
+      'u1|poppy:read|in|acct-1',
+      'u2|poppy:read|in|acct-2|profile-9',
+      'u3||out',
+    ]) {
+      const id = (await post(h, '', msg('who?'), auth(token))).body.conversation_id;
+      await readUntil(h, id, settled, auth(token));
+    }
+    expect(actors.map((a) => a.id)).toEqual(['acct-1', 'profile-9', poppyActorId(CLIENT, 'u3')]);
+    expect(actors[0]?.roles).toEqual([PERSONAL_AGENT_ROLE, 'scope:poppy:read']);
+    expect(actors[2]?.roles).toEqual([PERSONAL_AGENT_ROLE]);
+  });
+
   it('once used signed in, the conversation belongs to the account', async () => {
     const h = await withTools(() => ({ text: 'ok' }));
     harness = h;
@@ -1192,5 +1272,14 @@ describe('Poppy durability', () => {
     await sleep(100);
     const again = await get(harness, '/cnv_orphan/events');
     expect(companyMessages(again.body.events)).toHaveLength(1);
+  });
+});
+
+describe('publicOrigin', () => {
+  it('prefers baseUrl; else the request, upgraded to https behind a TLS proxy of an https issuer', () => {
+    const request = { protocol: 'http', host: 'api.acme.com' };
+    expect(publicOrigin(request, 'https://acme.com/')).toBe('https://acme.com');
+    expect(publicOrigin(request, undefined, 'https://auth.acme.com')).toBe('https://api.acme.com');
+    expect(publicOrigin(request, undefined, undefined)).toBe('http://api.acme.com');
   });
 });

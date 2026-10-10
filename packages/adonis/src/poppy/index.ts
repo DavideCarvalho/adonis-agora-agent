@@ -1,11 +1,12 @@
 export type {
   PoppyAuthenticate,
   PoppyAuthFailure,
+  PoppyAuthOptions,
   PoppyAuthRequest,
   PoppyAuthResult,
   PoppyPrincipal,
 } from './auth.js';
-export { globalPoppyAuthenticate, POPPY_AUTHENTICATE_SLOT } from './auth.js';
+export { globalPoppyAuthenticate, globalPoppyIssuer, POPPY_AUTHENTICATE_SLOT } from './auth.js';
 export type {
   PoppyConversationsOptions,
   PoppyDirectHooks,
@@ -27,7 +28,7 @@ export {
   poppyConversationsUrl,
 } from './endpoints.js';
 export type { PoppyExchange, PoppyHandlerOptions, PoppyStreamWriter } from './handler.js';
-export { adonisExchange, createPoppyHandler, nodeExchange } from './handler.js';
+export { adonisExchange, createPoppyHandler, nodeExchange, publicOrigin } from './handler.js';
 export type {
   PoppyContext,
   PoppyErrorCode,

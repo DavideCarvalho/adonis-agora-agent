@@ -199,14 +199,19 @@ export class PoppyConversations {
   // ── identity and ownership ──────────────────────────────────────────────────
 
   /**
-   * The actor a principal's turns run as: the resolver's, else the app's `actorFor`, else
-   * `poppy:<hash>`. It ALWAYS carries `personal_agent` (what puts it behind `personalAgentGate`)
-   * and one `scope:<id>` role per account scope of a signed-in token — the same roles a PACT
-   * delegation gives, so a tool written for personal agents gates both surfaces alike.
+   * The actor a principal's turns run as: the resolver's (`toActor`), else the app's `actorFor`,
+   * else — signed in — the ACCOUNT, `{ id: accountId }`, the way a PACT delegation runs as the
+   * account; signed out, `poppy:<hash>` (stable per Personal Agent and User, never an account).
+   * It ALWAYS carries `personal_agent` (what puts it behind `personalAgentGate`) and one
+   * `scope:<id>` role per account scope of a signed-in token — the roles a PACT delegation gives,
+   * so a tool written for personal agents gates both surfaces alike.
    */
   async actorOf(principal: PoppyPrincipal): Promise<Actor> {
     const defaults: Actor = principal.actor ?? {
-      id: poppyActorId(principal.clientId, principal.userId),
+      id:
+        principal.signedIn && principal.accountId
+          ? principal.accountId
+          : poppyActorId(principal.clientId, principal.userId),
     };
     const actor =
       principal.actor === undefined && this.options.actorFor
@@ -217,6 +222,12 @@ export class PoppyConversations {
       ...actor,
       roles: [...new Set([...(actor.roles ?? []), PERSONAL_AGENT_ROLE, ...scopes.map(scopeRole)])],
     };
+  }
+
+  /** The account a signed-in principal is — what a conversation binds to once used (§7.2). */
+  async #accountOf(principal: PoppyPrincipal): Promise<string | null> {
+    if (!principal.signedIn) return null;
+    return principal.accountId ?? (await this.actorOf(principal)).id;
   }
 
   #grant(principal: PoppyPrincipal, actor: Actor): PoppyGrant {
@@ -239,8 +250,9 @@ export class PoppyConversations {
     }
     if (conversation.accountRef !== null) {
       if (principal.signedIn) {
-        const actor = await this.actorOf(principal);
-        if (actor.id !== conversation.accountRef) throw new PoppyError('conversation_not_found');
+        if ((await this.#accountOf(principal)) !== conversation.accountRef) {
+          throw new PoppyError('conversation_not_found');
+        }
         return conversation;
       }
       if (conversation.userId === principal.userId) {
@@ -405,7 +417,7 @@ export class PoppyConversations {
       id,
       clientId: principal.clientId,
       userId: principal.userId,
-      accountRef: principal.signedIn ? actor.id : null,
+      accountRef: await this.#accountOf(principal),
       agentName: parent?.agentName ?? this.options.agentName ?? '',
       threadId: parent?.threadId ?? null,
       parentId: parent?.id ?? null,
@@ -475,7 +487,9 @@ export class PoppyConversations {
 
       const patch: PoppyConversationPatch = { grant: this.#grant(principal, actor) };
       // Once it is used signed in, the conversation belongs to that account (§7.2).
-      if (principal.signedIn && conversation.accountRef === null) patch.accountRef = actor.id;
+      if (principal.signedIn && conversation.accountRef === null) {
+        patch.accountRef = await this.#accountOf(principal);
+      }
       await this.#acceptMessage(conversation, body.message, status, patch);
       return response;
     });

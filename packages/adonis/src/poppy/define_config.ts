@@ -41,8 +41,8 @@ export interface PoppyConfig {
   /** Verifies Session Tokens; overrides the global resolver. Neither → the endpoint answers 501. */
   authenticate?: PoppyAuthenticate;
   /**
-   * The actor of a principal the resolver gave none (`principal.actor`). Gets the default
-   * (`poppy:<hash of client and user>`). `personal_agent` and the token's `scope:<id>` roles are
+   * The actor of a principal the resolver gave none (`principal.actor`). Gets the default: the
+   * account (`{ id: accountId }`) when signed in, `poppy:<hash of client and user>` signed out. `personal_agent` and the token's `scope:<id>` roles are
    * added whatever this returns.
    */
   actorFor?: (principal: PoppyPrincipal, defaults: Actor) => Actor | Promise<Actor>;

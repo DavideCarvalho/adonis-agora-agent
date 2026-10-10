@@ -1,6 +1,11 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { HttpContext } from '@adonisjs/core/http';
-import { globalPoppyAuthenticate, type PoppyAuthenticate, type PoppyPrincipal } from './auth.js';
+import {
+  globalPoppyAuthenticate,
+  globalPoppyIssuer,
+  type PoppyAuthenticate,
+  type PoppyPrincipal,
+} from './auth.js';
 import type { PoppyConversations } from './conversations.js';
 import { isPoppyId, PoppyError, parseEmptyBody, parseSendBody } from './protocol.js';
 
@@ -13,10 +18,12 @@ export interface PoppyExchange {
   /** The path, without the query string. */
   path: string;
   query: Record<string, string | undefined>;
-  /** The absolute URL the request was made to — what a DPoP proof's `htu` names. */
+  /** The full PUBLIC URL the request was made to (with its query) — what a DPoP proof's `htu` names. */
   url: string;
-  /** Lower-cased header names. */
+  /** Lower-cased header names, repeated values joined. */
   headers: Record<string, string | undefined>;
+  /** The headers as received (lower-cased names) — what the Session Token resolver verifies. */
+  rawHeaders: Record<string, string | string[] | undefined>;
   /** The raw body, refused past `limit` bytes. */
   readBody(limit: number): Promise<string>;
   json(status: number, body: unknown, headers?: Record<string, string>): void;
@@ -125,16 +132,26 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
         'Poppy conversations are not enabled: no Session Token resolver is installed',
       );
     }
+    // No options: a turn's scopes are decided per tool, and the `resource` a token must carry is
+    // the resolver's to derive from the URL (the `resource` of the `poppy` protocol entry, if any).
     const result = await resolver({
       method: exchange.method,
       url: exchange.url,
-      headers: exchange.headers,
+      headers: exchange.rawHeaders,
     });
     if (result.ok) return result.principal;
     exchange.json(
       result.status,
-      { error: result.error, ...(result.scope !== undefined ? { scope: result.scope } : {}) },
-      { 'WWW-Authenticate': result.wwwAuthenticate },
+      {
+        error: result.error,
+        ...(result.description !== undefined ? { error_description: result.description } : {}),
+        ...(result.scope !== undefined ? { scope: result.scope } : {}),
+      },
+      {
+        ...(result.headers ?? {}),
+        'WWW-Authenticate': result.wwwAuthenticate,
+        'Cache-Control': 'no-store',
+      },
     );
     return null;
   }
@@ -312,6 +329,14 @@ function allowFor(rest: string[]): string {
 
 // ── exchanges ─────────────────────────────────────────────────────────────────
 
+function rawLowerHeaders(
+  headers: Record<string, string | string[] | undefined>,
+): Record<string, string | string[] | undefined> {
+  const out: Record<string, string | string[] | undefined> = {};
+  for (const [name, value] of Object.entries(headers)) out[name.toLowerCase()] = value;
+  return out;
+}
+
 function lowerHeaders(
   headers: Record<string, string | string[] | undefined>,
 ): Record<string, string | undefined> {
@@ -363,6 +388,7 @@ export function nodeExchange(
     query: Object.fromEntries(target.searchParams),
     url: target.toString(),
     headers: lowerHeaders(req.headers),
+    rawHeaders: rawLowerHeaders(req.headers),
     readBody: (limit) => readStream(req, limit),
     json(status, body, headers = {}) {
       res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
@@ -376,11 +402,28 @@ export function nodeExchange(
   };
 }
 
+/**
+ * The public origin of a request: `baseUrl` when configured; else the request's protocol and host
+ * (Adonis honours `X-Forwarded-*` from trusted proxies) — upgraded to `https` when the Poppy issuer
+ * is, as a TLS-terminating proxy would otherwise make every DPoP `htu` mismatch.
+ */
+export function publicOrigin(
+  request: { protocol: string; host: string },
+  baseUrl: string | undefined,
+  issuer: string | undefined = globalPoppyIssuer(),
+): string {
+  if (baseUrl !== undefined) return baseUrl.replace(/\/+$/, '');
+  const protocol =
+    request.protocol === 'http' && issuer?.startsWith('https:') ? 'https' : request.protocol;
+  return `${protocol}://${request.host}`;
+}
+
 /** A {@link PoppyExchange} over an Adonis request — what the Poppy server middleware builds. */
 export function adonisExchange(ctx: HttpContext, options: { baseUrl?: string }): PoppyExchange {
-  const origin =
-    options.baseUrl?.replace(/\/+$/, '') ??
-    `${ctx.request.protocol()}://${ctx.request.host() ?? 'localhost'}`;
+  const origin = publicOrigin(
+    { protocol: ctx.request.protocol(), host: ctx.request.host() ?? 'localhost' },
+    options.baseUrl,
+  );
   const original = ctx.request.url(true) ?? ctx.request.url() ?? '/';
   const target = new URL(original, `${origin}/`);
   return {
@@ -389,6 +432,7 @@ export function adonisExchange(ctx: HttpContext, options: { baseUrl?: string }):
     query: Object.fromEntries(target.searchParams),
     url: `${origin}${target.pathname}${target.search}`,
     headers: lowerHeaders(ctx.request.headers()),
+    rawHeaders: rawLowerHeaders(ctx.request.headers()),
     async readBody(limit) {
       // Mounted ahead of the bodyparser: the body is still on the socket.
       const parsed = (ctx.request as { raw?: () => string | null }).raw?.();
