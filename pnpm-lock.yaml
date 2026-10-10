@@ -243,7 +243,7 @@ importers:
         specifier: 1.0.1
         version: 1.0.1(zod@4.6.5)
       '@ai-sdk/react':
-        specifier: ^4.0.125
+        specifier: 4.0.125
         version: 4.0.125(react@19.3.0)(zod@4.6.5)
       '@json-render/core':
         specifier: 0.21.0
@@ -298,16 +298,16 @@ importers:
         version: 19.3.0(@types/react@19.3.0)
       agent-0-56:
         specifier: npm:@adonis-agora/agent@0.56.0
-        version: '@adonis-agora/agent@0.56.0(333c9904f77cb28bd6ab05b0c6945828)'
+        version: '@adonis-agora/agent@0.56.0(fc57db8fbabfc73ae156c02cb043235b)'
       agent-0-58:
         specifier: npm:@adonis-agora/agent@0.58.0
-        version: '@adonis-agora/agent@0.58.0(333c9904f77cb28bd6ab05b0c6945828)'
+        version: '@adonis-agora/agent@0.58.0(fc57db8fbabfc73ae156c02cb043235b)'
       agent-0-59:
         specifier: npm:@adonis-agora/agent@0.59.0
-        version: '@adonis-agora/agent@0.59.0(333c9904f77cb28bd6ab05b0c6945828)'
+        version: '@adonis-agora/agent@0.59.0(fc57db8fbabfc73ae156c02cb043235b)'
       ai:
-        specifier: 7.0.122
-        version: 7.0.122(zod@4.6.5)
+        specifier: 7.0.130
+        version: 7.0.130(zod@4.6.5)
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -971,6 +971,12 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/gateway@4.0.106':
+    resolution: {integrity: sha512-NprSdFzyVnbEp2SDWtIgsCFIUHFCehOD9S6FQkF/dLrCmnke8w4SOK3KcmUUiEbwtVzlUF8prkaELp+ohcQaQw==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/mcp@2.0.62':
     resolution: {integrity: sha512-nGfJ+M9oW9haxvnDptzFoW/QQj7JQO1dzhKq31zls4UlKJ3BXrSlHnkpZvqMFjQbWKY97YCrIk9PjQpCXlk5Og==}
     engines: {node: '>=22'}
@@ -983,8 +989,18 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/provider-utils@5.0.56':
+    resolution: {integrity: sha512-F7/U1YpVXEfSxRHbxScm0PVdr9lN6GaUWHnt8ws2UjuGeuxWHqCkV25dGpHAkpDHkuIXoC+aak/OqSylKSJmHw==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/provider@4.0.19':
     resolution: {integrity: sha512-ryVZSSfmpEsr4bM8rbt9cSBWal+KGYRrm57C+k/hiPQHMiMahaqg2bPF0MpxSUWY8mGpt7s/ajM6PAqNTMKqPQ==}
+    engines: {node: '>=22'}
+
+  '@ai-sdk/provider@4.0.24':
+    resolution: {integrity: sha512-iztFqJTdxNN0ZzqZAAnVPMhRMaL1bfQFa3GIPAffWQ0+dP2FXIkyMD8kHeEI7EpB/C6TR45cqOkrS7YZZ1sATA==}
     engines: {node: '>=22'}
 
   '@ai-sdk/react@4.0.125':
@@ -2831,6 +2847,12 @@ packages:
 
   ai@7.0.122:
     resolution: {integrity: sha512-Un4yVROG+BMd6Q62xUxb9yV+wlTrUGeXhRtg5ltEFDV0p3lOYQaQHK9ozB6rdPdqlH3LyaszfbFdUkZ1p00nIQ==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  ai@7.0.130:
+    resolution: {integrity: sha512-QkBkCogl46jXUg0SrSsdqQlOI2ZVMCjfnbBQS8t3gE21U/SO17oNMVFyjmcC9z20wOoYUA+2O2vsso0maoS7dw==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -5654,7 +5676,7 @@ snapshots:
       zod: 3.25.76
       zod-to-json-schema: 3.25.2(zod@3.25.76)
 
-  '@adonis-agora/agent@0.56.0(333c9904f77cb28bd6ab05b0c6945828)':
+  '@adonis-agora/agent@0.56.0(fc57db8fbabfc73ae156c02cb043235b)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.30.1(supports-color@10.2.2)(zod@4.6.5)
       '@standard-schema/spec': 1.1.0
@@ -5669,10 +5691,10 @@ snapshots:
       '@adonisjs/lucid': 22.4.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.5(@types/node@26.6.4))(pg@8.23.1)(supports-color@10.2.2)
       '@adonisjs/redis': 11.0.0(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2)
       '@dudousxd/nestjs-agent-core': 0.40.0
-      '@dudousxd/nestjs-agent-react': 0.33.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(@json-render/react@0.21.0(react@19.3.0)(zod@4.6.5))(@streamdown/code@1.1.1(react@19.3.0))(@streamdown/math@1.0.3(react@19.3.0)(supports-color@10.2.2))(@streamdown/mermaid@1.0.3(react@19.3.0))(ai@7.0.122(zod@4.6.5))(katex@0.16.45)(prism-react-renderer@2.4.1(react@19.3.0))(react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.0)(supports-color@10.2.2))(react@19.3.0)(rehype-katex@7.0.1)(rehype-sanitize@6.0.0)(remark-gfm@4.0.1(supports-color@10.2.2))(remark-math@6.0.0(supports-color@10.2.2))(streamdown@2.6.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(supports-color@10.2.2))(unist-util-visit@5.1.0)
+      '@dudousxd/nestjs-agent-react': 0.33.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(@json-render/react@0.21.0(react@19.3.0)(zod@4.6.5))(@streamdown/code@1.1.1(react@19.3.0))(@streamdown/math@1.0.3(react@19.3.0)(supports-color@10.2.2))(@streamdown/mermaid@1.0.3(react@19.3.0))(ai@7.0.130(zod@4.6.5))(katex@0.16.45)(prism-react-renderer@2.4.1(react@19.3.0))(react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.0)(supports-color@10.2.2))(react@19.3.0)(rehype-katex@7.0.1)(rehype-sanitize@6.0.0)(remark-gfm@4.0.1(supports-color@10.2.2))(remark-math@6.0.0(supports-color@10.2.2))(streamdown@2.6.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(supports-color@10.2.2))(unist-util-visit@5.1.0)
       '@dudousxd/nestjs-media-client': 0.3.0
       '@qdrant/js-client-rest': 1.19.0(typescript@7.0.2)
-      ai: 7.0.122(zod@4.6.5)
+      ai: 7.0.130(zod@4.6.5)
       node-sql-parser: 5.4.0
       react: 19.3.0
       zod: 4.6.5
@@ -5680,7 +5702,7 @@ snapshots:
       - '@cfworker/json-schema'
       - supports-color
 
-  '@adonis-agora/agent@0.58.0(333c9904f77cb28bd6ab05b0c6945828)':
+  '@adonis-agora/agent@0.58.0(fc57db8fbabfc73ae156c02cb043235b)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.30.1(supports-color@10.2.2)(zod@4.6.5)
       '@standard-schema/spec': 1.1.0
@@ -5695,10 +5717,10 @@ snapshots:
       '@adonisjs/lucid': 22.4.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.5(@types/node@26.6.4))(pg@8.23.1)(supports-color@10.2.2)
       '@adonisjs/redis': 11.0.0(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2)
       '@dudousxd/nestjs-agent-core': 0.40.0
-      '@dudousxd/nestjs-agent-react': 0.33.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(@json-render/react@0.21.0(react@19.3.0)(zod@4.6.5))(@streamdown/code@1.1.1(react@19.3.0))(@streamdown/math@1.0.3(react@19.3.0)(supports-color@10.2.2))(@streamdown/mermaid@1.0.3(react@19.3.0))(ai@7.0.122(zod@4.6.5))(katex@0.16.45)(prism-react-renderer@2.4.1(react@19.3.0))(react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.0)(supports-color@10.2.2))(react@19.3.0)(rehype-katex@7.0.1)(rehype-sanitize@6.0.0)(remark-gfm@4.0.1(supports-color@10.2.2))(remark-math@6.0.0(supports-color@10.2.2))(streamdown@2.6.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(supports-color@10.2.2))(unist-util-visit@5.1.0)
+      '@dudousxd/nestjs-agent-react': 0.33.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(@json-render/react@0.21.0(react@19.3.0)(zod@4.6.5))(@streamdown/code@1.1.1(react@19.3.0))(@streamdown/math@1.0.3(react@19.3.0)(supports-color@10.2.2))(@streamdown/mermaid@1.0.3(react@19.3.0))(ai@7.0.130(zod@4.6.5))(katex@0.16.45)(prism-react-renderer@2.4.1(react@19.3.0))(react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.0)(supports-color@10.2.2))(react@19.3.0)(rehype-katex@7.0.1)(rehype-sanitize@6.0.0)(remark-gfm@4.0.1(supports-color@10.2.2))(remark-math@6.0.0(supports-color@10.2.2))(streamdown@2.6.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(supports-color@10.2.2))(unist-util-visit@5.1.0)
       '@dudousxd/nestjs-media-client': 0.3.0
       '@qdrant/js-client-rest': 1.19.0(typescript@7.0.2)
-      ai: 7.0.122(zod@4.6.5)
+      ai: 7.0.130(zod@4.6.5)
       node-sql-parser: 5.4.0
       react: 19.3.0
       zod: 4.6.5
@@ -5706,7 +5728,7 @@ snapshots:
       - '@cfworker/json-schema'
       - supports-color
 
-  '@adonis-agora/agent@0.59.0(333c9904f77cb28bd6ab05b0c6945828)':
+  '@adonis-agora/agent@0.59.0(fc57db8fbabfc73ae156c02cb043235b)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.30.1(supports-color@10.2.2)(zod@4.6.5)
       '@standard-schema/spec': 1.1.0
@@ -5721,10 +5743,10 @@ snapshots:
       '@adonisjs/lucid': 22.4.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.5(@types/node@26.6.4))(pg@8.23.1)(supports-color@10.2.2)
       '@adonisjs/redis': 11.0.0(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2)
       '@dudousxd/nestjs-agent-core': 0.40.0
-      '@dudousxd/nestjs-agent-react': 0.33.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(@json-render/react@0.21.0(react@19.3.0)(zod@4.6.5))(@streamdown/code@1.1.1(react@19.3.0))(@streamdown/math@1.0.3(react@19.3.0)(supports-color@10.2.2))(@streamdown/mermaid@1.0.3(react@19.3.0))(ai@7.0.122(zod@4.6.5))(katex@0.16.45)(prism-react-renderer@2.4.1(react@19.3.0))(react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.0)(supports-color@10.2.2))(react@19.3.0)(rehype-katex@7.0.1)(rehype-sanitize@6.0.0)(remark-gfm@4.0.1(supports-color@10.2.2))(remark-math@6.0.0(supports-color@10.2.2))(streamdown@2.6.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(supports-color@10.2.2))(unist-util-visit@5.1.0)
+      '@dudousxd/nestjs-agent-react': 0.33.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(@json-render/react@0.21.0(react@19.3.0)(zod@4.6.5))(@streamdown/code@1.1.1(react@19.3.0))(@streamdown/math@1.0.3(react@19.3.0)(supports-color@10.2.2))(@streamdown/mermaid@1.0.3(react@19.3.0))(ai@7.0.130(zod@4.6.5))(katex@0.16.45)(prism-react-renderer@2.4.1(react@19.3.0))(react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.0)(supports-color@10.2.2))(react@19.3.0)(rehype-katex@7.0.1)(rehype-sanitize@6.0.0)(remark-gfm@4.0.1(supports-color@10.2.2))(remark-math@6.0.0(supports-color@10.2.2))(streamdown@2.6.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(supports-color@10.2.2))(unist-util-visit@5.1.0)
       '@dudousxd/nestjs-media-client': 0.3.0
       '@qdrant/js-client-rest': 1.19.0(typescript@7.0.2)
-      ai: 7.0.122(zod@4.6.5)
+      ai: 7.0.130(zod@4.6.5)
       node-sql-parser: 5.4.0
       react: 19.3.0
       zod: 4.6.5
@@ -6181,6 +6203,13 @@ snapshots:
       '@vercel/oidc': 3.2.0
       zod: 4.6.5
 
+  '@ai-sdk/gateway@4.0.106(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.24
+      '@ai-sdk/provider-utils': 5.0.56(zod@4.6.5)
+      '@vercel/oidc': 3.2.0
+      zod: 4.6.5
+
   '@ai-sdk/mcp@2.0.62(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 4.0.19
@@ -6198,7 +6227,20 @@ snapshots:
       undici: 7.29.1
       zod: 4.6.5
 
+  '@ai-sdk/provider-utils@5.0.56(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.24
+      '@standard-schema/spec': 1.1.0
+      '@workflow/serde': 4.1.0
+      eventsource-parser: 3.1.1
+      undici: 7.29.1
+      zod: 4.6.5
+
   '@ai-sdk/provider@4.0.19':
+    dependencies:
+      json-schema: 0.4.0
+
+  '@ai-sdk/provider@4.0.24':
     dependencies:
       json-schema: 0.4.0
 
@@ -6519,11 +6561,11 @@ snapshots:
       - reflect-metadata
     optional: true
 
-  '@dudousxd/nestjs-agent-react@0.33.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(@json-render/react@0.21.0(react@19.3.0)(zod@4.6.5))(@streamdown/code@1.1.1(react@19.3.0))(@streamdown/math@1.0.3(react@19.3.0)(supports-color@10.2.2))(@streamdown/mermaid@1.0.3(react@19.3.0))(ai@7.0.122(zod@4.6.5))(katex@0.16.45)(prism-react-renderer@2.4.1(react@19.3.0))(react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.0)(supports-color@10.2.2))(react@19.3.0)(rehype-katex@7.0.1)(rehype-sanitize@6.0.0)(remark-gfm@4.0.1(supports-color@10.2.2))(remark-math@6.0.0(supports-color@10.2.2))(streamdown@2.6.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(supports-color@10.2.2))(unist-util-visit@5.1.0)':
+  '@dudousxd/nestjs-agent-react@0.33.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(@json-render/react@0.21.0(react@19.3.0)(zod@4.6.5))(@streamdown/code@1.1.1(react@19.3.0))(@streamdown/math@1.0.3(react@19.3.0)(supports-color@10.2.2))(@streamdown/mermaid@1.0.3(react@19.3.0))(ai@7.0.130(zod@4.6.5))(katex@0.16.45)(prism-react-renderer@2.4.1(react@19.3.0))(react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.0)(supports-color@10.2.2))(react@19.3.0)(rehype-katex@7.0.1)(rehype-sanitize@6.0.0)(remark-gfm@4.0.1(supports-color@10.2.2))(remark-math@6.0.0(supports-color@10.2.2))(streamdown@2.6.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(supports-color@10.2.2))(unist-util-visit@5.1.0)':
     dependencies:
       '@ai-sdk/react': 4.0.125(react@19.3.0)(zod@4.6.5)
       '@dudousxd/nestjs-agent-core': 0.40.0
-      ai: 7.0.122(zod@4.6.5)
+      ai: 7.0.130(zod@4.6.5)
       react: 19.3.0
     optionalDependencies:
       '@dudousxd/nestjs-media-client': 0.3.0
@@ -7718,6 +7760,13 @@ snapshots:
       '@ai-sdk/gateway': 4.0.100(zod@4.6.5)
       '@ai-sdk/provider': 4.0.19
       '@ai-sdk/provider-utils': 5.0.51(zod@4.6.5)
+      zod: 4.6.5
+
+  ai@7.0.130(zod@4.6.5):
+    dependencies:
+      '@ai-sdk/gateway': 4.0.106(zod@4.6.5)
+      '@ai-sdk/provider': 4.0.24
+      '@ai-sdk/provider-utils': 5.0.56(zod@4.6.5)
       zod: 4.6.5
 
   ajv-formats@3.0.1(ajv@8.20.0):
