@@ -20,6 +20,9 @@ Authentication and delegation come from [AuthKit's personal agents](https://davi
 (`@adonis-agora/authkit-server` 0.76+). This surface is the conversation: Agent Cards, `message:send`,
 `contextId`, retries, step-up and receipts.
 
+Personal agents speaking [Personal Agent Protocol ("Poppy")](/docs/agent/poppy) instead get its
+conversation endpoint — same gate, same `scope:<id>` roles.
+
 ## Mounting it
 
 Register the provider in `adonisrc.ts`, after the agent provider:

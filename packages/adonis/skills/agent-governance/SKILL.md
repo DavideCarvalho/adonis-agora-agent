@@ -80,14 +80,25 @@ the policy changes both layers together — they disagree only when a policy def
 `canOffer` to offer what it will not run (A2A step-up).
 
 The provider wraps whatever policy you configure with `personalAgentGate`: an actor with
-the `personal_agent` role (A2A personal agents) reaches only tools that declare one of its
+the `personal_agent` role (personal agents over A2A/PACT or Poppy conversations) reaches only tools that declare one of its
 roles — a tool with no `roles` is out of its reach even when open by default — and its
 memory and skill scopes resolve to none. Nothing changes for any other actor.
+Both personal-agent surfaces build that actor the same way: `personal_agent` plus one
+`scope:<id>` role per granted scope — a PACT delegation's scopes (`a2a_provider`) or a
+signed-in Poppy Session Token's (`poppy_provider`: `scope:poppy:read`, `scope:poppy:write`,
+custom scopes). A tool behind a missing scope is offered, not run; the refused call is the
+step-up (A2A: an `AUTH_REQUIRED` task; Poppy: an `authorization` event).
+
+> **Experimental:** Poppy (Personal Agent Protocol) is a Draft 0.1 spec still in development
+> (https://personalagentprotocol.org/docs/spec). The Poppy surface implements Draft 0.1 and WILL change
+> as the spec evolves — possibly breaking, outside semver majors while it is a draft.
+
 
 Source: `packages/adonis/docs/governance/authorization.mdx` ("Ability-aware
 authorization"), `packages/adonis/src/authorizer.ts`,
 `packages/adonis/src/a2a/gate.ts` (`personalAgentGate`, `personalAgentScopes`),
-`packages/adonis/docs/a2a.mdx` ("What a personal agent can reach").
+`packages/adonis/docs/a2a.mdx` ("What a personal agent can reach"),
+`packages/adonis/docs/poppy.mdx` ("Scopes, sign-in and actions").
 
 ### Pattern 2 — mount the governance read-model with `governanceAuthorize`
 

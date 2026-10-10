@@ -291,7 +291,7 @@ Source: `packages/adonis/docs/authoring/tools.mdx`, `packages/adonis/src/tool-fi
 
 ```ts
 // Wrong — no roles → inherits defaultRoles, which is [] (open) by default: every actor
-// except A2A personal agents, an anonymous visitor included, is offered this tool.
+// except personal agents (A2A, Poppy), an anonymous visitor included, is offered this tool.
 static tool = { name: 'refund_order', kind: 'action', description: '...', input }
 ```
 
@@ -304,8 +304,16 @@ Mechanism: `definitionsFor` filters the offered tool list through the role gate 
 each model turn, and `invoke` re-checks it. A tool with no `roles` takes `defaultRoles`;
 an empty list is no restriction (since 0.46 — before, it denied everyone; `emptyRoles: 'deny'`
 in the config, or `ClosedRolesPolicy`, keeps it closed) — except for an actor with the
-`personal_agent` role (A2A personal agents): it reaches only tools that declare one of its
-roles, so a tool with no `roles` is out of its reach even when open by default. An `action` still parks on approval — but by default the
+`personal_agent` role (personal agents — A2A/PACT and Poppy conversations): it reaches only
+tools that declare one of its roles, so a tool with no `roles` is out of its reach even when
+open by default. Write a tool for them with `roles: ['personal_agent']` (anyone's agent) or
+`['scope:<id>']` (a granted scope: a PACT delegation scope, or `scope:poppy:read` / `scope:poppy:write` /
+a custom Poppy scope).
+
+> **Experimental:** Poppy (Personal Agent Protocol) is a Draft 0.1 spec still in development
+> (https://personalagentprotocol.org/docs/spec). The Poppy surface implements Draft 0.1 and WILL change
+> as the spec evolves — possibly breaking, outside semver majors while it is a draft.
+ An `action` still parks on approval — but by default the
 requester approves, so for a public chat that is only a confirmation.
 Source: `packages/adonis/docs/governance/authorization.mdx`,
 `packages/adonis/src/tool-registry.ts` (`DefaultRolesPolicy.can`),

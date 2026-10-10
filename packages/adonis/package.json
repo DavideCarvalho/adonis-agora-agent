@@ -58,6 +58,21 @@
       "import": "./dist/src/a2a/server_middleware.js",
       "default": "./dist/src/a2a/server_middleware.js"
     },
+    "./poppy": {
+      "types": "./dist/src/poppy/index.d.ts",
+      "import": "./dist/src/poppy/index.js",
+      "default": "./dist/src/poppy/index.js"
+    },
+    "./poppy_provider": {
+      "types": "./dist/providers/poppy_provider.d.ts",
+      "import": "./dist/providers/poppy_provider.js",
+      "default": "./dist/providers/poppy_provider.js"
+    },
+    "./poppy/server_middleware": {
+      "types": "./dist/src/poppy/server_middleware.d.ts",
+      "import": "./dist/src/poppy/server_middleware.js",
+      "default": "./dist/src/poppy/server_middleware.js"
+    },
     "./mcp": {
       "types": "./dist/src/mcp/index.d.ts",
       "import": "./dist/src/mcp/index.js",
