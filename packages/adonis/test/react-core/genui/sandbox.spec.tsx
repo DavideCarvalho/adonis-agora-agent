@@ -195,6 +195,23 @@ describe('<SandboxView>', () => {
     fireEvent.load(iframe);
   });
 
+  it('keeps initialHeight only until the frame measures: then follows the content down and up', async () => {
+    render(<SandboxView {...view} initialHeight={600} />);
+    const iframe = frame();
+    expect(iframe.style.height).toBe('600px');
+    // The first measure rides `ready` (a `resize` sent before the listener was up is not resent).
+    await act(async () => fromFrame(iframe, { type: SANDBOX_MESSAGE.ready, height: 240 }));
+    expect(iframe.style.height).toBe('240px');
+    await act(async () => fromFrame(iframe, { type: SANDBOX_MESSAGE.resize, height: 410 }));
+    expect(iframe.style.height).toBe('410px');
+    await act(async () => fromFrame(iframe, { type: SANDBOX_MESSAGE.resize, height: 180 }));
+    expect(iframe.style.height).toBe('180px');
+    // The bridge measures the content, never `scrollHeight` (which never drops below the frame).
+    expect(iframe.srcdoc).not.toContain('scrollHeight');
+    expect(iframe.srcdoc).toContain('ResizeObserver');
+    expect(iframe.srcdoc).toContain('document.fonts');
+  });
+
   it('is the builtin definition the catalog validates against', async () => {
     expect((await defineCatalog([Sandbox]).validate('Sandbox', view)).ok).toBe(true);
   });

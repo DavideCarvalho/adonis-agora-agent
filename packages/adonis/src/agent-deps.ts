@@ -1,7 +1,7 @@
 import type { ActionApprovalMode } from './action-proposal-receipt.js';
 import type { AgentIntake } from './elicitation.js';
 import type { MemoryConfig } from './memory.js';
-import type { ResolveToolUiCatalog } from './negotiated-tool-ui.js';
+import type { ResolveToolUiCatalog, ToolUiChannelGuide } from './negotiated-tool-ui.js';
 import type { SkillsConfig } from './skills.js';
 import type { AgentStore } from './spi/agent-store.js';
 import type { ApprovalPolicy } from './spi/approval-policy.js';
@@ -22,6 +22,8 @@ import type { Actor, Persona, PromptBuilder } from './types.js';
 export interface AgentDeps {
   actionApprovalMode?: ActionApprovalMode;
   resolveUiCatalog?: ResolveToolUiCatalog;
+  /** genui `channels`: the channel's prompt block, and what tool pushes were delivered as. */
+  uiChannelGuide?: ToolUiChannelGuide;
   /** Where a tool's failed `present` is reported. Undefined → a console warning. */
   onPresentationError?: PresentationErrorHandler;
   model: ModelProvider;

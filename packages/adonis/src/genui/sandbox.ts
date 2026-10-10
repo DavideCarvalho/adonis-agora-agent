@@ -224,6 +224,13 @@ export interface SandboxDocumentOptions {
  * The bridge every sandbox document starts with: `window.agent.send(values)`, content-height
  * reports, uncaught errors, and — from the host only — `render` (preview redraws) and `run` (one more
  * script). It is the only way out of the frame; the host checks everything it says.
+ *
+ * The height it reports is the CONTENT's — the bottom of what the body holds, margins included —
+ * never `scrollHeight`, which does not drop below the frame's own height: a frame mounted at the
+ * model's `initialHeight` would otherwise keep that height (an empty gap under a short view) and
+ * could only ever grow. It re-measures on every resize of the page or of a top-level element, on
+ * every DOM or style change (the Tailwind runtime injecting its CSS, the kit drawing JSX), once
+ * fonts and images load, and twice more shortly after start; the first measure rides `ready`.
  */
 function bridgeScript(token: string, hostOrigin: string): string {
   const t = JSON.stringify(token);
@@ -232,14 +239,24 @@ function bridgeScript(token: string, hostOrigin: string): string {
   return `(function(){var T=${t},O=${o},M=${m},P=window.parent;
 function post(type,data){var msg={type:type,token:T};for(var k in data)msg[k]=data[k];try{P.postMessage(msg,O)}catch(e){}}
 window.agent=Object.freeze({send:function(payload){var clean;try{clean=JSON.parse(JSON.stringify(payload===undefined?{}:payload))}catch(e){throw new TypeError('agent.send: the payload must be JSON')}post(M.send,{payload:clean});return true}});
-var last=-1;function size(){var b=document.body,d=document.documentElement;var h=Math.ceil(Math.max(b?b.scrollHeight:0,d?d.scrollHeight:0));if(h!==last){last=h;post(M.resize,{height:h})}}
+var last=-1,queued=false;
+function measure(){var b=document.body;if(!b)return 0;var bottom=0;try{var r=document.createRange();r.selectNodeContents(b);bottom=r.getBoundingClientRect().bottom}catch(e){}
+var kids=b.children;for(var i=0;i<kids.length;i++){var k=kids[i];if(k.tagName==='SCRIPT'||k.tagName==='STYLE')continue;var cs=getComputedStyle(k);if(cs.display==='none'||cs.position==='fixed')continue;var kb=k.getBoundingClientRect().bottom+(parseFloat(cs.marginBottom)||0);if(kb>bottom)bottom=kb}
+var bs=getComputedStyle(b);bottom+=(parseFloat(bs.paddingBottom)||0)+(parseFloat(bs.borderBottomWidth)||0);return Math.max(0,Math.ceil(bottom+(window.scrollY||0)))}
+function size(){queued=false;var h=measure();if(h!==last){last=h;post(M.resize,{height:h})}}
+function later(){if(queued)return;queued=true;if(typeof requestAnimationFrame==='function'){requestAnimationFrame(size)}else{setTimeout(size,16)}}
 window.addEventListener('error',function(e){if(window.__agoraQuiet)return;post(M.error,{message:String(e&&e.message||'error')})});
 window.addEventListener('unhandledrejection',function(e){post(M.error,{message:String(e&&e.reason&&e.reason.message||e&&e.reason||'unhandled rejection')})});
 window.addEventListener('message',function(e){if(e.source!==P)return;var d=e.data;if(!d||d.token!==T)return;
 if(d.type===M.render){var s=document.getElementById('agora-sandbox-css');if(s)s.textContent=String(d.css||'');document.body.innerHTML=String(d.html||'');size()}
 else if(d.type===M.run){var el=document.createElement('script');el.textContent=String(d.code||'');document.body.appendChild(el);size()}
 else if(d.type===M.theme){var th=document.getElementById('agora-sandbox-theme');if(th)th.textContent=String(d.css||'');document.documentElement.classList.toggle('dark',d.dark===true);document.documentElement.setAttribute('data-theme',d.dark===true?'dark':'light');size()}});
-function start(){size();if(typeof ResizeObserver==='function'){new ResizeObserver(size).observe(document.documentElement)}window.addEventListener('load',size);post(M.ready,{})}
+function start(){size();var d=document.documentElement,b=document.body;
+if(typeof ResizeObserver==='function'){var ro=new ResizeObserver(later);ro.observe(d);if(b){ro.observe(b);for(var i=0;i<b.children.length;i++)ro.observe(b.children[i])}
+if(typeof MutationObserver==='function'){new MutationObserver(function(list){for(var i=0;i<list.length;i++){var added=list[i].addedNodes;for(var j=0;j<added.length;j++){if(added[j].nodeType===1&&added[j].parentNode===document.body)ro.observe(added[j])}}later()}).observe(d,{childList:true,subtree:true,attributes:true,characterData:true})}}
+window.addEventListener('load',later);document.addEventListener('load',later,true);
+if(document.fonts){if(document.fonts.ready)document.fonts.ready.then(later,function(){});if(document.fonts.addEventListener)document.fonts.addEventListener('loadingdone',later)}
+setTimeout(later,250);setTimeout(later,1000);post(M.ready,{height:last})}
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',start)}else{start()}})();`;
 }
 

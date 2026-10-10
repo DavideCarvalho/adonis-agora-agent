@@ -249,11 +249,22 @@ export type ChannelConversion<P = Record<string, unknown>> = {
 }['convert'];
 
 /**
- * A component's conversions, by channel name. `false` → the component is never offered on that
- * channel (it has nothing to say there).
+ * A conversion with words for the model: `describe` says how the component reaches the user on that
+ * channel — `'a pick-list of the orders; no Refund buttons: to refund, the user picks an order and
+ * replies'` — and goes into the channel's prompt (`channelPrompt`), so the model does not describe the
+ * web view there. A bare conversion is described from what it can send.
+ */
+export interface ChannelConversionSpec<P = Record<string, unknown>> {
+  convert: ChannelConversion<P>;
+  describe?: string;
+}
+
+/**
+ * A component's conversions, by channel name — a function, or `{ convert, describe }`. `false` →
+ * the component is never offered on that channel (it has nothing to say there).
  */
 export type ComponentChannels<P = Record<string, unknown>> = {
-  [channel: string]: ChannelConversion<P> | false | undefined;
+  [channel: string]: ChannelConversion<P> | ChannelConversionSpec<P> | false | undefined;
 };
 
 /** Renders chart components as images, for a channel that takes them. */
@@ -263,14 +274,40 @@ export interface ChartImageRenderer {
   render(component: string, props: Record<string, unknown>): Promise<ChannelNativeImage | null>;
 }
 
-function conversionOf(
+function conversionEntry(
   definition: ComponentDefinition<unknown> | undefined,
   channel: string,
-): ChannelConversion<unknown> | false | undefined {
+): ChannelConversion<unknown> | ChannelConversionSpec<unknown> | false | undefined {
   const channels = (definition as { channels?: ComponentChannels<unknown> } | undefined)?.channels;
   return channels === undefined || !Object.hasOwn(channels, channel)
     ? undefined
     : channels[channel];
+}
+
+/** The component's conversion function for `channel` (`false`: opted out; `undefined`: none). */
+function conversionOf(
+  definition: ComponentDefinition<unknown> | undefined,
+  channel: string,
+): ChannelConversion<unknown> | false | undefined {
+  const entry = conversionEntry(definition, channel);
+  if (entry === false || entry === undefined || typeof entry === 'function') return entry;
+  return typeof entry === 'object' && typeof entry.convert === 'function'
+    ? entry.convert
+    : undefined;
+}
+
+/** The conversion's own words for the model (`{ convert, describe }`), if it has them. */
+function conversionDescription(
+  definition: ComponentDefinition<unknown> | undefined,
+  channel: string,
+): string | undefined {
+  const entry = conversionEntry(definition, channel);
+  return typeof entry === 'object' &&
+    entry !== null &&
+    typeof entry.describe === 'string' &&
+    entry.describe.trim() !== ''
+    ? entry.describe.trim()
+    : undefined;
 }
 
 /** A sandbox component (it carries a sandbox policy). */
@@ -535,4 +572,170 @@ export function channelButtonAction(
     ...(from.title !== undefined ? { title: from.title } : {}),
     timestamp: new Date().toISOString(),
   };
+}
+
+// ── What the model is told on a channel ───────────────────────────────────────────────────────
+
+/** What a messaging channel can show at all, in the words the model reads. */
+const CHANNEL_FORMS: Record<string, string> = {
+  whatsapp:
+    'text, up to 3 reply buttons, a pick-list (a list the user opens and picks one entry from) and images',
+  telegram: 'text, buttons under a message and images',
+  email: 'formatted text (an email): nothing in it is interactive',
+};
+
+function channelLabel(channel: ResolvedGenuiChannel): string {
+  return CHANNEL_LABELS[channel.name] ?? channel.name;
+}
+
+/**
+ * The system-prompt block for a turn on a messaging channel (WhatsApp, Telegram, email): that the
+ * user is not on a web page, what the channel can show, and — component by component — how each one
+ * reaches the user there, from its channel conversion (its `describe`, else what a conversion can
+ * send), a chart image, or its text summary. Tool and component descriptions are written for the web
+ * ("a table with a Refund button per row"); this is what keeps the model from describing that view
+ * on WhatsApp. `undefined` on a web-like channel, or without `channels`.
+ */
+export function channelPrompt(catalog: Catalog, channel: ResolvedGenuiChannel): string | undefined {
+  if (!channel.configured || !channel.messaging) return undefined;
+  const label = channelLabel(channel);
+  const forms = CHANNEL_FORMS[channel.name] ?? 'text messages';
+  const own: string[] = [];
+  const asText: string[] = [];
+  const layouts: string[] = [];
+  const allText = channel.mode === 'text' || channel.render === 'text';
+  for (const definition of catalog.components) {
+    if (isSandbox(definition)) continue;
+    const conversion = conversionOf(definition, channel.name);
+    if (conversion === false) continue;
+    const named =
+      definition.title === definition.name
+        ? definition.name
+        : `${definition.title} (${definition.name})`;
+    if (definition.children === true) {
+      layouts.push(named);
+      continue;
+    }
+    if (allText) {
+      asText.push(named);
+      continue;
+    }
+    const described = conversionDescription(definition, channel.name);
+    if (described !== undefined) {
+      own.push(`- ${named}: ${described}`);
+    } else if (typeof conversion === 'function') {
+      own.push(
+        channel.render === 'html'
+          ? `- ${named}: a formatted section of the email — not the web view.`
+          : `- ${named}: a ${label} message of its own (text, maybe with reply buttons, a pick-list or an image) — not the web view; the tool result's \`delivered\` says exactly what was sent.`,
+      );
+    } else if (channel.chartImages?.components.includes(definition.name) === true) {
+      own.push(
+        `- ${named}: a picture of the chart (an image, its title as the caption) — nothing in it can be hovered, clicked or filtered.`,
+      );
+    } else {
+      asText.push(named);
+    }
+  }
+  const lines = [
+    `## Channel: ${label}`,
+    `This conversation happens in ${label}, not on a web page. What tools and components show reaches the user as ${label} messages, and ${label} can only show ${forms}. There are no tables, cards, dashboards, charts to interact with, interactive views, or buttons inside a component.`,
+    'Tool and component descriptions may describe the web view (a table, a button per row, a chart to hover). The user does not get that view here. How each component reaches the user here:',
+    ...own,
+    ...(asText.length > 0
+      ? [
+          `- As plain text (its summary), with no table, no buttons and nothing to click: ${asText.join(', ')}.`,
+        ]
+      : []),
+    ...(layouts.length > 0
+      ? [`- Layouts, sent as their contents one after another: ${layouts.join(', ')}.`]
+      : []),
+    `When a tool shows something, its result's \`delivered\` says exactly what the user received on ${label}. Describe only that: never mention a table, a button, a link or a view the user did not get, and never point "above"/"below" at one. To act on something, the user picks it from a list or buttons that were sent, or replies with what they want.`,
+  ];
+  if (channel.instructions !== undefined) lines.push(channel.instructions);
+  return lines.join('\n');
+}
+
+function excerpt(text: string, max = 120): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+function quoted(labels: string[], max = 10): string {
+  const shown = labels.slice(0, max).map((label) => `"${excerpt(label, 40)}"`);
+  return labels.length > max
+    ? `${shown.join(', ')} and ${labels.length - max} more`
+    : shown.join(', ');
+}
+
+/** How many reply buttons a channel shows before they become a list. */
+const CHANNEL_BUTTONS: Record<string, number> = { whatsapp: 3 };
+
+/**
+ * What a channel actually delivered, in words for the model: each message (text, a pick-list and its
+ * entries, reply buttons, an image, an email section), and what the user did NOT get. This is what a
+ * tool's result carries as `delivered` on a messaging channel, so the model talks about the list the
+ * user can pick from — not the table with Refund buttons it would have on the web.
+ */
+export function describeChannelDelivery(
+  messages: readonly ChannelRenderedMessage[],
+  channel: ResolvedGenuiChannel,
+): string {
+  const label = channelLabel(channel);
+  if (messages.length === 0) return `Nothing was shown on ${label} for this.`;
+  let interactive = false;
+  const parts = messages.map((message) => {
+    const text =
+      message.text !== undefined && message.text.trim() !== '' ? message.text : undefined;
+    if (message.image !== undefined) {
+      return `an image${text !== undefined ? ` captioned "${excerpt(text)}"` : ''}`;
+    }
+    const buttons = message.buttons ?? [];
+    // More buttons than the channel shows are sent as a list (the channel handler's rule).
+    const asList =
+      message.list !== undefined ||
+      buttons.length > (CHANNEL_BUTTONS[channel.name] ?? Number.POSITIVE_INFINITY);
+    const lead = text !== undefined ? `a message "${excerpt(text)}"` : 'a message';
+    if (asList) {
+      interactive = true;
+      const items = message.list?.items ?? buttons;
+      const button = message.list?.button;
+      return `${lead} with a pick-list${message.list?.title !== undefined ? ` "${excerpt(message.list.title, 40)}"` : ''}${button !== undefined ? ` (opened with "${excerpt(button, 30)}")` : ''} of ${items.length} ${items.length === 1 ? 'entry' : 'entries'}: ${quoted(items.map((item) => item.label))} — picking one comes back as the user's next message`;
+    }
+    if (buttons.length > 0) {
+      interactive = true;
+      return `${lead} with ${buttons.length} reply ${buttons.length === 1 ? 'button' : 'buttons'}: ${quoted(buttons.map((button) => button.label))} — pressing one comes back as the user's next message`;
+    }
+    if (message.html !== undefined && channel.render === 'html') {
+      return `a formatted email section${text !== undefined ? ` ("${excerpt(text)}")` : ''}`;
+    }
+    return `a text message "${excerpt(text ?? '')}"`;
+  });
+  const listed =
+    parts.length === 1 ? parts[0] : parts.map((part, index) => `${index + 1}) ${part}`).join('; ');
+  return [
+    `Shown on ${label} as ${listed}.`,
+    interactive
+      ? 'That is all the user got: no table, no web view, and no buttons other than the ones listed.'
+      : 'That is all the user got: no table, no web view, no buttons and nothing to click — they can only reply with a message.',
+  ].join(' ');
+}
+
+/**
+ * {@link describeChannelDelivery} of the components a tool pushed (last props per id, previews left
+ * out), rendered the way the channel draws them. `undefined` on a channel the server does not draw
+ * for, or without `channels`.
+ */
+export async function describeChannelComponents(
+  catalog: Catalog,
+  components: readonly (ChannelComponentInput & { partial?: boolean })[],
+  channel: ResolvedGenuiChannel,
+): Promise<string | undefined> {
+  if (!channel.configured || !channel.messaging) return undefined;
+  const messages: ChannelRenderedMessage[] = [];
+  for (const component of components) {
+    if (component.partial === true) continue;
+    messages.push(...(await renderChannelMessages(catalog, component, channel)));
+  }
+  return components.length === 0 ? undefined : describeChannelDelivery(messages, channel);
 }

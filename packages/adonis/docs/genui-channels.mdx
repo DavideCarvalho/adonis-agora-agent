@@ -86,6 +86,26 @@ A conversion returns `{ text?, buttons?, list?, image?, html? }` (or several). T
 
 A tree (`ui__render`) is flattened in order: each node's conversion or summary, consecutive text joined.
 
+A conversion may also be `{ convert, describe }`: `describe` says, in words for the model, how the component reaches the user on that channel (see below).
+
+```ts
+channels: {
+  whatsapp: {
+    describe: 'a message listing the orders, with a pick-list of them. No Refund buttons: to refund, the user picks an order and replies.',
+    convert: (props) => ({ text: '*Your orders*', list: { button: 'Order details', items: … } }),
+  },
+}
+```
+
+## What the model is told
+
+Tool and component descriptions are written once, usually for the web ("shows the orders as a table with a Refund button per row"). On a channel the server draws for (WhatsApp, Telegram, email), two things keep the model from describing that view there:
+
+- **The prompt.** The turn's system prompt gets a `## Channel: WhatsApp` block: the user is not on a web page, what the channel can show (text, up to 3 reply buttons, a pick-list, images), and how each component of the catalog reaches the user there. That comes from the component's conversion: its `describe` if it has one, otherwise what a conversion can send; a chart the channel draws as an image is "a picture of the chart"; everything else is "plain text, no table, no buttons, nothing to click"; layouts are their contents. A sandbox is never listed. `channelPrompt(catalog, channel)` returns that block.
+- **The tool result.** When a tool pushes UI on that channel (`ctx.emitUi`, or a `ui__show_*` tool), its result gets a `delivered` field that says what the user actually received, rendered the way the channel renders it, for example: `Shown on WhatsApp as a message "*Your orders*" with a pick-list (opened with "Order details") of 4 entries: "Order #1001", … — picking one comes back as the user's next message. That is all the user got: no table, no web view, and no buttons other than the ones listed.` An object output gets `delivered` added; any other output becomes `{ result, delivered }`. `describeChannelDelivery(messages, channel)` gives the same words for messages you render yourself.
+
+Web-like channels (`web`, `mobile`, A2UI) get neither: the page draws the components the descriptions talk about.
+
 ## Clicks come back as turns
 
 A pressed button (a WhatsApp `button_reply`/`list_reply`, a Telegram `callback_query`) becomes the user's next turn through the same path as a sandbox's `agent.send` and an A2UI `userAction`: a UI action (`source: 'component'`, the button's `action`, its `value` as context, its label as what the user said). Buttons carry short ids (`ui:<ref>`) kept in the channel store for 7 days; a provider that forwards only the label (Whatsmiau) is matched by label.
