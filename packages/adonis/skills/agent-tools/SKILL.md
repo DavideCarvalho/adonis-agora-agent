@@ -307,7 +307,7 @@ in the config, or `ClosedRolesPolicy`, keeps it closed) — except for an actor 
 `personal_agent` role (personal agents — A2A/PACT and Poppy conversations): it reaches only
 tools that declare one of its roles, so a tool with no `roles` is out of its reach even when
 open by default. Write a tool for them with `roles: ['personal_agent']` (anyone's agent) or
-`['scope:<id>']` (a granted scope: a PACT delegation scope, or `poppy:read` / `poppy:write` /
+`['scope:<id>']` (a granted scope: a PACT delegation scope, or `scope:poppy:read` / `scope:poppy:write` /
 a custom Poppy scope).
 
 > **Experimental:** Poppy (Personal Agent Protocol) is a Draft 0.1 spec still in development
