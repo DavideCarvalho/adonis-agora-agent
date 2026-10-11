@@ -133,6 +133,8 @@ describe('Tailwind detection', () => {
     expect(styles?.tailwind?.tokens.colors).toContain('gold');
     expect(styles?.tailwind?.directives).toContain('@custom-variant dark');
     expect(styles?.tailwind?.directives).not.toContain('@import');
+    // The theme is the app's root variables, not those of Tailwind's compiled theme layer.
+    expect(styles?.vars).toEqual({ '--gold': '#d6b46c' });
     expect(styles?.vocabulary).toBeUndefined();
     // The compiled CSS keeps the app's own rules (and Tailwind's base).
     expect(styles?.css).toContain('.shell');
@@ -551,4 +553,57 @@ describe('theme variables from workspace packages', () => {
       expect.arrayContaining(['card', 'page']),
     );
   }, 60_000);
+});
+
+describe('rebuilds in dev', () => {
+  it('run one at a time: a slow build started first never lands after a newer one', async () => {
+    const root = project('serial', {
+      'package.json': '{}',
+      'plain.css': ':root { --brand: #123456; }\n.plain-card { padding: 1rem; }\n',
+      'slow.scss': `$primary: #7c3aed;\n@import "bootstrap/scss/bootstrap";\n`,
+    });
+    // Symlink-free: the scratch project resolves bootstrap from the package's node_modules.
+    let styles = 'slow.scss';
+    const plugin = genuiSandboxKit({
+      get styles() {
+        return styles;
+      },
+      descriptor: '.genui/kit.json',
+    } as never);
+    const vite = await import('vite');
+    const server = await vite.createServer({
+      configFile: false,
+      root,
+      logLevel: 'silent',
+      plugins: [plugin],
+      server: { middlewareMode: true, watch: null },
+      appType: 'custom',
+    });
+    try {
+      await plugin.api.ready();
+      styles = 'plain.css';
+      server.watcher.emit('change', join(root, 'plain.css'));
+      await new Promise((r) => setTimeout(r, 250));
+      // Back to the slow one, then quickly to the plain one again: the last asked for must win.
+      styles = 'slow.scss';
+      server.watcher.emit('change', join(root, 'slow.scss'));
+      await new Promise((r) => setTimeout(r, 250));
+      styles = 'plain.css';
+      server.watcher.emit('change', join(root, 'plain.css'));
+      const deadline = Date.now() + 60_000;
+      const groups = () =>
+        plugin.api.descriptor()?.vocabulary?.groups.map((group) => group.name) ?? [];
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 500));
+        if (groups().includes('plain')) {
+          // Settled? Give any older build time to (wrongly) land.
+          await new Promise((r) => setTimeout(r, 6000));
+          break;
+        }
+      }
+      expect(groups()).toEqual(['plain']);
+    } finally {
+      await server.close();
+    }
+  }, 120_000);
 });
