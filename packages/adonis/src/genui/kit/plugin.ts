@@ -240,7 +240,16 @@ export function createGenuiSandboxKitPlugin(
     return found.files;
   };
 
-  const buildAll = async (): Promise<void> => {
+  // One build at a time, each reading the options as they are when it starts: a change that comes
+  // while a build runs waits for it, so a slower, older build never lands after a newer one.
+  let building: Promise<void> = Promise.resolve();
+  const buildAll = (): Promise<void> => {
+    const run = building.then(buildOnce);
+    building = run.catch(() => {});
+    return run;
+  };
+
+  const buildOnce = async (): Promise<void> => {
     if (config === undefined) return;
     const root = config.root;
     try {

@@ -397,13 +397,14 @@ export async function buildSandboxKitStyles(
     }
     const directives = [...parts].join('\n');
     result.tailwind = { version, tokens: tailwindTokensFromCss(directives), directives };
-    if (Object.keys(result.vars).length === 0) {
-      for (const source of sources)
-        Object.assign(result.vars, {
-          ...themeVarsFromCss(source.text, { rootOnly: true }),
-          ...result.vars,
-        });
-    }
+    // The theme is what the app's stylesheets declare on their root — not the variables Tailwind's
+    // compiled theme layer adds (`--color-white`, `--spacing`, `--text-xs`…), which are no theme of
+    // the app's. Off the compiled CSS only when the sources declare none.
+    const declared: Record<string, string> = {};
+    for (const source of sources)
+      for (const [name, value] of Object.entries(themeVarsFromCss(source.text, { rootOnly: true })))
+        declared[name] ??= value;
+    if (Object.keys(declared).length > 0) result.vars = declared;
   } else {
     result.vocabulary = extractCssVocabulary(css);
   }
