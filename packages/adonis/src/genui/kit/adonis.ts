@@ -6,7 +6,21 @@
 import { fileURLToPath } from 'node:url';
 import { ADONIS_SANDBOX_KIT_DESCRIPTOR } from '../../vite/index.js';
 import { type SandboxKitDiscovery, sandboxKitDiscovery } from './discover.js';
-import type { GenuiSandboxKitApi } from './plugin.js';
+import { type GenuiSandboxKitApi, sandboxKitDescriptorPath } from './plugin.js';
+
+/**
+ * Where the kit's assets are when this process cannot find them — an SPA built and served by its own
+ * Vite, with the assembler hook (`genuiKitHook`) writing the docs here. Same names as Nest's
+ * `sandboxKit` options.
+ */
+export interface AdonisSandboxKitUrls {
+  /** The kit bundle (React, the components, the wrapper): what JSX views draw with. */
+  kitUrl?: string;
+  /** The compiled styles. */
+  cssUrl?: string;
+  /** The Tailwind browser runtime (`@tailwindcss/browser`), when the styles use Tailwind. */
+  tailwindUrl?: string;
+}
 
 interface AdonisAppLike {
   appRoot: URL | string;
@@ -19,8 +33,14 @@ interface ViteServiceLike {
   getDevServer?(): { config: { plugins: readonly { name: string; api?: unknown }[] } } | undefined;
 }
 
-/** Find the kit through the app's Vite setup. `app` is the Adonis application. */
-export async function adonisSandboxKitDiscovery(app: unknown): Promise<SandboxKitDiscovery> {
+/**
+ * Find the kit through the app's Vite setup. `app` is the Adonis application; `name`, a named kit's
+ * (`genuiSandboxKit({ name })`).
+ */
+export async function adonisSandboxKitDiscovery(
+  app: unknown,
+  options: { name?: string } & AdonisSandboxKitUrls = {},
+): Promise<SandboxKitDiscovery> {
   const adonis = app as AdonisAppLike | undefined;
   const root =
     adonis === undefined
@@ -39,14 +59,23 @@ export async function adonisSandboxKitDiscovery(app: unknown): Promise<SandboxKi
   const buildDirectory = config.buildDirectory ?? 'public/assets';
   return sandboxKitDiscovery({
     root,
-    descriptor: ADONIS_SANDBOX_KIT_DESCRIPTOR,
+    ...(options.name !== undefined ? { name: options.name } : {}),
+    descriptor: sandboxKitDescriptorPath(ADONIS_SANDBOX_KIT_DESCRIPTOR, options.name),
     manifest: {
       file: config.manifestFile ?? `${buildDirectory}/.vite/manifest.json`,
       outDir: buildDirectory,
     },
     plugin: () =>
-      vite?.getDevServer?.()?.config.plugins.find((plugin) => plugin.name === 'genui-sandbox-kit')
-        ?.api as GenuiSandboxKitApi | undefined,
+      vite
+        ?.getDevServer?.()
+        ?.config.plugins.find(
+          (plugin) =>
+            plugin.name === 'genui-sandbox-kit' &&
+            (plugin.api as GenuiSandboxKitApi | undefined)?.kitName === options.name,
+        )?.api as GenuiSandboxKitApi | undefined,
     ...(adonis?.inProduction !== undefined ? { production: adonis.inProduction } : {}),
+    ...(options.kitUrl !== undefined ? { kitUrl: options.kitUrl } : {}),
+    ...(options.cssUrl !== undefined ? { cssUrl: options.cssUrl } : {}),
+    ...(options.tailwindUrl !== undefined ? { tailwindUrl: options.tailwindUrl } : {}),
   });
 }

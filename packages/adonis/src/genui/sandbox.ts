@@ -173,7 +173,28 @@ export const SANDBOX_MESSAGE = {
   theme: 'agora:sandbox:theme',
   /** host → frame: `{ code, final }` — the JSX so far (`final` once the model is done). */
   jsx: 'agora:sandbox:jsx',
+  /**
+   * frame → host: the frame is up and waits for its shared assets (a document built with
+   * `sharedAssets`); it says `ready` once they are in.
+   */
+  load: 'agora:sandbox:load',
+  /** host → frame: `{ styles?, tailwind?, kit? }` — the shared assets' text. */
+  assets: 'agora:sandbox:assets',
 } as const;
+
+/**
+ * The assets a host hands a frame built with `sharedAssets` (the answer to its `load`): the text of
+ * each, fetched once by the page. The frame puts each in an inline `<style>` / `<script>` — what the
+ * CSP already allows — so the policy is the same as for an inlined document.
+ */
+export interface SandboxSharedAssets {
+  /** The app's compiled styles. */
+  styles?: string;
+  /** The Tailwind browser runtime. */
+  tailwind?: string;
+  /** The kit bundle (React, ReactDOM, the components, the wrapper). */
+  kit?: string;
+}
 
 /** `</script` inside generated code would close the element it is inlined in. */
 function inlineScript(code: string): string {
@@ -223,6 +244,15 @@ export interface SandboxDocumentOptions {
   /** JSX to draw as soon as the document loads (a whole view: `final: true`). */
   initialJsx?: { code: string; final: boolean };
   /**
+   * The heavy assets come from the host instead of the `srcdoc`: the document carries none of
+   * `styles`, the Tailwind runtime or `kit` — only which of them it needs — and asks its host for them
+   * (`load`); the host answers with `assets` ({@link SandboxSharedAssets}), the text it fetched once
+   * for the whole page. The frame puts them in inline `<style>`/`<script>` elements — the same CSP as
+   * an inlined document, nothing more allowed — and says `ready` once they are in. The body stays
+   * hidden until then, so nothing draws unstyled. Ignored for `react-native` (inlined there).
+   */
+  sharedAssets?: { styles?: boolean; tailwind?: boolean; kit?: boolean };
+  /**
    * How the bridge reaches its host. `'parent'` (default): `parent.postMessage` to `hostOrigin`, an
    * iframe in a page. `'react-native'`: `window.ReactNativeWebView.postMessage(JSON)`, the document
    * as a `react-native-webview` source (`hostOrigin` unused), with a device-width viewport. The host
@@ -242,11 +272,22 @@ export interface SandboxDocumentOptions {
  * could only ever grow. It re-measures on every resize of the page or of a top-level element, on
  * every DOM or style change (the Tailwind runtime injecting its CSS, the kit drawing JSX), once
  * fonts and images load, and twice more shortly after start; the first measure rides `ready`.
+ *
+ * An open overlay — a dialog, a menu, a popover in a portal (`position: fixed`, `role="dialog"`,
+ * `<dialog open>`, `:popover-open`…) — counts too, for as long as it is open: the frame grows to
+ * fit it (a viewport-sized overlay, like a modal's backdrop, by what it holds — its content's full
+ * height and margins — not by its own height, which is the frame's; a box centered in the frame, by
+ * its full height and the room around it) and shrinks back once it closes.
+ *
+ * `shared`: the document's heavy assets come from the host (`load` → `assets`); the bridge applies
+ * them in order — the styles where the document reserved them, then the Tailwind runtime and the
+ * kit as inline scripts — runs `window.__agoraAfterAssets` and only then says `ready`.
  */
 function bridgeScript(
   token: string,
   hostOrigin: string,
   transport: 'parent' | 'react-native' = 'parent',
+  shared = false,
 ): string {
   const t = JSON.stringify(token);
   const o = JSON.stringify(hostOrigin);
@@ -255,19 +296,42 @@ function bridgeScript(
   const deliver = native
     ? '(R||window.ReactNativeWebView).postMessage(JSON.stringify(msg))'
     : 'P.postMessage(msg,O)';
+  const assets = shared
+    ? `var loaded=false;
+function apply(d){if(loaded)return;loaded=true;
+var at=document.getElementById('agora-sandbox-kit-css');if(at&&typeof d.styles==='string')at.textContent=d.styles;
+var order=[['tailwind',d.tailwind],['kit',d.kit]];
+for(var i=0;i<order.length;i++){var v=order[i][1];if(typeof v!=='string')continue;var s=document.createElement('script');s.textContent=v;document.head.appendChild(s)}
+try{if(typeof window.__agoraAfterAssets==='function')window.__agoraAfterAssets()}catch(e){post(M.error,{message:String(e&&e.message||e)})}
+var w=document.getElementById('agora-sandbox-wait');if(w)w.remove();size();post(M.ready,{height:last})}
+`
+    : '';
   return `(function(){var T=${t},O=${o},M=${m},P=window.parent${native ? ',R=window.ReactNativeWebView' : ''};
 function post(type,data){var msg={type:type,token:T};for(var k in data)msg[k]=data[k];try{${deliver}}catch(e){}}
 window.agent=Object.freeze({send:function(payload){var clean;try{clean=JSON.parse(JSON.stringify(payload===undefined?{}:payload))}catch(e){throw new TypeError('agent.send: the payload must be JSON')}post(M.send,{payload:clean});return true}});
 var last=-1,queued=false;
+var OVERLAY='dialog[open],[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[role="tooltip"],[aria-modal="true"],[data-radix-popper-content-wrapper]';
+function shown(el,cs){return cs.display!=='none'&&cs.visibility!=='hidden'&&el.getClientRects().length>0}
+function overlays(b){var out=[],kids=b.children;for(var i=0;i<kids.length;i++){var k=kids[i];if(k.tagName==='SCRIPT'||k.tagName==='STYLE')continue;var cs=getComputedStyle(k);if(cs.position==='fixed'&&shown(k,cs))out.push(k)}
+var found=[];try{found=document.querySelectorAll(OVERLAY)}catch(e){}for(var j=0;j<found.length;j++){var f=found[j];if(out.indexOf(f)<0&&shown(f,getComputedStyle(f)))out.push(f)}
+try{var pops=document.querySelectorAll('[popover]');for(var p=0;p<pops.length;p++){if(pops[p].matches(':popover-open')&&out.indexOf(pops[p])<0)out.push(pops[p])}}catch(e){}return out}
+function overlayBottom(b){var need=0,vh=window.innerHeight||0,list=overlays(b);
+for(var i=0;i<list.length;i++){var root=list[i],r=root.getBoundingClientRect(),covers=r.top<=1&&r.height>=vh-1;var queue=[root],seen=0;
+while(queue.length>0&&seen<400){var el=queue.shift();seen++;var cs=getComputedStyle(el);if(cs.display==='none')continue;
+var mt=parseFloat(cs.marginTop)||0,mb=parseFloat(cs.marginBottom)||0,er=el.getBoundingClientRect(),h=Math.max(er.height,el.scrollHeight);
+var centered=!covers&&el===root&&er.top>0&&Math.abs(vh-er.bottom-er.top)<=2;var v=covers?(el===root?0:h+mt+mb):centered?h+(vh-er.height):er.top+h+mb;if(covers&&el!==root&&el.scrollHeight>=vh-1&&er.height>=vh-1)v=0;if(v>need)need=v;
+for(var c=0;c<el.children.length;c++)queue.push(el.children[c])}}
+return need}
 function measure(){var b=document.body;if(!b)return 0;var bottom=0;try{var r=document.createRange();r.selectNodeContents(b);bottom=r.getBoundingClientRect().bottom}catch(e){}
 var kids=b.children;for(var i=0;i<kids.length;i++){var k=kids[i];if(k.tagName==='SCRIPT'||k.tagName==='STYLE')continue;var cs=getComputedStyle(k);if(cs.display==='none'||cs.position==='fixed')continue;var kb=k.getBoundingClientRect().bottom+(parseFloat(cs.marginBottom)||0);if(kb>bottom)bottom=kb}
-var bs=getComputedStyle(b);bottom+=(parseFloat(bs.paddingBottom)||0)+(parseFloat(bs.borderBottomWidth)||0);return Math.max(0,Math.ceil(bottom+(window.scrollY||0)))}
+var bs=getComputedStyle(b);bottom+=(parseFloat(bs.paddingBottom)||0)+(parseFloat(bs.borderBottomWidth)||0);var content=Math.ceil(bottom+(window.scrollY||0));
+var over=Math.ceil(overlayBottom(b));return Math.max(0,content,over)}
 function size(){queued=false;var h=measure();if(h!==last){last=h;post(M.resize,{height:h})}}
 function later(){if(queued)return;queued=true;if(typeof requestAnimationFrame==='function'){requestAnimationFrame(size)}else{setTimeout(size,16)}}
-window.addEventListener('error',function(e){if(window.__agoraQuiet)return;post(M.error,{message:String(e&&e.message||'error')})});
+${assets}window.addEventListener('error',function(e){if(window.__agoraQuiet)return;post(M.error,{message:String(e&&e.message||'error')})});
 window.addEventListener('unhandledrejection',function(e){post(M.error,{message:String(e&&e.reason&&e.reason.message||e&&e.reason||'unhandled rejection')})});
 window.addEventListener('message',function(e){if(e.source!==P)return;var d=e.data;if(!d||d.token!==T)return;
-if(d.type===M.render){var s=document.getElementById('agora-sandbox-css');if(s)s.textContent=String(d.css||'');document.body.innerHTML=String(d.html||'');size()}
+${shared ? 'if(d.type===M.assets){apply(d);return}' : ''}if(d.type===M.render){var s=document.getElementById('agora-sandbox-css');if(s)s.textContent=String(d.css||'');document.body.innerHTML=String(d.html||'');size()}
 else if(d.type===M.run){var el=document.createElement('script');el.textContent=String(d.code||'');document.body.appendChild(el);size()}
 else if(d.type===M.theme){var th=document.getElementById('agora-sandbox-theme');if(th)th.textContent=String(d.css||'');var de=document.documentElement;de.classList.toggle('dark',d.dark===true);var at=d.attributes&&typeof d.attributes==='object'?d.attributes:{};
 for(var i=de.attributes.length-1;i>=0;i--){var an=de.attributes[i].name;if(/^data-([\\w-]*-)?(theme|mode|scheme)$/.test(an)&&!(an in at))de.removeAttribute(an)}
@@ -277,12 +341,18 @@ var ro=null;if(typeof ResizeObserver==='function'){ro=new ResizeObserver(later);
 if(typeof MutationObserver==='function'){new MutationObserver(function(list){if(ro){for(var i=0;i<list.length;i++){var added=list[i].addedNodes;for(var j=0;j<added.length;j++){if(added[j].nodeType===1&&added[j].parentNode===document.body)ro.observe(added[j])}}}later()}).observe(d,{childList:true,subtree:true,attributes:true,characterData:true})}
 window.addEventListener('load',later);document.addEventListener('load',later,true);
 if(document.fonts){if(document.fonts.ready)document.fonts.ready.then(later,function(){});if(document.fonts.addEventListener)document.fonts.addEventListener('loadingdone',later)}
-setTimeout(later,250);setTimeout(later,1000);post(M.ready,{height:last})}
+setTimeout(later,250);setTimeout(later,1000);${shared ? 'post(M.load,{})' : 'post(M.ready,{height:last})'}}
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',start)}else{start()}})();`;
 }
 
+/**
+ * The frame's base. Its page is see-through whatever the kit's baseline says: the frame sits in the
+ * host's chat, and a baseline painting the body (MUI's `CssBaseline`, Bootstrap's reboot — emotion
+ * injects after every stylesheet of the document) would draw a box of its own colour around the view,
+ * beside a view narrower than the frame. The view's own surfaces (a card) keep theirs.
+ */
 const BASE_CSS =
-  'html,body{margin:0;padding:0;overflow:hidden;background:transparent}body{font-family:var(--font-sans,system-ui,-apple-system,"Segoe UI",sans-serif);font-size:14px;line-height:1.4;color:var(--foreground,#1f2328)}*,*::before,*::after{box-sizing:border-box}';
+  'html,body{margin:0;padding:0;overflow:hidden;background:transparent}html,body{background-color:transparent!important;background-image:none!important}body{font-family:var(--font-sans,system-ui,-apple-system,"Segoe UI",sans-serif);font-size:14px;line-height:1.4;color:var(--foreground,#1f2328)}*,*::before,*::after{box-sizing:border-box}';
 
 /** The frame root's attributes: the host's mode (`class="dark"`, `data-theme`, `data-bs-theme`…). */
 function rootAttributes(theme: SandboxDocumentOptions['theme']): string {
@@ -302,6 +372,13 @@ function rootAttributes(theme: SandboxDocumentOptions['theme']): string {
  * classic scripts, in that order.
  */
 export function buildSandboxDocument(props: SandboxProps, options: SandboxDocumentOptions): string {
+  const shared =
+    options.transport !== 'react-native' && options.sharedAssets !== undefined
+      ? options.sharedAssets
+      : undefined;
+  const sharing =
+    shared !== undefined &&
+    (shared.styles === true || shared.tailwind === true || shared.kit === true);
   const csp = sandboxCsp(options.policy);
   const live = options.mode === 'live';
   const html = live ? (props.html ?? '') : previewHtml(props.html ?? '');
@@ -314,7 +391,46 @@ export function buildSandboxDocument(props: SandboxProps, options: SandboxDocume
       if (typeof expression === 'string' && expression.trim().length > 0) scripts.push(expression);
     }
   }
-  const kit = options.kit !== undefined;
+  const sharedKit = sharing && shared?.kit === true;
+  const kit = options.kit !== undefined || sharedKit;
+  const jsxRuntime = kit
+    ? sandboxJsxRuntime({
+        token: options.token,
+        jsxMessage: SANDBOX_MESSAGE.jsx,
+        ...(options.initialJsx !== undefined ? { initial: options.initialJsx } : {}),
+      })
+    : '';
+  const styles =
+    sharing && shared?.styles === true
+      ? // Where the shared stylesheet goes once it arrives — before the theme and the model's CSS.
+        ['<style id="agora-sandbox-kit-css"></style>']
+      : options.styles !== undefined && options.styles !== ''
+        ? [`<style id="agora-sandbox-kit-css">${inlineStyle(options.styles)}</style>`]
+        : [];
+  const tailwind =
+    sharing && shared?.tailwind === true
+      ? [
+          `<style type="text/tailwindcss" id="agora-sandbox-tw">${inlineStyle(options.tailwind?.theme ?? '')}</style>`,
+        ]
+      : options.tailwind !== undefined
+        ? [
+            `<style type="text/tailwindcss" id="agora-sandbox-tw">${inlineStyle(options.tailwind.theme ?? '')}</style>`,
+            `<script>${inlineScript(options.tailwind.runtime)}</script>`,
+          ]
+        : [];
+  // Shared: the model's scripts and the JSX runtime run once the kit (React) has arrived.
+  const afterAssets = sharing
+    ? [
+        `<script>window.__agoraAfterAssets=function(){window.__agoraAfterAssets=null;${
+          sharedKit ? inlineScript(jsxRuntime) : ''
+        }${scripts
+          .map(
+            (code) =>
+              `var s=document.createElement('script');s.textContent=${inlineScript(JSON.stringify(code))};document.body.appendChild(s);`,
+          )
+          .join('')}}</script>`,
+      ]
+    : [];
   return [
     `<!doctype html><html${rootAttributes(options.theme)}><head><meta charset="utf-8">`,
     `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(csp)}">`,
@@ -322,37 +438,38 @@ export function buildSandboxDocument(props: SandboxProps, options: SandboxDocume
     ...(options.transport === 'react-native'
       ? ['<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">']
       : []),
-    `<script>${bridgeScript(options.token, options.hostOrigin, options.transport)}</script>`,
+    `<script>${bridgeScript(options.token, options.hostOrigin, options.transport, sharing)}</script>`,
     `<style>${BASE_CSS}</style>`,
-    ...(options.styles !== undefined && options.styles !== ''
-      ? [`<style id="agora-sandbox-kit-css">${inlineStyle(options.styles)}</style>`]
-      : []),
+    // Nothing draws unstyled while the shared assets are on their way.
+    ...(sharing ? ['<style id="agora-sandbox-wait">body{visibility:hidden}</style>'] : []),
+    ...styles,
     `<style id="agora-sandbox-theme">${inlineStyle(options.theme?.css ?? '')}</style>`,
-    ...(options.tailwind !== undefined
-      ? [
-          `<style type="text/tailwindcss" id="agora-sandbox-tw">${inlineStyle(options.tailwind.theme ?? '')}</style>`,
-          `<script>${inlineScript(options.tailwind.runtime)}</script>`,
-        ]
-      : []),
+    ...tailwind,
     `<style id="agora-sandbox-css">${inlineStyle(props.css ?? '')}</style>`,
     '</head><body>',
     html,
-    ...(kit
+    ...(kit ? ['<div id="agora-sandbox-root"></div>'] : []),
+    ...(kit && !sharedKit
       ? [
-          '<div id="agora-sandbox-root"></div>',
           `<script>${inlineScript(options.kit as string)}</script>`,
-          `<script>${inlineScript(
-            sandboxJsxRuntime({
-              token: options.token,
-              jsxMessage: SANDBOX_MESSAGE.jsx,
-              ...(options.initialJsx !== undefined ? { initial: options.initialJsx } : {}),
-            }),
-          )}</script>`,
+          `<script>${inlineScript(jsxRuntime)}</script>`,
         ]
       : []),
-    ...scripts.map((code) => `<script>${inlineScript(code)}</script>`),
+    ...(sharing ? afterAssets : scripts.map((code) => `<script>${inlineScript(code)}</script>`)),
     '</body></html>',
   ].join('');
+}
+
+/** Which shared assets a document built with {@link SandboxDocumentOptions.sharedAssets} asks for. */
+export function sandboxSharedAssetsWanted(
+  options: Pick<SandboxDocumentOptions, 'sharedAssets' | 'transport'>,
+): { styles: boolean; tailwind: boolean; kit: boolean } {
+  const shared = options.transport === 'react-native' ? undefined : options.sharedAssets;
+  return {
+    styles: shared?.styles === true,
+    tailwind: shared?.tailwind === true,
+    kit: shared?.kit === true,
+  };
 }
 
 /**
@@ -487,6 +604,11 @@ export interface DefineSandboxOptions {
    * through Vite; or pass the docs (or a function returning them) yourself.
    */
   kit?: boolean | SandboxKitSource;
+  /**
+   * Which kit `kit: true` finds, when the app builds several (`genuiSandboxKit({ name })`): its name.
+   * Default: the unnamed one.
+   */
+  kitName?: string;
 }
 
 /** How a sandbox draws: theme and kit on or off. */

@@ -5,6 +5,7 @@
 
 import { assertGenuiChannels, type GenuiChannels } from './channels.js';
 import { type GenuiFactory, type GenuiFactoryContext } from './factory.js';
+import type { AdonisSandboxKitUrls } from './kit/adonis.js';
 import type { SandboxKitDiscovery } from './kit/discover.js';
 import {
   type Catalog,
@@ -63,6 +64,13 @@ export interface GenuiOptions extends Omit<GenuiToolsOptions, 'resolveCatalog'> 
    * catalog file) so the renderer enforces the same policy.
    */
   sandbox?: boolean | DefineSandboxOptions;
+  /**
+   * Where the kit's assets are when this process cannot find them through Vite: a separate SPA
+   * that builds them with `genuiSandboxKit()` and serves them itself, while the assembler hook
+   * (`genuiKitHook`) writes the docs here. `{ kitUrl: '/spa/assets/genui-sandbox-kit.js', cssUrl,
+   * tailwindUrl }` — urls the browser can fetch (same origin, or CORS-enabled).
+   */
+  sandboxKit?: AdonisSandboxKitUrls;
 }
 
 /** What every configured sandbox (top level and channels) needs from the browser, together. */
@@ -71,6 +79,8 @@ function mergeSandboxClients(clients: Array<() => SandboxClientConfig>): Sandbox
   for (const client of clients) {
     const one = client();
     merged.theme ||= one.theme;
+    if (one.name !== undefined && merged.kit === undefined && one.kit !== undefined)
+      merged.name = one.name;
     if (one.kit !== undefined) merged.kit ??= one.kit;
     if (one.css !== undefined) merged.css ??= one.css;
     if (one.tailwind !== undefined) merged.tailwind ??= one.tailwind;
@@ -117,12 +127,19 @@ async function resolveCatalogFn(
  */
 export function genui(options: GenuiOptions = {}): GenuiFactory {
   return async (ctx) => {
-    const { catalog: given, resolver, sandbox: asked, channels: askedChannels, ...rest } = options;
+    const {
+      catalog: given,
+      resolver,
+      sandbox: asked,
+      channels: askedChannels,
+      sandboxKit: _urls,
+      ...rest
+    } = options;
     assertGenuiChannels(askedChannels);
     const base = given ?? defineCatalog([]);
     // A sandbox's kit (styles, components, wrapper) and theme names are found through the app's Vite setup.
     const clients: Array<() => SandboxClientConfig> = [];
-    let discovery: SandboxKitDiscovery | undefined;
+    const discoveries = new Map<string, SandboxKitDiscovery>();
     const resolveSandbox = async (
       value: boolean | DefineSandboxOptions | undefined,
     ): Promise<boolean | DefineSandboxOptions | undefined> => {
@@ -132,7 +149,15 @@ export function genui(options: GenuiOptions = {}): GenuiFactory {
         import('./kit/adonis.js'),
         import('./kit/discover.js'),
       ]);
-      discovery ??= await adonisSandboxKitDiscovery(ctx.app);
+      const kitName = value === true ? undefined : value.kitName;
+      let discovery = discoveries.get(kitName ?? '');
+      if (discovery === undefined) {
+        discovery = await adonisSandboxKitDiscovery(ctx.app, {
+          ...(kitName !== undefined ? { name: kitName } : {}),
+          ...(options.sandboxKit ?? {}),
+        });
+        discoveries.set(kitName ?? '', discovery);
+      }
       const resolved = resolveSandboxServer(value, discovery);
       clients.push(resolved.client);
       return resolved.define;

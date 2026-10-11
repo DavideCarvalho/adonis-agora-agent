@@ -105,16 +105,67 @@ describe('Tailwind and the kit', () => {
     serveAssets();
     const View = createSandboxRenderer({
       config: { theme: true, tailwind: { url: '/assets/tw.js' } },
+      assets: 'inline',
     });
     render(<View html='<div class="bg-primary">hi</div>' />);
     await waitFor(() => expect(frame().srcdoc).toContain('/*tailwind runtime*/'));
     expect(frame().srcdoc).toContain('--color-primary: var(--primary)');
   });
 
+  it('shared (the default): the srcdoc names the assets, and the page posts them when the frame asks', async () => {
+    setHostTheme(THEME_CSS);
+    document.documentElement.style.setProperty('--primary', 'oklch(0.7 0.15 80)');
+    const fetches = serveAssets();
+    const View = createSandboxRenderer({
+      config: { theme: true, tailwind: { url: '/assets/tw.js' }, kit: { url: '/assets/kit.js' } },
+    });
+    render(
+      <>
+        <View jsx="function App() { return <Button>Pay</Button> }" />
+        <View jsx="function App() { return <Button>Split</Button> }" />
+      </>,
+    );
+    await waitFor(() =>
+      expect(document.querySelectorAll('iframe[data-sandbox-phase="live"]')).toHaveLength(2),
+    );
+    const frames = Array.from(document.querySelectorAll('iframe'));
+    for (const iframe of frames) {
+      expect(iframe.srcdoc).not.toContain('/*tailwind runtime*/');
+      expect(iframe.srcdoc).not.toContain('window.Kit={Button');
+      expect(iframe.srcdoc).toContain('--color-primary: var(--primary)');
+      expect(iframe.srcdoc).toContain('post(M.load,{})');
+    }
+    // Each asset fetched once for the whole page.
+    expect(fetches.mock.calls.filter(([url]) => String(url) === '/assets/kit.js')).toHaveLength(1);
+    const iframe = frames[0] as HTMLIFrameElement;
+    await loaded(iframe);
+    const posted: unknown[] = [];
+    vi.spyOn(iframe.contentWindow as Window, 'postMessage').mockImplementation((message) => {
+      posted.push(message);
+    });
+    const token = /var T="([0-9a-f]+)"/.exec(iframe.srcdoc)?.[1];
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: SANDBOX_MESSAGE.load, token },
+        origin: 'null',
+        source: iframe.contentWindow,
+      }),
+    );
+    expect(posted).toContainEqual(
+      expect.objectContaining({
+        type: SANDBOX_MESSAGE.assets,
+        token,
+        tailwind: '/*tailwind runtime*/',
+        kit: assets['/assets/kit.js'],
+      }),
+    );
+  });
+
   it('draws JSX in one frame with the kit inlined, posting the code as it streams', async () => {
     serveAssets();
     const View = createSandboxRenderer({
       config: { theme: true, kit: { url: '/assets/kit.js', hash: 'abc' } },
+      assets: 'inline',
     });
     const registry = { Sandbox: View };
     const part = (jsx: string, incomplete: boolean) => ({

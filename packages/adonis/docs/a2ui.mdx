@@ -11,7 +11,7 @@ import { Callout } from 'fumadocs-ui/components/callout';
 The same `ui` frames the [native stream](/docs/agent/generative-ui) carries — a tool's `ctx.emitUi`, a `present` hook, a model-composed `ui__render` tree — can be served as A2UI: on a route of their own, or inside the [AG-UI](/docs/agent/ag-ui) stream. It is another way to ship the same UI, to clients that already speak A2UI; the catalog, validation, capabilities and persistence stay what they are.
 
 <Callout type="info" title="Which A2UI">
-This targets **A2UI v0.9**: every message is stamped `"version": "v0.9"`, and surfaces use the v0.9 basic catalog. v0.9.1 is the current production patch of the v0.9 family (same messages); v1.0 is a release candidate and is not targeted yet; v0.8 is legacy — an inbound v0.8 `userAction` is still accepted. Everything below is tested against the official `@a2ui/web_core` v0.9 schemas and the official React renderer (`@a2ui/react/v0_9`, 0.12.0).
+This targets **A2UI v0.9**: every message is stamped `"version": "v0.9"`, and surfaces use the v0.9 basic catalog. v0.9.1 is the current production patch of the v0.9 family (same messages); v1.0 is a release candidate and is not targeted yet (checked on 2026-10-11: the spec still reads "a candidate for becoming stable", and a2ui.org lists v0.9.1 as the current production release; it renames the capabilities key to `a2uiRendererCapabilities`, prefixes bindings with `@` and drops `createSurface.theme`, so it will be negotiated alongside v0.9 once it is final); v0.8 is legacy — an inbound v0.8 `userAction` is still accepted. Everything below is tested against the official `@a2ui/web_core` v0.9 schemas and the official React renderer (`@a2ui/react/v0_9`, 0.12.0).
 </Callout>
 
 ## The route — `a2uiAdapter()`

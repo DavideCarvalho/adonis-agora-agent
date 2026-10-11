@@ -3,7 +3,7 @@
  * docs generated from their types, the bundle, and finding all of it at runtime. The Vite plugin is
  * `@adonis-agora/agent/vite`; the assembler hook `@adonis-agora/agent/hooks/genui_kit`.
  */
-export { adonisSandboxKitDiscovery } from './adonis.js';
+export { type AdonisSandboxKitUrls, adonisSandboxKitDiscovery } from './adonis.js';
 export {
   type BuildSandboxKitOptions,
   buildSandboxKitBundle,
@@ -37,15 +37,19 @@ export {
   SANDBOX_KIT_DEV_PREFIX,
   SANDBOX_KIT_MANIFEST_KEYS,
   SANDBOX_KIT_UPDATE_EVENT,
+  sandboxKitDescriptorPath,
+  sandboxKitManifestKeys,
 } from './plugin.js';
 export {
   type BuildSandboxKitStylesOptions,
   buildSandboxKitStyles,
   collectStyleSources,
   discoverStyleEntries,
+  purgeSandboxKitStyles,
   readStylesGuide,
   resolveStyleEntries,
   resolveStyleImport,
+  type SandboxKitPurgeOption,
   type SandboxKitStyles,
   STYLE_EXTENSIONS,
   type StyleSource,

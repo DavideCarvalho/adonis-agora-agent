@@ -35,8 +35,10 @@ import {
 import {
   buildSandboxKitStyles,
   discoverStyleEntries,
+  purgeSandboxKitStyles,
   readStylesGuide,
   resolveStyleEntries,
+  type SandboxKitPurgeOption,
   type SandboxKitStyles,
   STYLE_EXTENSIONS,
   stylesDocs,
@@ -44,6 +46,14 @@ import {
 } from './styles.js';
 
 export interface GenuiSandboxKitOptions extends SandboxKitSourceOptions {
+  /**
+   * A name, for several kits in one app (variants of the design system, a tenant's own, an A/B
+   * test): each `genuiSandboxKit({ name })` builds its own kit, served under
+   * `/@genui-sandbox-kit/<name>/`, written to its own descriptor and listed under its own manifest
+   * keys ({@link sandboxKitManifestKeys}); the server picks one by that name (`kitName`). Unnamed:
+   * the app's one kit.
+   */
+  name?: string;
   /**
    * The app's style entry files — plain CSS, Sass/Less, PostCSS, CSS modules, a `.scss` importing
    * Bootstrap, a Tailwind v3/v4 stylesheet… — compiled with the app's Vite CSS pipeline and inlined
@@ -68,6 +78,15 @@ export interface GenuiSandboxKitOptions extends SandboxKitSourceOptions {
   inlineAssetLimit?: number;
   /** Most bytes of fonts and images inlined in all. Default 1 MB. */
   inlineAssetBudget?: number;
+  /**
+   * Take out of the compiled styles what the frame can never use (default on): with Tailwind v4,
+   * every utility the kit's own code does not name (the frame's Tailwind runtime generates the
+   * ones the model writes; the theme, base and components layers stay); with Tailwind v3, every
+   * rule naming a class the kit does not use; with other CSS, generated CSS-modules classes the kit
+   * does not use. `false` ships the whole stylesheet; `{ safelist }` keeps more classes (names or
+   * patterns) — say, a Tailwind plugin's utilities the model is told about in `stylesDocs`.
+   */
+  purge?: SandboxKitPurgeOption;
 }
 
 /** The library-specific defaults the shared plugin is built with. */
@@ -90,8 +109,37 @@ export const SANDBOX_KIT_MANIFEST_KEYS = {
 /** The event a page gets (`window`) when the kit was rebuilt in dev. */
 export const SANDBOX_KIT_UPDATE_EVENT = 'genui-sandbox-kit:update';
 
+/** The manifest keys a named kit's assets are listed under (`genui-sandbox-kit.<name>.js`…). */
+export function sandboxKitManifestKeys(
+  name?: string,
+): Record<keyof typeof SANDBOX_KIT_MANIFEST_KEYS, string> {
+  if (name === undefined) return { ...SANDBOX_KIT_MANIFEST_KEYS };
+  const keys = {} as Record<keyof typeof SANDBOX_KIT_MANIFEST_KEYS, string>;
+  for (const [key, file] of Object.entries(SANDBOX_KIT_MANIFEST_KEYS) as [
+    keyof typeof SANDBOX_KIT_MANIFEST_KEYS,
+    string,
+  ][])
+    keys[key] = file.replace(/(\.[a-z]+)$/, `.${name}$1`);
+  return keys;
+}
+
+/** A named kit's descriptor path, from the unnamed one's (`genui_sandbox_kit.json` → `genui_sandbox_kit.<name>.json`). */
+export function sandboxKitDescriptorPath(path: string, name?: string): string {
+  return name === undefined ? path : path.replace(/(\.json)?$/, `.${name}$1`);
+}
+
+/** Throws unless a kit name is a plain identifier (it goes into urls and file names). */
+export function assertSandboxKitName(name: unknown): asserts name is string | undefined {
+  if (name !== undefined && (typeof name !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(name)))
+    throw new TypeError(
+      `genuiSandboxKit: name "${String(name)}" must be letters, digits, "-" or "_" (up to 64)`,
+    );
+}
+
 /** What the plugin exposes to the server process it runs in (`plugin.api`). */
 export interface GenuiSandboxKitApi {
+  /** The kit's name (`genuiSandboxKit({ name })`), `undefined` for the unnamed one. */
+  readonly kitName?: string | undefined;
   /** The current descriptor (dev), once the first build is done. */
   descriptor(): SandboxKitDescriptor | null;
   /** Resolves when the first build is done. */
@@ -149,11 +197,19 @@ const STYLE_CHANGE = new RegExp(
   'i',
 );
 
+function kib(chars: number): string {
+  return `${Math.round(chars / 1024)} KB`;
+}
+
 export function createGenuiSandboxKitPlugin(
   options: GenuiSandboxKitOptions,
   defaults: GenuiSandboxKitDefaults,
 ): GenuiSandboxKitPlugin {
   assertNoLegacyKitOptions(options, 'genuiSandboxKit');
+  // Read once: the kit's identity (its urls, files, manifest keys) does not change while it runs.
+  const kitName = options.name;
+  assertSandboxKitName(kitName);
+  const manifestKeys = sandboxKitManifestKeys(kitName);
   let config: ViteLikeConfig | undefined;
   let files: SandboxKitFiles | null = null;
   let bundle: SandboxKitBundle | null = null;
@@ -173,8 +229,9 @@ export function createGenuiSandboxKitPlugin(
     config?.logger.warn(`[genui-sandbox-kit] ${message}`);
   };
 
+  const devDir = `${SANDBOX_KIT_DEV_PREFIX}${kitName === undefined ? '' : `${kitName}/`}`;
   const devUrl = (name: string, hash?: string) =>
-    `${config?.base ?? '/'}${SANDBOX_KIT_DEV_PREFIX}${name}${hash ? `?v=${hash}` : ''}`;
+    `${config?.base ?? '/'}${devDir}${name}${hash ? `?v=${hash}` : ''}`;
 
   /** The descriptor, given where each asset is (`null`: none). */
   const describe = (urls: {
@@ -219,7 +276,10 @@ export function createGenuiSandboxKitPlugin(
   const writeDescriptor = () => {
     if (config === undefined) return;
     descriptor = describeDev();
-    const path = resolve(config.root, options.descriptor ?? defaults.descriptor);
+    const path = resolve(
+      config.root,
+      options.descriptor ?? sandboxKitDescriptorPath(defaults.descriptor, kitName),
+    );
     try {
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, `${JSON.stringify(descriptor, null, 2)}\n`);
@@ -310,7 +370,20 @@ export function createGenuiSandboxKitPlugin(
             return null;
           }),
     ]);
-    styles = builtStyles;
+    const purge = options.purge ?? true;
+    styles =
+      builtStyles === null || purge === false
+        ? builtStyles
+        : purgeSandboxKitStyles(builtStyles, {
+            ...(built !== null ? { kitCode: built.code } : {}),
+            ...(typeof purge === 'object' && purge.safelist !== undefined
+              ? { safelist: purge.safelist }
+              : {}),
+          });
+    if (styles?.purged !== undefined)
+      config.logger.info(
+        `[genui-sandbox-kit] styles purged: ${kib(styles.purged.before)} → ${kib(styles.css.length)}`,
+      );
     bundle = built;
     docs = generated ?? (built === null ? [] : kitDocsFromBundle(built.code));
     if (generated === null && docs.length === 0 && built !== null)
@@ -323,6 +396,7 @@ export function createGenuiSandboxKitPlugin(
     name: 'genui-sandbox-kit',
     enforce: 'pre' as const,
     api: {
+      kitName,
       descriptor: () => descriptor,
       ready: () => ready,
     } satisfies GenuiSandboxKitApi,
@@ -389,9 +463,15 @@ export function createGenuiSandboxKitPlugin(
         });
       server.middlewares.use((req, res, next) => {
         const url = String(req.url ?? '').split('?')[0] ?? '';
-        const prefix = `${config?.base ?? '/'}${SANDBOX_KIT_DEV_PREFIX}`;
-        if (!url.startsWith(prefix) && !url.startsWith(`/${SANDBOX_KIT_DEV_PREFIX}`)) return next();
-        const name = url.slice(url.lastIndexOf('/') + 1);
+        const prefix = `${config?.base ?? '/'}${devDir}`;
+        const rest = url.startsWith(prefix)
+          ? url.slice(prefix.length)
+          : url.startsWith(`/${devDir}`)
+            ? url.slice(devDir.length + 1)
+            : undefined;
+        // Its own files only: `<prefix>kit.js` — another kit's (`<prefix><name>/kit.js`) is not its.
+        if (rest === undefined || rest.includes('/')) return next();
+        const name = rest;
         void (async () => {
           await firstBuild;
           let body: string | null = null;
@@ -442,6 +522,7 @@ export function createGenuiSandboxKitPlugin(
                 type: 'custom',
                 event: SANDBOX_KIT_UPDATE_EVENT,
                 data: {
+                  ...(kitName !== undefined ? { name: kitName } : {}),
                   hash: bundle?.hash ?? null,
                   url: descriptor?.assets.kit?.url ?? null,
                   css: descriptor?.assets.css?.url ?? null,
@@ -477,8 +558,8 @@ export function createGenuiSandboxKitPlugin(
       const emit = (key: keyof typeof SANDBOX_KIT_MANIFEST_KEYS, source: string): string => {
         const ref = this.emitFile({
           type: 'asset',
-          name: SANDBOX_KIT_MANIFEST_KEYS[key],
-          originalFileName: SANDBOX_KIT_MANIFEST_KEYS[key],
+          name: manifestKeys[key],
+          originalFileName: manifestKeys[key],
           source,
         });
         const fileName = this.getFileName(ref);
@@ -507,7 +588,7 @@ export function createGenuiSandboxKitPlugin(
         string | undefined,
       ][]) {
         if (file === undefined) continue;
-        const name = SANDBOX_KIT_MANIFEST_KEYS[key];
+        const name = manifestKeys[key];
         manifest[name] = { file, src: name };
       }
       writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
