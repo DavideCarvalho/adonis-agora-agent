@@ -49,8 +49,12 @@ export default class PoppyConnectionsProvider {
     const config = configOf(this.app);
     if (!config) return;
     const connections = await this.app.container.make(PoppyConnections);
-    const registry = await this.app.container.make(ToolRegistry);
-    registerPoppyConnectionTools(registry, connections, config.tools ?? {});
+    // The agent provider's registry when there is one; an app with its own loop registers the tools
+    // in its own registry (`tools.register: false` + `registerPoppyConnectionTools`).
+    if (config.tools?.register !== false && this.app.container.hasBinding(ToolRegistry)) {
+      const registry = await this.app.container.make(ToolRegistry);
+      registerPoppyConnectionTools(registry, connections, config.tools ?? {});
+    }
 
     const logger = await this.app.container.make('logger');
     const handle = createPoppyConnectionsHandler(connections, {
@@ -138,6 +142,8 @@ export default class PoppyConnectionsProvider {
   }
 
   async #resume(pending: PoppyPendingConnect): Promise<void> {
+    // No AgentService (an app running its own loop): nothing parked to resume.
+    if (!this.app.container.hasBinding(AgentService)) return;
     await resumeAfterConnect(await this.app.container.make(AgentService), pending);
   }
 }

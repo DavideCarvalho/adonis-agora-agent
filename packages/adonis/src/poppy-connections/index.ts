@@ -41,7 +41,7 @@ export {
   poppyConnectionTableStatements,
   redisPoppyConnectionStore,
 } from './store.js';
-export { registerPoppyConnectionTools } from './tools.js';
+export { callCompanyTool, registerPoppyConnectionTools, talkToCompany } from './tools.js';
 
 /** A fresh signing key for `identity.keys` (store the JSON in an env var). */
 export async function generatePoppyAgentKey(): Promise<Record<string, unknown>> {

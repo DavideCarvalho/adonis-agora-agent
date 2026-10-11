@@ -107,6 +107,93 @@ interface CompanyInput {
 }
 
 /**
+ * Runs a company MCP tool for `owner` and words the outcome for the model (`readOnly` refuses a
+ * tool the company does not mark `readOnlyHint`). For apps that build their own confirmed tools.
+ */
+export async function callCompanyTool(
+  connections: PoppyConnections,
+  owner: string,
+  input: CompanyInput & { tool: string; arguments?: Record<string, unknown> },
+  readOnly: boolean,
+  prefix = 'poppy_',
+): Promise<Record<string, unknown>> {
+  try {
+    const conn = await connections.mcp(owner, input.company);
+    try {
+      const { tools } = await conn.client.listTools();
+      const tool = tools.find((t) => t.name === input.tool);
+      if (!tool)
+        return { error: 'unknown_tool', message: `${input.company} has no tool ${input.tool}` };
+      if (readOnly && tool.annotations?.readOnlyHint !== true) {
+        return {
+          error: 'not_read_only',
+          next: `${input.tool} can change things: use ${prefix}write (the person confirms).`,
+        };
+      }
+      const result = await conn.client.callTool({
+        name: input.tool,
+        arguments: input.arguments ?? {},
+      });
+      const content = Array.isArray(result.content) ? result.content : [];
+      const text = content
+        .map((part) =>
+          (part as { type?: string }).type === 'text'
+            ? String((part as { text?: string }).text ?? '')
+            : '',
+        )
+        .filter(Boolean)
+        .join('\n');
+      return { ...(result.isError ? { error: 'tool_error' } : {}), result: text };
+    } finally {
+      await conn.close().catch(() => {});
+    }
+  } catch (error) {
+    return explain(prefix, error);
+  }
+}
+
+/** One exchange with the company's agent for `owner`, worded for the model (`act: false` = read-only token). */
+export async function talkToCompany(
+  connections: PoppyConnections,
+  owner: string,
+  input: CompanyInput & { message: string },
+  act: boolean,
+  prefix = 'poppy_',
+): Promise<Record<string, unknown>> {
+  try {
+    const reply = await connections.ask(owner, input.company, input.message, { act });
+    const out: Record<string, unknown> = {
+      reply: reply.replies
+        .map((r) => r.text)
+        .filter(Boolean)
+        .join('\n\n'),
+      status: reply.status,
+    };
+    const actions = reply.replies.flatMap((r) =>
+      Array.isArray(r.data?.actions) ? (r.data.actions as unknown[]) : [],
+    );
+    if (actions.length > 0) out.actions = actions;
+    if (reply.authorization) {
+      if (reply.authorization.error === 'no_read_scope') {
+        out.error = 'needs_permission';
+        out.next = `The connection has no read-only permission: call ${prefix}connect, or ${prefix}request (confirmed).`;
+      } else if (!act && reply.authorization.error === 'insufficient_scope') {
+        out.error = 'needs_action';
+        out.next = `That needs the company to act: use ${prefix}request with the same message (the person confirms), or ${prefix}connect if it still lacks permission${reply.authorization.scope ? ` (${reply.authorization.scope})` : ''}.`;
+      } else {
+        out.error =
+          reply.authorization.error === 'sign_in_required' ? 'not_connected' : 'needs_permission';
+        if (reply.authorization.scope) out.scopes = reply.authorization.scope.split(' ');
+        out.next = `Call ${prefix}connect${reply.authorization.scope ? ' with these scopes' : ''}.`;
+      }
+    }
+    return out;
+  } catch (error) {
+    return explain(prefix, error);
+  }
+}
+
+/**
  * Registers the tools a turn uses to work with OTHER Poppy Companies for its user. Reads run at
  * once; anything that can change something at a Company (`write`, `request`, `disconnect`) is an
  * `action` — it goes through this app's confirmation (a card with Confirm/Cancel, or the channel's
@@ -116,17 +203,63 @@ interface CompanyInput {
 export function registerPoppyConnectionTools(
   registry: ToolRegistry,
   connections: PoppyConnections,
-  options: { prefix?: string; roles?: string[] } = {},
+  options: {
+    prefix?: string;
+    roles?: string[];
+    /**
+     * `'action'` (default): `connect` is an action whose card carries the link, and completing the
+     * sign-in decides it (the turn resumes). `'link'`: a read tool returning the link — for loops
+     * that do not park on approvals; the person says when they are done.
+     */
+    connect?: 'action' | 'link';
+    /**
+     * Register `write`, `request` and `disconnect` (actions). `false` for a loop that confirms writes
+     * its own way: build them on {@link callCompanyTool} / {@link talkToCompany}.
+     */
+    writes?: boolean;
+  } = {},
 ): string[] {
   const p = options.prefix ?? 'poppy_';
   const roles = options.roles !== undefined ? { roles: options.roles } : {};
   const texts = connections.texts;
   const owner = (ctx: AiToolCtx) => connections.ownerOf(ctx.actor);
   const names: string[] = [];
+  const writeTools = new Set([`${p}write`, `${p}request`, `${p}disconnect`]);
   const register = <I>(
     spec: Omit<ToolSpec, 'inputSchema'> & { inputSchema: StandardSchemaV1<unknown, I> },
     handler: ToolHandler<I>,
   ) => {
+    if (options.writes === false && writeTools.has(spec.name)) return;
+    if (options.connect === 'link' && spec.name === `${p}connect`) {
+      const prepare = handler.preflight!;
+      registry.register(
+        {
+          ...spec,
+          ...roles,
+          kind: 'read',
+          description:
+            'Connect the person’s account at a company (or ask for more permissions there): returns a link they open to sign in at the company. Give them the link; once they say they finished, continue.',
+        } as ToolSpec,
+        {
+          async execute(input: unknown, ctx: AiToolCtx) {
+            const pre = await prepare(input as I, ctx, { phase: 'prepare' });
+            if (pre.status === 'completed') return pre.output;
+            if (pre.status === 'denied') return { error: 'not_allowed', message: pre.reason };
+            const id = connections.connectIdFor(
+              `${ctx.runId}:${ctx.toolCallId ?? (input as CompanyInput).company}`,
+            );
+            return {
+              connected: false,
+              company: normalizeDomain((input as CompanyInput).company),
+              link: connections.connectUrl(id),
+              next: 'Send the person this link to sign in at the company; continue once they say they finished.',
+            };
+          },
+        } as ToolHandler,
+      );
+      names.push(spec.name);
+      return;
+    }
     registry.register({ ...spec, ...roles } as ToolSpec, handler as ToolHandler);
     names.push(spec.name);
   };
@@ -276,46 +409,6 @@ export function registerPoppyConnectionTools(
     },
   );
 
-  const callTool = async (
-    ctx: AiToolCtx,
-    input: CompanyInput & { tool: string; arguments?: Record<string, unknown> },
-    readOnly: boolean,
-  ) => {
-    try {
-      const conn = await connections.mcp(owner(ctx), input.company);
-      try {
-        const { tools } = await conn.client.listTools();
-        const tool = tools.find((t) => t.name === input.tool);
-        if (!tool)
-          return { error: 'unknown_tool', message: `${input.company} has no tool ${input.tool}` };
-        if (readOnly && tool.annotations?.readOnlyHint !== true) {
-          return {
-            error: 'not_read_only',
-            next: `${input.tool} can change things: use ${p}write (the person confirms).`,
-          };
-        }
-        const result = await conn.client.callTool({
-          name: input.tool,
-          arguments: input.arguments ?? {},
-        });
-        const content = Array.isArray(result.content) ? result.content : [];
-        const text = content
-          .map((part) =>
-            (part as { type?: string }).type === 'text'
-              ? String((part as { text?: string }).text ?? '')
-              : '',
-          )
-          .filter(Boolean)
-          .join('\n');
-        return { ...(result.isError ? { error: 'tool_error' } : {}), result: text };
-      } finally {
-        await conn.close().catch(() => {});
-      }
-    } catch (error) {
-      return explain(p, error);
-    }
-  };
-
   const toolInput = objectSchema<
     CompanyInput & { tool: string; arguments?: Record<string, unknown> }
   >(
@@ -335,7 +428,7 @@ export function registerPoppyConnectionTools(
         'Run a READ-ONLY tool of a connected company (readOnly: true in the tools list).',
       inputSchema: toolInput,
     },
-    { execute: (input, ctx) => callTool(ctx, input, true) },
+    { execute: (input, ctx) => callCompanyTool(connections, owner(ctx), input, true, p) },
   );
 
   register(
@@ -371,7 +464,7 @@ export function registerPoppyConnectionTools(
           },
         };
       },
-      execute: (input, ctx) => callTool(ctx, input, false),
+      execute: (input, ctx) => callCompanyTool(connections, owner(ctx), input, false, p),
     },
   );
 
@@ -383,40 +476,6 @@ export function registerPoppyConnectionTools(
     ['company', 'message'],
   );
 
-  const talk = async (ctx: AiToolCtx, input: CompanyInput & { message: string }, act: boolean) => {
-    try {
-      const reply = await connections.ask(owner(ctx), input.company, input.message, { act });
-      const out: Record<string, unknown> = {
-        reply: reply.replies
-          .map((r) => r.text)
-          .filter(Boolean)
-          .join('\n\n'),
-        status: reply.status,
-      };
-      const actions = reply.replies.flatMap((r) =>
-        Array.isArray(r.data?.actions) ? (r.data.actions as unknown[]) : [],
-      );
-      if (actions.length > 0) out.actions = actions;
-      if (reply.authorization) {
-        if (reply.authorization.error === 'no_read_scope') {
-          out.error = 'needs_permission';
-          out.next = `The connection has no read-only permission: call ${p}connect, or ${p}request (confirmed).`;
-        } else if (!act && reply.authorization.error === 'insufficient_scope') {
-          out.error = 'needs_action';
-          out.next = `That needs the company to act: use ${p}request with the same message (the person confirms), or ${p}connect if it still lacks permission${reply.authorization.scope ? ` (${reply.authorization.scope})` : ''}.`;
-        } else {
-          out.error =
-            reply.authorization.error === 'sign_in_required' ? 'not_connected' : 'needs_permission';
-          if (reply.authorization.scope) out.scopes = reply.authorization.scope.split(' ');
-          out.next = `Call ${p}connect${reply.authorization.scope ? ' with these scopes' : ''}.`;
-        }
-      }
-      return out;
-    } catch (error) {
-      return explain(p, error);
-    }
-  };
-
   register(
     {
       name: `${p}ask`,
@@ -425,7 +484,7 @@ export function registerPoppyConnectionTools(
         'Ask a company’s own assistant a question (read-only: it cannot change anything with this). Answers what its tools cannot: policies, status, availability.',
       inputSchema: messageInput,
     },
-    { execute: (input, ctx) => talk(ctx, input, false) },
+    { execute: (input, ctx) => talkToCompany(connections, owner(ctx), input, false, p) },
   );
 
   register(
@@ -452,7 +511,7 @@ export function registerPoppyConnectionTools(
           },
         };
       },
-      execute: (input, ctx) => talk(ctx, input, true),
+      execute: (input, ctx) => talkToCompany(connections, owner(ctx), input, true, p),
     },
   );
 

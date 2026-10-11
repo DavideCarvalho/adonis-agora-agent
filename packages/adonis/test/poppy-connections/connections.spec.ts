@@ -574,3 +574,48 @@ describe('poppy-connections: the connect card resumes the turn (durable, single 
     }
   });
 });
+
+describe('poppy-connections: for loops that do not park on approvals', () => {
+  it("connect: 'link' is a read tool returning the link; writes: false leaves the writes to the app", async () => {
+    app = await setup();
+    const tools = new Map<string, { spec: ToolSpec; handler: ToolHandler<any> }>();
+    registerPoppyConnectionTools(
+      {
+        register: (spec: ToolSpec, handler: ToolHandler<any>) =>
+          tools.set(spec.name, { spec, handler }),
+      } as unknown as ToolRegistry,
+      app.connections,
+      { connect: 'link', writes: false },
+    );
+    expect([...tools.keys()].sort()).toEqual(
+      ['poppy_ask', 'poppy_companies', 'poppy_connect', 'poppy_read', 'poppy_tools'].sort(),
+    );
+    expect(tools.get('poppy_connect')!.spec.kind).toBe('read');
+    const out = (await tools
+      .get('poppy_connect')!
+      .handler.execute({ company: app.fake.domain }, ctx())) as {
+      connected: boolean;
+      link: string;
+    };
+    expect(out.connected).toBe(false);
+    expect(await direct(app, out.link)).toContain('Connected to Fake Co');
+    expect(
+      await tools
+        .get('poppy_connect')!
+        .handler.execute({ company: app.fake.domain }, ctx('call-2')),
+    ).toMatchObject({
+      connected: true,
+    });
+    const { callCompanyTool } = await import('../../src/poppy-connections/index.js');
+    expect(
+      await callCompanyTool(
+        app.connections,
+        'account-1',
+        { company: app.fake.domain, tool: 'place_order', arguments: { sku: 'y' } },
+        false,
+      ),
+    ).toMatchObject({
+      result: 'ordered y',
+    });
+  });
+});

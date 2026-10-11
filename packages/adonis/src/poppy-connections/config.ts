@@ -112,8 +112,19 @@ export interface PoppyConnectionsConfig {
    * http (a local app). Refused when `NODE_ENV=production`.
    */
   insecureDev?: boolean;
-  /** Tool names' prefix (default `'poppy_'`), and the roles the tools require. */
-  tools?: { prefix?: string; roles?: string[] };
+  /**
+   * Tool names' prefix (default `'poppy_'`), the roles they require, how `connect` works
+   * (`'action'` card that resumes, or `'link'`), and whether the write tools are registered.
+   * `register: false` registers none (an app with its own per-turn registry calls
+   * `registerPoppyConnectionTools` itself).
+   */
+  tools?: {
+    prefix?: string;
+    roles?: string[];
+    connect?: 'action' | 'link';
+    writes?: boolean;
+    register?: boolean;
+  };
   /** How long a connect link works, in seconds. Default 900. */
   connectTtlSeconds?: number;
   /** How long `ask`/`request` wait for the Company's reply. Default 90 000 ms. */
