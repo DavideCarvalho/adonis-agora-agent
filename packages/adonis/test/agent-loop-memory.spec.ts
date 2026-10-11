@@ -237,6 +237,17 @@ describe('a turn’s memory block', () => {
   });
 });
 
+describe('an actor with no memory scope (a personal agent)', () => {
+  it('is not offered `remember`: it could write nowhere, and the model would promise to remember', async () => {
+    const model = new RememberingModel();
+    await pass({
+      model,
+      memory: { provider: providerOf([]), scopes: { resolve: () => [] } },
+    });
+    expect(model.offered[0]).toEqual([]);
+  });
+});
+
 describe('writing a memory mid-turn', () => {
   it('stores at the actor’s OWN scope, with this run recorded as the origin', async () => {
     const provider = providerOf([]);
