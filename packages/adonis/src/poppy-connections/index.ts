@@ -10,6 +10,7 @@ export {
   type PoppyCompanyPolicy,
   type PoppyConnectionsConfig,
   type PoppyConnectionsTexts,
+  type TwoStepConvention,
 } from './config.js';
 export { Sealer } from './crypto.js';
 export {
@@ -41,7 +42,13 @@ export {
   poppyConnectionTableStatements,
   redisPoppyConnectionStore,
 } from './store.js';
-export { callCompanyTool, registerPoppyConnectionTools, talkToCompany } from './tools.js';
+export {
+  type CallCompanyToolOptions,
+  callCompanyTool,
+  previewCompanyWrite,
+  registerPoppyConnectionTools,
+  talkToCompany,
+} from './tools.js';
 
 /** A fresh signing key for `identity.keys` (store the JSON in an env var). */
 export async function generatePoppyAgentKey(): Promise<Record<string, unknown>> {

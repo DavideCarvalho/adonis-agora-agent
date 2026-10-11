@@ -138,6 +138,11 @@ export class PoppyConnections {
     this.baseUrl = config.baseUrl.replace(/\/+$/, '');
   }
 
+  /** The agent's display name (its `client_name`). */
+  get identityName(): string {
+    return this.#config.identity.name;
+  }
+
   /** The app's agent identity (`client_id` = `{baseUrl}/{path}/agent.json`). */
   async identity(): Promise<AgentIdentity> {
     if (this.#identity === null) {

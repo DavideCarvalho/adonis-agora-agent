@@ -3,7 +3,7 @@ import { ResourceAuthError } from '../poppy-client/index.js';
 import type { AiToolCtx, ToolHandler, ToolPreflightResult } from '../spi/tool.js';
 import type { ToolRegistry } from '../tool-registry.js';
 import type { ToolSpec } from '../types.js';
-import { normalizeDomain } from './config.js';
+import { normalizeDomain, type TwoStepConvention } from './config.js';
 import { OAuthError, PoppyCompanyNotAllowedError, type PoppyConnections } from './service.js';
 
 type JsonType = 'string' | 'object' | 'array';
@@ -106,17 +106,77 @@ interface CompanyInput {
   company: string;
 }
 
+const DEFAULT_TWO_STEP: TwoStepConvention = { confirm: 'confirm', token: 'confirmToken' };
+const DEFAULT_SUMMARY_FIELDS = ['summary', 'resumo', 'message'];
+
+type McpTool = { name: string; inputSchema?: unknown; annotations?: { readOnlyHint?: boolean } };
+
+/** The convention when `tool` declares both of its fields, else null. */
+function twoStepOf(tool: McpTool, convention: TwoStepConvention | false | undefined) {
+  const c = convention === undefined ? DEFAULT_TWO_STEP : convention;
+  if (c === false) return null;
+  const props = (tool.inputSchema as { properties?: Record<string, unknown> } | undefined)
+    ?.properties;
+  return props && c.confirm in props && c.token in props ? c : null;
+}
+
+function textOf(result: unknown): string {
+  const raw = (result as { content?: unknown }).content;
+  const content = Array.isArray(raw) ? raw : [];
+  return content
+    .map((part) =>
+      (part as { type?: string }).type === 'text'
+        ? String((part as { text?: string }).text ?? '')
+        : '',
+    )
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** A two-step preview: the token to commit with and a summary for the card, or null. */
+function previewOf(
+  text: string,
+  convention: TwoStepConvention,
+): { token: string; summary: string | null } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object') return null;
+  const body = parsed as Record<string, unknown>;
+  const token = body[convention.token];
+  if (typeof token !== 'string' || token === '') return null;
+  const field = (convention.summary ?? DEFAULT_SUMMARY_FIELDS).find(
+    (f) => typeof body[f] === 'string' && body[f] !== '',
+  );
+  return { token, summary: field ? (body[field] as string) : null };
+}
+
+export interface CallCompanyToolOptions {
+  prefix?: string;
+  /** The Company's two-step confirmation convention (default `confirm` / `confirmToken`); `false` = off. */
+  twoStep?: TwoStepConvention | false;
+}
+
 /**
  * Runs a company MCP tool for `owner` and words the outcome for the model (`readOnly` refuses a
  * tool the company does not mark `readOnlyHint`). For apps that build their own confirmed tools.
+ *
+ * A write (`readOnly: false`) to a tool that confirms in two steps (see `tools.twoStep`) is
+ * committed: the call is made for its preview, then again with `confirm` and the fresh token —
+ * call it only once the person has confirmed.
  */
 export async function callCompanyTool(
   connections: PoppyConnections,
   owner: string,
   input: CompanyInput & { tool: string; arguments?: Record<string, unknown> },
   readOnly: boolean,
-  prefix = 'poppy_',
+  options: string | CallCompanyToolOptions = {},
 ): Promise<Record<string, unknown>> {
+  const opts = typeof options === 'string' ? { prefix: options } : options;
+  const prefix = opts.prefix ?? 'poppy_';
   try {
     const conn = await connections.mcp(owner, input.company);
     try {
@@ -130,25 +190,51 @@ export async function callCompanyTool(
           next: `${input.tool} can change things: use ${prefix}write (the person confirms).`,
         };
       }
-      const result = await conn.client.callTool({
-        name: input.tool,
-        arguments: input.arguments ?? {},
-      });
-      const content = Array.isArray(result.content) ? result.content : [];
-      const text = content
-        .map((part) =>
-          (part as { type?: string }).type === 'text'
-            ? String((part as { text?: string }).text ?? '')
-            : '',
-        )
-        .filter(Boolean)
-        .join('\n');
+      const args = input.arguments ?? {};
+      let result = await conn.client.callTool({ name: input.tool, arguments: args });
+      const twoStep = readOnly ? null : twoStepOf(tool as McpTool, opts.twoStep);
+      if (twoStep && !result.isError && args[twoStep.confirm] === undefined) {
+        const pending = previewOf(textOf(result), twoStep);
+        if (pending) {
+          result = await conn.client.callTool({
+            name: input.tool,
+            arguments: { ...args, [twoStep.confirm]: true, [twoStep.token]: pending.token },
+          });
+        }
+      }
+      const text = textOf(result);
       return { ...(result.isError ? { error: 'tool_error' } : {}), result: text };
     } finally {
       await conn.close().catch(() => {});
     }
   } catch (error) {
     return explain(prefix, error);
+  }
+}
+
+/**
+ * The Company's own preview of a two-step write, for the confirmation card — nothing is written.
+ * Null when the tool does not confirm in two steps, or the preview did not come back.
+ */
+export async function previewCompanyWrite(
+  connections: PoppyConnections,
+  owner: string,
+  input: CompanyInput & { tool: string; arguments?: Record<string, unknown> },
+  twoStep?: TwoStepConvention | false,
+): Promise<{ summary: string | null } | null> {
+  const conn = await connections.mcp(owner, input.company);
+  try {
+    const { tools } = await conn.client.listTools();
+    const tool = tools.find((t) => t.name === input.tool);
+    const convention = tool ? twoStepOf(tool as McpTool, twoStep) : null;
+    const args = input.arguments ?? {};
+    if (!convention || args[convention.confirm] !== undefined) return null;
+    const result = await conn.client.callTool({ name: input.tool, arguments: args });
+    if (result.isError) return null;
+    const pending = previewOf(textOf(result), convention);
+    return pending ? { summary: pending.summary } : null;
+  } finally {
+    await conn.close().catch(() => {});
   }
 }
 
@@ -219,6 +305,8 @@ export function registerPoppyConnectionTools(
      * its own way: build them on {@link callCompanyTool} / {@link talkToCompany}.
      */
     writes?: boolean;
+    /** The Companies' two-step confirmation convention (see `tools.twoStep`). */
+    twoStep?: TwoStepConvention | false;
   } = {},
 ): string[] {
   const p = options.prefix ?? 'poppy_';
@@ -433,7 +521,9 @@ export function registerPoppyConnectionTools(
         'Run a READ-ONLY tool of a connected company (readOnly: true in the tools list).',
       inputSchema: toolInput,
     },
-    { execute: (input, ctx) => callCompanyTool(connections, owner(ctx), input, true, p) },
+    {
+      execute: (input, ctx) => callCompanyTool(connections, owner(ctx), input, true, { prefix: p }),
+    },
   );
 
   register(
@@ -457,6 +547,15 @@ export function registerPoppyConnectionTools(
             reason: `Not connected to ${domain}: call ${p}connect first.`,
           };
         }
+        // A two-step Company words the change itself: its preview goes on the card (nothing is
+        // written yet); confirming commits it with a fresh token.
+        const companyPreview = await previewCompanyWrite(
+          connections,
+          owner(ctx),
+          input,
+          options.twoStep,
+        ).catch(() => null);
+        const args = preview(input.arguments);
         return {
           status: 'ready',
           confirmation: {
@@ -465,11 +564,15 @@ export function registerPoppyConnectionTools(
               tool: input.tool,
             }),
             verb: texts.confirmVerb,
-            detail: preview(input.arguments),
+            detail: companyPreview?.summary ? `${companyPreview.summary}\n\n${args}` : args,
           },
         };
       },
-      execute: (input, ctx) => callCompanyTool(connections, owner(ctx), input, false, p),
+      execute: (input, ctx) =>
+        callCompanyTool(connections, owner(ctx), input, false, {
+          prefix: p,
+          ...(options.twoStep !== undefined ? { twoStep: options.twoStep } : {}),
+        }),
     },
   );
 

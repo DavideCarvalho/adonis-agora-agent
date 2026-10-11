@@ -187,6 +187,12 @@ describe('poppy-connections: identity', () => {
       redirect_uris: [`${app.base}/poppy-agent/oauth/callback`],
       token_endpoint_auth_method: 'private_key_jwt',
     });
+    // The default logo_uri resolves (a consent screen shows it).
+    expect(meta.logo_uri).toBe(`${app.base}/poppy-agent/logo.svg`);
+    const logo = await fetch(meta.logo_uri);
+    expect(logo.status).toBe(200);
+    expect(logo.headers.get('content-type')).toBe('image/svg+xml');
+    expect(await logo.text()).toContain('>A</text>');
     const jwks = await (await fetch(`${app.base}/poppy-agent/jwks.json`)).json();
     expect(jwks.keys).toHaveLength(1);
     expect(jwks.keys[0]).not.toHaveProperty('d');
@@ -348,6 +354,7 @@ describe('poppy-connections: tools at the company', () => {
       ['whoami', true],
       ['search_products', true],
       ['place_order', false],
+      ['book_trip', false],
     ]);
     expect(
       await tool(app, 'read', {
@@ -402,6 +409,54 @@ describe('poppy-connections: tools at the company', () => {
     ).toMatchObject({
       result: 'ordered x',
     });
+  });
+
+  it('a two-step company write: the card shows its preview, confirming commits with the token', async () => {
+    app = await setup();
+    await direct(app, await connectLink(app));
+    const input = { company: app.fake.domain, tool: 'book_trip', arguments: { city: 'Lisbon' } };
+    // The card carries the company's own preview; nothing is booked yet.
+    const card = await preflight(app, 'write', input);
+    expect(card).toMatchObject({
+      status: 'ready',
+      confirmation: { detail: expect.stringContaining('Preview: book a trip to Lisbon.') },
+    });
+    expect(app.fake.trips).toEqual([]);
+    // Confirmed: one write call previews and commits — the trip is booked once.
+    expect(await tool(app, 'write', input)).toMatchObject({
+      result: expect.stringContaining('"booked"'),
+    });
+    expect(app.fake.trips).toEqual(['Lisbon']);
+    // A tool without the convention runs once, as is.
+    expect(
+      await tool(app, 'write', {
+        company: app.fake.domain,
+        tool: 'place_order',
+        arguments: { sku: 'y' },
+      }),
+    ).toMatchObject({ result: 'ordered y' });
+  });
+
+  it('twoStep: false leaves a two-step tool to the model (only the preview runs)', async () => {
+    app = await setup({}, {}, {});
+    app.tools.clear();
+    registerPoppyConnectionTools(
+      {
+        register: (spec: ToolSpec, handler: ToolHandler<any>) => {
+          app!.tools.set(spec.name, { spec, handler });
+        },
+      } as unknown as ToolRegistry,
+      app.connections,
+      { twoStep: false },
+    );
+    await direct(app, await connectLink(app));
+    const out = (await tool(app, 'write', {
+      company: app.fake.domain,
+      tool: 'book_trip',
+      arguments: { city: 'Porto' },
+    })) as { result: string };
+    expect(JSON.parse(out.result)).toMatchObject({ status: 'preview' });
+    expect(app.fake.trips).toEqual([]);
   });
 
   it('ask narrows the token to the read scopes; request uses the grant', async () => {

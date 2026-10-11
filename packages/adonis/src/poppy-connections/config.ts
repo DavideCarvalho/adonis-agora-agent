@@ -125,6 +125,13 @@ export interface PoppyConnectionsConfig {
     connect?: 'action' | 'link';
     writes?: boolean;
     register?: boolean;
+    /**
+     * Company tools that confirm in two steps (called first without `confirm` they only answer a
+     * preview and a `confirmToken`): the write tool shows that preview on its card and, once the
+     * person confirms, commits with the token. Detected by the tool's input schema having both
+     * fields. `false` turns it off. Default `{ confirm: 'confirm', token: 'confirmToken' }`.
+     */
+    twoStep?: TwoStepConvention | false;
   };
   /** How long a connect link works, in seconds. Default 900. */
   connectTtlSeconds?: number;
@@ -140,6 +147,14 @@ export interface PoppyConnectionsConfig {
   };
   /** `fetch` for every request to Companies (tests). */
   fetch?: typeof fetch;
+}
+
+/** Field names of a Company's two-step confirmation convention (see `tools.twoStep`). */
+export interface TwoStepConvention {
+  confirm: string;
+  token: string;
+  /** Preview fields read for the card, first found wins. Default `['summary', 'resumo', 'message']`. */
+  summary?: string[];
 }
 
 export function definePoppyConnectionsConfig(

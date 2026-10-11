@@ -86,6 +86,9 @@ export class FakeCompany {
   origin = '';
   readonly violations: string[] = [];
   readonly log: string[] = [];
+  /** Trips `book_trip` committed, and its outstanding preview tokens. */
+  readonly trips: string[] = [];
+  readonly tripTokens = new Map<string, string>();
   readonly sessions = new Map<string, Session>();
   readonly tokens = new Map<string, AccessToken>();
   readonly accountTokens = new Map<string, AccountToken>();
@@ -852,6 +855,43 @@ export class FakeCompany {
       async ({ sku }) => ({
         content: [{ type: 'text', text: `ordered ${sku}` }],
       }),
+    );
+    // Confirms in two steps (the `confirm` / `confirmToken` convention): without `confirm` it only
+    // previews; with it and the preview's token it books.
+    server.registerTool(
+      'book_trip',
+      {
+        description: 'Book a trip (two-step confirmation)',
+        inputSchema: {
+          city: z.string(),
+          confirm: z.boolean().optional(),
+          confirmToken: z.string().optional(),
+        },
+      },
+      async ({ city, confirm, confirmToken }) => {
+        if (!confirm) {
+          const token = id('ct_');
+          this.tripTokens.set(token, city);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  status: 'preview',
+                  summary: `Preview: book a trip to ${city}.`,
+                  confirmToken: token,
+                }),
+              },
+            ],
+          };
+        }
+        if (!confirmToken || this.tripTokens.get(confirmToken) !== city) {
+          return { isError: true, content: [{ type: 'text', text: 'invalid confirmToken' }] };
+        }
+        this.tripTokens.delete(confirmToken);
+        this.trips.push(city);
+        return { content: [{ type: 'text', text: JSON.stringify({ status: 'booked', city }) }] };
+      },
     );
     // Stateless (no session id); the SDK's option types disagree under exactOptionalPropertyTypes.
     const transport = new StreamableHTTPServerTransport({

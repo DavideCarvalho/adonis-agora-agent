@@ -108,6 +108,12 @@ const SECURITY_HEADERS = {
   'referrer-policy': 'no-referrer',
 };
 
+/** The default identity logo: the name's initial on a rounded square. */
+export function defaultLogoSvg(name: string): string {
+  const initial = escapeHtml(([...name.trim()][0] ?? 'A').toUpperCase());
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#334155"/><text x="32" y="42" font-family="sans-serif" font-size="30" text-anchor="middle" fill="#fff">${initial}</text></svg>`;
+}
+
 /**
  * The routes under `/{path}`: the agent identity (`agent.json`, `jwks.json`), the connect pages and
  * the Direct Sign-In callback. Returns `false` for anything else. Mounted ahead of the router: no
@@ -150,6 +156,16 @@ export function createPoppyConnectionsHandler(
           200,
           { 'content-type': 'application/json', 'cache-control': 'public, max-age=300' },
           JSON.stringify(identity.metadata()),
+        );
+        return true;
+      }
+      if (ex.method === 'GET' && rest === '/logo.svg') {
+        // The default `logo_uri` (when `identity.logoUri` is not set) — a Company's consent screen
+        // shows it, so it must not 404: a mark with the name's initial.
+        ex.send(
+          200,
+          { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400' },
+          defaultLogoSvg(connections.identityName),
         );
         return true;
       }
