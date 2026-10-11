@@ -222,6 +222,13 @@ export interface SandboxDocumentOptions {
   kit?: string;
   /** JSX to draw as soon as the document loads (a whole view: `final: true`). */
   initialJsx?: { code: string; final: boolean };
+  /**
+   * How the bridge reaches its host. `'parent'` (default): `parent.postMessage` to `hostOrigin`, an
+   * iframe in a page. `'react-native'`: `window.ReactNativeWebView.postMessage(JSON)`, the document
+   * as a `react-native-webview` source (`hostOrigin` unused), with a device-width viewport. The host
+   * talks back the same way either way — `message` events whose `source` is the frame's parent.
+   */
+  transport?: 'parent' | 'react-native';
 }
 
 /**
@@ -236,12 +243,20 @@ export interface SandboxDocumentOptions {
  * every DOM or style change (the Tailwind runtime injecting its CSS, the kit drawing JSX), once
  * fonts and images load, and twice more shortly after start; the first measure rides `ready`.
  */
-function bridgeScript(token: string, hostOrigin: string): string {
+function bridgeScript(
+  token: string,
+  hostOrigin: string,
+  transport: 'parent' | 'react-native' = 'parent',
+): string {
   const t = JSON.stringify(token);
   const o = JSON.stringify(hostOrigin);
   const m = JSON.stringify(SANDBOX_MESSAGE);
-  return `(function(){var T=${t},O=${o},M=${m},P=window.parent;
-function post(type,data){var msg={type:type,token:T};for(var k in data)msg[k]=data[k];try{P.postMessage(msg,O)}catch(e){}}
+  const native = transport === 'react-native';
+  const deliver = native
+    ? '(R||window.ReactNativeWebView).postMessage(JSON.stringify(msg))'
+    : 'P.postMessage(msg,O)';
+  return `(function(){var T=${t},O=${o},M=${m},P=window.parent${native ? ',R=window.ReactNativeWebView' : ''};
+function post(type,data){var msg={type:type,token:T};for(var k in data)msg[k]=data[k];try{${deliver}}catch(e){}}
 window.agent=Object.freeze({send:function(payload){var clean;try{clean=JSON.parse(JSON.stringify(payload===undefined?{}:payload))}catch(e){throw new TypeError('agent.send: the payload must be JSON')}post(M.send,{payload:clean});return true}});
 var last=-1,queued=false;
 function measure(){var b=document.body;if(!b)return 0;var bottom=0;try{var r=document.createRange();r.selectNodeContents(b);bottom=r.getBoundingClientRect().bottom}catch(e){}
@@ -304,7 +319,10 @@ export function buildSandboxDocument(props: SandboxProps, options: SandboxDocume
     `<!doctype html><html${rootAttributes(options.theme)}><head><meta charset="utf-8">`,
     `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(csp)}">`,
     '<meta name="referrer" content="no-referrer">',
-    `<script>${bridgeScript(options.token, options.hostOrigin)}</script>`,
+    ...(options.transport === 'react-native'
+      ? ['<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">']
+      : []),
+    `<script>${bridgeScript(options.token, options.hostOrigin, options.transport)}</script>`,
     `<style>${BASE_CSS}</style>`,
     ...(options.styles !== undefined && options.styles !== ''
       ? [`<style id="agora-sandbox-kit-css">${inlineStyle(options.styles)}</style>`]
