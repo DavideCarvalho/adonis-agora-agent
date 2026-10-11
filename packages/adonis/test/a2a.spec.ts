@@ -789,7 +789,11 @@ describe('bring your own runtime (A2aTurnService)', () => {
 });
 
 describe('independent proposals (actionApprovalMode: independent)', () => {
-  function proposalService(opts: { executes: boolean; outcomeText?: string }) {
+  function proposalService(opts: {
+    executes: boolean;
+    outcomeText?: string;
+    noConfirmation?: boolean;
+  }) {
     const decided: { id: string; decision: string; via: string }[] = [];
     let execution: { status: string; error?: string; result?: unknown } | null = null;
     const service = {
@@ -843,7 +847,11 @@ describe('independent proposals (actionApprovalMode: independent)', () => {
         {
           id: 'p1',
           input: { id: 'A-1' },
-          confirmation: { title: 'Cancel order A-1?', verb: 'Cancel', detail: 'Order: A-1' },
+          ...(opts.noConfirmation
+            ? {}
+            : {
+                confirmation: { title: 'Cancel order A-1?', verb: 'Cancel', detail: 'Order: A-1' },
+              }),
           decision: decided.length ? decided[0]!.decision : 'pending',
           execution,
           ...(execution?.status === 'succeeded' && opts.outcomeText
@@ -909,6 +917,18 @@ describe('independent proposals (actionApprovalMode: independent)', () => {
     const parts = res.json().message.parts;
     expect(parts).toHaveLength(1);
     expect(parts[0].data.action).toMatchObject({ tool: 'cancel_order', status: 'succeeded' });
+  });
+
+  it('summarizes a proposal that carries no confirmation in words, not by its identifier', async () => {
+    const { service } = proposalService({ executes: true, noConfirmation: true });
+    const res = await call(handlerWith(service), 'POST', '/a2a/support/message:send', {
+      headers: { authorization: 'Bearer deleg|u1|acct-1|orders:cancel' },
+      body: send('cancel A-1'),
+    });
+    const parts = res.json().message.parts as { data?: { action?: { summary?: unknown } } }[];
+    expect(parts.find((part) => part.data?.action)?.data?.action?.summary).toEqual({
+      title: 'Cancel order',
+    });
   });
 
   it('without the scope: rejects it, and nothing is reported as done', async () => {

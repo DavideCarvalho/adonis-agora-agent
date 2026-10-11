@@ -231,7 +231,9 @@ defineTool(
 )
 ```
 
-The `confirm` templates are filled on the server too (`fillToolConfirmation`, the same filler as the React layer's `fillTemplate`): every approval frame carries the resolved `confirmation` (`Purge sessions:42?`), so a transport whose client has no tool catalog — [AG-UI](/docs/agent/ag-ui#interrupts-and-resume), [A2UI](/docs/agent/a2ui), OpenUI over AG-UI, A2A — words the prompt as the native page does.
+The `confirm` templates are filled on the server too (`fillToolConfirmation`, the same filler as the React layer's `fillTemplate`): every approval frame carries the resolved `confirmation` (`Purge sessions:42?`), so a transport whose client has no tool catalog — [AG-UI](/docs/agent/ag-ui#interrupts-and-resume), [A2UI](/docs/agent/a2ui), OpenUI over AG-UI, A2A — words the prompt as the native page does, and the approve button reads as its `verb` wherever there is one (A2UI, channel cards).
+
+A tool that declares no `confirm` never shows its identifier to a person: every adapter words the prompt with `resolveToolConfirmation(toolName, input, presentation?)` — the filled `confirm` when declared, else `"<presentation.label>?"`, else the humanized name (`refund_order` → `Refund order?`), with the verb `Approve` (`DEFAULT_CONFIRM_VERB`; a text channel shows its own localized `texts.approve` instead). `humanizeToolName` is exported too.
 
 The same field works on `@AiTool({ … })` and `static tool = { … }`. `GET /agent/tools?agent=` serves `{ name, kind, presentation? }[]` for the tools the caller can reach — the exact list the model is offered for that actor and agent (an unknown `agent` is a `404`) — which `@adonis-agora/agent/react`'s `useToolCatalog` reads to narrate calls. A tool with no `presentation` is narrated generically. Agora exports the shape (`ToolPresentation`, `ToolResultView`, …) locally, retaining protocol compatibility.
 

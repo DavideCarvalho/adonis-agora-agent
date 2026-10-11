@@ -166,6 +166,81 @@ describe('openCode engine: the library seams', () => {
     expect(h.fake.callsOf('mcp.add')).toHaveLength(2); // a second thread → a second session
   });
 
+  it("words an app tool's approval with its own confirm template, a built-in from its name", async () => {
+    h = await bootEngine({
+      engine: (host) => openCode({ host, tools: { url: 'https://app.test/mcp' } }),
+      register: (registry) => {
+        registry.register(
+          {
+            name: 'refund_order',
+            kind: 'action',
+            description: 'refund an order',
+            inputSchema: z.object({ order: z.string() }),
+            presentation: {
+              label: 'Refund',
+              running: 'Refunding',
+              done: 'Refunded',
+              confirm: { title: 'Refund order {order}?', verb: 'Refund' },
+            },
+          },
+          { execute: async () => ({ refunded: true }) },
+        );
+        registry.register(
+          {
+            name: 'archive_note',
+            kind: 'action',
+            description: 'archive a note',
+            inputSchema: z.object({}),
+            presentation: { label: 'Note archive', running: 'Archiving', done: 'Archived' },
+          },
+          { execute: async () => ({ archived: true }) },
+        );
+      },
+      script: async (t) => {
+        t.emit('permission.asked', {
+          id: 'per_refund',
+          action: 'agora_refund_order',
+          metadata: { input: { order: 'A-1' } },
+        });
+        await t.next('permission.reply');
+        t.emit('permission.asked', { id: 'per_archive', action: 'agora.archive_note' });
+        await t.next('permission.reply');
+        t.emit('permission.asked', { id: 'per_bash', action: 'bash' });
+        await t.next('permission.reply');
+        t.succeed();
+      },
+    });
+    const { runId, threadId } = await h.service.chat({ actor, message: 'refund A-1' });
+    const requested = async (id: string) => {
+      const fs = await framesUntil(
+        h!.service,
+        runId,
+        (f) => f.kind === 'approval-requested' && f.id === id,
+      );
+      return fs.find((f) => f.kind === 'approval-requested' && f.id === id);
+    };
+    expect(await requested('per_refund')).toMatchObject({
+      confirmation: { title: 'Refund order A-1?', verb: 'Refund' },
+    });
+    // Persisted with the call, so a reloaded thread words it the same.
+    const stored = (await h.store.getThread(threadId))?.messages
+      .flatMap((m) => m.approvals ?? [])
+      .find((a) => a.toolCallId === 'per_refund');
+    expect(stored?.confirmation).toEqual({ title: 'Refund order A-1?', verb: 'Refund' });
+    await approve(h.service, 'per_refund');
+    // No `confirm`: its label, never the prefixed identifier.
+    expect(await requested('per_archive')).toMatchObject({
+      confirmation: { title: 'Note archive?', verb: 'Approve' },
+    });
+    await approve(h.service, 'per_archive');
+    // OpenCode's own tool: no confirmation; adapters word it from its name.
+    const bash = await requested('per_bash');
+    expect(bash).toBeDefined();
+    expect(bash && 'confirmation' in bash ? bash.confirmation : undefined).toBeUndefined();
+    await approve(h.service, 'per_bash');
+    await frames(h.service, runId);
+  });
+
   it("denies the tools outside the agent's allow-list", async () => {
     h = await bootEngine({
       engine: (host) => openCode({ host, tools: { url: 'https://app.test/mcp' } }),

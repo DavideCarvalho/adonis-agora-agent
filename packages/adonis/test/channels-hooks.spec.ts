@@ -560,7 +560,7 @@ describe('channel hooks', () => {
     expect(outbox[0]?.message).toEqual({
       text: '*Refund order A-1?*',
       buttons: [
-        { id: ids.approve, label: 'Confirm' },
+        { id: ids.approve, label: 'Refund' },
         { id: ids.reject, label: 'Cancel' },
       ],
       fallbackText:

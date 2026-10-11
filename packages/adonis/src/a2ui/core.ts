@@ -23,6 +23,7 @@ import type { Catalog } from '../genui/catalog.js';
 import { toJsonSchema } from '../genui/schema.js';
 import { componentToText } from '../genui/text.js';
 import { GENUI_TREE_COMPONENT } from '../genui/tree.js';
+import { resolveToolConfirmation } from '../tool-presentation.js';
 
 /** The A2UI protocol version every message is stamped with. */
 export const A2UI_VERSION = 'v0.9';
@@ -609,8 +610,24 @@ export function a2uiApprovalComponents(interrupt: AgUiInterrupt): A2uiComponent[
   ];
   // The tool's own prompt, filled on the server: its title is the message, its detail under it.
   const confirmation = interrupt.metadata?.['agora.confirmation'] as
-    | { title?: unknown; detail?: unknown }
+    | { title?: unknown; verb?: unknown; detail?: unknown }
     | undefined;
+  const toolName = interrupt.metadata?.['agora.toolName'];
+  const fallback = resolveToolConfirmation(
+    typeof toolName === 'string' ? toolName : '',
+    interrupt.metadata?.['agora.input'],
+  );
+  const message =
+    typeof confirmation?.title === 'string' && confirmation.title.length > 0
+      ? confirmation.title
+      : interrupt.message !== undefined && interrupt.message.length > 0
+        ? interrupt.message
+        : fallback.title;
+  // The tool's own verb on the button ("Refund"), else the generic one.
+  const verb =
+    typeof confirmation?.verb === 'string' && confirmation.verb.length > 0
+      ? confirmation.verb
+      : fallback.verb;
   const detail =
     typeof confirmation?.detail === 'string' && confirmation.detail.length > 0
       ? confirmation.detail
@@ -622,10 +639,10 @@ export function a2uiApprovalComponents(interrupt: AgUiInterrupt): A2uiComponent[
       component: 'Column',
       children: detail !== undefined ? ['message', 'detail', 'buttons'] : ['message', 'buttons'],
     },
-    text('message', interrupt.message ?? 'Approve?', 'body'),
+    text('message', message, 'body'),
     ...(detail !== undefined ? [text('detail', detail, 'caption')] : []),
     { id: 'buttons', component: 'Row', children: ['approve', 'reject'] },
-    ...button('approve', 'Approve', A2UI_APPROVE_ACTION, 'primary'),
+    ...button('approve', verb, A2UI_APPROVE_ACTION, 'primary'),
     ...button('reject', 'Reject', A2UI_REJECT_ACTION, 'default'),
   ];
 }

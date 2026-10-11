@@ -250,7 +250,7 @@ describe('channels.handle', () => {
       {
         text: '*Refund order A-1?*\nAmount: 10.00',
         buttons: [
-          { id: ids.approve, label: 'Confirm' },
+          { id: ids.approve, label: 'Refund' },
           { id: ids.reject, label: 'Cancel' },
         ],
         fallbackText:
@@ -340,6 +340,78 @@ describe('channels.handle', () => {
     expect(other.service.decided).toEqual([]);
     expect(other.service.sends.map((send) => send.message)).toEqual(['refund A-1', 'Maybe']);
     expect(texts(other.outbox)[0]).toBe('There is nothing waiting for your confirmation here.');
+  });
+
+  it("maps a label-only press of the tool's own verb to the one card that showed it", async () => {
+    const carded = `proposal-${'a'.repeat(64)}`;
+    const { adapter } = fakeAdapter({ buttons: 3 });
+    const service = fakeService(proposalFrames, {
+      listActionProposals: (async () => [
+        {
+          id: carded,
+          decision: 'pending',
+          confirmation: { title: 'Refund order A-1?', verb: 'Refund' },
+        },
+      ]) as never,
+      decideActionProposal: (async (...args: unknown[]) => {
+        service.decided.push(args);
+        return { status: 'applied' };
+      }) as never,
+    });
+    const handle = channels.handle(adapter, {
+      service,
+      actor: () => actor,
+      thread: () => 't',
+      outcomeTimeoutMs: 0,
+    });
+    await handle(makeCtx(inbound('refund A-1')).ctx);
+    await handle.drain();
+    await handle(makeCtx(inbound(' refund ', { buttonWithoutId: true })).ctx);
+    await handle.drain();
+    expect(service.decided).toEqual([[actor, 't', carded, 'approved', {}, 'test']]);
+  });
+
+  it('keeps the localized approve label when the tool declared no verb, and never names the identifier', async () => {
+    const { adapter, outbox } = fakeAdapter({ buttons: 3 });
+    const generic: StreamFrame[] = [
+      {
+        t: 'approval',
+        runId: 'run-1',
+        id: 'call-1',
+        toolName: 'refund_order',
+        input: {},
+        target: { kind: 'proposal', proposalId: 'proposal-generic' },
+        confirmation: { title: 'Refund order?', verb: 'Approve' },
+      },
+      {
+        t: 'approval',
+        runId: 'run-1',
+        id: 'call-2',
+        toolName: 'refund_order',
+        input: {},
+        target: { kind: 'proposal', proposalId: 'proposal-bare' },
+      },
+    ];
+    const handle = channels.handle(adapter, {
+      service: fakeService(generic),
+      actor: () => actor,
+      thread: () => 't',
+    });
+    await handle(makeCtx(inbound('refund')).ctx);
+    await handle.drain();
+    const cards = outbox.map((item) => item.message as { text: string; buttons?: unknown[] });
+    expect(cards[0]).toMatchObject({
+      text: '*Refund order?*',
+      buttons: [{ label: 'Confirm' }, { label: 'Cancel' }],
+    });
+    expect(cards[1]).toMatchObject({
+      text: '*Refund order?*',
+      buttons: [{ label: 'Confirm' }, { label: 'Cancel' }],
+    });
+    expect(JSON.stringify(cards)).not.toContain('refund_order');
+    expect(ptBrChannelTexts.proposal({ id: 'p', toolName: 'refund_order' })).toBe(
+      '*Executar: Refund order?*',
+    );
   });
 
   it('reads its own button labels as decisions in the matching vocabulary', () => {
@@ -437,7 +509,7 @@ describe('channels.handle', () => {
     expect(outbox[1]!.message).toEqual({
       text: '*Refund order A-1?*\nAmount: 10.00',
       buttons: [
-        { id: ids.approve, label: 'Confirmar' },
+        { id: ids.approve, label: 'Refund' },
         { id: ids.reject, label: 'Cancelar' },
       ],
       fallbackText:
@@ -695,7 +767,8 @@ describe('channels.handle over a booted app (independent approvals, Telegram)', 
     expect(refunds).toBe(0);
     expect(outbox.map((item) => item.body.text)).toEqual([
       'I prepared the *refund*\\.',
-      expect.stringContaining('refund'),
+      // No `confirm` declared: the tool's name in words, never the identifier.
+      expect.stringContaining('Refund?'),
     ]);
     const keyboard = outbox[1]!.body.reply_markup.inline_keyboard[0];
     expect(keyboard.map((button: { text: string }) => button.text)).toEqual(['Confirm', 'Cancel']);

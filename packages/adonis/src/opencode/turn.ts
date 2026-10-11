@@ -10,6 +10,7 @@ import type { AgentStore, CostSource } from '../spi/agent-store.js';
 import type { ApprovalRequirement } from '../spi/approval-policy.js';
 import type { SinkWriter, StreamFrame } from '../spi/token-stream-sink.js';
 import type { AgentStreamEvent, AgentUiComponent } from '../stream-events.js';
+import { resolveToolConfirmation, type ToolPresentation } from '../tool-presentation.js';
 import type {
   AgentRunInput,
   Decision,
@@ -144,6 +145,14 @@ export interface OpenCodeTurnArgs {
   store: AgentStore;
   /** What an action needs before it runs (the agent's `ApprovalPolicy`). */
   approvalFor: (action: string) => Promise<ApprovalRequirement>;
+  /**
+   * The app tool a permission `action` names, with its presentation: its `confirm` templates (filled
+   * from the call's arguments) word the approval card. `undefined` (or omitted) → an OpenCode
+   * built-in, worded from its name.
+   */
+  approvalPresentation?: (
+    action: string,
+  ) => { name: string; presentation?: ToolPresentation } | undefined;
   /** The model label usage is recorded under until OpenCode names the step's model. */
   modelLabel: string;
   /**
@@ -841,6 +850,12 @@ export class OpenCodeTurn {
         ? Math.floor(requirement.ttlMs)
         : undefined;
     const expiresAt = ttlMs !== undefined ? new Date(Date.now() + ttlMs).toISOString() : undefined;
+    // An app tool's own prompt, as the loop would carry it ("Refund order #7?") — else its label or
+    // name in words: the call reaches clients under OpenCode's prefixed name (`agora_refund_order`),
+    // which no tool catalog knows. A built-in (`bash`) carries none; adapters word it from its name.
+    const tool = this.a.approvalPresentation?.(action);
+    const confirmation =
+      tool !== undefined ? resolveToolConfirmation(tool.name, args, tool.presentation) : undefined;
     this.segment.calls.push({ id: request.id, name: action, input: args, kind: 'action' });
     const messageId = (await this.flush(false)) as string;
     await store.recordToolCall({
@@ -850,6 +865,7 @@ export class OpenCodeTurn {
       toolType: 'action',
       input: args,
       status: 'pending_approval',
+      ...(confirmation !== undefined ? { confirmation } : {}),
       runId: this.a.runId,
       approver: requirement.approver,
       ...(expiresAt !== undefined ? { expiresAt } : {}),
@@ -868,6 +884,7 @@ export class OpenCodeTurn {
       toolName: action,
       input: args,
       approver: requirement.approver,
+      ...(confirmation !== undefined ? { confirmation } : {}),
       ...(expiresAt !== undefined ? { expiresAt } : {}),
     });
     this.reach({

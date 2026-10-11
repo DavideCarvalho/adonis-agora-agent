@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { AgentService } from '../agent-service.js';
 import type { StreamFrame } from '../spi/token-stream-sink.js';
+import { humanizeToolName } from '../tool-presentation.js';
 import type { Actor, PageContext } from '../types.js';
 import { SCOPE_ROLE_PREFIX, scopeRole } from './gate.js';
 import { PERMISSION_COMPONENT } from './permission-tool.js';
@@ -75,7 +76,8 @@ function summaryOf(
   toolName: string,
 ): A2aTurnOutcome['summary'] {
   const confirmation = proposal?.confirmation;
-  if (!confirmation) return { title: toolName };
+  // Words, not the identifier: "Refund order", never `refund_order`.
+  if (!confirmation) return { title: humanizeToolName(toolName) || toolName };
   return {
     title: confirmation.title,
     ...(confirmation.detail ? { detail: confirmation.detail } : {}),

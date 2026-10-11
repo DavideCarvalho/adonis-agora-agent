@@ -415,6 +415,36 @@ describe('the A2UI stream projection', () => {
     render(<A2uiSurface surface={approval as never} />);
     expect(await screen.findByText('Refund order #1002?')).toBeTruthy();
     expect(screen.getByText('$129.99 goes back to the card.')).toBeTruthy();
+    // The tool's own verb on the approve button.
+    expect(screen.getByRole('button', { name: 'Refund' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeTruthy();
+  });
+
+  it('words an approval without a confirmation from the tool name, with a generic Approve', async () => {
+    const projector = new A2uiProjector();
+    const messages = projector.project({
+      type: 'RUN_FINISHED',
+      threadId: 't',
+      runId: 'r',
+      outcome: {
+        type: 'interrupt',
+        interrupts: [
+          {
+            id: 'agora_z',
+            reason: 'tool_approval',
+            metadata: { 'agora.toolName': 'refund_order', 'agora.input': { id: 7 } },
+          },
+        ],
+      },
+    } as never);
+    assertValid(messages);
+    const processor = new MessageProcessor([basicCatalog], () => undefined);
+    processor.processMessages(messages as never);
+    const approval = processor.model.surfacesMap.get('interrupt-agora_z');
+    if (approval === undefined) throw new Error('missing surface');
+    render(<A2uiSurface surface={approval as never} />);
+    expect(await screen.findByText('Refund order?')).toBeTruthy();
+    expect(screen.queryByText(/refund_order/)).toBeNull();
     expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy();
   });
 

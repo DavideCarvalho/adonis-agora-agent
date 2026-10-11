@@ -103,12 +103,12 @@ AG-UI has no channel into a running run. A run that needs an approval or an answ
 { "type": "RUN_FINISHED", "threadId": "t1", "runId": "r1",
   "outcome": { "type": "interrupt", "interrupts": [{
     "id": "agora_…", "reason": "tool_approval", "toolCallId": "call_1",
-    "message": "Approve refund?",
+    "message": "Refund order #7?",
     "responseSchema": { "type": "object", "properties": { "approved": { "type": "boolean" } }, "required": ["approved"] },
     "metadata": { "agora.toolName": "refund", "agora.input": { "id": 7 } } }] } }
 ```
 
-An approval's `message` is the tool's confirmation title — its `presentation.confirm.title` template filled from the call's input on the server (`'Refund order #{orderId}?'` → `Refund order #1002?`, the same words the native page shows), or what a `preflight` resolved — else `Approve <tool>?`. The whole confirmation (`title`, `verb`, `detail`) rides as `metadata['agora.confirmation']` and on `agora.approval-requested`.
+An approval's `message` is the tool's confirmation title — its `presentation.confirm.title` template filled from the call's input on the server (`'Refund order #{orderId}?'` → `Refund order #1002?`, the same words the native page shows), or what a `preflight` resolved. It outranks a free-form `reason`. A tool that declares no `confirm` reads as its name in words (`refund_order` → `Refund order?`, via `resolveToolConfirmation`), never as the raw identifier. The whole confirmation (`title`, `verb`, `detail`) rides as `metadata['agora.confirmation']` and on `agora.approval-requested`.
 
 The next `RunAgentInput` answers each interrupt in `resume`:
 
