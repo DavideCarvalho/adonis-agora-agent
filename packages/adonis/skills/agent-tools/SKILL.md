@@ -317,6 +317,11 @@ a custom Poppy scope).
 > `@adonis-agora/agent/poppy-client` (framework-agnostic library, no AdonisJS imports) and the
 > `poppy-agent` CLI (`npx poppy-agent --help`; `--insecure-dev` for a local http app). Source:
 > `packages/adonis/docs/poppy-client.mdx`.
+> The other direction — the app's own agent acting at OTHER Poppy companies for its users — is
+> `@adonis-agora/agent/poppy_connections_provider` + `config/poppy_connections.ts`: allow-listed
+> companies (default none), connections sealed with the app key, `poppy_*` tools where every company
+> write (`poppy_write`, `poppy_request`) is an `action` behind the normal confirmation. Source:
+> `packages/adonis/docs/poppy-connections.mdx`.
  An `action` still parks on approval — but by default the
 requester approves, so for a public chat that is only a confirmation.
 Source: `packages/adonis/docs/governance/authorization.mdx`,

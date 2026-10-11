@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { DefaultRolesPolicy, runAgentLoop, ToolRegistry } from '../src/index.js';
+import {
+  DefaultRolesPolicy,
+  PENDING_ACTION_PROPOSAL_NOTE,
+  runAgentLoop,
+  ToolRegistry,
+} from '../src/index.js';
 import {
   FakeModelProvider,
   InMemoryAgentStore,
@@ -121,11 +126,14 @@ describe('independent action turns', () => {
       status: 'pending',
       target: { kind: 'proposal', proposalId: proposal?.id },
     });
+    // The model is told plainly that nothing happened yet (it must not say "done" before the tap).
     expect(message?.toolResults?.find((r) => r.id === 'call-0-action')?.output).toEqual({
       proposalId: proposal?.id,
       status: 'pending',
       executed: false,
+      note: PENDING_ACTION_PROPOSAL_NOTE,
     });
+    expect(PENDING_ACTION_PROPOSAL_NOTE).toMatch(/NOT done yet.*awaiting their confirmation/);
   });
 });
 

@@ -33,6 +33,7 @@
     "a2a",
     "poppy",
     "poppy-client",
+    "poppy-connections",
     "redis-streaming",
     "sql-streaming",
     "diagnostics",

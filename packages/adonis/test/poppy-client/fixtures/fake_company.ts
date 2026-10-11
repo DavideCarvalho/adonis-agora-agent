@@ -86,6 +86,17 @@ export class FakeCompany {
   origin = '';
   readonly violations: string[] = [];
   readonly log: string[] = [];
+  /** The user revokes the agent at this Company: Account Tokens die, Sessions are signed out. */
+  revokeAtCompany(): void {
+    for (const at of this.accountTokens.values()) at.revoked = true;
+    for (const session of this.sessions.values()) session.account = undefined;
+  }
+
+  /** Answer every MCP request 401 with a bare JSON body, no WWW-Authenticate (as some servers do). */
+  bareMcpErrors = false;
+  /** Trips `book_trip` committed, and its outstanding preview tokens. */
+  readonly trips: string[] = [];
+  readonly tripTokens = new Map<string, string>();
   readonly sessions = new Map<string, Session>();
   readonly tokens = new Map<string, AccessToken>();
   readonly accountTokens = new Map<string, AccountToken>();
@@ -802,6 +813,10 @@ export class FakeCompany {
   private async mcp(req: IncomingMessage, res: ServerResponse, url: URL) {
     const [scheme, token] = (req.headers.authorization ?? '').split(' ');
     const t = this.tokens.get(token ?? '');
+    if (this.bareMcpErrors) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'token invalid, expired or revoked' }));
+    }
     if (scheme !== 'Bearer' || !t || !t.bearer || t.resource !== this.mcpUrl || t.exp < now()) {
       if (scheme === 'DPoP') this.violation('DPoP token sent to MCP');
       res.writeHead(401, {
@@ -813,6 +828,15 @@ export class FakeCompany {
     this.mcpCalls++;
     const raw = req.method === 'POST' ? await this.body(req) : undefined;
     const rpc = raw ? JSON.parse(raw) : undefined;
+    // A signed-in Bearer whose Session was signed out meanwhile (the user revoked the agent here):
+    // its tools need a signed-in Session (4.4) — the agent's Account Token has to sign it back in.
+    if (rpc?.method === 'tools/call' && t.signedIn && !this.sessions.get(t.sessionId)?.account) {
+      res.writeHead(403, {
+        'content-type': 'application/json',
+        'www-authenticate': 'Bearer error="sign_in_required"',
+      });
+      return res.end(JSON.stringify({ error: 'sign_in_required' }));
+    }
     // `place_order` needs poppy:write: a Company refuses it before running (RFC 6750 §3.1 step-up).
     if (
       rpc?.method === 'tools/call' &&
@@ -852,6 +876,43 @@ export class FakeCompany {
       async ({ sku }) => ({
         content: [{ type: 'text', text: `ordered ${sku}` }],
       }),
+    );
+    // Confirms in two steps (the `confirm` / `confirmToken` convention): without `confirm` it only
+    // previews; with it and the preview's token it books.
+    server.registerTool(
+      'book_trip',
+      {
+        description: 'Book a trip (two-step confirmation)',
+        inputSchema: {
+          city: z.string(),
+          confirm: z.boolean().optional(),
+          confirmToken: z.string().optional(),
+        },
+      },
+      async ({ city, confirm, confirmToken }) => {
+        if (!confirm) {
+          const token = id('ct_');
+          this.tripTokens.set(token, city);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  status: 'preview',
+                  summary: `Preview: book a trip to ${city}.`,
+                  confirmToken: token,
+                }),
+              },
+            ],
+          };
+        }
+        if (!confirmToken || this.tripTokens.get(confirmToken) !== city) {
+          return { isError: true, content: [{ type: 'text', text: 'invalid confirmToken' }] };
+        }
+        this.tripTokens.delete(confirmToken);
+        this.trips.push(city);
+        return { content: [{ type: 'text', text: JSON.stringify({ status: 'booked', city }) }] };
+      },
     );
     // Stateless (no session id); the SDK's option types disagree under exactOptionalPropertyTypes.
     const transport = new StreamableHTTPServerTransport({

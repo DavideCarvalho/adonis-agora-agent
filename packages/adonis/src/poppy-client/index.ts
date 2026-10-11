@@ -45,6 +45,7 @@ export {
   type MediatedOutcome,
   mediatedSignIn,
   type PendingDirectSignIn,
+  pollDeviceSignInOnce,
   type SignInType,
   startDirectSignIn,
   submitMediatedCode,
