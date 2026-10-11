@@ -216,11 +216,14 @@ describe('poppy-connections: allow-list', () => {
     app = await setup({ companies: [] });
     expect(app.connections.policy(app.fake.domain)).toBeNull();
     expect(await tool(app, 'companies', {})).toEqual({ companies: [] });
+    // Each refusal points the model back to the list (a guessed domain is a common slip).
     expect(await preflight(app, 'connect', { company: app.fake.domain })).toMatchObject({
       status: 'denied',
+      reason: expect.stringContaining('Call poppy_companies'),
     });
     expect(await tool(app, 'read', { company: app.fake.domain, tool: 'whoami' })).toMatchObject({
       error: 'not_allowed',
+      next: expect.stringContaining('poppy_companies'),
     });
     expect(app.fake.log.length + app.fake.sessions.size).toBe(0); // nothing was fetched
   });

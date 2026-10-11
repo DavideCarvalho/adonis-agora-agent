@@ -68,6 +68,7 @@ function explain(prefix: string, error: unknown): Record<string, unknown> {
     return {
       error: 'not_allowed',
       message: `${error.domain} is not a company this assistant may use.`,
+      next: `Call ${prefix}companies: it lists the companies you can use, by domain — use that domain exactly.`,
     };
   }
   if (error instanceof ResourceAuthError) {
@@ -317,6 +318,8 @@ export function registerPoppyConnectionTools(
   const texts = connections.texts;
   const owner = (ctx: AiToolCtx) => connections.ownerOf(ctx.actor);
   const names: string[] = [];
+  const notAllowed = (domain: string) =>
+    `${domain} is not a company this assistant may use. Call ${p}companies for the domains you can use.`;
   const writeTools = new Set([`${p}write`, `${p}request`, `${p}disconnect`]);
   const register = <I>(
     spec: Omit<ToolSpec, 'inputSchema'> & { inputSchema: StandardSchemaV1<unknown, I> },
@@ -406,7 +409,7 @@ export function registerPoppyConnectionTools(
       async preflight(input, ctx): Promise<ToolPreflightResult> {
         const domain = normalizeDomain(input.company);
         if (connections.policy(domain) === null) {
-          return { status: 'denied', reason: `${domain} is not a company this assistant may use.` };
+          return { status: 'denied', reason: notAllowed(domain) };
         }
         const current = await connections.connection(owner(ctx), domain);
         const granted = new Set((current?.scope ?? '').split(' '));
@@ -538,7 +541,7 @@ export function registerPoppyConnectionTools(
       async preflight(input, ctx): Promise<ToolPreflightResult> {
         const domain = normalizeDomain(input.company);
         if (connections.policy(domain) === null) {
-          return { status: 'denied', reason: `${domain} is not a company this assistant may use.` };
+          return { status: 'denied', reason: notAllowed(domain) };
         }
         const current = await connections.connection(owner(ctx), domain);
         if (current?.status !== 'active') {
@@ -607,7 +610,7 @@ export function registerPoppyConnectionTools(
       async preflight(input, ctx): Promise<ToolPreflightResult> {
         const domain = normalizeDomain(input.company);
         if (connections.policy(domain) === null) {
-          return { status: 'denied', reason: `${domain} is not a company this assistant may use.` };
+          return { status: 'denied', reason: notAllowed(domain) };
         }
         const current = await connections.connection(owner(ctx), domain);
         return {
