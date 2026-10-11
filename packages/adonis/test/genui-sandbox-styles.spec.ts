@@ -23,7 +23,7 @@ import {
   tailwindVersionOf,
   vocabularyToModelText,
 } from '../src/genui/sandbox-styles.js';
-import { themeVarsFromCss } from '../src/genui/sandbox-theme.js';
+import { themeToModelText, themeVarsFromCss } from '../src/genui/sandbox-theme.js';
 import { genuiKitHook } from '../src/hooks/genui_kit.js';
 import { genuiSandboxKit } from '../src/vite/index.js';
 
@@ -641,5 +641,65 @@ describe('jsx or html', () => {
     expect(defineSandbox({ kit: { version: 2, components: [], jsx: true } }).description).toContain(
       'never both',
     );
+  });
+});
+
+describe('the names the model is given are the ones in the frame', () => {
+  it('lists `var(--color-…)` as it is, and the Tailwind utility separately', () => {
+    const vars = {
+      '--color-surface-secondary': '#f4f4f5',
+      '--color-primary': '#7c3aed',
+      '--primary': '#111',
+    };
+    const text = themeToModelText(vars);
+    expect(text).toContain('var(--color-surface-secondary)');
+    expect(text).toContain('var(--color-primary)');
+    expect(text).toContain('var(--primary)');
+    expect(text).not.toContain('var(--surface-secondary)');
+    const tokens = {
+      colors: [],
+      radius: [],
+      fonts: [],
+      shadows: [],
+      text: [],
+      animations: [],
+      utilities: [],
+      variants: [],
+    };
+    const sandbox = defineSandbox({
+      kit: { version: 2, components: [], tailwind: { version: 4, tokens }, theme: { vars } },
+    });
+    expect(sandbox.description).toContain('var(--color-surface-secondary)');
+    expect(sandbox.description).toContain('surface-secondary');
+    expect(sandbox.description).toMatch(/colors [^.]*surface-secondary[^.]*\(bg-\*/);
+    expect(sandbox.description).not.toContain('var(--surface-secondary)');
+    // And the view uses the frame's width.
+    expect(sandbox.description).toContain('full width');
+  });
+
+  it('follows the imports of a pnpm-injected workspace package from where it really is', async () => {
+    const { symlinkSync } = await import('node:fs');
+    const store = 'node_modules/.pnpm/@workspace+ui@file+packages+ui/node_modules';
+    const root = project('injected', {
+      'package.json': '{}',
+      [`${store}/@workspace/ui/package.json`]:
+        '{"name":"@workspace/ui","exports":{"./globals.css":"./src/globals.css"}}',
+      [`${store}/@workspace/ui/src/globals.css`]:
+        '@import "tailwindcss";\n@import "shadcn/tailwind.css";\n:root { --gold: #d6b46c; }\n',
+      [`${store}/shadcn/package.json`]:
+        '{"name":"shadcn","exports":{"./tailwind.css":{"style":"./dist/tailwind.css"}}}',
+      [`${store}/shadcn/dist/tailwind.css`]:
+        '@custom-variant data-open (&:where([data-state="open"]));\n@custom-variant data-horizontal (&:where([data-orientation="horizontal"]));\n',
+      'apps/web/app.css': '@import "@workspace/ui/globals.css";\n',
+    });
+    mkdirSync(join(root, 'node_modules/@workspace'), { recursive: true });
+    symlinkSync(join(root, store, '@workspace/ui'), join(root, 'node_modules/@workspace/ui'));
+    const styles = await buildSandboxKitStyles({
+      root,
+      entries: [join(root, 'apps/web/app.css')],
+      compile: false,
+    });
+    expect(styles?.tailwind?.tokens.variants).toEqual(['data-open', 'data-horizontal']);
+    expect(styles?.files.some((file) => file.endsWith('shadcn/dist/tailwind.css'))).toBe(true);
   });
 });

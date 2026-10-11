@@ -535,6 +535,7 @@ function describe(policy: SandboxPolicy, options: DefineSandboxOptions): string 
     opened.length > 0
       ? `Network: only ${opened.join('; ')}. Everything else (fetch, CDNs, remote fonts) is blocked.`
       : 'No network at all: no fetch, no external scripts, fonts or images — inline SVG and data: URLs only.',
+    'The frame is as wide as the chat column: lay the view out at full width (width: 100%) unless the user asks for something narrower.',
     'No <form> submission (use buttons with click handlers). jsFunctions and each jsExpressions entry run as classic scripts after the HTML, so no top-level await. Validate numeric input (no NaN/Infinity on screen), label units, keep it keyboard-accessible.',
     'To hand values back to the assistant, call agent.send({ text: "<one short sentence the user is saying>", ...values }) from an explicit button click only — never on load, on a timer or on input. It starts a new turn with those values.',
     ...(themeOn ? [themeToModelText(themeVars)] : []),

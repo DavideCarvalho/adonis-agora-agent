@@ -3,7 +3,7 @@
  * app's Vite entrypoints), what they are (Tailwind v3/v4 or plain CSS), and what they compile to
  * with the app's own Vite CSS pipeline (Sass, Less, PostCSS, CSS modules, Tailwind's plugin…).
  */
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -153,7 +153,15 @@ export function collectStyleSources(
 ): StyleSource[] {
   const seen = new Set<string>();
   const out: StyleSource[] = [];
-  const visit = (file: string, depth: number) => {
+  const visit = (given: string, depth: number) => {
+    // Its real path: a workspace package linked (or injected) into node_modules resolves its own
+    // imports (`shadcn/tailwind.css`) from where it really is, beside its own dependencies.
+    let file = given;
+    try {
+      file = realpathSync(given);
+    } catch {
+      /* not there: read below fails */
+    }
     if (seen.has(file) || depth > 16) return;
     seen.add(file);
     let text: string;
