@@ -730,7 +730,7 @@ describe('poppy-connections: independent approvals continue the turn (durable, s
         seen.push(last);
         if (last.includes('I connected my account at Fake Co'))
           return { text: 'Connected — ordering the boots now.' };
-        if (args.messages.some((m) => m.role === 'tool'))
+        if (args.messages.some((m) => (m.toolResults?.length ?? 0) > 0))
           return { text: 'Waiting for the sign-in.' };
         return {
           text: '',
