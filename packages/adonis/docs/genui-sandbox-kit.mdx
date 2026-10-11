@@ -71,6 +71,383 @@ genuiSandboxKit({
 })
 ```
 
+## Recipes by stack
+
+Complete setups for common stacks. Each one is the plugin's options, the files it points at, and the server line. The server line is the same everywhere:
+
+```ts title="config/agent.ts"
+import { genui } from '@adonis-agora/agent/genui'
+import { catalog } from '#genui/catalog'
+
+export default defineConfig({
+  // …
+  genui: genui({ catalog, sandbox: { kit: true } }),
+})
+```
+
+The sizes below are what each frame inlines (see [Sizes](#sizes)). The theme's variables are always passed in, whatever the stack.
+
+### shadcn/ui + Tailwind v4
+
+The common case, and **zero config** when your components live in `components/ui` and your stylesheet is a Vite entrypoint.
+
+```ts title="vite.config.ts"
+import { fileURLToPath } from 'node:url'
+import adonisjs from '@adonisjs/vite/client'
+import tailwindcss from '@tailwindcss/vite'
+import react from '@vitejs/plugin-react'
+import { defineConfig } from 'vite'
+import { genuiSandboxKit } from '@adonis-agora/agent/vite'
+
+export default defineConfig({
+  plugins: [
+    react(),
+    tailwindcss(),
+    adonisjs({ entrypoints: ['inertia/css/app.css', 'inertia/app/app.tsx'] }),
+    // styles: inertia/css/app.css (an entrypoint); components: inertia/components/ui.
+    genuiSandboxKit(),
+  ],
+  // The alias your shadcn components import with (`@/lib/utils`): the kit's build uses it too.
+  resolve: { alias: { '@': fileURLToPath(new URL('./inertia', import.meta.url)) } },
+})
+```
+
+```css title="inertia/css/app.css"
+@import "tailwindcss";
+@import "tw-animate-css";
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --radius-lg: var(--radius);
+  /* …the rest of shadcn's tokens */
+}
+:root { --background: oklch(1 0 0); --primary: oklch(0.52 0.2 268); --radius: 0.625rem; }
+.dark { --background: oklch(0.17 0.015 265); --primary: oklch(0.7 0.15 268); }
+```
+
+No components entry and no wrapper: every component exported by a file in `inertia/components/ui` is in the kit, documented from its props. If the defaults don't match your layout, name them: `genuiSandboxKit({ styles: 'inertia/css/app.css', components: 'inertia/components/ui' })`. Your `@tailwindcss/vite` is reused for the kit's build.
+
+**The model writes** JSX with your components (`<Card>`, `<Button variant="outline">`) and Tailwind classes from your theme (`bg-primary`, `rounded-lg`, `text-muted-foreground`). **Size:** React (≈230 KB) plus your components, Tailwind's runtime (≈280 KB), and your compiled CSS.
+
+### Tailwind v3 with `tailwind.config`
+
+Tailwind v3 through PostCSS. The kit maps your config to the v4 runtime (see [Tailwind](#tailwind)).
+
+```ts title="vite.config.ts"
+genuiSandboxKit({
+  styles: 'inertia/css/app.css',
+  components: 'inertia/components/ui',
+})
+```
+
+```css title="inertia/css/app.css"
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+```
+
+```js title="tailwind.config.js"
+export default {
+  darkMode: 'class',
+  content: ['./inertia/**/*.{ts,tsx}'],
+  theme: {
+    extend: {
+      colors: { brand: { DEFAULT: '#7c3aed', 50: '#f5f3ff', 900: '#4c1d95' } },
+      borderRadius: { lg: '0.75rem' },
+      fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+    },
+  },
+}
+```
+
+```js title="postcss.config.js"
+export default { plugins: { tailwindcss: {}, autoprefixer: {} } }
+```
+
+The CSS is compiled with your `postcss.config.*`, as in your build. `colors`, `borderRadius`, `fontFamily`, `fontSize`, `boxShadow`, `screens`, `spacing`, `keyframes` and `animation` (from `theme` and `theme.extend`) and `darkMode` reach the frame's runtime. Function values, `plugins` and `prefix` don't. Leave out `components` for a CSS-only kit.
+
+**The model writes** JSX with your components, or HTML without them, using your theme's classes (`bg-brand`, `bg-brand-50`) and v4 names where v3's differ (`shadow-xs`, `outline-hidden`). **Size:** as v4: Tailwind's runtime (≈280 KB) and your compiled CSS, plus React (≈230 KB) and your components with a kit.
+
+### Plain CSS / CSS modules
+
+A global stylesheet becomes a class vocabulary in the prompt:
+
+```ts title="vite.config.ts"
+genuiSandboxKit({
+  styles: 'inertia/css/app.css',
+  // Optional: when to use what.
+  stylesDocs: 'A view is a .panel; .button for actions, .button.is-primary for the main one; .stack for vertical layout.',
+})
+```
+
+```css title="inertia/css/app.css"
+:root { --accent: #2563eb; --radius: 10px; }
+.panel { padding: 16px; border-radius: var(--radius); background: var(--surface, #fff); }
+.button { padding: 6px 14px; border-radius: var(--radius); }
+.button.is-primary { background: var(--accent); color: #fff; }
+.stack { display: flex; flex-direction: column; gap: 12px; }
+```
+
+**CSS modules** hash their class names, so they are no vocabulary for the model. Put them behind components instead: the CSS the components import is bundled with the kit.
+
+```ts title="vite.config.ts"
+genuiSandboxKit({
+  styles: 'inertia/css/app.css',       // global styles, if any
+  components: 'inertia/components/kit', // Button.tsx imports './button.module.css', …
+})
+```
+
+**The model writes** HTML with your classes (`<div class="panel stack">`) when there are only styles, JSX with your components when there is a kit. **Size:** your compiled CSS (usually small) and inlined fonts. A kit adds React (≈230 KB) and your components.
+
+### Sass + Bootstrap 5
+
+CSS only: Bootstrap compiled from Sass with your overrides, and no components.
+
+```scss title="inertia/css/sandbox.scss"
+$primary: #6d28d9;
+$border-radius: 0.65rem;
+$font-family-sans-serif: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+@import 'bootstrap/scss/bootstrap';
+
+// If your page switches dark mode with `data-theme`, give it Bootstrap's dark rules too
+// (the frame mirrors the page's `data-theme` and `data-bs-theme`).
+[data-theme='dark'] {
+  @extend [data-bs-theme='dark'];
+}
+```
+
+```ts title="vite.config.ts"
+genuiSandboxKit({
+  styles: 'inertia/css/sandbox.scss',
+  stylesDocs:
+    'Wrap the view in a .card with a .card-body; .btn-primary for the main action, .btn-outline-primary for choices; Bootstrap spacing utilities (mb-3, gap-2) for layout.',
+})
+```
+
+Install `sass` (`npm i -D sass`). Your Vite config's `css.preprocessorOptions` apply. Bootstrap's class list is long: the prompt lists a capped selection, most used first, so `stylesDocs` is where you say which of them your app actually uses. It takes the text itself, or a markdown file (`stylesDocs: 'inertia/css/SANDBOX.md'`).
+
+**The model writes** HTML with Bootstrap's classes (`<div class="card"><div class="card-body">`, `<button class="btn btn-primary">`). **Size:** the compiled CSS, ≈230 KB for all of Bootstrap. Import only the partials you use (`bootstrap/scss/functions`, `variables`, `mixins`, `root`, `reboot`, `buttons`, `card`, `forms`…) to cut it.
+
+### react-bootstrap components + Bootstrap CSS
+
+The same CSS, plus react-bootstrap's components as the kit:
+
+```ts title="inertia/sandbox/components.ts"
+export { Alert, Badge, Button, ButtonGroup, Card, Col, Form, InputGroup, ListGroup, Row, Stack, Table } from 'react-bootstrap'
+```
+
+```ts title="vite.config.ts"
+genuiSandboxKit({
+  styles: 'inertia/css/sandbox.scss', // or the stock CSS: 'bootstrap/dist/css/bootstrap.min.css'
+  components: 'inertia/sandbox/components.ts',
+})
+```
+
+A re-export module keeps the kit to what a view needs. `components: 'react-bootstrap'` works too, but bundles and documents the whole library.
+
+**The model writes** JSX with react-bootstrap's components (`<Card><Card.Body>`, `<Button variant="primary">`, `<Form.Range>`) and Bootstrap's utility classes. **Size:** the Bootstrap CSS (≈230 KB in full), React (≈230 KB) and the react-bootstrap components you export.
+
+### MUI with a custom theme
+
+A theme and a provider, no stylesheet. The `wrapper` gives the model's App your `ThemeProvider` and `CssBaseline`:
+
+```ts title="inertia/sandbox/theme.ts"
+import { createTheme } from '@mui/material/styles'
+
+export function appTheme(mode: 'light' | 'dark') {
+  return createTheme({
+    palette: { mode, primary: { main: mode === 'dark' ? '#4db6ac' : '#00796b' } },
+    shape: { borderRadius: 14 },
+    typography: { button: { textTransform: 'none', fontWeight: 700 } },
+  })
+}
+```
+
+```tsx title="inertia/sandbox/wrapper.tsx"
+import CssBaseline from '@mui/material/CssBaseline'
+import { ThemeProvider } from '@mui/material/styles'
+import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { appTheme } from './theme'
+
+/** Light or dark, as the frame's root says (it mirrors the page's `data-theme`). */
+function useMode(): 'light' | 'dark' {
+  const read = () => (document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light')
+  const [mode, setMode] = useState<'light' | 'dark'>(read)
+  useEffect(() => {
+    const observer = new MutationObserver(() => setMode(read()))
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => observer.disconnect()
+  }, [])
+  return mode
+}
+
+export default function SandboxWrapper({ children }: { children?: ReactNode }) {
+  const mode = useMode()
+  const theme = useMemo(() => appTheme(mode), [mode])
+  return (
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      {children}
+    </ThemeProvider>
+  )
+}
+```
+
+```tsx title="inertia/sandbox/components.tsx"
+import { styled } from '@mui/material/styles'
+
+export {
+  Alert, Box, Button, Card, CardActions, CardContent, CardHeader, Chip, Divider,
+  Menu, MenuItem, Slider, Stack, TextField, ToggleButton, ToggleButtonGroup, Typography,
+} from '@mui/material'
+
+/** Your own styled() components join the kit like any other. */
+export const PriceTag = styled('span')(({ theme }) => ({
+  color: theme.palette.primary.main,
+  fontSize: '1.75rem',
+  fontWeight: 700,
+}))
+```
+
+```ts title="vite.config.ts"
+genuiSandboxKit({
+  components: 'inertia/sandbox/components.tsx',
+  wrapper: 'inertia/sandbox/wrapper.tsx',
+  stylesDocs: 'A Card with a CardHeader; Stack for layout; the main action is a contained Button. Use sx for one-off spacing, never CSS.',
+})
+```
+
+Emotion inserts its styles into the frame's own document, so the theme, `CssBaseline` and every `styled()` component apply there. Portals (`Menu`, `Dialog`, `Popover`, `Tooltip`) mount into the frame's `<body>` and open inside the frame. Without the `useMode` hook, pass a fixed theme.
+
+**The model writes** JSX with MUI's components and your own (`<Card><CardHeader title="…" />`, `<Slider>`, `sx={{ mt: 2 }}`). **Size:** React (≈230 KB) plus ≈180 KB for a dozen MUI components with emotion and a theme. No stylesheet.
+
+### styled-components / emotion without MUI
+
+Your styled components as the kit, your theme in a wrapper:
+
+```tsx title="inertia/sandbox/wrapper.tsx"
+import type { ReactNode } from 'react'
+import { ThemeProvider } from 'styled-components' // or: import { ThemeProvider } from '@emotion/react'
+import { theme } from '../theme'
+
+export default function SandboxWrapper({ children }: { children?: ReactNode }) {
+  return <ThemeProvider theme={theme}>{children}</ThemeProvider>
+}
+```
+
+```ts title="inertia/sandbox/components.ts"
+export { Button } from '../components/button'
+export { Card, CardTitle } from '../components/card'
+export { Stack } from '../components/stack'
+```
+
+```ts title="vite.config.ts"
+genuiSandboxKit({
+  components: 'inertia/sandbox/components.ts',
+  wrapper: 'inertia/sandbox/wrapper.tsx',
+})
+```
+
+Global styles (`createGlobalStyle`, emotion's `<Global>`) go in the wrapper too.
+
+**The model writes** JSX with your components and their props (`<Card><CardTitle>…</CardTitle><Button $variant="primary">`). **Size:** React (≈230 KB), the CSS-in-JS runtime, and your components.
+
+### Mantine or Chakra
+
+Their provider in the wrapper. Mantine also ships a stylesheet, which goes in `styles`:
+
+```tsx title="inertia/sandbox/wrapper.tsx"
+import { createTheme, MantineProvider } from '@mantine/core'
+import type { ReactNode } from 'react'
+
+const theme = createTheme({ primaryColor: 'violet', defaultRadius: 'md' })
+
+export default function SandboxWrapper({ children }: { children?: ReactNode }) {
+  return <MantineProvider theme={theme}>{children}</MantineProvider>
+}
+```
+
+```ts title="inertia/sandbox/components.ts"
+export { Badge, Button, Card, Group, NumberInput, Slider, Stack, Text, TextInput, Title } from '@mantine/core'
+```
+
+```ts title="vite.config.ts"
+genuiSandboxKit({
+  styles: '@mantine/core/styles.css',
+  components: 'inertia/sandbox/components.ts',
+  wrapper: 'inertia/sandbox/wrapper.tsx',
+})
+```
+
+**Chakra** is CSS-in-JS (emotion), so it needs no `styles`: the wrapper is `<ChakraProvider value={system}>{children}</ChakraProvider>` (v3, with your `createSystem(defaultConfig, …)`), and `components` re-exports the Chakra components a view needs.
+
+**The model writes** JSX with the library's components (`<Card withBorder>`, `<Group>`, `<Slider>`). **Size:** React (≈230 KB) and the components you export. Mantine adds its stylesheet (every component's CSS; list its per-component files in `styles` instead to cut it). Chakra adds emotion and its theme.
+
+### Your own component library from a workspace package
+
+Components from a package name, styles from the package's CSS:
+
+```ts title="vite.config.ts"
+genuiSandboxKit({
+  components: '@acme/ui',          // the package's exports are the kit
+  styles: '@acme/ui/styles.css',   // a stylesheet the package exports
+  // wrapper: '@acme/ui/sandbox-wrapper', // if the library needs a provider
+})
+```
+
+The kit resolves the package from your app, like any import. Its props are documented from the package's types, so it needs its `.d.ts` (or its TypeScript sources) to resolve. The kit's build uses your app's single copy of React. A workspace package, linked or injected by pnpm (`dependenciesMeta: { '@acme/ui': { injected: true } }`), is followed to its real files: its stylesheets' `@import`s resolve from the package, and in dev an edit to it rebuilds the kit. A package export lists everything, so for a large library a re-export module (`components: 'inertia/sandbox/components.ts'`) keeps the frame small (the docs list at most 120 components).
+
+**The model writes** JSX with your library's components, or HTML with its classes if you pass only `styles`. **Size:** React (≈230 KB) plus everything the package exports and its CSS, unless you re-export a subset.
+
+### A separate SPA (no Vite in the server process)
+
+The SPA's own Vite config runs the plugin. It serves and builds the kit's assets, and can write the dev descriptor where the server reads it:
+
+```ts title="web/vite.config.ts"
+import react from '@vitejs/plugin-react'
+import { defineConfig } from 'vite'
+import { genuiSandboxKit } from '@adonis-agora/agent/vite'
+
+export default defineConfig(({ command }) => ({
+  plugins: [
+    react(),
+    genuiSandboxKit({
+      styles: 'src/index.css',
+      components: 'src/components/ui',
+      // Dev: write the docs and asset urls where the Adonis server looks for them.
+      descriptor: '../api/.adonisjs/agent/genui_sandbox_kit.json',
+    }),
+  ],
+  // Build where the server looks (`config/vite.ts` defaults: public/assets, served at /assets/).
+  base: command === 'build' ? '/assets/' : '/',
+  build: { outDir: '../api/public/assets', assetsDir: '', emptyOutDir: true, manifest: true },
+  // Dev: the page, the frame's assets and the agent on one origin.
+  server: { proxy: { '/agent': 'http://localhost:3333' } },
+}))
+```
+
+```ts title="api/config/agent.ts"
+genui: genui({ catalog, sandbox: { kit: true } })
+```
+
+**Serving the assets.** The asset urls are same-origin paths: `/@genui-sandbox-kit/kit.js?v=…` from the SPA's dev server, `/assets/genui-sandbox-kit-….js` from the build. In dev, open the app through the SPA's dev server (it proxies `/agent`). In production, Adonis serves `public/` (`@adonisjs/static`) and finds the kit in `public/assets/.vite/manifest.json` (set `buildDirectory` and `manifestFile` in `config/vite.ts` if yours differ). If you can't point the descriptor at the server (the SPA lives in another repo), the server still needs the **docs**: the assembler hook writes them on `serve` and `build`, see [Without Vite in-process](#without-vite-in-process).
+
+```ts title="api/adonisrc.ts"
+import { genuiKitHook } from '@adonis-agora/agent/hooks/genui_kit'
+
+hooks: {
+  init: [genuiKitHook({ components: '../web/src/components/ui', styles: '../web/src/index.css' })],
+}
+```
+
+The hook's descriptor has docs and no asset urls, and it is the same file the plugin's `descriptor` above writes. Use one or the other.
+
+**The model writes** whatever the kit holds, as in the recipes above. **Size:** the same. Nothing changes in the frame.
+
 ## Tailwind
 
 Tailwind is **detected**, never configured. A style entry (or a file it `@import`s) that has `@import "tailwindcss"`, `@theme`, `@utility`, `@custom-variant` or `@tailwind`, or a compiled stylesheet with Tailwind's banner, turns it on.
@@ -214,7 +591,7 @@ With styles only, it writes `html` (and `jsFunctions`/`jsExpressions`), using yo
 
 ## Without Vite in-process
 
-An app whose frontend is a separate SPA builds the kit with the same plugin in its own Vite config. The server still needs the **docs**. The assembler hook that `node ace configure @adonis-agora/agent` adds writes `.adonisjs/agent/genui_sandbox_kit.json` on `serve` and `build`, and again when a kit or style file changes:
+An app whose frontend is a separate SPA builds the kit with the same plugin in its own Vite config (a complete setup: [A separate SPA](#a-separate-spa-no-vite-in-the-server-process)). The server still needs the **docs**. The plugin's `descriptor` option can write them where the server reads them. Otherwise, the assembler hook that `node ace configure @adonis-agora/agent` adds writes `.adonisjs/agent/genui_sandbox_kit.json` on `serve` and `build`, and again when a kit or style file changes:
 
 ```ts title="adonisrc.ts"
 import { genuiKitHook } from '@adonis-agora/agent/hooks/genui_kit'
@@ -225,25 +602,7 @@ hooks: {
 }
 ```
 
-The hook compiles the styles with Vite when it is installed (for Sass and PostCSS); without it, it reads plain CSS as it is. The kit's assets themselves are served by the SPA's dev server or build, on its own origin.
-
-## Migration from 0.74
-
-The options are fewer and work for any stack. The old ones throw a message naming their replacement.
-
-| 0.74 | 0.75 |
-| --- | --- |
-| `genuiSandboxKit({ include: 'inertia/components/ui/*.tsx' })` | `genuiSandboxKit({ components: 'inertia/components/ui/*.tsx' })` |
-| `genuiSandboxKit({ entry: 'resources/js/genui/kit.ts' })` | `genuiSandboxKit({ components: 'resources/js/genui/kit.ts' })` |
-| `genuiSandboxKit({ tailwindCss: ['resources/css/app.css', 'shadcn/tailwind.css'] })` | `genuiSandboxKit({ styles: 'resources/css/app.css' })`: the files it `@import`s are read on their own |
-| `genuiSandboxKit({ tailwind: false })` | Leave Tailwind out of `styles` |
-| `defineSandbox({ kit: true, tailwind: true })` / `sandbox: { kit: true, tailwind: true }` | `defineSandbox({ kit: true })` / `sandbox: { kit: true }`: Tailwind is detected |
-| `sandbox: { tailwind: true }` (Tailwind without a kit) | `genuiSandboxKit({ styles: '<your Tailwind stylesheet>' })` + `sandbox: { kit: true }` |
-| `genuiKitHook({ include, entry, css })` | `genuiKitHook({ components, styles })` |
-| `writeSandboxKitDocs({ include, entry, css, output })` | `writeSandboxKitDocs({ components, styles, output })` |
-| descriptor `{ version: 1, kit, tailwind }` | `{ version: 2, …docs, assets: { kit, css, tailwind } }`; `GET /agent/config` → `genui.sandbox` gains `css` |
-
-`plugins` (with `@tailwindcss/vite`) is no longer needed when your app has that plugin. Keep `plugins` for anything else your styles or components need to compile.
+The hook compiles the styles with Vite when it is installed (for Sass and PostCSS); without it, it reads plain CSS as it is. Its descriptor has no asset urls: the kit's assets themselves are served by the SPA's dev server or build, and a build in the server's `public/assets` is found through its manifest.
 
 ## Sizes
 
