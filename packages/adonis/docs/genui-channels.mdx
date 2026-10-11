@@ -17,7 +17,7 @@ genui: genui({
   streaming: 'partial',            // top-level options: the default (and what an unlisted channel gets)
   sandbox: true,
   channels: {
-    web: { mode: 'tree', streaming: 'partial', sandbox: { kit: true, tailwind: true } },
+    web: { mode: 'tree', streaming: 'partial', sandbox: { kit: true } },
     mobile: { mode: 'tree', sandbox: false },
     whatsapp: { mode: 'per-component', render: 'native', chartImages: chartImages() },
     telegram: { mode: 'per-component' },
@@ -94,6 +94,20 @@ channels: {
     describe: 'a message listing the orders, with a pick-list of them. No Refund buttons: to refund, the user picks an order and replies.',
     convert: (props) => ({ text: '*Your orders*', list: { button: 'Order details', items: … } }),
   },
+}
+```
+
+`convert(props, context)` also gets the frame it converts:
+
+- `context.version` is the schema version the props were written for: the frame's own `version`, or, for a node of a tree, the tree's `componentVersions` entry. It defaults to 1. A frame persisted before the component moved to v2 still says 1, so convert its props by it, as a renderer would;
+- `context.component` and `context.id` name the component and the frame;
+- `context.frame` is the whole frame as given.
+
+`describe` may be a function too, `({ channel, component, version }) => string`, where `version` is the component's current one.
+
+```ts
+channels: {
+  whatsapp: (props, { version }) => ({ text: `Total ${version === 1 ? props.amount : props.total}` }),
 }
 ```
 

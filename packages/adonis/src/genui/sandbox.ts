@@ -11,12 +11,13 @@
 import { type ComponentDefinition, defineComponent } from './catalog.js';
 import {
   kitDocsToModelText,
+  kitHtmlInstructions,
   kitJsxInstructions,
   type SandboxKitDocs,
   sandboxJsxRuntime,
-  tailwindInstructions,
 } from './sandbox-kit.js';
-import { themeToModelText } from './sandbox-theme.js';
+import { tailwindToModelText, vocabularyToModelText } from './sandbox-styles.js';
+import { themeTokens, themeToModelText } from './sandbox-theme.js';
 import type { JsonSchema } from './schema.js';
 
 /** The component name the builtin {@link Sandbox} registers under. */
@@ -206,9 +207,12 @@ export interface SandboxDocumentOptions {
   inlineJs?: boolean;
   /**
    * The host's theme (`hostThemeCss(collectHostThemeVars(document), dark)`): put on the frame's
-   * `:root`, and kept current with `theme` messages. `dark` mirrors the host's `dark` class.
+   * `:root`, and kept current with `theme` messages. `dark` mirrors the host's `dark` class;
+   * `attributes`, its light/dark attributes (`data-theme`, `data-bs-theme`…).
    */
-  theme?: { css: string; dark: boolean };
+  theme?: { css: string; dark: boolean; attributes?: Record<string, string> };
+  /** The app's compiled styles (`genuiSandboxKit({ styles })`), before the theme and the model's CSS. */
+  styles?: string;
   /** Tailwind: the `@tailwindcss/browser` runtime source, and the `@theme` mapping the host's variables. */
   tailwind?: { runtime: string; theme?: string };
   /**
@@ -250,7 +254,9 @@ window.addEventListener('unhandledrejection',function(e){post(M.error,{message:S
 window.addEventListener('message',function(e){if(e.source!==P)return;var d=e.data;if(!d||d.token!==T)return;
 if(d.type===M.render){var s=document.getElementById('agora-sandbox-css');if(s)s.textContent=String(d.css||'');document.body.innerHTML=String(d.html||'');size()}
 else if(d.type===M.run){var el=document.createElement('script');el.textContent=String(d.code||'');document.body.appendChild(el);size()}
-else if(d.type===M.theme){var th=document.getElementById('agora-sandbox-theme');if(th)th.textContent=String(d.css||'');document.documentElement.classList.toggle('dark',d.dark===true);document.documentElement.setAttribute('data-theme',d.dark===true?'dark':'light');size()}});
+else if(d.type===M.theme){var th=document.getElementById('agora-sandbox-theme');if(th)th.textContent=String(d.css||'');var de=document.documentElement;de.classList.toggle('dark',d.dark===true);var at=d.attributes&&typeof d.attributes==='object'?d.attributes:{};
+for(var i=de.attributes.length-1;i>=0;i--){var an=de.attributes[i].name;if(/^data-([\\w-]*-)?(theme|mode|scheme)$/.test(an)&&!(an in at))de.removeAttribute(an)}
+for(var k in at){if(/^data-([\\w-]*-)?(theme|mode|scheme)$/.test(k))de.setAttribute(k,String(at[k]))}if(!('data-theme' in at))de.setAttribute('data-theme',d.dark===true?'dark':'light');size()}});
 function start(){size();var d=document.documentElement,b=document.body;
 var ro=null;if(typeof ResizeObserver==='function'){ro=new ResizeObserver(later);ro.observe(d);if(b){ro.observe(b);for(var i=0;i<b.children.length;i++)ro.observe(b.children[i])}}
 if(typeof MutationObserver==='function'){new MutationObserver(function(list){if(ro){for(var i=0;i<list.length;i++){var added=list[i].addedNodes;for(var j=0;j<added.length;j++){if(added[j].nodeType===1&&added[j].parentNode===document.body)ro.observe(added[j])}}}later()}).observe(d,{childList:true,subtree:true,attributes:true,characterData:true})}
@@ -262,6 +268,18 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
 
 const BASE_CSS =
   'html,body{margin:0;padding:0;overflow:hidden;background:transparent}body{font-family:var(--font-sans,system-ui,-apple-system,"Segoe UI",sans-serif);font-size:14px;line-height:1.4;color:var(--foreground,#1f2328)}*,*::before,*::after{box-sizing:border-box}';
+
+/** The frame root's attributes: the host's mode (`class="dark"`, `data-theme`, `data-bs-theme`…). */
+function rootAttributes(theme: SandboxDocumentOptions['theme']): string {
+  if (theme === undefined) return '';
+  const attributes: Record<string, string> = { 'data-theme': theme.dark ? 'dark' : 'light' };
+  for (const [name, value] of Object.entries(theme.attributes ?? {})) {
+    if (/^data-([\w-]*-)?(theme|mode|scheme)$/.test(name)) attributes[name] = value;
+  }
+  return `${theme.dark ? ' class="dark"' : ''}${Object.entries(attributes)
+    .map(([name, value]) => ` ${name}="${escapeAttribute(value)}"`)
+    .join('')}`;
+}
 
 /**
  * The `srcdoc` of a sandbox frame. The CSP `<meta>` comes first, then the bridge, the base styles and
@@ -283,11 +301,14 @@ export function buildSandboxDocument(props: SandboxProps, options: SandboxDocume
   }
   const kit = options.kit !== undefined;
   return [
-    `<!doctype html><html${options.theme === undefined ? '' : options.theme.dark ? ' class="dark" data-theme="dark"' : ' data-theme="light"'}><head><meta charset="utf-8">`,
+    `<!doctype html><html${rootAttributes(options.theme)}><head><meta charset="utf-8">`,
     `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(csp)}">`,
     '<meta name="referrer" content="no-referrer">',
     `<script>${bridgeScript(options.token, options.hostOrigin)}</script>`,
     `<style>${BASE_CSS}</style>`,
+    ...(options.styles !== undefined && options.styles !== ''
+      ? [`<style id="agora-sandbox-kit-css">${inlineStyle(options.styles)}</style>`]
+      : []),
     `<style id="agora-sandbox-theme">${inlineStyle(options.theme?.css ?? '')}</style>`,
     ...(options.tailwind !== undefined
       ? [
@@ -440,33 +461,28 @@ export interface DefineSandboxOptions {
    */
   theme?: boolean | 'inherit' | { vars?: SandboxThemeSource };
   /**
-   * Tailwind CSS (v4, `@tailwindcss/browser`) inlined into the frame, its `@theme` mapped from the
-   * host's variables — `bg-primary`, `text-muted-foreground`, `rounded-lg` work offline. Opt-in:
-   * ≈280 KB per frame.
-   */
-  tailwind?: boolean;
-  /**
-   * The app's design-system components (the kit bundle: `Kit`, React, ReactDOM) inlined into the
-   * frame; the model writes `jsx` with them. The docs (component names and props, from their types)
-   * are what the model is told. Opt-in: ≈230 KB + the components per frame. `true` without docs
-   * tells the model only that a kit exists — the server's `sandbox({ kit: true })` finds them.
+   * The app's design system in the frame — whatever `genuiSandboxKit()` built: its compiled styles
+   * (fonts and images inlined), the Tailwind runtime with the app's theme when the styles use
+   * Tailwind, its components and wrapper (the model then writes `jsx`). What the model is told is
+   * read from the docs: components and props, Tailwind tokens or the CSS class vocabulary, the
+   * theme's variables, `stylesDocs`. `true`: the server's `sandbox({ kit: true })` finds them
+   * through Vite; or pass the docs (or a function returning them) yourself.
    */
   kit?: boolean | SandboxKitSource;
 }
 
-/** How a sandbox draws: theme, Tailwind and kit on or off (what `GET <agent>/config` reports). */
+/** How a sandbox draws: theme and kit on or off. */
 export interface SandboxView {
   theme: boolean;
-  tailwind: boolean;
   kit: boolean;
 }
 
 /** A sandbox definition: a {@link ComponentDefinition} that carries its {@link SandboxPolicy}. */
 export type SandboxDefinition = ComponentDefinition<SandboxProps> & {
   readonly sandbox: SandboxPolicy;
-  /** Theme, Tailwind and kit, as the definition was given them. */
+  /** Theme and kit, as the definition was given them. */
   readonly sandboxView?: SandboxView;
-  /** The options it was defined with — what a server resolves the kit and Tailwind for. */
+  /** The options it was defined with — what a server resolves the kit for. */
   readonly sandboxOptions?: Readonly<DefineSandboxOptions>;
 };
 
@@ -482,17 +498,20 @@ function describe(policy: SandboxPolicy, options: DefineSandboxOptions): string 
   const kitOn = options.kit !== undefined && options.kit !== false;
   const docs =
     kitOn && options.kit !== true ? resolveSource(options.kit as SandboxKitSource) : undefined;
+  // JSX only when a kit bundle exists (docs say so) — never on the promise of one.
+  const jsx = docs?.jsx === true;
+  const components = docs?.components ?? [];
   const themeOn = options.theme !== false;
   const themeVars =
     typeof options.theme === 'object'
       ? resolveSource(options.theme.vars)
       : (docs?.theme?.vars ?? undefined);
   return [
-    kitOn
-      ? "An interactive mini-app you write yourself — JSX with the app's own components, or HTML, CSS and JavaScript — drawn in an isolated sandbox."
-      : 'An interactive mini-app you write yourself in HTML, CSS and JavaScript, drawn in an isolated sandbox.',
+    jsx
+      ? `An interactive mini-app you write yourself — JSX${components.length > 0 ? " with the app's own components" : ''}, or HTML, CSS and JavaScript — drawn in an isolated sandbox${docs?.tailwind !== undefined || docs?.vocabulary !== undefined ? " in the app's own styles" : ''}.`
+      : `An interactive mini-app you write yourself in HTML, CSS and JavaScript, drawn in an isolated sandbox${docs?.tailwind !== undefined || docs?.vocabulary !== undefined ? " in the app's own styles" : ''}.`,
     'LAST RESORT: use it only when no other component of this catalog can present the answer — a calculator, a small simulation, a bespoke visualization. Tables, charts, KPIs and text go in the catalog components, never here.',
-    kitOn
+    jsx
       ? 'Write the fields in this order: initialHeight, placeholderMessages, title, summary, css (optional), jsx — or html, jsFunctions, jsExpressions instead of jsx.'
       : 'Write the fields in this order: initialHeight, placeholderMessages, title, summary, css, html, jsFunctions, jsExpressions.',
     opened.length > 0
@@ -500,10 +519,28 @@ function describe(policy: SandboxPolicy, options: DefineSandboxOptions): string 
       : 'No network at all: no fetch, no external scripts, fonts or images — inline SVG and data: URLs only.',
     'No <form> submission (use buttons with click handlers). jsFunctions and each jsExpressions entry run as classic scripts after the HTML, so no top-level await. Validate numeric input (no NaN/Infinity on screen), label units, keep it keyboard-accessible.',
     'To hand values back to the assistant, call agent.send({ text: "<one short sentence the user is saying>", ...values }) from an explicit button click only — never on load, on a timer or on input. It starts a new turn with those values.',
-    ...(themeOn ? [themeToModelText(themeVars, { tailwind: options.tailwind === true })] : []),
-    ...(options.tailwind === true ? [tailwindInstructions()] : []),
-    ...(kitOn ? [kitJsxInstructions()] : []),
-    ...(docs !== undefined && docs.components.length > 0 ? [`\n${kitDocsToModelText(docs)}`] : []),
+    ...(themeOn ? [themeToModelText(themeVars)] : []),
+    ...(docs?.tailwind !== undefined
+      ? [
+          tailwindToModelText(docs.tailwind.tokens, {
+            version: docs.tailwind.version,
+            ...(themeOn ? { colors: themeTokens(themeVars ?? []).colors } : {}),
+          }),
+        ]
+      : []),
+    ...(docs?.tailwind === undefined &&
+    docs?.vocabulary !== undefined &&
+    docs.vocabulary.groups.length > 0
+      ? [`\n${vocabularyToModelText(docs.vocabulary, { jsx })}\n`]
+      : []),
+    ...(jsx
+      ? [kitJsxInstructions({ components: components.length > 0, wrapper: docs?.wrapper === true })]
+      : []),
+    ...(kitOn && docs !== undefined && !jsx ? [kitHtmlInstructions()] : []),
+    ...(jsx && components.length > 0 ? [`\n${kitDocsToModelText(docs as SandboxKitDocs)}`] : []),
+    ...(docs?.guide !== undefined && docs.guide.trim() !== ''
+      ? [`\nThe app's notes on its styles:\n${docs.guide.trim()}`]
+      : []),
     ...(options.instructions !== undefined ? [options.instructions] : []),
   ].join(' ');
 }
@@ -525,6 +562,11 @@ const jsxSchema: JsonSchema = {
  * ```
  */
 export function defineSandbox(options: DefineSandboxOptions = {}): SandboxDefinition {
+  if ((options as { tailwind?: unknown }).tailwind !== undefined) {
+    throw new TypeError(
+      'defineSandbox: `tailwind` was removed in 0.75. `kit: true` turns on whatever genuiSandboxKit() produced — Tailwind included, detected from its `styles`. Replace `{ tailwind: true, kit: true }` with `{ kit: true }` (and pass your Tailwind stylesheet as genuiSandboxKit({ styles })).',
+    );
+  }
   const policy = options.policy ?? {};
   assertSandboxPolicy(policy);
   const kitOn = options.kit !== undefined && options.kit !== false;
@@ -554,7 +596,6 @@ export function defineSandbox(options: DefineSandboxOptions = {}): SandboxDefini
   });
   const sandboxView: SandboxView = {
     theme: options.theme !== false,
-    tailwind: options.tailwind === true,
     kit: kitOn,
   };
   const result = {

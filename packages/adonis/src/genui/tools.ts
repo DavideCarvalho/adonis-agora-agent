@@ -135,6 +135,16 @@ export interface GenuiToolsOptions {
   showInstructions?: string;
   /** Roles allowed to call the tools (the `ToolSpec.roles` gate). Undefined → the roles policy default. */
   roles?: string[];
+  /**
+   * The authorization ability the UI tools declare (`ToolSpec.ability`) — what an ability-aware
+   * authorizer (`authzToolAuthorizer` from `@adonis-agora/agent/authz`) checks the actor against.
+   * Under such an authorizer a tool with no ability is denied, so without this the UI tools are
+   * never offered. A string for every tool; a map by tool name (`{ ui__render: 'genui.render',
+   * ui__sandbox: 'genui.sandbox' }`, a tool it does not name declares none); or a function of the
+   * tool name and the component it shows (`undefined` for the tree and show tools). The authorizer
+   * still decides: nothing is allowed by default.
+   */
+  ability?: GenuiAbility;
   /** Override the generated presentation per component (or for the tree / show tool, under its tool name). */
   presentation?: (component: string) => ToolPresentation | undefined;
   /**
@@ -276,9 +286,31 @@ async function catalogFor(
     : channelCatalog(resolved, channelFor(options, scope.channel));
 }
 
-function common(options: GenuiToolsOptions): Pick<ToolSpec, 'roles'> & { terminal?: boolean } {
+/** {@link GenuiToolsOptions.ability}: one ability, one per tool name, or a function of the tool. */
+export type GenuiAbility =
+  | string
+  | Readonly<Record<string, string>>
+  | ((tool: { name: string; component?: string }) => string | undefined);
+
+/** The ability a UI tool declares, from {@link GenuiToolsOptions.ability}. */
+export function genuiToolAbility(
+  ability: GenuiAbility | undefined,
+  tool: { name: string; component?: string },
+): string | undefined {
+  if (ability === undefined) return undefined;
+  if (typeof ability === 'string') return ability;
+  if (typeof ability === 'function') return ability(tool);
+  return ability[tool.name];
+}
+
+function common(
+  options: GenuiToolsOptions,
+  tool: { name: string; component?: string },
+): Pick<ToolSpec, 'roles' | 'ability'> & { terminal?: boolean } {
+  const ability = genuiToolAbility(options.ability, tool);
   return {
     ...(options.roles !== undefined ? { roles: options.roles } : {}),
+    ...(ability !== undefined ? { ability } : {}),
     ...(options.terminal === true ? { terminal: true } : {}),
   };
 }
@@ -397,7 +429,10 @@ function componentTool(
       description: describeFor(component),
       inputSchema,
       presentation,
-      ...common(options),
+      ...common(options, {
+        name: toolNameFor(component.name, options.namePrefix),
+        component: component.name,
+      }),
     },
     handler,
   };
@@ -507,7 +542,7 @@ function treeTool(catalog: Catalog, options: GenuiToolsOptions): GenuiTool {
             return result.ok ? { value: result.value } : { issues: result.issues };
           }),
       presentation,
-      ...common(options),
+      ...common(options, { name }),
     },
     handler,
   };
@@ -623,7 +658,7 @@ function showTool(catalog: Catalog, options: GenuiToolsOptions): GenuiTool {
               : { issues: result.issues };
           }),
       presentation,
-      ...common(options),
+      ...common(options, { name }),
     },
     handler,
   };
