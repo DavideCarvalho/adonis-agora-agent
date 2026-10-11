@@ -44,6 +44,12 @@ export interface ToolConfirmation {
   verb: string;
   /** A sentence under the title, when the title alone does not say what changes. */
   detail?: string;
+  /**
+   * The card's action is OPENING this link (a sign-in at another service, say), not a Confirm:
+   * finishing there decides it. A text channel sends the card with the link and no buttons or
+   * reply instructions; a screen shows the link as the card's main button.
+   */
+  link?: string;
 }
 
 /** A value read out of a tool's output by dotted path, with the words to put next to it. */
@@ -132,5 +138,6 @@ export function fillToolConfirmation(confirm: ToolConfirmation, input: unknown):
     ...(confirm.detail !== undefined
       ? { detail: fillPresentationTemplate(confirm.detail, input) }
       : {}),
+    ...(confirm.link !== undefined ? { link: confirm.link } : {}),
   };
 }

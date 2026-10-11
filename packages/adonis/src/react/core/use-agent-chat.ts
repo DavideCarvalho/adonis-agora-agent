@@ -650,6 +650,43 @@ export function useAgentChat<B extends AgentBackend = AgentBackend>(
     }, 0);
   }
 
+  /**
+   * An action's outcome was just written to the thread: the server may go on from it with a turn
+   * this chat did not start (a sign-in that completed elsewhere continues the request). Look for it
+   * for a few seconds; found running → stream it, then show the thread as stored (its new user
+   * message included); already over → show the thread as stored.
+   */
+  async function followServerTurn(): Promise<void> {
+    const threadId = currentThreadId();
+    if (threadId === undefined) return;
+    const shown = chatRef.current.messages.length;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      if (chatRef.current.status !== 'ready' && chatRef.current.status !== 'error') return;
+      let thread: ThreadDetail | undefined;
+      try {
+        thread = await client.getThread(threadId);
+      } catch {
+        return;
+      }
+      if (currentThreadId() !== threadId) return;
+      const active = thread?.activeRunId ?? null;
+      if (active !== null) {
+        setActiveRunId(active);
+        autoResumeRunIdRef.current = active;
+        resyncAfterSettle.current = true;
+        void chatRef.current.resumeStream();
+        return;
+      }
+      const stored = Array.isArray(thread?.messages) ? thread.messages : [];
+      if (attempt > 0 && stored.length > shown) {
+        chatRef.current.setMessages(storedThreadToUiMessages(stored));
+        void proposalRefreshRef.current?.();
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 750));
+    }
+  }
+
   /** Replace the transcript with the persisted thread — after a run finished while we were away. */
   async function resyncFromThread(): Promise<void> {
     const threadId = currentThreadId();
@@ -1120,6 +1157,7 @@ export function useAgentChat<B extends AgentBackend = AgentBackend>(
     (update) => chatRef.current.setMessages(update),
     `${chat.status}:${connection.status}`,
     options.proposalPollMs,
+    () => void followServerTurn(),
   );
 
   proposalRefreshRef.current = proposals.refresh;
@@ -1496,6 +1534,12 @@ export function useAgentChat<B extends AgentBackend = AgentBackend>(
     /** Sub-agents this conversation started and did not wait for. */
     background,
     proposals,
+    /**
+     * Look for a turn the server started on this thread (after an action's outcome — a sign-in that
+     * finished elsewhere continues the request) and stream it. Called on its own when this chat's
+     * proposals see a new outcome; an app with its own proposals list calls it when it does.
+     */
+    followServerTurn,
     runId,
     /** The loaded thread's running turn, or `null` once read with none. */
     activeRunId,

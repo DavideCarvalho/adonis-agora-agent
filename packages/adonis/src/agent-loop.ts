@@ -1789,10 +1789,10 @@ async function claimApproval(
   if (remembered.includes(call.name)) {
     return { mode: 'remembered', approver: requirement.approver };
   }
+  // The tool's own lifetime (a sign-in link's) over the policy's.
+  const wanted = spec?.approvalTtlMs ?? requirement.ttlMs;
   const ttlMs =
-    requirement.ttlMs !== undefined && Number.isFinite(requirement.ttlMs) && requirement.ttlMs > 0
-      ? Math.floor(requirement.ttlMs)
-      : undefined;
+    wanted !== undefined && Number.isFinite(wanted) && wanted > 0 ? Math.floor(wanted) : undefined;
   return {
     mode: 'ask',
     approver: requirement.approver,

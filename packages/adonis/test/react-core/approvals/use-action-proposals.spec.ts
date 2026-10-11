@@ -138,3 +138,33 @@ it("stops after the real client's first 404 from a server that mounts no proposa
   // Told once — a listener that logs logs once.
   expect(onHttpError).toHaveBeenCalledTimes(1);
 });
+
+it('tells the chat about an outcome newly written to the thread, not one already there', async () => {
+  const admitted = { ...pending, decision: 'approved', outcomeDelivery: { status: 'admitted' } };
+  let current: ActionProposal[] = [pending];
+  const backend = {
+    listActionProposals: vi.fn(async () => current),
+    getThread: vi.fn(async () => ({ messages: [] })),
+  } as unknown as AgentBackend;
+  const onAdmitted = vi.fn();
+  const { result } = renderHook(() =>
+    useActionProposals(backend, 't', vi.fn(), 'ready', 0, onAdmitted),
+  );
+  await waitFor(() => expect(result.current.items).toHaveLength(1));
+  expect(onAdmitted).not.toHaveBeenCalled();
+  // The sign-in completed elsewhere: the connect ran and its outcome is in the thread.
+  current = [admitted as ActionProposal];
+  await act(async () => {
+    await result.current.refresh();
+  });
+  expect(onAdmitted).toHaveBeenCalledWith(['p']);
+  await act(async () => {
+    await result.current.refresh();
+  });
+  expect(onAdmitted).toHaveBeenCalledTimes(1);
+  // A chat opened after the fact (already admitted on its first read) is not told.
+  const late = vi.fn();
+  const other = renderHook(() => useActionProposals(backend, 't', vi.fn(), 'ready', 0, late));
+  await waitFor(() => expect(other.result.current.items).toHaveLength(1));
+  expect(late).not.toHaveBeenCalled();
+});

@@ -2,6 +2,7 @@ import { pathToFileURL } from 'node:url';
 import type { HttpContext } from '@adonisjs/core/http';
 import type { ApplicationService } from '@adonisjs/core/types';
 import { personalAgentGate, personalAgentScopes } from '../src/a2a/gate.js';
+import { notifyActionProposalAdmitted } from '../src/action-proposal-listeners.js';
 import { assertIndependentActionRuntime } from '../src/action-proposal-runtime.js';
 import {
   ActionProposalService,
@@ -483,6 +484,13 @@ export default class AgentProvider {
         executor,
         workerId: `agora-${crypto.randomUUID()}`,
         ...config.actionProposalWorker,
+        onAdmitted: async (outcome) => {
+          try {
+            await config.actionProposalWorker?.onAdmitted?.(outcome);
+          } finally {
+            await notifyActionProposalAdmitted(outcome);
+          }
+        },
         onError: (error) =>
           console.error('[@adonis-agora/agent] Action proposal worker failed', error),
       });

@@ -43,14 +43,21 @@ export function useActionProposals(
   setMessages: (update: (current: UIMessage[]) => UIMessage[]) => void,
   refreshKey: string,
   pollMs = 1000,
+  /**
+   * An outcome was newly written to the thread (not one already there when the thread was first
+   * read): the server may continue the conversation from it with a turn this chat did not start.
+   */
+  onAdmitted?: (proposalIds: string[]) => void,
 ): ActionProposalsState {
   const [items, setItems] = useState<ActionProposal[]>([]);
   const [error, setError] = useState<Error | null>(null);
   const [unsupported, setUnsupported] = useState(() => unsupportedBackends.has(backend));
   // Reads that failed in a row: each one doubles the wait before the next poll.
   const [failures, setFailures] = useState(0);
-  const latest = useRef({ threadId, setMessages });
-  latest.current = { threadId, setMessages };
+  const latest = useRef({ threadId, setMessages, onAdmitted });
+  latest.current = { threadId, setMessages, onAdmitted };
+  // Admitted outcomes already known per thread; `undefined` until the thread's first read.
+  const knownAdmitted = useRef(new Map<string, Set<string>>());
   const mounted = useRef(true);
   const requests = useRef(new Map<string, Promise<void>>());
   useEffect(() => {
@@ -78,12 +85,19 @@ export function useActionProposals(
             )
           : [];
         if (!mounted.current || latest.current.threadId !== threadId) return;
+        const admittedIds = proposals
+          .filter((proposal) => proposal.outcomeDelivery?.status === 'admitted')
+          .map((proposal) => proposal.id);
+        const known = knownAdmitted.current.get(threadId);
+        knownAdmitted.current.set(threadId, new Set(admittedIds));
+        const fresh = known === undefined ? [] : admittedIds.filter((id) => !known.has(id));
         setItems(proposals);
         setError(null);
         setFailures(0);
         latest.current.setMessages((current) =>
           reconcileProposalMessages(current, proposals, facts),
         );
+        if (fresh.length > 0) latest.current.onAdmitted?.(fresh);
       } catch (cause) {
         if (isProposalsUnsupported(cause)) {
           // Not this read failing: the server has no such route. Stop asking, quietly.

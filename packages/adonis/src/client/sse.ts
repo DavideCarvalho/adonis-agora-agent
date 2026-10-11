@@ -337,10 +337,12 @@ function decodeConfirmation(value: unknown): ToolConfirmation | undefined {
   )
     return undefined;
   if ('detail' in value && typeof value.detail !== 'string') return undefined;
+  if ('link' in value && typeof value.link !== 'string') return undefined;
   return {
     title: value.title,
     verb: value.verb,
     ...('detail' in value && typeof value.detail === 'string' ? { detail: value.detail } : {}),
+    ...('link' in value && typeof value.link === 'string' ? { link: value.link } : {}),
   };
 }
 
