@@ -49,6 +49,7 @@ import {
   writeMemory,
 } from './memory.js';
 import {
+  channelChoiceLimits,
   createNegotiatedUiCollector,
   type ResolveToolUiCatalog,
   type ToolUiChannelGuide,
@@ -1933,6 +1934,7 @@ async function invokeClaimedTool(
               channel: ctx.channel ?? turnChannel(ctx.pageContext),
             },
             pushed,
+            channelChoiceLimits(ctx.pageContext),
           )
           .catch(() => undefined);
         if (delivered !== undefined) output = withDelivered(output, delivered);

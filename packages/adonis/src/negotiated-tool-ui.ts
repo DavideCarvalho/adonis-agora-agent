@@ -1,5 +1,5 @@
 import { snapshotActionProposal } from './action-proposal-transitions.js';
-import type { GenuiChannelBase, GenuiChannels } from './genui/channels.js';
+import type { ChannelChoiceLimits, GenuiChannelBase, GenuiChannels } from './genui/channels.js';
 import type { Catalog } from './genui/index.js';
 import type { SinkWriter } from './spi/token-stream-sink.js';
 import type { ToolDescribeScope } from './spi/tool.js';
@@ -16,10 +16,26 @@ export type ResolveToolUiCatalog = (scope: ToolDescribeScope) => Catalog | Promi
  */
 export interface ToolUiChannelGuide {
   prompt(scope: ToolDescribeScope): Promise<string | undefined>;
+  /** `limits`: the turn's adapter's buttons and list rows (`pageContext.channel.choices`). */
   delivered(
     scope: ToolDescribeScope,
     components: readonly AgentUiComponent[],
+    limits?: ChannelChoiceLimits,
   ): Promise<string | undefined>;
+}
+
+/** The adapter's choice limits a text channel stamped on the turn (`pageContext.channel.choices`). */
+export function channelChoiceLimits(pageContext: unknown): ChannelChoiceLimits | undefined {
+  const channel = (pageContext as { channel?: unknown } | undefined)?.channel;
+  const choices = (channel as { choices?: unknown } | undefined)?.choices as
+    | { buttons?: unknown; lists?: unknown }
+    | undefined;
+  return typeof choices === 'object' &&
+    choices !== null &&
+    typeof choices.buttons === 'number' &&
+    typeof choices.lists === 'number'
+    ? { buttons: choices.buttons, lists: choices.lists }
+    : undefined;
 }
 
 /** The {@link ToolUiChannelGuide} of a genui setup with `channels`. */
@@ -43,7 +59,7 @@ export function createToolUiChannelGuide(options: {
       if (!channel.configured || !channel.messaging) return undefined;
       return channels.channelPrompt(await options.resolveCatalog(scope), channel);
     },
-    async delivered(scope, components) {
+    async delivered(scope, components, limits) {
       const { channels, channel } = await resolved(scope);
       if (!channel.configured || !channel.messaging || components.length === 0) return undefined;
       return channels.describeChannelComponents(
@@ -55,6 +71,7 @@ export function createToolUiChannelGuide(options: {
           ...(component.partial === true ? { partial: true } : {}),
         })),
         channel,
+        limits,
       );
     },
   };

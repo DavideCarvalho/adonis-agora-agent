@@ -35,6 +35,7 @@ export {
 } from './catalog.js';
 export {
   assertGenuiChannels,
+  type ChannelChoiceLimits,
   type ChannelComponentInput,
   type ChannelConversion,
   type ChannelConversionSpec,

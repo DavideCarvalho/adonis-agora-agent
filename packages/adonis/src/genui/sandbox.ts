@@ -252,8 +252,8 @@ if(d.type===M.render){var s=document.getElementById('agora-sandbox-css');if(s)s.
 else if(d.type===M.run){var el=document.createElement('script');el.textContent=String(d.code||'');document.body.appendChild(el);size()}
 else if(d.type===M.theme){var th=document.getElementById('agora-sandbox-theme');if(th)th.textContent=String(d.css||'');document.documentElement.classList.toggle('dark',d.dark===true);document.documentElement.setAttribute('data-theme',d.dark===true?'dark':'light');size()}});
 function start(){size();var d=document.documentElement,b=document.body;
-if(typeof ResizeObserver==='function'){var ro=new ResizeObserver(later);ro.observe(d);if(b){ro.observe(b);for(var i=0;i<b.children.length;i++)ro.observe(b.children[i])}
-if(typeof MutationObserver==='function'){new MutationObserver(function(list){for(var i=0;i<list.length;i++){var added=list[i].addedNodes;for(var j=0;j<added.length;j++){if(added[j].nodeType===1&&added[j].parentNode===document.body)ro.observe(added[j])}}later()}).observe(d,{childList:true,subtree:true,attributes:true,characterData:true})}}
+var ro=null;if(typeof ResizeObserver==='function'){ro=new ResizeObserver(later);ro.observe(d);if(b){ro.observe(b);for(var i=0;i<b.children.length;i++)ro.observe(b.children[i])}}
+if(typeof MutationObserver==='function'){new MutationObserver(function(list){if(ro){for(var i=0;i<list.length;i++){var added=list[i].addedNodes;for(var j=0;j<added.length;j++){if(added[j].nodeType===1&&added[j].parentNode===document.body)ro.observe(added[j])}}}later()}).observe(d,{childList:true,subtree:true,attributes:true,characterData:true})}
 window.addEventListener('load',later);document.addEventListener('load',later,true);
 if(document.fonts){if(document.fonts.ready)document.fonts.ready.then(later,function(){});if(document.fonts.addEventListener)document.fonts.addEventListener('loadingdone',later)}
 setTimeout(later,250);setTimeout(later,1000);post(M.ready,{height:last})}

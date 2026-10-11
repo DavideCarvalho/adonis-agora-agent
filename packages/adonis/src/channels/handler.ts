@@ -474,6 +474,11 @@ export interface ChannelAddress {
   conversation: string;
   /** The adapter's {@link ChannelAdapter.kind}, when it has one — what `turnChannel` reads first. */
   kind?: string;
+  /**
+   * How many reply buttons and list rows the adapter shows (its capabilities): what a tool result's
+   * `delivered` describes choices by, the way the handler will send them.
+   */
+  choices?: { buttons: number; lists: number };
 }
 
 /** A question set waiting for the person's answer, one question at a time. */
@@ -1797,6 +1802,7 @@ export function handleChannel(
       name,
       conversation: message.conversation,
       ...(adapter.kind !== undefined ? { kind: adapter.kind } : {}),
+      choices: { buttons: capabilities.buttons ?? 0, lists: capabilities.lists ?? 0 },
     };
     // A channel genui draws for: the turn may push whatever this channel can draw (the tools are
     // narrowed to it), and the components arrive whole, for the history and for native delivery.

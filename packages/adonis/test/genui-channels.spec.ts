@@ -342,6 +342,8 @@ describe('a genui channel end to end (handler)', () => {
       name: 'test',
       conversation: 'chat-1',
       kind: 'whatsapp',
+      // What `delivered` describes choices by: the adapter's buttons and list rows.
+      choices: { buttons: expect.any(Number), lists: expect.any(Number) },
     });
     expect(service.sends[0].uiCapabilities).toBeUndefined();
   });

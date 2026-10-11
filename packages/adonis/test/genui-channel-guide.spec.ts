@@ -180,6 +180,28 @@ describe('describeChannelDelivery — what the user actually received', () => {
     );
   });
 
+  it("follows the adapter's limits, the way the channel handler sends the choices", () => {
+    const items = Array.from({ length: 12 }, (_, index) => ({ label: `Order #${index + 1}` }));
+    const list = { button: 'Pick', items };
+    // A list past the adapter's rows: only the rows that fit are sent.
+    expect(describeChannelDelivery([at({ text: 'Orders', list })], channel('whatsapp'))).toContain(
+      'of 10 entries (only the first 10 of 12)',
+    );
+    // Telegram shows up to 8 buttons; more become its list.
+    const nine = items.slice(0, 9);
+    expect(describeChannelDelivery([at({ buttons: nine })], channel('telegram'))).toContain(
+      'pick-list (opened with "Options") of 9 entries',
+    );
+    // An adapter with neither buttons nor lists: numbered text the user answers by replying.
+    const plain = describeChannelDelivery([at({ text: 'Orders', list })], channel('whatsapp'), {
+      buttons: 0,
+      lists: 0,
+    });
+    expect(plain).toContain('with 12 numbered choices as text');
+    expect(plain).toContain('they answer by replying with a message');
+    expect(plain).not.toContain('pick-list');
+  });
+
   it('text only: nothing to click, the user can only reply', async () => {
     const text = await describeChannelComponents(
       catalog,

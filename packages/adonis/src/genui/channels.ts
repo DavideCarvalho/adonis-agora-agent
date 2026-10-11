@@ -668,56 +668,94 @@ function quoted(labels: string[], max = 10): string {
     : shown.join(', ');
 }
 
-/** How many reply buttons a channel shows before they become a list. */
-const CHANNEL_BUTTONS: Record<string, number> = { whatsapp: 3 };
+/**
+ * How many reply buttons and list rows a channel shows — the adapter's `capabilities.buttons` /
+ * `capabilities.lists`, which the channel handler stamps on the turn (`pageContext.channel.choices`).
+ */
+export interface ChannelChoiceLimits {
+  buttons: number;
+  lists: number;
+}
+
+/** What a channel's own adapters show, for a turn that did not say (WhatsApp Cloud, Telegram). */
+const DEFAULT_CHOICE_LIMITS: Record<string, ChannelChoiceLimits> = {
+  whatsapp: { buttons: 3, lists: 10 },
+  telegram: { buttons: 8, lists: 30 },
+};
 
 /**
  * What a channel actually delivered, in words for the model: each message (text, a pick-list and its
- * entries, reply buttons, an image, an email section), and what the user did NOT get. This is what a
- * tool's result carries as `delivered` on a messaging channel, so the model talks about the list the
- * user can pick from — not the table with Refund buttons it would have on the web.
+ * entries, reply buttons, numbered choices, an image, an email section), and what the user did NOT
+ * get. This is what a tool's result carries as `delivered` on a messaging channel, so the model talks
+ * about the list the user can pick from — not the table with Refund buttons it would have on the web.
+ *
+ * Choices follow the channel handler's rule, within `limits` (default: the channel's own adapter's):
+ * reply buttons when there is no list (or no lists) and they fit, else a list of at most `lists`
+ * rows, else numbered text the user answers by replying.
  */
 export function describeChannelDelivery(
   messages: readonly ChannelRenderedMessage[],
   channel: ResolvedGenuiChannel,
+  limits?: ChannelChoiceLimits,
 ): string {
   const label = channelLabel(channel);
   if (messages.length === 0) return `Nothing was shown on ${label} for this.`;
+  const { buttons: maxButtons, lists: maxRows } = limits ??
+    DEFAULT_CHOICE_LIMITS[channel.name] ?? { buttons: 0, lists: 0 };
   let interactive = false;
-  const parts = messages.map((message) => {
+  let numbered = false;
+  const parts: string[] = [];
+  for (const message of messages) {
     const text =
       message.text !== undefined && message.text.trim() !== '' ? message.text : undefined;
-    if (message.image !== undefined) {
-      return `an image${text !== undefined ? ` captioned "${excerpt(text)}"` : ''}`;
+    if (message.image !== undefined)
+      parts.push(`an image${text !== undefined ? ` captioned "${excerpt(text)}"` : ''}`);
+    const choices: ChannelNativeButton[] = message.list?.items ?? message.buttons ?? [];
+    // With an image, the text was its caption: the choices follow it on their own.
+    const body = message.image === undefined ? text : undefined;
+    const lead = body !== undefined ? `a message "${excerpt(body)}"` : 'a message';
+    if (choices.length === 0) {
+      if (message.image !== undefined) continue;
+      parts.push(
+        message.html !== undefined && channel.render === 'html'
+          ? `a formatted email section${text !== undefined ? ` ("${excerpt(text)}")` : ''}`
+          : `a text message "${excerpt(text ?? '')}"`,
+      );
+      continue;
     }
-    const buttons = message.buttons ?? [];
-    // More buttons than the channel shows are sent as a list (the channel handler's rule).
-    const asList =
-      message.list !== undefined ||
-      buttons.length > (CHANNEL_BUTTONS[channel.name] ?? Number.POSITIVE_INFINITY);
-    const lead = text !== undefined ? `a message "${excerpt(text)}"` : 'a message';
-    if (asList) {
+    const labels = choices.map((choice) => choice.label);
+    const asButtons = message.list === undefined || maxRows === 0;
+    if (asButtons && choices.length <= maxButtons) {
       interactive = true;
-      const items = message.list?.items ?? buttons;
-      const button = message.list?.button;
-      return `${lead} with a pick-list${message.list?.title !== undefined ? ` "${excerpt(message.list.title, 40)}"` : ''}${button !== undefined ? ` (opened with "${excerpt(button, 30)}")` : ''} of ${items.length} ${items.length === 1 ? 'entry' : 'entries'}: ${quoted(items.map((item) => item.label))} — picking one comes back as the user's next message`;
-    }
-    if (buttons.length > 0) {
+      parts.push(
+        `${lead} with ${choices.length} reply ${choices.length === 1 ? 'button' : 'buttons'}: ${quoted(labels)} — pressing one comes back as the user's next message`,
+      );
+    } else if (maxRows > 0) {
       interactive = true;
-      return `${lead} with ${buttons.length} reply ${buttons.length === 1 ? 'button' : 'buttons'}: ${quoted(buttons.map((button) => button.label))} — pressing one comes back as the user's next message`;
+      const rows = labels.slice(0, maxRows);
+      const cut =
+        labels.length > rows.length ? ` (only the first ${rows.length} of ${labels.length})` : '';
+      const button = message.list?.button ?? 'Options';
+      parts.push(
+        `${lead} with a pick-list${message.list?.title !== undefined ? ` "${excerpt(message.list.title, 40)}"` : ''} (opened with "${excerpt(button, 30)}") of ${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}${cut}: ${quoted(rows)} — picking one comes back as the user's next message`,
+      );
+    } else {
+      numbered = true;
+      parts.push(
+        `${lead} with ${labels.length} numbered ${labels.length === 1 ? 'choice' : 'choices'} as text: ${quoted(labels)} — the user answers by replying with one`,
+      );
     }
-    if (message.html !== undefined && channel.render === 'html') {
-      return `a formatted email section${text !== undefined ? ` ("${excerpt(text)}")` : ''}`;
-    }
-    return `a text message "${excerpt(text ?? '')}"`;
-  });
+  }
+  if (parts.length === 0) return `Nothing was shown on ${label} for this.`;
   const listed =
     parts.length === 1 ? parts[0] : parts.map((part, index) => `${index + 1}) ${part}`).join('; ');
   return [
     `Shown on ${label} as ${listed}.`,
     interactive
       ? 'That is all the user got: no table, no web view, and no buttons other than the ones listed.'
-      : 'That is all the user got: no table, no web view, no buttons and nothing to click — they can only reply with a message.',
+      : numbered
+        ? 'That is all the user got: no table, no web view, no buttons and nothing to click — they answer by replying with a message.'
+        : 'That is all the user got: no table, no web view, no buttons and nothing to click — they can only reply with a message.',
   ].join(' ');
 }
 
@@ -730,6 +768,7 @@ export async function describeChannelComponents(
   catalog: Catalog,
   components: readonly (ChannelComponentInput & { partial?: boolean })[],
   channel: ResolvedGenuiChannel,
+  limits?: ChannelChoiceLimits,
 ): Promise<string | undefined> {
   if (!channel.configured || !channel.messaging) return undefined;
   const messages: ChannelRenderedMessage[] = [];
@@ -737,5 +776,5 @@ export async function describeChannelComponents(
     if (component.partial === true) continue;
     messages.push(...(await renderChannelMessages(catalog, component, channel)));
   }
-  return components.length === 0 ? undefined : describeChannelDelivery(messages, channel);
+  return components.length === 0 ? undefined : describeChannelDelivery(messages, channel, limits);
 }
