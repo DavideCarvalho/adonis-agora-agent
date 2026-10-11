@@ -19,6 +19,8 @@ import type {
   UsageTrendPoint,
 } from '../src/index.js';
 import { FakeModelProvider } from '../src/testing/fake-model-provider.js';
+import { InMemoryGovernanceQueries } from '../src/testing/in-memory-governance-queries.js';
+import { InMemoryAgentStore } from '../src/testing/in-memory-store.js';
 import type { Actor } from '../src/types.js';
 
 /**
@@ -116,7 +118,10 @@ interface BootedApp {
   close(): Promise<void>;
 }
 
-async function bootApp(governanceAuthorize?: AgentGovernanceAuthorize): Promise<BootedApp> {
+async function bootApp(
+  governanceAuthorize?: AgentGovernanceAuthorize,
+  governanceQueries?: AgentGovernanceQueries,
+): Promise<BootedApp> {
   const governance = new StubGovernanceQueries();
   const ignitor = new IgnitorFactory()
     .withCoreProviders()
@@ -129,7 +134,7 @@ async function bootApp(governanceAuthorize?: AgentGovernanceAuthorize): Promise<
         agent: {
           model: new FakeModelProvider(() => ({ text: 'hi' })),
           actorResolver: headerActorResolver,
-          governanceQueries: governance,
+          governanceQueries: governanceQueries ?? governance,
           ...(governanceAuthorize !== undefined ? { governanceAuthorize } : {}),
         },
       },
@@ -215,5 +220,100 @@ describe('governance route mounting', () => {
     );
     expect(allowed.status).toBe(200);
     expect(await allowed.json()).toEqual([expect.objectContaining({ model: 'gpt-test' })]);
+  });
+
+  it('serves GET governance/genui from the governance queries over the requested range', async () => {
+    const store = new InMemoryAgentStore();
+    const base = {
+      threadId: 't1',
+      actorRef: 'u1',
+      step: 0,
+      channel: 'web',
+      mode: 'tree' as const,
+      modelId: 'gpt-test',
+      inputTokens: 10,
+      outputTokens: 5,
+      payloadBytes: 100,
+    };
+    await store.recordGenuiCalls([
+      {
+        ...base,
+        toolCallId: 'c1',
+        runId: 'r1',
+        toolName: 'ui__render',
+        attempt: 1,
+        outcome: 'error',
+        validity: 'failed',
+        errorCategory: 'shape',
+        errorMessage: 'invalid UI tree: bad',
+        costUsd: 0.01,
+      },
+      {
+        ...base,
+        toolCallId: 'c2',
+        runId: 'r1',
+        step: 1,
+        toolName: 'ui__render',
+        attempt: 2,
+        outcome: 'ok',
+        validity: 'retried',
+        costUsd: 0.02,
+        firstFrameMs: 300,
+        completeFrameMs: 900,
+      },
+    ]);
+    booted = await bootApp(() => true, new InMemoryGovernanceQueries(store));
+    const today = new Date().toISOString().slice(0, 10);
+
+    const response = await fetch(
+      `${booted.url}/agent/governance/genui?from=${today}&to=${today}`,
+      asActor('staff-1', 'ADMIN'),
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.totals).toEqual(
+      expect.objectContaining({ calls: 2, turns: 1, firstAttempts: 1, retried: 1, failed: 1 }),
+    );
+    expect(body.byToolModel).toEqual([
+      expect.objectContaining({ toolName: 'ui__render', modelId: 'gpt-test', calls: 2 }),
+    ]);
+    expect(body.errors).toEqual([
+      expect.objectContaining({ category: 'shape', toolName: 'ui__render', count: 1 }),
+    ]);
+    expect(body.byDay).toEqual([expect.objectContaining({ day: today, calls: 2, turns: 1 })]);
+    expect(body.latency.complete).toEqual({ samples: 1, p50Ms: 900, p95Ms: 900 });
+
+    // Default range is today, like the spend routes; a range without the rows is empty.
+    const defaulted = await (
+      await fetch(`${booted.url}/agent/governance/genui`, asActor('staff-1', 'ADMIN'))
+    ).json();
+    expect(defaulted.totals.calls).toBe(2);
+    const empty = await (
+      await fetch(
+        `${booted.url}/agent/governance/genui?from=2000-01-01&to=2000-01-02`,
+        asActor('staff-1', 'ADMIN'),
+      )
+    ).json();
+    expect(empty.totals.calls).toBe(0);
+    expect(empty.byToolModel).toEqual([]);
+  });
+
+  it('answers 501 on GET governance/genui when the governance queries lack genuiStats', async () => {
+    booted = await bootApp(() => true);
+
+    const response = await fetch(
+      `${booted.url}/agent/governance/genui`,
+      asActor('staff-1', 'ADMIN'),
+    );
+    expect(response.status).toBe(501);
+    expect(await response.json()).toEqual({ message: expect.stringContaining('generative UI') });
+  });
+
+  it('gates GET governance/genui like every governance route (404 unmounted, 403 denied)', async () => {
+    booted = await bootApp();
+    expect((await fetch(`${booted.url}/agent/governance/genui`, asActor('p1'))).status).toBe(404);
+    await booted.close();
+    booted = await bootApp((actor) => actor.roles?.includes('ADMIN') ?? false);
+    expect((await fetch(`${booted.url}/agent/governance/genui`, asActor('p1'))).status).toBe(403);
   });
 });

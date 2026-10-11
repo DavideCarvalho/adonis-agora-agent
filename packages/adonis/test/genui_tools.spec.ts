@@ -425,3 +425,90 @@ it.each([false, true])(
     expect(emitUi).toHaveBeenCalledWith('TreeLabel', { label: 'x!' }, expect.any(Object));
   },
 );
+
+describe('genuiTools: the sandbox code is checked before it is accepted', () => {
+  const kitDocs = {
+    version: 2 as const,
+    jsx: true,
+    components: [
+      { name: 'Button', props: [{ name: 'onClick', type: '() => void', required: false }] },
+    ],
+  };
+  const sandboxCatalog = defineCatalog([...LAYOUT_COMPONENTS, defineSandbox({ kit: kitDocs })]);
+  const tools = genuiTools(sandboxCatalog, { componentTools: ['Sandbox'] });
+  const sandbox = tools.find((tool) => tool.spec.name === 'ui__sandbox');
+  const render = tools.find((tool) => tool.spec.name === 'ui__render');
+
+  it('refuses a wrong bridge with its line and the fix, and pushes nothing', async () => {
+    const { ctx, emitUi } = ctxWithEmit();
+    await expect(
+      sandbox?.handler.execute(
+        {
+          jsx: 'function App() {\n  return <Button onClick={() => flippy.send({})}>x</Button>;\n}',
+        },
+        ctx,
+      ),
+    ).rejects.toThrow(
+      'invalid Sandbox code: jsx line 2:33: `flippy.send` — the bridge is `agent.send(payload)`',
+    );
+    expect(emitUi).not.toHaveBeenCalled();
+  });
+
+  it('accepts a prop the kit does not declare, and hands the warning back', async () => {
+    const { ctx, emitUi } = ctxWithEmit();
+    const output = await sandbox?.handler.execute(
+      { jsx: 'function App() { return <Button size="lg">x</Button>; }' },
+      ctx,
+    );
+    expect(emitUi).toHaveBeenCalledTimes(1);
+    expect(output).toMatchObject({
+      warnings: ['jsx line 1:33: `<Button size>`: Button has no prop `size` (it takes `onClick`)'],
+    });
+  });
+
+  it('checks a sandbox nested in a ui__render tree, addressed by its path', async () => {
+    const { ctx } = ctxWithEmit();
+    await expect(
+      render?.handler.execute(
+        {
+          type: 'Stack',
+          props: {},
+          children: [{ type: 'Sandbox', props: { jsx: 'function View() { return <div/>; }' } }],
+        },
+        ctx,
+      ),
+    ).rejects.toThrow(
+      'invalid UI tree code: children[0] jsx: no `App` — rename `function View` to `function App`; App is what gets drawn',
+    );
+  });
+
+  it('marks every UI tool for telemetry with its mode, metadata only by default', () => {
+    expect(sandbox?.spec.genui).toEqual({ mode: 'sandbox' });
+    expect(render?.spec.genui).toEqual({ mode: 'tree' });
+    const perComponent = genuiTools(catalog, { mode: 'per-component', showTool: true });
+    expect(perComponent.find((tool) => tool.spec.name === 'ui__show_callout')?.spec.genui).toEqual({
+      mode: 'per-component',
+    });
+    expect(perComponent.find((tool) => tool.spec.name === 'ui__show')?.spec.genui).toEqual({
+      mode: 'show',
+    });
+    const sampled = genuiTools(catalog, { telemetry: { samplePayloads: true } });
+    expect(sampled[0]?.spec.genui).toEqual({ mode: 'tree', telemetry: { samplePayloads: true } });
+    expect(genuiTools(catalog, { telemetry: false })[0]?.spec.genui).toEqual({
+      mode: 'tree',
+      telemetry: false,
+    });
+  });
+
+  it('describes the sandbox tool with a minimal valid call: JSX as a quoted string with a kit', () => {
+    expect(sandbox?.spec.description).toContain(
+      'Example call: {"initialHeight":120,"title":"Counter","summary":"A counter the user clicks.","jsx":"function App() {\\n  const [n, setN] = useState(0);\\n  return <Button onClick={() => setN(n + 1)}>Clicked {n}</Button>;\\n}"}',
+    );
+    const html = genuiTools(defineCatalog([defineSandbox()]), { componentTools: ['Sandbox'] }).find(
+      (tool) => tool.spec.name === 'ui__sandbox',
+    );
+    expect(html?.spec.description).toMatch(
+      /Example call: \{.*"html":"<button id=\\"b\\">Clicked 0<\/button>"/,
+    );
+  });
+});

@@ -228,3 +228,9 @@ export function usePricing() {
   const client = useAgentClient();
   return useAsync(() => client.pricing(), [client]);
 }
+
+/** Generative-UI telemetry over the range; errors with a `501` when the store does not record it. */
+export function useGenuiStats(range: GovernanceRange) {
+  const client = useAgentClient();
+  return useAsync(() => client.genuiStats(range), [client, rangeKey(range)]);
+}

@@ -1,4 +1,5 @@
 import { turnChannel } from './genui/channels.js';
+import { GenuiTurnTelemetry, observeGenuiFrames } from './genui-telemetry.js';
 import { DEFAULT_REFUSAL_REASON } from './refusal.js';
 
 export { DEFAULT_REFUSAL_REASON } from './refusal.js';
@@ -3114,7 +3115,18 @@ export async function runAgentLoop<TOutput = unknown>(
         );
   }
 
-  const writer = await hooks.openSink();
+  // Generative-UI telemetry: when each UI call's frames reach the stream (only watched when the
+  // registry has a UI tool and the store records it). The turn's start is this process's clock: a
+  // run resumed elsewhere measures from its resume.
+  const turnStartedAt = Date.now();
+  const genuiOn =
+    deps.store.recordGenuiCalls !== undefined &&
+    deps.registry
+      .allSpecs()
+      .some((spec) => spec.genui !== undefined && spec.genui.telemetry !== false);
+  const genuiFrames = genuiOn ? observeGenuiFrames(await hooks.openSink()) : undefined;
+  const writer = genuiFrames?.writer ?? (await hooks.openSink());
+  const genuiTurn = new GenuiTurnTelemetry();
   let lastText = '';
   let steps = 0;
   let totalInput = 0;
@@ -3742,6 +3754,38 @@ export async function runAgentLoop<TOutput = unknown>(
     // A position of its own, hence the marker: a run that suspended mid-turn under the shape
     // without it has no room for a checkpoint between the last tool's persist and the next `llm:`.
     // Every value written here comes from a checkpoint above, so a replay writes the same list.
+    // Worked out OUTSIDE the checkpoint below (the attempt count carries across steps, and a replay
+    // must count the same), recorded inside it (a replay does not record twice).
+    const genuiRows =
+      genuiFrames === undefined
+        ? []
+        : genuiTurn.rows({
+            runId: hooks.runId,
+            threadId: input.threadId,
+            actorRef: input.actor.id,
+            ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+            step: i,
+            channel: turnChannel(input.pageContext),
+            modelId: resolvedModelId,
+            startedAt: turnStartedAt,
+            usage: turn.usage,
+            costUsd,
+            ...(costUsd !== null
+              ? {
+                  costSource: usageCost(
+                    turn.usage,
+                    turn.costUsd,
+                    resolveModelPrice(priceByModel, resolvedModelId),
+                  ).costSource,
+                }
+              : {}),
+            text: turn.text,
+            calls: turn.toolCalls,
+            results,
+            markerOf: (name) => deps.registry.spec(name)?.genui,
+            frames: genuiFrames.times,
+            now: Date.now(),
+          });
     if (await (hooks.patched?.(MESSAGE_TOOL_RESULTS_PATCH) ?? Promise.resolve(true))) {
       await hooks.step(`persist:toolresults:${i}`, async () => {
         await deps.store.setMessageToolResults(assistant.id, [...results, ...syntheticResults]);
@@ -3778,6 +3822,13 @@ export async function runAgentLoop<TOutput = unknown>(
           await writer.write({ t: 'event', event: outcomeFrame(result) });
         }
         await writer.write(finishFrame);
+        if (genuiRows.length > 0) {
+          try {
+            await deps.store.recordGenuiCalls?.(genuiRows);
+          } catch {
+            // Telemetry is best-effort: it never fails the turn.
+          }
+        }
       });
     }
     modelMessages.push({ role: 'user', content: '', toolResults: results });

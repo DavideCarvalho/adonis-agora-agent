@@ -1,3 +1,4 @@
+import { type GenuiCallRow, type GenuiStats, summarizeGenuiCalls } from '../genui-telemetry.js';
 import type {
   ActorSpendRow,
   AgentGovernanceQueries,
@@ -32,6 +33,52 @@ function toInt(value: unknown): number {
   if (typeof value === 'bigint') return Number(value);
   if (typeof value === 'string') return Number.parseInt(value, 10) || 0;
   return 0;
+}
+
+/** A stored `agent_genui_call` row as the aggregation reads it (NULL → absent). */
+function genuiCallRow(row: Record<string, unknown>): GenuiCallRow {
+  const text = (value: unknown) =>
+    value === null || value === undefined ? undefined : String(value);
+  const num = (value: unknown) => {
+    const parsed = toNumOrNull(value);
+    return parsed === null ? undefined : parsed;
+  };
+  const agentName = text(row.agent_name);
+  const errorCategory = text(row.error_category);
+  const errorMessage = text(row.error_message);
+  const costUsd = num(row.cost_usd);
+  const costSource = text(row.cost_source);
+  const firstFrameMs = num(row.first_frame_ms);
+  const completeFrameMs = num(row.complete_frame_ms);
+  const payload = text(row.payload);
+  return {
+    toolCallId: String(row.id),
+    runId: String(row.run_id),
+    threadId: String(row.thread_id),
+    actorRef: String(row.actor_ref),
+    ...(agentName !== undefined ? { agentName } : {}),
+    step: Number(row.step),
+    toolName: String(row.tool_name),
+    channel: String(row.channel),
+    mode: String(row.mode) as GenuiCallRow['mode'],
+    modelId: String(row.model_id),
+    attempt: Number(row.attempt),
+    outcome: String(row.outcome) as GenuiCallRow['outcome'],
+    validity: String(row.validity) as GenuiCallRow['validity'],
+    ...(errorCategory !== undefined
+      ? { errorCategory: errorCategory as NonNullable<GenuiCallRow['errorCategory']> }
+      : {}),
+    ...(errorMessage !== undefined ? { errorMessage } : {}),
+    inputTokens: Number(row.input_tokens),
+    outputTokens: Number(row.output_tokens),
+    ...(costUsd !== undefined ? { costUsd } : {}),
+    ...(costSource !== undefined ? { costSource: costSource as 'provider' | 'estimate' } : {}),
+    ...(firstFrameMs !== undefined ? { firstFrameMs } : {}),
+    ...(completeFrameMs !== undefined ? { completeFrameMs } : {}),
+    payloadBytes: Number(row.payload_bytes),
+    ...(payload !== undefined ? { payload } : {}),
+    createdAt: new Date(Number(row.created_at)),
+  };
 }
 
 function toNumOrNull(value: unknown): number | null {
@@ -519,6 +566,18 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
    * first. `avgDurationMs` is the mean `execution_ms` across calls that recorded one; `null` when
    * none did.
    */
+  async genuiStats(range: GovernanceRange): Promise<GenuiStats> {
+    await this.ready();
+    const start = Date.parse(`${range.fromDay}T00:00:00.000Z`);
+    const end = Date.parse(`${range.toDay}T23:59:59.999Z`);
+    const rows = await this.db
+      .from(AGENT_TABLES.genuiCalls)
+      .where('created_at', '>=', start)
+      .where('created_at', '<=', end)
+      .select('*');
+    return summarizeGenuiCalls(rows.map(genuiCallRow));
+  }
+
   async perToolStats(range: ToolStatsRange = {}): Promise<PerToolStatRow[]> {
     await this.ready();
     const { start, end } = optionalDayBounds(range);

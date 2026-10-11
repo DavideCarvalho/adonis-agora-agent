@@ -14,6 +14,7 @@
     "genui-sandbox-react-native",
     "genui-channels",
     "genui-builtins",
+    "genui-telemetry",
     "frontends",
     "surfaces",
     "channels",

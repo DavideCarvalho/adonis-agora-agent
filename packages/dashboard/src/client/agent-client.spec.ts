@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AgentApiError, AgentClient } from './agent-client.js';
+import { AgentApiError, AgentClient, isUnsupported } from './agent-client.js';
 import type { ListRunsResult, ModelSpendRow } from './types.js';
 
 /** An empty `CursorPage` of runs — the wire shape `GET /governance/runs` answers with. */
@@ -140,5 +140,24 @@ describe('AgentClient', () => {
     await expect(
       client.spendByModel({ fromDay: '2026-03-01', toDay: '2026-03-01' }),
     ).rejects.toBeInstanceOf(AgentApiError);
+  });
+
+  it('maps genuiStats to GET /governance/genui with from/to, and flags a 501 as unsupported', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ totals: { calls: 0 } }));
+    const client = new AgentClient({ baseUrl: '/agent', fetch: fetchMock });
+
+    await client.genuiStats({ fromDay: '2026-03-01', toDay: '2026-03-07' });
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      '/agent/governance/genui?from=2026-03-01&to=2026-03-07',
+    );
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ message: 'unsupported' }, 501));
+    const error = await client
+      .genuiStats({ fromDay: '2026-03-01', toDay: '2026-03-01' })
+      .catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(AgentApiError);
+    expect(isUnsupported(error)).toBe(true);
+    expect(isUnsupported(new AgentApiError('x', 500))).toBe(false);
+    expect(isUnsupported(new Error('x'))).toBe(false);
   });
 });

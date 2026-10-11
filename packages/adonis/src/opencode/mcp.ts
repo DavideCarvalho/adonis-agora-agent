@@ -8,6 +8,8 @@ import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-sc
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { StandardSchemaV1 } from '@standard-schema/spec';
+import { turnChannel } from '../genui/channels.js';
+import { GenuiRunRecorder } from '../genui-telemetry.js';
 import {
   REMEMBER_TOOL_DESCRIPTION,
   REMEMBER_TOOL_NAME,
@@ -128,6 +130,9 @@ class RefusedError extends Error {}
  *   stream and message).
  */
 export class OpenCodeMcpEndpoint {
+  /** Genui telemetry of the UI calls OpenCode makes (its code mode calls tools here, not in the loop). */
+  private readonly genui = new GenuiRunRecorder();
+
   constructor(
     private readonly turns: OpenCodeTurns,
     private readonly tokens: OpenCodeToolsTokens,
@@ -285,12 +290,27 @@ export class OpenCodeMcpEndpoint {
       ...(turn.ctx.agentName !== undefined ? { agentName: turn.ctx.agentName } : {}),
       ...(turn.input.pageContext !== undefined ? { pageContext: turn.input.pageContext } : {}),
     };
-    return this.turns.registry.invoke(
-      name,
-      args ?? {},
-      ctx,
-      deps.rolesPolicy,
-      allowed !== undefined ? { allowedTools: allowed } : {},
+    const invoke = () =>
+      this.turns.registry.invoke(
+        name,
+        args ?? {},
+        ctx,
+        deps.rolesPolicy,
+        allowed !== undefined ? { allowedTools: allowed } : {},
+      );
+    return this.genui.track(
+      {
+        store: deps.store,
+        marker: spec.genui,
+        runId: turn.runId,
+        threadId: turn.ctx.threadId,
+        actorRef: actor.id,
+        ...(turn.ctx.agentName !== undefined ? { agentName: turn.ctx.agentName } : {}),
+        channel: turnChannel(turn.input.pageContext),
+        modelId: turn.input.model ?? deps.modelId ?? 'opencode',
+        call: { id: `mcp:${turn.runId}:${requestId}`, name, input: args ?? {} },
+      },
+      invoke,
     );
   }
 

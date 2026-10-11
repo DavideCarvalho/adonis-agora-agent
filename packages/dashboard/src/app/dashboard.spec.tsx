@@ -6,6 +6,7 @@ import { AgentApiError } from '../client/agent-client.js';
 import type {
   ActorSpendRow,
   CurrentModelPrice,
+  GenuiStats,
   GovernanceThreadDetail,
   ListRunsResult,
   ModelSpendRow,
@@ -19,6 +20,7 @@ import type {
   UsageTrendPoint,
 } from '../client/types.js';
 import { ApprovalsSection } from './ApprovalsSection.js';
+import { GenuiSection } from './GenuiSection.js';
 import { Overview } from './Overview.js';
 import { PricingSection } from './PricingSection.js';
 import { ReliabilitySection } from './ReliabilitySection.js';
@@ -192,6 +194,111 @@ const prices: CurrentModelPrice[] = [
   },
 ];
 
+const genuiStats: GenuiStats = {
+  totals: {
+    calls: 12,
+    turns: 8,
+    firstAttempts: 8,
+    firstTrySuccesses: 6,
+    firstTryRate: 0.75,
+    retried: 2,
+    failed: 4,
+    inputTokens: 24000,
+    outputTokens: 6000,
+    costUsd: 0.48,
+  },
+  byToolModel: [
+    {
+      toolName: 'ui__render',
+      modelId: 'gpt-4o',
+      mode: 'tree',
+      calls: 9,
+      firstAttempts: 6,
+      firstTrySuccesses: 5,
+      firstTryRate: 5 / 6,
+      retried: 1,
+      failed: 3,
+      costUsd: 0.36,
+    },
+    {
+      toolName: 'ui__sandbox',
+      modelId: 'claude-haiku',
+      mode: 'sandbox',
+      calls: 3,
+      firstAttempts: 2,
+      firstTrySuccesses: 1,
+      firstTryRate: 0.5,
+      retried: 1,
+      failed: 1,
+      costUsd: null,
+    },
+  ],
+  errors: [
+    {
+      category: 'unknown-component',
+      message: 'invalid sandbox code: "…" is not a kit component',
+      toolName: 'ui__sandbox',
+      count: 3,
+      lastAt: '2026-03-06T09:15:00.000Z',
+    },
+    {
+      category: 'shape',
+      message: 'invalid UI tree: props.rows: expected array',
+      toolName: 'ui__render',
+      count: 1,
+      lastAt: '2026-03-05T12:00:00.000Z',
+    },
+  ],
+  byDay: [
+    {
+      day: '2026-03-05',
+      calls: 5,
+      turns: 3,
+      inputTokens: 10000,
+      outputTokens: 2000,
+      costUsd: 0.2,
+      firstTryRate: 2 / 3,
+    },
+    {
+      day: '2026-03-06',
+      calls: 7,
+      turns: 5,
+      inputTokens: 14000,
+      outputTokens: 4000,
+      costUsd: 0.28,
+      firstTryRate: 0.8,
+    },
+  ],
+  costPerTurn: { turns: 8, avgUsd: 0.06, p50Usd: 0.05, p95Usd: 0.12 },
+  latency: {
+    firstFrame: { samples: 8, p50Ms: 420, p95Ms: 1300 },
+    complete: { samples: 7, p50Ms: 2100, p95Ms: 5600 },
+  },
+};
+
+const emptyGenuiStats: GenuiStats = {
+  totals: {
+    calls: 0,
+    turns: 0,
+    firstAttempts: 0,
+    firstTrySuccesses: 0,
+    firstTryRate: null,
+    retried: 0,
+    failed: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    costUsd: null,
+  },
+  byToolModel: [],
+  errors: [],
+  byDay: [],
+  costPerTurn: { turns: 0, avgUsd: null, p50Usd: null, p95Usd: null },
+  latency: {
+    firstFrame: { samples: 0, p50Ms: null, p95Ms: null },
+    complete: { samples: 0, p50Ms: null, p95Ms: null },
+  },
+};
+
 function fakeClient(overrides: Partial<AgentClient> = {}): AgentClient {
   return {
     spendByModel: vi.fn().mockResolvedValue(modelRows),
@@ -216,6 +323,7 @@ function fakeClient(overrides: Partial<AgentClient> = {}): AgentClient {
     rejectToolCall: vi.fn().mockResolvedValue({ ok: true }),
     pricing: vi.fn().mockResolvedValue(prices),
     upsertPrice: vi.fn().mockResolvedValue({ ok: true }),
+    genuiStats: vi.fn().mockResolvedValue(genuiStats),
     ...overrides,
   } as unknown as AgentClient;
 }
@@ -548,5 +656,96 @@ describe('PricingSection', () => {
     } as Partial<AgentClient>);
     renderWith(client, <PricingSection />);
     await waitFor(() => expect(screen.getByText(/No pricing store is bound/)).toBeTruthy());
+  });
+});
+
+describe('GenuiSection', () => {
+  it('renders the KPI tiles from the range stats', async () => {
+    const client = fakeClient();
+    renderWith(client, <GenuiSection range={RANGE} />);
+
+    await waitFor(() => expect(screen.getByText('UI calls')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('75%')).toBeTruthy());
+    expect(client.genuiStats).toHaveBeenCalledWith(RANGE);
+    expect(screen.getByText('12')).toBeTruthy();
+    expect(screen.getByText('6 of 8 first attempts')).toBeTruthy();
+    expect(screen.getByText('2 · 4')).toBeTruthy();
+    expect(screen.getByText('$0.48')).toBeTruthy();
+    expect(screen.getByText('$0.06')).toBeTruthy();
+    expect(screen.getByText('avg · p50 $0.05 · p95 $0.12')).toBeTruthy();
+    expect(screen.getByText('420ms')).toBeTruthy();
+    expect(screen.getByText('p50 · p95 1.3s · 8 turns')).toBeTruthy();
+    expect(screen.getByText('2.1s')).toBeTruthy();
+    expect(screen.getByText('p50 · p95 5.6s · 7 turns')).toBeTruthy();
+  });
+
+  it('renders first-try success by tool and model', async () => {
+    renderWith(fakeClient(), <GenuiSection range={RANGE} />);
+
+    await waitFor(() =>
+      expect(screen.getByText('First-try success by tool and model')).toBeTruthy(),
+    );
+    await waitFor(() => expect(screen.getByText('tree')).toBeTruthy());
+    const row = screen.getByText('tree').closest('tr') as HTMLElement;
+    expect(row.textContent).toContain('ui__render');
+    expect(row.textContent).toContain('gpt-4o');
+    expect(row.textContent).toContain('83%');
+    expect(row.textContent).toContain('$0.36');
+    const sandbox = screen.getByText('sandbox').closest('tr') as HTMLElement;
+    expect(sandbox.textContent).toContain('50%');
+    // An unpriced group shows a dash, not $0.00.
+    expect(sandbox.textContent).toContain('—');
+  });
+
+  it('renders the common errors with category, tool, message, count and last seen', async () => {
+    renderWith(fakeClient(), <GenuiSection range={RANGE} />);
+
+    await waitFor(() => expect(screen.getByText('unknown-component')).toBeTruthy());
+    const message = screen.getByText('invalid sandbox code: "…" is not a kit component');
+    expect(message.className).toContain('mono');
+    const row = message.closest('tr') as HTMLElement;
+    expect(row.textContent).toContain('ui__sandbox');
+    expect(row.textContent).toContain('Mar 6, 09:15');
+    expect(screen.getByText('shape')).toBeTruthy();
+    // The per-day panel reuses the spend trend chart.
+    expect(screen.getByText('UI cost per day')).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'daily cost trend' })).toBeTruthy();
+    expect(screen.getAllByText('2026-03-06').length).toBeGreaterThan(0);
+  });
+
+  it('shows an empty state when no UI calls were recorded in the range', async () => {
+    renderWith(
+      fakeClient({
+        genuiStats: vi.fn().mockResolvedValue(emptyGenuiStats),
+      } as Partial<AgentClient>),
+      <GenuiSection range={RANGE} />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/No generative-UI tool calls were recorded/)).toBeTruthy(),
+    );
+    expect(screen.queryByText('First-try success by tool and model')).toBeNull();
+  });
+
+  it('shows a distinct panel when the store does not record genui telemetry (501)', async () => {
+    renderWith(
+      fakeClient({
+        genuiStats: vi.fn().mockRejectedValue(new AgentApiError('nope', 501)),
+      } as Partial<AgentClient>),
+      <GenuiSection range={RANGE} />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/does not record generative-UI telemetry/)).toBeTruthy(),
+    );
+    expect(screen.queryByText(/Failed to load/)).toBeNull();
+  });
+
+  it('shows the generic error note on any other failure', async () => {
+    renderWith(
+      fakeClient({
+        genuiStats: vi.fn().mockRejectedValue(new AgentApiError('GET failed (500)', 500)),
+      } as Partial<AgentClient>),
+      <GenuiSection range={RANGE} />,
+    );
+    await waitFor(() => expect(screen.getAllByText(/Failed to load/).length).toBeGreaterThan(0));
   });
 });

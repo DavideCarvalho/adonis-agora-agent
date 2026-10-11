@@ -8,11 +8,12 @@ import type {
   ToolInputPreviewScope,
 } from '../spi/tool.js';
 import type { ToolPresentation } from '../tool-presentation.js';
-import type { Actor, ToolSpec } from '../types.js';
+import type { Actor, GenuiToolMarker, ToolSpec } from '../types.js';
 import { negotiateCatalog } from './capabilities.js';
 import {
   type Catalog,
   type ComponentDefinition,
+  type GenuiCheck,
   type GenuiStreaming,
   standaloneComponents,
   toolNameFor,
@@ -25,7 +26,7 @@ import {
   resolveGenuiChannel,
 } from './channels.js';
 import { partialTree } from './progressive.js';
-import type { DefineSandboxOptions } from './sandbox.js';
+import { type DefineSandboxOptions, sandboxCallExample, sandboxPolicyOf } from './sandbox.js';
 import {
   formatIssues,
   type GenuiIssue,
@@ -54,6 +55,8 @@ export interface GenuiTool {
 export interface GenuiToolOutput {
   shown: string;
   id: string;
+  /** What a check found that did not refuse the call (a prop the kit component does not declare). */
+  warnings?: string[];
 }
 
 /**
@@ -167,6 +170,20 @@ export interface GenuiToolsOptions {
    * Only read with {@link channels}: the sandbox itself is a component of `catalog`.
    */
   sandbox?: boolean | DefineSandboxOptions;
+  /**
+   * Generative-UI telemetry (see `ToolSpec.genui`): every UI call is recorded with its metadata —
+   * tool, channel, mode, attempt, validity, error category, tokens and cost, time to first and to
+   * complete frame. NEVER the generated HTML/JSX or props, unless `samplePayloads: true` (for
+   * debugging; off by default — keep it off where the UI may show personal data). `false` records
+   * nothing.
+   */
+  telemetry?: GenuiTelemetryOptions | false;
+}
+
+/** {@link GenuiToolsOptions.telemetry}. */
+export interface GenuiTelemetryOptions {
+  /** Also store each call's input (the generated code and props). Default `false`. */
+  samplePayloads?: boolean;
 }
 
 /** The default name of the generic show tool ({@link GenuiToolsOptions.showTool}). */
@@ -306,13 +323,50 @@ export function genuiToolAbility(
 function common(
   options: GenuiToolsOptions,
   tool: { name: string; component?: string },
-): Pick<ToolSpec, 'roles' | 'ability'> & { terminal?: boolean } {
+  mode: GenuiToolMarker['mode'],
+): Pick<ToolSpec, 'roles' | 'ability' | 'genui'> & { terminal?: boolean } {
   const ability = genuiToolAbility(options.ability, tool);
+  const telemetry = options.telemetry;
   return {
     ...(options.roles !== undefined ? { roles: options.roles } : {}),
     ...(ability !== undefined ? { ability } : {}),
     ...(options.terminal === true ? { terminal: true } : {}),
+    genui: {
+      mode,
+      ...(telemetry === false
+        ? { telemetry: false }
+        : telemetry?.samplePayloads === true
+          ? { telemetry: { samplePayloads: true } }
+          : {}),
+    },
   };
+}
+
+/**
+ * A component's {@link ComponentDefinition.check}: errors refuse the call (thrown, the model gets
+ * them), warnings come back to be handed over with the result.
+ */
+async function runChecks(
+  definition: ComponentDefinition<unknown>,
+  props: Record<string, unknown>,
+  where = '',
+): Promise<{ errors: string[]; warnings: string[] }> {
+  if (definition.check === undefined) return { errors: [], warnings: [] };
+  const found: GenuiCheck[] = await definition.check(props);
+  const prefix = where === '' ? '' : `${where} `;
+  return {
+    errors: found.filter((each) => each.severity === 'error').map((each) => prefix + each.message),
+    warnings: found
+      .filter((each) => each.severity === 'warning')
+      .map((each) => prefix + each.message),
+  };
+}
+
+/** At most three problems — the first ones are what the model fixes first. */
+function codeError(component: string, errors: string[]): Error {
+  const shown = errors.slice(0, 3).join('; ');
+  const more = errors.length > 3 ? ` (+${errors.length - 3} more)` : '';
+  return new Error(`invalid ${component} code: ${shown}${more}`);
 }
 
 function componentTool(
@@ -328,9 +382,14 @@ function componentTool(
     done: `Showed ${lowerFirst(component.title)}`,
     result: { kind: 'elsewhere' as const },
   };
-  const describeFor = (definition: ComponentDefinition<unknown>) =>
-    `Show the user a ${definition.title} (${definition.name}). ${definition.description}`;
+  const describeFor = (definition: ComponentDefinition<unknown>) => {
+    const example = sandboxCallExample(definition);
+    return `Show the user a ${definition.title} (${definition.name}). ${definition.description}${
+      example !== undefined ? `\n${example}` : ''
+    }`;
+  };
   const dynamic = options.resolveCatalog !== undefined;
+  const mode = sandboxPolicyOf(component) !== undefined ? 'sandbox' : 'per-component';
   // With a resolver the component's schema may differ per request (a tenant's version of it), so
   // the registry lets any object through and `execute` validates against the resolved definition.
   const inputSchema: StandardSchemaV1 = dynamic
@@ -357,11 +416,12 @@ function componentTool(
       if (!validated.ok) {
         throw new Error(`invalid ${component.name} props: ${formatIssues(validated.issues)}`);
       }
-      return push(
-        ctx,
-        component.name,
-        validated.value as Record<string, unknown>,
-        definition.version,
+      const props = validated.value as Record<string, unknown>;
+      const checked = await runChecks(definition, props);
+      if (checked.errors.length > 0) throw codeError(component.name, checked.errors);
+      return withWarnings(
+        await push(ctx, component.name, props, definition.version),
+        checked.warnings,
       );
     },
   };
@@ -429,10 +489,14 @@ function componentTool(
       description: describeFor(component),
       inputSchema,
       presentation,
-      ...common(options, {
-        name: toolNameFor(component.name, options.namePrefix),
-        component: component.name,
-      }),
+      ...common(
+        options,
+        {
+          name: toolNameFor(component.name, options.namePrefix),
+          component: component.name,
+        },
+        mode,
+      ),
     },
     handler,
   };
@@ -476,13 +540,18 @@ function treeTool(catalog: Catalog, options: GenuiToolsOptions): GenuiTool {
         throw new Error(`invalid UI tree: ${formatIssues(result.issues)}`);
       }
       const root: GenuiElement = result.value;
+      const checked = await checkTree(resolved, root);
+      if (checked.errors.length > 0) throw codeError('UI tree', checked.errors);
       // A tree of one standalone component is that component: pushed as its `ui__show_*` tool
       // would push it, so a client (or a channel's `renderComponent`) sees no difference.
       const single = resolved.get(root.type);
       if (root.children === undefined && single !== undefined && single.children !== true) {
-        return push(ctx, root.type, root.props, single.version);
+        return withWarnings(
+          await push(ctx, root.type, root.props, single.version),
+          checked.warnings,
+        );
       }
-      return push(ctx, GENUI_TREE_COMPONENT, { root });
+      return withWarnings(await push(ctx, GENUI_TREE_COMPONENT, { root }), checked.warnings);
     },
   };
   handler.describe = async (scope: ToolDescribeScope): Promise<ToolDescription> => {
@@ -542,10 +611,36 @@ function treeTool(catalog: Catalog, options: GenuiToolsOptions): GenuiTool {
             return result.ok ? { value: result.value } : { issues: result.issues };
           }),
       presentation,
-      ...common(options, { name }),
+      ...common(options, { name }, 'tree'),
     },
     handler,
   };
+}
+
+/** Every node's {@link ComponentDefinition.check}, addressed by its path when it is not the root. */
+async function checkTree(
+  catalog: Catalog,
+  root: GenuiElement,
+): Promise<{ errors: string[]; warnings: string[] }> {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const visit = async (node: GenuiElement, path: string) => {
+    const definition = catalog.get(node.type);
+    if (definition !== undefined) {
+      const found = await runChecks(definition, node.props, path);
+      errors.push(...found.errors);
+      warnings.push(...found.warnings);
+    }
+    for (const [index, child] of (node.children ?? []).entries()) {
+      await visit(child, `${path === '' ? '' : `${path}.`}children[${index}]`);
+    }
+  };
+  await visit(root, '');
+  return { errors, warnings };
+}
+
+function withWarnings(output: GenuiToolOutput, warnings: string[]): GenuiToolOutput {
+  return warnings.length > 0 ? { ...output, warnings: warnings.slice(0, 5) } : output;
 }
 
 /** The show tool's input: a component name (one of the catalog's) and its props. */
@@ -629,7 +724,12 @@ function showTool(catalog: Catalog, options: GenuiToolsOptions): GenuiTool {
       if (!result.ok) {
         throw new Error(`invalid ${name} call: ${formatIssues(result.issues)}`);
       }
-      return push(ctx, result.definition.name, result.props, result.definition.version);
+      const checked = await runChecks(result.definition, result.props);
+      if (checked.errors.length > 0) throw codeError(result.definition.name, checked.errors);
+      return withWarnings(
+        await push(ctx, result.definition.name, result.props, result.definition.version),
+        checked.warnings,
+      );
     },
   };
   handler.describe = async (scope: ToolDescribeScope): Promise<ToolDescription> => {
@@ -658,7 +758,7 @@ function showTool(catalog: Catalog, options: GenuiToolsOptions): GenuiTool {
               : { issues: result.issues };
           }),
       presentation,
-      ...common(options, { name }),
+      ...common(options, { name }, 'show'),
     },
     handler,
   };

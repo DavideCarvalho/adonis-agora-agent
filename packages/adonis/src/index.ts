@@ -248,6 +248,29 @@ export {
   type GenuiFactoryContext,
   type GenuiSetup,
 } from './genui/factory.js';
+export type {
+  GenuiCallRow,
+  GenuiDayRow,
+  GenuiErrorCategory,
+  GenuiErrorRow,
+  GenuiFrameTimes,
+  GenuiLatency,
+  GenuiOutOfLoopCall,
+  GenuiStats,
+  GenuiStepFacts,
+  GenuiToolModelRow,
+  GenuiValidity,
+  RecordGenuiCallInput,
+} from './genui-telemetry.js';
+export {
+  classifyGenuiError,
+  GenuiRunRecorder,
+  GenuiTurnTelemetry,
+  genuiRowsInRange,
+  observeGenuiFrames,
+  scrubGenuiError,
+  summarizeGenuiCalls,
+} from './genui-telemetry.js';
 export type { AgentGovernanceAuthorize, GovernanceGateVerdict } from './governance-gate.js';
 export { evaluateGovernanceGate } from './governance-gate.js';
 export * from './history-window.js';

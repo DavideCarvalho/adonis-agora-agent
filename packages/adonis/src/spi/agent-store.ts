@@ -1,4 +1,5 @@
 import type { ToolCallOutcome } from '../dangling-tool-calls.js';
+import type { RecordGenuiCallInput } from '../genui-telemetry.js';
 import type { AgentUiComponent } from '../stream-events.js';
 import type { ToolConfirmation } from '../tool-presentation.js';
 import type {
@@ -377,6 +378,13 @@ export interface AgentStore {
   toolCallInput?(toolCallId: string): Promise<unknown>;
 
   recordUsage(input: RecordUsageInput): Promise<void>;
+  /**
+   * OPTIONAL: record generative-UI telemetry — one row per UI tool call (see `genui-telemetry`),
+   * keyed by `toolCallId` (recording the same call again replaces its row). Metadata only unless
+   * the tool samples payloads. The loop calls it best-effort: a failure is swallowed, never the
+   * turn's. A store without it records nothing.
+   */
+  recordGenuiCalls?(rows: readonly RecordGenuiCallInput[]): Promise<void>;
   quotaToday(actorRef: string, day: string): Promise<{ usedTokens: number }>;
   /**
    * OPTIONAL: the actor's usage over the UTC days `fromDay`..`toDay` (`YYYY-MM-DD`, inclusive) —

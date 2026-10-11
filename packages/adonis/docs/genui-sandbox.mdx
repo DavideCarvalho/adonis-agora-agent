@@ -95,6 +95,31 @@ The sandbox's props are the view, and the model writes them **in this order** (`
 }
 ```
 
+## Checked before it is accepted
+
+A model's first sandbox is often one the frame cannot draw: the JSX does not parse, `App` is missing, or the code calls a bridge that does not exist (`flippy.send(…)` instead of `agent.send(…)`). The server checks the code **before the call is accepted**, so the model gets a short, exact tool error and its retry draws:
+
+```text
+invalid Sandbox code: jsx line 12:5: `flippy.send` — the bridge is `agent.send(payload)`
+```
+
+| Check | Refuses the call | Example message |
+| --- | --- | --- |
+| JSX through the frame's own transpiler (the same code the frame runs), then acorn | yes | `jsx line 2:21: Expected </span>, found </div> — check that every JSX tag is closed in order` |
+| TypeScript in the JSX | yes | `jsx line 1:15: Unexpected token — plain JavaScript only: drop the TypeScript types` |
+| `App` defined (`function App`, `const App = …`) when the view is JSX | yes | ``jsx: no `App` — rename `function Calculator` to `function App`; App is what gets drawn`` |
+| Every inline `<script>`, `on*=` handler, `jsFunctions` and `jsExpressions` entry parses (acorn) | yes | `jsExpressions[1] line 1:5: Unexpected token` |
+| `<script src>` from an origin the policy does not open | yes | ``html line 1:1: `<script src="https://cdn…">` is blocked (the sandbox has no network) — inline the code instead`` |
+| A bridge other than `agent.send` (`x.send(…)` on an undeclared `x`, `window.x.send`, `agent.post`) | yes | ``html line 1:18: `flippy.send` — the bridge is `agent.send(payload)` `` |
+| A `<Component>` the kit's docs do not have (and the code does not define) | yes | ``jsx line 3:22: `<Slider>` is not a kit component — use one of `Button`, `Card`, or a plain element`` |
+| A prop the kit component does not declare | **no** — a warning, handed back with the result (`warnings`) | ``jsx line 2:18: `<Button size>`: Button has no prop `size` (it takes `variant`, `onClick`)`` |
+
+At most three problems are reported, errors first. The same checks run for a sandbox nested in a `ui__render` tree (the message then starts with its path, `children[0] jsx …`). A component of your own can do the same through `defineComponent({ check(props) { … } })`: it returns `{ severity, category, message }` findings; an `error` refuses the call, a `warning` is handed back with the result.
+
+The parsers (`acorn`, `acorn-jsx`) are loaded on the first check, on the server; a browser bundle that imports the catalog never loads them. `validateSandboxCode(props, { jsx, kit, scriptOrigins })` is exported for your own tests.
+
+`ui__sandbox`'s description ends with one minimal, valid call for the mode it is in — JSX with a kit (a kit `Button` when there is one), HTML otherwise — with the JSX written as a quoted JSON string, which is what a model writing code (OpenCode's code mode) gets wrong. It costs about 70–77 prompt tokens (o200k), only on turns that offer `ui__sandbox`.
+
 ## While the model writes it
 
 The order is what makes the view usable before it is finished: a box of the right size first, then styles before markup (so nothing ever draws unstyled), then behavior last. The definition streams as `partial`, and the server trims what it previews (`partialProps`, see below), so the user sees:
@@ -351,6 +376,7 @@ The isolation above keeps generated code away from the page, the user's session 
 
 ## See also
 
+- [Generative UI telemetry](/docs/agent/genui-telemetry) — first-try success, errors, cost and latency of the UI calls.
 - [Generative UI](/docs/agent/generative-ui) — the catalog, tree mode and partial frames the sandbox is built on.
 - [Loading states and skeletons](/docs/agent/genui-loading-states) — progressive trees, and how layouts around a sandbox stream.
 - [A2UI](/docs/agent/a2ui) — the same UI frames as A2UI surfaces, and A2UI actions as turns.

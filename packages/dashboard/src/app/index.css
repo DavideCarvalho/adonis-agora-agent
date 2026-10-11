@@ -535,3 +535,14 @@ body {
   color: var(--muted);
   text-align: center;
 }
+
+/* generative UI: error category badge */
+.pill.cat {
+  color: var(--warn);
+}
+.genui-msg {
+  max-width: 520px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+}

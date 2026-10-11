@@ -3,6 +3,9 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { defineCatalog } from '../../src/genui/catalog.js';
+import { defineSandbox } from '../../src/genui/sandbox.js';
+import { genuiTools } from '../../src/genui/tools.js';
 import {
   AgentService,
   type MemoryProvider,
@@ -91,6 +94,11 @@ async function boot(): Promise<Booted> {
     { name: 'send', kind: 'action', description: 'send it', inputSchema: z.object({}) },
     { execute: async () => 'sent' },
   );
+  for (const tool of genuiTools(defineCatalog([defineSandbox()]), {
+    componentTools: ['Sandbox'],
+  })) {
+    registry.register(tool.spec, tool.handler);
+  }
   const service = await app.app.container.make(AgentService);
   return { app, engine, fake, store, service, gate, written };
 }
@@ -157,7 +165,13 @@ describe('the OpenCode engine behind the agent provider', () => {
 
     const client = await mcpClient(url, authorization);
     const listed = await client.listTools();
-    expect(listed.tools.map((t) => t.name).sort()).toEqual(['remember', 'send', 'whoami']);
+    expect(listed.tools.map((t) => t.name).sort()).toEqual([
+      'remember',
+      'send',
+      'ui__render',
+      'ui__sandbox',
+      'whoami',
+    ]);
 
     // No session in `_meta`: the call belongs to no turn.
     const alone = await client.callTool({ name: 'whoami', arguments: {} });
@@ -217,5 +231,48 @@ describe('the OpenCode engine behind the agent provider', () => {
     });
     const messages = (await b.store.getThread(threadId))?.messages ?? [];
     expect(messages.flatMap((m) => m.ui ?? []).map((c) => c.id)).toContain('card-1');
+  });
+
+  it("records genui telemetry for the UI calls OpenCode's code mode makes", async () => {
+    b = await boot();
+    const { runId } = await b.service.chat({ actor, message: 'go' });
+    await framesUntil(b.service, runId, (f) => f.kind === 'text');
+    const config = b.fake.callsOf('mcp.add')[0]?.args.config as
+      | { headers?: Record<string, string> }
+      | undefined;
+    const client = await mcpClient(
+      `${b.app.url}/agent/opencode/mcp`,
+      config?.headers?.Authorization ?? '',
+    );
+    const bad = await client.callTool({
+      name: 'ui__sandbox',
+      arguments: { html: '<button onclick="flippy.send({})">Go</button>' },
+      _meta: meta('ses_1'),
+    });
+    expect(bad.isError).toBe(true);
+    expect(textOfResult(bad)).toContain(
+      'html line 1:18: `flippy.send` — the bridge is `agent.send(payload)`',
+    );
+    const good = await client.callTool({
+      name: 'ui__sandbox',
+      arguments: { html: '<button onclick="agent.send({ text: \'go\' })">Go</button>' },
+      _meta: meta('ses_1'),
+    });
+    expect(good.isError).not.toBe(true);
+    await client.close();
+    const rows = b.store.genuiCallRows();
+    expect(rows).toEqual([
+      expect.objectContaining({
+        runId,
+        toolName: 'ui__sandbox',
+        mode: 'sandbox',
+        attempt: 1,
+        validity: 'failed',
+        errorCategory: 'bridge',
+        inputTokens: 0,
+      }),
+      expect.objectContaining({ runId, attempt: 2, validity: 'retried', outcome: 'ok' }),
+    ]);
+    expect(rows[1]).not.toHaveProperty('payload');
   });
 });

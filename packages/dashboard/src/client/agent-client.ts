@@ -2,6 +2,7 @@ import { resolveApiBase } from './api-base.js';
 import type {
   ActorSpendRow,
   CurrentModelPrice,
+  GenuiStats,
   GovernanceRange,
   GovernanceThreadDetail,
   ListRunsFilter,
@@ -29,6 +30,15 @@ export class AgentApiError extends Error {
     super(message);
     this.name = 'AgentApiError';
   }
+}
+
+/**
+ * `true` when the error is the server saying the bound governance adapter does not implement an
+ * OPTIONAL read (`501` — e.g. `genuiStats`, `threadDetail`, or no pricing store bound): an expected
+ * state the UI renders as "not available here", distinct from a network/auth failure.
+ */
+export function isUnsupported(error: unknown): boolean {
+  return error instanceof AgentApiError && error.status === 501;
 }
 
 type FetchLike = typeof fetch;
@@ -122,6 +132,14 @@ export class AgentClient {
     return this.get<GovernanceThreadDetail | null>(
       `/governance/threads/${encodeURIComponent(threadId)}`,
     );
+  }
+
+  /**
+   * `GET /agent/governance/genui` — generative-UI telemetry over the range. Rejects with a `501`
+   * {@link AgentApiError} (see {@link isUnsupported}) when the store does not record it.
+   */
+  genuiStats(range: GovernanceRange): Promise<GenuiStats> {
+    return this.get<GenuiStats>('/governance/genui', { from: range.fromDay, to: range.toDay });
   }
 
   /** Today's window of `GET /agent/quota` — the caller's token spend so far today. */

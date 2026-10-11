@@ -1,3 +1,5 @@
+import type { GenuiStats } from '../genui-telemetry.js';
+
 /**
  * A read-model over the persisted agent data (usage ⋈ pricing, tool calls, threads) for the
  * governance surfaces — the standalone `-dashboard` SPA and the `-telescope` "Agent" tab both
@@ -331,4 +333,10 @@ export interface AgentGovernanceQueries {
    * with a `501` rather than the dashboard breaking on a missing function.
    */
   threadDetail?(threadId: string): Promise<GovernanceThreadDetail | null>;
+  /**
+   * OPTIONAL: generative-UI telemetry over the range — first-try success per tool and model, common
+   * errors, UI cost per turn and per day, time to first and complete frame (the dashboard's
+   * "Generative UI" page). Absent → `GET <governance>/genui` answers `501`.
+   */
+  genuiStats?(range: GovernanceRange): Promise<GenuiStats>;
 }

@@ -3,6 +3,7 @@ import {
   snapshotActionProposal,
 } from '../action-proposal-transitions.js';
 import type { ToolCallOutcome } from '../dangling-tool-calls.js';
+import type { RecordGenuiCallInput } from '../genui-telemetry.js';
 import type { ActionProposalOutcome } from '../spi/action-proposal-outcome-store.js';
 import type { ActionProposalStoreOptions } from '../spi/action-proposal-store.js';
 import {
@@ -1055,6 +1056,44 @@ export class LucidAgentStore
       cost_source: input.costUsd !== undefined ? (input.costSource ?? 'provider') : null,
       run_id: input.runId ?? null,
       created_at: Date.now(),
+    });
+  }
+
+  async recordGenuiCalls(rows: readonly RecordGenuiCallInput[]): Promise<void> {
+    if (rows.length === 0) return;
+    await this.init();
+    await withStoreTransaction(this.db, async (trx) => {
+      const ids = rows.map((row) => row.toolCallId);
+      // A call recorded again (a replayed step) replaces its row.
+      await trx.from(AGENT_TABLES.genuiCalls).whereIn('id', ids).delete();
+      for (const row of rows) {
+        await trx.table(AGENT_TABLES.genuiCalls).insert({
+          id: row.toolCallId,
+          run_id: row.runId,
+          thread_id: row.threadId,
+          actor_ref: row.actorRef,
+          agent_name: row.agentName ?? null,
+          step: row.step,
+          tool_name: row.toolName,
+          channel: row.channel,
+          mode: row.mode,
+          model_id: row.modelId,
+          attempt: row.attempt,
+          outcome: row.outcome,
+          validity: row.validity,
+          error_category: row.errorCategory ?? null,
+          error_message: row.errorMessage ?? null,
+          input_tokens: row.inputTokens,
+          output_tokens: row.outputTokens,
+          cost_usd: row.costUsd ?? null,
+          cost_source: row.costUsd !== undefined ? (row.costSource ?? null) : null,
+          first_frame_ms: row.firstFrameMs ?? null,
+          complete_frame_ms: row.completeFrameMs ?? null,
+          payload_bytes: row.payloadBytes,
+          payload: row.payload ?? null,
+          created_at: Date.now(),
+        });
+      }
     });
   }
 
