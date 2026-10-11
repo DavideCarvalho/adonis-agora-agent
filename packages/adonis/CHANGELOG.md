@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.77.1
+
+### Patch Changes
+
+- [#365](https://github.com/DavideCarvalho/adonis-agora-agent/pull/365) [`932327c`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/932327c0bfee313eda5a8783b4742ba6f86164ed) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Text channels no longer draw a genui component whose frame was written for a schema version newer than the catalog knows: its native conversion, chart image and props summary are skipped and the frame's own `fallbackText` is sent (nothing, when it has none). Older versions still convert, told their version. `ChannelComponentInput.fallbackText` carries the frame's text into `renderChannelMessages`.
+
 ## 0.77.0
 
 ### Minor Changes
