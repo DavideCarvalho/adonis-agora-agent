@@ -86,7 +86,11 @@ import {
   withActorLabels,
 } from '../src/index.js';
 import { McpToolImporter } from '../src/mcp-client/index.js';
-import type { ResolveToolUiCatalog } from '../src/negotiated-tool-ui.js';
+import {
+  createToolUiChannelGuide,
+  type ResolveToolUiCatalog,
+  type ToolUiChannelGuide,
+} from '../src/negotiated-tool-ui.js';
 import { ensureModelPricing } from '../src/pricing/boot-pricing.js';
 import type { ListActionProposals } from '../src/spi/action-proposal-store.js';
 import type { DescribedModel } from '../src/spi/model-provider.js';
@@ -314,6 +318,7 @@ export default class AgentProvider {
     // Generative UI: the catalog's tools, registered like config-level functional tools, and the
     // boot-time catalog bound for injection.
     let resolveUiCatalog: ResolveToolUiCatalog | undefined;
+    let uiChannelGuide: ToolUiChannelGuide | undefined;
     if (config.genui !== undefined) {
       const setup = await config.genui({
         make: (klass) => this.app.container.make(klass as never),
@@ -326,6 +331,13 @@ export default class AgentProvider {
         };
         return (await (setup.resolveCatalog?.(serverScope) ?? setup.catalog)) as Catalog;
       };
+      if (setup.channels !== undefined) {
+        uiChannelGuide = createToolUiChannelGuide({
+          channels: setup.channels,
+          ...(setup.base !== undefined ? { base: setup.base } : {}),
+          resolveCatalog: resolveUiCatalog,
+        });
+      }
       for (const tool of setup.tools) {
         registerFunctionalTool(registry, tool, defaultRoles);
       }
@@ -407,6 +419,7 @@ export default class AgentProvider {
       registry,
       agents,
       ...(resolveUiCatalog !== undefined ? { resolveUiCatalog } : {}),
+      ...(uiChannelGuide !== undefined ? { uiChannelGuide } : {}),
       ...(config.actionApprovalMode !== undefined
         ? { actionApprovalMode: config.actionApprovalMode }
         : {}),

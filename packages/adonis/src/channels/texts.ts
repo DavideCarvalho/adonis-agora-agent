@@ -30,6 +30,8 @@ export interface ChannelComponent {
   name: string;
   data: unknown;
   version: number;
+  /** A tree frame's per-component versions. */
+  componentVersions?: Record<string, number>;
   fallbackText?: string;
 }
 

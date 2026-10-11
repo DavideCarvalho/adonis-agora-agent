@@ -1,15 +1,17 @@
 /**
  * `@adonis-agora/agent/vite` — `genuiSandboxKit()`, the Vite plugin that puts the app's design
- * system (its components, its theme, Tailwind) inside the sandbox:
+ * system (its styles, its components, its providers) inside the sandbox, whatever the stack:
  *
  * ```ts
  * // vite.config.ts
  * import { genuiSandboxKit } from '@adonis-agora/agent/vite'
- * export default defineConfig({ plugins: [react(), adonisjs({ … }), genuiSandboxKit({ include: 'inertia/components/ui/*.tsx' })] })
+ * export default defineConfig({
+ *   plugins: [react(), adonisjs({ … }), genuiSandboxKit({ styles: 'resources/css/app.css', components: 'inertia/components/ui' })],
+ * })
  * ```
  *
- * Then `genui({ sandbox: { kit: true, tailwind: true } })` in `config/agent.ts` finds the bundle and
- * the docs through Vite (the dev server in dev, the manifest in production).
+ * Then `genui({ sandbox: { kit: true } })` in `config/agent.ts` finds what it built through Vite
+ * (the dev server in dev, the manifest in production).
  */
 import {
   createGenuiSandboxKitPlugin,
@@ -25,9 +27,10 @@ import {
 export const ADONIS_SANDBOX_KIT_DESCRIPTOR = '.adonisjs/agent/genui_sandbox_kit.json';
 
 /**
- * The sandbox kit plugin. `entry` (a module exporting the kit) or `include` (a glob of component
- * files); neither → the first `components/ui` folder (`inertia/components/ui`…). See
- * {@link GenuiSandboxKitOptions}.
+ * The sandbox kit plugin: `styles` (the app's style entries — default, the stylesheets among its
+ * Vite entrypoints), `components` (modules or globs exporting React components — default, the
+ * first `components/ui` folder), `wrapper` (a module whose default export wraps the model's App).
+ * See {@link GenuiSandboxKitOptions}.
  */
 export function genuiSandboxKit(options: GenuiSandboxKitOptions = {}): GenuiSandboxKitPlugin {
   return createGenuiSandboxKitPlugin(options, {

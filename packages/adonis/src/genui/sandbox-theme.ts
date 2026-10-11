@@ -10,15 +10,37 @@
 /** Custom properties Tailwind and the browser keep for themselves — never the app's theme. */
 const INTERNAL_VAR = /^--(tw-|vite-|agora-)/;
 
-/** `--name: value` declarations in a stylesheet's text (what the Vite plugin scans). */
-export function themeVarsFromCss(css: string): Record<string, string> {
+/** Selectors a theme's variables live on: the root, and the light/dark switches on it. */
+const ROOT_SELECTOR =
+  /(^|[\s,(])(:root|html|:host|body)\b|\[data-[\w-]*(theme|mode|scheme)\b|\.(dark|light)\b/;
+
+/**
+ * `--name: value` declarations in a stylesheet's text (what the Vite plugin scans). `rootOnly`:
+ * only those on the root (`:root`, `html`, `[data-theme]`, `.dark`…) — a theme's, not a
+ * component's own (`.btn { --bs-btn-color }`).
+ */
+export function themeVarsFromCss(
+  css: string,
+  options: { rootOnly?: boolean } = {},
+): Record<string, string> {
   const vars: Record<string, string> = {};
-  const declaration = /(?:^|[;{\s])(--[A-Za-z0-9_-]+)\s*:\s*([^;{}]+)/g;
-  for (const match of css.matchAll(declaration)) {
-    const name = match[1] as string;
-    if (INTERNAL_VAR.test(name)) continue;
-    // The first value seen is the light one (`:root` comes before `.dark` in every theme file).
-    if (!(name in vars)) vars[name] = (match[2] as string).trim();
+  const text = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const take = (body: string) => {
+    const declaration = /(?:^|[;{\s])(--[A-Za-z0-9_-]+)\s*:\s*([^;{}]+)/g;
+    for (const match of body.matchAll(declaration)) {
+      const name = match[1] as string;
+      if (INTERNAL_VAR.test(name)) continue;
+      // The first value seen is the light one (`:root` comes before `.dark` in every theme file).
+      if (!(name in vars)) vars[name] = (match[2] as string).trim();
+    }
+  };
+  if (options.rootOnly !== true) {
+    take(text);
+    return vars;
+  }
+  // Each innermost rule: its selector (the text before its `{`) and its declarations.
+  for (const match of text.matchAll(/([^{};]*)\{([^{}]*)\}/g)) {
+    if (ROOT_SELECTOR.test((match[1] ?? '').trim())) take(match[2] ?? '');
   }
   return vars;
 }
@@ -41,8 +63,13 @@ export function isHslChannels(value: string): boolean {
 
 /** What a set of theme variables gives the model to work with. */
 export interface ThemeTokens {
-  /** Color names (`primary`, `muted-foreground`) — `var(--primary)`, and `bg-primary` with Tailwind. */
+  /** Color utility names (`primary`, `muted-foreground`): `bg-primary` with Tailwind. */
   colors: string[];
+  /**
+   * The color variables as they exist in the frame (`--primary`, `--color-surface-secondary`) —
+   * what `var(…)` may name. Not the utility name: `--color-x` is `bg-x`, never `var(--x)`.
+   */
+  colorVars: string[];
   /** There is a `--radius` (`rounded-sm`…`rounded-xl` follow it). */
   radius: boolean;
   /** Font variables (`--font-sans`). */
@@ -56,22 +83,25 @@ export function themeTokens(vars: Record<string, string> | readonly string[]): T
   const entries: [string, string | undefined][] = Array.isArray(vars)
     ? (vars as readonly string[]).map((name) => [name, undefined])
     : Object.entries(vars as Record<string, string>);
-  const tokens: ThemeTokens = { colors: [], radius: false, fonts: [], other: [] };
+  const tokens: ThemeTokens = { colors: [], colorVars: [], radius: false, fonts: [], other: [] };
   for (const [name, value] of entries) {
     if (INTERNAL_VAR.test(name)) continue;
     const bare = name.replace(/^--/, '');
     if (bare === 'radius') tokens.radius = true;
     else if (bare.startsWith('font-')) tokens.fonts.push(bare);
-    else if (bare.startsWith('color-')) tokens.colors.push(bare.slice('color-'.length));
-    else if (
+    else if (bare.startsWith('color-')) {
+      tokens.colors.push(bare.slice('color-'.length));
+      tokens.colorVars.push(name);
+    } else if (
       value !== undefined
         ? isColorValue(value)
         : /(^|-)(background|foreground|primary|secondary|muted|accent|destructive|border|input|ring|card|popover|chart|sidebar)/.test(
             bare,
           )
-    )
+    ) {
       tokens.colors.push(bare);
-    else tokens.other.push(bare);
+      tokens.colorVars.push(name);
+    } else tokens.other.push(bare);
   }
   return tokens;
 }
@@ -86,8 +116,8 @@ export function themeToModelText(
     return "The app's theme is on :root as CSS custom properties (for example var(--background), var(--foreground), var(--primary)); use them with a fallback, e.g. var(--primary, #2563eb), so the view matches the app in light and dark mode. The page background shows through: leave the body transparent.";
   }
   const parts = [
-    `The app's theme is on :root as CSS custom properties and follows light/dark mode: colors ${tokens.colors
-      .map((name) => `var(--${name})`)
+    `The app's theme is on :root as CSS custom properties and follows light/dark mode — use these exact names: colors ${tokens.colorVars
+      .map((name) => `var(${name})`)
       .join(', ')}${tokens.radius ? '; radius var(--radius)' : ''}${
       tokens.fonts.length > 0
         ? `; fonts ${tokens.fonts.map((name) => `var(--${name})`).join(', ')}`
@@ -158,51 +188,35 @@ export function tailwindThemeCss(vars: Record<string, string>): string {
     .join('\n')}\n}`;
 }
 
-/**
- * The Tailwind directives of an app stylesheet the sandbox's Tailwind should know too: its
- * `@custom-variant`s (shadcn's `data-open:`, `data-horizontal:`…), `@utility`s and `@theme` blocks —
- * not its `@import`s, `@source`s or base styles. What `genuiSandboxKit({ tailwindCss })` collects.
- */
-export function tailwindDirectivesFromCss(css: string): string {
-  const text = css.replace(/\/\*[\s\S]*?\*\//g, '');
-  const out: string[] = [];
-  const directive = /@(custom-variant|utility|theme)\b/g;
-  let depth = 0;
-  for (let index = 0; index < text.length; index++) {
-    const c = text[index];
-    if (c === '{') depth++;
-    else if (c === '}') depth = Math.max(0, depth - 1);
-    else if (c === '@' && depth === 0) {
-      directive.lastIndex = index;
-      const match = directive.exec(text);
-      if (match === null || match.index !== index) continue;
-      // One statement (`@custom-variant dark (&:where(.dark *));`) or one balanced block.
-      let end = index;
-      let inner = 0;
-      for (; end < text.length; end++) {
-        const ch = text[end];
-        if (ch === ';' && inner === 0) break;
-        if (ch === '{') inner++;
-        else if (ch === '}') {
-          inner--;
-          if (inner === 0) break;
-        }
-      }
-      out.push(text.slice(index, end + 1).trim());
-      index = end;
-    }
+/** The root attributes a light/dark switch lives in: `data-theme`, `data-mode`, `data-bs-theme`, `data-color-scheme`… */
+export const MODE_ATTRIBUTE = /^data-([\w-]*-)?(theme|mode|scheme)$/;
+
+/** The host root's light/dark attributes (see {@link MODE_ATTRIBUTE}), to mirror on the frame's. */
+export function hostModeAttributes(doc: Document): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const attribute of Array.from(doc.documentElement.attributes ?? [])) {
+    if (MODE_ATTRIBUTE.test(attribute.name)) out[attribute.name] = attribute.value;
   }
-  return out.join('\n');
+  return out;
 }
 
-/** Light or dark: the host's `dark` class / `data-theme`, else the system preference. */
+/** Light or dark: the host's `dark`/`light` class, a `data-*theme|mode|scheme` attribute, else the system preference. */
 export function isHostDark(doc: Document): boolean {
   const root = doc.documentElement;
   if (root.classList.contains('dark')) return true;
   if (root.classList.contains('light')) return false;
-  const attribute = root.getAttribute('data-theme') ?? root.getAttribute('data-mode');
-  if (attribute === 'dark') return true;
-  if (attribute === 'light') return false;
+  const preferred = ['data-theme', 'data-mode'];
+  const names = [
+    ...preferred,
+    ...Array.from(root.attributes ?? [], (attribute) => attribute.name).filter(
+      (name) => MODE_ATTRIBUTE.test(name) && !preferred.includes(name),
+    ),
+  ];
+  for (const name of names) {
+    const value = root.getAttribute(name);
+    if (value === 'dark') return true;
+    if (value === 'light') return false;
+  }
   return doc.defaultView?.matchMedia?.('(prefers-color-scheme: dark)').matches === true;
 }
 
@@ -262,10 +276,8 @@ export function watchHostTheme(doc: Document, onChange: () => void): () => void 
   };
   const observer =
     typeof MutationObserver === 'function' ? new MutationObserver(changed) : undefined;
-  observer?.observe(doc.documentElement, {
-    attributes: true,
-    attributeFilter: ['class', 'style', 'data-theme', 'data-mode'],
-  });
+  // Every attribute: the class, the style, and whichever `data-*theme` the app switches.
+  observer?.observe(doc.documentElement, { attributes: true });
   observer?.observe(doc.head, { childList: true });
   const media = doc.defaultView?.matchMedia?.('(prefers-color-scheme: dark)');
   media?.addEventListener?.('change', changed);

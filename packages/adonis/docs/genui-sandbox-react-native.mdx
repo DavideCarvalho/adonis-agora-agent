@@ -1,0 +1,88 @@
+---
+title: Sandbox in React Native
+description: "The sandbox component drawn in a hardened react-native-webview: the same document and CSP as the web iframe, the same checked agent.send bridge, sized to its content, themed with the app's tokens."
+icon: Smartphone
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+The [sandbox](/docs/agent/genui-sandbox) runs the model's HTML, CSS and JavaScript in an isolated iframe on the web. In a React Native app, `@adonis-agora/agent/react-native/genui` draws the same component in a [`react-native-webview`](https://github.com/react-native-webview/react-native-webview): the **same document** (`buildSandboxDocument`, the same Content-Security-Policy — no network unless the policy lists an origin), the same streaming (placeholder → preview → live, code posted in as it closes), and the same checks on everything the view sends back.
+
+## Install
+
+```sh
+npx expo install react-native-webview
+# or: pnpm add react-native-webview && (cd ios && pod install)
+```
+
+`react-native` (0.74 or later) and `react-native-webview` (13 or later) are optional peers of the package; only this entry imports them. No other entry pulls them in.
+
+## Use
+
+```tsx
+import { useColorScheme } from 'react-native'
+import {
+  createNativeSandboxRenderer,
+  GenerativeUI,
+  GenuiProvider,
+} from '@adonis-agora/agent/react-native/genui'
+import { useAgentChat } from '@adonis-agora/agent/react'
+
+const Sandbox = createNativeSandboxRenderer({
+  // The app's tokens as CSS custom properties; a hook, so a theme change reaches a drawn view.
+  theme: () => {
+    const dark = useColorScheme() === 'dark'
+    return { vars: dark ? darkTokens : lightTokens, dark }
+  },
+  // Tailwind (and the kit) from the agent's GET /config; relative asset urls resolve against it.
+  baseUrl: 'https://api.example.com/agent',
+})
+
+function Chat() {
+  const chat = useAgentChat()
+  return (
+    <GenuiProvider registry={{ Sandbox }} catalog={catalog} onAction={chat.sendUiAction}>
+      {/* …each ui block: */}
+      <GenerativeUI part={block} />
+    </GenuiProvider>
+  )
+}
+```
+
+Import `GenuiProvider`, `GenerativeUI`, `GenuiActionProvider`, `useGenuiNode` and the genui types **from this entry** in an app. `@adonis-agora/agent/react/genui` is the web entry: it also carries the iframe renderer, whose assets module calls `window.addEventListener` as it loads — React Native has a `window` without it, so importing that entry throws. This entry re-exports the same provider and components (they share their contexts by key), and its `GenuiProvider` defaults `fallback` to a `<Text>` of the item's persisted text (the web default is a `<span>`, which React Native cannot draw).
+
+## Options
+
+`createNativeSandboxRenderer(options?: NativeSandboxRendererOptions): GenuiRenderer<SandboxProps>`
+
+| Option | Default | |
+| --- | --- | --- |
+| `policy` | the catalog definition's (`defineSandbox({ policy })`), else none | network allowances (CSP) and the send limits |
+| `schema` | none | Zod / Standard Schema / JSON Schema every `agent.send` must pass |
+| `confirm` | none | `(action) => boolean \| Promise<boolean>` — e.g. an `Alert`; falsy → `declined` |
+| `onAction` | the enclosing `GenuiActionProvider` / `GenuiProvider onAction` | where accepted actions go |
+| `onRefused` | none | `(refusal: SandboxRefusal) => void` — the web renderer's reasons: `too-large`, `too-soon`, `too-many`, `not-json`, `invalid`, `declined`, `no-handler` |
+| `onError` | none | an uncaught error in the view, or the view lost (it navigated, its process died) |
+| `theme` | none | `{ vars, dark?, colorScheme?, attributes? }`, a hook returning one, or `false` |
+| `config` | `GET <baseUrl>/config` with a `baseUrl`, else theme only | `{ tailwind?: { runtime?, url?, css? }, css?: { source?, url? }, kit?: { source?, url? } }`, a url, a loader `() => Promise<config>`, or `false` |
+| `baseUrl` | none | the agent's absolute url; relative urls in the config resolve against it |
+| `fetch` | the global `fetch` | for the config and assets (your own authenticated client) |
+| `placeholder` | a box of `initialHeight` with the placeholder lines | `(state) => ReactNode` |
+| `style` | none | extra WebView style (the height is the content's) |
+
+`theme.vars` are CSS custom properties — `{ '--primary': '#2563eb' }` or `{ primary: '#2563eb' }` — written on the frame's `:root` like the web host's own; with Tailwind on, they map to utilities (`bg-primary`, `text-muted-foreground`, `rounded-lg` from `--radius`). `dark` sets the frame's `dark` class and `data-theme`; `attributes` adds light/dark attributes a stylesheet keys on (`data-bs-theme`…). The kit's compiled styles (`genuiSandboxKit({ styles })`, `css` in the agent's `/config`) are inlined like on the web.
+
+## What the WebView may do
+
+`NATIVE_SANDBOX_WEBVIEW_PROPS` is what every sandbox WebView gets, and the renderer accepts no override:
+
+- **It goes nowhere.** Every URL reaches `onShouldStartLoadWithRequest`, which allows only the inline document (`about:blank`, `about:srcdoc`, and `#fragment` jumps in it): no link, no `location = …`, no `window.open`, no `tel:` / `mailto:` / `intent:` / app scheme. `originWhitelist` is `['*']` on purpose — `react-native-webview` hands a URL its whitelist refuses to `Linking.openURL` (the system browser, or another app) instead of dropping it, so the decision is ours alone. As a backstop, a WebView that reports another URL anyway is replaced by a note, and messages from one are ignored.
+- **It keeps nothing and reads nothing:** no DOM storage, `incognito`, no cache, no shared or third-party cookies, no file access (`allowFileAccess`, `allowFileAccessFromFileURLs`, `allowUniversalAccessFromFileURLs` false), no mixed content, no geolocation, camera or microphone (`deny`), no payment request, no debugging.
+- **JavaScript runs inside it**, and nothing is injected but what the document already carries. The only bridge is the document's own: `ReactNativeWebView.postMessage` out (ready, resize, error, `agent.send`), `injectJavaScript` in, which only dispatches a `message` event of JSON (render, run, theme, jsx).
+- **It does not scroll** and shows no link preview, no data detectors, no zoom: the host sizes it to its content (between 24 px and the policy's `maxHeight`).
+
+Everything the WebView says is checked like the web host checks the frame's messages: the raw string is length-capped **before** it is parsed (`maxPayloadBytes` plus a small envelope), must be a JSON object carrying this view's token and a frame message type, and an `agent.send` then passes the preview check, the count, the interval, JSON-ness, the size, `schema` and `confirm` before it is handed on as a `UiAction`. If the WebView's process dies, the view is drawn afresh (twice at most), so Android never crashes the app over it.
+
+<Callout type="warn" title="JSX views (the kit)">
+A JSX view needs the kit bundle in the WebView: give it in the config (`kit: { url }` from the agent's `/config`, or `kit: { source }`). It uses the same document and runtime as the web, but it has not been exercised on devices as much as the HTML/CSS/JS mode; without a kit the view draws a note with its `summary`. HTML/CSS/JS views are the supported path.
+</Callout>

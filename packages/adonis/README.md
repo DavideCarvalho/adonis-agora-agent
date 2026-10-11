@@ -23,6 +23,22 @@ Tools support a `present` hook in both functional and decorated class forms. Reg
 
 See the [component rendering guide](./docs/authoring/component-rendering.mdx) for complete examples, schemas, text fallbacks, and capture configuration.
 
+### Generative UI sandbox in React Native
+
+`@adonis-agora/agent/react-native/genui` draws the sandbox component (`ui__sandbox`) in a hardened
+`react-native-webview` — the web iframe's document and CSP, the same checked `agent.send` bridge —
+and re-exports the React Native-safe genui provider and components (import them from here in an
+app, not from `/react/genui`). Install `react-native-webview` (an optional peer), then:
+
+```tsx
+import { createNativeSandboxRenderer, GenuiProvider } from '@adonis-agora/agent/react-native/genui'
+
+const Sandbox = createNativeSandboxRenderer({ theme: { vars: tokens }, baseUrl: 'https://api.example.com/agent' })
+<GenuiProvider registry={{ Sandbox }} onAction={chat.sendUiAction}>…</GenuiProvider>
+```
+
+See [Sandbox in React Native](./docs/genui-sandbox-react-native.mdx).
+
 
 ## Install
 

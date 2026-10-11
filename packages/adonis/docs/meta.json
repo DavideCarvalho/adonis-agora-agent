@@ -11,6 +11,7 @@
     "genui-loading-states",
     "genui-sandbox",
     "genui-sandbox-kit",
+    "genui-sandbox-react-native",
     "genui-channels",
     "genui-builtins",
     "frontends",

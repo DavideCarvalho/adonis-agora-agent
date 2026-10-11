@@ -11,9 +11,9 @@ import { writeSandboxKitDocs } from '../src/genui/kit/write.js';
 import { buildSandboxDocument, defineSandbox, sandboxPartialProps } from '../src/genui/sandbox.js';
 import { prepareSandboxJsx, transpileJsx } from '../src/genui/sandbox-jsx.js';
 import { kitDocsToModelText, sandboxJsxRuntime } from '../src/genui/sandbox-kit.js';
+import { tailwindDirectivesFromCss } from '../src/genui/sandbox-styles.js';
 import {
   hostThemeCss,
-  tailwindDirectivesFromCss,
   tailwindThemeCss,
   themeToModelText,
   themeVarsFromCss,
@@ -242,7 +242,7 @@ describe('kit docs generator', () => {
     expect(slider?.props.find((prop) => prop.name === 'onValueChange')?.type).toBe(
       '(value: number[]) => void',
     );
-    const text = kitDocsToModelText({ version: 1, components: docs });
+    const text = kitDocsToModelText({ components: docs });
     expect(text).toContain('- <Button> A button');
     expect(text).toContain('variant?: "default" | "outline" | "ghost" | "destructive" = "default"');
     expect(text).toContain('…and every <button> attribute');
@@ -263,11 +263,15 @@ describe('kit docs generator', () => {
         root: fixture,
         typescript,
         output: join(dir, 'kit.json'),
-        css: 'components/ui/*.css',
+        styles: 'components/ui/*.css',
+        compileStyles: false,
       });
       expect(out?.components).toHaveLength(7);
+      expect(out?.jsx).toBe(true);
+      // Plain CSS: its classes are the vocabulary.
+      expect(out?.vocabulary?.groups.map((group) => group.name)).toContain('btn');
       const written = JSON.parse(readFileSync(join(dir, 'kit.json'), 'utf8'));
-      expect(written.kit).toBeNull();
+      expect(written.assets).toEqual({ kit: null, css: null, tailwind: null });
       expect(written.components[0].name).toBe('Button');
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -278,19 +282,29 @@ describe('kit docs generator', () => {
 describe('the sandbox definition with a kit', () => {
   it('tells the model the kit, the JSX rules, Tailwind and the theme — read live', () => {
     let components = [{ name: 'Button', props: [] }];
+    const tokens = {
+      colors: ['gold'],
+      radius: [],
+      fonts: [],
+      shadows: [],
+      text: [],
+      animations: [],
+      utilities: ['kit-card'],
+      variants: ['dark'],
+    };
     const sandbox = defineSandbox({
-      kit: () => ({ version: 1, components }),
-      tailwind: true,
+      kit: () => ({ version: 2, components, jsx: true, tailwind: { version: 4, tokens } }),
       theme: { vars: ['--primary'] },
     });
     expect(sandbox.description).toContain('- <Button>');
     expect(sandbox.description).toContain('function App()');
-    expect(sandbox.description).toContain('Tailwind CSS v4');
+    expect(sandbox.description).toContain('Tailwind CSS utility classes work');
+    expect(sandbox.description).toContain('kit-card');
     expect(sandbox.description).toContain('var(--primary)');
     components = [{ name: 'Slider', props: [] }];
     expect(sandbox.description).toContain('- <Slider>');
     expect((sandbox.props as { properties: Record<string, unknown> }).properties.jsx).toBeDefined();
-    expect(sandbox.sandboxView).toEqual({ theme: true, tailwind: true, kit: true });
+    expect(sandbox.sandboxView).toEqual({ theme: true, kit: true });
   });
 
   it('the plain sandbox is unchanged (html required, no jsx)', () => {
@@ -312,21 +326,22 @@ describe('the Vite plugin', () => {
     rmSync(root, { recursive: true, force: true });
   });
   cpSync(fixture, root, { recursive: true });
-  writeFileSync(join(root, 'main.js'), 'import "./app.css"; console.log("app");\n');
+  writeFileSync(join(root, 'main.js'), 'import "./page.css"; console.log("app");\n');
+  writeFileSync(join(root, 'page.css'), '.page { color: red; }\n');
   writeFileSync(
     join(root, 'app.css'),
-    ':root { --primary: oklch(0.7 0.1 80); --radius: 0.5rem; }\n',
+    ':root { --primary: oklch(0.7 0.1 80); --radius: 0.5rem; }\n@theme inline { --color-gold: var(--primary); }\n@utility kit-card { border-radius: var(--radius); }\n.app-shell { display: grid; }\n',
   );
   const alias = { '@': root };
 
-  it('build: emits the kit, Tailwind and the descriptor, listed in the manifest', async () => {
+  it('build: emits the kit, the styles, Tailwind and the descriptor, listed in the manifest', async () => {
     const vite = await import('vite');
     await vite.build({
       configFile: false,
       root,
       logLevel: 'silent',
       resolve: { alias },
-      plugins: [genuiSandboxKit({ typescript, tailwindCss: 'tailwind-directives.txt' })],
+      plugins: [genuiSandboxKit({ typescript, styles: 'app.css' })],
       build: {
         outDir: join(work, 'dist'),
         manifest: true,
@@ -336,6 +351,7 @@ describe('the Vite plugin', () => {
     const manifest = JSON.parse(readFileSync(join(work, 'dist/.vite/manifest.json'), 'utf8'));
     for (const key of [
       'genui-sandbox-kit.js',
+      'genui-sandbox-kit.css',
       'genui-sandbox-tailwind.js',
       'genui-sandbox-kit.json',
     ])
@@ -343,11 +359,17 @@ describe('the Vite plugin', () => {
     const descriptor = JSON.parse(
       readFileSync(join(work, 'dist', manifest['genui-sandbox-kit.json'].file), 'utf8'),
     );
-    expect(descriptor.kit.url).toBe(`/${manifest['genui-sandbox-kit.js'].file}`);
-    expect(descriptor.tailwind.url).toBe(`/${manifest['genui-sandbox-tailwind.js'].file}`);
-    expect(descriptor.tailwind.css).toContain('@utility kit-card');
+    expect(descriptor.assets.kit.url).toBe(`/${manifest['genui-sandbox-kit.js'].file}`);
+    expect(descriptor.assets.css.url).toBe(`/${manifest['genui-sandbox-kit.css'].file}`);
+    expect(descriptor.assets.tailwind.url).toBe(`/${manifest['genui-sandbox-tailwind.js'].file}`);
+    expect(descriptor.assets.tailwind.css).toContain('@utility kit-card');
+    expect(descriptor.tailwind.tokens.colors).toContain('gold');
+    expect(
+      readFileSync(join(work, 'dist', manifest['genui-sandbox-kit.css'].file), 'utf8'),
+    ).toContain('.app-shell');
     expect(descriptor.components.map((c: { name: string }) => c.name)).toContain('Slider');
-    expect(descriptor.theme.vars['--primary']).toBe('oklch(0.7 0.1 80)');
+    // Read off the compiled (minified) styles.
+    expect(descriptor.theme.vars['--primary']).toMatch(/^oklch\(/);
     const kit = readFileSync(join(work, 'dist', manifest['genui-sandbox-kit.js'].file), 'utf8');
     expect(kit).toContain('window.Kit');
 
@@ -357,11 +379,12 @@ describe('the Vite plugin', () => {
       production: true,
       manifest: { file: 'dist/.vite/manifest.json', outDir: 'dist' },
     });
-    const server = resolveSandboxServer({ kit: true, tailwind: true }, discovery);
+    const server = resolveSandboxServer({ kit: true }, discovery);
     expect(server.client()).toEqual({
       theme: true,
-      tailwind: descriptor.tailwind,
-      kit: descriptor.kit,
+      tailwind: descriptor.assets.tailwind,
+      css: descriptor.assets.css,
+      kit: descriptor.assets.kit,
     });
     expect(defineSandbox(server.define).description).toContain('- <Slider>');
   }, 180_000);
@@ -387,13 +410,15 @@ describe('the Vite plugin', () => {
     try {
       await plugin.api.ready();
       const descriptor = plugin.api.descriptor();
-      expect(descriptor?.kit?.url).toMatch(/^\/@genui-sandbox-kit\/kit\.js\?v=[0-9a-f]{12}$/);
+      expect(descriptor?.assets.kit?.url).toMatch(
+        /^\/@genui-sandbox-kit\/kit\.js\?v=[0-9a-f]{12}$/,
+      );
       expect(existsSync(join(root, '.genui/kit.json'))).toBe(true);
       const http = await import('node:http');
       const listener = http.createServer(server.middlewares);
       await new Promise<void>((done) => listener.listen(0, '127.0.0.1', done));
       const port = (listener.address() as { port: number }).port;
-      const response = await fetch(`http://127.0.0.1:${port}${descriptor?.kit?.url}`);
+      const response = await fetch(`http://127.0.0.1:${port}${descriptor?.assets.kit?.url}`);
       const served = { status: response.status, body: await response.text() };
       listener.close();
       expect(served.status).toBe(200);
@@ -410,7 +435,7 @@ describe('the Vite plugin', () => {
         if (Date.now() > deadline) throw new Error('no rebuild');
         await new Promise((r) => setTimeout(r, 50));
       }
-      expect(plugin.api.descriptor()?.kit?.url).not.toBe(descriptor?.kit?.url);
+      expect(plugin.api.descriptor()?.assets.kit?.url).not.toBe(descriptor?.assets.kit?.url);
 
       // The dev server's descriptor is what the server process reads.
       const discovery = sandboxKitDiscovery({
@@ -418,7 +443,9 @@ describe('the Vite plugin', () => {
         descriptor: '.genui/kit.json',
         production: false,
       });
-      expect(discovery.descriptor()?.kit?.url).toBe(plugin.api.descriptor()?.kit?.url);
+      expect(discovery.descriptor()?.assets.kit?.url).toBe(
+        plugin.api.descriptor()?.assets.kit?.url,
+      );
     } finally {
       await server.close();
     }
@@ -443,16 +470,17 @@ describe('the Vite plugin', () => {
 });
 
 describe('genui() with a kit sandbox in the catalog', () => {
-  it('resolves it like `sandbox: { kit, tailwind }`: the client config, and the name kept', async () => {
+  it('resolves it like `sandbox: { kit }`: the client config, and the name kept', async () => {
     const { genui } = await import('../src/genui/index.js');
     const { defineCatalog } = await import('../src/genui/catalog.js');
     const setup = await genui({
-      catalog: defineCatalog([defineSandbox({ name: 'MiniApp', kit: true, tailwind: true })]),
+      catalog: defineCatalog([defineSandbox({ name: 'MiniApp', kit: true })]),
     })({ make: async () => ({}) as never, app: undefined });
     expect(setup.sandboxClient?.()).toEqual({ theme: true });
     const sandbox = setup.catalog.get('MiniApp');
     const props = sandbox?.props as { properties: Record<string, unknown> } | undefined;
-    expect(props?.properties.jsx).toBeDefined();
+    // No kit was built (no Vite here): the model is offered html only, not a jsx it cannot draw.
+    expect(props?.properties.jsx).toBeUndefined();
     expect(setup.catalog.components).toHaveLength(1);
   });
 });

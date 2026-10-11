@@ -16,7 +16,15 @@
     "types": ["node"],
     "jsx": "react-jsx",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "experimentalDecorators": true
+    "experimentalDecorators": true,
+    // The React Native entry compiles against the slice of `react-native` / `react-native-webview`
+    // it uses (`types/`): the real `react-native` types declare globals of their own
+    // (`setTimeout(): number`…) that would retype the Node code of the rest of the package. The
+    // emitted declarations import the real modules, which an app resolves to the real packages.
+    "paths": {
+      "react-native": ["./types/react-native.d.ts"],
+      "react-native-webview": ["./types/react-native-webview.d.ts"]
+    }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "providers/**/*.ts", "configure.ts", "stubs/main.ts"],
   "exclude": ["**/*.spec.ts", "**/*.test.ts", "test/**", "dist/**"]

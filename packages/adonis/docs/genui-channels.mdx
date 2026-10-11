@@ -17,7 +17,7 @@ genui: genui({
   streaming: 'partial',            // top-level options: the default (and what an unlisted channel gets)
   sandbox: true,
   channels: {
-    web: { mode: 'tree', streaming: 'partial', sandbox: { kit: true, tailwind: true } },
+    web: { mode: 'tree', streaming: 'partial', sandbox: { kit: true } },
     mobile: { mode: 'tree', sandbox: false },
     whatsapp: { mode: 'per-component', render: 'native', chartImages: chartImages() },
     telegram: { mode: 'per-component' },
@@ -85,6 +85,40 @@ A conversion returns `{ text?, buttons?, list?, image?, html? }` (or several). T
 - without a conversion, the component's text summary, as before. A conversion that throws falls back to the summary too.
 
 A tree (`ui__render`) is flattened in order: each node's conversion or summary, consecutive text joined.
+
+A conversion may also be `{ convert, describe }`: `describe` says, in words for the model, how the component reaches the user on that channel (see below).
+
+```ts
+channels: {
+  whatsapp: {
+    describe: 'a message listing the orders, with a pick-list of them. No Refund buttons: to refund, the user picks an order and replies.',
+    convert: (props) => ({ text: '*Your orders*', list: { button: 'Order details', items: … } }),
+  },
+}
+```
+
+`convert(props, context)` also gets the frame it converts:
+
+- `context.version` is the schema version the props were written for: the frame's own `version`, or, for a node of a tree, the tree's `componentVersions` entry. It defaults to 1. A frame persisted before the component moved to v2 still says 1, so convert its props by it, as a renderer would;
+- `context.component` and `context.id` name the component and the frame;
+- `context.frame` is the whole frame as given.
+
+`describe` may be a function too, `({ channel, component, version }) => string`, where `version` is the component's current one.
+
+```ts
+channels: {
+  whatsapp: (props, { version }) => ({ text: `Total ${version === 1 ? props.amount : props.total}` }),
+}
+```
+
+## What the model is told
+
+Tool and component descriptions are written once, usually for the web ("shows the orders as a table with a Refund button per row"). On a channel the server draws for (WhatsApp, Telegram, email), two things keep the model from describing that view there:
+
+- **The prompt.** The turn's system prompt gets a `## Channel: WhatsApp` block: the user is not on a web page, what the channel can show (text, up to 3 reply buttons, a pick-list, images), and how each component of the catalog reaches the user there. That comes from the component's conversion: its `describe` if it has one, otherwise what a conversion can send; a chart the channel draws as an image is "a picture of the chart"; everything else is "plain text, no table, no buttons, nothing to click"; layouts are their contents. A sandbox is never listed. `channelPrompt(catalog, channel)` returns that block.
+- **The tool result.** When a tool pushes UI on that channel (`ctx.emitUi`, or a `ui__show_*` tool), its result gets a `delivered` field that says what the user actually received, rendered the way the channel renders it, for example: `Shown on WhatsApp as a message "*Your orders*" with a pick-list (opened with "Order details") of 4 entries: "Order #1001", … — picking one comes back as the user's next message. That is all the user got: no table, no web view, and no buttons other than the ones listed.` Choices are described the way the channel handler sends them under the adapter's limits, which it stamps on the turn as `pageContext.channel.choices`: reply buttons when they fit, otherwise a list of the rows that fit, otherwise numbered text. An object output gets `delivered` added; any other output becomes `{ result, delivered }`. `describeChannelDelivery(messages, channel)` gives the same words for messages you render yourself.
+
+Web-like channels (`web`, `mobile`, A2UI) get neither: the page draws the components the descriptions talk about.
 
 ## Clicks come back as turns
 

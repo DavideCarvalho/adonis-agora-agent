@@ -1,5 +1,93 @@
 # @adonis-agora/agent
 
+## 0.76.3
+
+### Patch Changes
+
+- [#362](https://github.com/DavideCarvalho/adonis-agora-agent/pull/362) [`83299a0`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/83299a026b324665f5636e81dac70cf4d3e63d47) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Sandbox kit fixes from the app rollouts:
+  
+  - The prompt names theme variables as they exist in the frame. A variable named `--color-surface-secondary` is now listed as `var(--color-surface-secondary)`, not `var(--surface-secondary)`, which does not exist. Its Tailwind utility (`bg-surface-secondary`) is listed separately.
+  - A stylesheet's imports are followed from its real path. A workspace package linked or pnpm-injected into `node_modules` resolves its own imports beside its dependencies, so `@workspace/ui`'s `shadcn/tailwind.css` (with the `data-open:` and `data-horizontal:` variants) now reaches the frame's Tailwind.
+  - The prompt tells the model to lay the view out at the frame's full width (`width: 100%`, `w-full` with Tailwind) unless the user asks for something narrower.
+
+## 0.76.2
+
+### Patch Changes
+
+- [#360](https://github.com/DavideCarvalho/adonis-agora-agent/pull/360) [`43a34fc`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/43a34fca2b7fbd387e682d20244ac832375d8431) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Sandbox views a real model writes under strict tool calling (it fills every field):
+  
+  - The schema offers `jsx` only when the kit has a bundle to draw it with. A stylesheet-only kit (Bootstrap) and a server with no kit built are written as `html`, as their description says.
+  - When a model writes both `html` and `jsx`, the field holding the view wins (the longer one): a `function App() { return null }` stub next to the real `html` no longer blanks the frame. This applies to the web and React Native renderers (`sandboxDrawsJsx`).
+  - The JSX rules now say "jsx OR html, never both".
+
+## 0.76.1
+
+### Patch Changes
+
+- [#356](https://github.com/DavideCarvalho/adonis-agora-agent/pull/356) [`0158a9e`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/0158a9ed00e58e43af2f09dbcd7a564d02a2791c) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - The sandbox kit plugin now runs its dev rebuilds one at a time. Each rebuild reads the options when it starts. Before, a slower, older build could finish after a newer one and win, and the server then described the wrong kit. With Tailwind, the theme variables now come from the app's own stylesheets, not from Tailwind's compiled theme layer (`--color-white`, `--spacing`…).
+
+## 0.76.0
+
+### Minor Changes
+
+- [#355](https://github.com/DavideCarvalho/adonis-agora-agent/pull/355) [`35cab3d`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/35cab3da6e2af0ba1e807fa732e7c4ac2f30d416) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - The sandbox component in React Native: `@adonis-agora/agent/react-native/genui`.
+  
+  - **`createNativeSandboxRenderer(options)`** draws `Sandbox` (`ui__sandbox`) in a `react-native-webview` built from the web renderer's own document (`buildSandboxDocument`, the same CSP — no network unless the policy lists an origin), streaming the same way (placeholder → preview → live, code posted in as it closes) and sized to its content within the policy's `maxHeight`. Register it like the web one: `<GenuiProvider registry={{ Sandbox: createNativeSandboxRenderer({ … }) }}>`.
+  - **Hardened WebView** (`NATIVE_SANDBOX_WEBVIEW_PROPS`): every navigation refused but the inline document (with an `originWhitelist` of `['*']`, so a refused URL is never handed to `Linking.openURL`), no DOM storage, incognito, no cache or cookies, no file access, no new windows, no mixed content, no link previews, no scrolling. The only bridge is the document's: `ReactNativeWebView.postMessage` out, `injectJavaScript` dispatching JSON `message` events in.
+  - **The same checks as the web host**: the raw message is length-capped before parsing and needs the view's token; `agent.send` then goes through the count, interval, JSON, size, `schema` and `confirm` checks, `onRefused` gets the web `SandboxRefusal` reasons, and an accepted send reaches `onAction` / the enclosing `GenuiActionProvider` as a `UiAction`.
+  - **Theme and Tailwind**: `theme: { vars, dark }` (or a hook returning it) becomes the frame's `:root` custom properties and follows changes without reloading; Tailwind, the kit's compiled styles and the kit come from a config object (assets inline or by url) or the agent's `GET <baseUrl>/config`, relative urls resolved against `baseUrl`.
+  - The entry also re-exports the React Native-safe genui pieces — `GenuiProvider` (its default fallback a `<Text>`), `GenerativeUI`, `GenuiActionProvider`, `useGenuiNode`, the types. `@adonis-agora/agent/react/genui` is not safe to import in React Native (its iframe renderer's assets module calls `window.addEventListener` as it loads).
+  - `react-native` (>= 0.74) and `react-native-webview` (>= 13) are optional peers, imported by this entry only. `buildSandboxDocument` takes `transport: 'react-native'` (default `'parent'`, unchanged).
+
+## 0.75.0
+
+### Minor Changes
+
+- [#352](https://github.com/DavideCarvalho/adonis-agora-agent/pull/352) [`b53bc6d`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/b53bc6d1756e9808208120a0b3a6e83ceb3750ad) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - The sandbox kit works with any styling or component stack, without presets.
+  
+  `genuiSandboxKit({ styles, components, wrapper })`:
+  
+  - `styles` are your style entries (plain CSS, Sass/Less, PostCSS, CSS modules, Bootstrap through `.scss`, Tailwind v3/v4). They are compiled with Vite's own CSS pipeline, and fonts and images are inlined as `data:` URIs (`inlineAssetLimit` and `inlineAssetBudget`, with warnings).
+    - Tailwind is detected. The frame runs Tailwind's browser runtime with your `@theme`, `@custom-variant` and `@utility` directives, and a v3 config is mapped to v4.
+    - Any other CSS reaches the model as its class vocabulary. `stylesDocs` adds your own notes.
+  - `components` are modules, globs, directories or packages exporting React components. In a JavaScript project the docs fall back to names and propTypes.
+  - `wrapper` is a module whose default export wraps the model's App (MUI's ThemeProvider + CssBaseline, emotion, styled-components). Portals render inside the frame.
+  - With no options, the styles come from the Vite entrypoints and the components from `components/ui`.
+  - `defineSandbox({ theme, kit })`: `kit: true` picks up whatever the plugin produced. The prompt describes only what exists. The frame mirrors every `data-*theme` attribute of the page root.
+  
+  Other fixes:
+  
+  - The frame's JSX transpiler now ships prebuilt as a string. A minifying consumer build no longer breaks it (`m is not defined`).
+  - Outside production, the newer of the dev descriptor and the build manifest wins.
+  - Theme variables are read from workspace packages linked into `node_modules`.
+  
+  **Breaking (0.x):** `tailwind` and `tailwindCss` on the plugin, `entry` and `include` (now `components`), the hook's `css` (now `styles`), and `defineSandbox({ tailwind })` are removed. Passing them throws a migration message. The descriptor is `version: 2`, with assets under `assets`. See "Migration from 0.74" in the sandbox kit docs.
+  
+  Also:
+  
+  - `genui({ ability })`: the authorization ability the UI tools (`ui__render`, `ui__sandbox`, the per-component tools, `ui__show`) declare. It is a string, a map by tool name, or a function of the tool. Under `authzToolAuthorizer`, which denies a tool with no ability, the UI tools could not be offered before. Authz still decides.
+  - Channel conversions get the frame they convert: `convert(props, { channel, component, version, id, frame })`. `version` is the frame's (or, inside a tree, its `componentVersions` entry), so a v1 frame is converted as v1. `describe` may be a function of `{ channel, component, version }`.
+
+## 0.74.1
+
+### Patch Changes
+
+- [#350](https://github.com/DavideCarvalho/adonis-agora-agent/pull/350) [`2b6eb5b`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/2b6eb5b40a494455d5055059f761a28ab78cdc43) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Sandbox frames follow their content, and the model stops describing web UI on WhatsApp, Telegram and email.
+  
+  - **The sandbox frame resizes to its content, both ways.** The bridge measured `scrollHeight`, which never drops below the frame's own height, so a frame mounted at the model's `initialHeight` kept that height and left an empty gap under a short view, and it could only grow. It now reports the content's height (the bottom of what the body holds, margins included), re-measures on every resize of the page or a top-level element, on DOM and style changes (Tailwind injecting its CSS, the kit drawing JSX), and once fonts and images load. The first measure also rides `ready`. `initialHeight` only sizes the placeholder and the frame until its first measure.
+  - **On a channel the server draws for, the model is told what the user gets.** With `genui({ channels })`, a turn on WhatsApp, Telegram or email gets a `## Channel: …` prompt block: the user is not on a web page, what the channel can show, and how each component reaches the user there (its conversion's `describe`, a chart image, or plain text with no buttons). A tool that pushes UI there gets `delivered` on its result, which says what was actually sent (`Shown on WhatsApp as a message "*Your orders*" with a pick-list … of 4 entries …; no table, no web view, and no buttons other than the ones listed`). A conversion may be `{ convert, describe }`. New exports: `channelPrompt`, `describeChannelDelivery`, `describeChannelComponents`, `ChannelConversionSpec`.
+
+## 0.74.0
+
+### Minor Changes
+
+- [#346](https://github.com/DavideCarvalho/adonis-agora-agent/pull/346) [`61bb8b2`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/61bb8b207ea840632e1819d77c14d7799ced793b) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Generative UI and approvals, from a real-model pass:
+  
+  - `ui__render` takes a malformed call as meant when that is unambiguous: an element that left out its `{ type, props }` envelope (`{ props: { html, … } }` or the bare props) when exactly one component's schema fits, props written beside `type`, an element wrapped in one more key (`{ props: <element> }`, `{ root: "{…}" }`) or named under `component` / `root`, stringified `props`, and stringified arguments that wrote `>` for a key's `:`. `normalizeTreeInput(catalog, args)` applies the same reading for a client that draws a call from its arguments. The tool's description shows the envelope with an example from the catalog.
+  - `componentTools: ['Sandbox']` (tree mode) also registers a flat `ui__sandbox` tool whose input is the sandbox's props — no envelope to leave out. On `claude-haiku-5.5` it took the bill-splitter sandbox from 11 of 16 runs with a refused first call to 0 of 16.
+  - The transcript leaves out a failed tool call the model retried at once with the same tool (`retriedCallIds`; `hideRetriedFailures: false` keeps every attempt).
+  - Approvals carry the tool's `presentation.confirm` filled from the call's input on the server (`fillToolConfirmation`), so AG-UI, A2UI, OpenUI and A2A clients show "Refund order [#1002](https://github.com/DavideCarvalho/adonis-agora-agent/issues/1002)?" rather than "Approve refund_order?". The AG-UI interrupt carries the whole confirmation as `metadata['agora.confirmation']`; the A2UI approval surface shows its `detail` under the title.
+
 ## 0.73.0
 
 ### Minor Changes

@@ -71,8 +71,9 @@ function mergeSandboxClients(clients: Array<() => SandboxClientConfig>): Sandbox
   for (const client of clients) {
     const one = client();
     merged.theme ||= one.theme;
-    if (one.tailwind !== undefined) merged.tailwind ??= one.tailwind;
     if (one.kit !== undefined) merged.kit ??= one.kit;
+    if (one.css !== undefined) merged.css ??= one.css;
+    if (one.tailwind !== undefined) merged.tailwind ??= one.tailwind;
   }
   return merged;
 }
@@ -119,7 +120,7 @@ export function genui(options: GenuiOptions = {}): GenuiFactory {
     const { catalog: given, resolver, sandbox: asked, channels: askedChannels, ...rest } = options;
     assertGenuiChannels(askedChannels);
     const base = given ?? defineCatalog([]);
-    // A sandbox's kit, Tailwind and theme names are found through the app's Vite setup.
+    // A sandbox's kit (styles, components, wrapper) and theme names are found through the app's Vite setup.
     const clients: Array<() => SandboxClientConfig> = [];
     let discovery: SandboxKitDiscovery | undefined;
     const resolveSandbox = async (
@@ -137,15 +138,13 @@ export function genui(options: GenuiOptions = {}): GenuiFactory {
       return resolved.define;
     };
     const sandbox = await resolveSandbox(asked);
-    // A kit or Tailwind sandbox defined in the (shared) catalog itself: found the same way, and put
+    // A kit sandbox defined in the (shared) catalog itself: found the same way, and put
     // back under its own name, so the browser's copy of the catalog validates what the model writes.
     const own = base.components.find((each) => sandboxPolicyOf(each) !== undefined) as
       | SandboxDefinition
       | undefined;
     const ownOptions =
-      asked === undefined &&
-      own?.sandboxOptions !== undefined &&
-      (own.sandboxView?.kit === true || own.sandboxView?.tailwind === true)
+      asked === undefined && own?.sandboxOptions !== undefined && own.sandboxView?.kit === true
         ? await resolveSandbox({ ...own.sandboxOptions, name: own.name })
         : undefined;
     let channels: GenuiChannels | undefined;

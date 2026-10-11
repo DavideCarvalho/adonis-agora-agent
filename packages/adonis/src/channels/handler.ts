@@ -475,6 +475,11 @@ export interface ChannelAddress {
   conversation: string;
   /** The adapter's {@link ChannelAdapter.kind}, when it has one — what `turnChannel` reads first. */
   kind?: string;
+  /**
+   * How many reply buttons and list rows the adapter shows (its capabilities): what a tool result's
+   * `delivered` describes choices by, the way the handler will send them.
+   */
+  choices?: { buttons: number; lists: number };
 }
 
 /** A question set waiting for the person's answer, one question at a time. */
@@ -579,6 +584,9 @@ function componentOf(frame: StreamFrame, position: number): ChannelComponent | n
       name: frame.name,
       data: frame.data,
       version: frame.version ?? 1,
+      ...(frame.componentVersions !== undefined
+        ? { componentVersions: frame.componentVersions }
+        : {}),
       ...(frame.fallbackText !== undefined ? { fallbackText: frame.fallbackText } : {}),
     };
   }
@@ -589,6 +597,9 @@ function componentOf(frame: StreamFrame, position: number): ChannelComponent | n
       name: event.component,
       data: event.props,
       version: event.version ?? 1,
+      ...(event.componentVersions !== undefined
+        ? { componentVersions: event.componentVersions }
+        : {}),
       ...(event.fallbackText !== undefined ? { fallbackText: event.fallbackText } : {}),
     };
   }
@@ -1564,6 +1575,10 @@ export function handleChannel(
               id: component.id,
               name: component.name,
               props: (component.data ?? {}) as Record<string, unknown>,
+              version: component.version,
+              ...(component.componentVersions !== undefined
+                ? { componentVersions: component.componentVersions }
+                : {}),
             },
             native.channel,
           );
@@ -1828,6 +1843,7 @@ export function handleChannel(
       name,
       conversation: message.conversation,
       ...(adapter.kind !== undefined ? { kind: adapter.kind } : {}),
+      choices: { buttons: capabilities.buttons ?? 0, lists: capabilities.lists ?? 0 },
     };
     // A channel genui draws for: the turn may push whatever this channel can draw (the tools are
     // narrowed to it), and the components arrive whole, for the history and for native delivery.

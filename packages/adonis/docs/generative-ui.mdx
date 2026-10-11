@@ -149,6 +149,7 @@ Options, all optional:
 | `showTool` | `true` (or a tool name) adds a generic `ui__show` taking `{ component, props }` — how a model reaches components that exist only in a per-request catalog. |
 | `terminal` | A successful push ends the turn. |
 | `roles` | Roles allowed to call the tools; omitted → `defaultRoles`. |
+| `ability` | The authorization ability the UI tools declare, for an ability-aware authorizer such as `authzToolAuthorizer` (which denies a tool with none, so without it the UI tools are never offered). A string for every tool; a map by tool name (`{ ui__render: 'genui.render', ui__sandbox: 'genui.sandbox' }`, where a tool left out declares none); or `({ name, component }) => ability \| undefined`. The authorizer still decides; nothing is allowed by default. |
 | `presentation` | `(component) => ToolPresentation \| undefined`, overriding the generated chat copy per tool. |
 | `namePrefix` | Prefix of the per-component tools (`mode: 'per-component'`). Default `ui__show_`. |
 | `componentTools`, `componentToolPrefix` | Tree mode: standalone components that also get a flat tool of their own (`['Sandbox']` → `ui__sandbox`). See above. |

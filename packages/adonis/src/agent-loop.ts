@@ -48,8 +48,13 @@ import {
   rememberToolDefinition,
   writeMemory,
 } from './memory.js';
-import type { ResolveToolUiCatalog } from './negotiated-tool-ui.js';
-import { createNegotiatedUiCollector } from './negotiated-tool-ui.js';
+import {
+  channelChoiceLimits,
+  createNegotiatedUiCollector,
+  type ResolveToolUiCatalog,
+  type ToolUiChannelGuide,
+  withDelivered,
+} from './negotiated-tool-ui.js';
 import { personaFromTurn } from './personas.js';
 import { resolveUsageCost } from './pricing/resolve.js';
 import {
@@ -156,6 +161,12 @@ import type {
 export interface AgentLoopDeps<TOutput = unknown> {
   actionApprovalMode?: ActionApprovalMode;
   resolveUiCatalog?: ResolveToolUiCatalog;
+  /**
+   * genui `channels`: on a channel the server draws for (WhatsApp, Telegram, email), a prompt block
+   * saying how each component reaches the user there, and — on each tool result that pushed UI —
+   * `delivered`, what the user actually received. Undefined → neither.
+   */
+  uiChannelGuide?: ToolUiChannelGuide;
   /** Where a tool's failed `present` is reported, with the call's ids. Undefined → a console warning. */
   onPresentationError?: PresentationErrorHandler;
   model: ModelProvider;
@@ -1908,7 +1919,27 @@ async function invokeClaimedTool(
         if (!(error instanceof ToolPreflightDeniedError)) throw error;
         return { '@@adonis-agent/tool-preflight-denied': 1, reason: error.reason };
       }
-      return wrapToolStepOutput(output, ui.components(), ui.text());
+      // On a channel the server draws for, the model reads what the user actually got there (a
+      // pick-list, an image, text) — not the web view the tool's description talks about. Inside
+      // the step: a replay reads back the same words.
+      const pushed = ui.components();
+      if (deps.uiChannelGuide !== undefined && pushed.length > 0) {
+        const delivered = await deps.uiChannelGuide
+          .delivered(
+            {
+              actor: ctx.actor,
+              threadId: ctx.threadId,
+              ...(ctx.agentName !== undefined ? { agentName: ctx.agentName } : {}),
+              ...(ctx.uiCapabilities !== undefined ? { uiCapabilities: ctx.uiCapabilities } : {}),
+              channel: ctx.channel ?? turnChannel(ctx.pageContext),
+            },
+            pushed,
+            channelChoiceLimits(ctx.pageContext),
+          )
+          .catch(() => undefined);
+        if (delivered !== undefined) output = withDelivered(output, delivered);
+      }
+      return wrapToolStepOutput(output, pushed, ui.text());
     });
     if (
       typeof raw === 'object' &&
@@ -2984,6 +3015,20 @@ export async function runAgentLoop<TOutput = unknown>(
   const maxSteps = deps.maxSteps ?? 8;
   const persona = turnPersona;
   let system = await resolveSystemPrompt(deps, input, turnPersona);
+  // A turn on WhatsApp, Telegram or email: how each component reaches the user there. Derived from
+  // the config and the catalog like the base prompt, so it needs no checkpoint of its own.
+  if (deps.uiChannelGuide !== undefined) {
+    const channelBlock = await deps.uiChannelGuide
+      .prompt({
+        actor: input.actor,
+        threadId: input.threadId,
+        ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+        ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
+        channel: turnChannel(input.pageContext),
+      })
+      .catch(() => undefined);
+    if (channelBlock !== undefined && channelBlock !== '') system = `${system}\n\n${channelBlock}`;
+  }
   const inputProcessors = deps.inputProcessors ?? [];
   const outputProcessors = deps.outputProcessors ?? [];
   const gateMode = resolveOutputGateMode(outputProcessors);

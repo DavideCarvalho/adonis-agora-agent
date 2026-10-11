@@ -19,7 +19,10 @@ export interface SandboxKitDiscoveryOptions {
   manifest?: { file: string; outDir: string };
   /** The plugin's live API, when Vite runs in this process (the Adonis dev server). */
   plugin?: () => GenuiSandboxKitApi | undefined;
-  /** Read the manifest first (production). Default: `NODE_ENV === 'production'`. */
+  /**
+   * Production: the manifest first. Otherwise the in-process dev server, else whichever of the dev
+   * descriptor and the build's descriptor was written last. Default: `NODE_ENV === 'production'`.
+   */
   production?: boolean;
   /** An explicit kit url (an SPA served from elsewhere), over what is found. */
   kitUrl?: string;
@@ -42,8 +45,9 @@ function isDescriptor(value: unknown): value is SandboxKitDescriptor {
   return (
     typeof value === 'object' &&
     value !== null &&
-    (value as { version?: unknown }).version === 1 &&
-    Array.isArray((value as { components?: unknown }).components)
+    (value as { version?: unknown }).version === 2 &&
+    Array.isArray((value as { components?: unknown }).components) &&
+    typeof (value as { assets?: unknown }).assets === 'object'
   );
 }
 
@@ -60,28 +64,49 @@ export function sandboxKitDiscovery(options: SandboxKitDiscoveryOptions): Sandbo
     cache.set(path, { mtime, value });
     return value;
   };
-  const fromManifest = (): SandboxKitDescriptor | null => {
+  const mtimeOf = (path: string): number => {
+    try {
+      return statSync(path).mtimeMs;
+    } catch {
+      return 0;
+    }
+  };
+  /** The build's descriptor, and when it was written. */
+  const fromManifest = (): { value: SandboxKitDescriptor; mtime: number } | null => {
     if (options.manifest === undefined) return null;
     const manifest = cached(resolve(options.root, options.manifest.file)) as
       | Record<string, { file?: string }>
       | undefined;
     const file = manifest?.[SANDBOX_KIT_MANIFEST_KEYS.descriptor]?.file;
     if (file === undefined) return null;
-    const value = cached(join(resolve(options.root, options.manifest.outDir), file));
-    return isDescriptor(value) ? value : null;
+    const path = join(resolve(options.root, options.manifest.outDir), file);
+    const value = cached(path);
+    return isDescriptor(value) ? { value, mtime: mtimeOf(path) } : null;
   };
-  const fromDev = (): SandboxKitDescriptor | null => {
+  /** The dev server's descriptor file, and when it was written. */
+  const fromDevFile = (): { value: SandboxKitDescriptor; mtime: number } | null => {
+    if (options.descriptor === undefined) return null;
+    const path = resolve(options.root, options.descriptor);
+    const value = cached(path);
+    return isDescriptor(value) ? { value, mtime: mtimeOf(path) } : null;
+  };
+  const find = (): SandboxKitDescriptor | null => {
+    // A dev server in this process is current by definition.
     const live = options.plugin?.()?.descriptor();
     if (live !== undefined && live !== null) return live;
-    if (options.descriptor === undefined) return null;
-    const value = cached(resolve(options.root, options.descriptor));
-    return isDescriptor(value) ? value : null;
+    const built = fromManifest();
+    if (production) return built?.value ?? fromDevFile()?.value ?? null;
+    // Outside production, a dev descriptor left over from an earlier `vite dev` must not shadow a
+    // newer build (or the other way round): the one written last wins.
+    const dev = fromDevFile();
+    if (dev === null || built === null) return dev?.value ?? built?.value ?? null;
+    return dev.mtime >= built.mtime ? dev.value : built.value;
   };
   return {
     descriptor() {
-      const found = production ? (fromManifest() ?? fromDev()) : (fromDev() ?? fromManifest());
+      const found = find();
       if (found === null || options.kitUrl === undefined) return found;
-      return { ...found, kit: { url: options.kitUrl } };
+      return { ...found, jsx: true, assets: { ...found.assets, kit: { url: options.kitUrl } } };
     },
   };
 }
@@ -95,10 +120,10 @@ export interface ResolvedSandboxServer {
 }
 
 /**
- * `sandbox: { kit: true, tailwind: true }` (or `true`) as the definition and the browser need it:
- * docs and theme names from the discovery, asset urls for the client. A kit or Tailwind asked for
- * but not found is left out of what the browser is told (and the model is still told of a kit only
- * when docs exist), so a missing build degrades to the plain sandbox.
+ * `sandbox: { kit: true }` (or `true`) as the definition and the browser need it: docs and theme
+ * names from the discovery, asset urls for the client. What was asked for but not found is left out
+ * of what the browser is told (and of what the model is told), so a missing build degrades to the
+ * plain sandbox.
  */
 export function resolveSandboxServer(
   sandbox: true | DefineSandboxOptions,
@@ -121,11 +146,13 @@ export function resolveSandboxServer(
   return {
     define,
     client() {
-      const found = discovery.descriptor();
+      const kitOn = given.kit !== undefined && given.kit !== false;
+      const assets = kitOn ? discovery.descriptor()?.assets : undefined;
       return {
         theme: themeOn,
-        ...(given.tailwind === true && found?.tailwind ? { tailwind: found.tailwind } : {}),
-        ...(given.kit !== undefined && given.kit !== false && found?.kit ? { kit: found.kit } : {}),
+        ...(assets?.kit ? { kit: assets.kit } : {}),
+        ...(assets?.css ? { css: assets.css } : {}),
+        ...(assets?.tailwind ? { tailwind: assets.tailwind } : {}),
       };
     },
   };

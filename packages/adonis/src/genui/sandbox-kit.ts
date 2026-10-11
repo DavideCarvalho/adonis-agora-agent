@@ -4,7 +4,8 @@
  * draws the model's JSX in the frame. The Node half (docs generation, the bundle, the Vite plugin,
  * discovery) is `genui/kit`.
  */
-import { prepareSandboxJsx, transpileJsx } from './sandbox-jsx.js';
+import { SANDBOX_JSX_FRAME_SOURCE } from './sandbox-jsx-frame-generated.js';
+import type { CssVocabulary, TailwindTokens } from './sandbox-styles.js';
 
 /** One prop of a kit component, as its TypeScript type declares it. */
 export interface SandboxKitPropDoc {
@@ -26,32 +27,53 @@ export interface SandboxKitComponentDoc {
   inherits?: string;
 }
 
-/** The kit's docs: its components, and the theme variables its stylesheets declare. */
+/**
+ * What the model is told about the app's design system: its components (when there are any), what
+ * its styles are — Tailwind (its tokens) or plain CSS (its class vocabulary) — the theme's variables,
+ * and the app's own notes. Only what exists is described.
+ */
 export interface SandboxKitDocs {
-  version: 1;
+  version: 2;
+  /** The kit's components, from their types (or names and propTypes in a JavaScript project). */
   components: SandboxKitComponentDoc[];
+  /** The model writes JSX: a kit bundle exists (components, or a wrapper). */
+  jsx?: boolean;
+  /** The App is rendered inside the app's wrapper (`genuiSandboxKit({ wrapper })`: providers, theme). */
+  wrapper?: boolean;
   /** The theme variables (name → light value) the app's CSS declares — what the prompt names. */
   theme?: { vars: Record<string, string> };
+  /** The styles use Tailwind: the frame runs it, with these tokens. */
+  tailwind?: { version: 3 | 4; tokens: TailwindTokens };
+  /** The styles are plain CSS (Sass, Less, Bootstrap…): the classes they define. */
+  vocabulary?: CssVocabulary;
+  /** The app's own guidance on its styles (`stylesDocs`), as written. */
+  guide?: string;
 }
 
-/**
- * What the Vite plugin writes (dev) and emits (build), and what the server discovers: the docs, plus
- * where the browser fetches the kit bundle and the Tailwind runtime from (same origin).
- */
-export interface SandboxKitDescriptor extends SandboxKitDocs {
+/** Where the browser fetches the frame's assets from (same origin). `null`: there is none. */
+export interface SandboxKitAssets {
+  /** React, ReactDOM, the components and the wrapper, as one classic script (JSX views only). */
   kit: { url: string; hash?: string } | null;
-  /** The runtime's url, and the app's own Tailwind directives (custom variants, utilities). */
+  /** The app's styles, compiled (fonts and images inlined). */
+  css: { url: string; hash?: string } | null;
+  /** The Tailwind v4 browser runtime, and the app's Tailwind directives (`@theme`, variants, utilities). */
   tailwind: { url: string; css?: string } | null;
+}
+
+/** What the Vite plugin writes (dev) and emits (build), and what the server discovers. */
+export interface SandboxKitDescriptor extends SandboxKitDocs {
+  assets: SandboxKitAssets;
 }
 
 /**
  * What a sandbox renderer needs from the server (`GET <agent>/config` → `genui.sandbox`): whether to
- * pass the theme in, and where the Tailwind runtime and the kit bundle are.
+ * pass the theme in, and where the kit bundle, the compiled styles and the Tailwind runtime are.
  */
 export interface SandboxClientConfig {
   theme: boolean;
-  tailwind?: { url: string; css?: string };
   kit?: { url: string; hash?: string };
+  css?: { url: string; hash?: string };
+  tailwind?: { url: string; css?: string };
 }
 
 /** What the opt-in assets weigh, inlined into every sandbox frame that uses them. */
@@ -71,7 +93,7 @@ function propLine(prop: SandboxKitPropDoc): string {
 }
 
 /** The kit as the model reads it: one entry per component, its props from their types. */
-export function kitDocsToModelText(docs: SandboxKitDocs): string {
+export function kitDocsToModelText(docs: Pick<SandboxKitDocs, 'components'>): string {
   const lines = [
     'Kit components (the app design system — use these first; each is in scope by name, and on the global `Kit`):',
   ];
@@ -85,18 +107,29 @@ export function kitDocsToModelText(docs: SandboxKitDocs): string {
   return lines.join('\n');
 }
 
-/** The rules for writing the sandbox as JSX with the kit. */
-export function kitJsxInstructions(): string {
+/** The rules for writing the sandbox as JSX. */
+export function kitJsxInstructions(
+  options: { components?: boolean; wrapper?: boolean } = {},
+): string {
+  const components = options.components !== false;
   return [
     'Write the view as JSX in `jsx` (instead of `html`/`jsFunctions`): plain JavaScript + JSX, no TypeScript, no imports — define `function App()` and return the UI; it is rendered for you.',
-    'React hooks (useState, useEffect, useMemo, useRef, useCallback, useReducer) and every kit component are in scope by name. Use kit components for controls and surfaces, plain elements for the rest.',
+    components
+      ? 'React hooks (useState, useEffect, useMemo, useRef, useCallback, useReducer) and every kit component are in scope by name. Use kit components for controls and surfaces, plain elements for the rest.'
+      : 'React hooks (useState, useEffect, useMemo, useRef, useCallback, useReducer) are in scope by name; use plain elements.',
+    ...(options.wrapper === true
+      ? [
+          "App is rendered inside the app's own providers (its theme, its baseline styles): do not add a theme provider or global resets of your own.",
+        ]
+      : []),
     'Keep state in App; call agent.send({ text, ...values }) from a click handler to hand values back.',
+    'Write the view in jsx OR in html, never both: leave the other one empty.',
   ].join(' ');
 }
 
-/** The Tailwind rule, for the sandbox description. */
-export function tailwindInstructions(): string {
-  return 'Tailwind CSS v4 utility classes work (className="flex gap-2 p-4 rounded-lg bg-card text-card-foreground"), offline — prefer them to custom CSS.';
+/** The rule for a kit with styles but no components: the model writes HTML with those styles. */
+export function kitHtmlInstructions(): string {
+  return 'There is no component kit here: write html (and jsFunctions/jsExpressions), never jsx.';
 }
 
 /**
@@ -116,8 +149,10 @@ export function sandboxJsxRuntime(options: {
   const t = JSON.stringify(options.token);
   const type = JSON.stringify(options.jsxMessage);
   const initial = options.initial === undefined ? 'null' : JSON.stringify(options.initial);
-  return `(function(){var transpileJsx=${transpileJsx.toString()};var prepareSandboxJsx=${prepareSandboxJsx.toString()};
-var T=${t},TYPE=${type},R=window.React,D=window.ReactDOM,K=window.Kit||{};
+  // The transpiler ships prebuilt as a string (never `fn.toString()` of bundled code, which a
+  // consumer's minifier rewrites): see scripts/build-frame-runtime.mjs.
+  return `(function(){${SANDBOX_JSX_FRAME_SOURCE};var transpileJsx=__genuiJsx.transpileJsx,prepareSandboxJsx=__genuiJsx.prepareSandboxJsx;
+var T=${t},TYPE=${type},R=window.React,D=window.ReactDOM,K=window.Kit||{},W=typeof window.KitWrapper==='function'||(window.KitWrapper&&typeof window.KitWrapper==='object')?window.KitWrapper:null;
 if(window.__GENUI_KIT_CSS__){var ks=document.createElement('style');ks.textContent=window.__GENUI_KIT_CSS__;document.head.appendChild(ks)}
 var kitNames=Object.keys(K).filter(function(k){return /^[A-Z][\\w$]*$/.test(k)});
 var hookNames=['useState','useEffect','useMemo','useRef','useCallback','useReducer','useId','useLayoutEffect','Fragment'].filter(function(k){return R&&R[k]!==undefined});
@@ -141,7 +176,7 @@ document.head.appendChild(s);s.remove();window.__agoraQuiet=false;
 if(!window.__genuiOk||typeof window.__genuiApp!=='function'){return false}
 lastCode=code;var App=window.__genuiApp;
 if(!root)root=D.createRoot(document.getElementById('agora-sandbox-root'));
-root.render(R.createElement(Boundary,{key:++seq,app:App,keep:lastGood,final:final},R.createElement(App)));
+var view=R.createElement(Boundary,{key:++seq,app:App,keep:lastGood,final:final},R.createElement(App));\nroot.render(W?R.createElement(W,null,view):view);
 return true}
 window.addEventListener('message',function(e){if(e.source!==window.parent)return;var d=e.data;if(!d||d.token!==T||d.type!==TYPE)return;draw(String(d.code||''),d.final===true)});
 var init=${initial};if(init){draw(init.code,init.final)}})();`;
