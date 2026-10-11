@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.76.1
+
+### Patch Changes
+
+- [#356](https://github.com/DavideCarvalho/adonis-agora-agent/pull/356) [`0158a9e`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/0158a9ed00e58e43af2f09dbcd7a564d02a2791c) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - The sandbox kit plugin now runs its dev rebuilds one at a time. Each rebuild reads the options when it starts. Before, a slower, older build could finish after a newer one and win, and the server then described the wrong kit. With Tailwind, the theme variables now come from the app's own stylesheets, not from Tailwind's compiled theme layer (`--color-white`, `--spacing`…).
+
 ## 0.76.0
 
 ### Minor Changes
