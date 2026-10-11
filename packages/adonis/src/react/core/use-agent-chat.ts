@@ -1534,6 +1534,12 @@ export function useAgentChat<B extends AgentBackend = AgentBackend>(
     /** Sub-agents this conversation started and did not wait for. */
     background,
     proposals,
+    /**
+     * Look for a turn the server started on this thread (after an action's outcome — a sign-in that
+     * finished elsewhere continues the request) and stream it. Called on its own when this chat's
+     * proposals see a new outcome; an app with its own proposals list calls it when it does.
+     */
+    followServerTurn,
     runId,
     /** The loaded thread's running turn, or `null` once read with none. */
     activeRunId,
