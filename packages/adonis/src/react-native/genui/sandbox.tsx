@@ -25,6 +25,7 @@ import {
   SANDBOX_MESSAGE,
   type SandboxPolicy,
   type SandboxProps,
+  sandboxDrawsJsx,
   sandboxPolicyOf,
 } from '../../genui/sandbox.js';
 import type { JsonSchema } from '../../genui/schema.js';
@@ -262,7 +263,7 @@ export function createNativeSandboxRenderer(
       () => (themeOn && themeInput ? nativeThemeCss(themeInput) : null),
       [themeKey],
     );
-    const jsxMode = typeof props.jsx === 'string';
+    const jsxMode = sandboxDrawsJsx(props);
     const tailwindConfig = client.config?.tailwind;
     const tailwindText = useNativeSandboxAsset(
       tailwindConfig !== undefined

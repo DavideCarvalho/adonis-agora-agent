@@ -608,3 +608,38 @@ describe('rebuilds in dev', () => {
     }
   }, 120_000);
 });
+
+describe('jsx or html', () => {
+  it('a stylesheet-only kit offers no jsx field; a kit with a bundle does', async () => {
+    const { defineSandbox: define } = await import('../src/genui/sandbox.js');
+    let docs: { version: 2; components: never[]; jsx?: boolean } = { version: 2, components: [] };
+    const sandbox = define({ kit: () => docs });
+    const fields = () =>
+      Object.keys((sandbox.props as { properties: Record<string, unknown> }).properties);
+    expect(fields()).not.toContain('jsx');
+    docs = { version: 2, components: [], jsx: true };
+    expect(fields()).toContain('jsx');
+    // `kit: true` (a browser's copy of the catalog) keeps it, as before.
+    expect(
+      Object.keys((define({ kit: true }).props as { properties: object }).properties),
+    ).toContain('jsx');
+  });
+
+  it('a model filling every field (strict tool calls): the field holding the view wins', async () => {
+    const { sandboxDrawsJsx } = await import('../src/genui/sandbox.js');
+    const html =
+      '<div class="card"><div class="card-body"><h5>Split the bill</h5><button class="btn btn-primary">Settle</button></div></div>';
+    expect(sandboxDrawsJsx({ jsx: 'function App() {return null;}', html })).toBe(false);
+    expect(
+      sandboxDrawsJsx({
+        jsx: `function App() { return (<Card>${'x'.repeat(200)}</Card>) }`,
+        html: '<div></div>',
+      }),
+    ).toBe(true);
+    expect(sandboxDrawsJsx({ jsx: '', html: '' })).toBe(false);
+    expect(sandboxDrawsJsx({ jsx: 'function App() { return <p/> }' })).toBe(true);
+    expect(defineSandbox({ kit: { version: 2, components: [], jsx: true } }).description).toContain(
+      'never both',
+    );
+  });
+});

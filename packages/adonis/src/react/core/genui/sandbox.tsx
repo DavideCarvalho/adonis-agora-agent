@@ -23,6 +23,7 @@ import {
   SANDBOX_MESSAGE,
   type SandboxPolicy,
   type SandboxProps,
+  sandboxDrawsJsx,
   sandboxPolicyOf,
 } from '../../../genui/sandbox.js';
 import type { JsonSchema } from '../../../genui/schema.js';
@@ -176,7 +177,7 @@ export function createSandboxRenderer(
     const view = (definition as { sandboxView?: { theme?: boolean } } | undefined)?.sandboxView;
     const themeOn = options.theme ?? client.config?.theme ?? view?.theme ?? true;
     const hostTheme = useHostTheme(themeOn);
-    const jsxMode = typeof props.jsx === 'string';
+    const jsxMode = sandboxDrawsJsx(props);
     const tailwindText = useSandboxAsset(client.config?.tailwind?.url);
     const cssText = useSandboxAsset(client.config?.css?.url, { css: true });
     const kitText = useSandboxAsset(jsxMode ? client.config?.kit?.url : undefined, { kit: true });

@@ -123,6 +123,7 @@ export function kitJsxInstructions(
         ]
       : []),
     'Keep state in App; call agent.send({ text, ...values }) from a click handler to hand values back.',
+    'Write the view in jsx OR in html, never both: leave the other one empty.',
   ].join(' ');
 }
 
