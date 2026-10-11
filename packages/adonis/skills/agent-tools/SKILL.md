@@ -313,6 +313,10 @@ a custom Poppy scope).
 > **Experimental:** Poppy (Personal Agent Protocol) is a Draft 0.1 spec still in development
 > (https://personalagentprotocol.org/docs/spec). The Poppy surface implements Draft 0.1 and WILL change
 > as the spec evolves — possibly breaking, outside semver majors while it is a draft.
+> To test your Poppy surface end to end, the package ships a reference **personal agent**:
+> `@adonis-agora/agent/poppy-client` (framework-agnostic library, no AdonisJS imports) and the
+> `poppy-agent` CLI (`npx poppy-agent --help`; `--insecure-dev` for a local http app). Source:
+> `packages/adonis/docs/poppy-client.mdx`.
  An `action` still parks on approval — but by default the
 requester approves, so for a public chat that is only a confirmation.
 Source: `packages/adonis/docs/governance/authorization.mdx`,

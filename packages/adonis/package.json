@@ -1,7 +1,7 @@
 {
   "name": "@adonis-agora/agent",
   "version": "0.73.0",
-  "description": "Governed, durable-backed AI agent (chat + tool-calling + governance) for AdonisJS — part of the Agora ecosystem.",
+  "description": "Governed, durable-backed AI agent (chat + tool-calling + governance) for AdonisJS \u2014 part of the Agora ecosystem.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -262,6 +262,11 @@
       "types": "./dist/src/react/genui/server_playwright.d.ts",
       "import": "./dist/src/react/genui/server_playwright.js",
       "default": "./dist/src/react/genui/server_playwright.js"
+    },
+    "./poppy-client": {
+      "types": "./dist/src/poppy-client/index.d.ts",
+      "import": "./dist/src/poppy-client/index.js",
+      "default": "./dist/src/poppy-client/index.js"
     }
   },
   "files": [
@@ -286,7 +291,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.31.0",
     "@standard-schema/spec": "1.1.0",
-    "@tailwindcss/browser": "4.3.3"
+    "@tailwindcss/browser": "4.3.3",
+    "jose": "6.2.12"
   },
   "peerDependencies": {
     "@adonis-agora/authz": ">=0.4.2 <1.0.0",
@@ -488,5 +494,8 @@
   },
   "engines": {
     "node": ">=20.6.0"
+  },
+  "bin": {
+    "poppy-agent": "./dist/src/poppy-client/bin/poppy-agent.js"
   }
 }
