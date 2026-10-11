@@ -1,5 +1,8 @@
 import type { ApplicationService } from '@adonisjs/core/types';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
+import { scopeRole } from '../a2a/gate.js';
+import { PERSONAL_AGENT_ROLE } from '../a2a/permission-tool.js';
+import { globalPoppyAuthenticate } from '../poppy/auth.js';
 import type { Actor } from '../types.js';
 
 /**
@@ -89,13 +92,25 @@ export interface McpVerifyContext {
 export class McpAuthError extends Error {
   /** HTTP status of the refusal: `401` (the token does not authenticate) or `403` (it does, but may not do this). */
   readonly status: 401 | 403;
+  /**
+   * The `WWW-Authenticate` error code, when not the status' default (`invalid_token` for 401,
+   * `insufficient_scope` for 403) — e.g. Poppy's `sign_in_required` (§4.3).
+   */
+  readonly error?: McpChallengeError;
 
-  constructor(message: string, options: { status?: 401 | 403; cause?: unknown } = {}) {
+  constructor(
+    message: string,
+    options: { status?: 401 | 403; error?: McpChallengeError; cause?: unknown } = {},
+  ) {
     super(message, options.cause !== undefined ? { cause: options.cause } : undefined);
     this.name = 'McpAuthError';
     this.status = options.status ?? 401;
+    if (options.error !== undefined) this.error = options.error;
   }
 }
+
+/** Error codes the MCP endpoint can put in its `WWW-Authenticate` challenge. */
+export type McpChallengeError = 'invalid_token' | 'insufficient_scope' | 'sign_in_required';
 
 /**
  * A configured MCP auth strategy, as a lazy thunk the provider calls at boot. Each factory lazily
@@ -142,8 +157,13 @@ interface AuthKitAccessTokenLike {
   scope?: string;
   exp?: number;
   extra?: Record<string, unknown>;
+  /** Grant type the token was minted by — authkit sets `'poppy'` for a Personal Agent session. */
+  gty?: string;
   isExpired: boolean;
 }
+
+/** The `gty` authkit-server gives the access tokens it mints for a Poppy session (§6, MCP). */
+export const POPPY_GRANT_TYPE = 'poppy';
 
 /**
  * The organization authkit bound to a grant at consent time (the active org of the session that
@@ -183,6 +203,13 @@ export interface AuthKitActorInfo {
   activeOrg: AuthKitActiveOrg | undefined;
   /** Extra claims stored on the access token (`extraTokenClaims`), if any. */
   extra: Record<string, unknown> | undefined;
+  /**
+   * The token belongs to a **personal agent** — authkit minted it for a Personal Agent Protocol
+   * (Poppy) session (`gty: 'poppy'`), not for an MCP client the user logged into. Whatever `toActor`
+   * returns, the actor then also gets `personal_agent` and one `scope:<id>` role per granted scope,
+   * so the personal agent gate applies: only the tools of its scopes run.
+   */
+  personalAgent: boolean;
 }
 
 /**
@@ -249,6 +276,15 @@ export function authKitAuth(options: AuthKitMcpAuthOptions = {}): McpAuthFactory
         const service = await getService();
         const at = await service.provider.AccessToken.find(token);
         if (!at) {
+          // A signed-out Poppy Session's MCP token lives only in authkit's Poppy store: it is valid,
+          // but this server needs an account — Poppy's `sign_in_required` (§4.3), not `invalid_token`
+          // (which would only make the agent mint the same kind of token again).
+          if (context !== undefined && (await isSignedOutPoppyToken(token, context.resource))) {
+            throw new McpAuthError('sign in to use this server', {
+              status: 403,
+              error: 'sign_in_required',
+            });
+          }
           // Not an access token this issuer knows — plain `Error`, so `anyOf` tries the next strategy.
           throw new Error('invalid or expired access token');
         }
@@ -271,7 +307,8 @@ export function authKitAuth(options: AuthKitMcpAuthOptions = {}): McpAuthFactory
           }
         }
         const tokenScopes = (at.scope ?? '').split(' ').filter(Boolean);
-        const actor = await toActor({
+        const personalAgent = at.gty === POPPY_GRANT_TYPE;
+        const resolved = await toActor({
           accountId: at.accountId,
           scopes: tokenScopes,
           clientId: at.clientId,
@@ -279,7 +316,23 @@ export function authKitAuth(options: AuthKitMcpAuthOptions = {}): McpAuthFactory
           grant,
           activeOrg: readActiveOrg(grant?.activeOrg),
           extra: at.extra,
+          personalAgent,
         });
+        // A personal agent's token carries the user's account but only the scopes they granted: the
+        // roles below put it behind `personalAgentGate` (the MCP provider wraps its authorizer in it),
+        // as a Poppy conversation or a PACT delegation does.
+        const actor: Actor = personalAgent
+          ? {
+              ...resolved,
+              roles: [
+                ...new Set([
+                  ...(resolved.roles ?? []),
+                  PERSONAL_AGENT_ROLE,
+                  ...tokenScopes.map(scopeRole),
+                ]),
+              ],
+            }
+          : resolved;
         return {
           token,
           clientId: at.clientId ?? '',
@@ -290,6 +343,22 @@ export function authKitAuth(options: AuthKitMcpAuthOptions = {}): McpAuthFactory
       },
     };
   };
+}
+
+/** A Bearer token authkit issued for `resource` to a Poppy Session that is not signed in. */
+async function isSignedOutPoppyToken(token: string, resource: string): Promise<boolean> {
+  const authenticate = globalPoppyAuthenticate();
+  if (authenticate === undefined) return false;
+  try {
+    const result = await authenticate({
+      method: 'POST',
+      url: resource,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    return result.ok && !result.principal.signedIn;
+  } catch {
+    return false;
+  }
 }
 
 /** Whether a token's `aud` names `resource` (a trailing slash on either side is tolerated). */

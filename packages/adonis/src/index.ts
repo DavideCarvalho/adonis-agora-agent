@@ -1,5 +1,6 @@
 export * from './action-proposal-approval.js';
 export * from './action-proposal-executor.js';
+export { onActionProposalAdmitted } from './action-proposal-listeners.js';
 export * from './action-proposal-outcome.js';
 export * from './action-proposal-receipt.js';
 export * from './action-proposal-service.js';

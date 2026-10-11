@@ -58,6 +58,21 @@
       "import": "./dist/src/a2a/server_middleware.js",
       "default": "./dist/src/a2a/server_middleware.js"
     },
+    "./poppy": {
+      "types": "./dist/src/poppy/index.d.ts",
+      "import": "./dist/src/poppy/index.js",
+      "default": "./dist/src/poppy/index.js"
+    },
+    "./poppy_provider": {
+      "types": "./dist/providers/poppy_provider.d.ts",
+      "import": "./dist/providers/poppy_provider.js",
+      "default": "./dist/providers/poppy_provider.js"
+    },
+    "./poppy/server_middleware": {
+      "types": "./dist/src/poppy/server_middleware.d.ts",
+      "import": "./dist/src/poppy/server_middleware.js",
+      "default": "./dist/src/poppy/server_middleware.js"
+    },
     "./mcp": {
       "types": "./dist/src/mcp/index.d.ts",
       "import": "./dist/src/mcp/index.js",
@@ -248,6 +263,26 @@
       "import": "./dist/src/react/genui/server_playwright.js",
       "default": "./dist/src/react/genui/server_playwright.js"
     },
+    "./poppy-client": {
+      "types": "./dist/src/poppy-client/index.d.ts",
+      "import": "./dist/src/poppy-client/index.js",
+      "default": "./dist/src/poppy-client/index.js"
+    },
+    "./poppy-connections": {
+      "types": "./dist/src/poppy-connections/index.d.ts",
+      "import": "./dist/src/poppy-connections/index.js",
+      "default": "./dist/src/poppy-connections/index.js"
+    },
+    "./poppy-connections/server_middleware": {
+      "types": "./dist/src/poppy-connections/server_middleware.d.ts",
+      "import": "./dist/src/poppy-connections/server_middleware.js",
+      "default": "./dist/src/poppy-connections/server_middleware.js"
+    },
+    "./poppy_connections_provider": {
+      "types": "./dist/providers/poppy_connections_provider.d.ts",
+      "import": "./dist/providers/poppy_connections_provider.js",
+      "default": "./dist/providers/poppy_connections_provider.js"
+    },
     "./react-native/genui": {
       "types": "./dist/src/react-native/genui/index.d.ts",
       "import": "./dist/src/react-native/genui/index.js",
@@ -277,7 +312,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.31.0",
     "@standard-schema/spec": "1.1.0",
-    "@tailwindcss/browser": "4.3.3"
+    "@tailwindcss/browser": "4.3.3",
+    "jose": "6.2.12"
   },
   "peerDependencies": {
     "@adonis-agora/authz": ">=0.4.2 <1.0.0",
@@ -499,5 +535,8 @@
   },
   "engines": {
     "node": ">=20.6.0"
+  },
+  "bin": {
+    "poppy-agent": "./dist/src/poppy-client/bin/poppy-agent.js"
   }
 }

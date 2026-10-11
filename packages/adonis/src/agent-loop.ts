@@ -1800,10 +1800,10 @@ async function claimApproval(
   if (remembered.includes(call.name)) {
     return { mode: 'remembered', approver: requirement.approver };
   }
+  // The tool's own lifetime (a sign-in link's) over the policy's.
+  const wanted = spec?.approvalTtlMs ?? requirement.ttlMs;
   const ttlMs =
-    requirement.ttlMs !== undefined && Number.isFinite(requirement.ttlMs) && requirement.ttlMs > 0
-      ? Math.floor(requirement.ttlMs)
-      : undefined;
+    wanted !== undefined && Number.isFinite(wanted) && wanted > 0 ? Math.floor(wanted) : undefined;
   return {
     mode: 'ask',
     approver: requirement.approver,
@@ -3319,8 +3319,12 @@ export async function runAgentLoop<TOutput = unknown>(
         },
       ),
       ask: deps.ask,
-      skills: skillOffer !== undefined,
-      memory: memoryDigest !== undefined && memoryIsWritable(deps),
+      // Nothing to load (no skill for this actor — e.g. a personal agent), nothing to offer.
+      skills: skillOffer !== undefined && skillOffer.entries.length > 0,
+      // Not to an actor with no memory scope (a personal agent: `personalAgentScopes`) — it could
+      // write nowhere, and offering it makes the model promise to remember.
+      memory:
+        memoryDigest !== undefined && memoryDigest.scopes.length > 0 && memoryIsWritable(deps),
     });
 
     // Every step, not once per run: the transcript grows between steps, so a processor that only saw

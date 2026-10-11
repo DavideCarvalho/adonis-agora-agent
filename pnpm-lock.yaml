@@ -205,6 +205,9 @@ importers:
       '@tailwindcss/browser':
         specifier: 4.3.3
         version: 4.3.3
+      jose:
+        specifier: 6.2.12
+        version: 6.2.12
     devDependencies:
       '@a2ui/react':
         specifier: 0.12.0

@@ -262,6 +262,43 @@ describe('channels.handle', () => {
     expect(Buffer.byteLength(ids.approve)).toBeLessThanOrEqual(64);
   });
 
+  it('a card whose action is a link: the link in full and what to do, no buttons nor reply commands', async () => {
+    const link = 'https://app.example/poppy-agent/connect/3XEb1wnxbTv_kGG8_UwRU5Kurix3KGvf';
+    const frames: StreamFrame[] = [
+      { t: 'text', v: 'You need to sign in at Fake Co first.' },
+      {
+        t: 'approval',
+        runId: 'run-1',
+        id: 'call-1',
+        toolName: 'poppy_connect',
+        input: {},
+        target: { kind: 'proposal', proposalId: `proposal-${'c'.repeat(64)}` },
+        confirmation: {
+          title: 'Connect your Fake Co account',
+          verb: 'I connected',
+          detail: 'Sign in to Fake Co:',
+          link,
+        },
+      },
+    ];
+    for (const buttons of [3, undefined]) {
+      const { adapter, outbox } = fakeAdapter(buttons === undefined ? {} : { buttons });
+      const handle = channels.handle(adapter, {
+        service: fakeService(frames),
+        actor: () => actor,
+        thread: () => 't',
+      });
+      await handle(makeCtx(inbound('order boots')).ctx);
+      await handle.drain();
+      expect(outbox.map((item) => item.message)).toEqual([
+        { text: 'You need to sign in at Fake Co first.' },
+        {
+          text: `*Connect your Fake Co account*\nSign in to Fake Co:\n${link}\n\nOpen the link to continue.`,
+        },
+      ]);
+    }
+  });
+
   it('maps a press that lost its button id (only the label) to the one pending card it can be from', async () => {
     const carded = `proposal-${'a'.repeat(64)}`;
     const setup = (pending: string[]) => {

@@ -58,6 +58,33 @@ describe('resource URLs', () => {
   });
 });
 
+describe('the Poppy issuer (Poppy §6)', () => {
+  const meta = {
+    issuer: 'https://app.example.com/oidc',
+    authorizationEndpoint: 'https://app.example.com/oidc/auth',
+    tokenEndpoint: 'https://app.example.com/oidc/token',
+    scopesSupported: ['openid'],
+    resourceName: 'Acme',
+  };
+  const slot = Symbol.for('@adonis-agora/poppy:issuer');
+
+  it('is added to authorization_servers when authkit announces it, once', () => {
+    const global = globalThis as Record<symbol, unknown>;
+    try {
+      global[slot] = 'https://auth.example.com';
+      expect(
+        protectedResourceMetadata(meta, 'https://app.example.com', 'mcp').authorization_servers,
+      ).toEqual(['https://app.example.com/oidc', 'https://auth.example.com']);
+      global[slot] = 'https://app.example.com/oidc';
+      expect(
+        protectedResourceMetadata(meta, 'https://app.example.com', 'mcp').authorization_servers,
+      ).toEqual(['https://app.example.com/oidc']);
+    } finally {
+      delete global[slot];
+    }
+  });
+});
+
 describe('wwwAuthenticateChallenge', () => {
   const url = 'https://app.example.com/.well-known/oauth-protected-resource/mcp';
 

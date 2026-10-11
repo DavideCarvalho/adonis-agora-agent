@@ -60,15 +60,29 @@ export interface ProtectedResourceMetadata {
   resource_name: string;
 }
 
-/** Build the RFC 9728 document for the MCP endpoint at `origin` + `path`. */
+/**
+ * The Poppy issuer `@adonis-agora/authkit-server` announces in `Symbol.for('@adonis-agora/poppy:issuer')`
+ * when Personal Agent Protocol is on — Poppy §6 requires a listed MCP server's `authorization_servers`
+ * to include it, so a Poppy Session Token's issuer is one this server names.
+ */
+export function announcedPoppyIssuer(): string | undefined {
+  const value = (globalThis as Record<symbol, unknown>)[Symbol.for('@adonis-agora/poppy:issuer')];
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+/**
+ * Build the RFC 9728 document for the MCP endpoint at `origin` + `path`. Its `authorization_servers`
+ * is the configured issuer, plus the Poppy issuer when one is announced (and different).
+ */
 export function protectedResourceMetadata(
   meta: McpOAuthMetadata,
   origin: string,
   path: string,
 ): ProtectedResourceMetadata {
+  const poppyIssuer = announcedPoppyIssuer();
   return {
     resource: mcpResourceUrl(origin, path),
-    authorization_servers: [meta.issuer],
+    authorization_servers: [...new Set([meta.issuer, ...(poppyIssuer ? [poppyIssuer] : [])])],
     scopes_supported: meta.scopesSupported,
     bearer_methods_supported: ['header'],
     resource_name: meta.resourceName,
@@ -81,9 +95,11 @@ export interface WwwAuthenticateOptions {
    * The RFC 6750 error code. `invalid_token` when the request carried a token that was refused,
    * `insufficient_scope` for a `403`, omitted when no token was sent at all (RFC 6750 §3.1).
    */
-  error?: 'invalid_token' | 'insufficient_scope';
+  error?: 'invalid_token' | 'insufficient_scope' | 'sign_in_required';
   /** The metadata URL (RFC 9728 §5.1). Set only when the auth strategy exposes OAuth metadata. */
   resourceMetadataUrl?: string;
+  /** With `insufficient_scope`: the scopes the request needs (RFC 6750 §3), space-separated. */
+  scope?: string;
 }
 
 /**
@@ -94,6 +110,7 @@ export interface WwwAuthenticateOptions {
 export function wwwAuthenticateChallenge(options: WwwAuthenticateOptions = {}): string {
   const params: string[] = [];
   if (options.error !== undefined) params.push(`error="${options.error}"`);
+  if (options.scope !== undefined) params.push(`scope="${quote(options.scope)}"`);
   if (options.resourceMetadataUrl !== undefined) {
     params.push(`resource_metadata="${quote(options.resourceMetadataUrl)}"`);
   }

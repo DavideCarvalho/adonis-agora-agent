@@ -257,6 +257,9 @@ The well-known document is deliberately minimal and unauthenticated (and served 
 }
 ```
 
+With Personal Agent Protocol on in AuthKit, the Poppy issuer it announces in
+`Symbol.for('@adonis-agora/poppy:issuer')` is added to `authorization_servers` too (Poppy §6).
+
 The metadata itself is resolved per request rather than at boot, because authkit's issuer may not be readable until the app is fully booted.
 
 ### The `401` challenge

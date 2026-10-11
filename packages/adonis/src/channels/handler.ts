@@ -50,6 +50,7 @@ import {
   type ChannelTexts,
   type ChannelTextsOverrides,
   channelTextsFor,
+  DEFAULT_CHANNEL_TEXTS,
   mergeTexts,
 } from './texts.js';
 import type {
@@ -529,6 +530,11 @@ interface Registration {
     conversation: string,
     service?: ChannelTurnService,
   ): Promise<boolean>;
+  /** Deliver a run this channel did not start (a continuation) to `conversation`. */
+  follow(
+    conversation: string,
+    run: { runId: string; threadId: string; actor: Actor },
+  ): Promise<void>;
 }
 
 const registry = new Map<string, Registration>();
@@ -1025,6 +1031,28 @@ export function handleChannel(
     withId: boolean,
   ) => {
     const summary = texts.proposal(proposal);
+    const link = proposal.confirmation?.link;
+    if (link !== undefined && link !== '') {
+      // The action is opening the link: the card, the link in full, what to do — no buttons, no
+      // reply commands, no validity (finishing there decides it; a "yes" here decides nothing).
+      const card = toChannelMarkdown(
+        [
+          summary.includes(link) ? summary : `${summary}\n${link}`,
+          texts.linkInstruction ?? DEFAULT_CHANNEL_TEXTS.linkInstruction,
+          proposal.expiresAt !== undefined
+            ? (texts.linkValidity ?? DEFAULT_CHANNEL_TEXTS.linkValidity)?.(
+                Math.max(1, Math.round((proposal.expiresAt - Date.now()) / 60_000)),
+              )
+            : undefined,
+        ]
+          .filter((part) => part !== undefined && part !== '')
+          .join('\n\n'),
+        capabilities.markdown,
+      );
+      for (const piece of splitMessage(card, capabilities.maxLength))
+        await out.send({ text: piece }, 'card');
+      return;
+    }
     const footer = typeof texts.footer === 'function' ? texts.footer(proposal) : texts.footer;
     const instruction = texts.instruction(commandsFor(service, withId ? proposal.id : null));
     const asText = toChannelMarkdown(
@@ -1593,6 +1621,9 @@ export function handleChannel(
               id: frame.target.proposalId,
               toolName: frame.toolName,
               ...(frame.confirmation ? { confirmation: frame.confirmation } : {}),
+              ...(frame.expiresAt !== undefined && Number.isFinite(Date.parse(frame.expiresAt))
+                ? { expiresAt: Date.parse(frame.expiresAt) }
+                : {}),
             });
           } else {
             // Blocking mode: the run waits for a decision this channel cannot make.
@@ -2037,6 +2068,18 @@ export function handleChannel(
     adapter,
     run,
     relay: (proposal, conversation, service) => relay(proposal, conversation, service),
+    follow: (conversation, run) =>
+      executor().enqueue(
+        {
+          kind: 'resume',
+          channel: name,
+          conversation,
+          runId: run.runId,
+          threadId: run.threadId,
+          actor: run.actor,
+        },
+        jobId(name, 'follow', run.runId),
+      ),
   });
   // Registered on the engine as soon as there is one: a restarted process resumes the jobs a crash
   // interrupted only for workflows it knows.
@@ -2197,4 +2240,21 @@ export const channels = {
     deliverOutcome(proposal, service),
   /** The adapter registered under `name` (by `channels.handle`), if any. */
   adapter: (name: string): ChannelAdapter | undefined => registry.get(name)?.adapter,
+  /**
+   * Deliver a run started outside the channel (a turn continued on the server, e.g. after a sign-in
+   * completed elsewhere) to the conversation `address` names (`pageContext.channel`). `false` when
+   * no channel of that name is registered in this process.
+   */
+  follow: async (
+    address: unknown,
+    run: { runId: string; threadId: string; actor: Actor },
+  ): Promise<boolean> => {
+    const at = record(address);
+    const channelName = typeof at?.name === 'string' ? at.name : undefined;
+    const conversation = typeof at?.conversation === 'string' ? at.conversation : undefined;
+    const registration = channelName === undefined ? undefined : registry.get(channelName);
+    if (!registration || conversation === undefined) return false;
+    await registration.follow(conversation, run);
+    return true;
+  },
 };

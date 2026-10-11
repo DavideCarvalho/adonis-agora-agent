@@ -175,7 +175,7 @@ delegatesTo: [{ agent: 'researcher', roles: ['ANALYST', 'ADMIN'] }]
 
 Mechanism: a delegate tool goes through the SAME gate as every other tool. A bare string
 carries nothing, so under `DefaultToolAuthorizer` it takes `defaultRoles` (open unless
-configured — except for A2A personal agents, which reach only tools that declare one of
+configured — except for personal agents (A2A/PACT, Poppy), which reach only tools that declare one of
 their roles), and under the authz Bouncer adapter a spec without `ability` is denied
 outright — the edge becomes uncalled for everyone.
 Source: `packages/adonis/docs/authoring/personas-and-agents.mdx` ("Authorizing a

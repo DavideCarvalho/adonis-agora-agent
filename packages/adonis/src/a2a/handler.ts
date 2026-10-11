@@ -301,13 +301,15 @@ export function createA2aHandler(options: A2aHandlerOptions) {
           actions: turn.actions.map(({ tool, argsHash }) => ({ tool, argsHash })),
         })
       : {};
+    // A2A reports what was DONE (the delegation's receipt); a refused or failed action is not one.
+    const done = turn.outcomes.filter((outcome) => outcome.status === 'succeeded');
     const message: A2aMessage = {
       messageId: randomUUID(),
       contextId: turn.threadId,
       role: 'ROLE_AGENT',
       parts: [
-        ...(turn.text !== '' || turn.outcomes.length === 0 ? [{ text: turn.text }] : []),
-        ...turn.outcomes.map((outcome) => ({
+        ...(turn.text !== '' || done.length === 0 ? [{ text: turn.text }] : []),
+        ...done.map((outcome) => ({
           data: { action: outcome },
           mediaType: 'application/json',
         })),

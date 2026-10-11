@@ -20,6 +20,8 @@ const ACTOR = { id: 'u1', roles: ['ADMIN'] };
 class SkillCallingModel implements ModelProvider {
   readonly systems: string[] = [];
   readonly transcripts: ModelMessage[][] = [];
+  /** The tool names each turn was offered. */
+  readonly offered: string[][] = [];
   /** Turn index to fail at, standing in for whatever unwinds a run mid-turn. */
   failAt?: number;
 
@@ -30,6 +32,7 @@ class SkillCallingModel implements ModelProvider {
       throw new Error('the run came apart here');
     }
     this.systems.push(args.system);
+    this.offered.push((args.tools ?? []).map((tool) => tool.name));
     this.transcripts.push(args.messages.map((message) => ({ ...message })));
     // Read off the TRANSCRIPT, not off a counter of its own: a resumed pass replays the earlier
     // turns from the journal without calling this model, so a counter would restart mid-run.
@@ -116,6 +119,15 @@ describe('a turn’s skills catalog', () => {
     await pass({ model: without });
     expect(withSkills.systems[0]).toContain('<skills>');
     expect(without.systems[0]).not.toContain('<skills>');
+  });
+
+  it('does not offer `skill` when the actor’s scopes yield nothing (e.g. a personal agent)', async () => {
+    const empty = new SkillCallingModel(undefined);
+    await pass({ model: empty, skills: { provider: providerOf({}) } });
+    const some = new SkillCallingModel(undefined);
+    await pass({ model: some, skills: { provider: providerOf({ triage: 'body' }) } });
+    expect(empty.offered[0]).not.toContain('skill');
+    expect(some.offered[0]).toContain('skill');
   });
 
   it('spends no checkpoint at all when no skills are configured', async () => {

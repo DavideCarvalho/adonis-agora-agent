@@ -1,5 +1,5 @@
 import type { ApplicationService } from '@adonisjs/core/types';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type AuthKitActorInfo,
   anyOf,
@@ -18,6 +18,7 @@ interface FakeToken {
   scope?: string;
   exp?: number;
   extra?: Record<string, unknown>;
+  gty?: string;
   isExpired: boolean;
 }
 
@@ -181,6 +182,97 @@ describe('authKitAuth() → toActor', () => {
     expect(unknown).not.toBeInstanceOf(McpAuthError);
 
     await expect(auth.verify('old')).rejects.toBeInstanceOf(McpAuthError);
+  });
+});
+
+describe('authKitAuth() → a personal agent (Poppy) token', () => {
+  const poppyToken: FakeToken = {
+    accountId: 'acc-1',
+    clientId: 'https://agent.example/agent.json',
+    grantId: 'pgrant_1',
+    scope: 'poppy:read orders:read',
+    gty: 'poppy',
+    isExpired: false,
+  };
+
+  it('puts the actor behind the personal agent gate: personal_agent + one scope: role per scope', async () => {
+    const { app } = fakeAuthKit({ tokens: { p1: poppyToken }, grants: { pgrant_1: {} } });
+    const seen: AuthKitActorInfo[] = [];
+    const auth = await resolveMcpAuth(
+      authKitAuth({
+        toActor: (info) => {
+          seen.push(info);
+          return { id: `profile-of-${info.accountId}`, roles: ['account:acc-1'] };
+        },
+      }),
+      { app },
+    );
+    const actor = (await auth.verify('p1')).extra.actor;
+    expect(seen[0]?.personalAgent).toBe(true);
+    expect(actor.id).toBe('profile-of-acc-1');
+    expect(actor.roles).toEqual([
+      'account:acc-1',
+      'personal_agent',
+      'scope:poppy:read',
+      'scope:orders:read',
+    ]);
+  });
+
+  it('leaves an MCP client login alone', async () => {
+    const { app } = fakeAuthKit({ tokens: { t1: validToken }, grants: { 'grant-1': {} } });
+    const seen: AuthKitActorInfo[] = [];
+    const auth = await resolveMcpAuth(
+      authKitAuth({
+        toActor: (info) => {
+          seen.push(info);
+          return { id: info.accountId };
+        },
+      }),
+      { app },
+    );
+    expect((await auth.verify('t1')).extra.actor).toEqual({ id: 'acc-1' });
+    expect(seen[0]?.personalAgent).toBe(false);
+  });
+});
+
+describe('authKitAuth() → a signed-out Poppy Session', () => {
+  const slot = Symbol.for('@adonis-agora/poppy:authenticate');
+  afterEach(() => {
+    delete (globalThis as Record<symbol, unknown>)[slot];
+  });
+
+  it('answers sign_in_required (403) for its Bearer token, not invalid_token', async () => {
+    const seen: unknown[] = [];
+    (globalThis as Record<symbol, unknown>)[slot] = async (req: unknown) => {
+      seen.push(req);
+      return { ok: true, principal: { signedIn: false, accountId: null, scopes: [] } };
+    };
+    const { app } = fakeAuthKit({ tokens: {} });
+    const auth = await resolveMcpAuth(authKitAuth(), { app });
+    const err = await auth
+      .verify('poppy-signed-out', { resource: 'https://app.example.com/mcp' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(McpAuthError);
+    expect(err).toMatchObject({ status: 403, error: 'sign_in_required' });
+    expect(seen[0]).toMatchObject({
+      url: 'https://app.example.com/mcp',
+      headers: { authorization: 'Bearer poppy-signed-out' },
+    });
+  });
+
+  it('an unknown token stays a plain Error (anyOf tries the next strategy)', async () => {
+    (globalThis as Record<symbol, unknown>)[slot] = async () => ({
+      ok: false,
+      status: 401,
+      error: 'invalid_token',
+    });
+    const { app } = fakeAuthKit({ tokens: {} });
+    const auth = await resolveMcpAuth(authKitAuth(), { app });
+    const err = await auth
+      .verify('nope', { resource: 'https://app.example.com/mcp' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(McpAuthError);
   });
 });
 

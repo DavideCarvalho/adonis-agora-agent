@@ -65,7 +65,7 @@ export interface CreateMcpServerOptions extends McpToolContextOptions {
 const LOOP_SERVED_KINDS = new Set(['agent', 'ask', 'skill', 'memory']);
 
 /** Whether this tool may be reached over MCP at all — the same answer for listing and for calling. */
-function isExposable(
+export function isExposable(
   spec: { kind: string; presentation?: ToolSpec['presentation'] } | undefined,
   actions: 'refuse' | 'execute',
 ): boolean {

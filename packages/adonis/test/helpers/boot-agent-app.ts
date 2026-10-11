@@ -33,16 +33,28 @@ export async function bootAgentApp(
     anonymous?: boolean;
     /** Register the app's own routes, as `start/routes.ts` would. */
     routes?: (router: Router) => void;
+    /** More providers, after the agent's (e.g. `poppy_connections_provider`). */
+    providers?: (() => Promise<unknown>)[];
+    /** More config files (`{ poppy_connections: {…} }`). */
+    config?: Record<string, unknown>;
+    /** Listen on this port (one picked beforehand, for config that names the app's own URL). */
+    port?: number;
   } = {},
 ): Promise<BootedApp> {
   const ignitor = new IgnitorFactory()
     .withCoreProviders()
     .withCoreConfig()
     .merge({
-      rcFileContents: { providers: [() => import('../../providers/agent_provider.js')] },
+      rcFileContents: {
+        providers: [
+          () => import('../../providers/agent_provider.js'),
+          ...((options.providers ?? []) as never[]),
+        ],
+      },
       config: {
         agent:
           options.anonymous === true ? agent : { actorResolver: headerActorResolver, ...agent },
+        ...options.config,
       },
     })
     .create(new URL('../../', import.meta.url));
@@ -56,7 +68,7 @@ export async function bootAgentApp(
   const server = await app.container.make('server');
   await server.boot();
   const node: Server = createServer(server.handle.bind(server));
-  await new Promise<void>((resolve) => node.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => node.listen(options.port ?? 0, '127.0.0.1', resolve));
   const { port } = node.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}`,
