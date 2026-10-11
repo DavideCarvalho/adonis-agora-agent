@@ -4,6 +4,7 @@ import {
 } from '../action-proposal-outcome.js';
 import { snapshotActionProposal } from '../action-proposal-transitions.js';
 import type { ToolCallOutcome } from '../dangling-tool-calls.js';
+import type { GenuiCallRow, RecordGenuiCallInput } from '../genui-telemetry.js';
 import type {
   AgentRunStatus,
   AgentStore,
@@ -191,6 +192,7 @@ export class InMemoryAgentStore
   private readonly pauses = new Map<string, QueuePause>();
   private readonly toolCalls = new Map<string, ToolCallRow>();
   private readonly usage: UsageRow[] = [];
+  private readonly genuiCalls = new Map<string, GenuiCallRow>();
   private readonly runs = new Map<string, RunRow>();
 
   private now(): string {
@@ -790,6 +792,21 @@ export class InMemoryAgentStore
       }
     }
     return approvals.length > 0 ? { ...message, approvals } : message;
+  }
+
+  async recordGenuiCalls(rows: readonly RecordGenuiCallInput[]): Promise<void> {
+    for (const row of rows) {
+      const existing = this.genuiCalls.get(row.toolCallId);
+      this.genuiCalls.set(row.toolCallId, {
+        ...row,
+        createdAt: existing?.createdAt ?? new Date(this.now()),
+      });
+    }
+  }
+
+  /** Generative-UI telemetry rows, oldest first (test helper; the governance feed). */
+  genuiCallRows(): GenuiCallRow[] {
+    return [...this.genuiCalls.values()].map((row) => ({ ...row }));
   }
 
   async recordUsage(input: RecordUsageInput): Promise<void> {

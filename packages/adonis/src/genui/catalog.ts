@@ -76,6 +76,21 @@ export interface ComponentDefinition<P = Record<string, unknown>> {
    * Without one the channel sends {@link fallbackText}. `false` → never offered on that channel.
    */
   channels?: ComponentChannels<P>;
+  /**
+   * Checks beyond the props schema, run on the server once the props are valid — the sandbox parses
+   * its code here. An `error` refuses the call (the model gets its message and retries); a
+   * `warning` lets it through and is handed back with the result.
+   */
+  check?(props: P): GenuiCheck[] | Promise<GenuiCheck[]>;
+}
+
+/** One finding of a {@link ComponentDefinition.check}. */
+export interface GenuiCheck {
+  severity: 'error' | 'warning';
+  /** What kind of mistake it is (what telemetry counts): `syntax`, `bridge`, `unknown-component`, … */
+  category: string;
+  /** Short, with where and the fix: "jsx line 12:5: `flippy.send` — the bridge is `agent.send(payload)`". */
+  message: string;
 }
 
 /** The second argument of {@link defineComponent}: what a component is on each channel. */
@@ -117,6 +132,8 @@ export function defineComponent<P = Record<string, unknown>>(
     throw new TypeError("genui: streaming must be 'partial' or 'complete'");
   if (definition.partialProps !== undefined && typeof definition.partialProps !== 'function')
     throw new TypeError('genui: partialProps must be a function');
+  if (definition.check !== undefined && typeof definition.check !== 'function')
+    throw new TypeError('genui: check must be a function');
   if (definition.channels !== undefined) {
     if (typeof definition.channels !== 'object' || definition.channels === null)
       throw new TypeError('genui: channels must be an object of conversions');

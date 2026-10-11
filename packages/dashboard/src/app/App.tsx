@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { defaultRange, isIsoDay, normalizeRange } from '../client/default-range.js';
 import type { GovernanceRange } from '../client/types.js';
 import { ApprovalsSection } from './ApprovalsSection.js';
+import { GenuiSection } from './GenuiSection.js';
 import { Overview } from './Overview.js';
 import { PricingSection } from './PricingSection.js';
 import { QuotaSection } from './QuotaSection.js';
@@ -19,6 +20,7 @@ type SectionKey =
   | 'approvals'
   | 'toolstats'
   | 'reliability'
+  | 'genui'
   | 'quota'
   | 'pricing';
 
@@ -30,9 +32,13 @@ const SECTIONS: { key: SectionKey; label: string }[] = [
   { key: 'approvals', label: 'Approvals' },
   { key: 'toolstats', label: 'Tools' },
   { key: 'reliability', label: 'Reliability' },
+  { key: 'genui', label: 'Generative UI' },
   { key: 'quota', label: 'Quota' },
   { key: 'pricing', label: 'Pricing' },
 ];
+
+/** The sections whose queries the fromDay/toDay range scopes (the only ones that show the picker). */
+const RANGED: ReadonlySet<SectionKey> = new Set<SectionKey>(['overview', 'genui']);
 
 function sectionFromHash(hash: string): SectionKey {
   const key = hash.replace(/^#/, '') as SectionKey;
@@ -82,7 +88,7 @@ export function App() {
             </div>
           </div>
           <div className="controls">
-            {section === 'overview' && (
+            {RANGED.has(section) && (
               <>
                 <input
                   className="range-input"
@@ -136,16 +142,17 @@ export function App() {
           {section === 'approvals' && <ApprovalsSection />}
           {section === 'toolstats' && <ToolsSection />}
           {section === 'reliability' && <ReliabilitySection />}
+          {section === 'genui' && <GenuiSection range={range} />}
           {section === 'quota' && <QuotaSection />}
           {section === 'pricing' && <PricingSection />}
         </main>
 
         <div className="foot">
-          {/* The fromDay/toDay range only scopes Overview's queries (every other section reads its
-              own unbounded or section-scoped feed) — showing it here on every tab would claim a
-              filter that is not actually in effect, so it only appears while Overview is active. */}
+          {/* The fromDay/toDay range only scopes Overview's and Generative UI's queries (every other
+              section reads its own unbounded or section-scoped feed) — showing it here on every tab
+              would claim a filter that is not actually in effect, so it only appears on those. */}
           Read-only governance data
-          {section === 'overview' && (
+          {RANGED.has(section) && (
             <>
               {' '}
               · {range.fromDay} → {range.toDay}

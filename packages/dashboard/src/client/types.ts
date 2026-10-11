@@ -318,3 +318,78 @@ export interface ModelPriceInput {
 export interface CurrentModelPrice extends ModelPriceInput {
   effectiveFrom: string;
 }
+
+// ── Generative-UI telemetry (`GET /agent/governance/genui`) ──────────────────
+// Mirrors `GenuiStats` and its rows in the target's `src/genui-telemetry.ts`. Absent on the server
+// (an adapter without `genuiStats`) → the route answers `501` (an `AgentApiError` with that status).
+
+/** First-try success for one UI tool and model. */
+export interface GenuiToolModelRow {
+  toolName: string;
+  modelId: string;
+  mode: string;
+  calls: number;
+  /** Turns whose first UI attempt used this tool. */
+  firstAttempts: number;
+  firstTrySuccesses: number;
+  /** `firstTrySuccesses / firstAttempts`; `null` when there is none. */
+  firstTryRate: number | null;
+  retried: number;
+  failed: number;
+  costUsd: number | null;
+}
+
+/** One recurring UI tool error (category + scrubbed message + tool). */
+export interface GenuiErrorRow {
+  category: string;
+  /** The (scrubbed) message, as recorded. */
+  message: string;
+  toolName: string;
+  count: number;
+  lastAt: string;
+}
+
+export interface GenuiDayRow {
+  day: string;
+  calls: number;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number | null;
+  firstTryRate: number | null;
+}
+
+export interface GenuiLatency {
+  samples: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+}
+
+/** What the console's Generative UI page shows. */
+export interface GenuiStats {
+  totals: {
+    calls: number;
+    turns: number;
+    firstAttempts: number;
+    firstTrySuccesses: number;
+    firstTryRate: number | null;
+    retried: number;
+    failed: number;
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number | null;
+  };
+  byToolModel: GenuiToolModelRow[];
+  /** Most frequent first, at most 20. */
+  errors: GenuiErrorRow[];
+  byDay: GenuiDayRow[];
+  /** UI cost per turn (turns with at least one UI call). */
+  costPerTurn: {
+    turns: number;
+    avgUsd: number | null;
+    p50Usd: number | null;
+    p95Usd: number | null;
+  };
+  /** Per turn: turn start → its first UI frame, and → the first complete UI frame. */
+  latency: { firstFrame: GenuiLatency; complete: GenuiLatency };
+}

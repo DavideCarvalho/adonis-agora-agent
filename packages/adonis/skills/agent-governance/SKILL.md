@@ -168,7 +168,7 @@ Source: `packages/adonis/src/actor-resolver.ts` (`HeaderActorResolver` security 
 ### HIGH — expecting `/agent/governance/*` to exist after configuring only `governanceQueries`
 
 ```ts
-// Wrong — read-model resolves, but no gate → the 11 governance routes are NEVER mounted (all 404).
+// Wrong — read-model resolves, but no gate → the 12 governance routes are NEVER mounted (all 404).
 export default defineConfig({ store: 'lucid', stores: { lucid: stores.lucid() } })
 ```
 
@@ -204,7 +204,7 @@ dashboard: { enabled: true, authorize: (actor) => actor.roles?.includes('ADMIN')
 Mechanism: the console is a pure consumer of `/agent/governance/*`; `authorize` decides
 who may load the shell while `governanceAuthorize` decides whether the console mounts at
 all and whether its data routes answer. With no gate the provider logs a boot warning and
-refuses to mount rather than serve seven dead panels.
+refuses to mount rather than serve eight dead panels.
 Source: `packages/adonis/src/dashboard/define_config.ts` (`decideDashboardMount`,
 `NO_GOVERNANCE_GATE_WARNING`).
 

@@ -81,7 +81,7 @@ export default defineConfig({
 
 Run the published migrations for the agent tables (`agent_action_proposal`,
 `agent_thread`, `agent_message`, `agent_tool_call`, `agent_token_usage`,
-`agent_model_pricing`, `agent_run`, `agent_queued_message`, `agent_confirm_token`, plus the
+`agent_model_pricing`, `agent_run`, `agent_queued_message`, `agent_confirm_token`, `agent_genui_call`, plus the
 `agent_stream_frame` buffer and the text channels' `agent_channel_state`):
 
 ```bash

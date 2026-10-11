@@ -29,6 +29,7 @@ export {
   type DefineComponentExtras,
   defineCatalog,
   defineComponent,
+  type GenuiCheck,
   type GenuiStreaming,
   toolNameFor,
   toSnakeCase,
@@ -112,6 +113,7 @@ export {
   type SandboxProps,
   type SandboxThemeSource,
   type SandboxView,
+  sandboxCallExample,
   sandboxCsp,
   sandboxDrawsJsx,
   sandboxPartialProps,
@@ -164,6 +166,13 @@ export {
   watchHostTheme,
 } from './sandbox-theme.js';
 export {
+  formatSandboxIssue,
+  type GenuiErrorCategory,
+  type SandboxCodeIssue,
+  type ValidateSandboxCodeOptions,
+  validateSandboxCode,
+} from './sandbox-validate.js';
+export {
   type AjvLike,
   ajvValidator,
   builtinJsonSchemaValidator,
@@ -191,6 +200,7 @@ export {
   GENUI_SHOW_TOOL,
   type GenuiAbility,
   type GenuiCatalogScope,
+  type GenuiTelemetryOptions,
   type GenuiTool,
   type GenuiToolOutput,
   type GenuiToolsOptions,

@@ -1,3 +1,4 @@
+import { type GenuiStats, genuiRowsInRange, summarizeGenuiCalls } from '../genui-telemetry.js';
 import type {
   ActorSpendRow,
   AgentGovernanceQueries,
@@ -366,6 +367,10 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
       if (result.length >= limit) break;
     }
     return result;
+  }
+
+  async genuiStats(range: GovernanceRange): Promise<GenuiStats> {
+    return summarizeGenuiCalls(genuiRowsInRange(this.store.genuiCallRows(), range));
   }
 
   async perToolStats(range: ToolStatsRange = {}): Promise<PerToolStatRow[]> {

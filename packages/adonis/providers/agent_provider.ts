@@ -1848,6 +1848,20 @@ export default class AgentProvider {
         });
       });
 
+      // GET /agent/governance/genui — generative-UI telemetry over the range (first-try success by
+      // tool and model, common errors, UI cost per turn/day, time to first/complete frame). `501`
+      // when the bound governance adapter does not record genui telemetry (optional SPI method).
+      router.get(g('genui'), async (ctx: HttpContext) => {
+        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
+        if (actor === null) return;
+        if (gov.genuiStats === undefined) {
+          return ctx.response
+            .status(501)
+            .json({ message: 'this governance adapter does not support generative UI telemetry' });
+        }
+        return ctx.response.json(await gov.genuiStats(range(ctx)));
+      });
+
       // ── Run lifecycle governance (the run tracking read-model). Same read-only + authenticated +
       // authorized envelope; the runs are cross-actor governance data.
       const optionalRange = (ctx: HttpContext) => {

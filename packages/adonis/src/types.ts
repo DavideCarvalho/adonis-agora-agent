@@ -37,6 +37,14 @@ export type ToolKind = 'read' | 'action' | 'agent' | 'ask' | 'skill' | 'memory';
  *             `memory:digest` checkpoint holds. Registered by nothing, and spends a read's
  *             checkpoints exactly — see `memory.ts`.
  */
+/** {@link ToolSpec.genui}: which genui tool this is, and what its telemetry may keep. */
+export interface GenuiToolMarker {
+  /** `tree` (`ui__render`), `sandbox` (`ui__sandbox`), `per-component` (`ui__show_*`), `show` (`ui__show`). */
+  mode: 'tree' | 'sandbox' | 'per-component' | 'show';
+  /** `false`: no telemetry for this tool. `samplePayloads: true` also stores the call's input (debugging only). */
+  telemetry?: false | { samplePayloads?: boolean };
+}
+
 export interface ToolSpec {
   name: string;
   kind: ToolKind;
@@ -84,6 +92,14 @@ export interface ToolSpec {
    * no further model call narrates it. A failed call does not end it — the model gets to recover.
    */
   terminal?: boolean;
+  /**
+   * Marks a generative-UI tool (set by `genuiTools`): the loop records one telemetry row per call
+   * (`AgentStore.recordGenuiCalls`) — tool, channel, mode, attempt, validity, error category, the
+   * call's share of its step's tokens and cost, time to first and to complete frame. Metadata only:
+   * the call's input is stored only with `telemetry.samplePayloads`. `telemetry: false` records
+   * nothing.
+   */
+  genui?: GenuiToolMarker;
   /** Roles allowed to invoke. Undefined → defaults applied by RolesPolicy (unrestricted unless `defaultRoles` is set). */
   roles?: string[];
   /**

@@ -8,7 +8,7 @@
  * schema, text fallback, streaming trim), the browser renderer uses the same policy to build the
  * iframe document and to check what the frame sends back.
  */
-import { type ComponentDefinition, defineComponent } from './catalog.js';
+import { type ComponentDefinition, defineComponent, type GenuiCheck } from './catalog.js';
 import {
   kitDocsToModelText,
   kitHtmlInstructions,
@@ -18,6 +18,7 @@ import {
 } from './sandbox-kit.js';
 import { tailwindToModelText, vocabularyToModelText } from './sandbox-styles.js';
 import { themeTokens, themeToModelText } from './sandbox-theme.js';
+import { formatSandboxIssue, validateSandboxCode } from './sandbox-validate.js';
 import type { JsonSchema } from './schema.js';
 
 /** The component name the builtin {@link Sandbox} registers under. */
@@ -720,8 +721,27 @@ export function defineSandbox(options: DefineSandboxOptions = {}): SandboxDefini
   // With the kit's docs (a server resolving `kit: true`, or docs given), the schema offers `jsx` only
   // when the kit has a bundle to draw it with: a stylesheet-only kit is written as html.
   const docsSource = kitOn && options.kit !== true ? (options.kit as SandboxKitSource) : undefined;
+  // JSX is allowed when the schema offers it: a kit whose docs say it has a bundle, or a kit the
+  // server has yet to resolve (`kit: true`).
+  const jsxAllowed = () =>
+    kitOn && (docsSource === undefined || resolveSource(docsSource)?.jsx === true);
   const definition = defineComponent<SandboxProps>({
     name: options.name ?? SANDBOX_COMPONENT,
+    // The code, parsed before the call is accepted: a view the frame cannot draw is refused with
+    // where and how to fix it (see validateSandboxCode).
+    check: async (props): Promise<GenuiCheck[]> => {
+      const docs = docsSource !== undefined ? resolveSource(docsSource) : undefined;
+      const issues = await validateSandboxCode(props as Record<string, unknown>, {
+        jsx: jsxAllowed(),
+        ...(docs !== undefined ? { kit: docs } : {}),
+        ...(policy.allow?.scripts !== undefined ? { scriptOrigins: policy.allow.scripts } : {}),
+      });
+      return issues.map((issue) => ({
+        severity: issue.severity,
+        category: issue.category,
+        message: formatSandboxIssue(issue),
+      }));
+    },
     title: 'Interactive view',
     description: '',
     props,
@@ -759,6 +779,42 @@ export function defineSandbox(options: DefineSandboxOptions = {}): SandboxDefini
     });
   }
   return Object.freeze(result) as SandboxDefinition;
+}
+
+/**
+ * A minimal, valid call of a sandbox's own tool (`ui__sandbox`), as the model should write it: JSX
+ * when the kit draws JSX (a kit `Button` when there is one), HTML otherwise. The JSX is a JSON
+ * STRING — quoted, newlines escaped — which is what a model writing code (OpenCode) gets wrong.
+ */
+export function sandboxCallExample(definition: unknown): string | undefined {
+  const options = (definition as Partial<SandboxDefinition> | undefined)?.sandboxOptions;
+  if (sandboxPolicyOf(definition) === undefined) return undefined;
+  const kit = options?.kit;
+  const docs =
+    kit !== undefined && kit !== false && kit !== true
+      ? resolveSource(kit as SandboxKitSource)
+      : undefined;
+  const jsx = kit === true || docs?.jsx === true;
+  const button = docs?.components.some((component) => component.name === 'Button')
+    ? 'Button'
+    : 'button';
+  const call = jsx
+    ? {
+        initialHeight: 120,
+        title: 'Counter',
+        summary: 'A counter the user clicks.',
+        jsx: `function App() {\n  const [n, setN] = useState(0);\n  return <${button} onClick={() => setN(n + 1)}>Clicked {n}</${button}>;\n}`,
+      }
+    : {
+        initialHeight: 120,
+        title: 'Counter',
+        summary: 'A counter the user clicks.',
+        html: '<button id="b">Clicked 0</button>',
+        jsExpressions: [
+          "const b = document.getElementById('b'); let n = 0; b.onclick = () => { b.textContent = 'Clicked ' + ++n; };",
+        ],
+      };
+  return `Example call: ${JSON.stringify(call)}`;
 }
 
 /**

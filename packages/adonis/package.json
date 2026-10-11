@@ -313,6 +313,8 @@
     "@modelcontextprotocol/sdk": "1.31.0",
     "@standard-schema/spec": "1.1.0",
     "@tailwindcss/browser": "4.3.3",
+    "acorn": "8.17.0",
+    "acorn-jsx": "5.3.2",
     "jose": "6.2.12"
   },
   "peerDependencies": {

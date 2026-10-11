@@ -1,0 +1,81 @@
+---
+title: Generative UI telemetry
+description: "How often the model's UI calls are right the first time, what it gets wrong, what the UI costs and how long the user waits — recorded per UI call as metadata, shown on the dashboard's Generative UI page."
+icon: Activity
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+Every call of a UI tool — `ui__render`, `ui__sandbox`, `ui__show_*`, `ui__show` — is recorded by the agent loop as one row of telemetry: which tool, on which channel and in which mode, whether the model got it right the first time, what went wrong when it did not, what the call cost, and how long the user waited for the first and for the complete frame. The [dashboard](/docs/agent/governance/dashboard)'s **Generative UI** page reads it.
+
+It is on by default with `genui({ … })` and a store that records it (the Lucid store and the in-memory store both do). Nothing to migrate: the table is the library's own, created by the store's schema heal at boot like the others.
+
+## What is recorded — metadata only
+
+<Callout type="warn" title="Privacy default">
+A row never holds the generated HTML/JSX or the props. Only names, counts, timings, an error's category and its message with every quoted value replaced by `"…"` (a schema's `received 'Jane'` is stored as `received '…'`). Health and finance apps can leave it on.
+</Callout>
+
+| Field | What it is |
+| --- | --- |
+| `toolName`, `mode`, `channel` | `ui__sandbox`, `sandbox` (or `tree`, `per-component`, `show`), `web` |
+| `modelId`, `runId`, `threadId`, `actorRef`, `agentName`, `step` | who and where |
+| `attempt` | 1 + the UI calls refused since the turn's last accepted one — a refused `ui__render` followed by a `ui__sandbox` is a retry |
+| `outcome`, `validity` | `ok`/`error`; `first_try` (accepted on attempt 1), `retried` (accepted after a refusal), `failed` (refused) |
+| `errorCategory`, `errorMessage` | `shape`, `syntax`, `missing-app`, `bridge`, `unknown-component`, `unavailable`, `other`; the scrubbed message (≤ 300 chars) |
+| `inputTokens`, `outputTokens`, `costUsd`, `costSource` | the call's share of the model step that wrote it — the step's usage and cost (from the `agent_token_usage` ledger's figures: provider-reported, or estimated from the price list) split by the characters each tool call's arguments and the step's text took |
+| `firstFrameMs`, `completeFrameMs` | turn start → the call's first UI frame on the stream (a streaming preview counts), and → its final frame (accepted calls only) |
+| `payloadBytes` | the size of the call's arguments |
+| `payload` | **only** with `samplePayloads` (below) |
+
+The Lucid table is `agent_genui_call` (id = the tool call's id; indexes on `created_at` and `run_id`; its rows go with their thread, `ON DELETE CASCADE`). A call recorded again — a durable step replayed — replaces its row.
+
+## Options
+
+```ts
+// config/agent.ts
+genui: genui({
+  catalog,
+  sandbox: { kit: true },
+  componentTools: ['Sandbox'],
+  // Default: metadata only. For debugging a model's UI, also keep each call's input:
+  telemetry: { samplePayloads: true },
+  // Or record nothing:
+  // telemetry: false,
+}),
+```
+
+<Callout type="error" title="samplePayloads stores what the model wrote">
+With `samplePayloads: true` the generated code and props — whatever data the view shows — are stored in `payload`, and error messages are kept verbatim. Turn it on for a debugging session, never where a view may show personal data.
+</Callout>
+
+## The dashboard page
+
+`GET <governance>/genui?from=YYYY-MM-DD&to=YYYY-MM-DD` (gated like every governance route; `501` when the configured governance queries do not implement `genuiStats`) returns:
+
+- **totals** — UI calls, turns, first attempts, first-try successes and rate, retried, failed, tokens, cost;
+- **byToolModel** — first-try success per tool and model;
+- **errors** — the most common (category, tool, message), with counts and when last seen;
+- **byDay** — UI calls, turns, tokens, cost and first-try rate per UTC day;
+- **costPerTurn** — average, p50 and p95 UI cost of a turn;
+- **latency** — p50/p95 per turn from its start to its first UI frame, and to the first complete frame of an accepted call.
+
+The page shows them as KPI tiles, the tool × model table, the errors table and the daily cost chart.
+
+## On the OpenCode engine
+
+OpenCode runs its own loop and calls the tools through the MCP endpoint (its code mode included), so the endpoint records the UI calls it serves, with attempts counted per run (`GenuiRunRecorder`, exported for an engine of your own). Two fields stay empty there: the model's step is not split per call (`inputTokens`/`outputTokens` are `0`, no cost — the step's usage is in the token ledger as usual), and the frames are not timed (no latency).
+
+## Your own store
+
+A store records telemetry by implementing the optional `recordGenuiCalls(rows)`, and its governance queries serve the page with the optional `genuiStats(range)`. Both are small: `summarizeGenuiCalls(rows)` (exported) turns the rows of a range into the stats, so a store only selects them.
+
+## See also
+
+- [Sandboxed generated UI](/docs/agent/genui-sandbox#checked-before-it-is-accepted) — the checks whose refusals this counts.
+- [The dashboard](/docs/agent/governance/dashboard) — mounting and gating the console.
+- [Quota and cost](/docs/agent/governance/quota-and-cost) — the token ledger the cost comes from.
+
+<Callout type="info">
+The same telemetry, table and page ship in `@dudousxd/nestjs-agent` (`AgentGenuiModule.forRoot({ telemetry })`).
+</Callout>

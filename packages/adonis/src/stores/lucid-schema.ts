@@ -2,7 +2,7 @@ import type { LucidRawRunner } from './lucid.js';
 import { isMySql, portableSql } from './sql-dialect.js';
 
 /**
- * The eleven agent table names. They match the cross-adapter snake_case contract the reference Drizzle
+ * The twelve agent table names. They match the cross-adapter snake_case contract the reference Drizzle
  * store uses, so a dashboard or migration can point at any adapter and see the same physical schema.
  */
 export const AGENT_TABLES = {
@@ -25,6 +25,11 @@ export const AGENT_TABLES = {
    * questions waiting for an answer, outcomes already relayed — each row expiring at `expires_at`.
    */
   channelState: 'agent_channel_state',
+  /**
+   * Generative-UI telemetry: one row per UI tool call (`recordGenuiCalls`) — metadata only, the
+   * call's input only when its tool samples payloads. Read by the dashboard's Generative UI page.
+   */
+  genuiCalls: 'agent_genui_call',
 } as const;
 
 /**
@@ -86,7 +91,7 @@ export function channelStateTableStatements(table: string = AGENT_TABLES.channel
 }
 
 /**
- * `CREATE TABLE IF NOT EXISTS` DDL for the eleven agent tables plus their indexes, one statement per
+ * `CREATE TABLE IF NOT EXISTS` DDL for the twelve agent tables plus their indexes, one statement per
  * array element so each can be issued through Lucid's `rawQuery`. Portable across SQLite / Postgres /
  * MySQL: quoted identifiers, epoch-ms `BIGINT` timestamps, `INTEGER` booleans (0/1) and `TEXT` JSON
  * columns — no dialect-only types. A real deployment should prefer the bundled migration stub so the
@@ -277,6 +282,35 @@ export function createTableStatements(): string[] {
     `CREATE INDEX IF NOT EXISTS "${t.confirmTokens}_expires_idx" ON "${t.confirmTokens}" ("expires_at")`,
     streamFrameTableStatement(t.streamFrames),
     ...channelStateTableStatements(t.channelState),
+    `CREATE TABLE IF NOT EXISTS "${t.genuiCalls}" (
+      "id" VARCHAR(255) PRIMARY KEY NOT NULL,
+      "run_id" VARCHAR(255) NOT NULL,
+      "thread_id" VARCHAR(255) NOT NULL,
+      "actor_ref" VARCHAR(255) NOT NULL,
+      "agent_name" VARCHAR(255) NULL,
+      "step" INTEGER NOT NULL,
+      "tool_name" VARCHAR(255) NOT NULL,
+      "channel" VARCHAR(64) NOT NULL,
+      "mode" VARCHAR(32) NOT NULL,
+      "model_id" VARCHAR(255) NOT NULL,
+      "attempt" INTEGER NOT NULL,
+      "outcome" VARCHAR(16) NOT NULL,
+      "validity" VARCHAR(16) NOT NULL,
+      "error_category" VARCHAR(32) NULL,
+      "error_message" TEXT NULL,
+      "input_tokens" INTEGER NOT NULL,
+      "output_tokens" INTEGER NOT NULL,
+      "cost_usd" DOUBLE PRECISION NULL,
+      "cost_source" VARCHAR(16) NULL,
+      "first_frame_ms" BIGINT NULL,
+      "complete_frame_ms" BIGINT NULL,
+      "payload_bytes" INTEGER NOT NULL,
+      "payload" TEXT NULL,
+      "created_at" BIGINT NOT NULL,
+      FOREIGN KEY ("thread_id") REFERENCES "${t.threads}" ("id") ON DELETE CASCADE
+    )`,
+    `CREATE INDEX IF NOT EXISTS "${t.genuiCalls}_created_idx" ON "${t.genuiCalls}" ("created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.genuiCalls}_run_idx" ON "${t.genuiCalls}" ("run_id")`,
   ];
 }
 
@@ -470,7 +504,7 @@ function isTransientLockFailure(error: unknown): boolean {
 }
 
 /**
- * Idempotently provision the eleven agent tables through Lucid's async raw runner (`CREATE TABLE IF
+ * Idempotently provision the twelve agent tables through Lucid's async raw runner (`CREATE TABLE IF
  * NOT EXISTS`), then additively repair a database that predates run tracking by ALTERing in the
  * `run_id` columns its three older tables are missing.
  *
@@ -537,13 +571,14 @@ export async function createAgentTables(db: LucidRawRunner): Promise<string[]> {
 }
 
 /**
- * `DROP TABLE IF EXISTS` for the eleven agent tables, in reverse dependency order so a dialect that
+ * `DROP TABLE IF EXISTS` for the twelve agent tables, in reverse dependency order so a dialect that
  * enforces the `REFERENCES` clauses never refuses a drop for a child that still exists. The mirror of
  * {@link createAgentTables}, and what the published migration's `down()` calls.
  */
 export function dropTableStatements(): string[] {
   const t = AGENT_TABLES;
   return [
+    t.genuiCalls,
     t.actionProposals,
     t.channelState,
     t.confirmTokens,
@@ -558,7 +593,7 @@ export function dropTableStatements(): string[] {
   ].map((table) => `DROP TABLE IF EXISTS "${table}"`);
 }
 
-/** Drop the eleven agent tables. Destructive and irreversible — this erases every thread and every ledger row. */
+/** Drop the twelve agent tables. Destructive and irreversible — this erases every thread and every ledger row. */
 export async function dropAgentTables(db: LucidRawRunner): Promise<void> {
   for (const stmt of dropTableStatements()) {
     await db.rawQuery(portableSql(db, stmt));
@@ -631,7 +666,7 @@ export function schemaRunner(db: LucidRawRunner): LucidRawRunner {
 const provisioned = new WeakMap<object, Promise<void>>();
 
 /**
- * Idempotently ensure the eleven agent tables exist, memoized per db client. This is what the stores
+ * Idempotently ensure the twelve agent tables exist, memoized per db client. This is what the stores
  * run when `autoCreateTables` is on (the default): the agent provider calls each store's
  * `ensureSchema()` once as the app starts, and a store used without the provider (a script, a test
  * that builds one by hand) falls back to it on first use — whichever store touches the connection
