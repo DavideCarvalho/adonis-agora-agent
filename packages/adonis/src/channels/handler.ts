@@ -1579,6 +1579,9 @@ export function handleChannel(
               ...(component.componentVersions !== undefined
                 ? { componentVersions: component.componentVersions }
                 : {}),
+              ...(component.fallbackText !== undefined
+                ? { fallbackText: component.fallbackText }
+                : {}),
             },
             native.channel,
           );

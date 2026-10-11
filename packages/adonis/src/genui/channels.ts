@@ -423,6 +423,11 @@ export interface ChannelComponentInput {
   version?: number;
   /** A tree frame's per-component versions (`componentVersions`), for its nodes. */
   componentVersions?: Record<string, number>;
+  /**
+   * The frame's own text (`fallbackText`): what is sent for a component whose props were written
+   * for a schema version this catalog does not have — it is never drawn from them as if they were.
+   */
+  fallbackText?: string;
 }
 
 /** {@link ChannelNativeMessage} plus the component it came from (so a press can name it). */
@@ -529,6 +534,7 @@ export async function renderChannelMessages(
       ...(from.title !== undefined ? { title: from.title } : {}),
     });
   };
+  let unknownVersion = false;
   const visit = async (
     name: string,
     props: Record<string, unknown>,
@@ -546,6 +552,16 @@ export async function renderChannelMessages(
     // The props' version: the frame's own, or — for a tree's node — the tree's entry for it.
     const tree = component.name === GENUI_TREE_COMPONENT;
     const version = tree ? (component.componentVersions?.[name] ?? 1) : (component.version ?? 1);
+    // Props for a schema version newer than this catalog's (a newer client, a frame from a later
+    // deploy): never converted, drawn or summarised as if they were the known one — the frame's own
+    // text stands for them (once, for the frame). An older version still converts (it is told it).
+    if (version > (catalog.get(name)?.version ?? 1)) {
+      if (!unknownVersion) {
+        unknownVersion = true;
+        pushText(component.fallbackText ?? '', from);
+      }
+      return;
+    }
     const native = await nodeMessages(catalog, name, props, channel, {
       version,
       ...(id !== undefined ? { id } : {}),

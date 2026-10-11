@@ -204,6 +204,70 @@ describe('channel tool filtering', () => {
 });
 
 describe('WhatsApp / Telegram conversion', () => {
+  it('a frame for a version newer than the catalog knows is sent as its own text, never drawn', async () => {
+    const converted: unknown[] = [];
+    const drawn: string[] = [];
+    // The catalog knows Table v1; a frame says v2 (written for props this server does not have).
+    const Table = defineComponent<{ rows: { label: string; value: number }[] }>(
+      {
+        name: 'Table',
+        title: 'Table',
+        description: 'Rows.',
+        props: {
+          type: 'object',
+          properties: { rows: { type: 'array' } },
+          required: ['rows'],
+        },
+      },
+      {
+        channels: {
+          whatsapp: {
+            convert: (props) => {
+              converted.push(props);
+              return { text: props.rows.map((r) => `${r.label}: ${r.value}`).join('\n') };
+            },
+          },
+        },
+      },
+    );
+    const local = defineCatalog([...BUILTIN_COMPONENTS, Table]);
+    const channel = resolveGenuiChannel(
+      {},
+      {
+        whatsapp: {
+          chartImages: {
+            components: ['Table'],
+            render: async (name: string) => {
+              drawn.push(name);
+              return { url: 'https://img.example/t.png' };
+            },
+          },
+        },
+      },
+      'whatsapp',
+    );
+    const props = { rows: [{ label: 'Glicose <teste>&', value: 90.1234 }] };
+    const v2 = await renderChannelMessages(
+      local,
+      { id: 't2', name: 'Table', props, version: 2, fallbackText: 'Glicose: 90 mg/dL' },
+      channel,
+    );
+    expect(v2).toEqual([{ text: 'Glicose: 90 mg/dL', component: 'Table', componentId: 't2' }]);
+    expect(converted).toEqual([]);
+    expect(drawn).toEqual([]);
+    // No text of its own: nothing is sent rather than a guess from the props.
+    expect(
+      await renderChannelMessages(local, { id: 't3', name: 'Table', props, version: 2 }, channel),
+    ).toEqual([]);
+    // The known version converts as before.
+    const v1 = await renderChannelMessages(
+      local,
+      { id: 't1', name: 'Table', props, version: 1 },
+      channel,
+    );
+    expect(v1[0]?.text).toBe('Glicose <teste>&: 90.1234');
+  });
+
   it("a conversion is told the frame's version (and the frame), so a v1 frame converts as v1", async () => {
     const seen: unknown[] = [];
     // v2 renamed `amount` to `total`; a v1 frame persisted before that still carries `amount`.
