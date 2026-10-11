@@ -51,10 +51,13 @@ export interface FollowOptions {
 export class ConversationClient {
   readonly endpoint: string;
   private readonly resource?: string | undefined;
+  /** Narrower scope for every request of this client (4.3 "Narrower tokens"), when set. */
+  private readonly scope?: string | undefined;
 
   constructor(
     readonly company: CompanyClient,
     entry: PoppyProtocolEntry | undefined = poppyProtocol(company),
+    options: { scope?: string | undefined } = {},
   ) {
     if (!entry)
       throw new PoppyError('no_conversation_protocol', 'Company lists no `poppy` protocol');
@@ -62,6 +65,7 @@ export class ConversationClient {
       .toString()
       .replace(/\/+$/, '');
     this.resource = entry.resource;
+    this.scope = options.scope;
   }
 
   private url(
@@ -94,6 +98,7 @@ export class ConversationClient {
           headers: { 'content-type': 'application/json', accept: 'application/json' },
           body: JSON.stringify(body),
           resource: this.resource,
+          scope: this.scope,
         });
         if (res.status >= 500 && attempt < retries) {
           lastErr = new PoppyError(`http_${res.status}`);
@@ -171,6 +176,7 @@ export class ConversationClient {
     const { body } = await this.company.json<EventsPage>(this.url(id, '/events', opts), {
       headers: { accept: 'application/json' },
       resource: this.resource,
+      scope: this.scope,
     });
     if (!Array.isArray(body?.events))
       throw new PoppyError('invalid_response', 'events must be a list');
@@ -294,7 +300,7 @@ export class ConversationClient {
         if (useStream && cursor) headers['last-event-id'] = cursor;
         res = await this.company.fetch(
           this.url(id, '/events', useStream ? {} : { cursor, wait: opts.wait ?? 25 }),
-          { headers, signal: opts.signal, resource: this.resource },
+          { headers, signal: opts.signal, resource: this.resource, scope: this.scope },
         );
       } catch (e) {
         if (opts.signal?.aborted) return;

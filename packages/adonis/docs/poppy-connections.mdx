@@ -1,0 +1,112 @@
+---
+title: Poppy connections (your agent at other companies)
+description: Let your agent act on OTHER Personal Agent Protocol ("Poppy") companies for its users — agent identity, per-user connections sealed at rest, connect links that resume the conversation, company tools and agent behind your confirmation.
+icon: Link
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+<Callout type="warn" title="Experimental — tracks a draft spec">
+This implements the client side of the [Personal Agent Protocol (Poppy)](https://personalagentprotocol.org/docs/spec)
+**Draft 0.1**. The spec is still in development; this surface **will change, possibly in breaking ways
+and outside semver majors**, as it evolves.
+</Callout>
+
+[Poppy](/docs/agent/poppy) lets personal agents talk to your app. This is the other direction: **your
+app's agent becomes a personal agent** for its users at other Poppy companies — it discovers them,
+connects each user's account there, reads through their MCP tools and their own agent, and acts — always
+behind your app's confirmation. It is built on the framework-agnostic
+[`@adonis-agora/agent/poppy-client`](/docs/agent/poppy-client).
+
+## Mounting it
+
+```ts title="adonisrc.ts"
+providers: [
+  () => import('@adonis-agora/agent/agent_provider'),
+  () => import('@adonis-agora/agent/poppy_connections_provider'),
+]
+```
+
+```ts title="config/poppy_connections.ts"
+import env from '#start/env'
+import { definePoppyConnectionsConfig } from '@adonis-agora/agent/poppy-connections'
+
+export default definePoppyConnectionsConfig({
+  baseUrl: env.get('APP_URL'),                 // HTTPS: the agent identity lives under it
+  identity: {
+    name: 'Acme Assistant',                    // what companies show on their consent screen
+    keys: env.get('POPPY_AGENT_KEYS'),         // JSON array of private EC P-256 JWKs
+  },
+  // Default: NO company. The app decides where its agent may go.
+  companies: {
+    'shop.example': { label: 'Shop', readScopes: ['poppy:read', 'orders:read'] },
+  },
+})
+```
+
+Generate a key with `generatePoppyAgentKey()` (from `@adonis-agora/agent/poppy-connections`) and keep
+the JSON in an env var. Several keys rotate: the first signs, all are published.
+
+| Field | Default | |
+| --- | --- | --- |
+| `baseUrl` | — | Your public origin. `client_id` is `{baseUrl}/{path}/agent.json`. |
+| `path` | `'poppy-agent'` | Identity (`agent.json`, `jwks.json`), connect pages, `oauth/callback`. |
+| `identity` | — | `name`, `logoUri`, `keys`. |
+| `companies` | none | A list, a map to `{ label, scopes, readScopes }`, or a predicate. |
+| `owner` | `actor.tenantRef ?? actor.id` | Whose connection a turn uses. |
+| `store` | `'lucid'` | `'memory'`, `redisPoppyConnectionStore(redis)`, or your own; `connection`, `autoCreateTables`. |
+| `secret` | app key | Seals connections at rest (AES-256-GCM). |
+| `insecureDev` | `false` | **Development only, not spec-compliant**: http companies and identity. Refused in production. |
+| `tools` | `{ prefix: 'poppy_' }` | Tool names' prefix and the `roles` they require. |
+| `texts` | English | Pages and confirmation cards. |
+| `render` | built-in HTML | `(view, texts) => string` — give the connect pages your look. |
+| `api` | — | `{ actor(ctx) }` mounts `GET/DELETE {path}/api/connections[/:domain]` for your settings UI. |
+
+Add the tools to an agent (`tools: ['poppy_companies', 'poppy_connect', …]`) — they are registered in the
+same `ToolRegistry`, so your `RolesPolicy`, personas and allow-lists apply. Personal agents never reach
+them (they carry no `personal_agent` role).
+
+## Connections
+
+One connection per **owner** (person/account) and company: the company's issuer, the granted scopes,
+and the client state — the per-company User ID, the DPoP key, the Account Token (a refresh token) and
+Session Tokens — **sealed** with the app key. Sessions, DPoP proofs and nonces, renewals, narrowing and
+Account Token rotation are handled by the client; calls of one owner are serialized so a rotated token is
+never lost. `PoppyConnections` (container binding) gives your code `list(owner)` and
+`disconnect(owner, domain)`; a disconnect revokes the Account Token at the company (§4.9), and a
+revocation on their side is noticed (`invalid_grant`) and marks the connection `revoked`.
+
+## Connecting — a link, then the conversation resumes
+
+`poppy_connect` is an **action**: its confirmation card carries a link to a page on **your** app
+(`/{path}/connect/:id`) — a link works in the web chat and in WhatsApp alike. There the person picks:
+
+- **Sign in at the company** (Direct, §4.5): PKCE, `state` and the RFC 9207 `iss` check, back to your callback;
+- **a form on your page** (Mediated, §4.7) when the company offers it: the fields the company declares,
+  posted from the person's browser to your server and straight to the company — **never stored, logged
+  or shown to the model**; a one-time code on the next page;
+- **a code** (Device, §4.6) when Direct is not offered.
+
+Completing it **decides the parked `connect` call** (a proposal decision under
+`actionApprovalMode: 'independent'`, an approval otherwise): the turn resumes with the account
+connected and does what was asked. The link is a 128-bit capability, keyed to that call with your
+secret, expiring (`connectTtlSeconds`, 15 min) and single-purpose. A call whose account is already
+connected with the scopes asked completes at once, without a card.
+
+## Tools
+
+| Tool | Kind | |
+| --- | --- | --- |
+| `poppy_companies` | read | Allowed companies and the person's connection at each. |
+| `poppy_connect` | action | The connect card (see above); `scopes` for a step-up. |
+| `poppy_tools` | read | The company's MCP tools, with `readOnly`. |
+| `poppy_read` | read | Runs a tool the company marks `readOnlyHint`; anything else is refused. |
+| `poppy_write` | **action** | Any other company tool — your confirmation card shows the tool and its arguments. |
+| `poppy_ask` | read | A question to the company's agent with a token **narrowed to `readScopes`** (default `poppy:read`): a question cannot make the company act. |
+| `poppy_request` | **action** | A request for the company's agent to act — the person confirms the message. |
+| `poppy_disconnect` | action | Revokes the connection. |
+
+A company answer of `insufficient_scope`, `sign_in_required` or an `authorization` event comes back to the
+model as `needs_permission` / `not_connected` with the next step — `poppy_connect` with the scopes —
+never as a dead end. Opening the company's website for the person (§5 browser sessions) is not offered:
+the spec requires the assertion to be posted from a browser the agent controls, not the person's.

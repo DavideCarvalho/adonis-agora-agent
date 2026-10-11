@@ -186,6 +186,29 @@ export async function deviceSignIn(
   }
 }
 
+/**
+ * One device-code exchange (4.6), for a server that cannot hold a polling loop open (the user
+ * comes back and says "approved"): `'pending'` while the User has not decided, the sign-in when
+ * they approved. `access_denied` / `expired_token` throw.
+ */
+export async function pollDeviceSignInOnce(
+  company: CompanyClient,
+  deviceCode: string,
+  scope: string,
+): Promise<SignInResult | 'pending'> {
+  try {
+    const resp = await withLiveSession(company, (sessionId) =>
+      company.tokens.deviceToken({ deviceCode, sessionId, dpop: company.dpop }),
+    );
+    return await company.applySignIn(resp, 'device', scope);
+  } catch (e) {
+    if (e instanceof OAuthError && (e.code === 'authorization_pending' || e.code === 'slow_down')) {
+      return 'pending';
+    }
+    throw e;
+  }
+}
+
 /* ------------------------------------------------------------------ Mediated (4.7) */
 
 export type MediatedOutcome =

@@ -80,7 +80,20 @@ export class StateStore {
   private constructor(
     readonly path: string,
     public data: StateFile,
+    private readonly persist?: ((data: StateFile) => Promise<void>) | undefined,
   ) {}
+
+  /**
+   * A state kept by the caller instead of a file — a server keeping each user's Companies in its
+   * own database. `persist` receives the whole state on every save (serialized, like the file).
+   */
+  static memory(
+    data: StateFile = { version: 1, profiles: {} },
+    persist?: (data: StateFile) => Promise<void>,
+  ): StateStore {
+    data.profiles ??= {};
+    return new StateStore('', data, persist);
+  }
 
   static async open(path = defaultStatePath()): Promise<StateStore> {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
@@ -121,6 +134,10 @@ export class StateStore {
   }
 
   async #write(): Promise<void> {
+    if (this.path === '') {
+      await this.persist?.(this.data);
+      return;
+    }
     const tmp = `${this.path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
     await writeFile(tmp, `${JSON.stringify(this.data, null, 2)}\n`, { mode: 0o600 });
     await chmod(tmp, 0o600);

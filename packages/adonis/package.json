@@ -267,6 +267,21 @@
       "types": "./dist/src/poppy-client/index.d.ts",
       "import": "./dist/src/poppy-client/index.js",
       "default": "./dist/src/poppy-client/index.js"
+    },
+    "./poppy-connections": {
+      "types": "./dist/src/poppy-connections/index.d.ts",
+      "import": "./dist/src/poppy-connections/index.js",
+      "default": "./dist/src/poppy-connections/index.js"
+    },
+    "./poppy-connections/server_middleware": {
+      "types": "./dist/src/poppy-connections/server_middleware.d.ts",
+      "import": "./dist/src/poppy-connections/server_middleware.js",
+      "default": "./dist/src/poppy-connections/server_middleware.js"
+    },
+    "./poppy_connections_provider": {
+      "types": "./dist/providers/poppy_connections_provider.d.ts",
+      "import": "./dist/providers/poppy_connections_provider.js",
+      "default": "./dist/providers/poppy_connections_provider.js"
     }
   },
   "files": [
