@@ -3,7 +3,7 @@ import type { ActionApprovalMode } from './action-proposal-receipt.js';
 import type { AgentDeps } from './agent-deps.js';
 import type { AgentRegistry } from './agent-registry.js';
 import type { MemoryConfig } from './memory.js';
-import type { ResolveToolUiCatalog } from './negotiated-tool-ui.js';
+import type { ResolveToolUiCatalog, ToolUiChannelGuide } from './negotiated-tool-ui.js';
 import {
   defaultPersonaOf,
   findPersona,
@@ -159,6 +159,8 @@ export function registerDelegateTools(registry: ToolRegistry, agents: AgentRegis
 export interface AgentDepsFactoryConfig {
   actionApprovalMode?: ActionApprovalMode;
   resolveUiCatalog?: ResolveToolUiCatalog;
+  /** genui `channels`: the channel's prompt block, and what tool pushes were delivered as. */
+  uiChannelGuide?: ToolUiChannelGuide;
   /** Where a tool's failed `present` is reported. Undefined → a console warning. */
   onPresentationError?: PresentationErrorHandler;
   model: ModelProvider;
@@ -330,6 +332,9 @@ export class AgentDepsFactory {
     return {
       ...(this.config.resolveUiCatalog !== undefined
         ? { resolveUiCatalog: this.config.resolveUiCatalog }
+        : {}),
+      ...(this.config.uiChannelGuide !== undefined
+        ? { uiChannelGuide: this.config.uiChannelGuide }
         : {}),
       ...(this.config.onPresentationError !== undefined
         ? { onPresentationError: this.config.onPresentationError }

@@ -35,8 +35,10 @@ export {
 } from './catalog.js';
 export {
   assertGenuiChannels,
+  type ChannelChoiceLimits,
   type ChannelComponentInput,
   type ChannelConversion,
+  type ChannelConversionSpec,
   type ChannelNativeButton,
   type ChannelNativeImage,
   type ChannelNativeList,
@@ -49,7 +51,10 @@ export {
   channelButtonAction,
   channelCatalog,
   channelInstructions,
+  channelPrompt,
   DEFAULT_CHANNEL,
+  describeChannelComponents,
+  describeChannelDelivery,
   type GenuiChannelBase,
   type GenuiChannelMode,
   type GenuiChannelOptions,

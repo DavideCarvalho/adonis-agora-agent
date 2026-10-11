@@ -121,8 +121,18 @@ export function defineComponent<P = Record<string, unknown>>(
     if (typeof definition.channels !== 'object' || definition.channels === null)
       throw new TypeError('genui: channels must be an object of conversions');
     for (const [channel, conversion] of Object.entries(definition.channels)) {
-      if (conversion !== undefined && conversion !== false && typeof conversion !== 'function')
-        throw new TypeError(`genui: channels.${channel} must be a function or false`);
+      if (conversion === undefined || conversion === false || typeof conversion === 'function')
+        continue;
+      const spec = conversion as { convert?: unknown; describe?: unknown };
+      if (
+        typeof spec !== 'object' ||
+        spec === null ||
+        typeof spec.convert !== 'function' ||
+        (spec.describe !== undefined && typeof spec.describe !== 'string')
+      )
+        throw new TypeError(
+          `genui: channels.${channel} must be a function, { convert, describe? } or false`,
+        );
     }
   }
   return definition;

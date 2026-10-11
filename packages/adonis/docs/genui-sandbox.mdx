@@ -70,7 +70,7 @@ The sandbox's props are the view, and the model writes them **in this order** (`
 
 | Prop | What it is | Limit |
 | --- | --- | --- |
-| `initialHeight` | Height in CSS pixels to reserve while the code streams. The frame then sizes to its content. | 40 – 2000, default 240 |
+| `initialHeight` | Height in CSS pixels to reserve while the code streams (the placeholder, and the frame until it first measures). The frame then sizes to its content — taller or shorter than this. | 40 – 2000, default 240 |
 | `placeholderMessages` | One to three short lines shown while the code streams ("Setting up the calculator…"). | 5 lines of 120 characters |
 | `title` | Short title: the frame's accessible name, and what text-only clients print. | 120 characters |
 | `summary` | One or two sentences on what the view shows — what a client that cannot run it prints. | 600 characters |
@@ -315,6 +315,8 @@ Browsers apply the embedding page's Content-Security-Policy to `srcdoc` document
 - `confirm`, when you gave one, said yes.
 
 The host's own messages into the frame (preview redraws, the code that arrives while the model writes) carry the token too, and the frame only listens to its parent. A reported height is clamped to `maxHeight`.
+
+The height the frame reports is its **content's**: the bottom of what the body holds (margins included), not the document's `scrollHeight`, which never drops below the frame's own height. So the frame follows the view both ways — it shrinks from `initialHeight` to a short card, and grows and shrinks again as the view changes. It re-measures on every resize of the page or of a top-level element, on every DOM or style change (the Tailwind runtime injecting its CSS, the kit drawing JSX), and once fonts and images have loaded. A view sized to the viewport (`min-h-screen`, `height: 100vh` on its own element) keeps the frame's height, so write views that size to their content.
 
 ### What an action can do
 

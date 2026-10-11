@@ -395,6 +395,10 @@ export function createSandboxRenderer(
         switch (data.type) {
           case SANDBOX_MESSAGE.ready:
             ready.current = true;
+            // The first measure rides `ready` too: a `resize` sent before this listener was up is
+            // not sent again while the content keeps that height.
+            if (typeof data.height === 'number' && Number.isFinite(data.height) && data.height > 0)
+              setMeasured(clampHeight(data.height, policy));
             if (themeRef.current !== null)
               post({
                 type: SANDBOX_MESSAGE.theme,
