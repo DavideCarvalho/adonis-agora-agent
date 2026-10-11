@@ -142,6 +142,8 @@ export async function runKitViteBuild(options: KitBuildOptions): Promise<KitBuil
       },
       rollupOptions: {
         input: ENTRY_FILE,
+        // The app's own build reports its warnings (`"use client"` directives…); this one is quiet.
+        onwarn() {},
         output: {
           format: 'iife',
           name: '__genuiSandboxKit',

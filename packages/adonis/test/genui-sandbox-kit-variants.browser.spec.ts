@@ -166,7 +166,7 @@ describe.skipIf(!enabled)(
             await document.fonts.load('16px "Geist Variable"');
             return (
               document.fonts.check('16px "Geist Variable"') &&
-              [...document.fonts].some(
+              Array.from(document.fonts as unknown as Iterable<FontFace>).some(
                 (face) => face.family.includes('Geist') && face.status === 'loaded',
               )
             );

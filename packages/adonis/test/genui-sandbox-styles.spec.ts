@@ -412,7 +412,8 @@ describe('zero-config discovery', () => {
     );
     expect(descriptor.components.map((c: { name: string }) => c.name)).toEqual(['Badge']);
     expect(descriptor.vocabulary.groups.map((g: { name: string }) => g.name)).toEqual(['hero']);
-    expect(descriptor.theme.vars).toEqual({ '--brand': 'red' });
+    // Minified: `#f00` or `red`, depending on the CSS minifier of the Vite version.
+    expect(descriptor.theme.vars['--brand']).toMatch(/^(red|#f00)$/);
     expect(descriptor.assets.css).not.toBeNull();
     expect(descriptor.assets.tailwind).toBeNull();
   }, 120_000);
