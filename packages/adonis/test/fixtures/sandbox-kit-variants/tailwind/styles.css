@@ -1,0 +1,30 @@
+/* Tailwind v4, shadcn-style: the theme as CSS variables, mapped to utilities. */
+@import "tailwindcss";
+/* A self-hosted font through fontsource (url()s to its woff2 files): inlined, so it loads in the frame. */
+@import "@fontsource-variable/geist";
+@custom-variant dark (&:where(.dark, .dark *));
+@theme inline {
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-card: var(--card);
+  --radius-lg: var(--radius);
+  --font-sans: "Geist Variable", sans-serif;
+}
+@utility kit-ring {
+  box-shadow: 0 0 0 3px var(--primary);
+}
+:root {
+  --primary: rgb(79, 70, 229);
+  --primary-foreground: #fff;
+  --card: #fff;
+  --radius: 12px;
+}
+.dark {
+  --primary: rgb(165, 180, 252);
+}
+@layer components {
+  .kit-title {
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+}

@@ -137,7 +137,7 @@ describe('Tailwind and the kit', () => {
     const iframe = frame();
     expect(iframe.srcdoc).toContain('window.Kit={Button');
     expect(iframe.srcdoc).toContain('id="agora-sandbox-root"');
-    expect(iframe.srcdoc).toContain('function transpileJsx');
+    expect(iframe.srcdoc).toContain('var __genuiJsx=');
     await loaded(iframe);
     const posted: unknown[] = [];
     vi.spyOn(iframe.contentWindow as Window, 'postMessage').mockImplementation((message) => {

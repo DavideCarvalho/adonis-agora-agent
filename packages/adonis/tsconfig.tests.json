@@ -16,5 +16,5 @@
     "test/**/*.ts",
     "test/**/*.tsx"
   ],
-  "exclude": ["dist/**", "test/fixtures/sandbox-kit/**"]
+  "exclude": ["dist/**", "test/fixtures/sandbox-kit/**", "test/fixtures/sandbox-kit-variants/**"]
 }

@@ -1,38 +1,20 @@
 ---
 title: Your design system in the sandbox
-description: "The sandbox drawn in your app's look: the host theme's CSS variables (light and dark), Tailwind utilities mapped to them, and your own components (shadcn components/ui) as a kit the model writes JSX with — bundled, documented and found automatically through Vite."
+description: "The sandbox drawn in your app's look, whatever your stack: your styles (Tailwind, Bootstrap, Sass, plain CSS) compiled into the frame, your React components as a kit the model writes JSX with, and your providers (MUI, emotion, styled-components) around it — found through Vite, no presets."
 icon: Palette
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-The [sandbox](/docs/agent/genui-sandbox) runs the model's view in an isolated frame with no network. Out of the box that view looks like nothing in your app. Three opt-in levels close the gap, each building on the one before:
+The [sandbox](/docs/agent/genui-sandbox) runs the model's view in an isolated frame with no network. Out of the box it looks like nothing in your app. `genuiSandboxKit()` closes the gap with three inputs, and works the same whatever your stack is:
 
-| Level | Option | What the frame gets | Cost per frame |
+| Option | What it is | What the frame gets | What the model is told |
 | --- | --- | --- | --- |
-| 1. Theme | `theme: 'inherit'` (**on by default**) | Your page's CSS custom properties (`--background`, `--primary`, `--radius`…), following light/dark | a few hundred bytes |
-| 2. Tailwind | `tailwind: true` | `@tailwindcss/browser` (v4) with an `@theme` mapped from your variables: `bg-primary`, `text-muted-foreground`, `rounded-lg` work offline | ≈280 KB (≈75 KB gzipped, fetched once per page) |
-| 3. Kit | `kit: true` | Your components (e.g. shadcn `components/ui`) + React, as one bundle; the model writes **JSX** with them | ≈230 KB + your components |
+| `styles` | Your style entry files: plain CSS, Sass/Less, PostCSS, CSS modules, Bootstrap imported in a `.scss`, Tailwind v3/v4… | The compiled CSS, fonts and images inlined. With Tailwind, Tailwind's browser runtime with your theme, variants and utilities | Tailwind: your theme tokens and utilities. Other CSS: the classes it defines |
+| `components` | Modules or globs exporting React components: shadcn's `components/ui`, a customized MUI, react-bootstrap, Mantine, your own | Your components and React, as one bundle | Each component and its props, from their types. It writes **JSX** |
+| `wrapper` | A module whose default export wraps the model's App: `({ children }) => <ThemeProvider theme={appTheme}><CssBaseline />{children}</ThemeProvider>` | `<Wrapper><App /></Wrapper>`, in the frame's own document | That the providers are already there |
 
-The frame stays what it was: `sandbox="allow-scripts"` without `allow-same-origin`, a CSP with no network. Tailwind and the kit are **inlined** into the frame's document — the renderer fetches each once from your own origin, caches it, and puts it in the `srcdoc`.
-
-## 1. The theme (on by default)
-
-The renderer reads every custom property your stylesheets declare, takes their computed values on `:root`, and puts them on the frame's `:root`. When your page switches theme — a `dark` class, a `data-theme="dark|light"` attribute on `<html>`, a stylesheet swapped, or the system's `prefers-color-scheme` — it pushes the new values into the frame by `postMessage`, without reloading it. The frame mirrors the mode as both `class="dark"` and `data-theme`.
-
-The model is told which variables exist, so it writes `background: var(--card)` instead of `#fff`. Turn it off per sandbox with `theme: false`.
-
-## 2. Tailwind
-
-```ts title="config/agent.ts"
-genui: genui({ catalog, sandbox: { tailwind: true } })
-```
-
-The Tailwind runtime is served by the Vite plugin below (`genuiSandboxKit()` — Tailwind is on in it by default). The renderer builds an `@theme inline` from your variables (colors become `--color-*`, bare shadcn v3 `H S% L%` channels are wrapped in `hsl()`, `--radius` gives `rounded-sm`…`rounded-xl`, `--font-*` stay fonts) and a `dark` variant matching both `.dark` and `[data-theme=dark]`.
-
-Your own Tailwind setup — custom variants (shadcn's `data-open:`, `data-horizontal:`, a `dark` variant on `data-theme`), `@utility`s, `@theme` keys — reaches the frame with `genuiSandboxKit({ tailwindCss: ['shadcn/tailwind.css', 'resources/css/app.css'] })`: the plugin keeps those directives (never `@import`s, `@source`s or base styles) and the renderer adds them to the frame's Tailwind.
-
-## 3. The kit
+Your page's CSS custom properties are always passed in too (the **theme**, on by default), and follow light and dark mode.
 
 ```ts title="vite.config.ts"
 import { genuiSandboxKit } from '@adonis-agora/agent/vite'
@@ -40,44 +22,166 @@ import { genuiSandboxKit } from '@adonis-agora/agent/vite'
 export default defineConfig({
   plugins: [
     react(),
-    adonisjs({ entrypoints: ['inertia/app/app.tsx'] }),
-    // `include`: the component files whose exports are the kit — or `entry`: one module exporting it.
-    // Neither → the first `inertia/components/ui`, `resources/js/components/ui`, `src/components/ui`…
-    genuiSandboxKit({ include: 'inertia/components/ui/*.tsx' }),
+    adonisjs({ entrypoints: ['resources/css/app.css', 'inertia/app/app.tsx'] }),
+    genuiSandboxKit({
+      styles: 'resources/css/app.css',
+      components: 'inertia/components/ui/*.tsx',
+    }),
   ],
 })
 ```
 
 ```ts title="config/agent.ts"
-genui: genui({ catalog, sandbox: { kit: true, tailwind: true } })
+genui: genui({ catalog, sandbox: { kit: true } })
 ```
 
-That is all — nobody runs a command:
+`kit: true` turns on whatever the plugin produced: styles, Tailwind, components, wrapper, docs. Nothing else to configure, and no command to run:
 
-- **Dev**: the plugin builds the kit (your components, React and ReactDOM as one IIFE setting `window.Kit`), serves it under `/@genui-sandbox-kit/`, and writes the docs. When a component changes it rebuilds, and every open sandbox reloads with the new kit (HMR).
-- **Build**: it emits the bundle, the Tailwind runtime and `genui-sandbox-kit.json` (docs + urls) as hashed assets, listed in the Vite manifest.
-- **Server**: `sandbox({ kit: true })` finds them the way `@vite()` finds your assets — the in-process dev server in development, the manifest in production — and `GET /agent/config` tells the renderer where they are (`genui.sandbox`).
+- **Dev**: the plugin compiles the styles, bundles the components and the wrapper, serves them under `/@genui-sandbox-kit/`, and writes the docs. When a component or a stylesheet changes it rebuilds, and every open sandbox reloads with the new kit (HMR).
+- **Build**: it emits them as hashed assets plus `genui-sandbox-kit.json` (docs and urls), listed in the Vite manifest.
+- **Server**: `sandbox({ kit: true })` finds them the way `@vite()` finds your assets (the in-process dev server in development, the manifest in production), and `GET /agent/config` tells the renderer where they are (`genui.sandbox`).
 
-The **docs** are generated from your components' TypeScript types (the compiler API): each exported component, its props with their types, whether they are required, their JSDoc and `@default`, and the element whose native attributes it also takes. That is what the model reads, so it uses `variant="outline"` and not a prop that does not exist:
+The frame stays what it was: `sandbox="allow-scripts"` without `allow-same-origin`, and a CSP with no network. Everything is **inlined** into the frame's document. The renderer fetches each asset once from your own origin, caches it, and puts it in the `srcdoc`.
 
-```txt
-Kit components (the app design system — use these first; each is in scope by name, and on the global `Kit`):
-- <Button> A button in the app's style.
-    variant?: "default" | "outline" | "ghost" | "destructive" = "default" — How the button looks.
-    size?: "sm" | "md" | "lg" — Its size.
-    …and every <button> attribute (className, onClick, …)
-- <Slider> A range slider.
-    value: number[] — The current values (one thumb per value).
-    onValueChange?: (value: number[]) => void
+### Zero config
+
+`genuiSandboxKit()` with no options:
+
+- **styles**: the stylesheets among your Vite entrypoints. That is the AdonisJS plugin's `entrypoints`, or `build.rollupOptions.input`, or, without either, the `<link rel="stylesheet">`s of `index.html`. It also takes the stylesheets those script entries import directly (`import './app.css'`). CSS modules are left out.
+- **components**: the first `components/ui` folder it finds (`inertia/components/ui`, `resources/js/components/ui`, `src/components/ui`, `app/components/ui`, `components/ui`).
+- **wrapper**: none.
+
+### What the model is told
+
+Only what exists:
+
+- **components** and their props, when the kit has components. The model then writes JSX.
+- **Tailwind**, when your styles use it: your theme's colors, radius, fonts, shadows, text sizes and animations, your `@utility`s and your `@custom-variant`s.
+- **CSS classes** otherwise: the classes your stylesheet defines, grouped into families and deduplicated, most used first (a component's root class ranks above a utility). The list is capped. The model writes `class="btn btn-primary"`, not its own CSS.
+- **theme variables**: the custom properties on your styles' root (`:root`, `[data-theme]`, `.dark`).
+- **`stylesDocs`**: your own notes, if you wrote any.
+
+With styles but no components, the model writes **HTML** with your classes. With components (or a wrapper), it writes **JSX**.
+
+```ts
+genuiSandboxKit({
+  styles: 'resources/css/app.scss',
+  // A markdown file, or the text itself: when to use what, what never to use.
+  stylesDocs: 'resources/css/SANDBOX.md',
+})
 ```
 
-<Callout type="info" title="TypeScript 7">
-The docs need TypeScript's JavaScript compiler API (5.x/6.x). With only TypeScript 7 (the native compiler) installed, add `typescript5@npm:typescript@5` and pass `genuiSandboxKit({ typescript: await import('typescript5') })` — otherwise the docs list component names only.
+## Tailwind
+
+Tailwind is **detected**, never configured. A style entry (or a file it `@import`s) that has `@import "tailwindcss"`, `@theme`, `@utility`, `@custom-variant` or `@tailwind`, or a compiled stylesheet with Tailwind's banner, turns it on.
+
+The model writes classes your build never generated (it is writing a new view). So the frame runs **Tailwind's browser runtime** (`@tailwindcss/browser`, v4), which generates CSS for whatever classes are on screen, offline. It gets:
+
+- your stylesheet's **directives**: `@theme` blocks, `@custom-variant`s (shadcn's `data-open:`, a `dark` variant on `data-theme`), `@utility`s. That includes those of the files it imports, such as `shadcn/tailwind.css` or `tw-animate-css`. Imports, `@source`s, `@plugin`s and base styles are not passed to the runtime: they come compiled;
+- an `@theme inline` mapped from your page's variables (colors become `--color-*`, bare shadcn v3 `H S% L%` channels are wrapped in `hsl()`, `--radius` gives `rounded-sm`…`rounded-xl`), and a `dark` variant matching both `.dark` and `[data-theme=dark]`.
+
+The **compiled CSS** is inlined too, for your base styles, your `@layer components`, and fonts. Your app's `@tailwindcss/vite` plugin is added to the kit's build automatically. A PostCSS setup (`@tailwindcss/postcss`, or v3's `tailwindcss`) is picked up from `postcss.config.*` like in your build.
+
+```ts title="vite.config.ts"
+genuiSandboxKit({ styles: 'resources/css/app.css', components: 'inertia/components/ui' })
+```
+
+```css title="resources/css/app.css"
+@import "tailwindcss";
+@import "shadcn/tailwind.css";
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+@theme inline { --color-primary: var(--primary); --radius-lg: var(--radius); }
+:root { --primary: oklch(0.52 0.2 268); --radius: 0.625rem; }
+```
+
+**Tailwind v3.** The runtime is v4. The kit maps your `tailwind.config.*` (or the file an `@config` names) to a v4 `@theme`, from `theme` and `theme.extend`:
+
+- `colors` become `--color-*`, with nested shades flattened, `DEFAULT` dropped, and `<alpha-value>` replaced by `1`;
+- `borderRadius`, `fontFamily`, `fontSize` (with its line height), `boxShadow`, `screens`, `spacing`, `keyframes` and `animation` map the same way;
+- `darkMode: 'class' | 'selector' | ['class', '<selector>']` becomes a `dark` variant.
+
+Function values, `plugins` and `prefix` are not mapped. The model is told to write v4 class names (`shadow-xs` where v3 had `shadow-sm`, `outline-hidden` for `outline-none`).
+
+<Callout type="info" title="Size">
+The runtime is ≈280 KB (≈75 KB gzipped, fetched once per page), and it is inlined into every frame. The compiled CSS is whatever your build produces: with `@source`s scanning a whole monorepo, that can be large. Point `styles` at a stylesheet that sources less if it matters.
 </Callout>
 
-### What the model writes
+## Plain CSS / Sass / Bootstrap
 
-With a kit, the sandbox takes a `jsx` field: plain JavaScript + JSX that defines `function App()`. Kit components and React's hooks are in scope by name:
+Any stylesheet Vite can compile works: plain CSS, Sass, Less, Stylus, PostCSS, CSS modules. It is compiled with Vite's own CSS pipeline and your Vite config's `css` options (`preprocessorOptions`, `modules`, `postcss`, `transformer`), so a Sass `additionalData`, an alias in an `@import`, or a PostCSS plugin behave as in your app. Install the preprocessor your app already uses (`sass`, `less`).
+
+```scss title="resources/css/sandbox.scss"
+$primary: #7c3aed;
+$border-radius: 0.75rem;
+@import "bootstrap/scss/bootstrap";
+```
+
+```ts title="vite.config.ts"
+genuiSandboxKit({ styles: 'resources/css/sandbox.scss' })
+```
+
+The model is told the vocabulary (a capped list of class families, most used first) and writes HTML with it:
+
+```txt
+- btn: btn btn-{primary,secondary,success,danger,lg,sm,…} btn-outline-{primary,…} btn-group
+- card: card card-{body,header,footer,title,text}
+- form: form-{control,select,label,check,range} form-check-{input,label}
+…
+Its custom properties, for your own css: var(--bs-primary), var(--bs-body-font-family), …
+```
+
+A package stylesheet works directly, too: `styles: 'bootstrap/dist/css/bootstrap.min.css'`.
+
+**Fonts and images** referenced by `url()` are inlined as `data:` URIs. Each file can be up to `inlineAssetLimit` (default 128 KB), and all of them together up to `inlineAssetBudget` (default 1 MB). Anything over those, or anything remote, is left out with a warning in the Vite log, and the browser falls back to the next font in the stack or no background image. Absolute urls (`/fonts/x.woff2`) are read from your `publicDir`.
+
+**Light and dark.** The frame mirrors your page root's `dark` class and every `data-*theme`, `data-*mode` or `data-*scheme` attribute (`data-theme`, `data-bs-theme`, `data-color-scheme`…), live. Bootstrap's `data-bs-theme="dark"` therefore follows your page.
+
+## MUI / emotion / styled-components
+
+A CSS-in-JS design system has no stylesheet. It is a theme and a provider. Give the kit the components and the provider:
+
+```tsx title="resources/js/sandbox/wrapper.tsx"
+import CssBaseline from '@mui/material/CssBaseline'
+import { ThemeProvider } from '@mui/material/styles'
+import { appTheme } from '../theme'
+
+export default function SandboxWrapper({ children }: { children?: React.ReactNode }) {
+  return (
+    <ThemeProvider theme={appTheme}>
+      <CssBaseline />
+      {children}
+    </ThemeProvider>
+  )
+}
+```
+
+```ts title="resources/js/sandbox/components.ts"
+export { Button, Card, CardContent, Slider, Stack, TextField, Typography, Menu, MenuItem } from '@mui/material'
+export { PriceTag } from '../components/price_tag' // your own styled() components
+```
+
+```ts title="vite.config.ts"
+genuiSandboxKit({
+  components: 'resources/js/sandbox/components.ts',
+  wrapper: 'resources/js/sandbox/wrapper.tsx',
+})
+```
+
+The wrapper is bundled with the components, and the frame renders `<Wrapper><App /></Wrapper>`. Emotion and styled-components insert their styles into the document they run in, which is the frame's own, so the theme, `CssBaseline`'s baseline and every `styled()` component apply there. Portals (MUI's `Menu`, `Dialog`, `Popover`, `Tooltip`) mount into the frame's `<body>` and open inside the frame.
+
+`components` also takes a package (`components: '@mui/material'`), but that bundles and documents the whole library. A module re-exporting what a generated view needs keeps the frame small and the prompt short (the docs list at most 120 components).
+
+A **JavaScript** project (no TypeScript) gets each component's name, plus its `propTypes` keys and `defaultProps`, when it has them.
+
+<Callout type="info" title="TypeScript 7">
+The docs need TypeScript's JavaScript compiler API (5.x/6.x). With only TypeScript 7 (the native compiler) installed, add `typescript5@npm:typescript@5` and pass `genuiSandboxKit({ typescript: await import('typescript5') })`. Otherwise the docs fall back to names and propTypes.
+</Callout>
+
+A frame is only as tall as its content. A dialog taller than the view is clipped to the frame. Prefer inline disclosure (an accordion, a collapse) to modals in generated views.
+
+## What the model writes
+
+With components (or a wrapper), the sandbox takes a `jsx` field: plain JavaScript + JSX that defines `function App()`. Kit components and React's hooks are in scope by name:
 
 ```jsx
 function App() {
@@ -98,31 +202,66 @@ function App() {
 }
 ```
 
-It is compiled **inside the frame** by a small JSX transpiler inlined into it (no network, no `unsafe-eval`), and rendered into the frame's root. While the model writes it, the view keeps the skeleton → preview → live progression: a placeholder of `initialHeight`, then — every time what has arrived closes into code that parses and renders — a preview of it (a half-written attribute is held back, an open element is closed), then the live view once the call is complete. A version that does not parse or throws never replaces the last good one, so nothing is ever shown half broken. `agent.send` only counts from the live view.
+It is compiled **inside the frame** by a small JSX transpiler inlined into it (no network, no `unsafe-eval`), and rendered into the frame's root. While the model writes it, the view goes from skeleton to preview to live view:
 
-### Without Vite in the server's process
+1. a placeholder of `initialHeight`;
+2. a preview, every time what has arrived closes into code that parses and renders (a half-written attribute is held back, an open element is closed);
+3. the live view, once the call is complete.
 
-An app whose frontend is a separate SPA builds the kit with the same plugin in its own Vite config; the server still needs the **docs**. The assembler hook `node ace configure @adonis-agora/agent` adds does that: on `serve` and `build`, and again when a kit file changes, it writes `.adonisjs/agent/genui_sandbox_kit.json`:
+A version that does not parse or throws never replaces the last good one, so nothing is ever shown half broken. `agent.send` only counts from the live view.
+
+With styles only, it writes `html` (and `jsFunctions`/`jsExpressions`), using your classes.
+
+## Without Vite in-process
+
+An app whose frontend is a separate SPA builds the kit with the same plugin in its own Vite config. The server still needs the **docs**. The assembler hook that `node ace configure @adonis-agora/agent` adds writes `.adonisjs/agent/genui_sandbox_kit.json` on `serve` and `build`, and again when a kit or style file changes:
 
 ```ts title="adonisrc.ts"
 import { genuiKitHook } from '@adonis-agora/agent/hooks/genui_kit'
 
 hooks: {
-  // Defaults: the first components/ui folder; pass the SPA's if it lives elsewhere.
-  init: [genuiKitHook({ include: 'web/src/components/ui/*.tsx', css: 'web/src/app.css' })],
+  // Same options as the plugin: styles, components, wrapper, stylesDocs.
+  init: [genuiKitHook({ components: 'web/src/components/ui', styles: 'web/src/app.css' })],
 }
 ```
 
+The hook compiles the styles with Vite when it is installed (for Sass and PostCSS); without it, it reads plain CSS as it is. The kit's assets themselves are served by the SPA's dev server or build, on its own origin.
+
+## Migration from 0.74
+
+The options are fewer and work for any stack. The old ones throw a message naming their replacement.
+
+| 0.74 | 0.75 |
+| --- | --- |
+| `genuiSandboxKit({ include: 'inertia/components/ui/*.tsx' })` | `genuiSandboxKit({ components: 'inertia/components/ui/*.tsx' })` |
+| `genuiSandboxKit({ entry: 'resources/js/genui/kit.ts' })` | `genuiSandboxKit({ components: 'resources/js/genui/kit.ts' })` |
+| `genuiSandboxKit({ tailwindCss: ['resources/css/app.css', 'shadcn/tailwind.css'] })` | `genuiSandboxKit({ styles: 'resources/css/app.css' })`: the files it `@import`s are read on their own |
+| `genuiSandboxKit({ tailwind: false })` | Leave Tailwind out of `styles` |
+| `defineSandbox({ kit: true, tailwind: true })` / `sandbox: { kit: true, tailwind: true }` | `defineSandbox({ kit: true })` / `sandbox: { kit: true }`: Tailwind is detected |
+| `sandbox: { tailwind: true }` (Tailwind without a kit) | `genuiSandboxKit({ styles: '<your Tailwind stylesheet>' })` + `sandbox: { kit: true }` |
+| `genuiKitHook({ include, entry, css })` | `genuiKitHook({ components, styles })` |
+| `writeSandboxKitDocs({ include, entry, css, output })` | `writeSandboxKitDocs({ components, styles, output })` |
+| descriptor `{ version: 1, kit, tailwind }` | `{ version: 2, …docs, assets: { kit, css, tailwind } }`; `GET /agent/config` → `genui.sandbox` gains `css` |
+
+`plugins` (with `@tailwindcss/vite`) is no longer needed when your app has that plugin. Keep `plugins` for anything else your styles or components need to compile.
+
 ## Sizes
 
-Theme injection costs nothing measurable. Tailwind (≈280 KB) and the kit (≈230 KB of React + your components) are inlined into **every** sandbox frame that uses them — fetched over the network once per page, but parsed once per frame. Keep the kit to the components a generated view needs (`include` a curated list, or an `entry` re-exporting them) rather than your whole design system.
+Theme injection costs nothing measurable. Everything else is inlined into **every** sandbox frame that uses it: fetched over the network once per page, but parsed once per frame.
+
+- **Styles**: whatever they compile to, plus inlined fonts (capped by `inlineAssetBudget`).
+- **Tailwind**: ≈280 KB.
+- **The kit**: ≈230 KB of React plus your components and their dependencies (a dozen MUI components with emotion and a theme add ≈180 KB).
+
+Keep the kit to what a generated view needs.
 
 ## Reference
 
 | Export | From | |
 | --- | --- | --- |
-| `genuiSandboxKit(options)` | `@adonis-agora/agent/vite` | The Vite plugin: `entry`, `include`, `tailwind` (default `true`), `tailwindCss`, `descriptor`, `tsconfig`, `typescript`, `plugins` |
-| `defineSandbox({ theme, tailwind, kit })` | `@adonis-agora/agent/genui` | `kit` also takes docs (or a function returning them) |
+| `genuiSandboxKit(options)` | `@adonis-agora/agent/vite` | The Vite plugin: `styles`, `stylesDocs`, `components`, `wrapper`, `plugins`, `tsconfig`, `typescript`, `inlineAssetLimit`, `inlineAssetBudget`, `descriptor` |
+| `genuiKitHook(options)` | `@adonis-agora/agent/hooks/genui_kit` | The assembler hook: `styles`, `stylesDocs`, `components`, `wrapper`, `tsconfig`, `typescript`, `output` |
+| `defineSandbox({ theme, kit })` | `@adonis-agora/agent/genui` | `kit` also takes docs (or a function returning them) |
 | `createSandboxRenderer({ config, theme })` | `@adonis-agora/agent/react/genui` | `config`: an object, a url, or `false`; default the agent's `/config` |
-| `generateSandboxKitDocs`, `writeSandboxKitDocs`, `buildSandboxKitBundle`, `sandboxKitDiscovery` | `@adonis-agora/agent/genui/kit` | The Node half, for your own tooling |
-| `transpileJsx`, `tailwindThemeCss`, `collectHostThemeVars` | `@adonis-agora/agent/genui` | The isomorphic pieces |
+| `writeSandboxKitDocs`, `buildSandboxKitBundle`, `buildSandboxKitStyles`, `discoverStyleEntries`, `sandboxKitDiscovery` | `@adonis-agora/agent/genui/kit` | The Node half, for your own tooling |
+| `extractCssVocabulary`, `tailwindTokensFromCss`, `tailwindV3ConfigToCss`, `inlineCssUrls`, `transpileJsx`, `tailwindThemeCss`, `collectHostThemeVars` | `@adonis-agora/agent/genui` | The isomorphic pieces |

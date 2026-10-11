@@ -1,11 +1,14 @@
 /**
- * The kit bundle: the app's design-system components, React and ReactDOM as ONE classic script (an
- * IIFE) that sets `window.Kit`, `window.React` and `window.ReactDOM` — what the sandbox frame inlines,
- * so it needs no network and no module loader. Built with the app's own Vite (`vite.build`, nothing
- * written), its aliases kept, so `@/lib/utils` resolves as it does in the app.
+ * The kit bundle: the app's components, its wrapper, React and ReactDOM as ONE classic script (an
+ * IIFE) that sets `window.Kit`, `window.KitWrapper`, `window.React` and `window.ReactDOM` — what the
+ * sandbox frame inlines, so it needs no network and no module loader. Built with the app's own Vite
+ * (nothing written), its aliases kept, so `@/lib/utils` resolves as it does in the app.
  */
-import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import type { SandboxKitComponentDoc } from '../sandbox-kit.js';
 import type { SandboxKitFiles } from './files.js';
+import { contentHash, runKitViteBuild } from './vite-build.js';
 
 /** What a kit build produced. */
 export interface SandboxKitBundle {
@@ -24,155 +27,156 @@ export interface BuildSandboxKitOptions {
   files: SandboxKitFiles;
   /** `resolve` from the app's Vite config (aliases, dedupe, conditions). */
   resolve?: Record<string, unknown>;
+  /** `css` from the app's Vite config (for CSS the components import). */
+  css?: Record<string, unknown>;
   /** Extra Vite plugins for the kit build (e.g. one the components need to compile). */
   plugins?: unknown[];
+  inlineAssetLimit?: number;
+  inlineAssetBudget?: number;
+  warn?: (message: string) => void;
   /** Default true. */
   minify?: boolean;
 }
 
-/** The entry's file name (Vite resolves a lib entry against the root) and its virtual id. */
-const ENTRY_FILE = 'genui-sandbox-kit-entry.js';
-const ENTRY_ID = '\0genui-sandbox-kit-entry';
-const EXPORTS_ID = '\0genui-sandbox-kit-exports';
-
-function exportsCode(files: SandboxKitFiles): string {
-  return files.entry
-    ? `export * from ${JSON.stringify(files.entry)};`
-    : files.files.map((file) => `export * from ${JSON.stringify(file)};`).join('\n');
+function entryCode(files: SandboxKitFiles): string {
+  const modules = [...files.files, ...files.packages];
+  return [
+    'import * as React from "react";',
+    'import * as ReactDOMClient from "react-dom/client";',
+    ...modules.map((module, index) => `import * as __kit${index} from ${JSON.stringify(module)};`),
+    ...(files.wrapper !== undefined
+      ? [`import __KitWrapper from ${JSON.stringify(files.wrapper)};`]
+      : []),
+    'var Kit = {};',
+    // In order, the first module naming a component wins (what `export *` would leave ambiguous).
+    ...modules.map(
+      (_, index) =>
+        `for (var k in __kit${index}) { if (!(k in Kit) && k !== "default") Kit[k] = __kit${index}[k]; }`,
+    ),
+    'window.React = React;',
+    'window.ReactDOM = ReactDOMClient;',
+    'window.Kit = Kit;',
+    ...(files.wrapper !== undefined ? ['window.KitWrapper = __KitWrapper;'] : []),
+  ].join('\n');
 }
 
-interface OutputChunkLike {
-  type: 'chunk' | 'asset';
-  fileName: string;
-  code?: string;
-  source?: string | Uint8Array;
-  exports?: string[];
-  moduleIds?: string[];
-  modules?: Record<string, unknown>;
+/** The names the kit's source files export in PascalCase (read off the text: no TypeScript needed). */
+function sourceExportNames(files: readonly string[]): string[] {
+  const names = new Set<string>();
+  for (const file of files) {
+    let text: string;
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const match of text.matchAll(
+      /export\s+(?:const|function|class|let|var)\s+([A-Z][A-Za-z0-9]*)/g,
+    ))
+      names.add(match[1] as string);
+    for (const match of text.matchAll(/export\s*\{([^}]*)\}/g)) {
+      for (const part of (match[1] as string).split(',')) {
+        const name = part
+          .split(/\s+as\s+/)
+          .pop()
+          ?.trim();
+        if (name !== undefined && /^[A-Z][A-Za-z0-9]*$/.test(name)) names.add(name);
+      }
+    }
+  }
+  return [...names];
 }
 
 /** Build the kit bundle with the app's Vite. */
 export async function buildSandboxKitBundle(
   options: BuildSandboxKitOptions,
 ): Promise<SandboxKitBundle> {
-  const vite = (await import('vite')) as typeof import('vite');
-  const major = Number.parseInt(String(vite.version).split('.')[0] ?? '0', 10);
-  const files = options.files;
-  const kitExports = new Set<string>();
-  const result = await vite.build({
-    configFile: false,
+  const built = await runKitViteBuild({
     root: options.root,
-    logLevel: 'silent',
-    mode: 'production',
-    publicDir: false,
-    // One React: components living outside the app (a workspace package, another repo) resolve
-    // `react` from the app root too, never a second copy that would break their hooks.
-    resolve: {
-      ...(options.resolve ?? {}),
-      dedupe: [
-        ...(((options.resolve as { dedupe?: string[] } | undefined)?.dedupe ?? []) as string[]),
-        'react',
-        'react-dom',
-      ],
-    } as never,
-    define: { 'process.env.NODE_ENV': JSON.stringify('production') },
-    // Vite 8 compiles with Oxc, earlier versions with esbuild: the automatic JSX runtime on both.
-    // Production JSX (`jsx`, never `jsxDEV`) whatever NODE_ENV the dev server runs under.
-    ...(major >= 8
-      ? ({ oxc: { jsx: { runtime: 'automatic', development: false } } } as Record<string, unknown>)
-      : { esbuild: { jsx: 'automatic', jsxDev: false } }),
-    plugins: [
+    entry: entryCode(options.files),
+    ...(options.resolve !== undefined ? { resolve: options.resolve } : {}),
+    ...(options.css !== undefined ? { css: options.css } : {}),
+    ...(options.plugins !== undefined ? { plugins: options.plugins } : {}),
+    ...(options.inlineAssetLimit !== undefined
+      ? { inlineAssetLimit: options.inlineAssetLimit }
+      : {}),
+    ...(options.inlineAssetBudget !== undefined
+      ? { inlineAssetBudget: options.inlineAssetBudget }
+      : {}),
+    ...(options.warn !== undefined ? { warn: options.warn } : {}),
+    ...(options.minify !== undefined ? { minify: options.minify } : {}),
+  });
+  let code = built.code;
+  if (built.css !== '') code = `window.__GENUI_KIT_CSS__=${JSON.stringify(built.css)};\n${code}`;
+  const exports = sourceExportNames(options.files.files);
+  return { code, hash: contentHash(code), exports, modules: built.modules };
+}
+
+/**
+ * The kit's components as a JavaScript project can document them, without TypeScript: run the
+ * bundle in a bare context (no DOM) and read each PascalCase export's `propTypes` keys and
+ * `defaultProps`. `[]` when the bundle does not run outside a browser.
+ */
+export function kitDocsFromBundle(code: string): SandboxKitComponentDoc[] {
+  const window: Record<string, unknown> = {};
+  try {
+    runInNewContext(
+      code,
       {
-        name: 'genui-sandbox-kit-entry',
-        resolveId(id: string) {
-          if (id === ENTRY_ID || id.endsWith(ENTRY_FILE)) return ENTRY_ID;
-          if (id === EXPORTS_ID) return EXPORTS_ID;
-          return null;
-        },
-        load(id: string) {
-          if (id === ENTRY_ID) {
-            return [
-              'import * as React from "react";',
-              'import * as ReactDOMClient from "react-dom/client";',
-              'import * as Kit from "\\0genui-sandbox-kit-exports";',
-              'window.React = React;',
-              'window.ReactDOM = ReactDOMClient;',
-              'window.Kit = Kit;',
-            ].join('\n');
-          }
-          if (id === EXPORTS_ID) return exportsCode(files);
-          return null;
-        },
+        window,
+        self: window,
+        globalThis: window,
+        console: { log() {}, warn() {}, error() {} },
+        setTimeout,
+        clearTimeout,
+        queueMicrotask,
       },
-      ...((options.plugins ?? []) as never[]),
-    ],
-    build: {
-      write: false,
-      emptyOutDir: false,
-      copyPublicDir: false,
-      minify: options.minify ?? true,
-      sourcemap: false,
-      cssCodeSplit: false,
-      reportCompressedSize: false,
-      modulePreload: false,
-      lib: {
-        entry: ENTRY_FILE,
-        formats: ['iife'],
-        name: '__genuiSandboxKit',
-        fileName: () => 'genui-sandbox-kit.js',
-      },
-      rollupOptions: { output: { inlineDynamicImports: true } },
-    },
-  } as never);
-  const outputs = (Array.isArray(result) ? result : [result]) as unknown as {
-    output: OutputChunkLike[];
-  }[];
-  let code = '';
-  let css = '';
-  const modules = new Set<string>();
-  for (const out of outputs) {
-    for (const item of out.output ?? []) {
-      if (item.type === 'chunk') {
-        code += item.code ?? '';
-        for (const id of item.moduleIds ?? Object.keys(item.modules ?? {})) {
-          if (!id.startsWith('\0') && !id.includes('/node_modules/')) modules.add(id);
-        }
-      } else if (item.fileName.endsWith('.css')) {
-        css +=
-          typeof item.source === 'string'
-            ? item.source
-            : Buffer.from(item.source ?? new Uint8Array()).toString('utf8');
-      }
-    }
+      { timeout: 2000 },
+    );
+  } catch {
+    if (window.Kit === undefined) return [];
   }
-  if (css !== '') code = `window.__GENUI_KIT_CSS__=${JSON.stringify(css)};\n${code}`;
-  // The names the kit exports, read off the entry's re-exports at runtime would need a browser:
-  // list what the source files export by name instead (good enough for the fallback docs).
-  for (const file of files.files) {
-    try {
-      const { readFileSync } = await import('node:fs');
-      const text = readFileSync(file, 'utf8');
-      for (const match of text.matchAll(
-        /export\s+(?:const|function|class|let|var)\s+([A-Z][A-Za-z0-9]*)/g,
-      ))
-        kitExports.add(match[1] as string);
-      for (const match of text.matchAll(/export\s*\{([^}]*)\}/g)) {
-        for (const part of (match[1] as string).split(',')) {
-          const name = part
-            .split(/\s+as\s+/)
-            .pop()
-            ?.trim();
-          if (name !== undefined && /^[A-Z][A-Za-z0-9]*$/.test(name)) kitExports.add(name);
-        }
-      }
-    } catch {
-      /* unreadable: no fallback names from it */
-    }
+  const kit = (window.Kit ?? {}) as Record<string, unknown>;
+  const docs: SandboxKitComponentDoc[] = [];
+  for (const [name, value] of Object.entries(kit)) {
+    if (!/^[A-Z][A-Za-z0-9]*$/.test(name)) continue;
+    if (typeof value !== 'function' && (typeof value !== 'object' || value === null)) continue;
+    const component = value as {
+      propTypes?: unknown;
+      defaultProps?: unknown;
+      render?: { propTypes?: unknown; defaultProps?: unknown };
+    };
+    const propTypes = (component.propTypes ?? component.render?.propTypes ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const defaults = (component.defaultProps ?? component.render?.defaultProps ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const names = [...new Set([...Object.keys(propTypes), ...Object.keys(defaults)])];
+    docs.push({
+      name,
+      props: names.slice(0, 40).map((prop) => {
+        const value = defaults[prop];
+        const shown =
+          value === undefined || typeof value === 'function'
+            ? undefined
+            : (() => {
+                try {
+                  return JSON.stringify(value);
+                } catch {
+                  return undefined;
+                }
+              })();
+        return {
+          name: prop,
+          type: value === undefined ? 'unknown' : Array.isArray(value) ? 'array' : typeof value,
+          required: false,
+          ...(shown !== undefined && shown.length <= 80 ? { default: shown } : {}),
+        };
+      }),
+    });
   }
-  return {
-    code,
-    hash: createHash('sha256').update(code).digest('hex').slice(0, 12),
-    exports: [...kitExports],
-    modules: [...modules],
-  };
+  return docs;
 }

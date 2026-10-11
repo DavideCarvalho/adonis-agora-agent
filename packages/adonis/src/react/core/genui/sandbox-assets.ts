@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { SandboxClientConfig } from '../../../genui/sandbox-kit.js';
 import {
   collectHostThemeVars,
+  hostModeAttributes,
   hostThemeCss,
   isHostDark,
   tailwindThemeCss,
@@ -85,13 +86,16 @@ export function useSandboxClientConfig(source: SandboxConfigSource | undefined):
 const assets = new Map<string, Promise<string | null>>();
 /** The kit url the last HMR update named (dev): newer than what `/config` said. */
 let kitUrlOverride: string | undefined;
+/** The same for the compiled styles. */
+let cssUrlOverride: string | undefined;
 let kitVersion = 0;
 const kitListeners = new Set<() => void>();
 
 if (typeof window !== 'undefined') {
   window.addEventListener(SANDBOX_KIT_UPDATE_EVENT, (event) => {
-    const detail = (event as CustomEvent<{ url?: string | null }>).detail;
+    const detail = (event as CustomEvent<{ url?: string | null; css?: string | null }>).detail;
     if (typeof detail?.url === 'string') kitUrlOverride = detail.url;
+    if (typeof detail?.css === 'string') cssUrlOverride = detail.css;
     kitVersion += 1;
     for (const notify of kitListeners) notify();
   });
@@ -119,18 +123,26 @@ export function loadSandboxAsset(url: string): Promise<string | null> {
  */
 export function useSandboxAsset(
   url: string | undefined,
-  options: { kit?: boolean } = {},
+  options: { kit?: boolean; css?: boolean } = {},
 ): string | null | undefined {
   const [version, setVersion] = useState(kitVersion);
+  const follows = options.kit === true || options.css === true;
   useEffect(() => {
-    if (options.kit !== true) return;
+    if (!follows) return;
     const notify = () => setVersion(kitVersion);
     kitListeners.add(notify);
     return () => {
       kitListeners.delete(notify);
     };
-  }, [options.kit]);
-  const effective = options.kit === true && url !== undefined ? (kitUrlOverride ?? url) : url;
+  }, [follows]);
+  const effective =
+    url === undefined
+      ? url
+      : options.kit === true
+        ? (kitUrlOverride ?? url)
+        : options.css === true
+          ? (cssUrlOverride ?? url)
+          : url;
   const [state, setState] = useState<{ url: string | undefined; text: string | null | undefined }>({
     url: undefined,
     text: undefined,
@@ -153,10 +165,12 @@ export function useSandboxAsset(
   return state.url === effective ? state.text : undefined;
 }
 
-/** The host page's theme now, and as it changes: the frame's `:root` CSS, dark or not, Tailwind's `@theme`. */
+/** The host page's theme now, and as it changes: the frame's `:root` CSS, dark or not, its mode attributes, Tailwind's `@theme`. */
 export interface HostTheme {
   css: string;
   dark: boolean;
+  /** The host root's light/dark attributes (`data-theme`, `data-bs-theme`…), mirrored on the frame's. */
+  attributes: Record<string, string>;
   tailwind: string;
 }
 
@@ -168,6 +182,7 @@ function readHostTheme(): HostTheme | null {
   return {
     css: hostThemeCss(vars, colorScheme !== undefined ? { colorScheme } : {}),
     dark,
+    attributes: hostModeAttributes(document),
     tailwind: tailwindThemeCss(vars),
   };
 }
@@ -183,7 +198,8 @@ export function useHostTheme(enabled: boolean): HostTheme | null {
     }
     const update = () => {
       const next = readHostTheme();
-      const key = next === null ? '' : `${next.dark}|${next.css}`;
+      const key =
+        next === null ? '' : `${next.dark}|${JSON.stringify(next.attributes)}|${next.css}`;
       if (key === last.current) return;
       last.current = key;
       setTheme(next);
