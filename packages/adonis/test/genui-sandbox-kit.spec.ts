@@ -479,7 +479,8 @@ describe('genui() with a kit sandbox in the catalog', () => {
     expect(setup.sandboxClient?.()).toEqual({ theme: true });
     const sandbox = setup.catalog.get('MiniApp');
     const props = sandbox?.props as { properties: Record<string, unknown> } | undefined;
-    expect(props?.properties.jsx).toBeDefined();
+    // No kit was built (no Vite here): the model is offered html only, not a jsx it cannot draw.
+    expect(props?.properties.jsx).toBeUndefined();
     expect(setup.catalog.components).toHaveLength(1);
   });
 });

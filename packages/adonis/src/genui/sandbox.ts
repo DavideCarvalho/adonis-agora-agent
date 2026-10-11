@@ -588,13 +588,15 @@ export function defineSandbox(options: DefineSandboxOptions = {}): SandboxDefini
   const policy = options.policy ?? {};
   assertSandboxPolicy(policy);
   const kitOn = options.kit !== undefined && options.kit !== false;
-  const props: JsonSchema = kitOn
-    ? {
-        ...sandboxSchema,
-        properties: { ...(sandboxSchema.properties as Record<string, unknown>), jsx: jsxSchema },
-        required: [],
-      }
-    : sandboxSchema;
+  const withJsx: JsonSchema = {
+    ...sandboxSchema,
+    properties: { ...(sandboxSchema.properties as Record<string, unknown>), jsx: jsxSchema },
+    required: [],
+  };
+  const props: JsonSchema = kitOn ? withJsx : sandboxSchema;
+  // With the kit's docs (a server resolving `kit: true`, or docs given), the schema offers `jsx` only
+  // when the kit has a bundle to draw it with: a stylesheet-only kit is written as html.
+  const docsSource = kitOn && options.kit !== true ? (options.kit as SandboxKitSource) : undefined;
   const definition = defineComponent<SandboxProps>({
     name: options.name ?? SANDBOX_COMPONENT,
     title: 'Interactive view',
@@ -627,7 +629,26 @@ export function defineSandbox(options: DefineSandboxOptions = {}): SandboxDefini
     enumerable: true,
     get: () => options.description ?? describe(policy, options),
   });
+  if (docsSource !== undefined) {
+    Object.defineProperty(result, 'props', {
+      enumerable: true,
+      get: () => (resolveSource(docsSource)?.jsx === true ? withJsx : sandboxSchema),
+    });
+  }
   return Object.freeze(result) as SandboxDefinition;
+}
+
+/**
+ * Whether a sandbox's props draw as JSX (the kit) or as HTML. A model under strict tool calling
+ * (OpenAI's) fills every property, so it may write a whole view in one field and a stub in the
+ * other (`function App() { return null }` next to the real `html`): the field that holds the view —
+ * the longer one — wins. JSX only when it has something in it.
+ */
+export function sandboxDrawsJsx(props: Pick<SandboxProps, 'jsx' | 'html'>): boolean {
+  const jsx = typeof props.jsx === 'string' ? props.jsx.trim() : '';
+  if (jsx === '') return false;
+  const html = typeof props.html === 'string' ? props.html.trim() : '';
+  return jsx.length >= html.length;
 }
 
 /** The builtin sandbox: no network, default limits. */
