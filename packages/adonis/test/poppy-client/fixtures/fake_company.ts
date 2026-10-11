@@ -1079,6 +1079,7 @@ export class FakeCompany {
       // (the stream connected after the reply), and dropping the stream then needs it.
       let unsubscribe = () => {};
       const write = (chunk: string) => {
+        if (res.writableEnded) return; // dropped mid-backlog: the rest comes on the reconnect
         res.write(chunk);
         if (
           this.opts.dropStreamAfterFirstMessage &&
