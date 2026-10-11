@@ -333,7 +333,7 @@ export function tailwindToModelText(
   const list = (names: readonly string[], max: number) =>
     names.slice(0, max).join(', ') + (names.length > max ? ', …' : '');
   const parts = [
-    'Tailwind CSS utility classes work in the frame, offline — the app\'s own Tailwind theme, compiled live for whatever classes you write (className="flex gap-2 p-4 rounded-lg bg-card text-card-foreground"). Prefer them to custom CSS.',
+    'Tailwind CSS utility classes work in the frame, offline — the app\'s own Tailwind theme, compiled live for whatever classes you write (className="flex gap-2 p-4 rounded-lg bg-card text-card-foreground"). Prefer them to custom CSS; w-full for the full width of the frame.',
   ];
   if (options.version === 3)
     parts.push(

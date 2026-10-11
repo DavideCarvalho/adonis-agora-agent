@@ -63,8 +63,13 @@ export function isHslChannels(value: string): boolean {
 
 /** What a set of theme variables gives the model to work with. */
 export interface ThemeTokens {
-  /** Color names (`primary`, `muted-foreground`) — `var(--primary)`, and `bg-primary` with Tailwind. */
+  /** Color utility names (`primary`, `muted-foreground`): `bg-primary` with Tailwind. */
   colors: string[];
+  /**
+   * The color variables as they exist in the frame (`--primary`, `--color-surface-secondary`) —
+   * what `var(…)` may name. Not the utility name: `--color-x` is `bg-x`, never `var(--x)`.
+   */
+  colorVars: string[];
   /** There is a `--radius` (`rounded-sm`…`rounded-xl` follow it). */
   radius: boolean;
   /** Font variables (`--font-sans`). */
@@ -78,22 +83,25 @@ export function themeTokens(vars: Record<string, string> | readonly string[]): T
   const entries: [string, string | undefined][] = Array.isArray(vars)
     ? (vars as readonly string[]).map((name) => [name, undefined])
     : Object.entries(vars as Record<string, string>);
-  const tokens: ThemeTokens = { colors: [], radius: false, fonts: [], other: [] };
+  const tokens: ThemeTokens = { colors: [], colorVars: [], radius: false, fonts: [], other: [] };
   for (const [name, value] of entries) {
     if (INTERNAL_VAR.test(name)) continue;
     const bare = name.replace(/^--/, '');
     if (bare === 'radius') tokens.radius = true;
     else if (bare.startsWith('font-')) tokens.fonts.push(bare);
-    else if (bare.startsWith('color-')) tokens.colors.push(bare.slice('color-'.length));
-    else if (
+    else if (bare.startsWith('color-')) {
+      tokens.colors.push(bare.slice('color-'.length));
+      tokens.colorVars.push(name);
+    } else if (
       value !== undefined
         ? isColorValue(value)
         : /(^|-)(background|foreground|primary|secondary|muted|accent|destructive|border|input|ring|card|popover|chart|sidebar)/.test(
             bare,
           )
-    )
+    ) {
       tokens.colors.push(bare);
-    else tokens.other.push(bare);
+      tokens.colorVars.push(name);
+    } else tokens.other.push(bare);
   }
   return tokens;
 }
@@ -108,8 +116,8 @@ export function themeToModelText(
     return "The app's theme is on :root as CSS custom properties (for example var(--background), var(--foreground), var(--primary)); use them with a fallback, e.g. var(--primary, #2563eb), so the view matches the app in light and dark mode. The page background shows through: leave the body transparent.";
   }
   const parts = [
-    `The app's theme is on :root as CSS custom properties and follows light/dark mode: colors ${tokens.colors
-      .map((name) => `var(--${name})`)
+    `The app's theme is on :root as CSS custom properties and follows light/dark mode — use these exact names: colors ${tokens.colorVars
+      .map((name) => `var(${name})`)
       .join(', ')}${tokens.radius ? '; radius var(--radius)' : ''}${
       tokens.fonts.length > 0
         ? `; fonts ${tokens.fonts.map((name) => `var(--${name})`).join(', ')}`
