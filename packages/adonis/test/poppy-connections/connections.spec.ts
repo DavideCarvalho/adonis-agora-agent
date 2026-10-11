@@ -228,6 +228,48 @@ describe('poppy-connections: allow-list', () => {
     expect(app.fake.log.length + app.fake.sessions.size).toBe(0); // nothing was fetched
   });
 
+  it('a company named rather than by domain resolves to the one allowed company', async () => {
+    app = await setup();
+    const domain = app.fake.domain;
+    // Before connecting, only the label could name it; there is none → refused as given.
+    expect(await tool(app, 'tools', { company: 'fakeco.com' })).toMatchObject({
+      error: 'not_allowed',
+    });
+    await direct(app, await connectLink(app));
+    // Connected: its organization ("Fake Co") names it, as a word or a guessed domain.
+    for (const name of ['Fake Co', 'fakeco.com', 'FAKECO']) {
+      const listed = (await tool(app, 'tools', { company: name })) as { tools?: unknown[] };
+      expect(listed.tools, name).toBeDefined();
+    }
+    expect(await tool(app, 'tools', { company: 'other.example' })).toMatchObject({
+      error: 'not_allowed',
+    });
+    expect(await app.connections.resolveCompany('account-1', 'Fake Co')).toBe(domain);
+  });
+
+  it('a label names an allowed company before any connection', async () => {
+    const fake = await new FakeCompany().start();
+    const domain = fake.domain;
+    await fake.stop();
+    const connections = new PoppyConnections({
+      config: {
+        baseUrl: 'http://127.0.0.1:1',
+        identity: {
+          name: 'X',
+          keys: [(await generateEs256Key()).privateJwk as Record<string, unknown>],
+        },
+        companies: { [domain]: { label: 'Acme Shop' }, 'b.example': { label: 'Acme' } },
+        insecureDev: true,
+      },
+      store: new InMemoryPoppyConnectionStore(),
+      secret: SECRET,
+      production: false,
+    });
+    expect(await connections.resolveCompany('o', 'acmeshop.com')).toBe(domain);
+    expect(await connections.resolveCompany('o', 'Acme')).toBe('b.example');
+    expect(await connections.resolveCompany('o', 'nope.example')).toBe('nope.example');
+  });
+
   it('lists the allowed ones with their connection', async () => {
     app = await setup();
     expect(await tool(app, 'companies', {})).toEqual({

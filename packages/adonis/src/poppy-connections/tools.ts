@@ -323,9 +323,10 @@ export function registerPoppyConnectionTools(
   const writeTools = new Set([`${p}write`, `${p}request`, `${p}disconnect`]);
   const register = <I>(
     spec: Omit<ToolSpec, 'inputSchema'> & { inputSchema: StandardSchemaV1<unknown, I> },
-    handler: ToolHandler<I>,
+    raw: ToolHandler<I>,
   ) => {
     if (options.writes === false && writeTools.has(spec.name)) return;
+    const handler = resolved(raw);
     if (options.connect === 'link' && spec.name === `${p}connect`) {
       const prepare = handler.preflight!;
       registry.register(
@@ -358,6 +359,24 @@ export function registerPoppyConnectionTools(
     }
     registry.register({ ...spec, ...roles } as ToolSpec, handler as ToolHandler);
     names.push(spec.name);
+  };
+  // Every tool takes the company as the model named it; resolve it to the allow-listed domain.
+  const resolved = <I>(handler: ToolHandler<I>): ToolHandler<I> => {
+    const fix = async (input: I, ctx: AiToolCtx): Promise<I> => {
+      const company = (input as { company?: unknown }).company;
+      if (typeof company !== 'string') return input;
+      return { ...input, company: await connections.resolveCompany(owner(ctx), company) };
+    };
+    return {
+      ...handler,
+      execute: async (input, ctx) => handler.execute(await fix(input, ctx), ctx),
+      ...(handler.preflight
+        ? {
+            preflight: async (input: I, ctx: AiToolCtx, phase: unknown) =>
+              handler.preflight!(await fix(input, ctx), ctx, phase as never),
+          }
+        : {}),
+    } as ToolHandler<I>;
   };
 
   register<Record<string, never>>(

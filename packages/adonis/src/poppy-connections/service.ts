@@ -191,6 +191,27 @@ export class PoppyConnections {
     }));
   }
 
+  /**
+   * The allow-listed domain the model meant by `company`. A model often names a company rather than
+   * its domain ("MeuProntoo", "meuprontoo.com" for `localhost:3841`): when `company` is not itself
+   * allowed, it resolves to the ONE allowed company whose label, or the organization of the
+   * owner's connection to it, it names. Ambiguous or unknown → `company` as given (then refused).
+   */
+  async resolveCompany(owner: string, company: string): Promise<string> {
+    const given = normalizeDomain(company);
+    if (this.policy(given) !== null) return given;
+    const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const wanted = new Set([key(given), key(given.split('.')[0] ?? '')].filter(Boolean));
+    const connected = await this.#store.listConnections(owner);
+    const matches = this.allowedCompanies().filter((c) => {
+      const names = [c.label, connected.find((x) => x.domain === c.domain)?.organization]
+        .filter((n): n is string => typeof n === 'string' && n !== '')
+        .map(key);
+      return names.some((n) => wanted.has(n));
+    });
+    return matches.length === 1 ? matches[0]!.domain : given;
+  }
+
   // ── state ──────────────────────────────────────────────────────────────────
 
   /** Serialize everything one owner does: Account Tokens rotate, and a lost rotation is a lost login. */
