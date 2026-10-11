@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.80.1
+
+### Patch Changes
+
+- [#375](https://github.com/DavideCarvalho/adonis-agora-agent/pull/375) [`8b490b6`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/8b490b6f2c49267146149796044ec27b0b76c654) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - fix(client): aborting `send`/`resume` settles the call even while a host `fetch` has not reached the network yet (e.g. it is still awaiting a token refresh) — before, `send` stayed pending forever and a "Stop" button could not stop it.
+
 ## 0.80.0
 
 ### Minor Changes
