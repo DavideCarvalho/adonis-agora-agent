@@ -1,5 +1,15 @@
 # @adonis-agora/agent
 
+## 0.76.2
+
+### Patch Changes
+
+- [#360](https://github.com/DavideCarvalho/adonis-agora-agent/pull/360) [`43a34fc`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/43a34fca2b7fbd387e682d20244ac832375d8431) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Sandbox views a real model writes under strict tool calling (it fills every field):
+  
+  - The schema offers `jsx` only when the kit has a bundle to draw it with. A stylesheet-only kit (Bootstrap) and a server with no kit built are written as `html`, as their description says.
+  - When a model writes both `html` and `jsx`, the field holding the view wins (the longer one): a `function App() { return null }` stub next to the real `html` no longer blanks the frame. This applies to the web and React Native renderers (`sandboxDrawsJsx`).
+  - The JSX rules now say "jsx OR html, never both".
+
 ## 0.76.1
 
 ### Patch Changes
