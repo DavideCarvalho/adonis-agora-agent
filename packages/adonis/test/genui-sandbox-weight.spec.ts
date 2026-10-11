@@ -1,8 +1,10 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { sandboxKitDiscovery } from '../src/genui/kit/discover.js';
+import { resolveSandboxServer, sandboxKitDiscovery } from '../src/genui/kit/discover.js';
 import {
   assertSandboxKitName,
   sandboxKitDescriptorPath,
@@ -348,5 +350,48 @@ describe('named kits', () => {
     expect(discovery.name).toBe('mui');
     expect(discovery.descriptor()).toBe(descriptor);
     expect(read.size).toBe(0);
+  });
+});
+
+describe('a hook-only setup (an SPA serves the kit)', () => {
+  it('explicit urls give the browser the assets the hook-written descriptor has no urls for', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kit-urls-'));
+    const descriptor = {
+      version: 2,
+      components: [{ name: 'Button', props: [] }],
+      jsx: true,
+      tailwind: {
+        version: 4,
+        tokens: {
+          colors: ['gold'],
+          radius: [],
+          fonts: [],
+          shadows: [],
+          text: [],
+          animations: [],
+          utilities: [],
+          variants: [],
+        },
+      },
+      assets: { kit: null, css: null, tailwind: null },
+    };
+    writeFileSync(join(root, 'kit.json'), JSON.stringify(descriptor));
+    const bare = sandboxKitDiscovery({ root, descriptor: 'kit.json', production: false });
+    expect(resolveSandboxServer({ kit: true }, bare).client()).toEqual({ theme: true });
+    const discovery = sandboxKitDiscovery({
+      root,
+      descriptor: 'kit.json',
+      production: false,
+      kitUrl: '/spa/assets/kit.js',
+      cssUrl: '/spa/assets/kit.css',
+      tailwindUrl: '/spa/assets/tailwind.js',
+    });
+    expect(resolveSandboxServer({ kit: true }, discovery).client()).toEqual({
+      theme: true,
+      kit: { url: '/spa/assets/kit.js' },
+      css: { url: '/spa/assets/kit.css' },
+      tailwind: { url: '/spa/assets/tailwind.js' },
+    });
+    rmSync(root, { recursive: true, force: true });
   });
 });

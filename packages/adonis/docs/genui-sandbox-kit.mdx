@@ -444,7 +444,7 @@ hooks: {
 }
 ```
 
-The hook's descriptor has docs and no asset urls, and it is the same file the plugin's `descriptor` above writes. Use one or the other.
+The hook's descriptor has docs and no asset urls, and it is the same file the plugin's `descriptor` above writes. Use one or the other. With the hook, tell the server where the SPA serves the kit (`genui({ sandboxKit: { kitUrl, cssUrl, tailwindUrl } })`, see [Without Vite in-process](#without-vite-in-process)), unless its build lands in the server's `public/assets`, where the manifest is found.
 
 **The model writes** whatever the kit holds, as in the recipes above. **Size:** the same. Nothing changes in the frame.
 
@@ -606,7 +606,25 @@ hooks: {
 }
 ```
 
-The hook compiles the styles with Vite when it is installed (for Sass and PostCSS); without it, it reads plain CSS as it is. Its descriptor has no asset urls: the kit's assets themselves are served by the SPA's dev server or build, and a build in the server's `public/assets` is found through its manifest.
+The hook compiles the styles with Vite when it is installed (for Sass and PostCSS); without it, it reads plain CSS as it is.
+
+The descriptor the hook writes has the docs but no asset urls: the SPA's dev server or build serves the kit's files, and this process cannot see where (a build in the server's `public/assets` is found through its manifest). Tell the server where they are, and `GET /agent/config` passes them on to the renderer:
+
+```ts title="config/agent.ts"
+genui: genui({
+  catalog,
+  sandbox: { kit: true },
+  // Where the SPA serves what its genuiSandboxKit() built: its manifest lists them under
+  // genui-sandbox-kit.js, genui-sandbox-kit.css and genui-sandbox-tailwind.js.
+  sandboxKit: {
+    kitUrl: '/spa/assets/genui-sandbox-kit.js',
+    cssUrl: '/spa/assets/genui-sandbox-kit.css',
+    tailwindUrl: '/spa/assets/genui-sandbox-tailwind.js',
+  },
+})
+```
+
+Each url must be fetchable by the page: same origin, or served with CORS. Give only the ones your kit has. NestJS takes the same three options in `AgentGenuiModule.forRoot({ sandboxKit })`.
 
 ## Weight
 
@@ -686,6 +704,7 @@ To pick a kit per request, resolve a catalog per actor (`resolver`), each with a
 | --- | --- | --- |
 | `genuiSandboxKit(options)` | `@adonis-agora/agent/vite` | The Vite plugin: `name`, `styles`, `stylesDocs`, `components`, `wrapper`, `purge`, `plugins`, `tsconfig`, `typescript`, `inlineAssetLimit`, `inlineAssetBudget`, `descriptor` |
 | `genuiKitHook(options)` | `@adonis-agora/agent/hooks/genui_kit` | The assembler hook: `name`, `styles`, `stylesDocs`, `components`, `wrapper`, `tsconfig`, `typescript`, `output` |
+| `genui({ sandboxKit: { kitUrl, cssUrl, tailwindUrl } })` | `@adonis-agora/agent/genui` | Asset urls for a hook-only setup (an SPA serves the kit) |
 | `defineSandbox({ theme, kit, kitName })` | `@adonis-agora/agent/genui` | `kit` also takes docs (or a function returning them); `kitName` picks a named kit |
 | `createSandboxRenderer({ config, theme, assets })` | `@adonis-agora/agent/react/genui` | `config`: an object, a url, or `false`; default the agent's `/config`. `assets`: `'shared'` (default) or `'inline'` |
 | `writeSandboxKitDocs`, `buildSandboxKitBundle`, `buildSandboxKitStyles`, `purgeSandboxKitStyles`, `discoverStyleEntries`, `sandboxKitDiscovery`, `adonisSandboxKitDiscovery`, `resolveSandboxServer` | `@adonis-agora/agent/genui/kit` | The Node half, for your own tooling |

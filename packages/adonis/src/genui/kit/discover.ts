@@ -29,8 +29,15 @@ export interface SandboxKitDiscoveryOptions {
    * descriptor and the build's descriptor was written last. Default: `NODE_ENV === 'production'`.
    */
   production?: boolean;
-  /** An explicit kit url (an SPA served from elsewhere), over what is found. */
+  /**
+   * Explicit asset urls, over what is found: for an app whose Vite does not run in the server
+   * process (an SPA built and served elsewhere), where the descriptor the assembler hook / codegen
+   * writes has docs but no urls. `kitUrl`: the kit bundle (React, the components); `cssUrl`: the
+   * compiled styles; `tailwindUrl`: the Tailwind browser runtime.
+   */
   kitUrl?: string;
+  cssUrl?: string;
+  tailwindUrl?: string;
 }
 
 export interface SandboxKitDiscovery {
@@ -113,8 +120,22 @@ export function sandboxKitDiscovery(options: SandboxKitDiscoveryOptions): Sandbo
     ...(options.name !== undefined ? { name: options.name } : {}),
     descriptor() {
       const found = find();
-      if (found === null || options.kitUrl === undefined) return found;
-      return { ...found, jsx: true, assets: { ...found.assets, kit: { url: options.kitUrl } } };
+      if (
+        found === null ||
+        (options.kitUrl === undefined &&
+          options.cssUrl === undefined &&
+          options.tailwindUrl === undefined)
+      )
+        return found;
+      const assets = { ...found.assets };
+      if (options.kitUrl !== undefined) assets.kit = { url: options.kitUrl };
+      if (options.cssUrl !== undefined) assets.css = { url: options.cssUrl };
+      if (options.tailwindUrl !== undefined)
+        assets.tailwind = {
+          url: options.tailwindUrl,
+          ...(found.assets.tailwind?.css !== undefined ? { css: found.assets.tailwind.css } : {}),
+        };
+      return { ...found, ...(options.kitUrl !== undefined ? { jsx: true } : {}), assets };
     },
   };
 }

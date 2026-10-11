@@ -8,6 +8,20 @@ import { ADONIS_SANDBOX_KIT_DESCRIPTOR } from '../../vite/index.js';
 import { type SandboxKitDiscovery, sandboxKitDiscovery } from './discover.js';
 import { type GenuiSandboxKitApi, sandboxKitDescriptorPath } from './plugin.js';
 
+/**
+ * Where the kit's assets are when this process cannot find them — an SPA built and served by its own
+ * Vite, with the assembler hook (`genuiKitHook`) writing the docs here. Same names as Nest's
+ * `sandboxKit` options.
+ */
+export interface AdonisSandboxKitUrls {
+  /** The kit bundle (React, the components, the wrapper): what JSX views draw with. */
+  kitUrl?: string;
+  /** The compiled styles. */
+  cssUrl?: string;
+  /** The Tailwind browser runtime (`@tailwindcss/browser`), when the styles use Tailwind. */
+  tailwindUrl?: string;
+}
+
 interface AdonisAppLike {
   appRoot: URL | string;
   inProduction?: boolean;
@@ -25,7 +39,7 @@ interface ViteServiceLike {
  */
 export async function adonisSandboxKitDiscovery(
   app: unknown,
-  options: { name?: string } = {},
+  options: { name?: string } & AdonisSandboxKitUrls = {},
 ): Promise<SandboxKitDiscovery> {
   const adonis = app as AdonisAppLike | undefined;
   const root =
@@ -60,5 +74,8 @@ export async function adonisSandboxKitDiscovery(
             (plugin.api as GenuiSandboxKitApi | undefined)?.kitName === options.name,
         )?.api as GenuiSandboxKitApi | undefined,
     ...(adonis?.inProduction !== undefined ? { production: adonis.inProduction } : {}),
+    ...(options.kitUrl !== undefined ? { kitUrl: options.kitUrl } : {}),
+    ...(options.cssUrl !== undefined ? { cssUrl: options.cssUrl } : {}),
+    ...(options.tailwindUrl !== undefined ? { tailwindUrl: options.tailwindUrl } : {}),
   });
 }
