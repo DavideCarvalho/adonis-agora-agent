@@ -472,6 +472,7 @@ describe('createNativeSandboxRenderer', () => {
       token: token(),
       css: ':root{--primary:#f00;--background:black}',
       dark: true,
+      attributes: {},
     });
   });
 
@@ -493,6 +494,21 @@ describe('createNativeSandboxRenderer', () => {
     expect(documentHtml()).toContain('<script>window.__tw=1</script>');
     expect(documentHtml()).toContain('--color-primary: var(--primary)');
     expect(documentHtml()).toContain('@utility x {}');
+  });
+
+  it("inlines the kit's compiled styles, and mirrors the theme's mode attributes", () => {
+    const Sandbox = createNativeSandboxRenderer({
+      theme: {
+        vars: { '--primary': '#2563eb' },
+        dark: true,
+        attributes: { 'data-bs-theme': 'dark', onload: 'alert(1)' },
+      },
+      config: { css: { source: '.btn{color:red}' } },
+    });
+    render(<Sandbox {...view} />);
+    expect(documentHtml()).toContain('<style id="agora-sandbox-kit-css">.btn{color:red}</style>');
+    expect(documentHtml()).toContain('<html class="dark" data-theme="dark" data-bs-theme="dark">');
+    expect(documentHtml()).not.toContain('onload');
   });
 
   it("resolves the agent's config and Tailwind against baseUrl", async () => {

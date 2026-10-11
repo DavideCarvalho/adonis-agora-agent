@@ -118,14 +118,19 @@ export interface NativeSandboxTheme {
   vars: Record<string, string>;
   dark?: boolean;
   colorScheme?: string;
+  /** Light/dark attributes for the frame's root (`data-theme`, `data-bs-theme`…), as a web host mirrors its own. */
+  attributes?: Record<string, string>;
 }
 
-/** The theme as the frame takes it: `:root{…}`, light/dark, and Tailwind's `@theme` for it. */
+/** The theme as the frame takes it: `:root{…}`, light/dark, root attributes, Tailwind's `@theme`. */
 export interface NativeThemeCss {
   css: string;
   dark: boolean;
+  attributes: Record<string, string>;
   tailwind: string;
 }
+
+const MODE_ATTRIBUTE = /^data-([\w-]*-)?(theme|mode|scheme)$/;
 
 const VAR_NAME = /^--[A-Za-z0-9_-]+$/;
 
@@ -149,6 +154,11 @@ export function nativeThemeCss(theme: NativeSandboxTheme): NativeThemeCss {
       theme.colorScheme !== undefined ? { colorScheme: theme.colorScheme } : {},
     ),
     dark: theme.dark === true,
+    attributes: Object.fromEntries(
+      Object.entries(theme.attributes ?? {}).filter(
+        ([name, value]) => MODE_ATTRIBUTE.test(name) && typeof value === 'string',
+      ),
+    ),
     tailwind: tailwindThemeCss(vars),
   };
 }

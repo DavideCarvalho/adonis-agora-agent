@@ -21,6 +21,8 @@ export interface NativeSandboxConfig {
   tailwind?: { runtime?: string; url?: string; css?: string };
   /** The kit bundle (JSX views): its source inline, or a `url` to fetch it from. */
   kit?: { source?: string; url?: string };
+  /** The app's compiled styles (`genuiSandboxKit({ styles })`): inline, or a `url` to fetch them from. */
+  css?: { source?: string; url?: string };
 }
 
 /**
@@ -68,6 +70,10 @@ function toConfig(body: unknown): NativeSandboxConfig | undefined {
   const kit = sandbox.kit as { url?: unknown } | null | undefined;
   if (typeof kit === 'object' && kit !== null && typeof kit.url === 'string') {
     config.kit = { url: kit.url };
+  }
+  const css = sandbox.css as { url?: unknown } | null | undefined;
+  if (typeof css === 'object' && css !== null && typeof css.url === 'string') {
+    config.css = { url: css.url };
   }
   return config;
 }

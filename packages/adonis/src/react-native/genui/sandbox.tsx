@@ -271,6 +271,12 @@ export function createNativeSandboxRenderer(
       options.baseUrl,
       options.fetch,
     );
+    const cssConfig = client.config?.css;
+    const cssText = useNativeSandboxAsset(
+      cssConfig !== undefined ? { inline: cssConfig.source, url: cssConfig.url } : undefined,
+      options.baseUrl,
+      options.fetch,
+    );
     const kitConfig = client.config?.kit;
     const kitText = useNativeSandboxAsset(
       jsxMode && kitConfig !== undefined
@@ -281,6 +287,7 @@ export function createNativeSandboxRenderer(
     );
     const assetsPending =
       (tailwindConfig !== undefined && tailwindText === undefined) ||
+      (cssConfig !== undefined && cssText === undefined) ||
       (jsxMode && (client.loading || kitText === undefined));
     const themeRef = useRef(theme);
     themeRef.current = theme;
@@ -333,7 +340,10 @@ export function createNativeSandboxRenderer(
       if (phase === 'placeholder') return '';
       const current = themeRef.current;
       const look = {
-        ...(current !== null ? { theme: { css: current.css, dark: current.dark } } : {}),
+        ...(current !== null
+          ? { theme: { css: current.css, dark: current.dark, attributes: current.attributes } }
+          : {}),
+        ...(typeof cssText === 'string' ? { styles: cssText } : {}),
         ...(typeof tailwindText === 'string'
           ? {
               tailwind: {
@@ -355,7 +365,17 @@ export function createNativeSandboxRenderer(
       return phase === 'preview'
         ? buildSandboxDocument({}, { ...base, mode: 'preview' })
         : buildSandboxDocument(props, { ...base, mode: 'live', inlineJs });
-    }, [documentPhase, token, jsxMode ? '' : css, html, inlineJs, policy, tailwindText, kit]);
+    }, [
+      documentPhase,
+      token,
+      jsxMode ? '' : css,
+      html,
+      inlineJs,
+      policy,
+      tailwindText,
+      cssText,
+      kit,
+    ]);
     const source = useMemo(() => ({ html: documentHtml, baseUrl: 'about:blank' }), [documentHtml]);
 
     const post = useCallback(
@@ -397,7 +417,12 @@ export function createNativeSandboxRenderer(
     // The app's theme changed: the view follows, without reloading.
     useEffect(() => {
       if (theme === null || !ready.current) return;
-      post({ type: SANDBOX_MESSAGE.theme, css: theme.css, dark: theme.dark });
+      post({
+        type: SANDBOX_MESSAGE.theme,
+        css: theme.css,
+        dark: theme.dark,
+        attributes: theme.attributes,
+      });
     }, [theme, post]);
 
     // biome-ignore lint/correctness/useExhaustiveDependencies: a new document starts from nothing
@@ -456,6 +481,7 @@ export function createNativeSandboxRenderer(
                 type: SANDBOX_MESSAGE.theme,
                 css: themeRef.current.css,
                 dark: themeRef.current.dark,
+                attributes: themeRef.current.attributes,
               });
             preview();
             runPending();

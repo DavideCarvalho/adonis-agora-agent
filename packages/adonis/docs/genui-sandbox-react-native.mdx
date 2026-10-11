@@ -63,14 +63,14 @@ Import `GenuiProvider`, `GenerativeUI`, `GenuiActionProvider`, `useGenuiNode` an
 | `onAction` | the enclosing `GenuiActionProvider` / `GenuiProvider onAction` | where accepted actions go |
 | `onRefused` | none | `(refusal: SandboxRefusal) => void` — the web renderer's reasons: `too-large`, `too-soon`, `too-many`, `not-json`, `invalid`, `declined`, `no-handler` |
 | `onError` | none | an uncaught error in the view, or the view lost (it navigated, its process died) |
-| `theme` | none | `{ vars, dark?, colorScheme? }`, a hook returning one, or `false` |
-| `config` | `GET <baseUrl>/config` with a `baseUrl`, else theme only | `{ tailwind?: { runtime?, url?, css? }, kit?: { source?, url? } }`, a url, a loader `() => Promise<config>`, or `false` |
+| `theme` | none | `{ vars, dark?, colorScheme?, attributes? }`, a hook returning one, or `false` |
+| `config` | `GET <baseUrl>/config` with a `baseUrl`, else theme only | `{ tailwind?: { runtime?, url?, css? }, css?: { source?, url? }, kit?: { source?, url? } }`, a url, a loader `() => Promise<config>`, or `false` |
 | `baseUrl` | none | the agent's absolute url; relative urls in the config resolve against it |
 | `fetch` | the global `fetch` | for the config and assets (your own authenticated client) |
 | `placeholder` | a box of `initialHeight` with the placeholder lines | `(state) => ReactNode` |
 | `style` | none | extra WebView style (the height is the content's) |
 
-`theme.vars` are CSS custom properties — `{ '--primary': '#2563eb' }` or `{ primary: '#2563eb' }` — written on the frame's `:root` like the web host's own; with Tailwind on, they map to utilities (`bg-primary`, `text-muted-foreground`, `rounded-lg` from `--radius`). `dark` sets the frame's `dark` class and `data-theme`.
+`theme.vars` are CSS custom properties — `{ '--primary': '#2563eb' }` or `{ primary: '#2563eb' }` — written on the frame's `:root` like the web host's own; with Tailwind on, they map to utilities (`bg-primary`, `text-muted-foreground`, `rounded-lg` from `--radius`). `dark` sets the frame's `dark` class and `data-theme`; `attributes` adds light/dark attributes a stylesheet keys on (`data-bs-theme`…). The kit's compiled styles (`genuiSandboxKit({ styles })`, `css` in the agent's `/config`) are inlined like on the web.
 
 ## What the WebView may do
 
