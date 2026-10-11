@@ -51,13 +51,13 @@ the JSON in an env var. Several keys rotate: the first signs, all are published.
 | --- | --- | --- |
 | `baseUrl` | — | Your public origin. `client_id` is `{baseUrl}/{path}/agent.json`. |
 | `path` | `'poppy-agent'` | Identity (`agent.json`, `jwks.json`), connect pages, `oauth/callback`. |
-| `identity` | — | `name`, `logoUri`, `keys`. |
+| `identity` | — | `name`, `logoUri` (default: a served `{path}/logo.svg` with the name's initial), `keys`. |
 | `companies` | none | A list, a map to `{ label, scopes, readScopes }`, or a predicate. |
 | `owner` | `actor.tenantRef ?? actor.id` | Whose connection a turn uses. |
 | `store` | `'lucid'` | `'memory'`, `redisPoppyConnectionStore(redis)`, or your own; `connection`, `autoCreateTables`. |
 | `secret` | app key | Seals connections at rest (AES-256-GCM). |
 | `insecureDev` | `false` | **Development only, not spec-compliant**: http companies and identity. Refused in production. |
-| `tools` | `{ prefix: 'poppy_' }` | `prefix`, `roles`, `ability`, `connect` (`'action'` card that resumes, or `'link'`), `writes` (`false` = build your own confirmed writes), `register` (`false` = you call `registerPoppyConnectionTools` on your own registry). |
+| `tools` | `{ prefix: 'poppy_' }` | `prefix`, `roles`, `ability`, `connect` (`'action'` card that resumes, or `'link'`), `writes` (`false` = build your own confirmed writes), `register` (`false` = you call `registerPoppyConnectionTools` on your own registry), `twoStep` (see below). |
 | `texts` | English | Pages and confirmation cards. |
 | `render` | built-in HTML | `(view, texts) => string` — give the connect pages your look. |
 | `api` | — | `{ actor(ctx) }` mounts `GET/DELETE {path}/api/connections[/:domain]` for your settings UI. |
@@ -109,10 +109,16 @@ registry: `connect` then returns the link as a read tool, and the app builds its
 | `poppy_connect` | action | The connect card (see above); `scopes` for a step-up. |
 | `poppy_tools` | read | The company's MCP tools, with `readOnly`. |
 | `poppy_read` | read | Runs a tool the company marks `readOnlyHint`; anything else is refused. |
-| `poppy_write` | **action** | Any other company tool — your confirmation card shows the tool and its arguments. |
+| `poppy_write` | **action** | Any other company tool — your confirmation card shows the tool and its arguments (and the company's own preview, for a two-step tool). |
 | `poppy_ask` | read | A question to the company's agent with a token **narrowed to `readScopes`** (default `poppy:read`): a question cannot make the company act. |
 | `poppy_request` | **action** | A request for the company's agent to act — the person confirms the message. |
 | `poppy_disconnect` | action | Revokes the connection. |
+
+**Two-step company tools.** Some companies confirm writes themselves: called without `confirm`, the
+tool only answers a preview and a `confirmToken`. `poppy_write` detects a tool whose input schema has
+both fields: the card shows the company's preview (its `summary`/`resumo`/`message`), and confirming
+the card makes the call and commits it with the fresh token — one confirmation, by the person, in
+your app. `tools.twoStep` renames the fields (`{ confirm, token, summary }`) or turns it off (`false`).
 
 A company answer of `insufficient_scope`, `sign_in_required` or an `authorization` event comes back to the
 model as `needs_permission` / `not_connected` with the next step — `poppy_connect` with the scopes —
