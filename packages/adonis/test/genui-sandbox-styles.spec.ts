@@ -592,7 +592,8 @@ describe('rebuilds in dev', () => {
       server.watcher.emit('change', join(root, 'plain.css'));
       const deadline = Date.now() + 60_000;
       const groups = () =>
-        plugin.api.descriptor()?.vocabulary?.groups.map((group) => group.name) ?? [];
+        plugin.api.descriptor()?.vocabulary?.groups.map((group: { name: string }) => group.name) ??
+        [];
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 500));
         if (groups().includes('plain')) {
