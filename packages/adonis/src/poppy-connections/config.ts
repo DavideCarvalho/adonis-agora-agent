@@ -121,6 +121,7 @@ export interface PoppyConnectionsConfig {
   tools?: {
     prefix?: string;
     roles?: string[];
+    ability?: string;
     connect?: 'action' | 'link';
     writes?: boolean;
     register?: boolean;

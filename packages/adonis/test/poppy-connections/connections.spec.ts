@@ -585,12 +585,13 @@ describe('poppy-connections: for loops that do not park on approvals', () => {
           tools.set(spec.name, { spec, handler }),
       } as unknown as ToolRegistry,
       app.connections,
-      { connect: 'link', writes: false },
+      { connect: 'link', writes: false, ability: 'companies.use' },
     );
     expect([...tools.keys()].sort()).toEqual(
       ['poppy_ask', 'poppy_companies', 'poppy_connect', 'poppy_read', 'poppy_tools'].sort(),
     );
     expect(tools.get('poppy_connect')!.spec.kind).toBe('read');
+    expect([...tools.values()].every((t) => t.spec.ability === 'companies.use')).toBe(true);
     const out = (await tools
       .get('poppy_connect')!
       .handler.execute({ company: app.fake.domain }, ctx())) as {

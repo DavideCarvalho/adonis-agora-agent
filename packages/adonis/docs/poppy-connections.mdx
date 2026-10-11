@@ -57,7 +57,7 @@ the JSON in an env var. Several keys rotate: the first signs, all are published.
 | `store` | `'lucid'` | `'memory'`, `redisPoppyConnectionStore(redis)`, or your own; `connection`, `autoCreateTables`. |
 | `secret` | app key | Seals connections at rest (AES-256-GCM). |
 | `insecureDev` | `false` | **Development only, not spec-compliant**: http companies and identity. Refused in production. |
-| `tools` | `{ prefix: 'poppy_' }` | `prefix`, `roles`, `connect` (`'action'` card that resumes, or `'link'`), `writes` (`false` = build your own confirmed writes), `register` (`false` = you call `registerPoppyConnectionTools` on your own registry). |
+| `tools` | `{ prefix: 'poppy_' }` | `prefix`, `roles`, `ability`, `connect` (`'action'` card that resumes, or `'link'`), `writes` (`false` = build your own confirmed writes), `register` (`false` = you call `registerPoppyConnectionTools` on your own registry). |
 | `texts` | English | Pages and confirmation cards. |
 | `render` | built-in HTML | `(view, texts) => string` — give the connect pages your look. |
 | `api` | — | `{ actor(ctx) }` mounts `GET/DELETE {path}/api/connections[/:domain]` for your settings UI. |

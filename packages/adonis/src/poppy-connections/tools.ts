@@ -206,6 +206,8 @@ export function registerPoppyConnectionTools(
   options: {
     prefix?: string;
     roles?: string[];
+    /** An authorization ability every tool declares (for an ability-aware `RolesPolicy`). */
+    ability?: string;
     /**
      * `'action'` (default): `connect` is an action whose card carries the link, and completing the
      * sign-in decides it (the turn resumes). `'link'`: a read tool returning the link — for loops
@@ -220,7 +222,10 @@ export function registerPoppyConnectionTools(
   } = {},
 ): string[] {
   const p = options.prefix ?? 'poppy_';
-  const roles = options.roles !== undefined ? { roles: options.roles } : {};
+  const roles = {
+    ...(options.roles !== undefined ? { roles: options.roles } : {}),
+    ...(options.ability !== undefined ? { ability: options.ability } : {}),
+  };
   const texts = connections.texts;
   const owner = (ctx: AiToolCtx) => connections.ownerOf(ctx.actor);
   const names: string[] = [];
