@@ -630,10 +630,10 @@ createSandboxRenderer({ assets: 'inline' }) // every asset in every srcdoc, as b
 | --- | --- | --- | --- |
 | HTML parsed (5 `srcdoc`s) | 5.36 MB | 0.25 MB | 0.25 MB |
 | CSS + JS parsed by the frames | (in the HTML) | 5.11 MB | 4.07 MB |
-| Browser memory (PSS, median) | __PSS_INLINE__ MB | __PSS_SHARED__ MB | __PSS_PURGED__ MB |
-| All 5 frames drawn (median) | __T_INLINE__ ms | __T_SHARED__ ms | __T_PURGED__ ms |
+| Browser memory (PSS of every Chromium process) | 415 MB | 405 MB | 378 MB |
+| All 5 frames drawn (median) | 713 ms | 930 ms | 732 ms |
 
-The CSS and JavaScript are still parsed once per frame: that is the price of isolating each frame.
+Medians of 11 runs per column on a busy shared host, so the timings are noisy: their spread (450–1,400 ms) is wider than the differences between columns. What sharing measurably removes is the HTML parsing and the copies of each `srcdoc`. The purge removes about a fifth of the bytes the frames parse, and with them some memory. The CSS and JavaScript are still parsed once per frame: that is the price of isolating each frame.
 
 React Native keeps inlining. Its bridge carries strings only, and each WebView is its own process anyway.
 
