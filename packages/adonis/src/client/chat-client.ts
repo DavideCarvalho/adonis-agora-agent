@@ -217,6 +217,25 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
+ * `promise`, or an `AbortError` as soon as `signal` aborts — even when whatever produced the promise
+ * never looks at the signal. A host `fetch` may await something of its own before it reaches the
+ * network (a token refresh, a session read); aborting must still settle the call, or `send` stays
+ * pending forever and a "Stop" button cannot stop it.
+ */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | null | undefined): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortError());
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(abortError());
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  return Promise.race([promise, aborted]).finally(() => {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  });
+}
+
+/**
  * A framework-agnostic client for the agent chat SSE endpoints. `send` posts a turn and streams the
  * reply; if the connection drops before the run finishes, it re-attaches to
  * `GET {basePath}/chat/:runId/stream` — which replays the whole stream from the start and follows live
@@ -242,7 +261,10 @@ export interface AgentChatClient {
 
 export function createAgentChatClient(options: AgentChatClientOptions = {}): AgentChatClient {
   const basePath = (options.basePath ?? '/agent').replace(/\/$/, '');
-  const fetchImpl = options.fetch ?? globalThis.fetch;
+  const rawFetch = options.fetch ?? globalThis.fetch;
+  // Every request honours its `signal` end to end, whatever the injected `fetch` does with it.
+  const fetchImpl = (input: string, init: RequestInit): Promise<Response> =>
+    untilAborted(rawFetch(input, init), init.signal);
   const resumeCfg = options.resume;
   const maxAttempts = resumeCfg === false ? 0 : (resumeCfg?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS);
   const backoff = (resumeCfg === false ? undefined : resumeCfg?.backoffMs) ?? defaultBackoff;

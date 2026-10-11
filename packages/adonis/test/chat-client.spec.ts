@@ -137,3 +137,33 @@ describe('createAgentChatClient.send', () => {
     );
   });
 });
+
+describe('createAgentChatClient — abort before the network', () => {
+  // A host `fetch` that awaits something of its own first (a token refresh that never comes back)
+  // and never looks at the signal.
+  const hungFetch = vi.fn(() => new Promise<Response>(() => {}));
+
+  it('send rejects with AbortError when aborted while the host fetch has not reached the network', async () => {
+    const client = createAgentChatClient({
+      basePath: '/api/assistant',
+      fetch: hungFetch as unknown as typeof fetch,
+    });
+    const controller = new AbortController();
+    const sending = client.send({ body: { message: 'hi' }, signal: controller.signal });
+    controller.abort();
+    await expect(sending).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('resume rejects with AbortError too', async () => {
+    const client = createAgentChatClient({
+      basePath: '/api/assistant',
+      fetch: hungFetch as unknown as typeof fetch,
+      resume: { backoffMs: () => 0 },
+    });
+    const controller = new AbortController();
+    const resuming = client.resume('run-1', { signal: controller.signal });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    controller.abort();
+    await expect(resuming).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
