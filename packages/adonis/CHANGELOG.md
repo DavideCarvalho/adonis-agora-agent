@@ -1,5 +1,22 @@
 # @adonis-agora/agent
 
+## 0.78.0
+
+### Minor Changes
+
+- [#367](https://github.com/DavideCarvalho/adonis-agora-agent/pull/367) [`ad30042`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/ad300428f70df815750f4732e99e28497f91290c) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Approval prompts read as the tool's own words on every adapter. A new shared helper, `resolveToolConfirmation(toolName, input, presentation?)` (with `humanizeToolName` and `DEFAULT_CONFIRM_VERB`), words a prompt: the tool's `presentation.confirm` filled from the call input, else `"<presentation.label>?"`, else the humanized name (`refund_order` → "Refund order?") — never the raw identifier.
+  
+  - AG-UI: an interrupt's `message` is the confirmation title (it now outranks a free-form `reason`); without one it is the humanized name instead of `Approve <tool>?`.
+  - A2UI: the approve button is labelled with the confirmation's `verb` ("Refund"), and an approval without a confirmation reads as the tool's name in words instead of `Approve?`.
+  - Independent proposals: the stored confirmation is filled by the shared filler (placeholders collapse like everywhere else) and falls back to the label / humanized name instead of `Allow <tool>?`.
+  - Text channels: the approve button uses the tool's `confirm.verb` (the localized `texts.approve` when none was declared), a label-only press of that verb still decides the card, and the no-confirmation fallback no longer prints the identifier.
+  - OpenCode: an app tool's approval carries its filled `confirmation` (frame and persisted row), resolved from the tool's presentation behind OpenCode's prefixed name.
+  - A2A: an outcome summary without a confirmation uses the humanized name.
+
+### Patch Changes
+
+- [#370](https://github.com/DavideCarvalho/adonis-agora-agent/pull/370) [`097082d`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/097082dd148e7c99f9ffa8bf41176b0c7643f6e4) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - The React Native sandbox works on Android: `dataDetectorTypes` is passed as `['none']` (react-native-webview's Fabric codegen wants an array and only its iOS wrapper boxes a string, so the bare `'none'` aborted the app the moment a sandbox WebView mounted), and a frame message whose `url` is `'null'` (how Android reports the inline document's opaque origin in `onMessage`) is accepted instead of dropped, so the view's height, `agent.send` and error reports reach the host again.
+
 ## 0.77.1
 
 ### Patch Changes
