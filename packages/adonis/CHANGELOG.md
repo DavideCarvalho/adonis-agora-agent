@@ -1,5 +1,15 @@
 # @adonis-agora/agent
 
+## 0.76.3
+
+### Patch Changes
+
+- [#362](https://github.com/DavideCarvalho/adonis-agora-agent/pull/362) [`83299a0`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/83299a026b324665f5636e81dac70cf4d3e63d47) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Sandbox kit fixes from the app rollouts:
+  
+  - The prompt names theme variables as they exist in the frame. A variable named `--color-surface-secondary` is now listed as `var(--color-surface-secondary)`, not `var(--surface-secondary)`, which does not exist. Its Tailwind utility (`bg-surface-secondary`) is listed separately.
+  - A stylesheet's imports are followed from its real path. A workspace package linked or pnpm-injected into `node_modules` resolves its own imports beside its dependencies, so `@workspace/ui`'s `shadcn/tailwind.css` (with the `data-open:` and `data-horizontal:` variants) now reaches the frame's Tailwind.
+  - The prompt tells the model to lay the view out at the frame's full width (`width: 100%`, `w-full` with Tailwind) unless the user asks for something narrower.
+
 ## 0.76.2
 
 ### Patch Changes
