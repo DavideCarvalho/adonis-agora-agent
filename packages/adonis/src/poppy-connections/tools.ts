@@ -93,6 +93,28 @@ function explain(prefix: string, error: unknown): Record<string, unknown> {
   return { error: 'failed', message: error instanceof Error ? error.message : String(error) };
 }
 
+/**
+ * A failure at a company the owner is not connected to (never connected, disconnected, revoked):
+ * whatever the company answered (a 401 in any shape), the next step is to connect.
+ */
+async function explainAt(
+  connections: PoppyConnections,
+  owner: string,
+  company: string,
+  prefix: string,
+  error: unknown,
+): Promise<Record<string, unknown>> {
+  const explained = explain(prefix, error);
+  if (explained.error !== 'failed') return explained;
+  const current = await connections.connection(owner, company).catch(() => null);
+  if (current?.status === 'active') return explained;
+  return {
+    error: 'not_connected',
+    message: `The person's account at ${normalizeDomain(company)} is not connected.`,
+    next: `Call ${prefix}connect first.`,
+  };
+}
+
 function fill(template: string, values: Record<string, string>): string {
   return template.replace(/\{(\w+)\}/g, (_, k: string) => values[k] ?? `{${k}}`);
 }
@@ -209,7 +231,7 @@ export async function callCompanyTool(
       await conn.close().catch(() => {});
     }
   } catch (error) {
-    return explain(prefix, error);
+    return explainAt(connections, owner, input.company, prefix, error);
   }
 }
 
@@ -518,7 +540,7 @@ export function registerPoppyConnectionTools(
             await conn.close().catch(() => {});
           }
         } catch (error) {
-          return explain(p, error);
+          return explainAt(connections, owner(ctx), input.company, p, error);
         }
       },
     },

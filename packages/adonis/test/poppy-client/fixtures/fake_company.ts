@@ -86,6 +86,8 @@ export class FakeCompany {
   origin = '';
   readonly violations: string[] = [];
   readonly log: string[] = [];
+  /** Answer every MCP request 401 with a bare JSON body, no WWW-Authenticate (as some servers do). */
+  bareMcpErrors = false;
   /** Trips `book_trip` committed, and its outstanding preview tokens. */
   readonly trips: string[] = [];
   readonly tripTokens = new Map<string, string>();
@@ -805,6 +807,10 @@ export class FakeCompany {
   private async mcp(req: IncomingMessage, res: ServerResponse, url: URL) {
     const [scheme, token] = (req.headers.authorization ?? '').split(' ');
     const t = this.tokens.get(token ?? '');
+    if (this.bareMcpErrors) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'token invalid, expired or revoked' }));
+    }
     if (scheme !== 'Bearer' || !t || !t.bearer || t.resource !== this.mcpUrl || t.exp < now()) {
       if (scheme === 'DPoP') this.violation('DPoP token sent to MCP');
       res.writeHead(401, {

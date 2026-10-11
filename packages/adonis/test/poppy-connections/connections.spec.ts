@@ -555,6 +555,14 @@ describe('poppy-connections: revocation and refresh', () => {
     expect(await preflight(app, 'disconnect', { company: app.fake.domain })).toMatchObject({
       status: 'completed',
     });
+    // However the company words its refusal (a bare 401 here), not connected means: connect.
+    app.fake.bareMcpErrors = true;
+    expect(await tool(app, 'tools', { company: app.fake.domain })).toMatchObject({
+      error: 'not_connected',
+    });
+    expect(await tool(app, 'read', { company: app.fake.domain, tool: 'whoami' })).toMatchObject({
+      error: 'not_connected',
+    });
   });
 
   it('a revocation at the company is noticed (invalid_grant) and the connection marked revoked', async () => {
