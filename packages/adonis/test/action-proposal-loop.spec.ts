@@ -13,6 +13,87 @@ import {
 } from '../src/testing/index.js';
 
 describe('independent action turns', () => {
+  it('words a proposal with the shared filler: templates over the trusted input, else the label', async () => {
+    const actor = { id: 'actor', roles: ['ADMIN'] };
+    const store = new InMemoryAgentStore();
+    const thread = await store.createThread({ actor });
+    const registry = new ToolRegistry();
+    registry.register(
+      {
+        name: 'refund_order',
+        kind: 'action',
+        description: 'refund',
+        inputSchema: z.object({ order: z.object({ id: z.number() }), note: z.string().optional() }),
+        presentation: {
+          label: 'Refund',
+          running: 'Refunding',
+          done: 'Refunded',
+          confirm: { title: 'Refund order #{order.id} {note}?', verb: 'Refund' },
+        },
+      },
+      { execute: async () => 'refunded' },
+    );
+    registry.register(
+      {
+        name: 'archive_note',
+        kind: 'action',
+        description: 'archive',
+        inputSchema: z.object({}),
+        presentation: { label: 'Note archive', running: 'Archiving', done: 'Archived' },
+      },
+      { execute: async () => 'archived' },
+    );
+    registry.register(
+      { name: 'purge_cache', kind: 'action', description: 'purge', inputSchema: z.object({}) },
+      { execute: async () => 'purged' },
+    );
+    const model = new FakeModelProvider((_args, turn) =>
+      turn === 0
+        ? {
+            text: '',
+            toolCalls: [
+              { id: 'c-refund', name: 'refund_order', input: { order: { id: 1002 } } },
+              { id: 'c-archive', name: 'archive_note', input: {} },
+              { id: 'c-purge', name: 'purge_cache', input: {} },
+            ],
+          }
+        : { text: 'ok' },
+    );
+    const sink = new InMemoryTokenStreamSink();
+    await runAgentLoop(
+      {
+        model,
+        registry,
+        store,
+        rolesPolicy: new DefaultRolesPolicy(),
+        systemPrompt: 'Test',
+        day: '2026-10-01',
+        actionApprovalMode: 'independent',
+      },
+      { actor, threadId: thread.id, userText: 'Run' },
+      {
+        runId: 'run-words',
+        openSink: () => sink.open('run-words'),
+        step: (_, fn) => fn(),
+        awaitApproval: async () => {
+          throw new Error('Independent action must not await');
+        },
+      },
+    );
+    const proposals = await store.listActionProposals({
+      tenantRef: null,
+      actorRef: actor.id,
+      threadId: thread.id,
+    });
+    const byTool = Object.fromEntries(proposals.map((p) => [p.toolName, p.confirmation]));
+    expect(byTool).toEqual({
+      // The empty `{note}` collapses with its space, as every other surface's filler does.
+      refund_order: { title: 'Refund order #1002?', verb: 'Refund' },
+      archive_note: { title: 'Note archive?', verb: 'Approve' },
+      purge_cache: { title: 'Purge cache?', verb: 'Approve' },
+    });
+  });
+
   it('captures trusted raw and normalized input, finishes batch and ends without awaiting or false terminal success', async () => {
     const actor = { id: 'actor', roles: ['ADMIN'] };
     const store = new InMemoryAgentStore();

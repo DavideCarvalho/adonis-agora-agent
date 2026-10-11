@@ -517,9 +517,12 @@ export type {
 } from './tool-presentation.js';
 export {
   ALL_AGENTS,
+  DEFAULT_CONFIRM_VERB,
   fillPresentationTemplate,
   fillToolConfirmation,
+  humanizeToolName,
   readPresentationPath,
+  resolveToolConfirmation,
 } from './tool-presentation.js';
 export {
   ClosedRolesPolicy,

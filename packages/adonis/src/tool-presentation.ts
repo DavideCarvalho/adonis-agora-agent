@@ -141,3 +141,49 @@ export function fillToolConfirmation(confirm: ToolConfirmation, input: unknown):
     ...(confirm.link !== undefined ? { link: confirm.link } : {}),
   };
 }
+
+/**
+ * The approve button's words when a tool declared no `confirm.verb`. English, like every other
+ * library default: a localized surface (a text channel's `texts.approve`) shows its own word
+ * instead whenever a confirmation carries exactly this one.
+ */
+export const DEFAULT_CONFIRM_VERB = 'Approve';
+
+/**
+ * A tool identifier as words a person can read: `refund_order`, `refundOrder` and `refund-order`
+ * all become "Refund order". For the rare surface that has nothing better — a tool's own
+ * `presentation.label` (or its `confirm` templates) always wins, see {@link resolveToolConfirmation}.
+ */
+export function humanizeToolName(name: string): string {
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[_\-.:/\s]+/g, ' ')
+    .trim()
+    .toLowerCase();
+  return words.length === 0 ? '' : `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+}
+
+/**
+ * The approval prompt for one call of `toolName`, as every adapter (native stream, AG-UI, A2UI,
+ * text channels, OpenCode, A2A) shows it: the tool's `confirm` templates filled from `input` when it
+ * declared them; otherwise "<label>?" from its `presentation.label`, else "<humanized name>?" with
+ * {@link DEFAULT_CONFIRM_VERB} — never the raw identifier. The one place that fallback is worded.
+ */
+export function resolveToolConfirmation(
+  toolName: string,
+  input: unknown,
+  presentation?: Partial<Pick<ToolPresentation, 'label' | 'confirm'>> | undefined,
+): ToolConfirmation {
+  const label = presentation?.label?.trim();
+  const subject = label !== undefined && label !== '' ? label : humanizeToolName(toolName);
+  const fallbackTitle = subject === '' ? `${DEFAULT_CONFIRM_VERB}?` : `${subject}?`;
+  const declared = presentation?.confirm;
+  if (declared === undefined) return { title: fallbackTitle, verb: DEFAULT_CONFIRM_VERB };
+  const filled = fillToolConfirmation(declared, input);
+  return {
+    ...filled,
+    title: filled.title === '' ? fallbackTitle : filled.title,
+    verb: filled.verb === '' ? DEFAULT_CONFIRM_VERB : filled.verb,
+  };
+}

@@ -3,7 +3,11 @@ import {
   type TextActionProposalVocabulary,
 } from '../action-proposal-text.js';
 import type { AttachmentLimits } from '../attachment-limits.js';
-import type { ToolConfirmation } from '../tool-presentation.js';
+import {
+  humanizeToolName,
+  resolveToolConfirmation,
+  type ToolConfirmation,
+} from '../tool-presentation.js';
 import {
   type ChannelQuestionTexts,
   DEFAULT_CHANNEL_QUESTION_TEXTS,
@@ -114,7 +118,7 @@ export const DEFAULT_CHANNEL_TEXTS: ChannelTexts = {
   proposal: ({ confirmation, toolName }) =>
     confirmation
       ? `*${confirmation.title}*${confirmation.detail ? `\n${confirmation.detail}` : ''}`
-      : `*Run ${toolName}?*`,
+      : `*${resolveToolConfirmation(toolName, undefined).title}*`,
   instruction: ({ approve, reject }) => `Reply *${approve}* to confirm or *${reject}* to cancel.`,
   blockingApproval: 'This action needs an approval that can only be given in the app.',
   failed: 'Sorry, something went wrong. Please try again.',
@@ -149,7 +153,7 @@ export const ptBrChannelTexts: ChannelTexts = {
   proposal: ({ confirmation, toolName }) =>
     confirmation
       ? `*${confirmation.title}*${confirmation.detail ? `\n${confirmation.detail}` : ''}`
-      : `*Executar ${toolName}?*`,
+      : `*Executar: ${humanizeToolName(toolName) || 'ação'}?*`,
   instruction: ({ approve, reject }) =>
     `Responda *${approve}* para confirmar ou *${reject}* para cancelar.`,
   blockingApproval: 'Esta ação precisa de uma aprovação que só pode ser dada no app.',

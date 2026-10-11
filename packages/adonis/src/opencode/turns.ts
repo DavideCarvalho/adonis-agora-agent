@@ -17,6 +17,7 @@ import type { AgentPricingStore } from '../spi/pricing-store.js';
 import type { SinkWriter, TokenStreamSink } from '../spi/token-stream-sink.js';
 import type { AiToolCtx } from '../spi/tool.js';
 import type { AgentUiComponent } from '../stream-events.js';
+import type { ToolPresentation } from '../tool-presentation.js';
 import type { ToolRegistry } from '../tool-registry.js';
 import type {
   Actor,
@@ -255,6 +256,22 @@ export class OpenCodeTurns {
   /** The tools server's name in OpenCode. */
   get toolsServer(): string {
     return this.settings.tools?.server ?? 'agora';
+  }
+
+  /** The app tool an OpenCode permission `action` names, and its presentation — `undefined` for a built-in. */
+  presentationOf(action: string): { name: string; presentation?: ToolPresentation } | undefined {
+    if (this.settings.tools === undefined) return undefined;
+    const server = this.toolsServer;
+    for (const prefix of [`${server}.`, `${server}_`]) {
+      if (!action.startsWith(prefix)) continue;
+      const spec = this.registry.spec(action.slice(prefix.length));
+      if (spec !== undefined)
+        return {
+          name: spec.name,
+          ...(spec.presentation !== undefined ? { presentation: spec.presentation } : {}),
+        };
+    }
+    return undefined;
   }
 
   /** The agent's deps (prompt, approval policy, allow-list, skills, memory) for a turn. */
@@ -928,6 +945,9 @@ export class OpenCodeTurns {
           runId,
           ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
         }),
+      // An app tool reaches OpenCode as `<server>.<name>` / `<server>_<name>`: its own presentation
+      // words the approval card. OpenCode's built-ins (`bash`, `edit`) have none.
+      approvalPresentation: (action) => this.presentationOf(action),
       modelLabel: input.model ?? 'opencode',
       priceStep: (step) => this.priceStep(step),
       ...(spent !== undefined ? { carried: spent } : {}),

@@ -1,5 +1,6 @@
 import { type A2uiOptions, a2uiActivityEvent } from '../../a2ui/core.js';
 import type { ElicitationRequest } from '../../elicitation.js';
+import { resolveToolConfirmation } from '../../tool-presentation.js';
 import type { MessageUsage } from '../../types.js';
 import { encodeInterruptId } from './interrupt-id.js';
 import {
@@ -284,11 +285,13 @@ export class AgUiEncoder {
           ...(proposal !== undefined ? { proposalId: proposal.proposalId } : {}),
           interrupt: {
             reason: 'tool_approval',
-            // The tool's own wording ("Refund order #7?"), as the CUSTOM event's `confirmation`.
+            // The tool's own wording ("Refund order #7?"), as the CUSTOM event's `confirmation`;
+            // it outranks a free-form `reason`. A tool that declared none reads as its name in
+            // words ("Refund order?"), never as the raw identifier.
             message:
-              event.reason ??
               event.confirmation?.title ??
-              (toolName.length > 0 ? `Approve ${toolName}?` : 'Approve?'),
+              event.reason ??
+              resolveToolConfirmation(toolName, input).title,
             toolCallId: event.id,
             responseSchema: APPROVAL_SCHEMA,
             ...(event.expiresAt !== undefined ? { expiresAt: event.expiresAt } : {}),

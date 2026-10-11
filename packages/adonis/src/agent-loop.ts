@@ -124,7 +124,7 @@ import {
   type ShownPreview,
   withdrawPreviewFrame,
 } from './tool-input-preview.js';
-import { fillToolConfirmation } from './tool-presentation.js';
+import { fillToolConfirmation, resolveToolConfirmation } from './tool-presentation.js';
 import {
   ToolForbiddenError,
   ToolInputInvalidError,
@@ -1596,21 +1596,6 @@ async function claimToolCall(
         proposalId = `proposal-${createHash('sha256')
           .update(JSON.stringify([hooks.runId, call.id]))
           .digest('hex')}`;
-        const display = confirmation ??
-          deps.registry.spec(call.name)?.presentation?.confirm ?? {
-            title: `Allow ${call.name}?`,
-            verb: 'Approve',
-          };
-        const fill = (value: string) =>
-          value.replace(/\{([^}]+)\}/g, (_match, path: string) => {
-            let current: unknown = prepared!.input;
-            for (const part of path.split('.'))
-              current =
-                current !== null && typeof current === 'object'
-                  ? (current as Record<string, unknown>)[part]
-                  : undefined;
-            return current === undefined ? '' : String(current);
-          });
         const create =
           prepared.replacementKey === undefined
             ? store.createActionProposal.bind(store)
@@ -1638,11 +1623,15 @@ async function claimToolCall(
             ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
             ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
           },
-          confirmation: confirmation ?? {
-            title: fill(display.title),
-            verb: fill(display.verb),
-            ...(display.detail !== undefined ? { detail: fill(display.detail) } : {}),
-          },
+          // The preflight's own words, else the tool's `confirm` filled by the shared filler, else
+          // its label / name in words — the card a channel or the proposal inbox shows.
+          confirmation:
+            confirmation ??
+            resolveToolConfirmation(
+              call.name,
+              prepared.input,
+              deps.registry.spec(call.name)?.presentation,
+            ),
           approver: approval.approver,
           expiresAt: approval.expiresAt === undefined ? null : Date.parse(approval.expiresAt),
           idempotencyKey: `${hooks.runId}:${call.id}`,
