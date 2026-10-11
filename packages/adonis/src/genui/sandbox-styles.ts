@@ -83,16 +83,26 @@ export interface CssVocabulary {
 }
 
 export interface CssVocabularyOptions {
-  /** Most class names listed. Default 600. */
+  /** Most class names listed. Default: all of them (they are written as patterns). */
   maxClasses?: number;
-  /** Most class names listed per family (`btn`, `col`…), so utilities do not crowd out components. Default 30. */
+  /** Most class names listed per family (`btn`, `col`…). Default: all of them. */
   maxPerFamily?: number;
+  /**
+   * Most characters the families' patterns take, so the prompt stays small whatever the stylesheet;
+   * the rarest families go first. Default 12000.
+   */
+  maxChars?: number;
   /** Most custom properties listed. Default 80. */
   maxVars?: number;
 }
 
 /** A generated (CSS-modules) name: `_button_x1y2z_3`, `Button_root__a1B2c`. */
 const HASHED_CLASS = /(^_[\w-]+_[a-zA-Z0-9]{5,}(_\d+)?$)|(__[a-zA-Z0-9_-]{5}$)/;
+
+/** Whether a class name is a generated (CSS-modules) one — nobody can write it by hand. */
+export function isGeneratedClassName(name: string): boolean {
+  return HASHED_CLASS.test(name);
+}
 
 /** The class names a selector names (escaped ones — `md\:flex` — and those in attribute values left out). */
 function selectorClasses(selector: string): string[] {
@@ -116,8 +126,9 @@ export function extractCssVocabulary(
   css: string,
   options: CssVocabularyOptions = {},
 ): CssVocabulary {
-  const maxClasses = options.maxClasses ?? 600;
-  const maxPerFamily = options.maxPerFamily ?? 30;
+  const maxClasses = options.maxClasses ?? Number.POSITIVE_INFINITY;
+  const maxPerFamily = options.maxPerFamily ?? Number.POSITIVE_INFINITY;
+  const maxChars = options.maxChars ?? 12000;
   const maxVars = options.maxVars ?? 80;
   const score = new Map<string, number>();
   forEachSelector(css, (selectorList) => {
@@ -143,50 +154,139 @@ export function extractCssVocabulary(
     entry.names.push(name);
     families.set(key, entry);
   }
-  const groups: CssVocabulary['groups'] = [];
-  let listed = 0;
   const orderedFamilies = [...families.entries()].sort(
     (a, b) => b[1].score - a[1].score || a[0].localeCompare(b[0]),
   );
+  // Each family as patterns; families of the same shape (`m-{0..5,auto}`, `mt-{0..5,auto}`…) as one.
+  const shaped: { name: string; members: string[]; classes: string[]; count: number }[] = [];
+  const byShape = new Map<string, (typeof shaped)[number]>();
+  let counted = 0;
   for (const [name, entry] of orderedFamilies) {
-    if (listed >= maxClasses) break;
-    const names = entry.names.slice(0, Math.min(maxPerFamily, maxClasses - listed));
-    listed += names.length;
-    groups.push({ name, classes: compressClassNames(names) });
+    if (counted >= maxClasses) break;
+    const names = entry.names.slice(0, Math.min(maxPerFamily, maxClasses - counted));
+    counted += names.length;
+    const classes = compressClassNames(names);
+    // A family of one bare class (`active`, `show`) keeps its own entry.
+    const own =
+      classes.some((each) => each !== name) &&
+      classes.every((each) => each === name || each.startsWith(`${name}-`));
+    const shape = own ? classes.map((each) => `\u0000${each.slice(name.length)}`).join(' ') : '';
+    const same = shape === '' ? undefined : byShape.get(shape);
+    if (same !== undefined) {
+      same.members.push(name);
+      same.count += names.length;
+      continue;
+    }
+    const group = { name, members: [name], classes, count: names.length };
+    shaped.push(group);
+    if (shape !== '') byShape.set(shape, group);
+  }
+  const groups: CssVocabulary['groups'] = [];
+  let listed = 0;
+  let chars = 0;
+  for (const group of shaped) {
+    let { name, classes } = group;
+    if (group.members.length > 1) {
+      name = renderAlternatives(group.members);
+      classes = classes.map((each) => `${name}${each.slice((group.members[0] as string).length)}`);
+    }
+    const size = name.length + classes.reduce((sum, each) => sum + each.length + 1, 4);
+    if (chars + size > maxChars) continue;
+    chars += size;
+    listed += group.count;
+    groups.push({ name, classes });
   }
   const vars = Object.keys(themeVarsFromCss(css, { rootOnly: true })).slice(0, maxVars);
   return { groups, total: score.size, listed, vars };
 }
 
+/** One alternative set rendered: `{0..5}`, `{0..5,auto}`, `{m,p}{,t,b}`, `{primary,secondary}`. */
+function renderAlternatives(alternatives: readonly string[]): string {
+  if (alternatives.length === 1) return alternatives[0] as string;
+  const numbers = alternatives
+    .filter((each) => /^(0|[1-9]\d{0,3})$/.test(each))
+    .map(Number)
+    .sort((a, b) => a - b);
+  const others = alternatives.filter((each) => !/^(0|[1-9]\d{0,3})$/.test(each));
+  const runs: string[] = [];
+  for (let index = 0; index < numbers.length; ) {
+    let end = index;
+    while (end + 1 < numbers.length && numbers[end + 1] === (numbers[end] as number) + 1) end++;
+    if (end - index >= 2) runs.push(`${numbers[index]}..${numbers[end]}`);
+    else for (let each = index; each <= end; each++) runs.push(String(numbers[each]));
+    index = end + 1;
+  }
+  // Short words sharing their first letter (`m mt mb`: `m{,t,b}`), or their tails too
+  // (`m mt p pt`: `{m,p}{,t}`).
+  if (
+    numbers.length === 0 &&
+    others.length >= 3 &&
+    others.every((each) => /^[a-z]{1,4}$/.test(each))
+  ) {
+    const tails = new Map<string, string[]>();
+    for (const each of others) {
+      const head = each.slice(0, 1);
+      tails.set(head, [...(tails.get(head) ?? []), each.slice(1)]);
+    }
+    const lists = [...tails.values()].map((list) => list.join(','));
+    if (tails.size === 1) return `${[...tails.keys()][0]}{${lists[0]}}`;
+    if (lists.every((list) => list === lists[0]))
+      return `{${[...tails.keys()].join(',')}}{${lists[0]}}`;
+  }
+  return `{${[...runs, ...others].join(',')}}`;
+}
+
 /**
- * Class names sharing everything but their last `-segment`, written once: `btn-primary`,
- * `btn-secondary` → `btn-{primary,secondary}`. Order kept (the first member's place).
+ * Class names written as patterns, every name covered exactly once and nothing else: names with the
+ * same number of `-segments` that differ in one segment merge into one pattern (`btn-primary`,
+ * `btn-secondary` → `btn-{primary,secondary}`), again and again, segment by segment from the last —
+ * so a utility family becomes one line (`{m,p}{,t,b,s,e,x,y}-{0..5,auto}`,
+ * `{m,p}{,t,b,s,e,x,y}-{sm,md,lg,xl,xxl}-{0..5,auto}`). A run of three or more integers is a range
+ * (`{0..5}`); short words sharing their tails share them (`{m,p}{,t,b}`). Order kept (the first
+ * member's place).
  */
 export function compressClassNames(names: readonly string[]): string[] {
-  const stemOf = (name: string) => {
-    const cut = name.lastIndexOf('-');
-    return cut > 0 && cut < name.length - 1 ? name.slice(0, cut) : undefined;
-  };
-  const byStem = new Map<string, string[]>();
-  for (const name of names) {
-    const stem = stemOf(name);
-    if (stem === undefined) continue;
-    byStem.set(stem, [...(byStem.get(stem) ?? []), name]);
-  }
-  const out: string[] = [];
-  const done = new Set<string>();
-  for (const name of names) {
-    const stem = stemOf(name);
-    const siblings = stem === undefined ? undefined : byStem.get(stem);
-    if (stem === undefined || siblings === undefined || siblings.length < 2) {
-      out.push(name);
-      continue;
+  const byLength = new Map<number, { order: number; segments: string[][] }[]>();
+  names.forEach((name, order) => {
+    const segments = name.split('-').map((segment) => [segment]);
+    const list = byLength.get(segments.length) ?? [];
+    list.push({ order, segments });
+    byLength.set(segments.length, list);
+  });
+  const patterns: { order: number; segments: string[][] }[] = [];
+  for (const [length, start] of byLength) {
+    let list = start;
+    // Bare words (`alert`, `fade`) are names of their own, never alternatives of each other.
+    for (let changed = length > 1; changed; ) {
+      changed = false;
+      for (let position = length - 1; position >= 0; position--) {
+        const merged = new Map<string, { order: number; segments: string[][] }>();
+        for (const pattern of list) {
+          const key = pattern.segments
+            .map((alternatives, index) => (index === position ? '*' : alternatives.join(',')))
+            .join('\u0000');
+          const into = merged.get(key);
+          if (into === undefined) {
+            merged.set(key, {
+              order: pattern.order,
+              segments: pattern.segments.map((a) => [...a]),
+            });
+            continue;
+          }
+          changed = true;
+          into.order = Math.min(into.order, pattern.order);
+          const target = into.segments[position] as string[];
+          for (const alternative of pattern.segments[position] as string[])
+            if (!target.includes(alternative)) target.push(alternative);
+        }
+        list = [...merged.values()];
+      }
     }
-    if (done.has(stem)) continue;
-    done.add(stem);
-    out.push(`${stem}-{${siblings.map((each) => each.slice(stem.length + 1)).join(',')}}`);
+    patterns.push(...list);
   }
-  return out;
+  return patterns
+    .sort((a, b) => a.order - b.order)
+    .map((pattern) => pattern.segments.map(renderAlternatives).join('-'));
 }
 
 /** The vocabulary as the model reads it (inside the sandbox description). */
@@ -196,9 +296,26 @@ export function vocabularyToModelText(
 ): string {
   const attribute = options.jsx === true ? 'className (in JSX) or class (in html)' : 'class="…"';
   const lines = [
-    `The app's stylesheet is loaded in the frame. Style the view with ITS classes (${attribute}) instead of writing your own CSS — write css only for layout it does not cover. The classes it defines, by family, most used first (a{b,c} means ab and ac):`,
+    `The app's stylesheet is loaded in the frame. Style the view with ITS classes (${attribute}) instead of writing your own CSS — write css only for layout it does not cover. The classes it defines, by family, most used first (a{b,c} means ab and ac; {0..3} means 0, 1, 2 and 3):`,
   ];
-  for (const group of vocabulary.groups) lines.push(`- ${group.name}: ${group.classes.join(' ')}`);
+  // Families of one bare class (`active`, `show`, `lead`) share one line, where the first one ranks.
+  const bare = vocabulary.groups.filter(
+    (group) => group.classes.length === 1 && group.classes[0] === group.name,
+  );
+  let bareLine = false;
+  for (const group of vocabulary.groups) {
+    if (bare.includes(group)) {
+      if (!bareLine) lines.push(`- ${bare.map((each) => each.name).join(' ')}`);
+      bareLine = true;
+      continue;
+    }
+    // Families merged into one pattern are named by it: their classes say it already.
+    lines.push(
+      group.name.includes('{')
+        ? `- ${group.classes.join(' ')}`
+        : `- ${group.name}: ${group.classes.join(' ')}`,
+    );
+  }
   if (vocabulary.total > vocabulary.listed)
     lines.push(`(${vocabulary.total - vocabulary.listed} rarer classes not listed.)`);
   if (vocabulary.vars.length > 0)
@@ -474,6 +591,152 @@ export function tailwindV3ConfigToCss(config: unknown): string {
       `@theme {\n${lines.map((line) => `  ${line};`).join('\n')}${extra.length > 0 ? `\n  ${extra.join('\n  ')}` : ''}\n}`,
     );
   return out.join('\n');
+}
+
+// ---------------------------------------------------------------------------------------------
+// Purging
+// ---------------------------------------------------------------------------------------------
+
+/** Where in a stylesheet {@link purgeCss} may drop rules. */
+export type PurgeScope = 'utilities' | 'all';
+
+export interface PurgeCssOptions {
+  /** Whether a class name (unescaped: `hover:bg-primary/90`) is kept. */
+  keep(className: string): boolean;
+  /**
+   * `'utilities'`: only style rules inside `@layer utilities` (Tailwind v4's compiled output — the
+   * frame's runtime generates whatever utility the model writes, so only those the kit itself uses
+   * must ship); `'all'`: every style rule.
+   */
+  scope: PurgeScope;
+}
+
+/** Split a selector list on its top-level commas (not those inside `()` / `[]` / strings). */
+function splitSelectorList(prelude: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < prelude.length; index++) {
+    const c = prelude[index];
+    if (c === '\\') index++;
+    else if (c === '"' || c === "'") {
+      const close = prelude.indexOf(c, index + 1);
+      index = close < 0 ? prelude.length : close;
+    } else if (c === '(' || c === '[') depth++;
+    else if (c === ')' || c === ']') depth = Math.max(0, depth - 1);
+    else if (c === ',' && depth === 0) {
+      out.push(prelude.slice(start, index));
+      start = index + 1;
+    }
+  }
+  out.push(prelude.slice(start));
+  return out;
+}
+
+/** CSS identifier escapes undone: `hover\:bg-x` → `hover:bg-x`, `\31 0` → `10`. */
+function unescapeCssIdent(ident: string): string {
+  return ident.replace(/\\([0-9a-fA-F]{1,6}\s?|[\s\S])/g, (_all, escaped: string) =>
+    /^[0-9a-fA-F]{1,6}\s?$/.test(escaped)
+      ? String.fromCodePoint(Number.parseInt(escaped.trim(), 16))
+      : escaped,
+  );
+}
+
+/**
+ * The classes a complex selector REQUIRES — those outside functional pseudo-classes (`:not(.x)`,
+ * `:is(.a, .b)`, `:where(…)`, `:has(…)`), whose classes do not all have to be on the page — unescaped.
+ */
+function requiredClasses(selector: string): string[] {
+  let outer = '';
+  let depth = 0;
+  for (let index = 0; index < selector.length; index++) {
+    const c = selector[index] as string;
+    if (c === '\\') {
+      if (depth === 0) outer += selector.slice(index, index + 2);
+      index++;
+    } else if (c === '"' || c === "'") {
+      const close = selector.indexOf(c, index + 1);
+      index = close < 0 ? selector.length : close;
+      if (depth === 0) outer += '""';
+    } else if (c === '[') {
+      const close = selector.indexOf(']', index + 1);
+      index = close < 0 ? selector.length : close;
+      if (depth === 0) outer += '[]';
+    } else if (c === '(') depth++;
+    else if (c === ')') depth = Math.max(0, depth - 1);
+    else if (depth === 0) outer += c;
+  }
+  const out: string[] = [];
+  for (const match of outer.matchAll(/\.((?:\\[0-9a-fA-F]{1,6}\s?|\\[\s\S]|[\w-])+)/g))
+    out.push(unescapeCssIdent(match[1] as string));
+  return out;
+}
+
+/**
+ * A compiled stylesheet with the style rules nobody can use taken out: a rule (or one selector of
+ * its list) goes when a class it requires is not kept (`options.keep`). Rules without classes (the
+ * base: elements, `:root`, `*`), `@font-face`, `@keyframes`, `@property` and every other at-rule
+ * stay; grouping at-rules (`@media`, `@supports`, `@layer`…) left empty go too.
+ */
+export function purgeCss(css: string, options: PurgeCssOptions): string {
+  const walk = (text: string, candidate: boolean): string => {
+    let out = '';
+    let start = 0;
+    for (let index = 0; index < text.length; index++) {
+      const c = text[index];
+      if (c === '"' || c === "'") {
+        const close = text.indexOf(c, index + 1);
+        index = close < 0 ? text.length : close;
+      } else if (c === ';') {
+        // A statement (`@layer theme, base;`, `@import …;`, `@charset …;`): kept as it is.
+        out += text.slice(start, index + 1);
+        start = index + 1;
+      } else if (c === '}') {
+        start = index + 1;
+      } else if (c === '{') {
+        const prelude = text.slice(start, index);
+        const trimmed = prelude.trim();
+        const end = blockEnd(text, index);
+        const body = text.slice(index + 1, end);
+        if (trimmed.startsWith('@')) {
+          if (GROUPING_AT_RULES.test(trimmed)) {
+            const inner = walk(
+              body,
+              candidate || options.scope === 'all' || /^@layer\s+utilities\b/i.test(trimmed),
+            );
+            if (inner.trim() !== '') out += `${prelude}{${inner}}`;
+          } else out += `${prelude}{${body}}`;
+        } else if (!candidate || body.includes('{')) {
+          out += `${prelude}{${body}}`;
+        } else {
+          const kept = splitSelectorList(prelude).filter((selector) =>
+            requiredClasses(selector).every((name) => options.keep(name)),
+          );
+          if (kept.length > 0) out += `${kept.join(',')}{${body}}`;
+        }
+        index = end;
+        start = end + 1;
+      }
+    }
+    return out + text.slice(start);
+  };
+  return walk(stripComments(css), options.scope === 'all');
+}
+
+/**
+ * The class-like tokens of a source text (a kit bundle): every run of characters between quotes,
+ * backticks, whitespace and template braces — a superset of the class names it can put on an
+ * element (`"inline-flex hover:bg-primary/90"` → `inline-flex`, `hover:bg-primary/90`).
+ */
+export function classTokensOf(source: string): Set<string> {
+  const tokens = new Set<string>();
+  for (const raw of source.split(/[\s"'`]|\$\{|\\[nrt]/)) {
+    if (raw === '' || raw.length > 200) continue;
+    tokens.add(raw);
+    const trimmed = raw.replace(/^[{(,;]+|[,;)}]+$/g, '');
+    if (trimmed !== raw && trimmed !== '') tokens.add(trimmed);
+  }
+  return tokens;
 }
 
 // ---------------------------------------------------------------------------------------------

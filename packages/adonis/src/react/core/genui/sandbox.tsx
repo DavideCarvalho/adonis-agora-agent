@@ -98,6 +98,13 @@ export interface SandboxRendererOptions {
   config?: SandboxConfigSource;
   /** Pass the host's theme in (CSS custom properties, light/dark). Default: the config's, else on. */
   theme?: boolean;
+  /**
+   * How a frame gets the app's styles, the Tailwind runtime and the kit. `'shared'` (default): the
+   * page fetches each once and posts it to each frame when the frame asks (`load`), which puts it
+   * in inline elements of its own — each `srcdoc` is a few KB instead of every asset inlined into it,
+   * under the same CSP. `'inline'`: every asset in every frame's `srcdoc`, as before 0.78.
+   */
+  assets?: 'shared' | 'inline';
   /** What to draw while nothing is drawable yet. Default: a busy box of `initialHeight` with the placeholder lines. */
   placeholder?: (state: { height: number; messages: string[]; title?: string }) => ReactNode;
   className?: string;
@@ -179,8 +186,12 @@ export function createSandboxRenderer(
     const hostTheme = useHostTheme(themeOn);
     const jsxMode = sandboxDrawsJsx(props);
     const tailwindText = useSandboxAsset(client.config?.tailwind?.url);
-    const cssText = useSandboxAsset(client.config?.css?.url, { css: true });
-    const kitText = useSandboxAsset(jsxMode ? client.config?.kit?.url : undefined, { kit: true });
+    const kitName = client.config?.name !== undefined ? { name: client.config.name } : {};
+    const cssText = useSandboxAsset(client.config?.css?.url, { css: true, ...kitName });
+    const kitText = useSandboxAsset(jsxMode ? client.config?.kit?.url : undefined, {
+      kit: true,
+      ...kitName,
+    });
     // Assets still on their way: the frame waits for them rather than drawing twice.
     // A plain view does not wait for the config (it is redrawn if the app's styles turn out to be
     // on); a view that needs the styles, Tailwind or the kit waits for them.
@@ -238,6 +249,7 @@ export function createSandboxRenderer(
           }
         : undefined;
     const kit = jsxMode && typeof kitText === 'string' ? kitText : undefined;
+    const sharing = (options.assets ?? 'shared') === 'shared';
     // A JSX view is one document from its first line to its last: what streams in is posted.
     const documentPhase = jsxMode && phase !== 'placeholder' ? 'jsx' : phase;
     // The live document is built once per markup: code that arrives later is posted in, so the
@@ -257,6 +269,16 @@ export function createSandboxRenderer(
           : {}),
         ...(tailwind !== undefined ? { tailwind } : {}),
         ...(typeof cssText === 'string' ? { styles: cssText } : {}),
+        // Shared: the document names the assets it needs; the page posts them (`load` → `assets`).
+        ...(sharing
+          ? {
+              sharedAssets: {
+                styles: typeof cssText === 'string' && cssText !== '',
+                tailwind: tailwind !== undefined,
+                kit: jsxMode && kit !== undefined,
+              },
+            }
+          : {}),
       };
       if (jsxMode) {
         return buildSandboxDocument(
@@ -301,6 +323,17 @@ export function createSandboxRenderer(
       },
       [token],
     );
+
+    // The shared assets, as the page fetched them once (a frame that asked for none gets nothing).
+    const postAssets = useCallback(() => {
+      if (!sharing) return;
+      post({
+        type: SANDBOX_MESSAGE.assets,
+        ...(typeof cssText === 'string' && cssText !== '' ? { styles: cssText } : {}),
+        ...(typeof tailwindText === 'string' ? { tailwind: tailwindText } : {}),
+        ...(kit !== undefined ? { kit } : {}),
+      });
+    }, [sharing, post, cssText, tailwindText, kit]);
 
     // biome-ignore lint/correctness/useExhaustiveDependencies: jsxMode only gates it off
     const runPending = useCallback(() => {
@@ -409,6 +442,9 @@ export function createSandboxRenderer(
         const data = event.data as Record<string, unknown> | null;
         if (data === null || typeof data !== 'object' || data.token !== token) return;
         switch (data.type) {
+          case SANDBOX_MESSAGE.load:
+            postAssets();
+            return;
           case SANDBOX_MESSAGE.ready:
             ready.current = true;
             // The first measure rides `ready` too: a `resize` sent before this listener was up is
@@ -442,7 +478,7 @@ export function createSandboxRenderer(
       };
       window.addEventListener('message', listener);
       return () => window.removeEventListener('message', listener);
-    }, [phase, token, policy, preview, runPending, send, post]);
+    }, [phase, token, policy, preview, runPending, send, post, postAssets]);
 
     const messages = (props.placeholderMessages ?? []).filter(
       (line): line is string => typeof line === 'string',
@@ -472,6 +508,8 @@ export function createSandboxRenderer(
         key={documentPhase}
         title={title ?? 'Interactive view'}
         srcDoc={srcDoc}
+        // A `load` the listener missed: the frame applies its assets once, whichever comes first.
+        onLoad={sharing ? postAssets : undefined}
         sandbox={SANDBOX_IFRAME_FLAGS}
         referrerPolicy="no-referrer"
         allow=""

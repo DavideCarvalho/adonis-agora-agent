@@ -41,7 +41,7 @@ genui: genui({ catalog, sandbox: { kit: true } })
 - **Build**: it emits them as hashed assets plus `genui-sandbox-kit.json` (docs and urls), listed in the Vite manifest.
 - **Server**: `sandbox({ kit: true })` finds them the way `@vite()` finds your assets (the in-process dev server in development, the manifest in production), and `GET /agent/config` tells the renderer where they are (`genui.sandbox`).
 
-The frame stays what it was: `sandbox="allow-scripts"` without `allow-same-origin`, and a CSP with no network. Everything is **inlined** into the frame's document. The renderer fetches each asset once from your own origin, caches it, and puts it in the `srcdoc`.
+The frame stays what it was: `sandbox="allow-scripts"` without `allow-same-origin`, and a CSP with no network. The renderer fetches each asset once per page from your own origin and hands it to every frame that needs it (see [Weight](#weight)).
 
 ### Zero config
 
@@ -57,7 +57,7 @@ Only what exists:
 
 - **components** and their props, when the kit has components. The model then writes JSX.
 - **Tailwind**, when your styles use it: your theme's colors, radius, fonts, shadows, text sizes and animations, your `@utility`s and your `@custom-variant`s.
-- **CSS classes** otherwise: the classes your stylesheet defines, grouped into families and deduplicated, most used first (a component's root class ranks above a utility). The list is capped. The model writes `class="btn btn-primary"`, not its own CSS.
+- **CSS classes** otherwise: every class your stylesheet defines, grouped into families and written as patterns, most used first (a component's root class ranks above a utility). Families of the same shape share one pattern, so Bootstrap's 2,025 classes, spacing and breakpoints included, take about 10 KB. The model writes `class="btn btn-primary"`, not its own CSS.
 - **theme variables**: the custom properties on your styles' root (`:root`, `[data-theme]`, `.dark`).
 - **`stylesDocs`**: your own notes, if you wrote any.
 
@@ -480,7 +480,7 @@ genuiSandboxKit({ styles: 'resources/css/app.css', components: 'inertia/componen
 Function values, `plugins` and `prefix` are not mapped. The model is told to write v4 class names (`shadow-xs` where v3 had `shadow-sm`, `outline-hidden` for `outline-none`).
 
 <Callout type="info" title="Size">
-The runtime is ≈280 KB (≈75 KB gzipped, fetched once per page), and it is inlined into every frame. The compiled CSS is whatever your build produces: with `@source`s scanning a whole monorepo, that can be large. Point `styles` at a stylesheet that sources less if it matters.
+The runtime is ≈280 KB (≈75 KB gzipped), fetched once per page and handed to every frame. The compiled CSS ships without the utilities your kit does not use, because the runtime generates every utility the model writes (see [Purging](#purging)).
 </Callout>
 
 ## Plain CSS / Sass / Bootstrap
@@ -497,15 +497,19 @@ $border-radius: 0.75rem;
 genuiSandboxKit({ styles: 'resources/css/sandbox.scss' })
 ```
 
-The model is told the vocabulary (a capped list of class families, most used first) and writes HTML with it:
+The model is told the vocabulary and writes HTML with it. Every class is covered, written as patterns: `a{b,c}` means `ab` and `ac`, and `{0..5}` means 0 to 5. Families of the same shape (`m-*`, `mt-*`, `mb-*`…) share one line:
 
 ```txt
-- btn: btn btn-{primary,secondary,success,danger,lg,sm,…} btn-outline-{primary,…} btn-group
-- card: card card-{body,header,footer,title,text}
-- form: form-{control,select,label,check,range} form-check-{input,label}
+- btn: btn btn-{group,check,close,link,lg,sm,toolbar,danger,dark,info,light,primary,secondary,success,warning} btn-outline-{danger,…,warning}
+- card: card card-{group,img,footer,header,body,subtitle,title,link,text} card-img-{bottom,top,overlay}
+- active show fade h1 h2 lead small …
+- m{,b,e,s,t,x,y}-{0..5,auto} m{,b,e,s,t,x,y}-{lg,md,sm,xl,xxl}-{0..5,auto}
+- {g,gap,gx,gy,p,pb,ps,pt,px,py}-{0..5} {g,gap,gx,gy,p,pb,ps,pt,px,py}-{lg,md,sm,xl,xxl}-{0..5}
 …
 Its custom properties, for your own css: var(--bs-primary), var(--bs-body-font-family), …
 ```
+
+`extractCssVocabulary(css, { maxChars })` caps the text (default 12,000 characters); the rarest families go first, and the model is told how many classes were left out.
 
 A package stylesheet works directly, too: `styles: 'bootstrap/dist/css/bootstrap.min.css'`.
 
@@ -604,23 +608,85 @@ hooks: {
 
 The hook compiles the styles with Vite when it is installed (for Sass and PostCSS); without it, it reads plain CSS as it is. Its descriptor has no asset urls: the kit's assets themselves are served by the SPA's dev server or build, and a build in the server's `public/assets` is found through its manifest.
 
-## Sizes
+## Weight
 
-Theme injection costs nothing measurable. Everything else is inlined into **every** sandbox frame that uses it: fetched over the network once per page, but parsed once per frame.
+Every frame needs the kit's styles, the Tailwind runtime and the kit bundle. Each frame is its own document: an opaque origin with its own JavaScript realm, so it parses and runs them itself. React from one frame cannot draw in another. What the page can avoid is copying them into every `srcdoc`.
 
-- **Styles**: whatever they compile to, plus inlined fonts (capped by `inlineAssetBudget`).
-- **Tailwind**: ≈280 KB.
-- **The kit**: ≈230 KB of React plus your components and their dependencies (a dozen MUI components with emotion and a theme add ≈180 KB).
+### Shared assets (the default)
 
-Keep the kit to what a generated view needs.
+The renderer fetches each asset once per page. A frame's `srcdoc` carries only the bridge, the theme, the model's CSS and markup, and placeholders for the assets it needs. Once it has loaded, the frame asks its host for them (`agora:sandbox:load`). The host answers with their text (`agora:sandbox:assets`), and the frame puts them in inline `<style>` and `<script>` elements, in the order an inlined document has them. Its body stays hidden until then, so nothing draws unstyled. It then says `ready`, and the host posts the JSX as before.
+
+```tsx
+createSandboxRenderer({ assets: 'inline' }) // every asset in every srcdoc, as before 0.78
+```
+
+**Isolation is unchanged.** The frame is still `sandbox="allow-scripts"` without `allow-same-origin`, and its CSP is exactly the inlined document's: inline code only, no network, no `blob:`. The assets arrive by `postMessage`, which the frame accepts only from its parent window and with its own token, the same check as the other host messages. They are the same public files of your origin that the inlined document carried. A frame cannot ask for anything else: it gets the assets the page already has, or nothing.
+
+**Two other approaches were measured and rejected.** Posting each asset as a `Blob` that the frame loads from a `blob:` URL of its own copies nothing, but it needs `blob:` in `script-src` and `style-src`. It was also about 300 ms slower to first paint, because blob URLs load asynchronously. A hidden "runtime host" frame cannot share its React with other frames: each opaque origin has its own realm, and drawing into another frame's DOM would need `allow-same-origin`.
+
+**Measured** on a page with 5 kit sandboxes (Lastro's kit: 461 KB of CSS, a 282 KB Tailwind runtime and a 279 KB React kit), in headless Chromium 1248:
+
+| | Inlined (0.77) | Shared | Shared + purged CSS |
+| --- | --- | --- | --- |
+| HTML parsed (5 `srcdoc`s) | 5.36 MB | 0.25 MB | 0.25 MB |
+| CSS + JS parsed by the frames | (in the HTML) | 5.11 MB | 4.07 MB |
+| Browser memory (PSS, median) | __PSS_INLINE__ MB | __PSS_SHARED__ MB | __PSS_PURGED__ MB |
+| All 5 frames drawn (median) | __T_INLINE__ ms | __T_SHARED__ ms | __T_PURGED__ ms |
+
+The CSS and JavaScript are still parsed once per frame: that is the price of isolating each frame.
+
+React Native keeps inlining. Its bridge carries strings only, and each WebView is its own process anyway.
+
+### Purging
+
+The plugin compiles your app's whole stylesheet. `purge`, on by default, takes out what the frame can never use:
+
+- **Tailwind v4**: the `utilities` layer keeps only the utilities your kit's own code names. The frame's Tailwind runtime generates every other utility the model writes, from your theme. The `theme`, `base` and `components` layers, `@font-face`, `@keyframes` and `@property` stay whole.
+- **Tailwind v3** (its output has no layers): every rule naming a class the kit does not use goes.
+- **Other CSS** (Bootstrap, Sass, plain CSS): only generated CSS-modules classes the kit does not use go. Every other class is in the vocabulary the model is told, so it stays.
+
+"The kit's own code" is the kit bundle: every class name its components can put on an element, including CSS-modules hashes and `cn()`/`cva()` strings.
+
+```ts title="vite.config.ts"
+genuiSandboxKit({ purge: false })                          // ship the whole stylesheet
+genuiSandboxKit({ purge: { safelist: ['prose', /^prose-/] } }) // keep a plugin's classes the model is told about
+```
+
+A Tailwind `@plugin`'s utilities (`prose`) are not generated by the browser runtime. Safelist the ones you tell the model about in `stylesDocs`.
+
+The dev server logs the result: `[genui-sandbox-kit] styles purged: 453 KB → 249 KB`. Sizes for the example app's kits:
+
+| Kit | Compiled | Purged |
+| --- | --- | --- |
+| shadcn (Tailwind v4 + components) | 14.2 KB | 12.7 KB |
+| Bootstrap 5 (Sass, CSS only) | 225.2 KB | 225.2 KB: every class is in the vocabulary |
+| MUI (emotion, no stylesheet) | 0 | 0 |
+| Lastro (Tailwind v4, Geist fonts inlined) | 464.4 KB | 255.4 KB: 199 KB of it is `@font-face` |
+
+## Several kits in one app
+
+Give each `genuiSandboxKit()` a `name`, for variants of your design system, a tenant's own, or an A/B test. Each named kit is built on its own and served under `/@genui-sandbox-kit/<name>/`. It writes its own descriptor (`genui_sandbox_kit.<name>.json`) and is listed under its own manifest keys (`genui-sandbox-kit.<name>.js`…). A named kit's rebuilds reload only the sandboxes drawn with it.
+
+```ts title="vite.config.ts"
+plugins: [
+  genuiSandboxKit({ name: 'brand', styles: 'resources/css/brand.css', components: 'inertia/brand/ui' }),
+  genuiSandboxKit({ name: 'partner', styles: 'resources/css/partner.scss' }),
+]
+```
+
+```ts title="config/agent.ts"
+genui: genui({ catalog, sandbox: { kit: true, kitName: 'brand' } })
+```
+
+To pick a kit per request, resolve a catalog per actor (`resolver`), each with a sandbox for one kit. Find each kit with `adonisSandboxKitDiscovery(app, { name })` and `resolveSandboxServer()` from `@adonis-agora/agent/genui/kit`, and give the renderer that kit's client config (`createSandboxRenderer({ config })`). The example app's kit switcher does this per visitor.
 
 ## Reference
 
 | Export | From | |
 | --- | --- | --- |
-| `genuiSandboxKit(options)` | `@adonis-agora/agent/vite` | The Vite plugin: `styles`, `stylesDocs`, `components`, `wrapper`, `plugins`, `tsconfig`, `typescript`, `inlineAssetLimit`, `inlineAssetBudget`, `descriptor` |
-| `genuiKitHook(options)` | `@adonis-agora/agent/hooks/genui_kit` | The assembler hook: `styles`, `stylesDocs`, `components`, `wrapper`, `tsconfig`, `typescript`, `output` |
-| `defineSandbox({ theme, kit })` | `@adonis-agora/agent/genui` | `kit` also takes docs (or a function returning them) |
-| `createSandboxRenderer({ config, theme })` | `@adonis-agora/agent/react/genui` | `config`: an object, a url, or `false`; default the agent's `/config` |
-| `writeSandboxKitDocs`, `buildSandboxKitBundle`, `buildSandboxKitStyles`, `discoverStyleEntries`, `sandboxKitDiscovery` | `@adonis-agora/agent/genui/kit` | The Node half, for your own tooling |
-| `extractCssVocabulary`, `tailwindTokensFromCss`, `tailwindV3ConfigToCss`, `inlineCssUrls`, `transpileJsx`, `tailwindThemeCss`, `collectHostThemeVars` | `@adonis-agora/agent/genui` | The isomorphic pieces |
+| `genuiSandboxKit(options)` | `@adonis-agora/agent/vite` | The Vite plugin: `name`, `styles`, `stylesDocs`, `components`, `wrapper`, `purge`, `plugins`, `tsconfig`, `typescript`, `inlineAssetLimit`, `inlineAssetBudget`, `descriptor` |
+| `genuiKitHook(options)` | `@adonis-agora/agent/hooks/genui_kit` | The assembler hook: `name`, `styles`, `stylesDocs`, `components`, `wrapper`, `tsconfig`, `typescript`, `output` |
+| `defineSandbox({ theme, kit, kitName })` | `@adonis-agora/agent/genui` | `kit` also takes docs (or a function returning them); `kitName` picks a named kit |
+| `createSandboxRenderer({ config, theme, assets })` | `@adonis-agora/agent/react/genui` | `config`: an object, a url, or `false`; default the agent's `/config`. `assets`: `'shared'` (default) or `'inline'` |
+| `writeSandboxKitDocs`, `buildSandboxKitBundle`, `buildSandboxKitStyles`, `purgeSandboxKitStyles`, `discoverStyleEntries`, `sandboxKitDiscovery`, `adonisSandboxKitDiscovery`, `resolveSandboxServer` | `@adonis-agora/agent/genui/kit` | The Node half, for your own tooling |
+| `extractCssVocabulary`, `purgeCss`, `tailwindTokensFromCss`, `tailwindV3ConfigToCss`, `inlineCssUrls`, `transpileJsx`, `tailwindThemeCss`, `collectHostThemeVars` | `@adonis-agora/agent/genui` | The isomorphic pieces |

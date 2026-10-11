@@ -84,18 +84,21 @@ export function useSandboxClientConfig(source: SandboxConfigSource | undefined):
 }
 
 const assets = new Map<string, Promise<string | null>>();
-/** The kit url the last HMR update named (dev): newer than what `/config` said. */
-let kitUrlOverride: string | undefined;
+/** The kit url the last HMR update named (dev), per kit name (`''`: the unnamed kit): newer than what `/config` said. */
+const kitUrlOverride = new Map<string, string>();
 /** The same for the compiled styles. */
-let cssUrlOverride: string | undefined;
+const cssUrlOverride = new Map<string, string>();
 let kitVersion = 0;
 const kitListeners = new Set<() => void>();
 
 if (typeof window !== 'undefined') {
   window.addEventListener(SANDBOX_KIT_UPDATE_EVENT, (event) => {
-    const detail = (event as CustomEvent<{ url?: string | null; css?: string | null }>).detail;
-    if (typeof detail?.url === 'string') kitUrlOverride = detail.url;
-    if (typeof detail?.css === 'string') cssUrlOverride = detail.css;
+    const detail = (
+      event as CustomEvent<{ name?: string; url?: string | null; css?: string | null }>
+    ).detail;
+    const name = typeof detail?.name === 'string' ? detail.name : '';
+    if (typeof detail?.url === 'string') kitUrlOverride.set(name, detail.url);
+    if (typeof detail?.css === 'string') cssUrlOverride.set(name, detail.css);
     kitVersion += 1;
     for (const notify of kitListeners) notify();
   });
@@ -123,7 +126,7 @@ export function loadSandboxAsset(url: string): Promise<string | null> {
  */
 export function useSandboxAsset(
   url: string | undefined,
-  options: { kit?: boolean; css?: boolean } = {},
+  options: { kit?: boolean; css?: boolean; name?: string } = {},
 ): string | null | undefined {
   const [version, setVersion] = useState(kitVersion);
   const follows = options.kit === true || options.css === true;
@@ -139,9 +142,9 @@ export function useSandboxAsset(
     url === undefined
       ? url
       : options.kit === true
-        ? (kitUrlOverride ?? url)
+        ? (kitUrlOverride.get(options.name ?? '') ?? url)
         : options.css === true
-          ? (cssUrlOverride ?? url)
+          ? (cssUrlOverride.get(options.name ?? '') ?? url)
           : url;
   const [state, setState] = useState<{ url: string | undefined; text: string | null | undefined }>({
     url: undefined,

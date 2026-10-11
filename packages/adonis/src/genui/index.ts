@@ -71,6 +71,8 @@ function mergeSandboxClients(clients: Array<() => SandboxClientConfig>): Sandbox
   for (const client of clients) {
     const one = client();
     merged.theme ||= one.theme;
+    if (one.name !== undefined && merged.kit === undefined && one.kit !== undefined)
+      merged.name = one.name;
     if (one.kit !== undefined) merged.kit ??= one.kit;
     if (one.css !== undefined) merged.css ??= one.css;
     if (one.tailwind !== undefined) merged.tailwind ??= one.tailwind;
@@ -122,7 +124,7 @@ export function genui(options: GenuiOptions = {}): GenuiFactory {
     const base = given ?? defineCatalog([]);
     // A sandbox's kit (styles, components, wrapper) and theme names are found through the app's Vite setup.
     const clients: Array<() => SandboxClientConfig> = [];
-    let discovery: SandboxKitDiscovery | undefined;
+    const discoveries = new Map<string, SandboxKitDiscovery>();
     const resolveSandbox = async (
       value: boolean | DefineSandboxOptions | undefined,
     ): Promise<boolean | DefineSandboxOptions | undefined> => {
@@ -132,7 +134,15 @@ export function genui(options: GenuiOptions = {}): GenuiFactory {
         import('./kit/adonis.js'),
         import('./kit/discover.js'),
       ]);
-      discovery ??= await adonisSandboxKitDiscovery(ctx.app);
+      const kitName = value === true ? undefined : value.kitName;
+      let discovery = discoveries.get(kitName ?? '');
+      if (discovery === undefined) {
+        discovery = await adonisSandboxKitDiscovery(
+          ctx.app,
+          kitName !== undefined ? { name: kitName } : {},
+        );
+        discoveries.set(kitName ?? '', discovery);
+      }
       const resolved = resolveSandboxServer(value, discovery);
       clients.push(resolved.client);
       return resolved.define;

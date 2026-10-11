@@ -144,6 +144,7 @@ const Sandbox = createSandboxRenderer({
 | `onRefused` | Something the frame sent was refused: `too-large`, `too-soon`, `too-many`, `not-json`, `invalid` (with the issues), `declined`, or `no-handler`. |
 | `onError` | An uncaught error (or unhandled rejection) in the generated code, as a message of at most 500 characters. |
 | `placeholder` | `({ height, messages, title }) => ReactNode` — what to draw before anything is drawable. Default: a dashed busy box with the rotating messages. |
+| `assets` | `'shared'` (default): the page fetches the kit, its styles and the Tailwind runtime once and hands them to each frame when it asks; each `srcdoc` stays a few KB. `'inline'`: every asset in every `srcdoc`. Same CSP either way ([Weight](/docs/agent/genui-sandbox-kit#weight)). |
 | `className`, `style` | On the `<iframe>`. |
 
 ## The bridge back to the agent
@@ -314,9 +315,13 @@ Browsers apply the embedding page's Content-Security-Policy to `srcdoc` document
 - it passes the renderer's `schema`, when you gave one (Zod, any Standard Schema, or a JSON Schema);
 - `confirm`, when you gave one, said yes.
 
-The host's own messages into the frame (preview redraws, the code that arrives while the model writes) carry the token too, and the frame only listens to its parent. A reported height is clamped to `maxHeight`.
+The host's own messages into the frame (preview redraws, the code that arrives while the model writes, the [shared assets](/docs/agent/genui-sandbox-kit#weight)) carry the token too, and the frame only listens to its parent. A reported height is clamped to `maxHeight`.
 
 The height the frame reports is its **content's**: the bottom of what the body holds (margins included), not the document's `scrollHeight`, which never drops below the frame's own height. So the frame follows the view both ways — it shrinks from `initialHeight` to a short card, and grows and shrinks again as the view changes. It re-measures on every resize of the page or of a top-level element, on every DOM or style change (the Tailwind runtime injecting its CSS, the kit drawing JSX), and once fonts and images have loaded. A view sized to the viewport (`min-h-screen`, `height: 100vh` on its own element) keeps the frame's height, so write views that size to their content.
+
+**Overlays grow the frame while they are open.** A dialog, a menu or a popover in a portal (`position: fixed`, `role="dialog"`/`"menu"`/`"listbox"`, `aria-modal`, `<dialog open>`, `:popover-open`, Radix's popper wrapper) is measured too. A viewport-sized overlay, like a modal's backdrop, counts by what it holds: its content's full height and margins, not its own height, which is the frame's. A box centered in the frame counts by its full height and the room around it, and an anchored popover by where it ends. The frame grows to fit the overlay, so a MUI `Dialog` or a Radix `Popover` taller than the view shows whole instead of clipped or scrolled. Once the overlay closes, the frame shrinks back to the content.
+
+**The frame's page is see-through.** `html` and `body` keep a transparent background whatever a kit's baseline says. MUI's `CssBaseline` and Bootstrap's reboot paint the body, and emotion injects its styles after every other stylesheet. Without this, a view narrower than the frame would show a box of the baseline's colour beside it. The view's own surfaces, such as a card, keep their colours.
 
 ### What an action can do
 

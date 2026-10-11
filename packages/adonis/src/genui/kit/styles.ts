@@ -10,7 +10,10 @@ import { pathToFileURL } from 'node:url';
 import type { SandboxKitDocs } from '../sandbox-kit.js';
 import {
   type CssVocabulary,
+  classTokensOf,
   extractCssVocabulary,
+  isGeneratedClassName,
+  purgeCss,
   type TailwindTokens,
   tailwindDirectivesFromCss,
   tailwindTokensFromCss,
@@ -315,6 +318,8 @@ export interface SandboxKitStyles {
   vocabulary?: CssVocabulary;
   /** Custom properties on the styles' root. */
   vars: Record<string, string>;
+  /** Set once purged ({@link purgeSandboxKitStyles}): the size before, in characters. */
+  purged?: { before: number };
 }
 
 export interface BuildSandboxKitStylesOptions {
@@ -417,6 +422,48 @@ export async function buildSandboxKitStyles(
     result.vocabulary = extractCssVocabulary(css);
   }
   return result;
+}
+
+/** What `genuiSandboxKit({ purge })` takes: on/off, or the classes to keep whatever the purge finds. */
+export type SandboxKitPurgeOption =
+  | boolean
+  | {
+      /** Classes kept even when the kit does not use them (exact names, or patterns). */
+      safelist?: readonly (string | RegExp)[];
+    };
+
+/**
+ * The compiled styles with what the frame can never use taken out (`genuiSandboxKit({ purge })`,
+ * on by default):
+ *
+ * - Tailwind v4: the `utilities` layer keeps only the utilities the kit's own code names — the
+ *   frame's Tailwind runtime generates every other one the model writes, from the app's theme; the
+ *   theme, base and components layers, `@font-face`, `@keyframes` and `@property` stay whole;
+ * - Tailwind v3 (no layers in its output): every rule naming a class the kit does not use goes —
+ *   the model writes utilities, which the runtime generates, and is told nothing of the rest;
+ * - any other CSS: only generated CSS-modules classes the kit does not use go — every other class
+ *   is in the vocabulary the model is told, so it stays.
+ *
+ * `kitCode` is the kit bundle (what the components can put on an element); `safelist` keeps more.
+ */
+export function purgeSandboxKitStyles(
+  styles: SandboxKitStyles,
+  options: { kitCode?: string; safelist?: readonly (string | RegExp)[] } = {},
+): SandboxKitStyles {
+  if (styles.css === '') return styles;
+  const used = classTokensOf(options.kitCode ?? '');
+  const safe = (name: string) =>
+    (options.safelist ?? []).some((entry) =>
+      typeof entry === 'string' ? entry === name : entry.test(name),
+    );
+  const tailwind = styles.tailwind?.version;
+  const keep =
+    tailwind === undefined
+      ? (name: string) => !isGeneratedClassName(name) || used.has(name) || safe(name)
+      : (name: string) => used.has(name) || safe(name);
+  const css = purgeCss(styles.css, { keep, scope: tailwind === 4 ? 'utilities' : 'all' });
+  if (css === styles.css) return styles;
+  return { ...styles, css, hash: contentHash(css), purged: { before: styles.css.length } };
 }
 
 /** The docs half of compiled styles (what the model is told). */

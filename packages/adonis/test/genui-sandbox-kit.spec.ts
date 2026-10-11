@@ -451,6 +451,71 @@ describe('the Vite plugin', () => {
     }
   }, 180_000);
 
+  it('dev: two named kits side by side, each with its own urls, descriptor and styles', async () => {
+    const vite = await import('vite');
+    writeFileSync(join(root, 'other.css'), '.other-shell { display: flex; }\n');
+    const a = genuiSandboxKit({
+      name: 'main',
+      typescript,
+      styles: 'app.css',
+      descriptor: '.genui/main.json',
+    });
+    const b = genuiSandboxKit({
+      name: 'other',
+      styles: 'other.css',
+      components: [],
+      descriptor: '.genui/other.json',
+    });
+    expect(() => genuiSandboxKit({ name: '../up' })).toThrow(TypeError);
+    const server = await vite.createServer({
+      configFile: false,
+      root,
+      logLevel: 'silent',
+      resolve: { alias },
+      plugins: [a, b],
+      server: { middlewareMode: true },
+      appType: 'custom',
+    });
+    try {
+      await Promise.all([a.api.ready(), b.api.ready()]);
+      expect(a.api.kitName).toBe('main');
+      expect(b.api.kitName).toBe('other');
+      const main = a.api.descriptor();
+      const other = b.api.descriptor();
+      expect(main?.assets.css?.url).toMatch(/^\/@genui-sandbox-kit\/main\/styles\.css\?v=/);
+      expect(other?.assets.css?.url).toMatch(/^\/@genui-sandbox-kit\/other\/styles\.css\?v=/);
+      expect(main?.assets.kit?.url).toMatch(/^\/@genui-sandbox-kit\/main\/kit\.js/);
+      expect(existsSync(join(root, '.genui/main.json'))).toBe(true);
+      expect(existsSync(join(root, '.genui/other.json'))).toBe(true);
+      const http = await import('node:http');
+      const listener = http.createServer(server.middlewares);
+      await new Promise<void>((done) => listener.listen(0, '127.0.0.1', done));
+      const port = (listener.address() as { port: number }).port;
+      const get = async (url: string) => {
+        const response = await fetch(`http://127.0.0.1:${port}${url}`);
+        return { status: response.status, body: await response.text() };
+      };
+      const mainCss = await get(main?.assets.css?.url as string);
+      const otherCss = await get(other?.assets.css?.url as string);
+      listener.close();
+      expect(mainCss.body).toContain('.app-shell');
+      expect(mainCss.body).not.toContain('.other-shell');
+      expect(otherCss.body).toContain('.other-shell');
+      // The server picks a kit by its name.
+      const discovery = sandboxKitDiscovery({
+        root,
+        name: 'other',
+        descriptor: '.genui/other.json',
+        production: false,
+      });
+      expect(discovery.descriptor()?.assets.css?.url).toBe(other?.assets.css?.url);
+      const resolved = resolveSandboxServer({ kit: true, kitName: 'other' }, discovery);
+      expect(resolved.client()).toMatchObject({ name: 'other', css: other?.assets.css });
+    } finally {
+      await server.close();
+    }
+  }, 180_000);
+
   it('dev: an app module importing the renderer gets the HMR bridge', async () => {
     const plugin = genuiSandboxKit();
     (plugin.configResolved as (c: unknown) => void)({

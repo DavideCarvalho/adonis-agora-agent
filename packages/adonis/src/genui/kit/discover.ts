@@ -8,11 +8,16 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { DefineSandboxOptions } from '../sandbox.js';
 import type { SandboxClientConfig, SandboxKitDescriptor, SandboxKitDocs } from '../sandbox-kit.js';
-import { type GenuiSandboxKitApi, SANDBOX_KIT_MANIFEST_KEYS } from './plugin.js';
+import { type GenuiSandboxKitApi, sandboxKitManifestKeys } from './plugin.js';
 
 export interface SandboxKitDiscoveryOptions {
   /** The app root (relative paths below resolve against it). */
   root: string;
+  /**
+   * The kit's name (`genuiSandboxKit({ name })`): its manifest keys. `descriptor` and `plugin` are
+   * given for that kit already. Unnamed: the app's one kit.
+   */
+  name?: string;
   /** The descriptor the dev plugin (or a docs generator) writes. */
   descriptor?: string;
   /** The production manifest, and the directory its `file`s are relative to. */
@@ -29,6 +34,8 @@ export interface SandboxKitDiscoveryOptions {
 }
 
 export interface SandboxKitDiscovery {
+  /** The kit's name, for a named kit. */
+  readonly name?: string;
   /** What is known now: docs, theme names, asset urls — `null` when nothing was found. */
   descriptor(): SandboxKitDescriptor | null;
 }
@@ -77,7 +84,7 @@ export function sandboxKitDiscovery(options: SandboxKitDiscoveryOptions): Sandbo
     const manifest = cached(resolve(options.root, options.manifest.file)) as
       | Record<string, { file?: string }>
       | undefined;
-    const file = manifest?.[SANDBOX_KIT_MANIFEST_KEYS.descriptor]?.file;
+    const file = manifest?.[sandboxKitManifestKeys(options.name).descriptor]?.file;
     if (file === undefined) return null;
     const path = join(resolve(options.root, options.manifest.outDir), file);
     const value = cached(path);
@@ -103,6 +110,7 @@ export function sandboxKitDiscovery(options: SandboxKitDiscoveryOptions): Sandbo
     return dev.mtime >= built.mtime ? dev.value : built.value;
   };
   return {
+    ...(options.name !== undefined ? { name: options.name } : {}),
     descriptor() {
       const found = find();
       if (found === null || options.kitUrl === undefined) return found;
@@ -150,6 +158,7 @@ export function resolveSandboxServer(
       const assets = kitOn ? discovery.descriptor()?.assets : undefined;
       return {
         theme: themeOn,
+        ...(assets !== undefined && discovery.name !== undefined ? { name: discovery.name } : {}),
         ...(assets?.kit ? { kit: assets.kit } : {}),
         ...(assets?.css ? { css: assets.css } : {}),
         ...(assets?.tailwind ? { tailwind: assets.tailwind } : {}),

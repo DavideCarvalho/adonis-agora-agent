@@ -71,12 +71,14 @@ export interface SandboxKitDescriptor extends SandboxKitDocs {
  */
 export interface SandboxClientConfig {
   theme: boolean;
+  /** The kit's name, when it is a named one (`genuiSandboxKit({ name })`): whose dev rebuilds to follow. */
+  name?: string;
   kit?: { url: string; hash?: string };
   css?: { url: string; hash?: string };
   tailwind?: { url: string; css?: string };
 }
 
-/** What the opt-in assets weigh, inlined into every sandbox frame that uses them. */
+/** What the opt-in assets weigh: fetched once per page, handed to (or inlined into) every frame that uses them. */
 export const SANDBOX_ASSET_SIZES = {
   /** `@tailwindcss/browser` v4 (minified, as inlined; ≈75 KB gzipped over the wire, once). */
   tailwind: '≈280 KB',

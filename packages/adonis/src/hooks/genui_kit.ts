@@ -17,11 +17,14 @@
 import { relative, resolve } from 'node:path';
 import type { SandboxKitSourceOptions } from '../genui/kit/files.js';
 import { assertNoLegacyKitOptions, resolveSandboxKitFiles } from '../genui/kit/files.js';
+import { sandboxKitDescriptorPath } from '../genui/kit/plugin.js';
 import { resolveStyleEntries, STYLE_EXTENSIONS } from '../genui/kit/styles.js';
 import { writeSandboxKitDocs } from '../genui/kit/write.js';
 import { ADONIS_SANDBOX_KIT_DESCRIPTOR } from '../vite/index.js';
 
 export interface GenuiKitHookOptions extends SandboxKitSourceOptions {
+  /** A named kit's (`genuiSandboxKit({ name })`): its docs go to that kit's descriptor. */
+  name?: string;
   /** The app's style entries (paths or globs): what the model is told about the styles. */
   styles?: string | readonly string[];
   /** Guidance on the styles for the model (a markdown file, or the text itself). */
@@ -39,7 +42,8 @@ interface HooksLike {
 
 export function genuiKitHook(options: GenuiKitHookOptions = {}) {
   assertNoLegacyKitOptions(options, 'genuiKitHook');
-  const output = options.output ?? ADONIS_SANDBOX_KIT_DESCRIPTOR;
+  const output =
+    options.output ?? sandboxKitDescriptorPath(ADONIS_SANDBOX_KIT_DESCRIPTOR, options.name);
   const generate = async (root: string) => {
     try {
       await writeSandboxKitDocs({ ...options, root, output });

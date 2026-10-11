@@ -246,8 +246,27 @@ describe.skipIf(!enabled)(
         expect(await style(frame, '#open', 'border-top-left-radius')).toBe('14px');
         expect(await style(frame, '#heading', 'font-family')).toContain('Georgia');
         expect(await style(frame, '#price', 'color')).toBe('rgb(0, 137, 123)');
-        // CssBaseline: the theme's background on the frame's body, its margin reset.
-        expect(await style(frame, 'body', 'background-color')).toBe('rgb(255, 251, 234)');
+        // CssBaseline paints the body in the theme's background — the frame's page stays
+        // see-through (no box of that colour beside a card narrower than the frame) while the
+        // card keeps its own surface.
+        expect(await style(frame, 'body', 'background-color')).toBe('rgba(0, 0, 0, 0)');
+        expect(await style(frame, 'html', 'background-color')).toBe('rgba(0, 0, 0, 0)');
+        expect(await style(frame, '.MuiCard-root', 'background-color')).not.toBe(
+          'rgba(0, 0, 0, 0)',
+        );
+        expect(
+          await frame.evaluate(() => {
+            const sheet = Array.from(
+              document.querySelectorAll('style[data-emotion]'),
+              (s) => s.textContent,
+            ).join('');
+            return (
+              sheet.includes('rgb(255, 251, 234)') ||
+              sheet.includes('#fffbea') ||
+              sheet.includes('#FFFBEA')
+            );
+          }),
+        ).toBe(true);
         expect(
           await frame.evaluate(() => document.head.querySelectorAll('style[data-emotion]').length),
         ).toBeGreaterThan(0);

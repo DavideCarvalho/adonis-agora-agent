@@ -206,8 +206,9 @@ describe('<SandboxView>', () => {
     expect(iframe.style.height).toBe('410px');
     await act(async () => fromFrame(iframe, { type: SANDBOX_MESSAGE.resize, height: 180 }));
     expect(iframe.style.height).toBe('180px');
-    // The bridge measures the content, never `scrollHeight` (which never drops below the frame).
-    expect(iframe.srcdoc).not.toContain('scrollHeight');
+    // The bridge measures the content, never the page's `scrollHeight` (which never drops below
+    // the frame); only an open overlay's own content is read that way.
+    expect(iframe.srcdoc).not.toMatch(/(documentElement|body|\bb)\.scrollHeight/);
     expect(iframe.srcdoc).toContain('ResizeObserver');
     expect(iframe.srcdoc).toContain('document.fonts');
   });
