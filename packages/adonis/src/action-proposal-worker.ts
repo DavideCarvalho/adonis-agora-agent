@@ -1,5 +1,8 @@
 import type { ActionProposalExecutor } from './action-proposal-executor.js';
-import type { ActionProposalOutcomeStore } from './spi/action-proposal-outcome-store.js';
+import type {
+  ActionProposalOutcome,
+  ActionProposalOutcomeStore,
+} from './spi/action-proposal-outcome-store.js';
 import type { ActionProposal, ActionProposalStore } from './spi/action-proposal-store.js';
 import type { ActionProposalWorkerStore } from './spi/action-proposal-worker-store.js';
 export interface ActionProposalWorkerOptions {
@@ -12,6 +15,11 @@ export interface ActionProposalWorkerOptions {
   onError?(error: unknown): void;
   /** After a proposal's execution settled (succeeded or failed). A throw goes to `onError`. */
   onSettled?(proposal: ActionProposal): void | Promise<void>;
+  /**
+   * After a settled proposal's outcome was written to its thread (the thread was free). The moment
+   * to continue the conversation from it. A throw goes to `onError`.
+   */
+  onAdmitted?(outcome: ActionProposalOutcome): void | Promise<void>;
 }
 export class ActionProposalWorker {
   private readonly leaseMs: number;
@@ -79,7 +87,15 @@ export class ActionProposalWorker {
         leaseMs: this.leaseMs,
       });
       if (!delivery) break;
-      await this.options.store.admitActionProposalOutcome(delivery.lease);
+      const admitted = await this.options.store.admitActionProposalOutcome(delivery.lease);
+      if (admitted.status === 'applied') {
+        try {
+          await this.options.onAdmitted?.(delivery.outcome);
+        } catch (error) {
+          // The outcome is already in the thread: a broken listener must not fail the tick.
+          this.options.onError?.(error);
+        }
+      }
     }
   }
   private async execute(proposal: ActionProposal): Promise<void> {

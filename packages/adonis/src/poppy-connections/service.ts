@@ -12,6 +12,7 @@ import {
   ConversationError,
   completeDirectSignIn,
   connectMcp,
+  discover,
   mediatedSignIn,
   newMessageId,
   OAuthError,
@@ -106,6 +107,7 @@ const DEFAULT_READ_SCOPES = ['poppy:read'];
  * @experimental Tracks Personal Agent Protocol Draft 0.1 — will change as the spec evolves.
  */
 export class PoppyConnections {
+  readonly #names = new Map<string, { name: string | undefined; until: number }>();
   readonly texts: PoppyConnectionsTexts;
   readonly path: string;
   readonly baseUrl: string;
@@ -203,13 +205,43 @@ export class PoppyConnections {
     const key = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
     const wanted = new Set([key(given), key(given.split('.')[0] ?? '')].filter(Boolean));
     const connected = await this.#store.listConnections(owner);
-    const matches = this.allowedCompanies().filter((c) => {
-      const names = [c.label, connected.find((x) => x.domain === c.domain)?.organization]
-        .filter((n): n is string => typeof n === 'string' && n !== '')
-        .map(key);
-      return names.some((n) => wanted.has(n));
-    });
+    const allowed = this.allowedCompanies();
+    const names = await Promise.all(
+      allowed.map(async (c) =>
+        [
+          c.label,
+          connected.find((x) => x.domain === c.domain)?.organization,
+          await this.organizationOf(c.domain),
+        ]
+          .filter((n): n is string => typeof n === 'string' && n !== '')
+          .map(key),
+      ),
+    );
+    const matches = allowed.filter((_, i) => names[i]!.some((n) => wanted.has(n)));
     return matches.length === 1 ? matches[0]!.domain : given;
+  }
+
+  /**
+   * The organization an allow-listed company names itself in its `poppy.json` (cached ten
+   * minutes), or `undefined` when it cannot be reached — no owner, no sign-in needed.
+   */
+  async organizationOf(domain: string): Promise<string | undefined> {
+    const d = normalizeDomain(domain);
+    if (this.policy(d) === null) return undefined;
+    const cached = this.#names.get(d);
+    if (cached && cached.until > Date.now()) return cached.name;
+    let name: string | undefined;
+    try {
+      const found = await discover(d, {
+        insecureDev: this.insecureDev,
+        ...(this.#config.fetch !== undefined ? { fetch: this.#config.fetch } : {}),
+      });
+      name = found.document.organization.name;
+    } catch {
+      name = undefined;
+    }
+    this.#names.set(d, { name, until: Date.now() + (name ? 600_000 : 30_000) });
+    return name;
   }
 
   // ── state ──────────────────────────────────────────────────────────────────
@@ -400,6 +432,11 @@ export class PoppyConnections {
         scope,
       };
     });
+  }
+
+  /** The connect started by one tool call (`runId`, `toolCallId`), if any. */
+  pendingFor(runId: string, toolCallId: string): Promise<PoppyPendingConnect | null> {
+    return this.#store.getPending(this.connectIdFor(`${runId}:${toolCallId}`));
   }
 
   /**

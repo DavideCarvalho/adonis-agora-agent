@@ -40,6 +40,11 @@ export interface PoppyConnectionsTexts {
   confirmConnectTitle: string;
   confirmConnectVerb: string;
   confirmConnectDetail: string;
+  /**
+   * What the conversation is continued with once the person connected (independent approvals:
+   * a new turn on the thread, in the person's voice). `{company}`.
+   */
+  continueAfterConnect: string;
   confirmWriteTitle: string;
   confirmRequestTitle: string;
   confirmDisconnectTitle: string;
@@ -70,6 +75,7 @@ export const DEFAULT_POPPY_CONNECTIONS_TEXTS: PoppyConnectionsTexts = {
   confirmConnectTitle: 'Connect your {company} account',
   confirmConnectVerb: 'I connected',
   confirmConnectDetail: 'Open this link and sign in to {company}: {link}',
+  continueAfterConnect: 'I connected my account at {company}. Please go on with what I asked.',
   confirmWriteTitle: '{company}: {tool}',
   confirmRequestTitle: 'Ask {company} to act',
   confirmDisconnectTitle: 'Disconnect your {company} account',

@@ -9,9 +9,13 @@ import {
   setDurableAgentContext,
 } from '../../src/durable/index.js';
 import {
+  ActionProposalExecutor,
+  ActionProposalService,
+  ActionProposalWorker,
   AgentDepsFactory,
   AgentRegistry,
   AgentService,
+  ChatQueueService,
   DefaultToolAuthorizer,
   ToolRegistry,
 } from '../../src/index.js';
@@ -25,7 +29,7 @@ import {
   registerPoppyConnectionTools,
   Sealer,
 } from '../../src/poppy-connections/index.js';
-import { resumeAfterConnect } from '../../src/poppy-connections/resume.js';
+import { continueAfterConnect, resumeAfterConnect } from '../../src/poppy-connections/resume.js';
 import type { AiToolCtx, ToolHandler } from '../../src/spi/tool.js';
 import {
   FakeModelProvider,
@@ -161,10 +165,13 @@ async function connectLink(
 ): Promise<string> {
   const pre = (await preflight(a, 'connect', { company: a.fake.domain, ...input }, callId)) as {
     status: string;
-    confirmation: { detail: string };
+    confirmation: { detail: string; link?: string };
   };
   expect(pre.status).toBe('ready');
-  return /(http:\/\/\S+\/connect\/\S+)$/.exec(pre.confirmation.detail)![1]!;
+  const link = /(http:\/\/\S+\/connect\/\S+)$/.exec(pre.confirmation.detail)![1]!;
+  // The card's action is the link (a channel sends it with no reply buttons).
+  expect(pre.confirmation.link).toBe(link);
+  return link;
 }
 
 /** Plays the person's browser through Direct Sign-In from the connect page. */
@@ -231,12 +238,13 @@ describe('poppy-connections: allow-list', () => {
   it('a company named rather than by domain resolves to the one allowed company', async () => {
     app = await setup();
     const domain = app.fake.domain;
-    // Before connecting, only the label could name it; there is none → refused as given.
-    expect(await tool(app, 'tools', { company: 'fakeco.com' })).toMatchObject({
-      error: 'not_allowed',
+    // Before connecting, the name its poppy.json gives ("Fake Co") already names it.
+    expect(await app.connections.resolveCompany('account-1', 'fakeco.com')).toBe(domain);
+    expect(await preflight(app, 'connect', { company: 'Fake Co' })).toMatchObject({
+      status: 'ready',
     });
     await direct(app, await connectLink(app));
-    // Connected: its organization ("Fake Co") names it, as a word or a guessed domain.
+    // Connected: its organization names it, as a word or a guessed domain.
     for (const name of ['Fake Co', 'fakeco.com', 'FAKECO']) {
       const listed = (await tool(app, 'tools', { company: name })) as { tools?: unknown[] };
       expect(listed.tools, name).toBeDefined();
@@ -273,7 +281,10 @@ describe('poppy-connections: allow-list', () => {
   it('lists the allowed ones with their connection', async () => {
     app = await setup();
     expect(await tool(app, 'companies', {})).toEqual({
-      companies: [{ company: app.fake.domain, connected: false, scopes: [] }],
+      // Named as its poppy.json names it, before any connection.
+      companies: [
+        { company: app.fake.domain, organization: 'Fake Co', connected: false, scopes: [] },
+      ],
     });
   });
 });
@@ -703,6 +714,160 @@ describe('poppy-connections: the connect card resumes the turn (durable, single 
       await worker;
       setDurableAgentContext(undefined);
     }
+  });
+});
+
+describe('poppy-connections: independent approvals continue the turn (durable, single serial worker)', () => {
+  it('the sign-in decides the connect proposal; once its outcome is in, the model goes on', async () => {
+    const store = new InMemoryAgentStore();
+    const sink = new InMemoryTokenStreamSink();
+    const registry = new ToolRegistry();
+    const seen: string[] = [];
+    const factory = new AgentDepsFactory({
+      model: new FakeModelProvider((args) => {
+        const users = args.messages.filter((m) => m.role === 'user');
+        const last = String(users.at(-1)?.content ?? '');
+        seen.push(last);
+        if (last.includes('I connected my account at Fake Co'))
+          return { text: 'Connected — ordering the boots now.' };
+        if (args.messages.some((m) => m.role === 'tool'))
+          return { text: 'Waiting for the sign-in.' };
+        return {
+          text: '',
+          toolCall: { name: 'poppy_connect', input: { company: app!.fake.domain } },
+        };
+      }),
+      store,
+      sink,
+      rolesPolicy: new DefaultToolAuthorizer(),
+      registry,
+      agents: new AgentRegistry(),
+      actionApprovalMode: 'independent',
+    });
+    const engine = new WorkflowEngine({
+      store: new InMemoryStateStore(),
+      runDispatcher: { dispatch: () => {} },
+    });
+    const queue = new ChatQueueService(store, sink);
+    setDurableAgentContext({ factory, store, queue });
+    registerAgentWorkflow(engine);
+    const owner = { id: 'profile-1', tenantRef: 'account-1' };
+    const runner = new DurableAgentRunner(engine, store, queue, sink);
+    const service = new AgentService(runner, store, factory, {
+      queue,
+      actionProposals: new ActionProposalService(store),
+      backgroundActorResolver: { resolve: async () => owner },
+    });
+    const followed: unknown[] = [];
+    const proposals = new ActionProposalWorker({
+      store,
+      executor: new ActionProposalExecutor({
+        resolver: { resolve: async () => owner },
+        resolveExecution: async () => ({ registry, rolesPolicy: new DefaultToolAuthorizer() }),
+      }),
+      workerId: 'w',
+      onAdmitted: (outcome) =>
+        continueAfterConnect(service, app!.connections, outcome, {
+          follow: async (address, run) => {
+            followed.push({ address, run });
+          },
+        }).then(() => {}),
+    });
+    // ONE serial worker, as `durable:work` deploys it: the durable ticks and the proposal worker.
+    let stopped = false;
+    const worker = (async () => {
+      while (!stopped) {
+        await runTick(engine);
+        await proposals.runOnce();
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    })();
+    const until = async (what: string, ok: () => boolean | Promise<boolean>) => {
+      const deadline = Date.now() + 10_000;
+      while (!(await ok())) {
+        if (Date.now() > deadline) throw new Error(`never: ${what}`);
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+    try {
+      app = await setup(
+        {},
+        {},
+        { registry, onConnected: (pending) => resumeAfterConnect(service, pending) },
+      );
+      const { runId, threadId } = await service.chat({
+        actor: owner,
+        message: 'order boots at Fake Co',
+        pageContext: { channel: { name: 'whatsapp', conversation: '5511@s' } } as never,
+      });
+      await until(
+        'proposed',
+        async () => (await service.listActionProposals(owner, threadId)).length > 0,
+      );
+      await until(
+        'first run done',
+        async () => (await engine.getRun(runId))?.status === 'completed',
+      );
+      const proposal = (await service.listActionProposals(owner, threadId))[0]!;
+      const link = app.connections.connectUrl(
+        app.connections.connectIdFor(`${runId}:${proposal.originToolCallId}`),
+      );
+      expect(await direct(app, link)).toContain('Connected to Fake Co');
+      // The connect ran, its outcome was written, and a new turn went on with the request.
+      await until('continued', () =>
+        seen.some((t) => t.includes('I connected my account at Fake Co')),
+      );
+      await until('answered', async () =>
+        ((await store.getThread(threadId))?.messages ?? []).some((m) =>
+          String(m.content).includes('ordering the boots now'),
+        ),
+      );
+      const after = (await service.listActionProposals(owner, threadId))[0]!;
+      expect(after).toMatchObject({
+        decision: 'approved',
+        outcomeDelivery: { status: 'admitted' },
+      });
+      expect(JSON.stringify(after.outcome?.result)).toContain('"connected":true');
+      // The channel the turn came from gets the new run.
+      expect(followed).toMatchObject([
+        { address: { name: 'whatsapp', conversation: '5511@s' }, run: { threadId } },
+      ]);
+      // Only once: the outcome is admitted once.
+      await new Promise((r) => setTimeout(r, 200));
+      expect(seen.filter((t) => t.includes('I connected my account')).length).toBe(1);
+    } finally {
+      stopped = true;
+      await worker;
+      await proposals.stop();
+      setDurableAgentContext(undefined);
+    }
+  });
+
+  it('nothing continues for a connect that was not completed (the person tapped the card first)', async () => {
+    app = await setup();
+    const send = vi.fn();
+    const out = await continueAfterConnect(
+      { listActionProposals: async () => [], send } as never,
+      app.connections,
+      {
+        id: 'o',
+        proposalId: 'p',
+        outcomeVersion: 1,
+        tenantRef: 'account-1',
+        actorRef: 'profile-1',
+        threadId: 't',
+        originRunId: 'r',
+        originToolCallId: 'c',
+        toolName: 'poppy_connect',
+        decision: 'approved',
+        executionStatus: 'succeeded',
+        result: { connected: false, link: 'x' },
+        ui: [],
+        createdAt: 1,
+      },
+    );
+    expect(out).toBeNull();
+    expect(send).not.toHaveBeenCalled();
   });
 });
 

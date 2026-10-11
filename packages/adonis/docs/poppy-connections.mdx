@@ -124,3 +124,19 @@ A company answer of `insufficient_scope`, `sign_in_required` or an `authorizatio
 model as `needs_permission` / `not_connected` with the next step — `poppy_connect` with the scopes —
 never as a dead end. Opening the company's website for the person (§5 browser sessions) is not offered:
 the spec requires the assertion to be posted from a browser the agent controls, not the person's.
+
+
+## Independent approvals and text channels
+
+With `actionApprovalMode: 'independent'`, completing the sign-in decides the `connect` proposal;
+once it ran and its outcome is in the thread, the provider starts the next turn on the thread in the
+person's voice (`texts.continueAfterConnect`), so the model goes on with what was asked. The turn is
+delivered where the conversation is: the web chat follows it, and a text channel (WhatsApp,
+Telegram) gets it through `channels.follow`.
+
+The connect card's confirmation carries `link`: a text channel sends it as one message with the link
+in full and "Open the link to continue." (`linkInstruction`), no buttons nor reply commands — the
+link is the action. A screen can render it as the card's main button.
+
+A proposal still waiting tells the model plainly that nothing happened yet
+(`PENDING_ACTION_PROPOSAL_NOTE`), so it says it is awaiting confirmation rather than done.

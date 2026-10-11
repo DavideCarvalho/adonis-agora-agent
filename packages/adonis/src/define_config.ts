@@ -9,6 +9,7 @@ import type { McpServerConfig } from './mcp-client/options.js';
 import type { MemoryConfig } from './memory.js';
 import type { PriceCatalogOptions } from './pricing/boot-pricing.js';
 import type { SkillsConfig } from './skills.js';
+import type { ActionProposalOutcome } from './spi/action-proposal-outcome-store.js';
 import type { ActionProposal } from './spi/action-proposal-store.js';
 import type { ActorDirectory } from './spi/actor-directory.js';
 import type { ActorResolver } from './spi/actor-resolver.js';
@@ -106,6 +107,8 @@ export interface AgentConfig {
      * logged, never retried.
      */
     onSettled?(proposal: ActionProposal): void | Promise<void>;
+    /** Once a settled proposal's outcome is written to its thread — to continue the conversation. */
+    onAdmitted?(outcome: ActionProposalOutcome): void | Promise<void>;
   };
   /**
    * How a chat message decides an independent proposal (`actionApprovalMode: 'independent'`). A

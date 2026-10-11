@@ -54,6 +54,11 @@ export interface ChannelTexts {
    * than one proposal is waiting.
    */
   instruction(commands: { approve: string; reject: string }): string;
+  /**
+   * Under a card whose action is a link (`confirmation.link`, e.g. signing in at another service):
+   * what to do instead of replying. Default: "Open the link to continue."
+   */
+  linkInstruction?: string;
   /** An approval in blocking mode, which a text channel cannot settle. */
   blockingApproval: string;
   /** The turn failed. */
@@ -107,6 +112,7 @@ export const DEFAULT_CHANNEL_TEXTS: ChannelTexts = {
   instruction: ({ approve, reject }) => `Reply *${approve}* to confirm or *${reject}* to cancel.`,
   blockingApproval: 'This action needs an approval that can only be given in the app.',
   failed: 'Sorry, something went wrong. Please try again.',
+  linkInstruction: 'Open the link to continue.',
   actionSucceeded: 'Done.',
   actionFailed: 'The action could not be completed.',
   noPendingConfirmation: 'There is nothing waiting for your confirmation here.',
@@ -141,6 +147,7 @@ export const ptBrChannelTexts: ChannelTexts = {
     `Responda *${approve}* para confirmar ou *${reject}* para cancelar.`,
   blockingApproval: 'Esta ação precisa de uma aprovação que só pode ser dada no app.',
   failed: 'Desculpe, algo deu errado. Tente de novo, por favor.',
+  linkInstruction: 'Abra o link para continuar.',
   actionSucceeded: 'Pronto.',
   actionFailed: 'Não foi possível concluir a ação.',
   noPendingConfirmation: 'Não há nenhuma confirmação pendente por aqui.',

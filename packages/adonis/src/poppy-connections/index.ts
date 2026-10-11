@@ -20,7 +20,7 @@ export {
   type PoppyConnectRenderer,
   type PoppyConnectView,
 } from './http.js';
-export { resumeAfterConnect } from './resume.js';
+export { continueAfterConnect, resumeAfterConnect } from './resume.js';
 export {
   normalizeKeys,
   PoppyCompanyNotAllowedError,

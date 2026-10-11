@@ -413,16 +413,21 @@ export function registerPoppyConnectionTools(
       async execute(_input, ctx) {
         const connected = await connections.list(owner(ctx));
         return {
-          companies: connections.allowedCompanies().map((c) => {
-            const found = connected.find((x) => x.domain === c.domain);
-            return {
-              company: c.domain,
-              ...(c.label !== undefined ? { label: c.label } : {}),
-              ...(found ? { organization: found.organization } : {}),
-              connected: found?.status === 'active',
-              scopes: found?.status === 'active' ? found.scope.split(' ').filter(Boolean) : [],
-            };
-          }),
+          companies: await Promise.all(
+            connections.allowedCompanies().map(async (c) => {
+              const found = connected.find((x) => x.domain === c.domain);
+              // Its name even before connecting (its `poppy.json`), so the model can match it.
+              const organization =
+                found?.organization ?? (await connections.organizationOf(c.domain));
+              return {
+                company: c.domain,
+                ...(c.label !== undefined ? { label: c.label } : {}),
+                ...(organization !== undefined ? { organization } : {}),
+                connected: found?.status === 'active',
+                scopes: found?.status === 'active' ? found.scope.split(' ').filter(Boolean) : [],
+              };
+            }),
+          ),
         };
       },
     },
@@ -483,6 +488,8 @@ export function registerPoppyConnectionTools(
               title: fill(texts.confirmConnectTitle, values),
               verb: fill(texts.confirmConnectVerb, values),
               detail: fill(texts.confirmConnectDetail, values),
+              // The action is opening the link (finishing the sign-in decides the card).
+              link: started.url,
             },
           };
         } catch (error) {

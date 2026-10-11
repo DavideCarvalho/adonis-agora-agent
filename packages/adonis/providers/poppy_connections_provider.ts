@@ -1,12 +1,13 @@
 import type { HttpContext } from '@adonisjs/core/http';
 import type { ApplicationService } from '@adonisjs/core/types';
+import { onActionProposalAdmitted } from '../src/action-proposal-listeners.js';
 import { AgentService } from '../src/agent-service.js';
 import type { PoppyConnectionsConfig } from '../src/poppy-connections/config.js';
 import {
   createPoppyConnectionsHandler,
   type PoppyConnectRenderer,
 } from '../src/poppy-connections/http.js';
-import { resumeAfterConnect } from '../src/poppy-connections/resume.js';
+import { continueAfterConnect, resumeAfterConnect } from '../src/poppy-connections/resume.js';
 import { setPoppyConnectionsHandler } from '../src/poppy-connections/runtime.js';
 import { PoppyConnections } from '../src/poppy-connections/service.js';
 import {
@@ -36,6 +37,7 @@ function configOf(app: ApplicationService): Config | undefined {
  */
 export default class PoppyConnectionsProvider {
   #service: Promise<PoppyConnections> | null = null;
+  #unsubscribe: (() => void) | null = null;
 
   constructor(protected app: ApplicationService) {}
 
@@ -57,6 +59,22 @@ export default class PoppyConnectionsProvider {
     }
 
     const logger = await this.app.container.make('logger');
+    // Independent approvals: once the decided `connect` ran and its outcome is in the thread, go on
+    // with the person's request (a new turn), on the channel it came from.
+    if (config.tools?.connect !== 'link') {
+      this.#unsubscribe = onActionProposalAdmitted(async (outcome) => {
+        if (!this.app.container.hasBinding(AgentService)) return;
+        const service = await this.app.container.make(AgentService);
+        if (service.actionApprovalMode() !== 'independent') return;
+        const { channels } = await import('../src/channels/handler.js');
+        await continueAfterConnect(service, connections, outcome, {
+          ...(config.tools?.prefix !== undefined ? { prefix: config.tools.prefix } : {}),
+          follow: channels.follow,
+        }).catch((error) =>
+          logger.error({ err: error }, 'poppy-connections: continuing after connect failed'),
+        );
+      });
+    }
     const handle = createPoppyConnectionsHandler(connections, {
       ...(config.render !== undefined ? { render: config.render } : {}),
       onError: (error) => logger.error({ err: error }, 'poppy-connections: request failed'),
@@ -96,6 +114,8 @@ export default class PoppyConnectionsProvider {
   }
 
   async shutdown() {
+    this.#unsubscribe?.();
+    this.#unsubscribe = null;
     setPoppyConnectionsHandler(null);
   }
 
