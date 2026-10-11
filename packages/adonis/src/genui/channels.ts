@@ -234,12 +234,38 @@ export interface ChannelNativeMessage {
   image?: ChannelNativeImage;
 }
 
-/** `defineComponent(…, { channels: { whatsapp: (props) => ({ text, buttons }) } })`. */
+/**
+ * What a conversion is told about the frame it converts. `version` is the schema version the props
+ * were written for (the frame's — a v1 frame persisted before the component moved to v2 still says
+ * 1); convert the props by it, as a renderer would.
+ */
+export interface ChannelConversionContext {
+  /** The channel (`whatsapp`, `telegram`, `email`…). */
+  channel: string;
+  /** The component being converted (inside a tree: the node's). */
+  component: string;
+  /** The props' schema version: the frame's, or the tree's `componentVersions` entry. Default 1. */
+  version: number;
+  /** The frame's id, when it has one. */
+  id?: string;
+  /** The whole frame the component came from (a tree's, for one of its nodes), as given. */
+  frame?: ChannelComponentInput;
+}
+
+/** What `describe` is told: the channel, and the version the component is at now. */
+export interface ChannelDescribeContext {
+  channel: string;
+  component: string;
+  /** The component definition's current version (default 1). */
+  version: number;
+}
+
+/** `defineComponent(…, { channels: { whatsapp: (props, { version }) => ({ text, buttons }) } })`. */
 export type ChannelConversion<P = Record<string, unknown>> = {
   // Method syntax: bivariant in `props`, so a typed definition stays a `ComponentDefinition<unknown>`.
   convert(
     props: P,
-    context: { channel: string },
+    context: ChannelConversionContext,
   ):
     | ChannelNativeMessage
     | ChannelNativeMessage[]
@@ -256,7 +282,8 @@ export type ChannelConversion<P = Record<string, unknown>> = {
  */
 export interface ChannelConversionSpec<P = Record<string, unknown>> {
   convert: ChannelConversion<P>;
-  describe?: string;
+  /** Words for the model, or a function of the channel and the component's current version. */
+  describe?: string | ((context: ChannelDescribeContext) => string | undefined);
 }
 
 /**
@@ -302,12 +329,12 @@ function conversionDescription(
   channel: string,
 ): string | undefined {
   const entry = conversionEntry(definition, channel);
-  return typeof entry === 'object' &&
-    entry !== null &&
-    typeof entry.describe === 'string' &&
-    entry.describe.trim() !== ''
-    ? entry.describe.trim()
-    : undefined;
+  if (typeof entry !== 'object' || entry === null || definition === undefined) return undefined;
+  const words =
+    typeof entry.describe === 'function'
+      ? entry.describe({ channel, component: definition.name, version: definition.version ?? 1 })
+      : entry.describe;
+  return typeof words === 'string' && words.trim() !== '' ? words.trim() : undefined;
 }
 
 /** A sandbox component (it carries a sandbox policy). */
@@ -392,6 +419,10 @@ export interface ChannelComponentInput {
   id?: string;
   name: string;
   props: Record<string, unknown>;
+  /** The schema version the props were written for (the frame's `version`). Default 1. */
+  version?: number;
+  /** A tree frame's per-component versions (`componentVersions`), for its nodes. */
+  componentVersions?: Record<string, number>;
 }
 
 /** {@link ChannelNativeMessage} plus the component it came from (so a press can name it). */
@@ -433,13 +464,18 @@ async function nodeMessages(
   name: string,
   props: Record<string, unknown>,
   channel: ResolvedGenuiChannel,
+  context: Omit<ChannelConversionContext, 'channel' | 'component'>,
 ): Promise<ChannelNativeMessage[] | undefined> {
   if (channel.render === 'text') return undefined;
   const definition = catalog.get(name);
   const conversion = conversionOf(definition, channel.name);
   if (typeof conversion === 'function') {
     try {
-      const converted = await conversion(props, { channel: channel.name });
+      const converted = await conversion(props, {
+        channel: channel.name,
+        component: name,
+        ...context,
+      });
       if (converted !== null && converted !== undefined)
         return Array.isArray(converted) ? converted : [converted];
     } catch {
@@ -507,7 +543,14 @@ export async function renderChannelMessages(
       ...(id !== undefined ? { id } : {}),
       ...(title !== undefined ? { title } : {}),
     };
-    const native = await nodeMessages(catalog, name, props, channel);
+    // The props' version: the frame's own, or — for a tree's node — the tree's entry for it.
+    const tree = component.name === GENUI_TREE_COMPONENT;
+    const version = tree ? (component.componentVersions?.[name] ?? 1) : (component.version ?? 1);
+    const native = await nodeMessages(catalog, name, props, channel, {
+      version,
+      ...(id !== undefined ? { id } : {}),
+      frame: component,
+    });
     if (native !== undefined) {
       for (const message of native) {
         if (

@@ -21,3 +21,8 @@ Other fixes:
 - Theme variables are read from workspace packages linked into `node_modules`.
 
 **Breaking (0.x):** `tailwind` and `tailwindCss` on the plugin, `entry` and `include` (now `components`), the hook's `css` (now `styles`), and `defineSandbox({ tailwind })` are removed. Passing them throws a migration message. The descriptor is `version: 2`, with assets under `assets`. See "Migration from 0.74" in the sandbox kit docs.
+
+Also:
+
+- `genui({ ability })`: the authorization ability the UI tools (`ui__render`, `ui__sandbox`, the per-component tools, `ui__show`) declare. It is a string, a map by tool name, or a function of the tool. Under `authzToolAuthorizer`, which denies a tool with no ability, the UI tools could not be offered before. Authz still decides.
+- Channel conversions get the frame they convert: `convert(props, { channel, component, version, id, frame })`. `version` is the frame's (or, inside a tree, its `componentVersions` entry), so a v1 frame is converted as v1. `describe` may be a function of `{ channel, component, version }`.

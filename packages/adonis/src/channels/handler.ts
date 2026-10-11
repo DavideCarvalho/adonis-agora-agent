@@ -578,6 +578,9 @@ function componentOf(frame: StreamFrame, position: number): ChannelComponent | n
       name: frame.name,
       data: frame.data,
       version: frame.version ?? 1,
+      ...(frame.componentVersions !== undefined
+        ? { componentVersions: frame.componentVersions }
+        : {}),
       ...(frame.fallbackText !== undefined ? { fallbackText: frame.fallbackText } : {}),
     };
   }
@@ -588,6 +591,9 @@ function componentOf(frame: StreamFrame, position: number): ChannelComponent | n
       name: event.component,
       data: event.props,
       version: event.version ?? 1,
+      ...(event.componentVersions !== undefined
+        ? { componentVersions: event.componentVersions }
+        : {}),
       ...(event.fallbackText !== undefined ? { fallbackText: event.fallbackText } : {}),
     };
   }
@@ -1541,6 +1547,10 @@ export function handleChannel(
               id: component.id,
               name: component.name,
               props: (component.data ?? {}) as Record<string, unknown>,
+              version: component.version,
+              ...(component.componentVersions !== undefined
+                ? { componentVersions: component.componentVersions }
+                : {}),
             },
             native.channel,
           );

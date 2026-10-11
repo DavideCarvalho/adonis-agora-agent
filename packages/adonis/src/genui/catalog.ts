@@ -128,7 +128,9 @@ export function defineComponent<P = Record<string, unknown>>(
         typeof spec !== 'object' ||
         spec === null ||
         typeof spec.convert !== 'function' ||
-        (spec.describe !== undefined && typeof spec.describe !== 'string')
+        (spec.describe !== undefined &&
+          typeof spec.describe !== 'string' &&
+          typeof spec.describe !== 'function')
       )
         throw new TypeError(
           `genui: channels.${channel} must be a function, { convert, describe? } or false`,

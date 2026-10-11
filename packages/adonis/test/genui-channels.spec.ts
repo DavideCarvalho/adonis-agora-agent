@@ -204,6 +204,69 @@ describe('channel tool filtering', () => {
 });
 
 describe('WhatsApp / Telegram conversion', () => {
+  it("a conversion is told the frame's version (and the frame), so a v1 frame converts as v1", async () => {
+    const seen: unknown[] = [];
+    // v2 renamed `amount` to `total`; a v1 frame persisted before that still carries `amount`.
+    const Receipt = defineComponent<{ amount?: number; total?: number }>(
+      {
+        name: 'Receipt',
+        title: 'Receipt',
+        description: 'A receipt.',
+        version: 2,
+        props: {
+          type: 'object',
+          properties: { amount: { type: 'number' }, total: { type: 'number' } },
+        },
+      },
+      {
+        channels: {
+          whatsapp: {
+            convert: (props, context) => {
+              seen.push(context);
+              return { text: `Total ${context.version === 1 ? props.amount : props.total}` };
+            },
+            describe: ({ version }) => `a receipt line (v${version})`,
+          },
+        },
+      },
+    );
+    const local = defineCatalog([...BUILTIN_COMPONENTS, Receipt]);
+    const v1 = await renderChannelMessages(
+      local,
+      { id: 'r1', name: 'Receipt', props: { amount: 5 }, version: 1 },
+      whatsapp,
+    );
+    const v2 = await renderChannelMessages(
+      local,
+      { id: 'r2', name: 'Receipt', props: { total: 7 }, version: 2 },
+      whatsapp,
+    );
+    expect(v1[0]?.text).toBe('Total 5');
+    expect(v2[0]?.text).toBe('Total 7');
+    expect(seen[0]).toMatchObject({
+      channel: 'whatsapp',
+      component: 'Receipt',
+      version: 1,
+      id: 'r1',
+      frame: { props: { amount: 5 } },
+    });
+    // Inside a tree: the node's version from the tree's `componentVersions` (none → 1).
+    const tree = {
+      id: 't1',
+      name: GENUI_TREE_COMPONENT,
+      props: {
+        root: { type: 'Stack', props: {}, children: [{ type: 'Receipt', props: { total: 9 } }] },
+      },
+      componentVersions: { Receipt: 2 },
+    };
+    expect(
+      (await renderChannelMessages(local, tree, whatsapp)).map((m) => m.text).join('\n'),
+    ).toContain('Total 9');
+    expect(seen[2]).toMatchObject({ version: 2, id: 't1', frame: { name: GENUI_TREE_COMPONENT } });
+    const { channelPrompt } = await import('../src/genui/channels.js');
+    expect(channelPrompt(local, whatsapp)).toContain('Receipt: a receipt line (v2)');
+  });
+
   const whatsapp = resolveGenuiChannel({}, { whatsapp: {} }, 'whatsapp');
   const orders = {
     orders: [

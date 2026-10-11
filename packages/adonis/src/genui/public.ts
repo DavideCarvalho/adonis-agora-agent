@@ -38,7 +38,9 @@ export {
   type ChannelChoiceLimits,
   type ChannelComponentInput,
   type ChannelConversion,
+  type ChannelConversionContext,
   type ChannelConversionSpec,
+  type ChannelDescribeContext,
   type ChannelNativeButton,
   type ChannelNativeImage,
   type ChannelNativeList,
@@ -186,10 +188,12 @@ export {
 } from './text.js';
 export {
   GENUI_SHOW_TOOL,
+  type GenuiAbility,
   type GenuiCatalogScope,
   type GenuiTool,
   type GenuiToolOutput,
   type GenuiToolsOptions,
+  genuiToolAbility,
   genuiTools,
   jsonStandardSchema,
   type ResolveGenuiCatalog,
