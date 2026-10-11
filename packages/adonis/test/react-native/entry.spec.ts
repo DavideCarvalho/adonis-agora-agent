@@ -62,20 +62,18 @@ describe('the React Native entry', () => {
     expect(graph).not.toContain(resolve(src, 'react/core/genui/index.ts'));
     expect(graph).not.toContain(resolve(src, 'genui/index.ts'));
     expect(graph).not.toContain(resolve(src, 'index.ts'));
-    expect(graph.filter((path) => !path.startsWith('/'))).toEqual(
+    const externals = graph.filter((path) => !path.startsWith('/'));
+    expect(externals).toEqual(
       expect.arrayContaining(['react', 'react-native', 'react-native-webview']),
     );
-    expect(graph.filter((path) => !path.startsWith('/')).sort()).toEqual(
-      [
-        '@standard-schema/spec',
-        'react',
-        'react/jsx-runtime',
-        'react-native',
-        'react-native-webview',
-      ]
-        .filter((name) => graph.includes(name))
-        .sort(),
-    );
+    const allowed = [
+      '@standard-schema/spec',
+      'react',
+      'react/jsx-runtime',
+      'react-native',
+      'react-native-webview',
+    ];
+    expect(externals.filter((name) => !allowed.includes(name))).toEqual([]);
   });
 
   it('is the only code that imports react-native', () => {
