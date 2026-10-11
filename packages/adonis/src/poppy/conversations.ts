@@ -2,7 +2,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { scopeRole } from '../a2a/gate.js';
 import { PERSONAL_AGENT_ROLE } from '../a2a/permission-tool.js';
-import { type A2aActionPolicy, type A2aTurnService, runA2aTurn } from '../a2a/turn.js';
+import {
+  type A2aActionPolicy,
+  type A2aTurnOutcome,
+  type A2aTurnService,
+  runA2aTurn,
+} from '../a2a/turn.js';
 import type { StreamFrame } from '../spi/token-stream-sink.js';
 import type { Actor } from '../types.js';
 import type { PoppyPrincipal } from './auth.js';
@@ -78,13 +83,51 @@ export interface PoppyTexts {
   failed: string;
   /** Asked in a Direct Conversation alongside an `authorization` event (§7.11 SHOULD). */
   signIn: string;
+  /** An action that ran — `{title}` is the app's confirmation title (default {@link formatPoppyAction}). */
+  actionSucceeded: string;
+  /** An approved action that did not run. `{title}`, `{error}`. */
+  actionFailed: string;
+  /** An action the policy refused. `{title}`. */
+  actionRejected: string;
 }
 
 export const DEFAULT_POPPY_TEXTS: PoppyTexts = {
   handoffUnavailable: 'No one is available to take this conversation right now.',
   failed: 'Sorry, something went wrong on our side. Please try again.',
   signIn: 'Please sign in to your account so I can continue with this request.',
+  actionSucceeded: 'Done: {title}',
+  actionFailed: 'This could not be done: {title}',
+  actionRejected: 'This was not done: {title}',
 };
+
+/** An action of the turn, as the reply's `data.actions` carries it. */
+export type PoppyActionOutcome = A2aTurnOutcome;
+
+/**
+ * Words an action for the reply's text (§7: the message must make sense without `data`). Return
+ * `null` to leave it out. Default {@link formatPoppyAction}.
+ */
+export type PoppyActionFormatter = (
+  action: PoppyActionOutcome,
+  texts: PoppyTexts,
+) => string | null | undefined;
+
+/**
+ * Default wording: the status line from `texts` with the confirmation title (a question like
+ * "Log this dose?" loses its `?`), then the confirmation detail.
+ */
+export function formatPoppyAction(action: PoppyActionOutcome, texts: PoppyTexts): string {
+  const title = action.summary.title.trim().replace(/\?+$/, '');
+  const template =
+    action.status === 'succeeded'
+      ? texts.actionSucceeded
+      : action.status === 'failed'
+        ? texts.actionFailed
+        : texts.actionRejected;
+  const line = template.replaceAll('{title}', title).replaceAll('{error}', action.error ?? '');
+  const detail = action.summary.detail?.trim();
+  return detail ? `${line}\n${detail}` : line;
+}
 
 export interface PoppyConversationsOptions {
   store: PoppyStore;
@@ -102,6 +145,8 @@ export interface PoppyConversationsOptions {
   drive?: boolean;
   /** Map a principal without an actor to the app's actor. Default: `poppy:<hash>`. */
   actorFor?: (principal: PoppyPrincipal, defaults: Actor) => Actor | Promise<Actor>;
+  /** Words each action of a reply. Default {@link formatPoppyAction}. */
+  formatAction?: PoppyActionFormatter;
   handoff?: PoppyHandoffHooks;
   direct?: PoppyDirectHooks;
   texts?: Partial<PoppyTexts>;
@@ -1156,7 +1201,7 @@ export class PoppyConversations {
     turn: {
       text: string;
       components: Extract<StreamFrame, { t: 'component' }>[];
-      outcomes: unknown[];
+      outcomes: PoppyActionOutcome[];
       permission: string[] | null;
       failed: boolean;
     },
@@ -1179,6 +1224,18 @@ export class PoppyConversations {
         .map((frame) => frame.fallbackText?.trim() ?? '')
         .filter((part) => part !== '')
         .join('\n\n');
+    }
+    // Every action is told in words too: a reader that ignores `data` still learns what was done.
+    // The model wrote its text before an action's result — so when one did not go through, the
+    // reply is the actions' own account (the streamed deltas are provisional and get replaced).
+    if (turn.outcomes.length > 0) {
+      const format = this.options.formatAction ?? formatPoppyAction;
+      const told = turn.outcomes
+        .map((action) => format(action, this.#texts)?.trim() ?? '')
+        .filter((line) => line !== '')
+        .join('\n\n');
+      const allDone = turn.outcomes.every((action) => action.status === 'succeeded');
+      if (!allDone || text === '') text = told;
     }
     if (text === '' && turn.failed && components.length === 0 && turn.outcomes.length === 0) {
       text = this.#texts.failed;

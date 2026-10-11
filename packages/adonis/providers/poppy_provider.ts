@@ -132,6 +132,7 @@ export default class PoppyProvider {
       ...(config.handoff !== undefined ? { handoff: config.handoff } : {}),
       ...(config.direct !== undefined ? { direct: config.direct } : {}),
       ...(config.texts !== undefined ? { texts: config.texts } : {}),
+      ...(config.formatAction !== undefined ? { formatAction: config.formatAction } : {}),
       ...(config.retentionMs !== undefined ? { retentionMs: config.retentionMs } : {}),
       onError: (error, context) => logger.error({ err: error }, context),
     });

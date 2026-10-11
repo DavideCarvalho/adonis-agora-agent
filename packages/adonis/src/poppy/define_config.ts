@@ -2,7 +2,12 @@ import type { ApplicationService } from '@adonisjs/core/types';
 import type { A2aActionPolicy, A2aTurnService } from '../a2a/turn.js';
 import type { Actor } from '../types.js';
 import type { PoppyAuthenticate, PoppyPrincipal } from './auth.js';
-import type { PoppyDirectHooks, PoppyHandoffHooks, PoppyTexts } from './conversations.js';
+import type {
+  PoppyActionFormatter,
+  PoppyDirectHooks,
+  PoppyHandoffHooks,
+  PoppyTexts,
+} from './conversations.js';
 import type { PoppyStore } from './store.js';
 
 /**
@@ -63,6 +68,11 @@ export interface PoppyConfig {
   direct?: PoppyDirectHooks;
   /** What the Company Agent says on its own. */
   texts?: Partial<PoppyTexts>;
+  /**
+   * Words each action of a reply (executed, failed, refused) — the reply's text always tells them,
+   * `data.actions` carries them structured. Default: `texts.action*` + the confirmation detail.
+   */
+  formatAction?: PoppyActionFormatter;
   /** Give up on a turn after this many ms. Default 120 000. */
   timeoutMs?: number;
   /** Largest accepted request body, in bytes. Default 1 MiB. */

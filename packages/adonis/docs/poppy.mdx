@@ -121,6 +121,11 @@ action" (§7.11), the token's scopes do. So:
   proposals (`actionApprovalMode: 'independent'`): the turn decides it, **waits for it to execute**, and
   the reply carries it in `data.actions` — `{ tool, status, summary, result }`, the summary being the
   confirmation your app would have shown the person. A question set (`ask`) is skipped.
+- Every action is also told in the reply's **text** (§7: a message must make sense without `data`):
+  `status` is `succeeded`, `failed` (with `error`) or `rejected`. When the model wrote nothing, or an
+  action did not go through (the model wrote before the result, so its claim is replaced), the text is
+  each action worded by `formatAction(action, texts)` — by default `texts.actionSucceeded` /
+  `actionFailed` / `actionRejected` (`{title}`, `{error}`) plus the confirmation's detail.
 
 ## Messages and events
 
@@ -227,7 +232,8 @@ gets the complete message only (the spec makes deltas optional).
 | `store` | `'lucid'` | `'memory'`, or a `PoppyStore` (`redisPoppyStore`). `connection`, `autoCreateTables`. |
 | `actions` | `'approve-delegated'` | Or `'reject'`. |
 | `handoff`, `direct` | — | Hooks above. |
-| `texts` | English | `handoffUnavailable`, `failed`, `signIn`. |
+| `texts` | English | `handoffUnavailable`, `failed`, `signIn`, `actionSucceeded`, `actionFailed`, `actionRejected`. |
+| `formatAction` | `formatPoppyAction` | `(action, texts) => string \| null` — how an action reads in the reply. |
 | `timeoutMs` | `120000` | A turn running longer is cancelled. |
 | `maxWaitSeconds` | `30` | Cap on `wait`. |
 | `streamMaxMs` | 5 min | A stream is closed after this; the personal agent reconnects. |

@@ -953,6 +953,103 @@ describe('Poppy actions and components', () => {
     });
   });
 
+  /** A one-proposal service: the model says `said`, the proposal ends `execution` / `decision`. */
+  const proposalService = (opts: {
+    said?: string;
+    execution: { status: string; result?: unknown; error?: string };
+    outcomeText?: string;
+  }) => {
+    let decision = 'pending';
+    return {
+      chat: async () => ({ runId: 'r9', threadId: 'thread-9' }),
+      subscribe: async function* () {
+        yield* [
+          ...(opts.said ? [{ t: 'text', v: opts.said }] : []),
+          {
+            t: 'event',
+            event: {
+              kind: 'tool-input-available',
+              id: 'c1',
+              name: 'cancel_order',
+              input: {},
+              toolKind: 'action',
+            },
+          },
+          {
+            t: 'approval',
+            runId: 'r9',
+            id: 'c1',
+            toolName: 'cancel_order',
+            input: {},
+            target: { kind: 'proposal', proposalId: 'p1' },
+          },
+        ] as never[];
+      },
+      approve: async () => {},
+      reject: async () => {},
+      skip: async () => {},
+      cancel: async () => {},
+      decideActionProposal: async (_a: unknown, _t: string, _id: string, d: string) => {
+        decision = d;
+        return { status: 'applied' };
+      },
+      listActionProposals: async () => [
+        {
+          id: 'p1',
+          input: {},
+          confirmation: { title: 'Cancel order A-1?', detail: 'Order A-1, $70', verb: 'Cancel' },
+          decision,
+          execution: decision === 'approved' ? opts.execution : null,
+          ...(opts.outcomeText ? { outcome: { text: opts.outcomeText } } : {}),
+        },
+      ],
+    };
+  };
+  const writeRoles = (name: string) =>
+    name === 'cancel_order' ? ['scope:poppy:write'] : undefined;
+
+  it('an executed action with no words from the model or the app is told by its summary', async () => {
+    harness = await serve({
+      service: proposalService({ execution: { status: 'succeeded' } }) as never,
+      toolRoles: writeRoles,
+    });
+    const writer = auth('u1|poppy:write|in|acct-1');
+    const id = (await post(harness, '', msg('cancel A-1'), writer)).body.conversation_id;
+    const { events } = await readUntil(harness, id, (e) => companyMessages(e).length > 0, writer);
+    expect(companyMessages(events)[0]?.message.text).toBe('Done: Cancel order A-1\nOrder A-1, $70');
+  });
+
+  it('an action that did not run replaces what the model claimed, and is a failed action', async () => {
+    harness = await serve({
+      service: proposalService({
+        said: 'Done, order A-1 is cancelled!',
+        execution: { status: 'failed', error: 'already shipped' },
+      }) as never,
+      toolRoles: writeRoles,
+    });
+    const writer = auth('u1|poppy:write|in|acct-1');
+    const id = (await post(harness, '', msg('cancel A-1'), writer)).body.conversation_id;
+    const { events } = await readUntil(harness, id, (e) => companyMessages(e).length > 0, writer);
+    const message = companyMessages(events)[0]?.message;
+    expect(message?.text).toBe('This could not be done: Cancel order A-1\nOrder A-1, $70');
+    expect(message?.data).toMatchObject({
+      actions: [{ tool: 'cancel_order', status: 'failed', error: 'already shipped' }],
+    });
+  });
+
+  it("actions: 'reject' tells the refused action; formatAction words it the app's way", async () => {
+    harness = await serve({
+      service: proposalService({ execution: { status: 'succeeded' } }) as never,
+      toolRoles: writeRoles,
+      actions: 'reject',
+      formatAction: (action) => `[${action.status}] ${action.summary.title}`,
+    });
+    const writer = auth('u1|poppy:write|in|acct-1');
+    const id = (await post(harness, '', msg('cancel A-1'), writer)).body.conversation_id;
+    const { events } = await readUntil(harness, id, (e) => companyMessages(e).length > 0, writer);
+    expect(companyMessages(events)[0]?.message.text).toBe('[rejected] Cancel order A-1?');
+  });
+
   it('a component becomes data, with its fallback as the text', async () => {
     const service = {
       chat: async () => ({ runId: 'r2', threadId: 'thread-2' }),

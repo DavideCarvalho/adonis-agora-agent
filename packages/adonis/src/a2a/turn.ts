@@ -58,9 +58,28 @@ export interface A2aTurnAction {
  */
 export interface A2aTurnOutcome {
   tool: string;
-  status: 'succeeded';
+  /**
+   * `succeeded` — approved and executed; `failed` — approved but did not run (`error` says why);
+   * `rejected` — the policy refused it (no delegated scope, or `actions: 'reject'`).
+   */
+  status: 'succeeded' | 'failed' | 'rejected';
   summary: { title: string; detail?: string };
   result?: unknown;
+  /** Why a `failed` action did not run. */
+  error?: string;
+}
+
+/** The app's confirmation of a proposal, as an outcome's `summary`. */
+function summaryOf(
+  proposal: { confirmation?: { title: string; detail?: string } } | undefined,
+  toolName: string,
+): A2aTurnOutcome['summary'] {
+  const confirmation = proposal?.confirmation;
+  if (!confirmation) return { title: toolName };
+  return {
+    title: confirmation.title,
+    ...(confirmation.detail ? { detail: confirmation.detail } : {}),
+  };
 }
 
 export interface A2aTurnResult {
@@ -197,13 +216,33 @@ export async function runA2aTurn(
       } catch {
         continue;
       }
-      if (!approve) continue;
+      if (!approve) {
+        // Refused by the policy: say so, with the app's own summary of what was asked.
+        const listed = await listActionProposals
+          .call(service, input.actor, threadId)
+          .catch(() => []);
+        result.outcomes.push({
+          tool: proposal.toolName,
+          status: 'rejected',
+          summary: summaryOf(
+            listed.find((p) => p.id === proposal.id),
+            proposal.toolName,
+          ),
+        });
+        continue;
+      }
       while (!finished) {
         const listed = await listActionProposals.call(service, input.actor, threadId);
         const current = listed.find((p) => p.id === proposal.id);
         const status = current?.execution?.status;
         if (current?.decision !== 'approved' || status === 'failed') {
           result.error = current?.execution?.error ?? `${proposal.toolName} did not run`;
+          result.outcomes.push({
+            tool: proposal.toolName,
+            status: 'failed',
+            summary: summaryOf(current, proposal.toolName),
+            error: result.error,
+          });
           return;
         }
         if (status === 'succeeded') {
@@ -217,10 +256,7 @@ export async function runA2aTurn(
           result.outcomes.push({
             tool: proposal.toolName,
             status: 'succeeded',
-            summary: {
-              title: current.confirmation.title,
-              ...(current.confirmation.detail ? { detail: current.confirmation.detail } : {}),
-            },
+            summary: summaryOf(current, proposal.toolName),
             ...(current.execution?.result !== undefined
               ? { result: current.execution.result }
               : {}),

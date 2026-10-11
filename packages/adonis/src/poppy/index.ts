@@ -8,6 +8,8 @@ export type {
 } from './auth.js';
 export { globalPoppyAuthenticate, globalPoppyIssuer, POPPY_AUTHENTICATE_SLOT } from './auth.js';
 export type {
+  PoppyActionFormatter,
+  PoppyActionOutcome,
   PoppyConversationsOptions,
   PoppyDirectHooks,
   PoppyHandoffDecision,
@@ -17,7 +19,12 @@ export type {
   PoppyStreamItem,
   PoppyTexts,
 } from './conversations.js';
-export { DEFAULT_POPPY_TEXTS, PoppyConversations, poppyActorId } from './conversations.js';
+export {
+  DEFAULT_POPPY_TEXTS,
+  formatPoppyAction,
+  PoppyConversations,
+  poppyActorId,
+} from './conversations.js';
 export type { PoppyConfig } from './define_config.js';
 export { definePoppyConfig } from './define_config.js';
 export type { PoppyEndpoints } from './endpoints.js';
