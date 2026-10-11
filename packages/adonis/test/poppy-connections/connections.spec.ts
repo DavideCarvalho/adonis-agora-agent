@@ -576,6 +576,29 @@ describe('poppy-connections: revocation and refresh', () => {
     expect((await app.store.listConnections('account-1'))[0]).toMatchObject({ status: 'revoked' });
   });
 
+  it('revoked at the company while a signed-in MCP token is still valid: noticed, marked revoked', async () => {
+    app = await setup();
+    await direct(app, await connectLink(app));
+    expect(await tool(app, 'read', { company: app.fake.domain, tool: 'whoami' })).toMatchObject({
+      result: expect.stringContaining('"signed_in":true'),
+    });
+    app.fake.revokeAtCompany();
+    // The cached Bearer is still valid but its Session is signed out: the Account Token is tried,
+    // answers invalid_grant, and the call goes on signed out (a public tool still answers)…
+    expect(
+      await tool(app, 'read', {
+        company: app.fake.domain,
+        tool: 'search_products',
+        arguments: { query: 'boots' },
+      }),
+    ).toMatchObject({ result: expect.stringContaining('boots') });
+    // …while the connection is marked revoked: the model sees it is no longer connected.
+    expect((await app.store.listConnections('account-1'))[0]).toMatchObject({ status: 'revoked' });
+    expect(await tool(app, 'companies', {})).toMatchObject({
+      companies: [{ company: app.fake.domain, connected: false }],
+    });
+  });
+
   it('expired Session Tokens renew with the Account Token, a rotated one is kept sealed', async () => {
     app = await setup({}, { accessTtl: 1, rotateAccountToken: true });
     await direct(app, await connectLink(app));

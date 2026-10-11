@@ -86,6 +86,12 @@ export class FakeCompany {
   origin = '';
   readonly violations: string[] = [];
   readonly log: string[] = [];
+  /** The user revokes the agent at this Company: Account Tokens die, Sessions are signed out. */
+  revokeAtCompany(): void {
+    for (const at of this.accountTokens.values()) at.revoked = true;
+    for (const session of this.sessions.values()) session.account = undefined;
+  }
+
   /** Answer every MCP request 401 with a bare JSON body, no WWW-Authenticate (as some servers do). */
   bareMcpErrors = false;
   /** Trips `book_trip` committed, and its outstanding preview tokens. */
@@ -822,6 +828,15 @@ export class FakeCompany {
     this.mcpCalls++;
     const raw = req.method === 'POST' ? await this.body(req) : undefined;
     const rpc = raw ? JSON.parse(raw) : undefined;
+    // A signed-in Bearer whose Session was signed out meanwhile (the user revoked the agent here):
+    // its tools need a signed-in Session (4.4) — the agent's Account Token has to sign it back in.
+    if (rpc?.method === 'tools/call' && t.signedIn && !this.sessions.get(t.sessionId)?.account) {
+      res.writeHead(403, {
+        'content-type': 'application/json',
+        'www-authenticate': 'Bearer error="sign_in_required"',
+      });
+      return res.end(JSON.stringify({ error: 'sign_in_required' }));
+    }
     // `place_order` needs poppy:write: a Company refuses it before running (RFC 6750 §3.1 step-up).
     if (
       rpc?.method === 'tools/call' &&

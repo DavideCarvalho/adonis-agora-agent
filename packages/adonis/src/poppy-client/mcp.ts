@@ -36,6 +36,18 @@ export async function connectMcp(
         token = await company.bearerFor(resource, true);
         continue;
       }
+      // A signed-in Bearer whose Session was signed out meanwhile (4.4): the Account Token signs
+      // it back in — or, revoked, answers invalid_grant and the client continues signed out.
+      if (
+        res.status === 403 &&
+        attempt === 0 &&
+        err.error === 'sign_in_required' &&
+        company.accountToken
+      ) {
+        await res.body?.cancel().catch(() => {});
+        token = await company.bearerFor(resource, true);
+        continue;
+      }
       // A tool behind a scope the user did not grant (MCP scope step-up, RFC 6750 §3.1): surface it
       // like any other resource, so the caller can sign in again with `scope`.
       if (
