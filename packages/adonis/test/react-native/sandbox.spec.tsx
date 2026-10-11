@@ -255,6 +255,12 @@ describe('createNativeSandboxRenderer', () => {
     expect(NATIVE_SANDBOX_WEBVIEW_PROPS.onShouldStartLoadWithRequest).toBe(shouldStartSandboxLoad);
   });
 
+  it('passes dataDetectorTypes as an array (Android aborts on the bare string)', () => {
+    expect(NATIVE_SANDBOX_WEBVIEW_PROPS.dataDetectorTypes).toEqual(['none']);
+    expect(Array.isArray(NATIVE_SANDBOX_WEBVIEW_PROPS.dataDetectorTypes)).toBe(true);
+    expect(Object.isFrozen(NATIVE_SANDBOX_WEBVIEW_PROPS.dataDetectorTypes)).toBe(true);
+  });
+
   it('hands a valid agent.send on as a UiAction (GenuiActionProvider)', async () => {
     const onAction = vi.fn();
     render(
@@ -271,6 +277,20 @@ describe('createNativeSandboxRenderer', () => {
       context: { people: 3 },
       title: 'Bill splitter',
     });
+  });
+
+  it("accepts the inline document's message on Android (url 'null'), drops a foreign URL", async () => {
+    const onAction = vi.fn();
+    render(
+      <GenuiActionProvider onAction={onAction}>
+        <NativeSandboxView {...view} />
+      </GenuiActionProvider>,
+    );
+    const send = { type: SANDBOX_MESSAGE.send, payload: { a: 1 } };
+    await fromFrame(send, 'null');
+    expect(onAction).toHaveBeenCalledTimes(1);
+    await fromFrame(send, 'https://evil.test/');
+    expect(onAction).toHaveBeenCalledTimes(1);
   });
 
   it('ignores what has no token, another token, is not JSON, or comes from another URL', async () => {

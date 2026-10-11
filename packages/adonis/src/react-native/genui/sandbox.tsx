@@ -130,7 +130,9 @@ export const NATIVE_SANDBOX_WEBVIEW_PROPS: Readonly<WebViewProps> = Object.freez
   allowsProtectedMedia: false,
   allowsBackForwardNavigationGestures: false,
   pullToRefreshEnabled: false,
-  dataDetectorTypes: 'none',
+  // An array, never the bare string: react-native-webview's Fabric codegen types this as an
+  // array and only its iOS wrapper boxes a string, so on Android 'none' aborts the app on mount.
+  dataDetectorTypes: Object.freeze(['none']) as unknown as string[],
   saveFormDataDisabled: true,
   setBuiltInZoomControls: false,
   setDisplayZoomControls: false,
@@ -162,7 +164,8 @@ const SandboxWebView = WebView as unknown as ComponentType<
 
 /** A URL that is neither the inline document nor a `data:` one — the WebView left the sandbox. */
 function isForeignUrl(url: unknown): boolean {
-  return typeof url === 'string' && url !== '' && !/^(about|data):/i.test(url);
+  // Android reports the inline document's (opaque) origin as the string 'null' in `onMessage`.
+  return typeof url === 'string' && url !== '' && url !== 'null' && !/^(about|data):/i.test(url);
 }
 
 /** How many times a view whose WebView process died is drawn afresh before it gives up. */
