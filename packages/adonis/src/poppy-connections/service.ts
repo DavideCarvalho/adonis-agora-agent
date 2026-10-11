@@ -140,6 +140,11 @@ export class PoppyConnections {
     this.baseUrl = config.baseUrl.replace(/\/+$/, '');
   }
 
+  /** How long a connect link works, in ms (`connectTtlSeconds`, default 15 minutes). */
+  get connectTtlMs(): number {
+    return (this.#config.connectTtlSeconds ?? 900) * 1000;
+  }
+
   /** The agent's display name (its `client_name`). */
   get identityName(): string {
     return this.#config.identity.name;
@@ -422,7 +427,7 @@ export class PoppyConnections {
         toolCallId: input.toolCallId ?? null,
         flow: null,
         status: 'open',
-        expiresAt: now + (this.#config.connectTtlSeconds ?? 900) * 1000,
+        expiresAt: now + this.connectTtlMs,
         createdAt: now,
       });
       return {

@@ -437,6 +437,8 @@ export function registerPoppyConnectionTools(
     {
       name: `${p}connect`,
       kind: 'action',
+      // The card lives as long as its sign-in link, not as long as a Confirm button.
+      approvalTtlMs: connections.connectTtlMs,
       description:
         'Connect the person’s account at a company (or ask for more permissions there): they get a link, sign in at the company and choose what to allow. The conversation continues once they finish. Use when a tool answered not_connected or needs_permission.',
       inputSchema: objectSchema(

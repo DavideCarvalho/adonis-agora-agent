@@ -17,42 +17,90 @@ export async function resumeAfterConnect(
     | 'decideActionProposal'
     | 'approve'
     | 'toolCallApproval'
-  >,
+  > &
+    Partial<Pick<AgentService, 'send'>>,
   pending: PoppyPendingConnect,
+  /**
+   * For a sign-in that finished after its card expired: the connection is stored all the same, and
+   * the conversation is continued with a new turn ({@link PoppyConnectionsTexts.continueAfterConnect})
+   * instead of nothing happening. Without it, an expired card is left alone.
+   */
+  late?: {
+    connections: Pick<PoppyConnections, 'texts'>;
+    follow?: (
+      address: unknown,
+      run: { runId: string; threadId: string; actor: Actor },
+    ) => Promise<unknown>;
+  },
 ): Promise<void> {
   if (!pending.actor || !pending.threadId || !pending.toolCallId) return;
   const actor = pending.actor as Actor;
+  const threadId = pending.threadId;
   if (service.actionApprovalMode() === 'independent') {
-    const proposals = (await service.listActionProposals(actor, pending.threadId)) as unknown as {
+    const proposals = (await service.listActionProposals(actor, threadId)) as unknown as {
       id: string;
       originToolCallId?: string;
       decision?: string;
+      executionContext?: { agentName?: string; pageContext?: Record<string, unknown> };
     }[];
-    const proposal = proposals.find(
-      (p) =>
-        p.originToolCallId === pending.toolCallId &&
-        p.decision !== 'approved' &&
-        p.decision !== 'rejected',
-    );
-    if (proposal) {
-      await service.decideActionProposal(
-        actor,
-        pending.threadId,
-        proposal.id,
-        'approved',
-        {},
-        'poppy-connect',
-      );
+    const mine = proposals.filter((p) => p.originToolCallId === pending.toolCallId);
+    const open = mine.find((p) => p.decision === 'pending');
+    if (open) {
+      const decided = await service
+        .decideActionProposal(actor, threadId, open.id, 'approved', {}, 'poppy-connect')
+        .then(
+          (r) => (r as { status?: string }).status !== 'expired',
+          () => false,
+        );
+      if (decided) return;
     }
+    // Approved already (the person tapped first) or turned down: nothing to add.
+    if (mine.some((p) => p.decision === 'approved' || p.decision === 'rejected')) return;
+    // Expired (or gone) before the sign-in finished: the account is connected anyway — go on.
+    await continueLate(service, late, actor, threadId, pending, mine[0]?.executionContext);
     return;
   }
   if (!pending.runId) return;
   const state = await service.toolCallApproval(pending.toolCallId);
-  if (state !== null && state.status !== 'pending_approval') return;
-  await service.approve(pending.runId, pending.toolCallId, {
-    executedByRef: actor.id,
-    via: 'poppy-connect',
-  });
+  if (state === null || state.status === 'pending_approval') {
+    await service.approve(pending.runId, pending.toolCallId, {
+      executedByRef: actor.id,
+      via: 'poppy-connect',
+    });
+    return;
+  }
+  if (state.status === 'expired') await continueLate(service, late, actor, threadId, pending);
+}
+
+async function continueLate(
+  service: Partial<Pick<AgentService, 'send'>>,
+  late: Parameters<typeof resumeAfterConnect>[2],
+  actor: Actor,
+  threadId: string,
+  pending: PoppyPendingConnect,
+  context?: { agentName?: string; pageContext?: Record<string, unknown> },
+): Promise<void> {
+  if (!late || !service.send) return;
+  const sent = await service.send(
+    {
+      actor,
+      threadId,
+      message: late.connections.texts.continueAfterConnect.replace(
+        /\{company\}/g,
+        pending.organization,
+      ),
+      ...(context?.agentName !== undefined ? { agentName: context.agentName } : {}),
+      ...(context?.pageContext !== undefined
+        ? { pageContext: context.pageContext as NonNullable<ChatParams['pageContext']> }
+        : {}),
+    },
+    { textDecisions: false },
+  );
+  const runId = (sent as { runId?: string }).runId;
+  const address = context?.pageContext?.channel;
+  if (runId !== undefined && late.follow && address !== null && typeof address === 'object') {
+    await late.follow(address, { runId, threadId, actor });
+  }
 }
 
 /**

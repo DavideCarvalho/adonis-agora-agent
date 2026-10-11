@@ -15,6 +15,7 @@ import {
   AgentDepsFactory,
   AgentRegistry,
   AgentService,
+  approvalRules,
   ChatQueueService,
   DefaultToolAuthorizer,
   ToolRegistry,
@@ -839,6 +840,124 @@ describe('poppy-connections: independent approvals continue the turn (durable, s
       stopped = true;
       await worker;
       await proposals.stop();
+      setDurableAgentContext(undefined);
+    }
+  });
+
+  it('the card lives as long as its link (not the 5-min policy); a sign-in after it expired still goes on', async () => {
+    let offset = 0;
+    const store = new InMemoryAgentStore({ clock: () => Date.now() + offset });
+    const sink = new InMemoryTokenStreamSink();
+    const registry = new ToolRegistry();
+    const seen: string[] = [];
+    const factory = new AgentDepsFactory({
+      model: new FakeModelProvider((args) => {
+        const users = args.messages.filter((m) => m.role === 'user');
+        const last = String(users.at(-1)?.content ?? '');
+        seen.push(last);
+        if (last.includes('I connected my account at Fake Co')) return { text: 'Going on.' };
+        if (args.messages.some((m) => (m.toolResults?.length ?? 0) > 0))
+          return { text: 'Waiting for the sign-in.' };
+        return {
+          text: '',
+          toolCall: { name: 'poppy_connect', input: { company: app!.fake.domain } },
+        };
+      }),
+      store,
+      sink,
+      rolesPolicy: new DefaultToolAuthorizer(),
+      registry,
+      agents: new AgentRegistry(),
+      actionApprovalMode: 'independent',
+      // Every other action's card lapses in 5 minutes.
+      approvalPolicy: approvalRules({ ttlMs: 5 * 60_000 }),
+    });
+    const engine = new WorkflowEngine({
+      store: new InMemoryStateStore(),
+      runDispatcher: { dispatch: () => {} },
+    });
+    const queue = new ChatQueueService(store, sink);
+    setDurableAgentContext({ factory, store, queue });
+    registerAgentWorkflow(engine);
+    const owner = { id: 'profile-1', tenantRef: 'account-1' };
+    const service = new AgentService(
+      new DurableAgentRunner(engine, store, queue, sink),
+      store,
+      factory,
+      {
+        queue,
+        actionProposals: new ActionProposalService(store),
+        backgroundActorResolver: { resolve: async () => owner },
+      },
+    );
+    const followed: unknown[] = [];
+    let stopped = false;
+    const worker = (async () => {
+      while (!stopped) {
+        await runTick(engine);
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    })();
+    const until = async (what: string, ok: () => boolean | Promise<boolean>) => {
+      const deadline = Date.now() + 10_000;
+      while (!(await ok())) {
+        if (Date.now() > deadline) throw new Error(`never: ${what}`);
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+    try {
+      app = await setup(
+        {},
+        {},
+        {
+          registry,
+          onConnected: (pending) =>
+            resumeAfterConnect(service, pending, {
+              connections: app!.connections,
+              follow: async (address, run) => {
+                followed.push({ address, run });
+              },
+            }),
+        },
+      );
+      const { runId, threadId } = await service.chat({
+        actor: owner,
+        message: 'order boots at Fake Co',
+        pageContext: { channel: { name: 'whatsapp', conversation: '5511@s' } } as never,
+      });
+      await until(
+        'proposed',
+        async () => (await service.listActionProposals(owner, threadId)).length > 0,
+      );
+      await until(
+        'first run done',
+        async () => (await engine.getRun(runId))?.status === 'completed',
+      );
+      const proposal = (await service.listActionProposals(owner, threadId))[0]!;
+      // The connect card's own lifetime (the link's, 15 min), not the policy's 5 min.
+      const lifetime = proposal.expiresAt! - proposal.createdAt;
+      expect(lifetime).toBeGreaterThan(15 * 60_000 - 5_000);
+      expect(lifetime).toBeLessThanOrEqual(15 * 60_000);
+      // The person comes back after it lapsed; the link (the page) still works a little longer.
+      offset = 16 * 60_000;
+      const link = app.connections.connectUrl(
+        app.connections.connectIdFor(`${runId}:${proposal.originToolCallId}`),
+      );
+      expect(await direct(app, link)).toContain('Connected to Fake Co');
+      // Stored, and the conversation goes on instead of nothing happening.
+      expect((await app.store.listConnections('account-1'))[0]).toMatchObject({ status: 'active' });
+      await until('continued', () =>
+        seen.some((t) => t.includes('I connected my account at Fake Co')),
+      );
+      expect((await service.listActionProposals(owner, threadId))[0]).toMatchObject({
+        decision: 'expired',
+      });
+      expect(followed).toMatchObject([
+        { address: { name: 'whatsapp', conversation: '5511@s' }, run: { threadId } },
+      ]);
+    } finally {
+      stopped = true;
+      await worker;
       setDurableAgentContext(undefined);
     }
   });

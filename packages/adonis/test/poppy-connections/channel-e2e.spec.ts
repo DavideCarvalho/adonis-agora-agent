@@ -118,6 +118,8 @@ it('WhatsApp-like channel: link card → sign-in → the turn continues in the c
   const link = /(http:\/\/\S+\/poppy-agent\/connect\/[A-Za-z0-9_-]+)/.exec(card!.text!)![1]!;
   // The link in full, what to do — and nothing to reply or press.
   expect(card!.text).toContain('Open the link to continue.');
+  // How long it works: the link's lifetime (15 min), which is also the card's.
+  expect(card!.text).toContain('The link works for up to 15 minutes.');
   expect(card!.text).not.toMatch(/Reply \*/);
   expect(card).not.toHaveProperty('buttons');
 

@@ -1028,6 +1028,11 @@ export function handleChannel(
         [
           summary.includes(link) ? summary : `${summary}\n${link}`,
           texts.linkInstruction ?? DEFAULT_CHANNEL_TEXTS.linkInstruction,
+          proposal.expiresAt !== undefined
+            ? (texts.linkValidity ?? DEFAULT_CHANNEL_TEXTS.linkValidity)?.(
+                Math.max(1, Math.round((proposal.expiresAt - Date.now()) / 60_000)),
+              )
+            : undefined,
         ]
           .filter((part) => part !== undefined && part !== '')
           .join('\n\n'),
@@ -1601,6 +1606,9 @@ export function handleChannel(
               id: frame.target.proposalId,
               toolName: frame.toolName,
               ...(frame.confirmation ? { confirmation: frame.confirmation } : {}),
+              ...(frame.expiresAt !== undefined && Number.isFinite(Date.parse(frame.expiresAt))
+                ? { expiresAt: Date.parse(frame.expiresAt) }
+                : {}),
             });
           } else {
             // Blocking mode: the run waits for a decision this channel cannot make.

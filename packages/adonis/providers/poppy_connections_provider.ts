@@ -164,7 +164,12 @@ export default class PoppyConnectionsProvider {
   async #resume(pending: PoppyPendingConnect): Promise<void> {
     // No AgentService (an app running its own loop): nothing parked to resume.
     if (!this.app.container.hasBinding(AgentService)) return;
-    await resumeAfterConnect(await this.app.container.make(AgentService), pending);
+    const { channels } = await import('../src/channels/handler.js');
+    // A sign-in that finished after its card expired still continues the conversation.
+    await resumeAfterConnect(await this.app.container.make(AgentService), pending, {
+      connections: await this.app.container.make(PoppyConnections),
+      follow: channels.follow,
+    });
   }
 }
 

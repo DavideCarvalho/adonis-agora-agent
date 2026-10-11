@@ -23,10 +23,9 @@ export async function resolveActionProposalApproval(
   const remembered = (await input.store.rememberedApprovals?.(input.thread.threadId)) ?? [];
   if (remembered.includes(input.tool.name))
     return { mode: 'remembered', approver: requirement.approver };
-  const roundedTtl =
-    requirement.ttlMs !== undefined && Number.isFinite(requirement.ttlMs)
-      ? Math.floor(requirement.ttlMs)
-      : 0;
+  // The tool's own lifetime (a sign-in link's) over the policy's.
+  const ttl = input.tool.spec?.approvalTtlMs ?? requirement.ttlMs;
+  const roundedTtl = ttl !== undefined && Number.isFinite(ttl) ? Math.floor(ttl) : 0;
   if (roundedTtl <= 0) return { mode: 'ask', approver: requirement.approver };
   const now = (input.clock ?? Date.now)();
   if (

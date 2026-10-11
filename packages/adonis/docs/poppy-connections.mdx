@@ -140,3 +140,8 @@ link is the action. A screen can render it as the card's main button.
 
 A proposal still waiting tells the model plainly that nothing happened yet
 (`PENDING_ACTION_PROPOSAL_NOTE`), so it says it is awaiting confirmation rather than done.
+
+The connect card lives as long as its link (`connectTtlSeconds`, default 15 minutes) — not the
+approval policy's `ttlMs` (`ToolSpec.approvalTtlMs`), and a channel says how long the link works
+(`linkValidity`). A sign-in finished after the card expired anyway still stores the connection and
+continues the conversation.

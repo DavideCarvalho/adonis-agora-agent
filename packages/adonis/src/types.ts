@@ -42,6 +42,12 @@ export interface ToolSpec {
   kind: ToolKind;
   description: string;
   /**
+   * For `kind: 'action'` — how long its approval (or proposal) stays open, in ms, over the
+   * approval policy's `ttlMs`: an action whose card carries something with its own lifetime (a
+   * sign-in link) lives as long as that, not as a Confirm button does.
+   */
+  approvalTtlMs?: number;
+  /**
    * How a person-facing surface talks about this tool (see {@link ToolPresentation}). Never shown
    * to the model; served to clients by `GET <path>/tools`.
    */
