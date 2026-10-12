@@ -1,18 +1,32 @@
 ---
 title: "Generative UI: native vs CopilotKit vs OpenUI"
-description: The same agent drawing the same generative UI through the native React client, CopilotKit and OpenUI over AG-UI — what each does out of the box, what takes glue, what is not possible, verified by running all three.
+description: Why the native client wins on generative UI — model-designed views in your own design system, checked before they render, delivered on every channel — and the evidence, the same agent behind the native client, CopilotKit and OpenUI, every scenario run in a browser.
 icon: Scale
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-The agent's generative UI can reach a browser three ways: the native React client over the [native stream](/docs/agent/streaming-and-http), or a third-party frontend over [AG-UI](/docs/agent/ag-ui). This page compares the three for generative UI only — tool-driven components, progressive rendering, model-composed layouts, interactive components, persistence, non-visual surfaces, validation, DX and cost. Every cell comes from running the same agent behind three pages:
+The agent's generative UI can reach a browser three ways: the native React client over the [native stream](/docs/agent/streaming-and-http), or a third-party frontend over [AG-UI](/docs/agent/ag-ui). This page compares the three for generative UI only — tool-driven components, progressive rendering, model-composed layouts, model-written views, interactive components, persistence, non-visual surfaces, validation, DX and cost. Every cell comes from running the same agent behind three pages:
 
 - **Native** — `@adonis-agora/agent/react`: `<AgentProvider>`, `useAgentChat`, `<GenerativeUI>`.
 - **CopilotKit** 1.77 — the v2 API (`@copilotkit/react-core/v2`, `CopilotChat`) on `agUiAdapter()`.
 - **OpenUI** 0.17 — `@openuidev/react-ui`'s `AgentInterface` on `agUiAdapter()`.
 
 The app is the [`frontends` example](https://github.com/DavideCarvalho/agora/tree/main/examples/frontends) (AdonisJS 7, SQLite, a scripted model, no API key). Its `pnpm e2e` drives every scenario on every page in headless Chromium and saves the screenshots its README shows. Versions: `@adonis-agora/agent` 0.66.0, `@copilotkit/react-core` 1.77.1, `@openuidev/react-ui` 0.17.0.
+
+## Why native
+
+CopilotKit and OpenUI are frontends: they draw in the browser and stop there. The native client is the browser half of a generative UI that lives on the server, and that is where it pulls ahead:
+
+- **The model designs in your design system, not someone else's.** For what no component fits, the [sandbox](/docs/agent/genui-sandbox) lets the model write the view, with your styles, your components and your providers through a [sandbox kit](/docs/agent/genui-sandbox-kit) — Tailwind, Bootstrap, plain CSS, shadcn, a customized MUI. A view it invents looks like the rest of your app. OpenUI's views look like OpenUI's library.
+- **The model writes behavior, not just layout.** A calculator, a simulation, a slider that recomputes a chart: the sandbox runs the model's own code in an isolated frame with no network, and a button sends values back as the next turn through a checked bridge. A layout of fixed components cannot do that.
+- **Nothing reaches the screen unchecked.** Every component's props, every `ui__render` tree and every sandbox's code is [checked on the server](/docs/agent/genui-sandbox#checked-before-it-is-accepted) before it is accepted. A mistake goes back to the model as a tool error and it fixes it. CopilotKit hands renderers unvalidated arguments; OpenUI drops invalid output without telling anyone.
+- **One answer, every channel.** The same component is drawn in React, [in React Native](/docs/agent/genui-sandbox-react-native), as text on WhatsApp, Telegram or e-mail, or as a PNG or PDF — with [per-channel conversions](/docs/agent/genui-channels) you choose, and the text the model writes knowing what was actually delivered. A UI that exists only as model text, or only as a browser renderer, has nothing to send a text channel.
+- **It is governed.** UI tools declare an [authorization ability](/docs/agent/generative-ui) like any other tool, approvals are part of the transcript, and every UI call is [recorded as telemetry](/docs/agent/genui-telemetry) — first-try success, what the model got wrong, cost, time to first frame — on the dashboard's Generative UI page, metadata only by default.
+- **No glue.** History, thread lists, approvals, tool-pushed components and skeletons work out of the box. Against this agent CopilotKit needs ~70 lines for history and OpenUI ~45 lines for history plus ~46 for approvals (see the matrix).
+- **And it still interoperates.** The same agent serves [AG-UI](/docs/agent/ag-ui) for CopilotKit and OpenUI and [A2UI](/docs/agent/a2ui) for Google's renderers, so choosing native closes no door.
+
+The rest of this page is the evidence: the same agent behind all three frontends, every scenario run in a browser.
 
 ## Three models of generative UI
 
@@ -41,8 +55,11 @@ So on the OpenUI page the server must hand the model the library's prompt, and t
 | 7 | Typing, validation, versioning | **Built in.** A props schema per component, validated on the server before anything streams, and on the client against the same catalog. An invalid `ui__render` (a chart type the schema does not list) came back to the model as a tool error and it retried. Each component has a `version`. | **No.** The zod `parameters` type the renderer; arguments reach `render` unvalidated (and partial while they stream). No component versioning. | **No.** zod props per component, but invalid arguments are dropped silently — the component does not appear and the model is not told. No versioning. |
 | 8 | One new component, end to end | A definition in a file both sides import (schema, description, `fallbackText`, a loading state if it has a skeleton), the React renderer, one registry key. | The React renderer and a `useRenderTool`, all client-side; the component is bound to a tool, not to a catalog. | **Leanest:** one `defineComponent` (zod props, description, React component). The server imports that client module to build the prompt. |
 | 9 | Targets, token cost | React; the framework-free [browser client](/docs/agent/browser-client) for anything else; HTML/PNG/PDF; [text channels](/docs/agent/channels). `ui__render` over 9 components adds ~2.1k prompt tokens with its exact schema (~680 with `treeSchema: 'loose'`). | React, Vue, Angular and React Native packages (only React was run). No prompt of its own. | React, Vue, Svelte, Angular and React Email renderers (only React was run). The full chat library's prompt is ~14k tokens per turn (an 11-component library: ~1.3k). The same dashboard took 29% fewer output tokens than `ui__render` JSON (198 vs 279). |
+| 10 | Model-written view with behavior | **Built in.** [`ui__sandbox`](/docs/agent/genui-sandbox): the model writes JSX or HTML, CSS and JavaScript; it is checked before it is accepted, streams as placeholder → styled preview → live view, runs in an isolated frame with no network, and sends values back through a checked `agent.send`. | **Not in the library.** CopilotKit's OpenIntelligentUI showcase app runs model-written HTML in an iframe, unchecked. Against this agent, draw `ui__sandbox` with `SandboxView` ([glue](/docs/agent/genui-sandbox#over-ag-ui-and-copilotkit)). | **No.** The model composes the library's components; it writes no code of its own. |
+| 11 | Model-designed UI in your design system | **Built in.** A [sandbox kit](/docs/agent/genui-sandbox-kit) (one Vite plugin, no presets) gives the frame your styles, your components and your providers, and tells the model their props from their types. | **Partly.** Your renderers draw tool calls in your look, but the model cannot compose a new screen from them. | **Partly.** Each of your components becomes one `defineComponent`, and every one adds to the prompt on every turn. |
+| 12 | Per-channel delivery | **Built in.** [`channels`](/docs/agent/genui-channels): sandbox on the web, native conversions on WhatsApp, charts as PNG, text elsewhere — and the model is told what was delivered, so it does not describe a screen the user never saw. | **No.** | **No.** |
 
-Token counts use the o200k tokenizer on the exact system prompt and tool definitions the model received, and on the two outputs for the same dashboard.
+Token counts use the o200k tokenizer on the exact system prompt and tool definitions the model received, and on the two outputs for the same dashboard. Rows 1–9 were run on all three pages. Rows 10–12 were run on the native page (the sandbox scenario) and in this library's tests; the CopilotKit and OpenUI cells there come from their documentation and showcase apps, not from the example's e2e.
 
 <Callout type="info" title="A scripted model">
 The example's model is scripted: it writes what a model would, and shows what each frontend does with it — including invalid output (row 7). It does not measure how reliably a real model writes valid OpenUI Lang or valid `ui__render` trees. Set `AGENT_MODEL=openai:<model>` to run the same pages on a real one.
