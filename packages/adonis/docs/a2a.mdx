@@ -57,7 +57,7 @@ Each entry is a "brand" in PACT terms, answered at `/a2a/{key}`:
 | --- | --- |
 | `GET /a2a/{key}/.well-known/agent-card.json` | The Agent Card (public). `rootCard` also serves one at `/.well-known/agent-card.json`. |
 | `POST /a2a/{key}/message:send` | A synchronous turn. |
-| `GET /a2a/{key}/tasks`, `GET …/tasks/{id}`, `POST …/tasks/{id}:cancel` | As PACT §2.2 fixes them: empty list, `TASK_NOT_FOUND`. |
+| `GET /a2a/{key}/tasks`, `GET …/tasks/{id}`, `POST …/tasks/{id}:cancel` | As [PACT §2.2](https://openpactprotocol.org/spec#2-2-operations) fixes them: empty list, `TASK_NOT_FOUND`. |
 
 In AuthKit, set `personalAgents.delegation.interfaceUrl` to the interface URL of the agent that offers
 delegation (`https://acme.com/a2a/support`): only that card advertises it.

@@ -15,7 +15,7 @@ spec is a draft. Everything under `@adonis-agora/agent/poppy` and `poppy_provide
 
 [Personal Agent Protocol](https://personalagentprotocol.org) ("Poppy", Draft 0.1) is how a user's
 personal agent works with a company: discovery (`poppy.json`), Sessions and sign-in, APIs — and
-**conversations** (§7), where the personal agent talks with the Company Agent. `@adonis-agora/agent/poppy_provider`
+**conversations** ([Poppy §7](https://personalagentprotocol.org/docs/spec#conversations)), where the personal agent talks with the Company Agent. `@adonis-agora/agent/poppy_provider`
 makes one of your registered agents that Company Agent.
 
 The rest of the protocol — `poppy.json`, the OAuth server, Session Tokens and DPoP — is
@@ -100,7 +100,7 @@ skills resolve no scope for it.
 ```ts
 // Anyone's agent, signed in or not — general questions.
 registry.register({ name: 'store_hours', kind: 'read', roles: ['personal_agent'], /* … */ }, handler)
-// Reading the account (§4.4).
+// Reading the account (Poppy spec §4.4).
 registry.register({ name: 'list_orders', kind: 'read', roles: ['scope:poppy:read'], /* … */ }, handler)
 // Changing it — and your own scopes work the same (`scope:addresses`).
 registry.register({ name: 'cancel_order', kind: 'action', roles: ['scope:poppy:write'], /* … */ }, handler)
@@ -109,19 +109,19 @@ registry.register({ name: 'cancel_order', kind: 'action', roles: ['scope:poppy:w
 ## Scopes, sign-in and actions
 
 The protocol has no confirmation step: "sending a message does not authorize the requested account
-action" (§7.11), the token's scopes do. So:
+action" ([Poppy §7.11](https://personalagentprotocol.org/docs/spec#conversation-sign-in)), the token's scopes do. So:
 
 - A tool behind a scope the token lacks is **offered but not run**. Its refused call ends the turn
   with an **`authorization`** event: `sign_in_required` for a signed-out token, `insufficient_scope`
   otherwise, and `scope` naming what was missing (`"poppy:write"`). In a Direct Conversation the
-  Company Agent also asks in a message (§7.11 SHOULD). The conversation stays open; the personal agent
+  Company Agent also asks in a message ([Poppy §7.11](https://personalagentprotocol.org/docs/spec#conversation-sign-in) SHOULD). The conversation stays open; the personal agent
   continues it with its new token.
 - With the scope, an `action` that parks for approval is **approved by the scope** (`actions:
   'approve-delegated'`, the default; `'reject'` refuses them all). The same goes for independent
   proposals (`actionApprovalMode: 'independent'`): the turn decides it, **waits for it to execute**, and
   the reply carries it in `data.actions` — `{ tool, status, summary, result }`, the summary being the
   confirmation your app would have shown the person. A question set (`ask`) is skipped.
-- Every action is also told in the reply's **text** (§7: a message must make sense without `data`):
+- Every action is also told in the reply's **text** ([Poppy §7](https://personalagentprotocol.org/docs/spec#conversations): a message must make sense without `data`):
   `status` is `succeeded`, `failed` (with `error`) or `rejected`. When the model wrote nothing, or an
   action did not go through (the model wrote before the result, so its claim is replaced), the text is
   each action worded by `formatAction(action, texts)` — by default `texts.actionSucceeded` /
@@ -146,7 +146,7 @@ from `Last-Event-ID`, and ends once the conversation closes.
 
 Message ids are the personal agent's and unique per User: a retry with the same content answers what
 the first delivery answered (a retried first message returns the conversation it started); different
-content is `message_id_conflict` (409). Unknown fields are ignored everywhere (§3.3).
+content is `message_id_conflict` (409). Unknown fields are ignored everywhere ([Poppy §3.3](https://personalagentprotocol.org/docs/spec#extensions)).
 
 ## Handoff to a person
 
@@ -189,7 +189,7 @@ cannot be a parent. `direct.opened` / `direct.closed` hooks tell your app.
 
 ## MCP and the Poppy issuer
 
-Poppy §6 requires a listed MCP server's protected-resource metadata to name the Poppy issuer in
+[Poppy §6](https://personalagentprotocol.org/docs/spec#apis) requires a listed MCP server's protected-resource metadata to name the Poppy issuer in
 `authorization_servers`. When AuthKit announces it (`Symbol.for('@adonis-agora/poppy:issuer')`), the
 [MCP provider](/docs/agent/mcp) adds it to its `/.well-known/oauth-protected-resource/…` document,
 next to the configured issuer.

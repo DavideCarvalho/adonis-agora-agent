@@ -73,7 +73,7 @@ and the client state — the per-company User ID, the DPoP key, the Account Toke
 Session Tokens — **sealed** with the app key. Sessions, DPoP proofs and nonces, renewals, narrowing and
 Account Token rotation are handled by the client; calls of one owner are serialized so a rotated token is
 never lost. `PoppyConnections` (container binding) gives your code `list(owner)` and
-`disconnect(owner, domain)`; a disconnect revokes the Account Token at the company (§4.9), and a
+`disconnect(owner, domain)`; a disconnect revokes the Account Token at the company ([Poppy §4.9](https://personalagentprotocol.org/docs/spec#sign-out)), and a
 revocation on their side is noticed (`invalid_grant`) and marks the connection `revoked`.
 
 ## Connecting — a link, then the conversation resumes
@@ -81,11 +81,11 @@ revocation on their side is noticed (`invalid_grant`) and marks the connection `
 `poppy_connect` is an **action**: its confirmation card carries a link to a page on **your** app
 (`/{path}/connect/:id`) — a link works in the web chat and in WhatsApp alike. There the person picks:
 
-- **Sign in at the company** (Direct, §4.5): PKCE, `state` and the RFC 9207 `iss` check, back to your callback;
-- **a form on your page** (Mediated, §4.7) when the company offers it: the fields the company declares,
+- **Sign in at the company** (Direct, [Poppy §4.5](https://personalagentprotocol.org/docs/spec#direct-sign-in)): PKCE, `state` and the RFC 9207 `iss` check, back to your callback;
+- **a form on your page** (Mediated, [Poppy §4.7](https://personalagentprotocol.org/docs/spec#mediated-sign-in)) when the company offers it: the fields the company declares,
   posted from the person's browser to your server and straight to the company — **never stored, logged
   or shown to the model**; a one-time code on the next page;
-- **a code** (Device, §4.6) when Direct is not offered.
+- **a code** (Device, [Poppy §4.6](https://personalagentprotocol.org/docs/spec#device-sign-in)) when Direct is not offered.
 
 Completing it **decides the parked `connect` call** (a proposal decision under
 `actionApprovalMode: 'independent'`, an approval otherwise): the turn resumes with the account
@@ -122,7 +122,7 @@ your app. `tools.twoStep` renames the fields (`{ confirm, token, summary }`) or 
 
 A company answer of `insufficient_scope`, `sign_in_required` or an `authorization` event comes back to the
 model as `needs_permission` / `not_connected` with the next step — `poppy_connect` with the scopes —
-never as a dead end. Opening the company's website for the person (§5 browser sessions) is not offered:
+never as a dead end. Opening the company's website for the person ([Poppy §5](https://personalagentprotocol.org/docs/spec#web-browsing) browser sessions) is not offered:
 the spec requires the assertion to be posted from a browser the agent controls, not the person's.
 
 
