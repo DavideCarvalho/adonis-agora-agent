@@ -7,15 +7,7 @@
     "concepts",
     "authoring",
     "retrieval",
-    "generative-ui",
-    "genui-loading-states",
-    "genui-sandbox",
-    "genui-sandbox-kit",
-    "genui-sandbox-react-native",
-    "genui-channels",
-    "genui-builtins",
-    "genui-telemetry",
-    "frontends",
+    "genui",
     "surfaces",
     "channels",
     "governance",
@@ -26,8 +18,6 @@
     "streaming-and-http",
     "independent-approvals",
     "ag-ui",
-    "a2ui",
-    "openui",
     "react",
     "browser-client",
     "mcp",
@@ -45,6 +35,6 @@
     "programmatic-api"
   ],
   "root": true,
-  "description": "A governed, durable-ready AI agent for AdonisJS \u2014 streaming chat, tool-calling, HITL, and multi-agent delegation.",
+  "description": "A governed, durable-ready AI agent for AdonisJS — streaming chat, tool-calling, HITL, and multi-agent delegation.",
   "icon": "Bot"
 }

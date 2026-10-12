@@ -1,0 +1,17 @@
+{
+  "title": "Generative UI",
+  "icon": "Blocks",
+  "pages": [
+    "../generative-ui",
+    "../genui-loading-states",
+    "../genui-builtins",
+    "../genui-sandbox",
+    "../genui-sandbox-kit",
+    "../genui-sandbox-react-native",
+    "../genui-channels",
+    "../genui-telemetry",
+    "../frontends",
+    "../openui",
+    "../a2ui"
+  ]
+}
