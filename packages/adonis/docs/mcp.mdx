@@ -258,13 +258,13 @@ The well-known document is deliberately minimal and unauthenticated (and served 
 ```
 
 With Personal Agent Protocol on in AuthKit, the Poppy issuer it announces in
-`Symbol.for('@adonis-agora/poppy:issuer')` is added to `authorization_servers` too (Poppy §6).
+`Symbol.for('@adonis-agora/poppy:issuer')` is added to `authorization_servers` too ([Poppy §6](https://personalagentprotocol.org/docs/spec#apis)).
 
 The metadata itself is resolved per request rather than at boot, because authkit's issuer may not be readable until the app is fully booted.
 
 ### The `401` challenge
 
-Every refused request carries a `WWW-Authenticate` header ([MCP Authorization](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization), RFC 6750 §3, RFC 9728 §5.1). With OAuth metadata it names the document above — that is what makes an MCP client discover the authorization server and open the login in the browser:
+Every refused request carries a `WWW-Authenticate` header ([MCP Authorization](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization), [RFC 6750 §3](https://www.rfc-editor.org/rfc/rfc6750#section-3), [RFC 9728 §5.1](https://www.rfc-editor.org/rfc/rfc9728#section-5.1)). With OAuth metadata it names the document above — that is what makes an MCP client discover the authorization server and open the login in the browser:
 
 ```http
 HTTP/1.1 401 Unauthorized
