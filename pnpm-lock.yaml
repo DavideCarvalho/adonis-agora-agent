@@ -324,8 +324,8 @@ importers:
         specifier: npm:@adonis-agora/agent@0.56.0
         version: '@adonis-agora/agent@0.56.0(22d2288c30b937b6de76928a5f3124c9)'
       agent-0-58:
-        specifier: npm:@adonis-agora/agent@0.58.0
-        version: '@adonis-agora/agent@0.58.0(22d2288c30b937b6de76928a5f3124c9)'
+        specifier: npm:@adonis-agora/agent@0.80.1
+        version: '@adonis-agora/agent@0.80.1(a0cc28b728b414d08e5c0c2d9cc5fd01)'
       agent-0-59:
         specifier: npm:@adonis-agora/agent@0.59.0
         version: '@adonis-agora/agent@0.59.0(22d2288c30b937b6de76928a5f3124c9)'
@@ -552,8 +552,8 @@ packages:
       zod:
         optional: true
 
-  '@adonis-agora/agent@0.58.0':
-    resolution: {integrity: sha512-oENv7n2e/Y5YOaoRjKFrA7g3QhLjtkpe6D51DsFTKrfxyUwXcR+UXZdVlpT6D0Rnpumwg66dwD+NIC0gbyUvBQ==}
+  '@adonis-agora/agent@0.59.0':
+    resolution: {integrity: sha512-rafuX+Z9Hu3oci2ptc7QkO0QBta58sxONWcVepGnYT8IYerKMYgoSeCmCMqEhCR5t7dLM/aoJ4hk5uAgAcWUHA==}
     engines: {node: '>=20.6.0'}
     peerDependencies:
       '@adonis-agora/authz': '>=0.4.2 <1.0.0'
@@ -609,26 +609,45 @@ packages:
       zod:
         optional: true
 
-  '@adonis-agora/agent@0.59.0':
-    resolution: {integrity: sha512-rafuX+Z9Hu3oci2ptc7QkO0QBta58sxONWcVepGnYT8IYerKMYgoSeCmCMqEhCR5t7dLM/aoJ4hk5uAgAcWUHA==}
+  '@adonis-agora/agent@0.80.1':
+    resolution: {integrity: sha512-7sMFXrtOe3SM2MN9+JBB8w0DhQY6o4jecyihGXCokc+tsPz3kkcx51z5u6n0C/0ht5fG2XvDD2p/LuMVkGjXhg==}
     engines: {node: '>=20.6.0'}
+    hasBin: true
     peerDependencies:
       '@adonis-agora/authz': '>=0.4.2 <1.0.0'
       '@adonis-agora/diagnostics': '>=0.1.0 <1.0.0'
-      '@adonis-agora/durable': '>=0.8.0 <1.0.0'
+      '@adonis-agora/durable': '>=0.43.3 <1.0.0'
       '@adonis-agora/media': '>=0.18.0 <1.0.0'
       '@adonis-agora/telescope': '>=0.4.0 <1.0.0'
       '@adonisjs/assembler': ^8.4.0
       '@adonisjs/core': ^7.3.0
       '@adonisjs/lucid': ^22.4.0
       '@adonisjs/redis': ^9.2.0 || ^10.0.0 || ^11.0.0
-      '@dudousxd/nestjs-agent-core': '>=0.35.0 <1.0.0'
-      '@dudousxd/nestjs-agent-react': '>=0.30.0 <1.0.0'
-      '@dudousxd/nestjs-media-client': '>=0.3.0 <1.0.0'
+      '@ai-sdk/react': ^4.0.0
+      '@json-render/react': '>=0.21.0 <1.0.0'
       '@qdrant/js-client-rest': ^1.11.0
+      '@resvg/resvg-js': ^2.6.0
+      '@streamdown/code': ^1.1.1
+      '@streamdown/math': ^1.0.2
+      '@streamdown/mermaid': ^1.0.2
       ai: ^7.0.0
+      katex: ^0.16.45
       node-sql-parser: ^5.3.0
+      playwright-core: '>=1.48 <2'
+      prism-react-renderer: ^2.4.1
       react: ^18.0.0 || ^19.0.0
+      react-dom: '>=18'
+      react-markdown: ^10.1.0
+      react-native: '>=0.74'
+      react-native-webview: '>=13'
+      rehype-katex: ^7.0.1
+      rehype-sanitize: ^6.0.0
+      remark-gfm: ^4.0.1
+      remark-math: ^6.0.0
+      streamdown: ^2.5.0
+      typescript: '>=5'
+      unist-util-visit: ^5.1.0
+      vite: '>=5'
       zod: ^4.0.0
     peerDependenciesMeta:
       '@adonis-agora/authz':
@@ -649,19 +668,55 @@ packages:
         optional: true
       '@adonisjs/redis':
         optional: true
-      '@dudousxd/nestjs-agent-core':
+      '@ai-sdk/react':
         optional: true
-      '@dudousxd/nestjs-agent-react':
-        optional: true
-      '@dudousxd/nestjs-media-client':
+      '@json-render/react':
         optional: true
       '@qdrant/js-client-rest':
         optional: true
+      '@resvg/resvg-js':
+        optional: true
+      '@streamdown/code':
+        optional: true
+      '@streamdown/math':
+        optional: true
+      '@streamdown/mermaid':
+        optional: true
       ai:
+        optional: true
+      katex:
         optional: true
       node-sql-parser:
         optional: true
+      playwright-core:
+        optional: true
+      prism-react-renderer:
+        optional: true
       react:
+        optional: true
+      react-dom:
+        optional: true
+      react-markdown:
+        optional: true
+      react-native:
+        optional: true
+      react-native-webview:
+        optional: true
+      rehype-katex:
+        optional: true
+      rehype-sanitize:
+        optional: true
+      remark-gfm:
+        optional: true
+      remark-math:
+        optional: true
+      streamdown:
+        optional: true
+      typescript:
+        optional: true
+      unist-util-visit:
+        optional: true
+      vite:
         optional: true
       zod:
         optional: true
@@ -6825,7 +6880,7 @@ snapshots:
       - '@cfworker/json-schema'
       - supports-color
 
-  '@adonis-agora/agent@0.58.0(22d2288c30b937b6de76928a5f3124c9)':
+  '@adonis-agora/agent@0.59.0(22d2288c30b937b6de76928a5f3124c9)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.30.1(supports-color@10.2.2)(zod@4.6.5)
       '@standard-schema/spec': 1.1.0
@@ -6851,10 +6906,14 @@ snapshots:
       - '@cfworker/json-schema'
       - supports-color
 
-  '@adonis-agora/agent@0.59.0(22d2288c30b937b6de76928a5f3124c9)':
+  '@adonis-agora/agent@0.80.1(a0cc28b728b414d08e5c0c2d9cc5fd01)':
     dependencies:
-      '@modelcontextprotocol/sdk': 1.30.1(supports-color@10.2.2)(zod@4.6.5)
+      '@modelcontextprotocol/sdk': 1.31.0(supports-color@10.2.2)(zod@4.6.5)
       '@standard-schema/spec': 1.1.0
+      '@tailwindcss/browser': 4.3.3
+      acorn: 8.17.0
+      acorn-jsx: 5.3.2(acorn@8.17.0)
+      jose: 6.2.12
     optionalDependencies:
       '@adonis-agora/authz': 0.18.0(@adonis-agora/diagnostics@0.2.10(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/redis@11.0.0(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2))(ioredis@6.0.0(supports-color@10.2.2)))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.5.2(babel-plugin-macros@3.1.0)(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.5(@types/node@26.6.4))(pg@8.23.1)(supports-color@10.2.2))
       '@adonis-agora/diagnostics': 0.2.10(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/redis@11.0.0(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2))(ioredis@6.0.0(supports-color@10.2.2))
@@ -6865,13 +6924,31 @@ snapshots:
       '@adonisjs/core': 7.5.2(@adonisjs/assembler@8.5.2(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1)
       '@adonisjs/lucid': 22.4.2(@adonisjs/assembler@8.5.2(babel-plugin-macros@3.1.0)(typescript@7.0.2))(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.5(@types/node@26.6.4))(pg@8.23.1)(supports-color@10.2.2)
       '@adonisjs/redis': 11.0.0(@adonisjs/core@7.5.2(@adonisjs/assembler@8.5.2(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2)
-      '@dudousxd/nestjs-agent-core': 0.40.0
-      '@dudousxd/nestjs-agent-react': 0.33.0(@ai-sdk/react@4.0.125(react@19.3.0)(zod@4.6.5))(@dudousxd/nestjs-media-client@0.3.0)(@json-render/react@0.21.0(react@19.3.0)(zod@4.6.5))(@streamdown/code@1.1.1(react@19.3.0))(@streamdown/math@1.0.3(react@19.3.0)(supports-color@10.2.2))(@streamdown/mermaid@1.0.3(react@19.3.0))(ai@7.0.122(zod@4.6.5))(katex@0.16.45)(prism-react-renderer@2.4.1(react@19.3.0))(react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.0)(supports-color@10.2.2))(react@19.3.0)(rehype-katex@7.0.1)(rehype-sanitize@6.0.0)(remark-gfm@4.0.1(supports-color@10.2.2))(remark-math@6.0.0(supports-color@10.2.2))(streamdown@2.6.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(supports-color@10.2.2))(unist-util-visit@5.1.0)
-      '@dudousxd/nestjs-media-client': 0.3.0
+      '@ai-sdk/react': 4.0.125(react@19.3.0)(zod@4.6.5)
+      '@json-render/react': 0.21.0(react@19.3.0)(zod@4.6.5)
       '@qdrant/js-client-rest': 1.19.0(typescript@7.0.2)
+      '@resvg/resvg-js': 2.6.2
+      '@streamdown/code': 1.1.1(react@19.3.0)
+      '@streamdown/math': 1.0.3(react@19.3.0)(supports-color@10.2.2)
+      '@streamdown/mermaid': 1.0.3(react@19.3.0)
       ai: 7.0.122(zod@4.6.5)
+      katex: 0.16.45
       node-sql-parser: 5.4.0
+      playwright-core: 1.63.0
+      prism-react-renderer: 2.4.1(react@19.3.0)
       react: 19.3.0
+      react-dom: 19.3.0(react@19.3.0)
+      react-markdown: 10.1.0(@types/react@19.3.0)(react@19.3.0)(supports-color@10.2.2)
+      react-native: 0.87.1(@babel/core@7.29.7(supports-color@10.2.2))(@types/react@19.3.0)(react@19.3.0)(supports-color@10.2.2)
+      react-native-webview: 14.0.1(react-native@0.87.1(@babel/core@7.29.7(supports-color@10.2.2))(@types/react@19.3.0)(react@19.3.0)(supports-color@10.2.2))(react@19.3.0)
+      rehype-katex: 7.0.1
+      rehype-sanitize: 6.0.0
+      remark-gfm: 4.0.1(supports-color@10.2.2)
+      remark-math: 6.0.0(supports-color@10.2.2)
+      streamdown: 2.6.0(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(supports-color@10.2.2)
+      typescript: 7.0.2
+      unist-util-visit: 5.1.0
+      vite: 8.3.2(@types/node@26.6.4)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.105.1)(terser@5.51.2)(yaml@2.9.0)
       zod: 4.6.5
     transitivePeerDependencies:
       - '@cfworker/json-schema'
