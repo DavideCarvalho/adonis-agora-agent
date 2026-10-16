@@ -99,6 +99,8 @@ export async function settleUnsettledDelegation(args: {
   delivery: DetachedDelivery;
   agent: string;
   runId: string;
+  /** The run that made the delegating call (the detached run's `parentRunId`), whose row is settled. */
+  parentRunId?: string;
   status: 'failed' | 'cancelled';
   error?: string;
 }): Promise<void> {
@@ -121,6 +123,7 @@ export async function settleUnsettledDelegation(args: {
   });
   await store.updateToolCall({
     toolCallId: delivery.toolCallId,
+    ...(args.parentRunId !== undefined ? { runId: args.parentRunId } : {}),
     status: 'executed',
     output: detachedUnsettled({
       agent,

@@ -80,7 +80,7 @@ Eleven tables (names from the `AGENT_TABLES` constant; `agent_run`, the run life
 | `agent_thread` | one row per conversation: actor/tenant refs, title, persona, transient flag, `active_stream_id`, soft-delete (`deleted_at`), timestamps |
 | `agent_action_proposal` | independent proposal snapshot, exact identity hashes, decision, version fence and embedded execution work/lease |
 | `agent_message` | one row per message: role, content, and JSON columns for `tool_calls` / `tool_results` / `follow_ups` / `usage` / `ui`, plus the step's streamed `reasoning` and `reasoning_ms` |
-| `agent_tool_call` | one row per tool call — **PK is the model-supplied `toolCallId`**, not a generated id — with tool name/type, input/output, status, timing, and `executed_by_ref` |
+| `agent_tool_call` | one row per tool call — the model-supplied `toolCallId` is in `call_id`, and the PK is that id scoped to its assistant message (`<message_id>:<toolCallId>`), because a provider only promises the id is unique within one response. A row written before `call_id` existed has it NULL and the bare id as PK. With tool name/type, input/output, status, timing, and `executed_by_ref` |
 | `agent_token_usage` | the usage ledger: input/output tokens, cache breakdown, `model_id`, `purpose`, and `cost_usd` |
 | `agent_model_pricing` | per-model pricing rows for cost estimation (see [Quota & cost](/docs/agent/governance/quota-and-cost)) |
 | `agent_queued_message` | the [message queue](/docs/agent/streaming-and-http#message-queue): messages sent while a turn was running, per thread, in run order (`position`), with everything the send carried (actor, attachments, agent, model, page context, `interrupt`). The thread's pause lives in `agent_thread.queue_pause` |

@@ -179,6 +179,7 @@ export class DurableAgentRunner implements AgentRunner {
       delivery,
       agent: typeof input.agentName === 'string' ? input.agentName : 'default',
       runId,
+      ...(typeof input.parentRunId === 'string' ? { parentRunId: input.parentRunId } : {}),
       status: 'cancelled',
     }).catch(() => undefined);
     if (this.sink !== undefined) {

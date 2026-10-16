@@ -106,10 +106,11 @@ describe('LucidAgentStore', () => {
       status: 'pending_approval',
     });
 
-    let row = await db.from('agent_tool_call').where('id', 'call-abc').first();
+    let row = await db.from('agent_tool_call').where('call_id', 'call-abc').first();
     expect(row?.status).toBe('pending_approval');
-    // PK is exactly the model-supplied toolCallId.
-    expect(row?.id).toBe('call-abc');
+    // The model's id is kept as-is; the PK scopes it to its message, as a provider only promises it is
+    // unique within one response (#183).
+    expect(row?.id).toBe(`${msg.id}:call-abc`);
 
     await store.updateToolCall({
       toolCallId: 'call-abc',
@@ -117,7 +118,7 @@ describe('LucidAgentStore', () => {
       output: { ok: true },
       executedByRef: actor.id,
     });
-    row = await db.from('agent_tool_call').where('id', 'call-abc').first();
+    row = await db.from('agent_tool_call').where('call_id', 'call-abc').first();
     expect(row?.status).toBe('executed');
     expect(row?.executed_by_ref).toBe('user-1');
     expect(JSON.parse(String(row?.output))).toEqual({ ok: true });

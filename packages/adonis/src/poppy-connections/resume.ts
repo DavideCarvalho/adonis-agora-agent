@@ -61,7 +61,7 @@ export async function resumeAfterConnect(
     return;
   }
   if (!pending.runId) return;
-  const state = await service.toolCallApproval(pending.toolCallId);
+  const state = await service.toolCallApproval(pending.toolCallId, pending.runId);
   if (state === null || state.status === 'pending_approval') {
     await service.approve(pending.runId, pending.toolCallId, {
       executedByRef: actor.id,

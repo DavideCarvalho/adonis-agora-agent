@@ -143,16 +143,16 @@ describe('InlineAgentRunner + AgentService over the Lucid store', () => {
     const toolCallId = 'call-0-danger';
 
     await waitFor(async () => {
-      const row = await g.db.from('agent_tool_call').where('id', toolCallId).first();
+      const row = await g.db.from('agent_tool_call').where('call_id', toolCallId).first();
       return row?.status === 'pending_approval';
     });
     await g.service.approve(runId, toolCallId);
 
     await waitFor(async () => {
-      const row = await g.db.from('agent_tool_call').where('id', toolCallId).first();
+      const row = await g.db.from('agent_tool_call').where('call_id', toolCallId).first();
       return row?.status === 'executed';
     });
-    const row = await g.db.from('agent_tool_call').where('id', toolCallId).first();
+    const row = await g.db.from('agent_tool_call').where('call_id', toolCallId).first();
     expect(row?.executed_by_ref).toBe('u1');
     expect(JSON.parse(String(row?.output))).toEqual({ acted: true });
   });
@@ -183,15 +183,15 @@ describe('InlineAgentRunner + AgentService over the Lucid store', () => {
     const { runId } = await g.service.chat({ actor, message: 'do it' });
     const toolCallId = 'call-0-danger';
     await waitFor(async () => {
-      const row = await g.db.from('agent_tool_call').where('id', toolCallId).first();
+      const row = await g.db.from('agent_tool_call').where('call_id', toolCallId).first();
       return row?.status === 'pending_approval';
     });
     await g.service.reject(runId, toolCallId, 'nope');
     await waitFor(async () => {
-      const row = await g.db.from('agent_tool_call').where('id', toolCallId).first();
+      const row = await g.db.from('agent_tool_call').where('call_id', toolCallId).first();
       return row?.status === 'rejected';
     });
-    const row = await g.db.from('agent_tool_call').where('id', toolCallId).first();
+    const row = await g.db.from('agent_tool_call').where('call_id', toolCallId).first();
     expect(row?.error).toBe('nope');
     expect(ran).toBe(false);
   });
@@ -225,7 +225,7 @@ describe('InlineAgentRunner + AgentService over the Lucid store', () => {
     const { runId } = await g.service.chat({ actor, message: 'do it' });
     const toolCallId = 'call-0-danger';
     await waitFor(async () => {
-      const row = await g.db.from('agent_tool_call').where('id', toolCallId).first();
+      const row = await g.db.from('agent_tool_call').where('call_id', toolCallId).first();
       return row?.status === 'pending_approval';
     });
 
@@ -239,14 +239,14 @@ describe('InlineAgentRunner + AgentService over the Lucid store', () => {
     );
 
     // The approval is still there to make: nothing was decided, nothing ran.
-    const parked = await g.db.from('agent_tool_call').where('id', toolCallId).first();
+    const parked = await g.db.from('agent_tool_call').where('call_id', toolCallId).first();
     expect(parked?.status).toBe('pending_approval');
     expect(ran).toBe(false);
 
     // ...and the real decision still settles it.
     await g.service.approve(runId, toolCallId);
     await waitFor(async () => {
-      const row = await g.db.from('agent_tool_call').where('id', toolCallId).first();
+      const row = await g.db.from('agent_tool_call').where('call_id', toolCallId).first();
       return row?.status === 'executed';
     });
     expect(ran).toBe(true);
@@ -301,12 +301,12 @@ describe('InlineAgentRunner + AgentService over the Lucid store', () => {
     await g.service.approve(parked.runId, parked.toolCallId);
 
     await waitFor(async () => {
-      const row = await g.db.from('agent_tool_call').where('id', 'call-0-voidInvoice').first();
+      const row = await g.db.from('agent_tool_call').where('call_id', 'call-0-voidInvoice').first();
       return row?.status === 'executed';
     });
     expect(ran).toBe(true);
     await waitFor(async () => {
-      const row = await g.db.from('agent_tool_call').where('id', 'call-0-ask_helper').first();
+      const row = await g.db.from('agent_tool_call').where('call_id', 'call-0-ask_helper').first();
       return row?.status === 'executed';
     });
   });

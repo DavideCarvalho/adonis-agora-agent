@@ -385,7 +385,7 @@ async function settleResume(
       });
       return false;
     }
-    const problem = await service.answerProblem(toolCallId, answers);
+    const problem = await service.answerProblem(toolCallId, answers, parked);
     if (problem !== null) {
       ctx.response.badRequest({ code: 'invalid_resume', message: problem });
       return false;

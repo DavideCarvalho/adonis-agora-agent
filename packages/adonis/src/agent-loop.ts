@@ -1319,6 +1319,7 @@ async function runIntake(args: {
   await hooks.step('intake:answers', async () => {
     await deps.store.updateToolCall({
       toolCallId: request.id,
+      runId: hooks.runId,
       // A skip is not an answer. Both leave the agent holding the same values, but only one of them
       // is evidence the user chose them, and a reader auditing what the agent was told has to be
       // able to tell those apart.
@@ -1680,6 +1681,7 @@ async function claimToolCall(
       if (early) {
         await deps.store.updateToolCall({
           toolCallId: call.id,
+          runId: hooks.runId,
           status:
             preflight?.status === 'denied'
               ? 'rejected'
@@ -2006,6 +2008,7 @@ async function recordToolOutcome(
     await hooks.step(`persist:toolfail:${call.id}`, async () => {
       await deps.store.updateToolCall({
         toolCallId: call.id,
+        runId: hooks.runId,
         status: 'failed',
         error: outcome.error,
         ...decided,
@@ -2024,6 +2027,7 @@ async function recordToolOutcome(
   await hooks.step(`persist:toolexec:${call.id}`, async () => {
     await deps.store.updateToolCall({
       toolCallId: call.id,
+      runId: hooks.runId,
       status: 'executed',
       output: outcome.output,
       ...(toolType === 'action' ? { executedByRef: deciderRef } : {}),
@@ -2074,7 +2078,12 @@ async function delegateToolCall(
     sub = { text: `(no multi-agent support wired; cannot reach "${targetAgent}")` };
   }
   await hooks.step(`persist:toolexec:${call.id}`, () =>
-    deps.store.updateToolCall({ toolCallId: call.id, status: 'executed', output: sub }),
+    deps.store.updateToolCall({
+      toolCallId: call.id,
+      runId: hooks.runId,
+      status: 'executed',
+      output: sub,
+    }),
   );
   return { id: call.id, name: call.name, output: sub };
 }
@@ -2254,7 +2263,12 @@ async function elicitToolCall(
       .map((each) => `${(each.path ?? []).join('.') || '(root)'}: ${each.message}`)
       .join('; ')}`;
     await hooks.step(`persist:toolfail:${call.id}`, () =>
-      deps.store.updateToolCall({ toolCallId: call.id, status: 'failed', error }),
+      deps.store.updateToolCall({
+        toolCallId: call.id,
+        runId: hooks.runId,
+        status: 'failed',
+        error,
+      }),
     );
     // A malformed question set is the model's mistake to fix, so it comes back as a tool failure —
     // the vocabulary the model already knows how to answer — rather than failing the run.
@@ -2278,6 +2292,7 @@ async function elicitToolCall(
     () =>
       deps.store.updateToolCall({
         toolCallId: call.id,
+        runId: hooks.runId,
         status: result.skipped ? 'rejected' : 'executed',
         output: result,
         ...(result.skipped ? { error: 'skipped by the user' } : {}),
@@ -2514,6 +2529,7 @@ async function runClaimedToolCall(
       await hooks.step(`persist:toolreject:${call.id}`, async () => {
         await deps.store.updateToolCall({
           toolCallId: call.id,
+          runId: hooks.runId,
           status: 'rejected',
           executedByRef: deciderRef,
           ...(decision.reason !== undefined ? { error: decision.reason } : {}),
@@ -2577,6 +2593,7 @@ async function expireToolCall(
   await hooks.step(`persist:toolreject:${call.id}`, async () => {
     await deps.store.updateToolCall({
       toolCallId: call.id,
+      runId: hooks.runId,
       status: 'expired',
       error: APPROVAL_EXPIRED_REASON,
     });
@@ -3674,6 +3691,7 @@ export async function runAgentLoop<TOutput = unknown>(
         });
         await deps.store.updateToolCall({
           toolCallId: call.id,
+          runId: hooks.runId,
           status: 'executed',
           output: result.output,
         });
@@ -3887,6 +3905,8 @@ export async function runAgentLoop<TOutput = unknown>(
       }
       await deps.store.updateToolCall({
         toolCallId: delivery.toolCallId,
+        // The call is a row of the run that delegated, not of this one.
+        ...(input.parentRunId !== undefined ? { runId: input.parentRunId } : {}),
         status: 'executed',
         output: detachedDelivered({ agent, runId: hooks.runId, text: lastText }),
       });
