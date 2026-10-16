@@ -190,6 +190,7 @@ export class InMemoryAgentStore
   /** Each thread's waiting messages, in run order. */
   private readonly queues = new Map<string, QueuedMessage[]>();
   private readonly pauses = new Map<string, QueuePause>();
+  /** Keyed by run and model-supplied id: two runs can be handed the same id (see `toolCallKey`). */
   private readonly toolCalls = new Map<string, ToolCallRow>();
   private readonly usage: UsageRow[] = [];
   private readonly genuiCalls = new Map<string, GenuiCallRow>();
@@ -654,18 +655,35 @@ export class InMemoryAgentStore
     }
   }
 
-  async toolCallInput(toolCallId: string): Promise<unknown> {
-    return this.toolCalls.get(toolCallId)?.input ?? null;
+  /** A provider only promises a call id is unique within one response, so a call is keyed by its run too. */
+  private toolCallKey(toolCallId: string, runId: string | undefined): string {
+    return runId === undefined ? toolCallId : `${runId}\u0000${toolCallId}`;
+  }
+
+  /** The call `runId` recorded under `toolCallId`, or without a run the newest one. */
+  private findToolCall(toolCallId: string, runId?: string): ToolCallRow | undefined {
+    if (runId !== undefined) {
+      const row =
+        this.toolCalls.get(this.toolCallKey(toolCallId, runId)) ?? this.toolCalls.get(toolCallId);
+      return row === undefined || row.runId === undefined || row.runId === runId ? row : undefined;
+    }
+    let newest: ToolCallRow | undefined;
+    for (const row of this.toolCalls.values()) if (row.toolCallId === toolCallId) newest = row;
+    return newest;
+  }
+
+  async toolCallInput(toolCallId: string, runId?: string): Promise<unknown> {
+    return this.findToolCall(toolCallId, runId)?.input ?? null;
   }
 
   async getToolCallRunId(toolCallId: string): Promise<string | null> {
-    return this.toolCalls.get(toolCallId)?.runId ?? null;
+    return this.findToolCall(toolCallId)?.runId ?? null;
   }
 
   async toolCallOutcomes(toolCallIds: string[]): Promise<ToolCallOutcome[]> {
     const outcomes: ToolCallOutcome[] = [];
     for (const id of toolCallIds) {
-      const row = this.toolCalls.get(id);
+      const row = this.findToolCall(id);
       if (row !== undefined) {
         outcomes.push({
           id,
@@ -691,7 +709,7 @@ export class InMemoryAgentStore
   }
 
   async recordToolCall(input: RecordToolCallInput): Promise<void> {
-    this.toolCalls.set(input.toolCallId, {
+    this.toolCalls.set(this.toolCallKey(input.toolCallId, input.runId), {
       toolCallId: input.toolCallId,
       messageId: input.messageId,
       threadId: this.threadIdForMessage(input.messageId) ?? '',
@@ -709,7 +727,7 @@ export class InMemoryAgentStore
   }
 
   async updateToolCall(input: UpdateToolCallInput): Promise<void> {
-    const row = this.toolCalls.get(input.toolCallId);
+    const row = this.findToolCall(input.toolCallId, input.runId);
     if (row === undefined) {
       return;
     }
@@ -756,8 +774,11 @@ export class InMemoryAgentStore
     return [...names];
   }
 
-  async toolCallApproval(toolCallId: string): Promise<ToolCallApprovalState | null> {
-    const call = this.toolCalls.get(toolCallId);
+  async toolCallApproval(
+    toolCallId: string,
+    runId?: string,
+  ): Promise<ToolCallApprovalState | null> {
+    const call = this.findToolCall(toolCallId, runId);
     if (call === undefined) {
       return null;
     }

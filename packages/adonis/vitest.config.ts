@@ -30,6 +30,7 @@ const LUCID_STORE_SPECS = [
   'test/run-fields.spec.ts',
   'test/run-tracing-spans.spec.ts',
   'test/run-tracking.spec.ts',
+  'test/tool-call-id-collision.spec.ts',
 ];
 
 const realDatabases =

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   canonicalActionProposalJson,
   snapshotActionProposal,
@@ -145,6 +146,25 @@ export interface LucidAgentStoreOptions extends ActionProposalStoreOptions {
    * The same flag governs the pricing store and the governance read-model, which share these tables.
    */
   autoCreateTables?: boolean;
+}
+
+/**
+ * The PK of a tool call's row: the model's id scoped to the run that recorded it. A provider only
+ * promises a call id is unique within one response, and some repeat one across runs (the short
+ * `call_<digits>` ids of some providers behind OpenRouter), so the bare id as PK let one run's insert
+ * fail on another's row. The model's id itself is kept in `call_id`, and is still what every caller
+ * addresses the call by. Without a run the key is the bare id, as it always was. Hashed in the rare
+ * case the pair outgrows the column.
+ */
+export function toolCallRowId(toolCallId: string, runId: string | undefined): string {
+  if (runId === undefined) return toolCallId;
+  const key = `${runId}:${toolCallId}`;
+  return key.length <= 255 ? key : createHash('sha256').update(key).digest('hex');
+}
+
+/** The id the model gave the call on `row`: `call_id`, or the PK on a row from before it existed. */
+export function toolCallIdOfRow(row: Record<string, unknown>): string {
+  return row.call_id !== null && row.call_id !== undefined ? String(row.call_id) : String(row.id);
 }
 
 function toInt(value: unknown): number {
@@ -886,9 +906,9 @@ export class LucidAgentStore
 
   async recordToolCall(input: RecordToolCallInput): Promise<void> {
     await this.init();
-    // PK = the model-supplied toolCallId (never a generated id).
     await this.db.table(AGENT_TABLES.toolCalls).insert({
-      id: input.toolCallId,
+      id: toolCallRowId(input.toolCallId, input.runId),
+      call_id: input.toolCallId,
       message_id: input.messageId,
       proposal_id: input.proposalId ?? null,
       tool_name: input.toolName,
@@ -920,7 +940,38 @@ export class LucidAgentStore
     if (input.remember !== undefined) patch.remember = input.remember ? 1 : 0;
     if (input.decidedVia !== undefined) patch.decided_via = input.decidedVia;
     if (input.status === 'executed' || input.status === 'failed') patch.executed_at = Date.now();
-    await this.db.from(AGENT_TABLES.toolCalls).where('id', input.toolCallId).update(patch);
+    const row = await this.findToolCall(input.toolCallId, input.runId);
+    if (row === null) return;
+    await this.db.from(AGENT_TABLES.toolCalls).where('id', String(row.id)).update(patch);
+  }
+
+  /**
+   * The row of the call the model named `toolCallId`: the one `runId` recorded, or without a run the
+   * newest one. Falls back to a row keyed by the bare id — one from before `call_id` existed, or one
+   * recorded without a run — unless it belongs to another run.
+   */
+  private async findToolCall(
+    toolCallId: string,
+    runId?: string,
+  ): Promise<Record<string, unknown> | null> {
+    const table = AGENT_TABLES.toolCalls;
+    if (runId !== undefined) {
+      const row = await this.db.from(table).where('id', toolCallRowId(toolCallId, runId)).first();
+      if (row !== null && row !== undefined) return row;
+    } else {
+      const [newest] = await this.db
+        .from(table)
+        .where('call_id', toolCallId)
+        .orderBy('created_at', 'desc')
+        .limit(1)
+        .select('*');
+      if (newest !== undefined) return newest;
+    }
+    const bare = await this.db.from(table).where('id', toolCallId).first();
+    if (bare === null || bare === undefined) return null;
+    return runId === undefined || bare.run_id == null || String(bare.run_id) === runId
+      ? bare
+      : null;
   }
 
   /** Attach, per message, the approval record of every call on it a policy put to a person. */
@@ -968,10 +1019,13 @@ export class LucidAgentStore
     return [...names];
   }
 
-  async toolCallApproval(toolCallId: string): Promise<ToolCallApprovalState | null> {
+  async toolCallApproval(
+    toolCallId: string,
+    runId?: string,
+  ): Promise<ToolCallApprovalState | null> {
     await this.init();
-    const row = await this.db.from(AGENT_TABLES.toolCalls).where('id', toolCallId).first();
-    if (row === null || row === undefined) return null;
+    const row = await this.findToolCall(toolCallId, runId);
+    if (row === null) return null;
     return {
       status: String(row.status) as ToolCallStatus,
       approver: typeof row.approver === 'string' ? row.approver : null,
@@ -996,31 +1050,44 @@ export class LucidAgentStore
       .update({ feedback: safeJson(feedback) });
   }
 
-  async toolCallInput(toolCallId: string): Promise<unknown> {
+  async toolCallInput(toolCallId: string, runId?: string): Promise<unknown> {
     await this.init();
-    const row = await this.db.from(AGENT_TABLES.toolCalls).where('id', toolCallId).first();
-    if (row === null || row === undefined) return null;
+    const row = await this.findToolCall(toolCallId, runId);
+    if (row === null) return null;
     return parseJson<unknown>(row.input) ?? null;
   }
 
   async getToolCallRunId(toolCallId: string): Promise<string | null> {
     await this.init();
-    const row = await this.db.from(AGENT_TABLES.toolCalls).where('id', toolCallId).first();
-    if (row === null || row === undefined || row.run_id == null) return null;
+    const row = await this.findToolCall(toolCallId);
+    if (row === null || row.run_id == null) return null;
     return String(row.run_id);
   }
 
   async toolCallOutcomes(toolCallIds: string[]): Promise<ToolCallOutcome[]> {
     if (toolCallIds.length === 0) return [];
     await this.init();
-    const rows = await this.db
-      .from(AGENT_TABLES.toolCalls)
-      .whereIn('id', toolCallIds)
-      .select('id', 'status', 'output', 'error');
-    return rows.map((row: Record<string, unknown>) => {
+    const columns = ['id', 'call_id', 'status', 'output', 'error', 'created_at'];
+    const rows = [
+      // A row from before `call_id` existed, whose PK is the model's id — older than any other.
+      ...(await this.db
+        .from(AGENT_TABLES.toolCalls)
+        .whereIn('id', toolCallIds)
+        .whereNull('call_id')
+        .select(...columns)),
+      ...(await this.db
+        .from(AGENT_TABLES.toolCalls)
+        .whereIn('call_id', toolCallIds)
+        .orderBy('created_at', 'asc')
+        .select(...columns)),
+    ];
+    // One outcome per id: when two runs were handed the same id, the newest call's.
+    const newest = new Map<string, Record<string, unknown>>();
+    for (const row of rows) newest.set(toolCallIdOfRow(row), row);
+    return [...newest.entries()].map(([id, row]) => {
       const output = parseJson<unknown>(row.output);
       return {
-        id: String(row.id),
+        id,
         status: String(row.status) as ToolCallStatus,
         ...(output !== undefined && output !== null ? { output } : {}),
         ...(typeof row.error === 'string' ? { error: row.error } : {}),
@@ -1213,7 +1280,7 @@ function threadRowToSummary(row: Record<string, unknown>, lastPreview?: string):
 function approvalColumns(row: Record<string, unknown>): ToolCallApprovalColumns {
   return {
     ...(typeof row.proposal_id === 'string' ? { proposalId: row.proposal_id } : {}),
-    toolCallId: String(row.id),
+    toolCallId: toolCallIdOfRow(row),
     ...(row.confirmation != null
       ? { confirmation: parseJson<ToolConfirmation>(row.confirmation) }
       : {}),

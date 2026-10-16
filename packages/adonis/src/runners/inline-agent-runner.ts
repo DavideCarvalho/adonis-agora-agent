@@ -280,6 +280,7 @@ export class InlineAgentRunner implements AgentRunner {
         delivery: detached.deliverTo,
         agent: detached.agentName ?? 'default',
         runId,
+        ...(detached.parentRunId !== undefined ? { parentRunId: detached.parentRunId } : {}),
         status: 'cancelled',
       }).catch(() => undefined);
     }
@@ -505,6 +506,7 @@ export class InlineAgentRunner implements AgentRunner {
           delivery: deliverTo,
           agent: agentName,
           runId,
+          parentRunId,
           status: cancelled ? 'cancelled' : 'failed',
           ...(cancelled ? {} : { error: message }),
         });

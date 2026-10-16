@@ -189,7 +189,7 @@ async function parked(phase: Phase, runId: string, toolName: string): Promise<st
       .where('tool_name', toolName)
       .where('status', 'pending_approval')
       .first();
-    return row === null || row === undefined ? undefined : String(row.id);
+    return row === null || row === undefined ? undefined : String(row.call_id ?? row.id);
   }, `${runId} to park on ${toolName}`);
   await eventually(
     async () => ((await phase.engine.getRun(runId))?.status === 'suspended' ? true : undefined),

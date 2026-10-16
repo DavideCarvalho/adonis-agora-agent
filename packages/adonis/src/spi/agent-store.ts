@@ -75,6 +75,10 @@ export interface AppendMessageInput {
 export interface RecordToolCallInput {
   proposalId?: string;
   confirmation?: ToolConfirmation;
+  /**
+   * The id the model gave the call. A provider only promises it is unique within one response —
+   * another run can be handed the same one — so a store keys the call by this id AND {@link runId}.
+   */
   toolCallId: string;
   messageId: string;
   toolName: string;
@@ -95,6 +99,11 @@ export interface RecordToolCallInput {
 
 export interface UpdateToolCallInput {
   toolCallId: string;
+  /**
+   * The run that recorded the call, which tells it apart from another run's call under the same
+   * model-supplied id. Absent → the newest call recorded under {@link toolCallId}.
+   */
+  runId?: string;
   status: ToolCallStatus;
   output?: unknown;
   error?: string;
@@ -339,14 +348,15 @@ export interface AgentStore {
    * The run a tool call belongs to, or `null` when the call is unknown. Lets the approve / reject /
    * answer / skip routes accept a body naming the call alone (`{ toolCallId }`), which is what the
    * shared React client sends. Optional: without it those routes still take an explicit `runId`.
+   * When several runs were handed the same id, the newest call's run.
    */
   getToolCallRunId?(toolCallId: string): Promise<string | null>;
   /**
    * What is recorded about each of these calls — its status, and the output or error it settled
    * with. Read when a thread's history holds a tool call its message has no result for (the turn
    * died mid-step), so the next turn can be told what actually happened instead of being handed a
-   * call answered by nothing. Unknown ids are left out. Absent → such a call is put to the model as
-   * never completed.
+   * call answered by nothing. Unknown ids are left out, and an id several runs were handed answers
+   * with the newest call's outcome. Absent → such a call is put to the model as never completed.
    */
   toolCallOutcomes?(toolCallIds: string[]): Promise<ToolCallOutcome[]>;
   /**
@@ -367,15 +377,16 @@ export interface AgentStore {
    * OPTIONAL: a call's approval state, or `null` when the call is unknown. Read by the approve/reject
    * routes to enforce the recorded approver and refuse a decision on a request that already
    * expired. Absent → every call is treated as the requester's, with no expiry (the old behaviour).
+   * `runId` picks that run's call; without it, the newest call recorded under the id.
    */
-  toolCallApproval?(toolCallId: string): Promise<ToolCallApprovalState | null>;
+  toolCallApproval?(toolCallId: string, runId?: string): Promise<ToolCallApprovalState | null>;
   /**
    * OPTIONAL: the input a call was recorded with, or `null` when the call is unknown. Read by the
    * answer route to check a reply against the questions it answers (a typed question's rules, a
    * `required` one left empty) before it is signalled. Absent → answers are checked for shape only,
-   * and the loop drops what it cannot settle.
+   * and the loop drops what it cannot settle. `runId` as in {@link toolCallApproval}.
    */
-  toolCallInput?(toolCallId: string): Promise<unknown>;
+  toolCallInput?(toolCallId: string, runId?: string): Promise<unknown>;
 
   recordUsage(input: RecordUsageInput): Promise<void>;
   /**

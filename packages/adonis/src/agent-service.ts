@@ -1093,7 +1093,7 @@ export class AgentService {
     toolCallId: string,
     opts: { executedByRef?: string; remember?: boolean; via?: string } = {},
   ): Promise<void> {
-    if ((await this.toolCallApproval(toolCallId))?.status === 'proposed')
+    if ((await this.toolCallApproval(toolCallId, runId))?.status === 'proposed')
       throw new ActionProposalServiceError(
         400,
         'Action proposals require a scoped proposal decision',
@@ -1113,7 +1113,7 @@ export class AgentService {
     reason?: string,
     opts: { executedByRef?: string; via?: string } = {},
   ): Promise<void> {
-    if ((await this.toolCallApproval(toolCallId))?.status === 'proposed')
+    if ((await this.toolCallApproval(toolCallId, runId))?.status === 'proposed')
       throw new ActionProposalServiceError(
         400,
         'Action proposals require a scoped proposal decision',
@@ -1127,9 +1127,15 @@ export class AgentService {
     });
   }
 
-  /** A call's approval state (see `AgentStore.toolCallApproval`); `null` when unknown or unrecorded. */
-  async toolCallApproval(toolCallId: string): Promise<ToolCallApprovalState | null> {
-    return (await this.store.toolCallApproval?.(toolCallId)) ?? null;
+  /**
+   * A call's approval state (see `AgentStore.toolCallApproval`); `null` when unknown or unrecorded.
+   * Pass the call's `runId` when known: another run may have been handed the same call id.
+   */
+  async toolCallApproval(
+    toolCallId: string,
+    runId?: string,
+  ): Promise<ToolCallApprovalState | null> {
+    return (await this.store.toolCallApproval?.(toolCallId, runId)) ?? null;
   }
 
   /**
@@ -1160,11 +1166,12 @@ export class AgentService {
   async answerProblem(
     toolCallId: string,
     answers: Record<string, string[]>,
+    runId?: string,
   ): Promise<string | null> {
     if (this.store.toolCallInput === undefined) {
       return null;
     }
-    const questions = readElicitationQuestions(await this.store.toolCallInput(toolCallId));
+    const questions = readElicitationQuestions(await this.store.toolCallInput(toolCallId, runId));
     for (const question of questions) {
       const submitted = Object.hasOwn(answers, question.id) ? answers[question.id] : undefined;
       const problem = validateElicitationAnswer(question, submitted ?? question.defaults ?? []);

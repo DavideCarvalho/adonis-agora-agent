@@ -363,6 +363,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
           delivery,
           agent: input.agentName ?? 'default',
           runId: ctx.runId,
+          ...(input.parentRunId !== undefined ? { parentRunId: input.parentRunId } : {}),
           status: 'failed',
           error,
         }),
@@ -410,6 +411,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
             delivery: input.deliverTo,
             agent: input.agentName ?? 'default',
             runId: ctx.runId,
+            ...(input.parentRunId !== undefined ? { parentRunId: input.parentRunId } : {}),
             status: 'failed',
             error: message,
           }).catch(() => undefined);

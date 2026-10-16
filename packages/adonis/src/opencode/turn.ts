@@ -771,7 +771,7 @@ export class OpenCodeTurn {
 
   /** A request recorded by an earlier process (a turn resumed after a restart). */
   private async alreadyRecorded(id: string): Promise<boolean> {
-    return ((await this.a.store.toolCallApproval?.(id)) ?? null) !== null;
+    return ((await this.a.store.toolCallApproval?.(id, this.a.runId)) ?? null) !== null;
   }
 
   /** The persisted assistant message carrying call `id`, so its result lands on the same message. */
@@ -791,7 +791,7 @@ export class OpenCodeTurn {
     const args = permissionArgs(request);
 
     if (recovering && (await this.alreadyRecorded(request.id))) {
-      const state = await store.toolCallApproval?.(request.id);
+      const state = await store.toolCallApproval?.(request.id, this.a.runId);
       const messageId = await this.messageOf(request.id);
       this.reach({
         kind: 'ask',
@@ -938,6 +938,7 @@ export class OpenCodeTurn {
         };
     await store.updateToolCall({
       toolCallId: id,
+      runId: this.a.runId,
       status: decision.approved ? 'executed' : status === 'expired' ? 'expired' : 'rejected',
       output: result.output,
       ...(result.error !== undefined ? { error: result.error } : {}),
@@ -1034,6 +1035,7 @@ export class OpenCodeTurn {
     const result = settleElicitation({ request, reply: answer });
     await this.a.store.updateToolCall({
       toolCallId: form.id,
+      runId: this.a.runId,
       status: result.skipped ? 'rejected' : 'executed',
       output: result,
       ...(result.skipped ? { error: 'skipped by the user' } : {}),

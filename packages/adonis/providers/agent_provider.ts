@@ -1121,7 +1121,7 @@ export default class AgentProvider {
       if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
       // A value a question's rules refuse, or a `required` question left empty, is refused HERE so
       // the person who typed it hears why — rather than signalled and quietly dropped by the loop.
-      const problem = await service.answerProblem(body.toolCallId, body.answers ?? {});
+      const problem = await service.answerProblem(body.toolCallId, body.answers ?? {}, runId);
       if (problem !== null) {
         return ctx.response.badRequest({ message: problem });
       }
@@ -2129,7 +2129,7 @@ export default class AgentProvider {
     toolCallId: string,
     governanceAuthorize: AgentGovernanceAuthorize | undefined,
   ): Promise<boolean> {
-    const approval = await service.toolCallApproval(toolCallId);
+    const approval = await service.toolCallApproval(toolCallId, runId);
     const approver = approval?.approver ?? REQUESTER_APPROVER;
     const owner = await service.runOwner(runId);
     if (approver === REQUESTER_APPROVER) {

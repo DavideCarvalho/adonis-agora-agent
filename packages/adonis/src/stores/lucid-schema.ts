@@ -97,8 +97,10 @@ export function channelStateTableStatements(table: string = AGENT_TABLES.channel
  * columns — no dialect-only types. A real deployment should prefer the bundled migration stub so the
  * schema is versioned; this helper lets a store stand itself up in tests and scripts.
  *
- * The tool-call PK is the model-supplied `toolCallId` (not a generated id), preserving the invariant
- * that a persisted tool call is addressable by exactly the id the model emitted.
+ * A tool call is addressed by the model-supplied `toolCallId`, kept as-is in `call_id`. The row's PK
+ * is that id scoped to its run (see `toolCallRowId` in `lucid.ts`): a provider only promises the id is
+ * unique within one response, and some (short `call_<digits>` ids behind OpenRouter) repeat one across
+ * runs. A row from before `call_id` existed has it NULL and its PK is the bare model id.
  *
  * The `agent_run` table records each run (turn) lifecycle; `agent_message` / `agent_tool_call` /
  * `agent_token_usage` each carry a nullable `run_id` correlation column (logically referencing
@@ -198,9 +200,11 @@ export function createTableStatements(): string[] {
       "expires_at" BIGINT NULL,
       "remember" INTEGER NULL,
       "decided_via" VARCHAR(64) NULL,
+      "call_id" VARCHAR(255) NULL,
       FOREIGN KEY ("message_id") REFERENCES "${t.messages}" ("id") ON DELETE CASCADE
     )`,
     `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_run_idx" ON "${t.toolCalls}" ("run_id")`,
+    `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_call_idx" ON "${t.toolCalls}" ("call_id", "run_id")`,
     `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_status_created_idx" ON "${t.toolCalls}" ("status", "created_at")`,
     `CREATE TABLE IF NOT EXISTS "${t.tokenUsage}" (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
@@ -371,6 +375,9 @@ const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }
   { table: AGENT_TABLES.toolCalls, column: 'expires_at', type: 'BIGINT NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'remember', type: 'INTEGER NULL' },
   { table: AGENT_TABLES.toolCalls, column: 'decided_via', type: 'VARCHAR(64) NULL' },
+  // The model's own tool call id, now that the PK is scoped to the run. NULL on a row from before:
+  // its PK is that id.
+  { table: AGENT_TABLES.toolCalls, column: 'call_id', type: 'VARCHAR(255) NULL' },
   // Where a usage row's `cost_usd` came from: 'provider' | 'estimate'. NULL on rows from before it
   // existed, which only ever held a provider-reported cost.
   { table: AGENT_TABLES.tokenUsage, column: 'cost_source', type: 'VARCHAR(16) NULL' },

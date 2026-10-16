@@ -25,7 +25,7 @@ import type {
 } from '../spi/governance-queries.js';
 import type { AgentPricingStore, CurrentModelPrice } from '../spi/pricing-store.js';
 import { estimateCost, resolveModelPrice } from '../spi/pricing-store.js';
-import { inAppendOrder, type LucidDatabaseLike } from './lucid.js';
+import { inAppendOrder, type LucidDatabaseLike, toolCallIdOfRow } from './lucid.js';
 import { AGENT_TABLES, ensureAgentTables } from './lucid-schema.js';
 
 function toInt(value: unknown): number {
@@ -178,7 +178,7 @@ function runRowToSummary(row: Record<string, unknown>): RunSummaryRow {
 /** Map a raw `agent_tool_call` Lucid row to the read-model {@link RunToolCallRow}. */
 function toolCallRowToDetail(row: Record<string, unknown>): RunToolCallRow {
   return {
-    toolCallId: String(row.id),
+    toolCallId: toolCallIdOfRow(row),
     toolName: String(row.tool_name),
     toolType: String(row.tool_type),
     status: String(row.status),
@@ -364,7 +364,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
         .where('id', String(call.message_id))
         .first();
       result.push({
-        toolCallId: String(call.id),
+        toolCallId: toolCallIdOfRow(call),
         toolName: String(call.tool_name),
         toolType: String(call.tool_type),
         status: String(call.status),
@@ -548,7 +548,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       }
       if (filter.actor !== undefined && actorRef !== filter.actor) continue;
       result.push({
-        toolCallId: String(call.id),
+        toolCallId: toolCallIdOfRow(call),
         toolName: String(call.tool_name),
         input: parseJsonCol(call.input),
         threadId,
