@@ -39,6 +39,11 @@
       "enabled": false
     },
     {
+      "description": "The `agent-0-*` aliases (`npm:@adonis-agora/agent@0.56.0` and friends) are earlier releases of this very package, pinned on purpose: the upgrade-replay suites (detached-upgrade-replay, personas-upgrade-replay) park a run on that exact release and finish it on the current code. Bumping one to the latest release turns the test into current-against-current, and its assertions about what the old release left behind fail. A new alias is added by hand when a new replay boundary needs covering, never by an update.",
+      "matchDepNames": ["agent-0-*"],
+      "enabled": false
+    },
+    {
       "description": "`ai` and `@ai-sdk/*` ship as one release train, and `@ai-sdk/react` depends on an exact `ai`. Updating either side alone leaves two copies of `ai` in the tree, whose types are not the same types — the inferred return of a hook wrapping `useChat` then cannot be named (TS2742) and the build fails on a version bump that is individually fine. Grouping them keeps the tree at one copy.",
       "matchPackageNames": ["ai", "@ai-sdk/**"],
       "groupName": "ai sdk"
