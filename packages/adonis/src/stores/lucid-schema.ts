@@ -98,9 +98,10 @@ export function channelStateTableStatements(table: string = AGENT_TABLES.channel
  * schema is versioned; this helper lets a store stand itself up in tests and scripts.
  *
  * A tool call is addressed by the model-supplied `toolCallId`, kept as-is in `call_id`. The row's PK
- * is that id scoped to its run (see `toolCallRowId` in `lucid.ts`): a provider only promises the id is
- * unique within one response, and some (short `call_<digits>` ids behind OpenRouter) repeat one across
- * runs. A row from before `call_id` existed has it NULL and its PK is the bare model id.
+ * is that id scoped to its assistant message (see `toolCallRowId` in `lucid.ts`): a provider only
+ * promises the id is unique within one response, and some (short `call_<digits>` ids behind
+ * OpenRouter) repeat one across runs. A row from before `call_id` existed has it NULL and its PK is
+ * the bare model id.
  *
  * The `agent_run` table records each run (turn) lifecycle; `agent_message` / `agent_tool_call` /
  * `agent_token_usage` each carry a nullable `run_id` correlation column (logically referencing
@@ -399,6 +400,15 @@ async function hasColumn(db: LucidRawRunner, table: string, column: string): Pro
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether `agent_tool_call` has its `call_id` column (#183). What `LucidAgentStore` checks when the
+ * app owns the schema (`autoCreateTables: false`) and so may boot a new version before its migration
+ * has added the column. Probed on {@link schemaRunner}'s client, outside any global transaction.
+ */
+export function hasToolCallIdColumn(db: LucidRawRunner): Promise<boolean> {
+  return hasColumn(schemaRunner(db), AGENT_TABLES.toolCalls, 'call_id');
 }
 
 /** Rows of a raw query result, whatever the driver wraps them in (`{ rows }`, `[rows, fields]`, rows). */

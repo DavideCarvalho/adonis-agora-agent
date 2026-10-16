@@ -77,7 +77,8 @@ export interface RecordToolCallInput {
   confirmation?: ToolConfirmation;
   /**
    * The id the model gave the call. A provider only promises it is unique within one response —
-   * another run can be handed the same one — so a store keys the call by this id AND {@link runId}.
+   * another response can be handed the same one — so a store keys the call by this id AND
+   * {@link messageId} (one assistant message per response), and reads it back by id and run.
    */
   toolCallId: string;
   messageId: string;

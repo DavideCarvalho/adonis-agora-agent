@@ -190,7 +190,7 @@ export class InMemoryAgentStore
   /** Each thread's waiting messages, in run order. */
   private readonly queues = new Map<string, QueuedMessage[]>();
   private readonly pauses = new Map<string, QueuePause>();
-  /** Keyed by run and model-supplied id: two runs can be handed the same id (see `toolCallKey`). */
+  /** Keyed by message and model-supplied id: two responses can be handed the same id (see `toolCallKey`). */
   private readonly toolCalls = new Map<string, ToolCallRow>();
   private readonly usage: UsageRow[] = [];
   private readonly genuiCalls = new Map<string, GenuiCallRow>();
@@ -655,20 +655,25 @@ export class InMemoryAgentStore
     }
   }
 
-  /** A provider only promises a call id is unique within one response, so a call is keyed by its run too. */
-  private toolCallKey(toolCallId: string, runId: string | undefined): string {
-    return runId === undefined ? toolCallId : `${runId}\u0000${toolCallId}`;
+  /**
+   * A provider only promises a call id is unique within one response (one assistant message), so a
+   * call is keyed by its message too — as `LucidAgentStore` keys its rows.
+   */
+  private toolCallKey(toolCallId: string, messageId: string): string {
+    return `${messageId}\u0000${toolCallId}`;
   }
 
-  /** The call `runId` recorded under `toolCallId`, or without a run the newest one. */
+  /**
+   * The newest call `runId` recorded under `toolCallId`, or without a run the newest overall — the
+   * same rule as `LucidAgentStore`. Insertion order is recording order.
+   */
   private findToolCall(toolCallId: string, runId?: string): ToolCallRow | undefined {
-    if (runId !== undefined) {
-      const row =
-        this.toolCalls.get(this.toolCallKey(toolCallId, runId)) ?? this.toolCalls.get(toolCallId);
-      return row === undefined || row.runId === undefined || row.runId === runId ? row : undefined;
-    }
     let newest: ToolCallRow | undefined;
-    for (const row of this.toolCalls.values()) if (row.toolCallId === toolCallId) newest = row;
+    for (const row of this.toolCalls.values()) {
+      if (row.toolCallId === toolCallId && (runId === undefined || row.runId === runId)) {
+        newest = row;
+      }
+    }
     return newest;
   }
 
@@ -709,7 +714,7 @@ export class InMemoryAgentStore
   }
 
   async recordToolCall(input: RecordToolCallInput): Promise<void> {
-    this.toolCalls.set(this.toolCallKey(input.toolCallId, input.runId), {
+    this.toolCalls.set(this.toolCallKey(input.toolCallId, input.messageId), {
       toolCallId: input.toolCallId,
       messageId: input.messageId,
       threadId: this.threadIdForMessage(input.messageId) ?? '',

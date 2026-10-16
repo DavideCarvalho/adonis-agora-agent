@@ -55,7 +55,7 @@ import type {
 } from '../types.js';
 import type { UiCapabilities } from '../ui-capabilities.js';
 import { LucidActionProposalStore } from './lucid-action-proposal-store.js';
-import { AGENT_TABLES, ensureAgentTables } from './lucid-schema.js';
+import { AGENT_TABLES, ensureAgentTables, hasToolCallIdColumn } from './lucid-schema.js';
 import { withStoreTransaction } from './sqlite-transactions.js';
 
 // ── Structural Lucid typing (copied from telescope) ──────────────────────────
@@ -149,16 +149,17 @@ export interface LucidAgentStoreOptions extends ActionProposalStoreOptions {
 }
 
 /**
- * The PK of a tool call's row: the model's id scoped to the run that recorded it. A provider only
- * promises a call id is unique within one response, and some repeat one across runs (the short
- * `call_<digits>` ids of some providers behind OpenRouter), so the bare id as PK let one run's insert
- * fail on another's row. The model's id itself is kept in `call_id`, and is still what every caller
- * addresses the call by. Without a run the key is the bare id, as it always was. Hashed in the rare
- * case the pair outgrows the column.
+ * The PK of a tool call's row: the model's id scoped to the assistant message that carries it. A
+ * provider only promises a call id is unique within one response — one assistant message, since the
+ * loop writes one per step — and some repeat one across runs (the short `call_<digits>` ids of some
+ * providers behind OpenRouter), so the bare id as PK let one insert fail on another's row. Scoping
+ * by message rather than run also covers a provider that numbers calls per response (`call_0` again
+ * on the next step of the same run), and a call recorded without a run. Deterministic, so a durable
+ * replay derives the same key. The model's id itself is kept in `call_id`, and is still what every
+ * caller addresses the call by. Hashed in the rare case the pair outgrows the column.
  */
-export function toolCallRowId(toolCallId: string, runId: string | undefined): string {
-  if (runId === undefined) return toolCallId;
-  const key = `${runId}:${toolCallId}`;
+export function toolCallRowId(toolCallId: string, messageId: string): string {
+  const key = `${messageId}:${toolCallId}`;
   return key.length <= 255 ? key : createHash('sha256').update(key).digest('hex');
 }
 
@@ -273,6 +274,11 @@ export class LucidAgentStore
 {
   private readonly autoCreateTables: boolean;
   private ready: Promise<void> | null = null;
+  /**
+   * Whether `agent_tool_call` has `call_id`, i.e. rows are keyed per message (#183). Always so when
+   * the store provisions the schema itself; see {@link checkToolCallSchema} for when it is not.
+   */
+  private toolCallsScoped = true;
 
   constructor(
     private readonly db: LucidDatabaseLike,
@@ -289,7 +295,7 @@ export class LucidAgentStore
 
   private init(): Promise<void> {
     if (this.ready === null) {
-      const ready = this.autoCreateTables ? ensureAgentTables(this.db) : Promise.resolve();
+      const ready = this.autoCreateTables ? ensureAgentTables(this.db) : this.checkToolCallSchema();
       // A failed provisioning is not remembered: the next call tries again.
       ready.catch(() => {
         if (this.ready === ready) this.ready = null;
@@ -297,6 +303,23 @@ export class LucidAgentStore
       this.ready = ready;
     }
     return this.ready;
+  }
+
+  /**
+   * Under `autoCreateTables: false` the app owns the schema, so it can boot this version before its
+   * migration has added `agent_tool_call.call_id`. Rather than fail every tool call insert until then,
+   * the store keeps the old layout — PK = the model's id, so the #183 collision is still possible —
+   * and says so once, at startup.
+   */
+  private async checkToolCallSchema(): Promise<void> {
+    this.toolCallsScoped = await hasToolCallIdColumn(this.db);
+    if (!this.toolCallsScoped) {
+      console.warn(
+        '[@adonis-agora/agent] agent_tool_call has no call_id column. With autoCreateTables off the ' +
+          'schema is yours: add a migration that calls createAgentTables(). Until it runs, tool calls ' +
+          'are stored as before, and a tool call id a provider repeats across runs can still collide.',
+      );
+    }
   }
 
   /**
@@ -907,8 +930,9 @@ export class LucidAgentStore
   async recordToolCall(input: RecordToolCallInput): Promise<void> {
     await this.init();
     await this.db.table(AGENT_TABLES.toolCalls).insert({
-      id: toolCallRowId(input.toolCallId, input.runId),
-      call_id: input.toolCallId,
+      ...(this.toolCallsScoped
+        ? { id: toolCallRowId(input.toolCallId, input.messageId), call_id: input.toolCallId }
+        : { id: input.toolCallId }),
       message_id: input.messageId,
       proposal_id: input.proposalId ?? null,
       tool_name: input.toolName,
@@ -946,32 +970,27 @@ export class LucidAgentStore
   }
 
   /**
-   * The row of the call the model named `toolCallId`: the one `runId` recorded, or without a run the
-   * newest one. Falls back to a row keyed by the bare id — one from before `call_id` existed, or one
-   * recorded without a run — unless it belongs to another run.
+   * The row of the call the model named `toolCallId`: the newest one `runId` recorded, or without a
+   * run the newest one overall. Newest is the live one: a run's steps are sequential, so when a step
+   * settles its call, a repeat of the id in an earlier step has already settled. Falls back to a row
+   * from before `call_id` existed, whose PK is the bare model id, unless it belongs to another run.
    */
   private async findToolCall(
     toolCallId: string,
     runId?: string,
   ): Promise<Record<string, unknown> | null> {
     const table = AGENT_TABLES.toolCalls;
-    if (runId !== undefined) {
-      const row = await this.db.from(table).where('id', toolCallRowId(toolCallId, runId)).first();
-      if (row !== null && row !== undefined) return row;
-    } else {
-      const [newest] = await this.db
-        .from(table)
-        .where('call_id', toolCallId)
-        .orderBy('created_at', 'desc')
-        .limit(1)
-        .select('*');
+    if (this.toolCallsScoped) {
+      const query = this.db.from(table).where('call_id', toolCallId);
+      if (runId !== undefined) query.where('run_id', runId);
+      const [newest] = await query.orderBy('created_at', 'desc').limit(1).select('*');
       if (newest !== undefined) return newest;
     }
-    const bare = await this.db.from(table).where('id', toolCallId).first();
-    if (bare === null || bare === undefined) return null;
-    return runId === undefined || bare.run_id == null || String(bare.run_id) === runId
-      ? bare
-      : null;
+    const bare = this.db.from(table).where('id', toolCallId);
+    if (this.toolCallsScoped) bare.whereNull('call_id');
+    const row = await bare.first();
+    if (row === null || row === undefined) return null;
+    return runId === undefined || row.run_id == null || String(row.run_id) === runId ? row : null;
   }
 
   /** Attach, per message, the approval record of every call on it a policy put to a person. */
@@ -1067,21 +1086,28 @@ export class LucidAgentStore
   async toolCallOutcomes(toolCallIds: string[]): Promise<ToolCallOutcome[]> {
     if (toolCallIds.length === 0) return [];
     await this.init();
-    const columns = ['id', 'call_id', 'status', 'output', 'error', 'created_at'];
-    const rows = [
-      // A row from before `call_id` existed, whose PK is the model's id — older than any other.
-      ...(await this.db
-        .from(AGENT_TABLES.toolCalls)
-        .whereIn('id', toolCallIds)
-        .whereNull('call_id')
-        .select(...columns)),
-      ...(await this.db
-        .from(AGENT_TABLES.toolCalls)
-        .whereIn('call_id', toolCallIds)
-        .orderBy('created_at', 'asc')
-        .select(...columns)),
-    ];
-    // One outcome per id: when two runs were handed the same id, the newest call's.
+    const table = AGENT_TABLES.toolCalls;
+    const columns = ['id', 'status', 'output', 'error', 'created_at'];
+    const rows = this.toolCallsScoped
+      ? [
+          // A row from before `call_id` existed, whose PK is the model's id — older than any other.
+          ...(await this.db
+            .from(table)
+            .whereIn('id', toolCallIds)
+            .whereNull('call_id')
+            .select(...columns, 'call_id')),
+          ...(await this.db
+            .from(table)
+            .whereIn('call_id', toolCallIds)
+            .orderBy('created_at', 'asc')
+            .select(...columns, 'call_id')),
+        ]
+      : // The old layout (see `checkToolCallSchema`): the PK is the model's id.
+        await this.db
+          .from(table)
+          .whereIn('id', toolCallIds)
+          .select(...columns);
+    // One outcome per id: when two responses were handed the same id, the newest call's.
     const newest = new Map<string, Record<string, unknown>>();
     for (const row of rows) newest.set(toolCallIdOfRow(row), row);
     return [...newest.entries()].map(([id, row]) => {
