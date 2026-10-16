@@ -32,13 +32,24 @@ export interface McpOAuthMetadata {
 }
 
 /**
+ * The `extra` of an {@link McpAuthInfo}: the SDK's open record, with the acting {@link Actor} typed.
+ * A strategy of your own can carry more beside it (a session, the raw claims) without a cast, and
+ * the whole object is still an SDK `AuthInfo['extra']`.
+ */
+export interface McpAuthExtra {
+  actor: Actor;
+  [key: string]: unknown;
+}
+
+/**
  * MCP `AuthInfo` with a typed acting {@link Actor} in `extra`. The MCP auth strategies
  * (`authKitAuth`/`apiKeyAuth`) and the open-mode fallback all produce this shape, so consumers can
- * read `extra.actor` without a runtime guard — or resolve it from a generic SDK `AuthInfo` with
- * `actorFromAuthInfo`.
+ * read `extra.actor` without a runtime guard. It is assignable to the SDK's `AuthInfo`; going the
+ * other way — the `AuthInfo` the SDK hands a request handler — narrow with `isMcpAuthInfo`, or
+ * resolve the actor with `actorFromAuthInfo`, which throws when there is none.
  */
 export interface McpAuthInfo extends Omit<AuthInfo, 'extra'> {
-  extra: { actor: Actor };
+  extra: McpAuthExtra;
 }
 
 /**
