@@ -1,6 +1,6 @@
 {
   "name": "@adonis-agora/agent",
-  "version": "0.80.1",
+  "version": "0.80.2",
   "description": "Governed, durable-backed AI agent (chat + tool-calling + governance) for AdonisJS — part of the Agora ecosystem.",
   "license": "MIT",
   "repository": {
@@ -474,7 +474,7 @@
     "@adonisjs/redis": "11.0.0",
     "@ag-ui/client": "1.0.1",
     "@ag-ui/core": "1.0.1",
-    "@ai-sdk/react": "^4.0.125",
+    "@ai-sdk/react": "4.0.142",
     "@emotion/react": "11.14.0",
     "@emotion/styled": "11.14.1",
     "@fontsource-variable/geist": "5.3.0",
@@ -500,7 +500,7 @@
     "agent-0-56": "npm:@adonis-agora/agent@0.56.0",
     "agent-0-58": "npm:@adonis-agora/agent@0.58.0",
     "agent-0-59": "npm:@adonis-agora/agent@0.59.0",
-    "ai": "7.0.122",
+    "ai": "7.0.139",
     "ajv": "^8.20.0",
     "better-sqlite3": "13.0.3",
     "bootstrap": "5.3.8",

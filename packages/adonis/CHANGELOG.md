@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.80.2
+
+### Patch Changes
+
+- [#385](https://github.com/DavideCarvalho/adonis-agora-agent/pull/385) [`7b2b30d`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/7b2b30de73070b86bc0487c8202b03aeeff7d483) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - fix(mcp): type the auth → actor contract end to end ([#42](https://github.com/DavideCarvalho/adonis-agora-agent/issues/42)). `isMcpAuthInfo(authInfo)` (from `@adonis-agora/agent/mcp`) narrows the SDK's `AuthInfo`, whose `extra` is an untyped record, to an `McpAuthInfo`, so `authInfo.extra.actor` is an `Actor` without a cast. `actorFromAuthInfo` is built on it. `McpAuthInfo.extra` is now `McpAuthExtra`: the actor typed, plus any other keys a strategy of your own adds, so it is still an SDK `AuthInfo`. `isActor` also rejects a non-string `tenantRef`.
+
 ## 0.80.1
 
 ### Patch Changes

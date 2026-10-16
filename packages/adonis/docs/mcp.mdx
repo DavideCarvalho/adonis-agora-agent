@@ -305,6 +305,8 @@ The token is verified, the resulting `McpAuthInfo` carries `extra.actor`, and th
 - **`tools/list`** returns `registry.definitionsFor(actor, policy, allowedTools)` — the `allowedTools` allow-list, then `enabled`, the role/ability policy and `canUse` — minus `action` tools and the kinds only the agent loop serves (delegation, `ask`, skills, memory). An actor sees only the tools it may call.
 - **`tools/call`** refuses a name that is off the list or not exposable (`action` and loop-served kinds) as an unknown tool, then goes through `registry.invoke`, which **re-checks** `enabled`, `policy.can(actor, spec)` and `canUse` before validating the input against the tool's Standard Schema and running the handler.
 
+`McpAuthInfo` types `extra.actor` as an `Actor` (a strategy of your own may put more keys beside it). Code that receives the SDK's own `AuthInfo`, whose `extra` is an untyped record, narrows it with `isMcpAuthInfo(authInfo)` or reads the actor with `actorFromAuthInfo(authInfo)`, which throws when there is none. Both are exported from `@adonis-agora/agent/mcp`.
+
 To run MCP under abilities instead of roles, hand it the same Bouncer adapter you gave the agent:
 
 ```ts title="config/mcp.ts"
