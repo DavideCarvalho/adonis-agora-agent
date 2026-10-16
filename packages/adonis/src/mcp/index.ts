@@ -1,4 +1,4 @@
-export { actorFromAuthInfo, isActor } from './actor.js';
+export { actorFromAuthInfo, isActor, isMcpAuthInfo } from './actor.js';
 export type {
   ApiKeyActorResolver,
   ApiKeyMcpAuthOptions,
@@ -9,6 +9,7 @@ export type {
   AuthKitMcpAuthOptions,
   McpAuth,
   McpAuthContext,
+  McpAuthExtra,
   McpAuthFactory,
   McpAuthInfo,
   McpChallengeError,
