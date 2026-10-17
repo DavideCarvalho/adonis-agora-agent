@@ -279,7 +279,7 @@ importers:
         specifier: 1.19.0
         version: 1.19.0(typescript@7.0.2)
       '@resvg/resvg-js':
-        specifier: ^2.6.2
+        specifier: 2.6.2
         version: 2.6.2
       '@streamdown/code':
         specifier: 1.1.1
@@ -333,7 +333,7 @@ importers:
         specifier: 7.0.140
         version: 7.0.140(zod@4.6.5)
       ajv:
-        specifier: ^8.20.0
+        specifier: 8.20.0
         version: 8.20.0
       better-sqlite3:
         specifier: 13.0.3
@@ -363,7 +363,7 @@ importers:
         specifier: 8.23.1
         version: 8.23.1
       playwright-core:
-        specifier: ^1.63.0
+        specifier: 1.64.1
         version: 1.64.1
       prism-react-renderer:
         specifier: 2.4.1
@@ -399,7 +399,7 @@ importers:
         specifier: 6.0.0
         version: 6.0.0(supports-color@10.2.2)
       rxjs:
-        specifier: ^7.8.1
+        specifier: 7.8.2
         version: 7.8.2
       sass:
         specifier: 1.105.1
