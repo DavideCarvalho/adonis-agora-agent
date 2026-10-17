@@ -31,7 +31,8 @@ jobs:
 
       - run: pnpm build
 
-  # The suite runs on every Node line Node itself still maintains (the range `engines.node` promises).
+  # The suite runs on every Node line we support (the range `engines.node` promises): the lines Node
+  # itself still maintains that AdonisJS 7 also accepts (it requires >=24).
   # Lint, typecheck and build stay on the single pinned version above: only the test run is multiplied.
   # The real-database suites ride along on every line — one Postgres service and one MySQL container
   # per leg, running in parallel, is cheap next to what a driver regression on a newer Node would cost.
@@ -40,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [22, 24, 26]
+        node: [24, 26]
     name: test (node ${{ matrix.node }})
     # The schema-provisioning tests need real Postgres locks (test/schema-provisioning-postgres.spec.ts),
     # and the Lucid store suites run on it too.
