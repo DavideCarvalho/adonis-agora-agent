@@ -1,5 +1,7 @@
 # @adonis-agora/agent
 
+[![npm version](https://img.shields.io/npm/v/@adonis-agora/agent)](https://www.npmjs.com/package/@adonis-agora/agent) [![npm downloads](https://img.shields.io/npm/dm/@adonis-agora/agent)](https://www.npmjs.com/package/@adonis-agora/agent) [![CI](https://github.com/DavideCarvalho/adonis-agora-agent/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/DavideCarvalho/adonis-agora-agent/actions/workflows/ci.yml) [![license](https://img.shields.io/npm/l/@adonis-agora/agent)](https://www.npmjs.com/package/@adonis-agora/agent)
+
 Governed, durable-backed AI agent (chat + tool-calling + governance) for **AdonisJS** — part of the
 [Agora](https://github.com/DavideCarvalho) ecosystem.
 
