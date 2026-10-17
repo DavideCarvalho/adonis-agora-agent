@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.81.1
+
+### Patch Changes
+
+- [#404](https://github.com/DavideCarvalho/adonis-agora-agent/pull/404) [`f3883f4`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/f3883f4f0e7788013825ce1e3d317f2656cb25c3) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Accept katex 0.19 as a peer dependency (`^0.16.45 || ^0.19.0`).
+
 ## 0.81.0
 
 ### Minor Changes
