@@ -478,7 +478,7 @@
     "@emotion/react": "11.14.0",
     "@emotion/styled": "11.14.1",
     "@fontsource-variable/geist": "5.3.0",
-    "@json-render/core": "0.21.0",
+    "@json-render/core": "0.21.1",
     "@json-render/react": "0.21.0",
     "@mui/material": "7.3.11",
     "@opencode/client": "2.0.18",
