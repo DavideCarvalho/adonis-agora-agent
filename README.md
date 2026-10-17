@@ -87,6 +87,11 @@ Docker. Without Docker the Postgres/MySQL cases are reported as skipped and SQLi
 (or `AGENT_TEST_REQUIRE_REAL_DB=1`) a missing Docker fails the run instead. `AGENT_TEST_PG_URL` /
 `AGENT_TEST_MYSQL_URL` point the suites at servers you already run (a user that may `CREATE DATABASE`).
 
+## Sponsors
+
+Every Agora library is MIT and stays free. The work is funded by partners and
+sponsors — [become one](https://davidecarvalho.github.io/agora/partners).
+
 ## License
 
 MIT
