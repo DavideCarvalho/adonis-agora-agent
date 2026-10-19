@@ -466,7 +466,7 @@
     "@a2ui/web_core": "0.12.0",
     "@adonis-agora/authz": "0.18.0",
     "@adonis-agora/diagnostics": "0.2.10",
-    "@adonis-agora/durable": "0.43.4",
+    "@adonis-agora/durable": "0.43.5",
     "@adonis-agora/telescope": "0.21.1",
     "@adonisjs/assembler": "8.5.2",
     "@adonisjs/core": "7.5.2",
