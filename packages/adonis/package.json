@@ -473,7 +473,7 @@
     "@adonisjs/lucid": "22.4.2",
     "@adonisjs/redis": "11.0.0",
     "@ag-ui/client": "1.0.3",
-    "@ag-ui/core": "1.0.2",
+    "@ag-ui/core": "1.0.3",
     "@ai-sdk/react": "4.0.146",
     "@emotion/react": "11.14.0",
     "@emotion/styled": "11.14.1",
