@@ -23,6 +23,8 @@ import { type AgentDashboardOptions, agentDashboard } from './dashboard.js';
 import {
   agentActiveRunsProvider,
   agentDelegationsOverTimeProvider,
+  agentFailuresByCodeProvider,
+  agentLatencyDistributionProvider,
   agentRecentApprovalsProvider,
   agentRecentDelegationsProvider,
   agentRecentRunsProvider,
@@ -142,6 +144,8 @@ export function agentTelescopeExtension(
       agentRunsOverTimeProvider(),
       agentTokensOverTimeProvider(),
       agentRecentRunsProvider(),
+      agentLatencyDistributionProvider(),
+      agentFailuresByCodeProvider(),
       agentToolCallsOverTimeProvider(),
       agentRecentToolCallsProvider(),
       agentRecentApprovalsProvider(),

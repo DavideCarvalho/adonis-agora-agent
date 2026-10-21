@@ -10,6 +10,7 @@ import {
   RunCancelledError,
   runAgentLoop,
   settleAll,
+  streamErrorCode,
   streamErrorFrame,
 } from '../agent-loop.js';
 import type { QueuePlan, QueueSettleOutcome } from '../chat-queue-service.js';
@@ -401,6 +402,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
         await settleDeadRun(store, {
           runId: ctx.runId,
           error: message,
+          errorCode: streamErrorCode(error),
           ...(ownsThread ? { threadId: input.threadId } : {}),
         });
         if (detached && input.deliverTo !== undefined) {
@@ -431,7 +433,12 @@ export class AgentRunWorkflow extends BaseWorkflow {
       // own crash). A checkpointed step so a replay re-settles the ONE row idempotently; first-
       // terminal, so it can't clobber a completion. Each run (parent AND child) owns its own row.
       await step('persist:run:fail', async () => {
-        await store.recordRunEnd({ runId: ctx.runId, status: 'failed', error: message });
+        await store.recordRunEnd({
+          runId: ctx.runId,
+          status: 'failed',
+          error: message,
+          errorCode: streamErrorCode(error),
+        });
         // A call this run had put to a person is not waiting for anything any more. Inside the same
         // checkpoint, so it adds no position to a failing run's journal.
         await store.failUnsettledToolCalls?.(ctx.runId, RUN_ENDED_BEFORE_TOOL_CALL).catch(() => 0);

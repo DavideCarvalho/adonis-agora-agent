@@ -140,6 +140,12 @@ export interface RunSummaryRow {
   costUsd: number | null;
   error: string | null;
   durable: boolean;
+  /** Turn start → first text frame, on a completed run; absent from an older server. */
+  ttftMs?: number | null;
+  /** A failed run's stable stream error code; absent from an older server. */
+  errorCode?: string | null;
+  /** The completed run's last model; absent from an older server. */
+  modelId?: string | null;
 }
 
 /**
@@ -238,6 +244,9 @@ export interface PerToolStatRow {
   rejected: number;
   /** Mean `executionMs` across calls that recorded one; `null` when none did. */
   avgDurationMs: number | null;
+  /** Nearest-rank median / 95th percentile of the same samples; absent from an older server. */
+  p50ExecutionMs?: number | null;
+  p95ExecutionMs?: number | null;
 }
 
 /** Run count + failure count for one agent, part of {@link RunReliability.byAgent}. */
@@ -258,8 +267,8 @@ export interface RunTrendPoint {
 
 /**
  * `GET /agent/governance/reliability` — aggregated run reliability over a range (success / failure /
- * cancel rates + mean settled duration), plus an optional per-agent breakdown and daily trend (an
- * older server may omit both).
+ * cancel rates + mean settled duration), plus an optional per-agent breakdown, daily trend, turn
+ * latency and failures by code (an older server may omit them).
  */
 export interface RunReliability {
   runs: number;
@@ -279,6 +288,16 @@ export interface RunReliability {
   byAgent?: RunAgentBreakdownRow[];
   /** Daily run/failure counts over the same range, oldest first. */
   trend?: RunTrendPoint[];
+  /** Time to first token and turn duration of completed, person-started turns; absent from an older server. */
+  latency?: { ttft: Latency; duration: Latency };
+  /** Failed runs by stream error code, most frequent first; absent from an older server. */
+  failuresByCode?: RunFailureCodeRow[];
+}
+
+/** How many failed runs ended under one stream error code (`'unknown'` before codes were recorded). */
+export interface RunFailureCodeRow {
+  code: string;
+  count: number;
 }
 
 /** Thread metadata + LIFETIME usage rollup (not range-scoped) for the thread governance drill-down. */
@@ -359,11 +378,14 @@ export interface GenuiDayRow {
   firstTryRate: number | null;
 }
 
-export interface GenuiLatency {
+/** A latency distribution: sample count and nearest-rank p50 / p95, `null` when there are no samples. */
+export interface Latency {
   samples: number;
   p50Ms: number | null;
   p95Ms: number | null;
 }
+
+export type GenuiLatency = Latency;
 
 /** What the console's Generative UI page shows. */
 export interface GenuiStats {

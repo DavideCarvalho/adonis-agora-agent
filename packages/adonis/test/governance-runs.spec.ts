@@ -1,5 +1,5 @@
 import type { Database } from '@adonisjs/lucid/database';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   type AgentGovernanceQueries,
   type AgentStore,
@@ -236,11 +236,16 @@ function runContract(name: string, make: () => Promise<AgentGovernanceQueries>):
       expect(search?.failed).toBe(1);
       expect(search?.rejected).toBe(0);
       expect(search?.avgDurationMs).toBeCloseTo(12.5, 6); // (20 + 5) / 2
+      // Nearest-rank over [5, 20]: index floor(p · 2) → 20 for both.
+      expect(search?.p50ExecutionMs).toBe(20);
+      expect(search?.p95ExecutionMs).toBe(20);
 
       const deploy = stats.find((s) => s.toolName === 'deploy');
       expect(deploy?.calls).toBe(2);
       expect(deploy?.rejected).toBe(1);
       expect(deploy?.avgDurationMs).toBeNull(); // no execution_ms recorded
+      expect(deploy?.p50ExecutionMs).toBeNull();
+      expect(deploy?.p95ExecutionMs).toBeNull();
     });
 
     it('runReliability aggregates success / failure / cancel rates', async () => {
@@ -258,6 +263,134 @@ function runContract(name: string, make: () => Promise<AgentGovernanceQueries>):
     });
   });
 }
+
+const T0 = Date.parse('2026-03-07T10:00:00.000Z');
+
+/**
+ * Runs for the latency / failure-code rollup, on a frozen clock so every duration is exact:
+ *  - ten completed person-started turns, durations 1s…10s and TTFTs 100ms…1000ms (the 10s one
+ *    streamed no text, so it has no TTFT)
+ *  - a completed delegation child (60s, TTFT 30s) — must not move either distribution
+ *  - three failed runs: two `run_failed` (one of them a child), one with no code (from before codes)
+ *  - one `quota_exceeded`, one cancelled, one still running
+ */
+async function seedLatency(store: AgentStore): Promise<void> {
+  vi.useFakeTimers({ now: T0, toFake: ['Date'] });
+  try {
+    const thread = await store.createThread({ actor: alice, persona: 'default', title: 'L' });
+    const run = async (
+      runId: string,
+      end: Omit<Parameters<AgentStore['recordRunEnd']>[0], 'runId'> | null,
+      parentRunId?: string,
+    ) => {
+      await store.recordRunStart({
+        runId,
+        threadId: thread.id,
+        actor: alice,
+        ...(parentRunId !== undefined ? { parentRunId } : {}),
+      });
+      if (end !== null) await store.recordRunEnd({ runId, ...end });
+    };
+    for (let i = 1; i <= 10; i += 1) {
+      await run(`turn-${i}`, {
+        status: 'completed',
+        finishedAt: T0 + i * 1000,
+        ...(i < 10 ? { ttftMs: i * 100 } : {}),
+        modelId: 'gpt-x',
+      });
+    }
+    await run('child', { status: 'completed', finishedAt: T0 + 60_000, ttftMs: 30_000 }, 'turn-1');
+    await run('fail-1', { status: 'failed', error: 'boom', errorCode: 'run_failed' });
+    await run('fail-2', { status: 'failed', error: 'boom', errorCode: 'run_failed' }, 'turn-2');
+    await run('fail-3', { status: 'failed', error: 'old' });
+    await run('fail-4', { status: 'failed', error: 'spent', errorCode: 'quota_exceeded' });
+    await run('stop', { status: 'cancelled' });
+    await run('live', null);
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+/** Turn latency, failures by code and the run's new columns, against both twins. */
+function latencyContract(name: string, make: () => Promise<AgentGovernanceQueries>): void {
+  describe(`run latency read-model — ${name}`, () => {
+    it('runReliability reports TTFT and turn-duration percentiles over completed person turns', async () => {
+      const gov = await make();
+      const { latency } = await gov.runReliability();
+      // Nine TTFT samples 100…900 → p50 = sorted[4], p95 = sorted[8]; the child's 30s is not one.
+      expect(latency?.ttft).toEqual({ samples: 9, p50Ms: 500, p95Ms: 900 });
+      // Ten durations 1s…10s → p50 = sorted[5], p95 = sorted[9]; the child's 60s is not one.
+      expect(latency?.duration).toEqual({ samples: 10, p50Ms: 6000, p95Ms: 10_000 });
+    });
+
+    it('runReliability counts every failed run by code, null code → unknown', async () => {
+      const gov = await make();
+      const reliability = await gov.runReliability();
+      expect(reliability.failed).toBe(4);
+      expect(reliability.failuresByCode).toEqual([
+        { code: 'run_failed', count: 2 },
+        { code: 'quota_exceeded', count: 1 },
+        { code: 'unknown', count: 1 },
+      ]);
+    });
+
+    it('an empty range yields no samples and no codes', async () => {
+      const gov = await make();
+      const reliability = await gov.runReliability({ from: '2030-01-01' });
+      expect(reliability.latency).toEqual({
+        ttft: { samples: 0, p50Ms: null, p95Ms: null },
+        duration: { samples: 0, p50Ms: null, p95Ms: null },
+      });
+      expect(reliability.failuresByCode).toEqual([]);
+    });
+
+    it('recordRunEnd persists ttftMs, errorCode and modelId onto the run row', async () => {
+      const gov = await make();
+      expect((await gov.runDetail('turn-3'))?.run).toMatchObject({
+        status: 'completed',
+        ttftMs: 300,
+        errorCode: null,
+        modelId: 'gpt-x',
+      });
+      expect((await gov.runDetail('fail-4'))?.run).toMatchObject({
+        status: 'failed',
+        error: 'spent',
+        errorCode: 'quota_exceeded',
+        ttftMs: null,
+        modelId: null,
+      });
+      const page = await gov.listRuns({ status: 'failed' });
+      expect(page.items.map((row) => row.errorCode).sort()).toEqual([
+        null,
+        'quota_exceeded',
+        'run_failed',
+        'run_failed',
+      ]);
+    });
+  });
+}
+
+latencyContract('in-memory', async () => {
+  const store = new InMemoryAgentStore();
+  await seedLatency(store);
+  return new InMemoryGovernanceQueries(store);
+});
+
+describe('run latency read-model — Lucid (SQLite)', () => {
+  let db: Database;
+  beforeEach(async () => {
+    db = await makeStoreDb();
+  });
+  afterEach(async () => {
+    await db?.manager.closeAll();
+  });
+
+  latencyContract('lucid', async () => {
+    const store = new LucidAgentStore(asStoreDb(db));
+    await seedLatency(store);
+    return new LucidGovernanceQueries(asStoreDb(db));
+  });
+});
 
 runContract('in-memory', async () => {
   const store = new InMemoryAgentStore();

@@ -4,15 +4,23 @@ import type { PerToolStatRow } from '../client/types.js';
 import { AsyncBlock, Panel, SectionTitle } from './ui.js';
 import { useToolStats } from './use-governance.js';
 
-type SortKey = 'toolName' | 'calls' | 'failed' | 'rejected' | 'avgDurationMs';
+type SortKey =
+  | 'toolName'
+  | 'calls'
+  | 'failed'
+  | 'rejected'
+  | 'avgDurationMs'
+  | 'p50ExecutionMs'
+  | 'p95ExecutionMs';
 type SortDir = 'asc' | 'desc';
 
 /** Compare two per-tool rows on `key`; `null` durations always sort last regardless of direction. */
 function compare(a: PerToolStatRow, b: PerToolStatRow, key: SortKey, dir: SortDir): number {
   const sign = dir === 'asc' ? 1 : -1;
   if (key === 'toolName') return sign * a.toolName.localeCompare(b.toolName);
-  const av = a[key];
-  const bv = b[key];
+  // An older server sends no percentiles: read as "no duration", like a null one.
+  const av = a[key] ?? null;
+  const bv = b[key] ?? null;
   if (av === null) return 1;
   if (bv === null) return -1;
   return sign * (av - bv);
@@ -85,6 +93,24 @@ export function ToolsSection() {
                       Avg duration{arrow('avgDurationMs')}
                     </button>
                   </th>
+                  <th className="num">
+                    <button
+                      type="button"
+                      className="th-sort"
+                      onClick={() => toggle('p50ExecutionMs')}
+                    >
+                      p50{arrow('p50ExecutionMs')}
+                    </button>
+                  </th>
+                  <th className="num">
+                    <button
+                      type="button"
+                      className="th-sort"
+                      onClick={() => toggle('p95ExecutionMs')}
+                    >
+                      p95{arrow('p95ExecutionMs')}
+                    </button>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -102,6 +128,8 @@ export function ToolsSection() {
                     </td>
                     <td className="num mono tnum">{formatCount(row.rejected)}</td>
                     <td className="num mono tnum muted">{formatDuration(row.avgDurationMs)}</td>
+                    <td className="num mono tnum muted">{formatDuration(row.p50ExecutionMs)}</td>
+                    <td className="num mono tnum muted">{formatDuration(row.p95ExecutionMs)}</td>
                   </tr>
                 ))}
               </tbody>

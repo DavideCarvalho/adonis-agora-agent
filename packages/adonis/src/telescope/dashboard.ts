@@ -27,8 +27,8 @@ export interface AgentDashboardOptions {
 }
 
 /**
- * The "Agent" overview dashboard. Four ENTRY-BACKED sections (unchanged from before this port — see
- * `data-providers.ts`): run health, run activity, tools & approvals, delegations & tokens. Then two
+ * The "Agent" overview dashboard. Five ENTRY-BACKED sections (see `data-providers.ts`): run health,
+ * run activity, run latency & failures by code, tools & approvals, delegations & tokens. Then two
  * GOVERNANCE-BACKED sections reading the authoritative, restart-surviving read-model (see
  * `agent-governance-providers.ts` for exactly what that read-model can and can't answer on this SPI):
  * spend/usage and run reliability + governance activity feeds. Then RAG (see `rag-data-providers.ts`
@@ -103,6 +103,32 @@ export function agentDashboard(opts: AgentDashboardOptions = {}): DashboardSpec 
               { key: 'steps', label: 'Steps' },
               { key: 'tokens', label: 'Tokens' },
             ],
+          },
+        ],
+      },
+      {
+        title: 'Run latency',
+        cols: 3,
+        panels: [
+          {
+            kind: 'distribution',
+            title: 'Time to first token',
+            data: { provider: 'agent.latency', query: { metric: 'ttft' } },
+            markers: ['p50', 'p95', 'p99'],
+            format: 'duration',
+          },
+          {
+            kind: 'distribution',
+            title: 'Turn duration',
+            data: { provider: 'agent.latency', query: { metric: 'duration' } },
+            markers: ['p50', 'p95', 'p99'],
+            format: 'duration',
+          },
+          {
+            kind: 'breakdown',
+            title: 'Failures by code',
+            data: { provider: 'agent.failuresByCode' },
+            style: 'donut',
           },
         ],
       },

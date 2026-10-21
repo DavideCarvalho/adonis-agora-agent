@@ -1132,7 +1132,8 @@ export class OpenCodeTurns {
       usage,
     );
     const worded = (await this.amend(writer, result)).error;
-    await this.store.recordRunEnd({ runId, status: 'failed', error });
+    // OpenCode reports a failure as text, so it is coded the generic crash.
+    await this.store.recordRunEnd({ runId, status: 'failed', error, errorCode: 'run_failed' });
     await Promise.resolve(
       this.store.failUnsettledToolCalls?.(runId, RUN_ENDED_BEFORE_TOOL_CALL),
     ).catch(() => 0);

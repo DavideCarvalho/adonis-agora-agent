@@ -7,7 +7,7 @@ import {
   registerAgentWorkflow,
   setDurableAgentContext,
 } from '../src/durable/index.js';
-import type { Actor } from '../src/index.js';
+import type { Actor, AgentDepsFactoryConfig } from '../src/index.js';
 import {
   AgentDepsFactory,
   AgentRegistry,
@@ -94,6 +94,11 @@ describe('run tracking — inline runner (Lucid)', () => {
     expect(run?.inputTokens).toBeGreaterThan(0);
     expect(run?.finishedAt).not.toBeNull();
     expect(run?.durationMs).not.toBeNull();
+    // The turn's time to first token and its model ride the run row, not only the diagnostic.
+    expect(run?.ttftMs).toBeTypeOf('number');
+    expect(run?.ttftMs as number).toBeGreaterThanOrEqual(0);
+    expect(run?.modelId).toBeTypeOf('string');
+    expect(run?.errorCode).toBeNull();
   });
 
   it("stamps run_id on the run's messages, tool calls and usage", async () => {
@@ -121,6 +126,8 @@ describe('run tracking — inline runner (Lucid)', () => {
     expect(detail?.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'assistant']);
     expect(detail?.toolCalls.map((c) => c.toolName)).toEqual(['lookup']);
     expect(detail?.toolCalls[0]?.status).toBe('executed');
+    // Measured inside the tool's checkpoint.
+    expect(detail?.toolCalls[0]?.executionMs).toBeTypeOf('number');
     expect(detail?.usage.length).toBe(2); // one usage row per llm turn
     expect(detail?.usage.every((u) => u.purpose === 'chat')).toBe(true);
   });
@@ -147,7 +154,9 @@ describe('run tracking — inline runner (Lucid)', () => {
     const detail = await gov.runDetail(runId);
     expect(detail?.run.status).toBe('failed');
     expect(detail?.run.error).toContain('quota');
+    expect(detail?.run.errorCode).toBe('quota_exceeded');
     expect(detail?.run.finishedAt).not.toBeNull();
+    expect(detail?.run.ttftMs).toBeNull();
   });
 
   /** Records `agora:agent:*` events through the diagnostics slot while `fn` runs. */
@@ -270,7 +279,7 @@ describe('run tracking — durable runner (replay-safe)', () => {
   let service: AgentService;
   let registry: ToolRegistry;
 
-  function build(script: FakeScript): void {
+  function build(script: FakeScript, quota?: AgentDepsFactoryConfig['quota']): void {
     store = new InMemoryAgentStore();
     const sink = new InMemoryTokenStreamSink();
     registry = new ToolRegistry();
@@ -281,6 +290,7 @@ describe('run tracking — durable runner (replay-safe)', () => {
       rolesPolicy: new DefaultToolAuthorizer(),
       registry,
       agents: new AgentRegistry(),
+      ...(quota !== undefined ? { quota } : {}),
     });
     engine = new WorkflowEngine({ store: new InMemoryStateStore() });
     setDurableAgentContext({ factory, store });
@@ -346,5 +356,33 @@ describe('run tracking — durable runner (replay-safe)', () => {
     const runs = store.governanceRuns().filter((r) => r.runId === runId);
     expect(runs).toHaveLength(1);
     expect(runs[0]?.status).toBe('completed');
+    // The approved call ran on the resumed body, inside its checkpoint: it has a real duration.
+    const danger = store.governanceToolCalls().find((c) => c.toolName === 'danger');
+    expect(danger?.executionMs).toBeTypeOf('number');
+  });
+
+  it('a durable run that fails records the stream error code on its row', async () => {
+    const { InMemoryQuotaStore } = await import('../src/testing/index.js');
+    build(() => ({ text: 'never' }), new InMemoryQuotaStore(0));
+    const { runId } = await service.chat({ actor, message: 'hi' });
+    await collect(runId);
+    await waitFor(() =>
+      store.governanceRuns().some((r) => r.runId === runId && r.status === 'failed'),
+    );
+    const run = store.governanceRuns().find((r) => r.runId === runId);
+    expect(run?.errorCode).toBe('quota_exceeded');
+    expect(run?.error).toContain('quota');
+  });
+
+  it('a completed durable run records its time to first token and model', async () => {
+    build(() => ({ text: 'done' }));
+    const { runId } = await service.chat({ actor, message: 'hi' });
+    await collect(runId);
+    await waitFor(() =>
+      store.governanceRuns().some((r) => r.runId === runId && r.status === 'completed'),
+    );
+    const run = store.governanceRuns().find((r) => r.runId === runId);
+    expect(run?.ttftMs).toBeTypeOf('number');
+    expect(run?.modelId).toBeTypeOf('string');
   });
 });

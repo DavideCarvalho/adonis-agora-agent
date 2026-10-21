@@ -1985,6 +1985,14 @@ function toolTiming(outcome: ToolOutcome): ToolTiming {
   };
 }
 
+/**
+ * The row's `execution_ms`: measured inside the `tool:<id>` checkpoint, so it is how long the tool ran
+ * rather than how long a replay took to read it back. A replayed checkpoint has none and writes none.
+ */
+function executionMs(outcome: ToolOutcome): { executionMs?: number } {
+  return outcome.durationMs !== undefined ? { executionMs: outcome.durationMs } : {};
+}
+
 /** Persist one settled invocation and shape the result the model is fed. */
 async function recordToolOutcome(
   turn: ToolTurnContext,
@@ -2032,6 +2040,7 @@ async function recordToolOutcome(
         runId: hooks.runId,
         status: 'failed',
         error: outcome.error,
+        ...executionMs(outcome),
         ...decided,
       });
       await settle();
@@ -2059,6 +2068,7 @@ async function recordToolOutcome(
       status: 'executed',
       output: outcome.output,
       ...(toolType === 'action' ? { executedByRef: deciderRef } : {}),
+      ...executionMs(outcome),
       ...decided,
     });
     await settle();
@@ -4006,6 +4016,9 @@ async function runAgentTurn<TOutput = unknown>(
     });
   }
 
+  // Every text frame of the turn has gone out by now, so its time to first token is known.
+  const firstTextAt = firstText.firstTextAt();
+
   // Settle the run `completed` with its rollup. Normal completion only — the loop never records a
   // failure (it doesn't catch its own crash; that's the runner's job). A checkpointed step so a
   // resumed durable replay settles the ONE row exactly once, and `recordRunEnd` is first-terminal so
@@ -4019,11 +4032,12 @@ async function runAgentTurn<TOutput = unknown>(
       inputTokens: totalInput,
       outputTokens: totalOutput,
       ...(hasCost ? { costUsd: totalCost } : {}),
+      ...(firstTextAt !== undefined ? { ttftMs: firstTextAt - turnStartedAt } : {}),
+      ...(lastModelId !== undefined ? { modelId: lastModelId } : {}),
     }),
   );
 
   await writer.end();
-  const firstTextAt = firstText.firstTextAt();
   publishAgentRunFinished({
     runId: hooks.runId,
     threadId: input.threadId,

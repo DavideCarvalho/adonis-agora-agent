@@ -1,4 +1,5 @@
 import { type GenuiCallRow, type GenuiStats, summarizeGenuiCalls } from '../genui-telemetry.js';
+import { summarizeLatency, summarizeRunMetrics } from '../run-metrics.js';
 import type {
   ActorSpendRow,
   AgentGovernanceQueries,
@@ -92,6 +93,10 @@ function toNumOrNull(value: unknown): number | null {
   return null;
 }
 
+function toStrOrNull(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
 /** The `agent_token_usage` shape the aggregations bucket over, normalized off the raw Lucid row. */
 interface UsageRow {
   modelId: string;
@@ -172,6 +177,9 @@ function runRowToSummary(row: Record<string, unknown>): RunSummaryRow {
     costUsd: toNumOrNull(row.cost_usd),
     error: row.error === null || row.error === undefined ? null : String(row.error),
     durable: toInt(row.durable) !== 0,
+    ttftMs: toNumOrNull(row.ttft_ms),
+    errorCode: toStrOrNull(row.error_code),
+    modelId: toStrOrNull(row.model_id),
   };
 }
 
@@ -594,8 +602,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
         calls: number;
         failed: number;
         rejected: number;
-        durationSum: number;
-        durationCount: number;
+        durations: number[];
       }
     >();
     for (const call of calls) {
@@ -608,21 +615,18 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
         calls: 0,
         failed: 0,
         rejected: 0,
-        durationSum: 0,
-        durationCount: 0,
+        durations: [],
       };
       bucket.calls += 1;
       if (String(call.status) === 'failed') bucket.failed += 1;
       if (String(call.status) === 'rejected') bucket.rejected += 1;
       const execMs = toNumOrNull(call.execution_ms);
-      if (execMs !== null) {
-        bucket.durationSum += execMs;
-        bucket.durationCount += 1;
-      }
+      if (execMs !== null) bucket.durations.push(execMs);
       byTool.set(key, bucket);
     }
     const result: PerToolStatRow[] = [];
     for (const bucket of byTool.values()) {
+      const execution = summarizeLatency(bucket.durations);
       result.push({
         toolName: bucket.toolName,
         toolType: bucket.toolType,
@@ -630,7 +634,11 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
         failed: bucket.failed,
         rejected: bucket.rejected,
         avgDurationMs:
-          bucket.durationCount === 0 ? null : bucket.durationSum / bucket.durationCount,
+          bucket.durations.length === 0
+            ? null
+            : bucket.durations.reduce((a, b) => a + b, 0) / bucket.durations.length,
+        p50ExecutionMs: execution.p50Ms,
+        p95ExecutionMs: execution.p95Ms,
       });
     }
     result.sort(
@@ -641,8 +649,9 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
 
   /**
    * Success / failure / cancel rates + mean settled-run duration over the (optional) range, bucketed
-   * on `started_at`, plus a per-agent breakdown and a daily runs/failed trend over the same rows. A
-   * store without recorded runs yields all zeros / `null` duration / empty breakdown+trend.
+   * on `started_at`, plus a per-agent breakdown, a daily runs/failed trend, turn latency and failures
+   * by code over the same rows. A store without recorded runs yields all zeros / `null` duration /
+   * empty breakdown+trend+codes.
    */
   async runReliability(range: ToolStatsRange = {}): Promise<RunReliability> {
     await this.ready();
@@ -715,6 +724,19 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       avgDurationMs: durationCount === 0 ? null : durationSum / durationCount,
       byAgent: byAgentRows,
       trend,
+      ...summarizeRunMetrics(
+        runs.map((run) => ({
+          status: String(run.status),
+          parentRunId: toStrOrNull(run.parent_run_id),
+          startedAt: toInt(run.started_at),
+          finishedAt:
+            run.finished_at === null || run.finished_at === undefined
+              ? null
+              : toInt(run.finished_at),
+          ttftMs: toNumOrNull(run.ttft_ms),
+          errorCode: toStrOrNull(run.error_code),
+        })),
+      ),
     };
   }
 

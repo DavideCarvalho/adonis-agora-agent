@@ -5,6 +5,7 @@ import {
   RunCancelledError,
   runAgentLoop,
   settleAll,
+  streamErrorCode,
   streamErrorFrame,
 } from '../agent-loop.js';
 import {
@@ -144,7 +145,12 @@ export class InlineAgentRunner implements AgentRunner {
         const message = error instanceof Error ? error.message : String(error);
         // Settle the run's persisted outcome — the loop only records completions (it can't catch its
         // own crash). First-terminal, so this can't clobber a completion that already landed.
-        await this.store.recordRunEnd({ runId, status: 'failed', error: message });
+        await this.store.recordRunEnd({
+          runId,
+          status: 'failed',
+          error: message,
+          errorCode: streamErrorCode(error),
+        });
         await this.store.failUnsettledToolCalls?.(runId, RUN_ENDED_BEFORE_TOOL_CALL).catch(() => 0);
         const writer = await deps.sink.open(runId);
         // The queue behind it pauses (a failed turn's next message would likely fail the same way),
@@ -490,7 +496,12 @@ export class InlineAgentRunner implements AgentRunner {
         const cancelled = error instanceof RunCancelledError;
         const message = error instanceof Error ? error.message : String(error);
         if (!cancelled) {
-          await this.store.recordRunEnd({ runId, status: 'failed', error: message });
+          await this.store.recordRunEnd({
+            runId,
+            status: 'failed',
+            error: message,
+            errorCode: streamErrorCode(error),
+          });
           await this.store
             .failUnsettledToolCalls?.(runId, RUN_ENDED_BEFORE_TOOL_CALL)
             .catch(() => 0);

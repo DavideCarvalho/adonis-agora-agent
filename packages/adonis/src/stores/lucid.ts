@@ -1229,6 +1229,9 @@ export class LucidAgentStore
     if (input.outputTokens !== undefined) patch.output_tokens = input.outputTokens;
     if (input.costUsd !== undefined) patch.cost_usd = input.costUsd;
     if (input.error !== undefined) patch.error = input.error;
+    if (input.ttftMs !== undefined) patch.ttft_ms = input.ttftMs;
+    if (input.errorCode !== undefined) patch.error_code = input.errorCode;
+    if (input.modelId !== undefined) patch.model_id = input.modelId;
     // First terminal wins: only settle a run still `running`, so a late `completed` from the loop can
     // never overwrite a `failed`/`cancelled` the runner already recorded (idempotent under replay too).
     await this.db

@@ -103,6 +103,9 @@ interface RunRow {
   outputTokens: number;
   costUsd?: number;
   error?: string;
+  ttftMs?: number;
+  errorCode?: string;
+  modelId?: string;
   durable: boolean;
 }
 
@@ -159,6 +162,9 @@ export interface GovernanceRunRow {
   outputTokens: number;
   costUsd?: number;
   error?: string;
+  ttftMs?: number;
+  errorCode?: string;
+  modelId?: string;
   durable: boolean;
 }
 
@@ -895,6 +901,9 @@ export class InMemoryAgentStore
     if (input.outputTokens !== undefined) row.outputTokens = input.outputTokens;
     if (input.costUsd !== undefined) row.costUsd = input.costUsd;
     if (input.error !== undefined) row.error = input.error;
+    if (input.ttftMs !== undefined) row.ttftMs = input.ttftMs;
+    if (input.errorCode !== undefined) row.errorCode = input.errorCode;
+    if (input.modelId !== undefined) row.modelId = input.modelId;
   }
 
   async usageBetween(actorRef: string, fromDay: string, toDay: string): Promise<UsageTotals> {

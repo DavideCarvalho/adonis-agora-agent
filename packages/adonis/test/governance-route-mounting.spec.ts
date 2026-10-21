@@ -222,6 +222,57 @@ describe('governance route mounting', () => {
     expect(await allowed.json()).toEqual([expect.objectContaining({ model: 'gpt-test' })]);
   });
 
+  it('serves GET governance/reliability with turn latency, failures by code and tool percentiles', async () => {
+    const store = new InMemoryAgentStore();
+    const actor = { id: 'u1' };
+    const thread = await store.createThread({ actor, persona: 'default', title: 'T' });
+    await store.recordRunStart({ runId: 'r1', threadId: thread.id, actor });
+    await store.recordRunEnd({
+      runId: 'r1',
+      status: 'completed',
+      ttftMs: 250,
+      modelId: 'gpt-test',
+    });
+    await store.recordRunStart({ runId: 'r2', threadId: thread.id, actor });
+    await store.recordRunEnd({
+      runId: 'r2',
+      status: 'failed',
+      error: 'x',
+      errorCode: 'run_failed',
+    });
+    const message = await store.appendMessage({
+      threadId: thread.id,
+      role: 'assistant',
+      content: 'a',
+      runId: 'r1',
+    });
+    await store.recordToolCall({
+      toolCallId: 'c1',
+      messageId: message.id,
+      toolName: 'lookup',
+      toolType: 'read',
+      input: {},
+      status: 'auto_executed',
+      runId: 'r1',
+    });
+    await store.updateToolCall({ toolCallId: 'c1', status: 'executed', executionMs: 75 });
+    booted = await bootApp(() => true, new InMemoryGovernanceQueries(store));
+
+    const reliability = await (
+      await fetch(`${booted.url}/agent/governance/reliability`, asActor('staff-1', 'ADMIN'))
+    ).json();
+    expect(reliability.latency.ttft).toEqual({ samples: 1, p50Ms: 250, p95Ms: 250 });
+    expect(reliability.latency.duration.samples).toBe(1);
+    expect(reliability.failuresByCode).toEqual([{ code: 'run_failed', count: 1 }]);
+
+    const tools = await (
+      await fetch(`${booted.url}/agent/governance/tools/stats`, asActor('staff-1', 'ADMIN'))
+    ).json();
+    expect(tools).toEqual([
+      expect.objectContaining({ toolName: 'lookup', p50ExecutionMs: 75, p95ExecutionMs: 75 }),
+    ]);
+  });
+
   it('serves GET governance/genui from the governance queries over the requested range', async () => {
     const store = new InMemoryAgentStore();
     const base = {

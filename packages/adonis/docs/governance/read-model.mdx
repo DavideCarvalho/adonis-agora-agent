@@ -71,7 +71,7 @@ All read-only (`GET`), all mounted only when a `governanceAuthorize` gate exists
 | `GET /agent/governance/runs/:id` | One run's full trace — run + messages + tool calls + approvals + usage — or `null`. |
 | `GET /agent/governance/approvals/pending` | Cross-thread HITL approvals inbox, oldest first. Query: `actor?`, `limit?`. |
 | `GET /agent/governance/tools/stats` | Per-tool call/failure/rejection/latency rollup. Query: `from?`, `to?`. |
-| `GET /agent/governance/reliability` | Success/failure/cancel rates + mean settled duration. Query: `from?`, `to?`. |
+| `GET /agent/governance/reliability` | Success/failure/cancel rates, mean settled duration, turn latency (TTFT and duration p50/p95) and failures by code. Query: `from?`, `to?`. |
 
 Two more mount **only when a `pricingStore` is also bound** — the store already exists for the loop's cost fold, and these expose it:
 
@@ -146,6 +146,9 @@ interface RunSummaryRow {
   costUsd: number | null         // null when nothing priced it
   error: string | null
   durable: boolean               // true under the durable runner
+  ttftMs?: number | null         // turn start → first text frame, on a completed run
+  errorCode?: string | null      // a failed run's stream error code (`quota_exceeded`, `run_failed`…)
+  modelId?: string | null        // the completed run's last model
 }
 ```
 
@@ -181,6 +184,8 @@ interface PerToolStatRow {
   toolName: string; toolType: string
   calls: number; failed: number; rejected: number
   avgDurationMs: number | null   // null when no call recorded a duration
+  p50ExecutionMs?: number | null // nearest-rank, over the same samples
+  p95ExecutionMs?: number | null
 }
 
 interface RunReliability {
@@ -189,10 +194,14 @@ interface RunReliability {
   avgDurationMs: number | null   // mean over SETTLED runs, null when none settled
   byAgent?: RunAgentBreakdownRow[]   // { agentName: string | null, runs, failed, successRate }
   trend?: RunTrendPoint[]            // { day, runs, failed }, oldest first
+  latency?: { ttft: Latency; duration: Latency }  // Latency = { samples, p50Ms, p95Ms }
+  failuresByCode?: { code: string; count: number }[]  // most frequent first
 }
 ```
 
-`byAgent` and `trend` are **optional** so an adapter written before they existed stays valid; a consumer renders an empty section rather than failing when they are absent.
+`byAgent`, `trend`, `latency` and `failuresByCode` are **optional** so an adapter written before they existed stays valid; a consumer renders an empty section rather than failing when they are absent.
+
+`latency` is over the range's **completed** turns a person started: a delegation's child run is part of its parent's turn and is left out. `ttft` is the time from the turn's start to its first non-empty `text` frame (a run that streamed no text has no sample); `duration` is `finishedAt − startedAt`. Percentiles are nearest-rank, the same as the Generative UI page's. `failuresByCode` counts every failed run under the stable code its stream `error` frame carried; a failure recorded before codes were is `'unknown'`. A tool call's `executionMs` is measured inside its checkpoint, so it is how long the tool ran; a call the durable runtime read back from its journal records none.
 
 ### Thread detail
 
@@ -256,12 +265,12 @@ It reads the same store as the governance inbox — `pendingApprovals({ actor })
 
 ## Run lifecycle tracking
 
-Both runners record each run (turn) to an `agent_run` table through `store.recordRunStart(...)` / `recordRunEnd(...)`, tracked through `running → completed | failed | cancelled` with `stepCount`, token totals, an `error`, and a `durable` flag (true under the [durable runner](/docs/agent/durability/durable-runner)). A run's messages, tool calls, and usage back-reference its `run_id`.
+Both runners record each run (turn) to an `agent_run` table through `store.recordRunStart(...)` / `recordRunEnd(...)`, tracked through `running → completed | failed | cancelled` with `stepCount`, token totals, an `error` (and its stable `error_code`), the time to first token `ttft_ms`, the last `model_id`, and a `durable` flag (true under the [durable runner](/docs/agent/durability/durable-runner)). A run's messages, tool calls, and usage back-reference its `run_id`.
 
 A delegation's child run also records `parent_run_id` — the run that asked for it — surfaced as `RunSummaryRow.parentRunId` and `null` for a turn a person started. Both runners fill it. Without it a delegation's tokens and cost read as an orphan turn on every surface built over these rows: the durable engine journals the parent→child edge, but only in its own journal, which nothing reading run rows can join to.
 
 <Callout type="info" title="The run tables come with the rest">
-`agent_run` and the `run_id` back-references are part of the one `create_agent_tables` migration — there is no separate run-tracking migration to remember. On a database provisioned before run tracking existed, that migration ALTERs the missing `run_id` columns in rather than skipping them, and the same repair adds `agent_run.parent_run_id` to a database provisioned before that column existed. Adapters backed by a store without run recording return an empty page / `null` / zeros from the run-lifecycle methods, so the surface degrades gracefully.
+`agent_run` and the `run_id` back-references are part of the one `create_agent_tables` migration — there is no separate run-tracking migration to remember. On a database provisioned before run tracking existed, that migration ALTERs the missing `run_id` columns in rather than skipping them, and the same repair adds `agent_run.parent_run_id`, `ttft_ms`, `error_code` and `model_id` to a database provisioned before those columns existed. Adapters backed by a store without run recording return an empty page / `null` / zeros from the run-lifecycle methods, so the surface degrades gracefully.
 </Callout>
 
 ## Actor labels

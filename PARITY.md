@@ -7,3 +7,11 @@ Capability parity compares observable behavior and compatible protocols, rather 
 The cross-project comparison ledger lives in [Aviary/PARITY.md](https://github.com/DavideCarvalho/nestjs-agent/blob/master/PARITY.md). Update the relevant status when a capability changes, and validate Agora's behavior locally. A compatible protocol does not imply a package dependency, coordinated publication or release-order requirement.
 
 Use `not ported` when an implementation remains incomplete. Use `not applicable` only with a framework-specific explanation. A matching export alone does not establish behavioral parity.
+
+## Paired deliveries
+
+Capabilities delivered alongside a parallel change in Aviary, recorded here until the shared ledger catches up.
+
+| Capability | Agora | Aviary |
+| --- | --- | --- |
+| Run metrics: TTFT, cost/model on run, run.failed/run.cancelled diagnostics, tool timing, dashboard latency | yes | paired delivery |

@@ -3,6 +3,8 @@ import { agentDashboard } from '../../src/telescope/dashboard.js';
 import {
   agentActiveRunsProvider,
   agentDelegationsOverTimeProvider,
+  agentFailuresByCodeProvider,
+  agentLatencyDistributionProvider,
   agentRecentApprovalsProvider,
   agentRecentDelegationsProvider,
   agentRecentRunsProvider,
@@ -84,6 +86,8 @@ describe('agentTelescopeExtension registration', () => {
         'agent.runsOverTime',
         'agent.tokensOverTime',
         'agent.recentRuns',
+        'agent.latency',
+        'agent.failuresByCode',
         'agent.toolCallsOverTime',
         'agent.recentToolCalls',
         'agent.recentApprovals',
@@ -164,6 +168,94 @@ describe('agent diagnostics events map to telescope entry shapes', () => {
     };
     expect(res.rows).toHaveLength(1);
     expect(res.rows[0]).toMatchObject({ runId: 'r-1', thread: 't-1', steps: 3, tokens: 140 });
+  });
+
+  it('activeRuns subtracts failed and cancelled runs too, not only finished ones', async () => {
+    const ctx = makeCtx([
+      entry('run.started', { runId: 'r-1' }),
+      entry('run.started', { runId: 'r-2' }),
+      entry('run.started', { runId: 'r-3' }),
+      entry('run.started', { runId: 'r-4' }),
+      entry('run.finished', { runId: 'r-1' }),
+      entry('run.failed', { runId: 'r-2', code: 'run_failed' }),
+      entry('run.cancelled', { runId: 'r-3' }),
+    ]);
+    const res = (await agentActiveRunsProvider().resolve(undefined, ctx)) as { value: number };
+    expect(res.value).toBe(1);
+  });
+
+  it('latency is a TTFT distribution with nearest-rank markers, child runs left out', async () => {
+    const ttfts = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000];
+    const ctx = makeCtx([
+      ...ttfts.map((ttftMs, i) =>
+        entry('run.finished', { runId: `r-${i}`, ttftMs, durationMs: 5000 }),
+      ),
+      // A delegation's child is part of its parent's turn.
+      entry('run.finished', { runId: 'child', parentRunId: 'r-0', ttftMs: 60_000 }),
+      // A turn that streamed no text has no TTFT sample.
+      entry('run.finished', { runId: 'silent', durationMs: 5000 }),
+      entry('run.started', { runId: 'r-x' }),
+    ]);
+    const res = (await agentLatencyDistributionProvider().resolve(undefined, ctx)) as {
+      buckets: Array<{ label: string; count: number }>;
+      p50?: number;
+      p95?: number;
+      p99?: number;
+    };
+    expect(res.buckets).toHaveLength(8);
+    expect(res.buckets.reduce((sum, b) => sum + b.count, 0)).toBe(10);
+    expect(res.buckets[0]?.label).toBe('0ms');
+    expect(res).toMatchObject({ p50: 600, p95: 1000, p99: 1000 });
+  });
+
+  it('latency with metric=duration reads the whole turn', async () => {
+    const ctx = makeCtx([
+      entry('run.finished', { durationMs: 2000, ttftMs: 100 }),
+      entry('run.finished', { durationMs: 4000 }),
+      entry('run.finished', { durationMs: 9000, parentRunId: 'p' }),
+    ]);
+    const res = (await agentLatencyDistributionProvider().resolve({ metric: 'duration' }, ctx)) as {
+      buckets: Array<{ count: number }>;
+      p50?: number;
+      p95?: number;
+    };
+    expect(res.buckets.reduce((sum, b) => sum + b.count, 0)).toBe(2);
+    expect(res).toMatchObject({ p50: 4000, p95: 4000 });
+  });
+
+  it('failuresByCode groups run.failed by code, most frequent first, missing code → unknown', async () => {
+    const ctx = makeCtx([
+      entry('run.failed', { code: 'quota_exceeded' }),
+      entry('run.failed', { code: 'run_failed' }),
+      entry('run.failed', { code: 'run_failed' }),
+      entry('run.failed', {}),
+      entry('run.cancelled', {}),
+      entry('run.finished', {}),
+    ]);
+    const res = await agentFailuresByCodeProvider().resolve(undefined, ctx);
+    expect(res).toEqual({
+      segments: [
+        { label: 'run_failed', value: 2 },
+        { label: 'quota_exceeded', value: 1 },
+        { label: 'unknown', value: 1 },
+      ],
+    });
+  });
+
+  it('a tool call the journal replayed is not counted again', async () => {
+    const ctx = makeCtx([
+      entry('tool-call', { toolCallId: 'c1', status: 'executed', durationMs: 40 }),
+      entry('tool-call', { toolCallId: 'c1', status: 'executed', replayed: true }),
+      entry('tool-call', { toolCallId: 'c2', status: 'failed', durationMs: 5 }),
+    ]);
+    const rate = (await agentToolCallSuccessRateProvider().resolve(undefined, ctx)) as {
+      value: number;
+    };
+    expect(rate.value).toBeCloseTo(0.5);
+    const overTime = (await agentToolCallsOverTimeProvider().resolve({ buckets: 1 }, ctx)) as {
+      rows: Array<{ executed: number; failed: number }>;
+    };
+    expect(overTime.rows[0]).toMatchObject({ executed: 1, failed: 1 });
   });
 
   it('activeRuns = run.started - run.finished, floored at 0', async () => {
@@ -314,6 +406,13 @@ describe('no-op when unconfigured / no telescope data', () => {
     expect(await agentRecentDelegationsProvider().resolve(undefined, ctx)).toMatchObject({
       rows: [],
     });
+    const latency = (await agentLatencyDistributionProvider().resolve(undefined, ctx)) as Record<
+      string,
+      unknown
+    >;
+    expect(latency.buckets).toHaveLength(8);
+    expect(latency).not.toHaveProperty('p50');
+    expect(await agentFailuresByCodeProvider().resolve(undefined, ctx)).toEqual({ segments: [] });
   });
 });
 

@@ -20,11 +20,10 @@ import type { DataProvider, ExtensionContext } from './telescope-sdk.js';
  *  - **Top threads by cost** (`spendByThread`) — no such query on `AgentGovernanceQueries`.
  *  - **Run retries** — `RunReliability` has no retry counter at all (Nest's `RunMetrics.retries`
  *    counts LLM-step retries; Adonis's read-model doesn't aggregate that dimension).
- *  - **Run duration percentiles** — `RunReliability` exposes one `avgDurationMs`, not p50/p95; the
- *    `agent.runs.duration` provider below returns the mean instead of a metric-selectable
- *    percentile (Nest's `query.metric === 'p95'` switch has nothing to switch to here).
- *  - **Failed-run breakdown by error code** — no `RunErrorBreakdownRow`-shaped query exists;
- *    `RunSummaryRow.error` is a per-run message, not an aggregable code.
+ *  - **Run duration percentiles** — `agent.runs.duration` below stays the mean. `RunReliability`
+ *    now carries an optional `latency` (TTFT and turn duration p50/p95) and `failuresByCode`, but an
+ *    adapter may omit both; the tab charts them from entries instead (`agent.latency`,
+ *    `agent.failuresByCode` in `data-providers.ts`), which every host has.
  *  - **Paged tool-calls / threads / runs tables** (`{ rows, total, page, limit }`, `Panel.paged`) —
  *    `AgentGovernanceQueries` has no page+total query for tool calls or threads at all
  *    (`recentToolCalls`/`recentThreads` are capped lists with no total), and `listRuns` paginates by
