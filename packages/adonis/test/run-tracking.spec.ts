@@ -150,6 +150,31 @@ describe('run tracking — inline runner (Lucid)', () => {
     expect(detail?.run.finishedAt).not.toBeNull();
   });
 
+  it('run.finished carries the turn duration and the time to the first text frame', async () => {
+    const slot = Symbol.for('@agora/diagnostics:emit');
+    const finished: Array<Record<string, unknown>> = [];
+    (globalThis as Record<symbol, unknown>)[slot] = (
+      lib: string,
+      event: string,
+      payload: unknown,
+    ) => {
+      if (lib === 'agent' && event === 'run.finished')
+        finished.push(payload as Record<string, unknown>);
+    };
+    try {
+      const { service } = buildService(() => ({ text: 'done' }));
+      const { runId } = await service.chat({ actor, message: 'hi' });
+      await collect(service, runId);
+      await waitFor(() => finished.some((p) => p.runId === runId));
+      const payload = finished.find((p) => p.runId === runId)!;
+      expect(payload.ttftMs).toBeTypeOf('number');
+      expect(payload.ttftMs as number).toBeGreaterThanOrEqual(0);
+      expect(payload.durationMs as number).toBeGreaterThanOrEqual(payload.ttftMs as number);
+    } finally {
+      delete (globalThis as Record<symbol, unknown>)[slot];
+    }
+  });
+
   it('lists a run and returns it in listRuns', async () => {
     const { service } = buildService(() => ({ text: 'done' }));
     const { runId } = await service.chat({ actor, message: 'hi' });
