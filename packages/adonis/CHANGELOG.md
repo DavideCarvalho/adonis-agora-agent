@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.82.0
+
+### Minor Changes
+
+- [#434](https://github.com/DavideCarvalho/adonis-agora-agent/pull/434) [`3855b8f`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3855b8fa1cee64deced130d86a1b3bf4aeeb4447) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `agora:agent:run.finished` carries the turn's timing: `durationMs` (turn start to end) and `ttftMs` (turn start to the first `text` frame on the stream, absent when no text went out). Both use the clock of the process running the turn, so a resumed run measures from its resume.
+
 ## 0.81.1
 
 ### Patch Changes
