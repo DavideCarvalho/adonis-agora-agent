@@ -150,29 +150,102 @@ describe('run tracking — inline runner (Lucid)', () => {
     expect(detail?.run.finishedAt).not.toBeNull();
   });
 
-  it('run.finished carries the turn duration and the time to the first text frame', async () => {
+  /** Records `agora:agent:*` events through the diagnostics slot while `fn` runs. */
+  async function captureDiagnostics(
+    fn: (events: Array<{ event: string; payload: Record<string, unknown> }>) => Promise<void>,
+  ): Promise<void> {
     const slot = Symbol.for('@agora/diagnostics:emit');
-    const finished: Array<Record<string, unknown>> = [];
+    const events: Array<{ event: string; payload: Record<string, unknown> }> = [];
     (globalThis as Record<symbol, unknown>)[slot] = (
       lib: string,
       event: string,
       payload: unknown,
     ) => {
-      if (lib === 'agent' && event === 'run.finished')
-        finished.push(payload as Record<string, unknown>);
+      if (lib === 'agent') events.push({ event, payload: payload as Record<string, unknown> });
     };
     try {
-      const { service } = buildService(() => ({ text: 'done' }));
-      const { runId } = await service.chat({ actor, message: 'hi' });
-      await collect(service, runId);
-      await waitFor(() => finished.some((p) => p.runId === runId));
-      const payload = finished.find((p) => p.runId === runId)!;
-      expect(payload.ttftMs).toBeTypeOf('number');
-      expect(payload.ttftMs as number).toBeGreaterThanOrEqual(0);
-      expect(payload.durationMs as number).toBeGreaterThanOrEqual(payload.ttftMs as number);
+      await fn(events);
     } finally {
       delete (globalThis as Record<symbol, unknown>)[slot];
     }
+  }
+
+  it('run.finished carries timing, model and who the run is', async () => {
+    await captureDiagnostics(async (events) => {
+      const { service } = buildService(() => ({ text: 'done' }));
+      const { runId } = await service.chat({ actor, message: 'hi' });
+      await collect(service, runId);
+      await waitFor(() =>
+        events.some((e) => e.event === 'run.finished' && e.payload.runId === runId),
+      );
+      const payload = events.find((e) => e.event === 'run.finished')!.payload;
+      expect(payload.ttftMs).toBeTypeOf('number');
+      expect(payload.ttftMs as number).toBeGreaterThanOrEqual(0);
+      expect(payload.durationMs as number).toBeGreaterThanOrEqual(payload.ttftMs as number);
+      expect(payload.actorId).toBe('u1');
+      expect(payload.tenantRef).toBe('t-9');
+      expect(payload.modelId).toBeTypeOf('string');
+      expect(payload).not.toHaveProperty('parentRunId');
+      expect(events.some((e) => e.event === 'run.failed')).toBe(false);
+    });
+  });
+
+  it('a failed run publishes run.failed with the stream error code, never the error', async () => {
+    await captureDiagnostics(async (events) => {
+      const sink = new InProcessTokenStreamSink();
+      const { InMemoryQuotaStore } = await import('../src/testing/index.js');
+      const factory = new AgentDepsFactory({
+        model: new FakeModelProvider(() => ({ text: 'never' })),
+        store,
+        sink,
+        rolesPolicy: new DefaultToolAuthorizer(),
+        registry: new ToolRegistry(),
+        agents: new AgentRegistry(),
+        quota: new InMemoryQuotaStore(0),
+      });
+      const service = new AgentService(new InlineAgentRunner(factory, store), store, factory);
+      const { runId } = await service.chat({ actor, message: 'hi' });
+      await collect(service, runId);
+      await waitFor(() => events.some((e) => e.event === 'run.failed'));
+      const payload = events.find((e) => e.event === 'run.failed')!.payload;
+      expect(payload).toMatchObject({
+        runId,
+        code: 'quota_exceeded',
+        actorId: 'u1',
+        tenantRef: 't-9',
+      });
+      expect(payload.durationMs).toBeTypeOf('number');
+      expect(Object.keys(payload)).not.toContain('message');
+      expect(events.some((e) => e.event === 'run.finished')).toBe(false);
+    });
+  });
+
+  it('tool-call carries the call id and how long the tool ran', async () => {
+    await captureDiagnostics(async (events) => {
+      const script: FakeScript = (_args, turnIndex) =>
+        turnIndex === 0
+          ? { text: 'looking', toolCall: { name: 'lookup', input: { q: 'x' } } }
+          : { text: 'answer' };
+      const { service, registry } = buildService(script);
+      registry.register(
+        {
+          name: 'lookup',
+          kind: 'read',
+          description: 'reads',
+          inputSchema: z.object({ q: z.string() }),
+          roles: ['ADMIN'],
+        },
+        { execute: async () => ({ found: true }) },
+      );
+      const { runId } = await service.chat({ actor, message: 'hi' });
+      await collect(service, runId);
+      await waitFor(() => events.some((e) => e.event === 'tool-call'));
+      const payload = events.find((e) => e.event === 'tool-call')!.payload;
+      expect(payload).toMatchObject({ runId, toolName: 'lookup', status: 'executed' });
+      expect(payload.toolCallId).toBeTypeOf('string');
+      expect(payload.durationMs).toBeTypeOf('number');
+      expect(payload).not.toHaveProperty('replayed');
+    });
   });
 
   it('lists a run and returns it in listRuns', async () => {

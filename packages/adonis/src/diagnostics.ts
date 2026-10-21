@@ -8,6 +8,7 @@
  * (dashboard / telescope) reads.
  */
 import diagnostics_channel, { type Channel } from 'node:diagnostics_channel';
+import type { AgentStreamErrorCode } from './stream-events.js';
 
 const EMIT_SLOT = Symbol.for('@agora/diagnostics:emit');
 type EmitFn = (lib: string, event: string, payload: unknown) => void;
@@ -27,17 +28,38 @@ export interface AgentMessageEvent {
 }
 export interface AgentToolCallEvent {
   runId: string;
+  /** The call's id — the same on every publication of it, so an observer can deduplicate. */
+  toolCallId?: string;
   toolName: string;
   toolType: 'read' | 'action';
   status: string;
+  /** How long the tool ran, when this process ran it (absent for a decision or a replay). */
   durationMs?: number;
+  /**
+   * The durable runtime replayed the call's checkpoint instead of running the tool: the call was
+   * already published by the attempt that ran it. Observers that count calls skip these.
+   */
+  replayed?: boolean;
 }
 export interface AgentQuotaExceeded {
   actorId: string;
   usedTokens: number;
   limitTokens: number;
 }
-export interface AgentRunFinished {
+/**
+ * Who and what a run is, carried by the run's terminal events so an observer can attribute them
+ * without reading the store. All optional: a run that has none of them (the default agent, no
+ * tenant) carries none.
+ */
+export interface AgentRunContext {
+  /** The agent that handled the run; absent for the default agent. */
+  agentName?: string;
+  actorId?: string;
+  tenantRef?: string;
+  /** Set on a delegation's child run: the run that started it. Not a turn of its own. */
+  parentRunId?: string;
+}
+export interface AgentRunFinished extends AgentRunContext {
   runId: string;
   threadId: string;
   steps: number;
@@ -47,6 +69,27 @@ export interface AgentRunFinished {
   durationMs?: number;
   /** From the turn's start to the first `text` frame on the stream; absent when no text went out. */
   ttftMs?: number;
+  /** The run's cost, from the steps whose cost is known; absent when none was. */
+  costUsd?: number;
+  /** The model of the run's last model call. */
+  modelId?: string;
+}
+/**
+ * A run that ended in an error (the loop threw). `code` is the stable code the stream's `error`
+ * frame carries ({@link AgentStreamErrorCode}); the error itself is never on the event.
+ */
+export interface AgentRunFailed extends AgentRunContext {
+  runId: string;
+  threadId: string;
+  code: AgentStreamErrorCode;
+  /** From the turn's start in this process to the failure. */
+  durationMs: number;
+}
+/** A run someone stopped (its abort signal fired) before it finished. */
+export interface AgentRunCancelled extends AgentRunContext {
+  runId: string;
+  threadId: string;
+  durationMs: number;
 }
 export interface AgentDelegated {
   runId: string;
@@ -82,6 +125,8 @@ export interface AgentDiagnosticPayloads {
   'tool-call': AgentToolCallEvent;
   'quota.exceeded': AgentQuotaExceeded;
   'run.finished': AgentRunFinished;
+  'run.failed': AgentRunFailed;
+  'run.cancelled': AgentRunCancelled;
   delegated: AgentDelegated;
   retrieved: AgentRetrieved;
   'tool.retry': AgentToolRetry;
@@ -119,6 +164,14 @@ export function publishAgentToolCall(payload: AgentToolCallEvent): void {
 export function publishAgentQuotaExceeded(payload: AgentQuotaExceeded): void {
   publishAgent('quota.exceeded', payload);
 }
+export function publishAgentRunFailed(payload: AgentRunFailed): void {
+  publishAgent('run.failed', payload);
+}
+
+export function publishAgentRunCancelled(payload: AgentRunCancelled): void {
+  publishAgent('run.cancelled', payload);
+}
+
 export function publishAgentRunFinished(payload: AgentRunFinished): void {
   publishAgent('run.finished', payload);
 }
