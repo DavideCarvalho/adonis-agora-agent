@@ -1,6 +1,7 @@
 import { turnChannel } from './genui/channels.js';
 import { GenuiTurnTelemetry, observeGenuiFrames } from './genui-telemetry.js';
 import { DEFAULT_REFUSAL_REASON } from './refusal.js';
+import { observeFirstText } from './turn-timing.js';
 
 export { DEFAULT_REFUSAL_REASON } from './refusal.js';
 
@@ -3142,7 +3143,8 @@ export async function runAgentLoop<TOutput = unknown>(
       .allSpecs()
       .some((spec) => spec.genui !== undefined && spec.genui.telemetry !== false);
   const genuiFrames = genuiOn ? observeGenuiFrames(await hooks.openSink()) : undefined;
-  const writer = genuiFrames?.writer ?? (await hooks.openSink());
+  const firstText = observeFirstText(genuiFrames?.writer ?? (await hooks.openSink()));
+  const writer = firstText.writer;
   const genuiTurn = new GenuiTurnTelemetry();
   let lastText = '';
   let steps = 0;
@@ -3930,12 +3932,15 @@ export async function runAgentLoop<TOutput = unknown>(
   );
 
   await writer.end();
+  const firstTextAt = firstText.firstTextAt();
   publishAgentRunFinished({
     runId: hooks.runId,
     threadId: input.threadId,
     steps,
     inputTokens: totalInput,
     outputTokens: totalOutput,
+    durationMs: Date.now() - turnStartedAt,
+    ...(firstTextAt !== undefined ? { ttftMs: firstTextAt - turnStartedAt } : {}),
   });
   return { text: lastText, ...(structured !== undefined ? { object: structured } : {}) };
 }

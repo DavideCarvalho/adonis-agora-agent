@@ -43,6 +43,10 @@ export interface AgentRunFinished {
   steps: number;
   inputTokens: number;
   outputTokens: number;
+  /** From the turn's start in this process (a resumed run: its resume) to the end. */
+  durationMs?: number;
+  /** From the turn's start to the first `text` frame on the stream; absent when no text went out. */
+  ttftMs?: number;
 }
 export interface AgentDelegated {
   runId: string;
