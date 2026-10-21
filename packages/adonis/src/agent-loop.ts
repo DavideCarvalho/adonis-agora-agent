@@ -17,9 +17,12 @@ import {
   detachedStarted,
 } from './delegation.js';
 import {
+  type AgentRunContext,
   publishAgentDelegated,
   publishAgentMessage,
   publishAgentRetrieved,
+  publishAgentRunCancelled,
+  publishAgentRunFailed,
   publishAgentRunFinished,
   publishAgentRunStarted,
   publishAgentToolCall,
@@ -1439,9 +1442,12 @@ interface SyntheticToolCall {
 }
 
 /** One invocation's result, already reduced to what the persist checkpoint writes. */
+/** How long the tool ran in this process; `replayed` when its checkpoint came from the journal. */
+type ToolTiming = { durationMs?: number; replayed?: true };
+
 type ToolOutcome =
-  | { status: 'executed'; output: unknown }
-  | { status: 'failed'; error: string; denied?: true };
+  | ({ status: 'executed'; output: unknown } & ToolTiming)
+  | ({ status: 'failed'; error: string; denied?: true } & ToolTiming);
 
 /**
  * Record the call and settle its KIND, which decides this call's control flow: an `action` suspends
@@ -1828,8 +1834,13 @@ async function invokeClaimedTool(
   // Execution retains every narrowing the offer and preparation had, including an agent-only list.
   const allowedTools = intersectAllow(personaOf(turn.input)?.allowedTools, deps.toolAllowList);
   const invokeOptions = allowedTools === undefined ? {} : { allowedTools };
+  // Set only when the step's body runs here: a checkpoint read back from the journal has no timing.
+  let ranAt: number | undefined;
+  const timing = (): ToolTiming =>
+    ranAt === undefined ? { replayed: true } : { durationMs: Date.now() - ranAt };
   try {
     const raw = await hooks.step(`tool:${call.id}`, async () => {
+      ranAt = Date.now();
       // Pushed components stream as they happen and ride this step's RESULT into the journal (see
       // `wrapToolStepOutput`), so a replay neither re-streams nor re-persists them.
       const ui = createNegotiatedUiCollector(
@@ -1942,7 +1953,7 @@ async function invokeClaimedTool(
       'reason' in raw &&
       typeof raw.reason === 'string'
     ) {
-      return { status: 'failed', error: raw.reason, denied: true };
+      return { status: 'failed', error: raw.reason, denied: true, ...timing() };
     }
     const { output, ui, text } = unwrapToolStepOutput(raw);
     if (text) turn.toolText.set(call.id, text);
@@ -1952,7 +1963,7 @@ async function invokeClaimedTool(
     if (claimed.terminal === true) {
       turn.halt.terminal = true;
     }
-    return { status: 'executed', output };
+    return { status: 'executed', output, ...timing() };
   } catch (error) {
     if (isReplayIntegrityError(error) || hooks.isControlFlowError?.(error) === true) {
       throw error;
@@ -1961,8 +1972,17 @@ async function invokeClaimedTool(
       status: 'failed',
       error: error instanceof Error ? error.message : String(error),
       ...(error instanceof ToolPreflightDeniedError ? { denied: true as const } : {}),
+      ...timing(),
     };
   }
+}
+
+/** The timing a settled invocation carries onto its `tool-call` diagnostic. */
+function toolTiming(outcome: ToolOutcome): ToolTiming {
+  return {
+    ...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}),
+    ...(outcome.replayed === true ? { replayed: true as const } : {}),
+  };
 }
 
 /** Persist one settled invocation and shape the result the model is fed. */
@@ -2016,7 +2036,14 @@ async function recordToolOutcome(
       });
       await settle();
     });
-    publishAgentToolCall({ runId: hooks.runId, toolName: call.name, toolType, status: 'failed' });
+    publishAgentToolCall({
+      runId: hooks.runId,
+      toolCallId: call.id,
+      toolName: call.name,
+      toolType,
+      status: 'failed',
+      ...toolTiming(outcome),
+    });
     return {
       id: call.id,
       name: call.name,
@@ -2036,7 +2063,14 @@ async function recordToolOutcome(
     });
     await settle();
   });
-  publishAgentToolCall({ runId: hooks.runId, toolName: call.name, toolType, status: 'executed' });
+  publishAgentToolCall({
+    runId: hooks.runId,
+    toolCallId: call.id,
+    toolName: call.name,
+    toolType,
+    status: 'executed',
+    ...toolTiming(outcome),
+  });
   return { id: call.id, name: call.name, output: outcome.output };
 }
 
@@ -2302,6 +2336,7 @@ async function elicitToolCall(
   );
   publishAgentToolCall({
     runId: hooks.runId,
+    toolCallId: call.id,
     toolName: call.name,
     toolType: 'action',
     status: result.skipped ? 'rejected' : 'executed',
@@ -2552,6 +2587,7 @@ async function runClaimedToolCall(
       });
       publishAgentToolCall({
         runId: hooks.runId,
+        toolCallId: call.id,
         toolName: call.name,
         toolType,
         status: 'rejected',
@@ -2605,6 +2641,7 @@ async function expireToolCall(
   });
   publishAgentToolCall({
     runId: hooks.runId,
+    toolCallId: call.id,
     toolName: call.name,
     toolType: 'action',
     status: 'rejected',
@@ -2988,6 +3025,58 @@ export async function runAgentLoop<TOutput = unknown>(
   requested: AgentRunInput,
   hooks: AgentLoopHooks,
 ): Promise<AgentLoopResult<TOutput>> {
+  const startedAt = Date.now();
+  try {
+    return await runAgentTurn(boundDeps, requested, hooks);
+  } catch (error) {
+    publishRunEnded(error, requested, hooks, startedAt);
+    throw error;
+  }
+}
+
+/** Who and what the run is, for its terminal diagnostics. */
+function runContext(input: AgentRunInput): AgentRunContext {
+  return {
+    ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+    actorId: input.actor.id,
+    ...(input.actor.tenantRef !== undefined && input.actor.tenantRef !== null
+      ? { tenantRef: input.actor.tenantRef }
+      : {}),
+    ...(input.parentRunId !== undefined ? { parentRunId: input.parentRunId } : {}),
+  };
+}
+
+/**
+ * `run.failed` / `run.cancelled` for a loop that threw. A durable control-flow signal (suspend on an
+ * approval or a question, continue-as-new) is not an ending — the run goes on — so it publishes
+ * nothing; a run whose abort signal fired was stopped; anything else failed, under the same code the
+ * stream's `error` frame carries.
+ */
+function publishRunEnded(
+  error: unknown,
+  input: AgentRunInput,
+  hooks: AgentLoopHooks,
+  startedAt: number,
+): void {
+  if (!isReplayIntegrityError(error) && hooks.isControlFlowError?.(error) === true) return;
+  const base = {
+    runId: hooks.runId,
+    threadId: input.threadId,
+    durationMs: Date.now() - startedAt,
+    ...runContext(input),
+  };
+  if (hooks.abortSignal?.aborted === true) {
+    publishAgentRunCancelled(base);
+    return;
+  }
+  publishAgentRunFailed({ ...base, code: streamErrorCode(error) });
+}
+
+async function runAgentTurn<TOutput = unknown>(
+  boundDeps: AgentLoopDeps<TOutput>,
+  requested: AgentRunInput,
+  hooks: AgentLoopHooks,
+): Promise<AgentLoopResult<TOutput>> {
   // The persona, FIRST and only when the run names one by id: its definition is read from config
   // once and frozen in this checkpoint, so a run resumed after the persona was edited or removed
   // keeps the prompt and allow-list it started with. A run that names none spends no position here
@@ -3154,6 +3243,7 @@ export async function runAgentLoop<TOutput = unknown>(
   // priced). If NO step had a cost, the run's `cost_usd` stays `null` — never a fabricated `0`.
   let totalCost = 0;
   let hasCost = false;
+  let lastModelId: string | undefined;
   let structured: TOutput | undefined;
 
   publishAgentRunStarted({
@@ -3498,6 +3588,7 @@ export async function runAgentLoop<TOutput = unknown>(
 
     // provider-reported model wins over the configured fallback, so cost can't misattribute
     const resolvedModelId = turn.modelId ?? deps.modelId ?? 'unknown';
+    lastModelId = resolvedModelId;
     // Provider-reported spend wins; else an estimate from the (once-per-run cached) price list; else
     // `null` — stamped onto the persisted assistant message's `usage.costUsd` below.
     // `resolveModelPrice` e não `priceByModel.get`: o provider responde com o snapshot datado
@@ -3941,6 +4032,9 @@ export async function runAgentLoop<TOutput = unknown>(
     outputTokens: totalOutput,
     durationMs: Date.now() - turnStartedAt,
     ...(firstTextAt !== undefined ? { ttftMs: firstTextAt - turnStartedAt } : {}),
+    ...(hasCost ? { costUsd: totalCost } : {}),
+    ...(lastModelId !== undefined ? { modelId: lastModelId } : {}),
+    ...runContext(input),
   });
   return { text: lastText, ...(structured !== undefined ? { object: structured } : {}) };
 }
