@@ -1,6 +1,6 @@
 ---
 title: Diagnostics & tracing
-description: The eight lifecycle events and four span channels the agent publishes — their exact names and payloads, what is deliberately redacted, and how to subscribe.
+description: The ten lifecycle events and four span channels the agent publishes — their exact names and payloads, what is deliberately redacted, and how to subscribe.
 icon: Activity
 ---
 
@@ -32,15 +32,17 @@ Both forms return an unsubscribe thunk. On the wire the channel names are `agora
 
 ## The events
 
-Eight names, each with a fixed payload shape.
+Ten names, each with a fixed payload shape.
 
 ### `run.started`
 
-Fires once, at the top of a turn, before the quota check.
+Fires at the top of a turn, before the quota check.
 
 ```ts
 { runId: string; threadId: string; actorId: string; persona?: string }
 ```
+
+It is published outside any checkpoint, so a [durable](/docs/agent/durability/durable-runner) run publishes it again each time it replays (a resume after an approval or a question). Count runs from their endings — `run.finished`, `run.failed`, `run.cancelled` — not from this.
 
 ### `message`
 
@@ -59,18 +61,68 @@ The type allows `'user'`, but the loop publishes only the assistant side. If you
 Note the hyphen — it is `tool-call`, not `tool.call`. Fires once per tool call, after it settles.
 
 ```ts
-{ runId: string; toolName: string; toolType: 'read' | 'action'; status: string; durationMs?: number }
+{
+  runId: string
+  toolCallId?: string
+  toolName: string
+  toolType: 'read' | 'action'
+  status: string
+  durationMs?: number
+  replayed?: true
+}
 ```
 
-`status` is `'executed'`, `'failed'`, or `'rejected'` (a HITL denial). `durationMs` is declared but **never populated** — timing lives on the `tool.execution` span instead, where it is measured rather than reported.
+- `status` is `'executed'`, `'failed'`, or `'rejected'` (a HITL denial, or an approval that expired).
+- `toolCallId` is the call's id, the same on every publication of it — key on it to deduplicate.
+- `durationMs` is how long the tool ran, measured inside its `tool:<callId>` checkpoint. It is set only when this process ran the tool; a decision (`rejected`) or an `ask` has none.
+- `replayed: true` marks a call whose checkpoint the durable runtime read back from its journal instead of running the tool. The attempt that ran it already published it, so **skip these when counting** calls. The same `durationMs` is stored on the call's row as `execution_ms`.
 
 ### `run.finished`
 
-Fires once, when the turn settles.
+Fires once, when the turn completes.
 
 ```ts
-{ runId: string; threadId: string; steps: number; inputTokens: number; outputTokens: number }
+{
+  runId: string
+  threadId: string
+  steps: number
+  inputTokens: number
+  outputTokens: number
+  durationMs?: number // turn start → end
+  ttftMs?: number // turn start → first non-empty `text` frame on the stream
+  costUsd?: number // sum of the steps whose cost is known; absent when none was
+  modelId?: string // the last model call's model
+  // AgentRunContext — who and what the run is:
+  agentName?: string
+  actorId?: string
+  tenantRef?: string
+  parentRunId?: string // set on a delegation's child run: not a turn of its own
+}
 ```
+
+`ttftMs` is the time to first token as the reader sees it: a frame an output gate held back counts when it was released. It is absent when the turn streamed no text. Both timings use the clock of the process running the turn, so a run resumed elsewhere measures from its resume. `ttftMs` and `modelId` are also stored on the run's row (`ttft_ms`, `model_id`) for the [read-model](/docs/agent/governance/read-model).
+
+### `run.failed`
+
+Fires when the loop throws.
+
+```ts
+{ runId: string; threadId: string; code: AgentStreamErrorCode; durationMs: number } & AgentRunContext
+```
+
+`code` is the same stable code the stream's `error` frame carries — `quota_exceeded`, `output_rejected`, `structured_output_invalid`, `replay_diverged`, `model_no_output`, or `run_failed` for anything else — and is stored on the run's row as `error_code`. The error itself is **never** on the event. A durable control-flow signal (suspending on an approval or a question, continue-as-new) is not an ending and publishes nothing. A failure the durable engine retries can publish more than once for the same run — key on `runId`.
+
+### `run.cancelled`
+
+Fires when the run's abort signal fired — someone pressed Stop — before it finished.
+
+```ts
+{ runId: string; threadId: string; durationMs: number } & AgentRunContext
+```
+
+<Callout type="info" title="Endings outside the loop are not published">
+`run.failed` and `run.cancelled` come from the loop. A run the dead-run reaper settles, or one cancelled from another process without its loop unwinding here, gets the row update but no event.
+</Callout>
 
 ### `delegated`
 
@@ -105,12 +157,12 @@ Fires once per [transient retry](/docs/agent/authoring/transient-retry) — on t
 ```
 
 <Callout type="warn" title="Never emitted today">
-This one is part of the typed contract but the loop does not publish it — it throws `QuotaExceededError` without emitting. Do not build an alert on it. To detect an over-budget turn today, watch for a `run.started` with no matching `run.finished`, or catch the error at your own boundary.
+This one is part of the typed contract but the loop does not publish it — it throws `QuotaExceededError` without emitting. Do not build an alert on it: an over-budget turn shows up as a `run.failed` with `code: 'quota_exceeded'`.
 </Callout>
 
 ## What is redacted, and why
 
-Every payload above carries **lengths and counts, never content**. `message` carries `textLength`, not the text. `retrieved` carries `queryLength`, not the query. `tool-call` carries the name and status, not the input or output.
+Every payload above carries **lengths and counts, never content**. `message` carries `textLength`, not the text. `retrieved` carries `queryLength`, not the query. `tool-call` carries the name and status, not the input or output. `run.failed` carries the stable `code`, not the error message.
 
 This is not squeamishness: diagnostics are the least-guarded surface in the stack. They fan out to log aggregators, APM vendors, and a browser-facing dashboard, all of which sit outside whatever access control the conversation itself has. A prompt or a tool result routinely carries exactly the data your governance layer exists to protect, so the safe default is that it never leaves the loop through this channel. The full content is in the [governance read-model](/docs/agent/governance/read-model), behind the gate.
 
