@@ -1,4 +1,5 @@
 import type { GenuiErrorCategory } from './genui/sandbox-validate.js';
+import { type Latency, percentile, summarizeLatency } from './run-metrics.js';
 /**
  * Generative-UI telemetry: one row per UI tool call (`ui__render`, `ui__sandbox`, `ui__show_*`,
  * `ui__show`), recorded by the loop through `AgentStore.recordGenuiCalls` and read back by the
@@ -101,11 +102,8 @@ export interface GenuiDayRow {
   firstTryRate: number | null;
 }
 
-export interface GenuiLatency {
-  samples: number;
-  p50Ms: number | null;
-  p95Ms: number | null;
-}
+/** Time to a UI tool's first and complete frame — the same distribution run latency reports. */
+export type GenuiLatency = Latency;
 
 /** What the dashboard's Generative UI page shows. */
 export interface GenuiStats {
@@ -173,11 +171,6 @@ export function genuiRowsInRange<T extends { createdAt: Date }>(
   const start = new Date(`${range.fromDay}T00:00:00.000Z`);
   const end = new Date(`${range.toDay}T23:59:59.999Z`);
   return rows.filter((row) => row.createdAt >= start && row.createdAt <= end);
-}
-
-function percentile(sorted: number[], p: number): number | null {
-  if (sorted.length === 0) return null;
-  return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] ?? null;
 }
 
 function rate(successes: number, attempts: number): number | null {
@@ -321,10 +314,7 @@ export function summarizeGenuiCalls(rows: readonly GenuiCallRow[]): GenuiStats {
     if (firstFrame !== undefined) firstFrames.push(firstFrame);
     if (complete !== undefined) completes.push(complete);
   }
-  const ascending = (values: number[]) => [...values].sort((a, b) => a - b);
-  const costs = ascending(turnCosts);
-  const firstSorted = ascending(firstFrames);
-  const completeSorted = ascending(completes);
+  const costs = [...turnCosts].sort((a, b) => a - b);
   return {
     totals,
     byToolModel: [...toolModel.values()].sort(
@@ -347,16 +337,8 @@ export function summarizeGenuiCalls(rows: readonly GenuiCallRow[]): GenuiStats {
       p95Usd: percentile(costs, 0.95),
     },
     latency: {
-      firstFrame: {
-        samples: firstSorted.length,
-        p50Ms: percentile(firstSorted, 0.5),
-        p95Ms: percentile(firstSorted, 0.95),
-      },
-      complete: {
-        samples: completeSorted.length,
-        p50Ms: percentile(completeSorted, 0.5),
-        p95Ms: percentile(completeSorted, 0.95),
-      },
+      firstFrame: summarizeLatency(firstFrames),
+      complete: summarizeLatency(completes),
     },
   };
 }

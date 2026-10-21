@@ -369,6 +369,13 @@ export {
   type RedisTokenStreamSinkOptions,
 } from './redis-token-stream-sink.js';
 export { isReplayIntegrityError } from './replay-integrity.js';
+export type {
+  Latency,
+  RunFailureCodeRow,
+  RunMetrics,
+  RunMetricsSample,
+} from './run-metrics.js';
+export { summarizeLatency, summarizeRunMetrics } from './run-metrics.js';
 export { InlineAgentRunner } from './runners/inline-agent-runner.js';
 export {
   actorScope,

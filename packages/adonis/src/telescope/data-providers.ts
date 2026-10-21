@@ -1,3 +1,4 @@
+import { percentile } from '../run-metrics.js';
 import type { DataProvider, ExtensionContext, TelescopeEntryLike } from './telescope-sdk.js';
 
 /**
@@ -39,6 +40,18 @@ interface AgentEntryContent {
     toolType?: 'read' | 'action';
     status?: string;
     durationMs?: number;
+    /** `run.finished`: turn start → first non-empty `text` frame. */
+    ttftMs?: number;
+    costUsd?: number;
+    modelId?: string;
+    agentName?: string;
+    /** Set on a delegation's child run. */
+    parentRunId?: string;
+    /** `run.failed`: the stable stream error code (`quota_exceeded`, `run_failed`…). */
+    code?: string;
+    toolCallId?: string;
+    /** `tool-call`: re-published for a checkpoint read back from the journal — not a new call. */
+    replayed?: boolean;
     steps?: number;
     inputTokens?: number;
     outputTokens?: number;
@@ -65,6 +78,12 @@ export async function fetchEntries(
   limit = ENTRY_LIMIT,
 ): Promise<TelescopeEntryLike[]> {
   return ctx.store.list({ type: 'diagnostic', tag: 'lib:agent', limit });
+}
+
+/** A `tool-call` entry for a call that ran, not one re-published when the journal replayed it. */
+function isFreshToolCall(e: TelescopeEntryLike): boolean {
+  const content = contentOf(e);
+  return content.event === 'tool-call' && content.payload?.replayed !== true;
 }
 
 function countEvent(entries: TelescopeEntryLike[], event: string): number {
@@ -127,9 +146,10 @@ export function bucketIndexFor(
 // ─── Runs ───────────────────────────────────────────────────────────────────
 
 /**
- * Net in-flight runs = `run.started` − `run.finished` over the window (default 24h; `windowMs: 0` =
- * all-time). Floored at 0. A cheap "how many agent runs are live right now" stat derived purely from the
- * captured event stream — no live run store is consulted.
+ * Net in-flight runs = `run.started` − every ending (`run.finished`, `run.failed`, `run.cancelled`)
+ * over the window (default 24h; `windowMs: 0` = all-time). Floored at 0. A cheap "how many agent runs
+ * are live right now" stat derived purely from the captured event stream — no live run store is
+ * consulted.
  */
 export function agentActiveRunsProvider(): DataProvider {
   return {
@@ -138,8 +158,11 @@ export function agentActiveRunsProvider(): DataProvider {
       const windowMs = Number(query?.windowMs ?? DAY_MS);
       const { current } = splitWindows(await fetchEntries(ctx), windowMs, Date.now());
       const started = countEvent(current, 'run.started');
-      const finished = countEvent(current, 'run.finished');
-      return { value: Math.max(0, started - finished) };
+      const ended =
+        countEvent(current, 'run.finished') +
+        countEvent(current, 'run.failed') +
+        countEvent(current, 'run.cancelled');
+      return { value: Math.max(0, started - ended) };
     },
   };
 }
@@ -192,7 +215,7 @@ export function agentToolCallSuccessRateProvider(): DataProvider {
       let executed = 0;
       let other = 0;
       for (const e of current) {
-        if (contentOf(e).event !== 'tool-call') continue;
+        if (!isFreshToolCall(e)) continue;
         const status = contentOf(e).payload?.status;
         if (status === 'executed') executed += 1;
         else if (status === 'rejected' || status === 'failed') other += 1;
@@ -276,6 +299,85 @@ export function agentRecentRunsProvider(): DataProvider {
   };
 }
 
+// ─── Run latency & failures ──────────────────────────────────────────────────
+
+/** Equal-width buckets a distribution panel draws. */
+const DISTRIBUTION_BUCKETS = 8;
+
+const durationLabel = (ms: number): string =>
+  ms < 1000 ? `${Math.round(ms)}ms` : `${Math.round(ms / 100) / 10}s`;
+
+/**
+ * Turn latency as a distribution, from `run.finished` over the window (default 24h; `windowMs: 0` =
+ * all-time): `query.metric` `'ttft'` (default — turn start → first text frame; a turn that streamed
+ * no text has no sample) or `'duration'` (the whole turn). A delegation's child run is left out: it is
+ * part of its parent's turn, the same rule the read-model's `RunReliability.latency` follows.
+ * Percentiles are nearest-rank and omitted when there are no samples.
+ */
+export function agentLatencyDistributionProvider(): DataProvider {
+  return {
+    name: 'agent.latency',
+    async resolve(query, ctx) {
+      const windowMs = Number(query?.windowMs ?? DAY_MS);
+      const metric = query?.metric === 'duration' ? 'durationMs' : 'ttftMs';
+      const { current } = splitWindows(await fetchEntries(ctx), windowMs, Date.now());
+      const samples: number[] = [];
+      for (const e of current) {
+        const content = contentOf(e);
+        if (content.event !== 'run.finished' || content.payload?.parentRunId !== undefined)
+          continue;
+        const value = content.payload?.[metric];
+        if (typeof value === 'number' && Number.isFinite(value)) samples.push(value);
+      }
+      samples.sort((a, b) => a - b);
+      const max = samples.at(-1) ?? 0;
+      const size = Math.max(1, Math.ceil((max + 1) / DISTRIBUTION_BUCKETS));
+      const buckets = Array.from({ length: DISTRIBUTION_BUCKETS }, (_, i) => ({
+        label: durationLabel(i * size),
+        count: 0,
+      }));
+      for (const value of samples) {
+        const bucket = buckets[Math.min(DISTRIBUTION_BUCKETS - 1, Math.floor(value / size))];
+        if (bucket) bucket.count += 1;
+      }
+      if (samples.length === 0) return { buckets };
+      return {
+        buckets,
+        p50: percentile(samples, 0.5),
+        p95: percentile(samples, 0.95),
+        p99: percentile(samples, 0.99),
+      };
+    },
+  };
+}
+
+/**
+ * Failed runs by the stable code their stream `error` frame carried, from `run.failed` over the
+ * window (default 24h; `windowMs: 0` = all-time), most frequent first. An entry without a code is
+ * `unknown`.
+ */
+export function agentFailuresByCodeProvider(): DataProvider {
+  return {
+    name: 'agent.failuresByCode',
+    async resolve(query, ctx) {
+      const windowMs = Number(query?.windowMs ?? DAY_MS);
+      const { current } = splitWindows(await fetchEntries(ctx), windowMs, Date.now());
+      const counts = new Map<string, number>();
+      for (const e of current) {
+        const content = contentOf(e);
+        if (content.event !== 'run.failed') continue;
+        const code = content.payload?.code ?? 'unknown';
+        counts.set(code, (counts.get(code) ?? 0) + 1);
+      }
+      return {
+        segments: [...counts.entries()]
+          .map(([label, value]) => ({ label, value }))
+          .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label)),
+      };
+    },
+  };
+}
+
 // ─── Tools & approvals ────────────────────────────────────────────────────────
 
 /** Tool calls over time — executed/rejected/failed per bucket (the `tool-call` event). */
@@ -291,7 +393,7 @@ export function agentToolCallsOverTimeProvider(): DataProvider {
         failed: 0,
       }));
       for (const e of entries) {
-        if (contentOf(e).event !== 'tool-call') continue;
+        if (!isFreshToolCall(e)) continue;
         const row = rows[bucketIndexFor(e, minTime, bucketSize, buckets)];
         if (!row) continue;
         const status = contentOf(e).payload?.status;

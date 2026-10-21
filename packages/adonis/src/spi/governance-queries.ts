@@ -1,4 +1,5 @@
 import type { GenuiStats } from '../genui-telemetry.js';
+import type { Latency, RunFailureCodeRow } from '../run-metrics.js';
 
 /**
  * A read-model over the persisted agent data (usage ⋈ pricing, tool calls, threads) for the
@@ -127,6 +128,15 @@ export interface RunSummaryRow {
   costUsd: number | null;
   error: string | null;
   durable: boolean;
+  /**
+   * Turn start → first text frame, for a completed run that streamed text. Optional: an adapter that
+   * predates it omits it; `null` when the run didn't record one.
+   */
+  ttftMs?: number | null;
+  /** A failed run's stable stream error code (`quota_exceeded`, `run_failed`…); optional, as `ttftMs`. */
+  errorCode?: string | null;
+  /** The completed run's last model; optional, as `ttftMs`. */
+  modelId?: string | null;
 }
 
 /**
@@ -220,6 +230,12 @@ export interface PerToolStatRow {
   rejected: number;
   /** Mean `executionMs` across calls that recorded one; `null` when none did. */
   avgDurationMs: number | null;
+  /**
+   * Nearest-rank median / 95th percentile of the same `executionMs` samples; `null` when none did.
+   * Optional: an adapter that predates them omits them.
+   */
+  p50ExecutionMs?: number | null;
+  p95ExecutionMs?: number | null;
 }
 
 /** Run count + failure count for one agent, part of {@link RunReliability.byAgent}. */
@@ -261,6 +277,16 @@ export interface RunReliability {
   byAgent?: RunAgentBreakdownRow[];
   /** Daily run/failure counts over the same range, oldest first. Optional, same reason as {@link byAgent}. */
   trend?: RunTrendPoint[];
+  /**
+   * Time to first token and turn duration of the range's completed turns — a person's turns only, a
+   * delegation's child run is part of its parent's. Optional, same reason as {@link byAgent}.
+   */
+  latency?: { ttft: Latency; duration: Latency };
+  /**
+   * Failed runs by their stream error code, most frequent first; a failure recorded before codes
+   * were is `'unknown'`. Optional, same reason as {@link byAgent}.
+   */
+  failuresByCode?: RunFailureCodeRow[];
 }
 
 /** Thread metadata + LIFETIME usage rollup (not range-scoped) for the thread governance drill-down. */

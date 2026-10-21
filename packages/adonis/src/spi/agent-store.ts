@@ -213,6 +213,15 @@ export interface RecordRunEndInput {
   outputTokens?: number;
   costUsd?: number;
   error?: string;
+  /**
+   * Turn start → first non-empty `text` frame, on `completed`. The clock is the finishing process's,
+   * so a durable run resumed elsewhere measures from its resume. Omitted when no text went out.
+   */
+  ttftMs?: number;
+  /** The stable code a failure's stream `error` frame carries (`quota_exceeded`, `run_failed`…). */
+  errorCode?: string;
+  /** The last model call's id, on `completed`. */
+  modelId?: string;
 }
 
 /** Which thread, and how many of its newest messages, {@link ThreadTurnReader.loadThreadForTurn} reads. */

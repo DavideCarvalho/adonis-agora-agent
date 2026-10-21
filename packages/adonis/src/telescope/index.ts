@@ -26,6 +26,8 @@ export { type AgentDashboardOptions, agentDashboard } from './dashboard.js';
 export {
   agentActiveRunsProvider,
   agentDelegationsOverTimeProvider,
+  agentFailuresByCodeProvider,
+  agentLatencyDistributionProvider,
   agentRecentApprovalsProvider,
   agentRecentDelegationsProvider,
   agentRecentRunsProvider,

@@ -146,6 +146,8 @@ const toolStatRows: PerToolStatRow[] = [
     failed: 2,
     rejected: 0,
     avgDurationMs: 130,
+    p50ExecutionMs: 110,
+    p95ExecutionMs: 420,
   },
   {
     toolName: 'refund_order',
@@ -561,6 +563,10 @@ describe('ToolsSection', () => {
     const firstToolBefore = screen.getAllByRole('row')[1]?.textContent ?? '';
     expect(firstToolBefore).toContain('search_orders');
 
+    // The execution percentiles, and an older server's missing ones as a dash.
+    expect(screen.getByText('420ms')).toBeTruthy();
+    expect(screen.getAllByRole('row')[2]?.textContent ?? '').toContain('—');
+
     // Sort by rejected desc → refund_order (3) rises to the top.
     fireEvent.click(screen.getByText(/^Rejected/));
     await waitFor(() => {
@@ -625,6 +631,35 @@ describe('ReliabilitySection', () => {
     await waitFor(() => expect(screen.getByText('Success rate')).toBeTruthy());
     expect(screen.queryByText('By agent')).toBeNull();
     expect(screen.queryByText('Runs vs failed')).toBeNull();
+    expect(screen.queryByText('Time to first token')).toBeNull();
+    expect(screen.queryByText('Failures by code')).toBeNull();
+  });
+
+  it('renders turn latency and failures by code when the server provides them', async () => {
+    const client = fakeClient({
+      runReliability: vi.fn().mockResolvedValue({
+        ...reliability,
+        latency: {
+          ttft: { samples: 80, p50Ms: 640, p95Ms: 2100 },
+          duration: { samples: 82, p50Ms: 3200, p95Ms: 12_500 },
+        },
+        failuresByCode: [
+          { code: 'run_failed', count: 7 },
+          { code: 'quota_exceeded', count: 3 },
+        ],
+      } as RunReliability),
+    } as Partial<AgentClient>);
+    renderWith(client, <ReliabilitySection />);
+
+    await waitFor(() => expect(screen.getByText('Time to first token')).toBeTruthy());
+    expect(screen.getByText('640ms')).toBeTruthy();
+    expect(screen.getByText(/p95 2\.1s · 80 turns/)).toBeTruthy();
+    expect(screen.getByText('Turn duration')).toBeTruthy();
+    expect(screen.getByText(/p95 12\.5s · 82 turns/)).toBeTruthy();
+    expect(screen.getByText('Failures by code')).toBeTruthy();
+    // Once in the donut's legend, once in the table.
+    expect(screen.getAllByText('quota_exceeded').length).toBe(2);
+    expect(screen.getByRole('img', { name: 'failures by code' })).toBeTruthy();
   });
 });
 

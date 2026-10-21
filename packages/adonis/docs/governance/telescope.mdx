@@ -1,12 +1,12 @@
 ---
 title: Telescope "Agent" tab
-description: A first-party Telescope extension — nine sections spanning live activity, spend, run reliability, governance and RAG, plus the provider/section API for adding your own panels.
+description: A first-party Telescope extension — ten sections spanning live activity, spend, run reliability, governance and RAG, plus the provider/section API for adding your own panels.
 icon: Telescope
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-`agentTelescopeExtension` contributes an **"Agent" dashboard** to [`@adonis-agora/telescope`](/docs/telescope): nine sections covering live run activity, spend and usage, run reliability, the governance feeds, and RAG retrieval quality. It lives on the `@adonis-agora/agent/telescope` subpath.
+`agentTelescopeExtension` contributes an **"Agent" dashboard** to [`@adonis-agora/telescope`](/docs/telescope): ten sections covering live run activity, turn latency and failures, spend and usage, run reliability, the governance feeds, and RAG retrieval quality. It lives on the `@adonis-agora/agent/telescope` subpath.
 
 ## Wire it
 
@@ -39,6 +39,7 @@ When `governanceQueries` is unset (or `false`), the governance-backed providers 
 | --- | --- | --- |
 | **Runs** | entries | Active runs, 24h token usage, tool-call success rate |
 | **Run activity** | entries | Runs over time, tokens over time |
+| **Run latency** | entries | Time to first token and turn duration (distributions, p50/p95/p99), failures by code (donut) |
 | **Tools & approvals** | entries | Tool calls over time, recent tool calls, recent approvals |
 | **Delegations & tokens** | entries | Delegations over time, recent delegations |
 | **Spend & usage** | read-model | Total spend (USD), total tokens, spend by model (donut) |
@@ -50,7 +51,9 @@ When `governanceQueries` is unset (or `false`), the governance-backed providers 
 A few of the numbers have caveats worth knowing before you act on them:
 
 - **Success rate** is `completed / runs`, gauged with warn at 95% and bad at 90%.
-- **Average run duration** is a mean over settled runs, not a percentile — a single very slow run moves it.
+- **Average run duration** is a mean over settled runs, not a percentile — a single very slow run moves it. The **Run latency** distributions are the percentiles: completed turns a person started (a delegation's child run is part of its parent's turn), from `run.finished`. A turn that streamed no text has no time to first token.
+- **Active runs** is `run.started` minus every ending — `run.finished`, `run.failed` and `run.cancelled` — in the window.
+- **Failures by code** groups `run.failed` by the stable code its stream `error` frame carried (`quota_exceeded`, `model_no_output`, `run_failed`…).
 - **Pending approvals** counts the inbox up to 500 rows, so a backlog larger than that reads as exactly 500.
 - **Zero-hit rate** is the fraction of retrievals that returned no passages, gauged with warn at 10% and bad at 25%. A rising line usually means the corpus lost coverage or a [retrieval filter](/docs/agent/retrieval/rag) is scoping too tightly.
 - The **spend rollups price an unpriced model at $0**, so seed the pricing table before reading a total as authoritative.
@@ -114,7 +117,7 @@ export default defineConfig({
 })
 ```
 
-Both are **appended**, never spliced in: your providers come after the built-ins and your sections after the ninth, so the tab's own layout is stable across upgrades and a name collision is impossible in the direction that matters.
+Both are **appended**, never spliced in: your providers come after the built-ins and your sections after the tenth, so the tab's own layout is stable across upgrades and a name collision is impossible in the direction that matters.
 
 <Callout type="warn" title="The `agent.` prefix is reserved, and it throws">
 Every built-in provider is named `agent.<something>`. A host provider whose `name` starts with `agent.` would shadow or be shadowed by one, so `agentTelescopeExtension()` **throws at construction** rather than resolving the ambiguity silently:

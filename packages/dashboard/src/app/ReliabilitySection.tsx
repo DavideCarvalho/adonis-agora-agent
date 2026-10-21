@@ -1,6 +1,8 @@
 import { formatCount, formatDuration, formatPercent } from '../client/format.js';
-import type { RunReliability, RunTrendPoint } from '../client/types.js';
-import { AsyncBlock, Empty, Panel, SectionTitle, ShareBar, Stat } from './ui.js';
+import type { DonutSegment } from '../client/spend-summary.js';
+import type { Latency, RunFailureCodeRow, RunReliability, RunTrendPoint } from '../client/types.js';
+import { Donut } from './Donut.js';
+import { AsyncBlock, colorAt, Empty, Panel, SectionTitle, ShareBar, Stat } from './ui.js';
 import { useReliability } from './use-governance.js';
 
 /** One outcome slice of the reliability donut, with its semantic CSS colour token. */
@@ -170,10 +172,77 @@ function ReliabilityTrendChart({ points }: { points: RunTrendPoint[] }) {
   );
 }
 
+/** A latency headline: p50 as the value, p95 and the sample count underneath. */
+function LatencyStat({ label, latency }: { label: string; latency: Latency }) {
+  return (
+    <Stat
+      label={label}
+      value={formatDuration(latency.p50Ms)}
+      sub={`p50 · p95 ${formatDuration(latency.p95Ms)} · ${formatCount(latency.samples)} turns`}
+    />
+  );
+}
+
+/** Failed runs split by the stable code their stream `error` frame carried: a donut and a table. */
+function FailuresByCode({ rows }: { rows: RunFailureCodeRow[] }) {
+  const total = rows.reduce((sum, row) => sum + row.count, 0);
+  const segments: DonutSegment[] = [];
+  let offset = 0;
+  for (const row of rows) {
+    const fraction = total > 0 ? row.count / total : 0;
+    segments.push({ key: row.code, value: row.count, fraction, offset });
+    offset += fraction;
+  }
+  return (
+    <div className="grid cols-2" style={{ alignItems: 'center' }}>
+      <div style={{ display: 'grid', placeItems: 'center', gap: 14 }}>
+        <Donut
+          segments={segments}
+          centerLabel={formatCount(total)}
+          centerSub="failed"
+          label="failures by code"
+        />
+        <div className="legend" style={{ width: '100%' }}>
+          {rows.slice(0, 6).map((row, i) => (
+            <div className="row" key={row.code}>
+              <span className="swatch" style={{ background: colorAt(i) }} />
+              <span className="name mono">{row.code}</span>
+              <span className="mono tnum muted">{formatCount(row.count)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Code</th>
+              <th className="num">Failed</th>
+              <th style={{ width: 160 }}>Share</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={row.code}>
+                <td className="mono">{row.code}</td>
+                <td className="num mono tnum">{formatCount(row.count)}</td>
+                <td>
+                  <ShareBar fraction={total > 0 ? row.count / total : 0} color={colorAt(i)} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /**
  * The run reliability surface from `GET /agent/governance/reliability`: success / failure / cancel
  * rates + mean settled duration, shown as headline stats, a hand-rolled outcome donut with a legend,
- * per-rate bars, a daily runs/failed trend chart, and a per-agent breakdown table.
+ * per-rate bars, turn latency (time to first token, duration), failures by code, a daily runs/failed
+ * trend chart, and a per-agent breakdown table.
  */
 export function ReliabilitySection() {
   const reliability = useReliability();
@@ -267,6 +336,20 @@ export function ReliabilitySection() {
                   </table>
                 </div>
               </div>
+
+              {r.latency !== undefined && (
+                <div className="grid cols-2">
+                  <LatencyStat label="Time to first token" latency={r.latency.ttft} />
+                  <LatencyStat label="Turn duration" latency={r.latency.duration} />
+                </div>
+              )}
+
+              {r.failuresByCode !== undefined && r.failuresByCode.length > 0 && (
+                <Panel>
+                  <SectionTitle title="Failures by code" hint="the code the run's error carried" />
+                  <FailuresByCode rows={r.failuresByCode} />
+                </Panel>
+              )}
 
               {r.trend !== undefined && r.trend.length > 0 && (
                 <Panel>

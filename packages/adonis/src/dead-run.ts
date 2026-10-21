@@ -18,10 +18,16 @@ import { releaseThreadRun } from './spi/chat-queue.js';
  */
 export async function settleDeadRun(
   store: AgentStore,
-  args: { runId: string; threadId?: string; error: string },
+  args: { runId: string; threadId?: string; error: string; errorCode?: string },
 ): Promise<void> {
   await store
-    .recordRunEnd({ runId: args.runId, status: 'failed', error: args.error })
+    .recordRunEnd({
+      runId: args.runId,
+      status: 'failed',
+      error: args.error,
+      // A run found dead has no error of its own to code: the generic crash, like its stream's.
+      errorCode: args.errorCode ?? 'run_failed',
+    })
     .catch(() => undefined);
   await store.failUnsettledToolCalls?.(args.runId, RUN_ENDED_BEFORE_TOOL_CALL).catch(() => 0);
   if (args.threadId !== undefined) {

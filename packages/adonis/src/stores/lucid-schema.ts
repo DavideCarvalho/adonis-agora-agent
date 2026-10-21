@@ -252,6 +252,9 @@ export function createTableStatements(): string[] {
       "cost_usd" DOUBLE PRECISION NULL,
       "error" TEXT NULL,
       "durable" INTEGER NOT NULL DEFAULT 0,
+      "ttft_ms" INTEGER NULL,
+      "error_code" VARCHAR(64) NULL,
+      "model_id" VARCHAR(255) NULL,
       FOREIGN KEY ("thread_id") REFERENCES "${t.threads}" ("id") ON DELETE CASCADE
     )`,
     `CREATE INDEX IF NOT EXISTS "${t.runs}_started_idx" ON "${t.runs}" ("started_at")`,
@@ -382,6 +385,11 @@ const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }
   // Where a usage row's `cost_usd` came from: 'provider' | 'estimate'. NULL on rows from before it
   // existed, which only ever held a provider-reported cost.
   { table: AGENT_TABLES.tokenUsage, column: 'cost_source', type: 'VARCHAR(16) NULL' },
+  // A run's time to first token, its failure's stream error code and its last model. NULL on a run
+  // from before they were recorded, and on the runs they don't apply to.
+  { table: AGENT_TABLES.runs, column: 'ttft_ms', type: 'INTEGER NULL' },
+  { table: AGENT_TABLES.runs, column: 'error_code', type: 'VARCHAR(64) NULL' },
+  { table: AGENT_TABLES.runs, column: 'model_id', type: 'VARCHAR(255) NULL' },
 ];
 
 /**

@@ -21,6 +21,7 @@ import type {
   ToolStatsRange,
   UsageTrendPoint,
 } from '../index.js';
+import { summarizeLatency, summarizeRunMetrics } from '../run-metrics.js';
 import { modelPriceCandidates } from '../spi/pricing-store.js';
 import type {
   GovernanceRunRow,
@@ -64,6 +65,9 @@ function runToSummary(run: GovernanceRunRow): RunSummaryRow {
     costUsd: run.costUsd ?? null,
     error: run.error ?? null,
     durable: run.durable,
+    ttftMs: run.ttftMs ?? null,
+    errorCode: run.errorCode ?? null,
+    modelId: run.modelId ?? null,
   };
 }
 
@@ -382,8 +386,7 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
         calls: number;
         failed: number;
         rejected: number;
-        durationSum: number;
-        durationCount: number;
+        durations: number[];
       }
     >();
     for (const call of this.store.governanceToolCalls()) {
@@ -395,20 +398,17 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
         calls: 0,
         failed: 0,
         rejected: 0,
-        durationSum: 0,
-        durationCount: 0,
+        durations: [],
       };
       bucket.calls += 1;
       if (call.status === 'failed') bucket.failed += 1;
       if (call.status === 'rejected') bucket.rejected += 1;
-      if (call.executionMs !== undefined) {
-        bucket.durationSum += call.executionMs;
-        bucket.durationCount += 1;
-      }
+      if (call.executionMs !== undefined) bucket.durations.push(call.executionMs);
       byTool.set(key, bucket);
     }
     const result: PerToolStatRow[] = [];
     for (const bucket of byTool.values()) {
+      const execution = summarizeLatency(bucket.durations);
       result.push({
         toolName: bucket.toolName,
         toolType: bucket.toolType,
@@ -416,7 +416,11 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
         failed: bucket.failed,
         rejected: bucket.rejected,
         avgDurationMs:
-          bucket.durationCount === 0 ? null : bucket.durationSum / bucket.durationCount,
+          bucket.durations.length === 0
+            ? null
+            : bucket.durations.reduce((a, b) => a + b, 0) / bucket.durations.length,
+        p50ExecutionMs: execution.p50Ms,
+        p95ExecutionMs: execution.p95Ms,
       });
     }
     result.sort(
@@ -433,11 +437,13 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
     let durationSum = 0;
     let durationCount = 0;
     let total = 0;
+    const inRange: GovernanceRunRow[] = [];
     const byAgent = new Map<string | null, { runs: number; failed: number; completed: number }>();
     const byDay = new Map<string, { runs: number; failed: number }>();
     for (const run of this.store.governanceRuns()) {
       if (!withinOptionalRange(run.startedAt.slice(0, 10), range)) continue;
       total += 1;
+      inRange.push(run);
       if (run.status === 'completed') completed += 1;
       else if (run.status === 'failed') failed += 1;
       else if (run.status === 'cancelled') cancelled += 1;
@@ -488,6 +494,16 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
       avgDurationMs: durationCount === 0 ? null : durationSum / durationCount,
       byAgent: byAgentRows,
       trend,
+      ...summarizeRunMetrics(
+        inRange.map((run) => ({
+          status: run.status,
+          parentRunId: run.parentRunId ?? null,
+          startedAt: Date.parse(run.startedAt),
+          finishedAt: run.finishedAt !== undefined ? Date.parse(run.finishedAt) : null,
+          ttftMs: run.ttftMs ?? null,
+          errorCode: run.errorCode ?? null,
+        })),
+      ),
     };
   }
 

@@ -55,6 +55,42 @@ describe('createAgentTables repairs a run table that predates parent tracking', 
     expect(await hasParentColumn()).toBe(true);
   });
 
+  it('ALTERs in the run metrics columns (ttft_ms, error_code, model_id) and the store fills them', async () => {
+    await runTableWithoutParent();
+    const raw = db.connection('sqlite');
+    for (const column of ['ttft_ms', 'error_code', 'model_id']) {
+      expect(await raw.schema.hasColumn('agent_run', column)).toBe(false);
+    }
+
+    const repairs = await createAgentTables(asStoreDb(db));
+
+    expect(repairs).toEqual(
+      expect.arrayContaining(['agent_run.ttft_ms', 'agent_run.error_code', 'agent_run.model_id']),
+    );
+    for (const column of ['ttft_ms', 'error_code', 'model_id']) {
+      expect(await raw.schema.hasColumn('agent_run', column)).toBe(true);
+    }
+
+    const store = new LucidAgentStore(asStoreDb(db), { autoCreateTables: false });
+    const actor = { id: 'u1', roles: ['ADMIN'] };
+    const thread = await store.createThread({ actor, persona: 'default' });
+    await store.recordRunStart({ runId: 'run-1', threadId: thread.id, actor });
+    await store.recordRunEnd({ runId: 'run-1', status: 'completed', ttftMs: 420, modelId: 'm-1' });
+    await store.recordRunStart({ runId: 'run-2', threadId: thread.id, actor });
+    await store.recordRunEnd({
+      runId: 'run-2',
+      status: 'failed',
+      error: 'boom',
+      errorCode: 'model_no_output',
+    });
+
+    const queries = new LucidGovernanceQueries(asStoreDb(db));
+    expect((await queries.runDetail('run-1'))?.run).toMatchObject({ ttftMs: 420, modelId: 'm-1' });
+    expect((await queries.runDetail('run-2'))?.run).toMatchObject({
+      errorCode: 'model_no_output',
+    });
+  });
+
   it('leaves the repaired schema writable by the store and readable by the read-model', async () => {
     await runTableWithoutParent();
     await createAgentTables(asStoreDb(db));
