@@ -488,7 +488,7 @@
     "@streamdown/math": "1.0.3",
     "@streamdown/mermaid": "1.0.3",
     "@tailwindcss/vite": "4.3.3",
-    "@tanstack/intent": "0.5.5",
+    "@tanstack/intent": "0.5.6",
     "@testcontainers/mysql": "12.2.1",
     "@testcontainers/postgresql": "12.2.1",
     "@testing-library/dom": "10.4.2",
