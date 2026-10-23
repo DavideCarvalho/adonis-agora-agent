@@ -97,7 +97,7 @@ What makes the overlap safe is *when* a checkpoint position is handed out: `ctx.
 
 ### Bounding the history
 
-Without a `historyWindow`, every message the store holds rides every turn: a long-lived thread grows until the provider rejects the request, and pays for the whole transcript until then. `SlidingWindowHistory` keeps the newest messages that fit a message count, a token budget, or both, and can fold what it left out into a leading `system` summary via `summarizeWithModel(model)` — recorded as a `summary` usage row, so bounding context cost never becomes spend nothing accounts for.
+Without a `historyWindow`, every message the store holds rides every turn: a long-lived thread grows until the provider rejects the request, and pays for the whole transcript until then. `SlidingWindowHistory` keeps the newest messages that fit a message count, a token budget, or both, and can fold what it left out into a summary via `summarizeWithModel(model)` — appended to the turn's system prompt, after every other block, never sent as a `system` message in the conversation (AI SDK 7 refuses those); `renderSummary` words it, `renderHistorySummary` is the default — recorded as a `summary` usage row, so bounding context cost never becomes spend nothing accounts for.
 
 The window's two halves run in deliberately different places. `select` is a **pure** function called *outside* any checkpoint — safe because its input already is one (`load:thread`'s cached result), so a replay reaches the same split. That is what lets a window exist without moving a single position. `summarize` calls a model, so it runs *inside* `history:summarize`: a resumed run reads back the summary the suspended attempt produced instead of prompting with a different one.
 

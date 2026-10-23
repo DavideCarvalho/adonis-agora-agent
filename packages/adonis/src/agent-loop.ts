@@ -42,6 +42,7 @@ import {
   normalizeElicitationReply,
   settleElicitation,
 } from './elicitation.js';
+import { renderHistorySummary } from './history-window.js';
 import {
   buildMemoryBlock,
   type MemoryConfig,
@@ -930,9 +931,29 @@ function resolveCostUsd(
 /** The cost a usage row persists — see {@link resolveUsageCost}, the rule every engine records by. */
 const usageCost = resolveUsageCost;
 
-/** Renders a folded-history summary as the leading `system` message of a windowed turn. */
-function buildSummaryBlock(summary: string): string {
-  return `<conversation_summary>\n${summary}\n</conversation_summary>\nEarlier messages in this thread are no longer included verbatim. Treat the summary above as an accurate record of them.`;
+/**
+ * Split a windowed history into the `system` messages it leads with — the folded summary — and the
+ * conversation after them. The summary reaches the model through the system prompt, never as a
+ * message: AI SDK 7 refuses `system` messages in `messages` (`AI_InvalidPromptError`), and a
+ * provider that tolerates them still reads them as part of the conversation rather than as standing
+ * instructions.
+ *
+ * The window's result keeps its old shape (the summary as a leading `system` message) on purpose: a
+ * run that recorded the single `history:window` checkpoint journaled exactly that array, and its
+ * replay is lifted here the same way a fresh run is.
+ */
+function liftLeadingSystem(messages: ModelMessage[]): {
+  system: string[];
+  messages: ModelMessage[];
+} {
+  let index = 0;
+  while (messages[index]?.role === 'system') {
+    index += 1;
+  }
+  return {
+    system: messages.slice(0, index).map((message) => message.content),
+    messages: messages.slice(index),
+  };
 }
 
 /**
@@ -1162,7 +1183,8 @@ async function applyHistoryWindow(
       }),
     );
   }
-  return [{ role: 'system', content: buildSummaryBlock(summary.text) }, ...keep];
+  const render = window.renderSummary?.bind(window) ?? renderHistorySummary;
+  return [{ role: 'system', content: render(summary.text) }, ...keep];
 }
 
 /**
@@ -3246,6 +3268,9 @@ async function runAgentTurn<TOutput = unknown>(
   // With no window configured this whole block is skipped, so an existing deployment sends the
   // messages `load:thread` returned and records byte-identical checkpoints.
   let modelMessages: ModelMessage[] = thread.messages;
+  // The folded summary of what the window left out, appended to the system prompt just before the
+  // first model call — see {@link liftLeadingSystem}.
+  let historyBlocks: string[] = [];
   if (deps.historyWindow !== undefined) {
     const window = deps.historyWindow;
     modelMessages = (await (hooks.patched?.(HISTORY_SELECT_PATCH) ?? Promise.resolve(true)))
@@ -3258,6 +3283,9 @@ async function runAgentTurn<TOutput = unknown>(
         await hooks.step('history:window', () =>
           applyHistoryWindow(window, deps, input, hooks, thread.messages, (_name, fn) => fn()),
         );
+    const lifted = liftLeadingSystem(modelMessages);
+    modelMessages = lifted.messages;
+    historyBlocks = lifted.system;
   }
 
   // Generative-UI telemetry: when each UI call's frames reach the stream (only watched when the
@@ -3399,7 +3427,7 @@ async function runAgentTurn<TOutput = unknown>(
     });
   }
 
-  // The skills catalog, LAST of the things that write the system block (base prompt, persona,
+  // The skills catalog, LAST of the agent's own blocks in the system prompt (base prompt, persona,
   // retrieved context, this) — so a reader of the assembled prompt meets the agent's own
   // instructions before the menu of ones it could go and fetch.
   //
@@ -3445,6 +3473,13 @@ async function runAgentTurn<TOutput = unknown>(
     if (asked !== null) {
       modelMessages.push(asked);
     }
+  }
+
+  // The history summary, LAST in the system block: it stands in for the oldest part of the
+  // conversation, so it reads right before the messages that continue it — and, being the part that
+  // changes as the thread grows, it sits after every stable block a provider's prompt cache keys on.
+  for (const block of historyBlocks) {
+    if (block !== '') system = `${system}\n\n${block}`;
   }
 
   // NOTE: no try/finally around this loop. A durable runner suspends by THROWING through the stack

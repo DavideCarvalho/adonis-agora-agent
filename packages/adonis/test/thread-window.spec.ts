@@ -194,20 +194,25 @@ describe('agent loop — reading the thread through the store’s window', () =>
     const store = new WindowingStore();
     const thread = await seed(store, 6, 64);
 
-    const observed = await pass({
+    let summarized = '';
+    await pass({
       journal: new Journal(),
       store,
       threadId: thread.id,
       historyWindow: new SlidingWindowHistory({
         maxMessages: 2,
         summarize: async (messages) => ({ text: `folded ${messages.length}` }),
+        renderSummary: (text) => {
+          summarized = text;
+          return text;
+        },
       }),
     });
 
     // A read bounded to what `select` KEEPS drops nothing, so the summary would stand in for no
     // messages at all — silently, in a prompt that is missing them.
     expect(store.queries).toEqual([{ threadId: thread.id }]);
-    expect(observed[0]?.content).toContain('folded 11');
+    expect(summarized).toBe('folded 11');
   });
 
   it('asks for no row limit where the ceiling names no message count', async () => {

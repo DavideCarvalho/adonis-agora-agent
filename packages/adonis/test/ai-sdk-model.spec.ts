@@ -304,8 +304,8 @@ describe('aiSdkModel', () => {
     });
 
     const passed = streamTextMock.mock.calls[0]?.[0].messages;
+    expect(streamTextMock.mock.calls[0]?.[0].instructions).toBe('sys');
     expect(passed).toEqual([
-      { role: 'system', content: 'sys' },
       { role: 'user', content: 'ask' },
       {
         role: 'assistant',
@@ -326,6 +326,33 @@ describe('aiSdkModel', () => {
         ],
       },
     ]);
+  });
+
+  it('hoists every system message into instructions, after the turn system prompt, in order', async () => {
+    const messages: ModelMessage[] = [
+      { role: 'system', content: 'summary' },
+      { role: 'user', content: 'ask' },
+      { role: 'assistant', content: 'answer' },
+      { role: 'system', content: 'reminder' },
+      { role: 'system', content: '  ' },
+      { role: 'user', content: 'again' },
+    ];
+
+    await aiSdkModel('openai/gpt-4o').runTurn({
+      system: 'base',
+      messages,
+      tools: [],
+      sink: createSink(),
+    });
+
+    const call = streamTextMock.mock.calls[0]?.[0];
+    expect(call.instructions).toBe('base\n\nsummary\n\nreminder');
+    expect(call.messages).toEqual([
+      { role: 'user', content: 'ask' },
+      { role: 'assistant', content: 'answer' },
+      { role: 'user', content: 'again' },
+    ]);
+    expect('allowSystemInMessages' in call).toBe(false);
   });
 
   it('never sends an empty assistant message or a blank text part', async () => {
@@ -401,8 +428,8 @@ describe('aiSdkModel', () => {
     });
 
     const passed = streamTextMock.mock.calls[0]?.[0].messages;
+    expect(streamTextMock.mock.calls[0]?.[0].instructions).toBe('sys');
     expect(passed).toEqual([
-      { role: 'system', content: 'sys' },
       { role: 'user', content: 'search for x' },
       {
         role: 'assistant',

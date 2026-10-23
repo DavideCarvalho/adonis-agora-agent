@@ -43,6 +43,11 @@ export interface SlidingWindowHistoryOptions {
    * are simply gone. {@link summarizeWithModel} is the built-in.
    */
   summarize?: NonNullable<HistoryWindow['summarize']>;
+  /**
+   * How the summary is worded in the system prompt. Undefined → {@link renderHistorySummary}. Must be
+   * pure — it runs outside any checkpoint.
+   */
+  renderSummary?: NonNullable<HistoryWindow['renderSummary']>;
 }
 
 /**
@@ -62,6 +67,7 @@ export class SlidingWindowHistory implements HistoryWindow {
   private readonly maxTokens: number | undefined;
   private readonly estimate: (message: ModelMessage) => number;
   readonly summarize?: NonNullable<HistoryWindow['summarize']>;
+  readonly renderSummary?: NonNullable<HistoryWindow['renderSummary']>;
 
   constructor(options: SlidingWindowHistoryOptions = {}) {
     this.maxMessages = options.maxMessages ?? 40;
@@ -69,6 +75,9 @@ export class SlidingWindowHistory implements HistoryWindow {
     this.estimate = options.estimate ?? estimateMessageTokens;
     if (options.summarize !== undefined) {
       this.summarize = options.summarize;
+    }
+    if (options.renderSummary !== undefined) {
+      this.renderSummary = options.renderSummary;
     }
   }
 
@@ -114,6 +123,14 @@ function tokenCut(
  */
 export const DEFAULT_HISTORY_SUMMARY_INSTRUCTION =
   'Summarize this conversation for an assistant that will continue it without seeing these messages. Preserve decisions made, facts and constraints the user stated, identifiers and names mentioned, and anything left unresolved. Omit pleasantries. Reply with the summary only — no preamble, no headings.';
+
+/**
+ * The default wording of a folded-history summary in the system prompt: the summary in a delimited
+ * block, followed by a note that the messages it stands in for are no longer sent verbatim.
+ */
+export function renderHistorySummary(summary: string): string {
+  return `<conversation_summary>\n${summary}\n</conversation_summary>\nEarlier messages in this thread are no longer included verbatim. Treat the summary above as an accurate record of them.`;
+}
 
 /**
  * A {@link HistoryWindow.summarize} backed by one extra, non-streamed model call. Writes to a

@@ -244,16 +244,12 @@ async function runTurnOn(
   // schema the SDK can convert; for anything else the call goes out unconstrained and the loop
   // reads the JSON out of the reply text, which is what `toSdkOutput` returning undefined means.
   const output = args.outputSchema !== undefined ? toSdkOutput(args.outputSchema) : undefined;
+  const prompt = hoistSystemMessages(args.system, args.messages);
   const result = streamText({
     ...settings,
     ...withOpenRouterUsageAccounting(model, settings.providerOptions),
     model,
-    instructions: args.system,
-    messages: mapMessages(args.messages),
-    // `mapMessages` keeps `system` messages in the thread (the `historyWindow` summary is one), and
-    // AI SDK 7 rejects any by default (`AI_InvalidPromptError`), which failed every turn of a thread
-    // long enough to be summarized.
-    allowSystemInMessages: true,
+    ...prompt,
     tools: mapTools(args.tools),
     ...(output !== undefined ? { output } : {}),
     ...(args.abortSignal ? { abortSignal: args.abortSignal } : {}),
@@ -347,11 +343,37 @@ function streamToolKind(toolName: string, tools: ToolDefinition[]): 'read' | 'ac
     : 'read';
 }
 
+/**
+ * The turn's `instructions` and `messages`, with every `system` message the conversation carries
+ * moved into `instructions` — in order, after the turn's own system prompt.
+ *
+ * AI SDK 7 refuses a `system` message in `messages` (`AI_InvalidPromptError: System messages are not
+ * allowed in the prompt or messages fields. Use the instructions option instead.`), and even with
+ * `allowSystemInMessages` some providers refuse one that follows a user or assistant message. A
+ * `ModelMessage` may still be `system` (a stored one, or a host's own provider wrapper feeding this
+ * one), so the adapter hoists rather than trusting every caller to have kept them out.
+ */
+function hoistSystemMessages(
+  system: string,
+  messages: ModelMessage[],
+): { instructions: string; messages: SdkModelMessage[] } {
+  const parts = system === '' ? [] : [system];
+  const conversation: ModelMessage[] = [];
+  for (const message of messages) {
+    if (message.role === 'system') {
+      if (message.content.trim() !== '') parts.push(message.content);
+    } else {
+      conversation.push(message);
+    }
+  }
+  return { instructions: parts.join('\n\n'), messages: mapMessages(conversation) };
+}
+
+/** Maps the conversation's user and assistant messages; `system` ones are {@link hoistSystemMessages}'s. */
 function mapMessages(messages: ModelMessage[]): SdkModelMessage[] {
   const out: SdkModelMessage[] = [];
   for (const message of messages) {
     if (message.role === 'system') {
-      out.push({ role: 'system', content: message.content });
       continue;
     }
     if (message.role === 'user') {
