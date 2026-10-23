@@ -80,6 +80,22 @@ export function onAgentEngine(listener: (engine: WorkflowEngine) => void): () =>
   return () => engineListeners.delete(listener);
 }
 
+let stepServer: unknown;
+
+/**
+ * @internal Where the app's durable engine serves dispatched steps by name (its transport) —
+ * recorded by the provider before the agent workflow is registered, so the text channels dispatch
+ * their phases there.
+ */
+export function rememberAgentStepServer(server: unknown): void {
+  stepServer = server;
+}
+
+/** @internal See {@link rememberAgentStepServer}. */
+export function registeredAgentStepServer(): unknown {
+  return stepServer;
+}
+
 /** @internal The engine a detached delegation starts on — see {@link DurableAgentContext.engine}. */
 export function agentEngine(context: DurableAgentContext): WorkflowEngine | undefined {
   return context.engine ?? registered;

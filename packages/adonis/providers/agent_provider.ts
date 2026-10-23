@@ -809,6 +809,23 @@ export default class AgentProvider {
       const { DurableAgentRunner, registerAgentWorkflow, setDurableAgentContext } = await import(
         '../src/durable/index.js'
       );
+      // Where the engine serves dispatched steps (its transport): the text channels run their
+      // phases there, in whichever process takes them. Absent (an older durable, a role without
+      // one) → the channels run their phases in the workflow's process.
+      const { rememberAgentStepServer } = await import('../src/durable/agent-run-context.js');
+      const transportBinding = '@adonis-agora/durable:transport' as never;
+      let transport: unknown;
+      try {
+        if (this.app.container.hasBinding(transportBinding))
+          transport = await this.app.container.make(transportBinding);
+      } catch {
+        transport = undefined;
+      }
+      rememberAgentStepServer(
+        typeof (transport as { handle?: unknown } | undefined)?.handle === 'function'
+          ? transport
+          : undefined,
+      );
       setDurableAgentContext({ factory, store, queue, engine });
       registerAgentWorkflow(engine);
       return new DurableAgentRunner(engine, store, queue, sink);

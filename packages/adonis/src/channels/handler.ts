@@ -6,7 +6,11 @@ import {
 } from '../action-proposal-text.js';
 import { AgentService, AttachmentRefusedError, type ChatSendOptions } from '../agent-service.js';
 import type { AttachmentLimits } from '../attachment-limits.js';
-import { onAgentEngine, registeredAgentEngine } from '../durable/agent-run-context.js';
+import {
+  onAgentEngine,
+  registeredAgentEngine,
+  registeredAgentStepServer,
+} from '../durable/agent-run-context.js';
 import type { ElicitationQuestion } from '../elicitation.js';
 import { uiActionText } from '../genui/actions.js';
 import type { UiCapabilities } from '../genui/capabilities.js';
@@ -30,11 +34,17 @@ import type { Actor, PageContext } from '../types.js';
 import {
   type ChannelExecutor,
   type ChannelJob,
+  type ChannelJobIo,
+  type ChannelPhase,
+  type ChannelPhaseInput,
   type ChannelRetryOptions,
-  type ChannelStepRunner,
+  type ChannelRunner,
+  type ChannelStepServer,
   type ChannelWorkflowEngine,
   durableExecutor,
   inlineExecutor,
+  inlineIo,
+  isControlFlowSignal,
   jobId,
   registerChannelWorkflows,
   withRetries,
@@ -123,6 +133,11 @@ export interface ChannelHookContext {
   channel: string;
   conversation: string;
   message: InboundMessage;
+  /**
+   * Every message the turn is made of, in the order they arrived — set only when `coalesce` grouped
+   * several into one turn (`message` is then one of them: the one the hook is about, or the first).
+   */
+  coalesced?: readonly InboundMessage[];
 }
 
 /** One message about to go out — what {@link ChannelHandleOptions.canDeliver} checks. */
@@ -183,6 +198,13 @@ export interface ChannelTurnStarted {
   message: InboundMessage;
   /** The message waits in the thread's queue (its run starts later under `runId`). */
   queued: boolean;
+  /**
+   * Every message the turn is made of, in order — set only when `coalesce` grouped several (then
+   * `message` is the first of them).
+   */
+  coalesced?: readonly InboundMessage[];
+  /** From the webhook taking the (first) message to its turn starting, in ms. */
+  queueWaitMs?: number;
 }
 
 /**
@@ -226,6 +248,16 @@ export interface ChannelTurnEnded {
   outcome: ChannelTurnOutcome;
   /** What failed, for `outcome: 'failed'` from an error (after its retries). */
   error?: unknown;
+  /**
+   * Every message the turn was made of, in order — set only when `coalesce` grouped several (then
+   * `message` is the first of them). A message grouped into another's turn is told about here, on
+   * that turn: its own job ends without a call of its own.
+   */
+  coalesced?: readonly InboundMessage[];
+  /** The files the turn was sent with (after refusals and `transformInbound`), when it started one. */
+  attachments?: number;
+  /** From the webhook taking the (first) message to its turn starting, in ms — when a turn started. */
+  queueWaitMs?: number;
 }
 
 /** What {@link ChannelHandleOptions.prepareMedia} makes of a downloaded file. */
@@ -243,6 +275,44 @@ export interface ChannelInbound {
   /** The text (with prepared media's text appended). */
   text: string;
   attachments: AttachmentRef[];
+  /**
+   * The messages a coalesced turn is made of, each with its own text (its caption, with its prepared
+   * media's text) and its own files — set only when `coalesce` grouped several. `text` is their
+   * texts joined in order and `attachments` their files in order; rebuild them from `parts` to,
+   * say, put each caption next to its file.
+   */
+  parts?: ChannelInboundPart[];
+}
+
+/** One message of a coalesced turn — see {@link ChannelInbound.parts}. */
+export interface ChannelInboundPart {
+  message: InboundMessage;
+  text: string;
+  attachments: AttachmentRef[];
+}
+
+/**
+ * Group a burst of messages into one turn — see {@link ChannelHandleOptions.coalesce}.
+ */
+export interface ChannelCoalesceOptions {
+  /**
+   * How long the conversation must stay quiet after its last message before the burst becomes a
+   * turn. Every message waits at least this long before it is answered.
+   */
+  quietMs: number;
+  /**
+   * The longest a burst is held, from its first message being taken, however long the person keeps
+   * writing. Default: 30 s (or `quietMs`, when longer).
+   */
+  maxWaitMs?: number;
+  /** The most messages one turn groups; the rest go to the next turn. Default 20. */
+  maxMessages?: number;
+  /**
+   * Which messages may be grouped — e.g. only files. One it returns `false` for is handled alone
+   * (and ends a burst). Default: every message but a control one (a button press, a text decision,
+   * an answer to a question), which is never grouped.
+   */
+  when?(message: InboundMessage): boolean;
 }
 
 export interface ChannelHandleOptions {
@@ -325,6 +395,26 @@ export interface ChannelHandleOptions {
    * in this process (a restart loses what is in flight). An engine → that one.
    */
   durable?: boolean | ChannelWorkflowEngine;
+  /**
+   * Where a durable job's phases run as DISPATCHED steps (`agora.channel.prepare`, `.act`, `.read`,
+   * …), so any process that registered the channel runs them and any process continues the job: a
+   * durable `Transport` (anything with `handle(name, fn)`). Default: the transport of the app's
+   * durable engine (from the container) when the channel runs on the agent's engine, or the engine's
+   * own `handleStep`. `false`, or none found → each phase runs in the process that runs the
+   * workflow (`ctx.localStep`).
+   */
+  durableSteps?: ChannelStepServer | false;
+  /**
+   * Group a burst of messages of one conversation into ONE turn — "oi" / "tudo bem?" / "queria saber
+   * X", or ten files sent in a row: a message waits until the conversation has been quiet for
+   * `quietMs` (at most `maxWaitMs`, at most `maxMessages` messages), then the burst is one turn —
+   * texts joined in order, every file attached (each message's files prepared and refused as
+   * alone). Control messages are never grouped: a button press, a text decision ("yes") or an
+   * answer to a question is handled on its own, in order, and ends a burst. Messages that arrive
+   * while a grouped turn runs go to the next turn. With a durable engine the wait is the engine's
+   * durable sleep (any process resumes it); inline, a timer. Off by default.
+   */
+  coalesce?: ChannelCoalesceOptions;
   /** How each phase of a message is retried when it fails. */
   retry?: ChannelRetryOptions;
   /** How long a message id (and what was delivered for it) is remembered. Default 24 h. */
@@ -536,8 +626,8 @@ async function containerService(): Promise<ChannelTurnService> {
 /** One registered channel: what `channels.onSettled` and the durable jobs reach it by. */
 interface Registration {
   adapter: ChannelAdapter;
-  /** Process one job (a message, a resume, a timeout). */
-  run(job: ChannelJob, step: ChannelStepRunner): Promise<void>;
+  /** Process one job (a message, a resume, a timeout), and each of its phases. */
+  runner: ChannelRunner;
   /** Relay an executed proposal's outcome once; `false` when it was not relayed. */
   relay(
     proposal: ActionProposal,
@@ -554,7 +644,7 @@ interface Registration {
 const registry = new Map<string, Registration>();
 
 /** The job runner of the channel registered under `channel` in this process. */
-const runnerFor = (channel: string) => registry.get(channel)?.run;
+const runnerFor = (channel: string) => registry.get(channel)?.runner;
 
 let following = false;
 /** Register the channel workflows on the agent's durable engine, now or once it is wired. */
@@ -562,7 +652,11 @@ function followAgentEngine(): void {
   if (following) return;
   following = true;
   onAgentEngine((engine) =>
-    registerChannelWorkflows(engine as unknown as ChannelWorkflowEngine, runnerFor),
+    registerChannelWorkflows(
+      engine as unknown as ChannelWorkflowEngine,
+      runnerFor,
+      registeredAgentStepServer() as ChannelStepServer | undefined,
+    ),
   );
 }
 
@@ -1434,6 +1528,7 @@ export function handleChannel(
     out: Outbox,
     actor: Actor,
     message: InboundMessage,
+    coalesced?: readonly InboundMessage[],
   ): Promise<{ refs: AttachmentRef[]; extra: string[] }> => {
     const refs: AttachmentRef[] = [];
     const extra: string[] = [];
@@ -1462,9 +1557,7 @@ export function handleChannel(
       try {
         let file = await adapter.download(media, { maxBytes: limits.maxBytes });
         const prepared = await options.prepareMedia?.(file, media, {
-          channel: name,
-          conversation: message.conversation,
-          message,
+          ...hookContext(message, coalesced),
           actor,
         });
         if (prepared && 'refuse' in prepared) {
@@ -1733,20 +1826,34 @@ export function handleChannel(
     return timedOut ? 'timeout' : failed ? 'failed' : blocked ? 'blocked' : 'replied';
   };
 
-  const hookContext = (message: InboundMessage): ChannelHookContext => ({
+  const hookContext = (
+    message: InboundMessage,
+    coalesced?: readonly InboundMessage[],
+  ): ChannelHookContext => ({
     channel: name,
     conversation: message.conversation,
     message,
+    ...(coalesced !== undefined && coalesced.length > 1 ? { coalesced } : {}),
   });
 
-  /** Before the turn: who is talking, and whether the app lets them through. */
-  const prepare = async (
+  /** What `prepare` came to: stop here, or the actor, the thread and (a burst) who got through. */
+  type Prepared =
+    | { stop: true; actor?: Actor | null }
+    | {
+        stop: false;
+        actor: Actor;
+        threadId: string | null;
+        /** A burst: the messages its gates let through, in order (the first is the turn's). */
+        messages?: InboundMessage[];
+      };
+
+  /** One message's gate: who sent it (`unknownSender` when nobody), and whether `beforeTurn` lets it on. */
+  const gate = async (
+    service: ChannelTurnService,
+    store: ChannelStore,
     message: InboundMessage,
-  ): Promise<
-    { stop: true; actor?: Actor | null } | { stop: false; actor: Actor; threadId: string | null }
-  > => {
-    const service = await serviceFor();
-    const store = await storeFor(service);
+    coalesced?: readonly InboundMessage[],
+  ): Promise<{ actor: Actor | null; pass: boolean }> => {
     await adapter.acknowledge?.(message).catch(() => {});
     const actor = await options.actor(message);
     if (actor === null) {
@@ -1755,47 +1862,97 @@ export function handleChannel(
         message,
       });
       const replies = options.unknownSender
-        ? replyList(await options.unknownSender(message, hookContext(message)))
+        ? replyList(await options.unknownSender(message, hookContext(message, coalesced)))
         : replyList((await textsFor(service, { actor: null, message })).unknownSender);
       for (const reply of replies) await out.reply(reply, 'gate');
-      return { stop: true, actor: null };
+      return { actor: null, pass: false };
     }
-    const gate = await options.beforeTurn?.(message, actor, hookContext(message));
-    if (gate === 'stop') return { stop: true, actor };
-    if (gate !== undefined && gate !== 'continue') {
+    const decided = await options.beforeTurn?.(message, actor, hookContext(message, coalesced));
+    if (decided === 'stop') return { actor, pass: false };
+    if (decided !== undefined && decided !== 'continue') {
       const out = outbox(store, `${name}:out:msg:${message.id}:gate`, message.conversation, {
         actor,
         message,
       });
-      for (const reply of 'replies' in gate ? gate.replies : [gate.reply])
+      for (const reply of 'replies' in decided ? decided.replies : [decided.reply])
         await out.reply(reply, 'gate');
-      return { stop: true, actor };
+      return { actor, pass: false };
     }
-    const threadId = (await options.thread(actor, message)) ?? null;
-    return { stop: false, actor, threadId };
+    return { actor, pass: true };
   };
+
+  /**
+   * Before the turn: who is talking, and whether the app lets them through. A burst goes through
+   * message by message — each one acknowledged, mapped and gated as if alone; the turn is made of
+   * those let through, as the first of them's actor.
+   */
+  const prepare = async (received: InboundMessage, batch?: InboundMessage[]): Promise<Prepared> => {
+    const service = await serviceFor();
+    const store = await storeFor(service);
+    const messages = batch !== undefined && batch.length > 1 ? batch : [received];
+    const coalesced = messages.length > 1 ? messages : undefined;
+    let first: { actor: Actor; message: InboundMessage } | undefined;
+    let known: Actor | null = null;
+    const through: InboundMessage[] = [];
+    for (const message of messages) {
+      const gated = await gate(service, store, message, coalesced);
+      known ??= gated.actor;
+      if (!gated.pass || gated.actor === null) continue;
+      first ??= { actor: gated.actor, message };
+      through.push(message);
+    }
+    if (first === undefined) return { stop: true, actor: known };
+    const threadId = (await options.thread(first.actor, first.message)) ?? null;
+    return {
+      stop: false,
+      actor: first.actor,
+      threadId,
+      ...(coalesced !== undefined ? { messages: through } : {}),
+    };
+  };
+
+  /** What `act` came to: the run to read. */
+  interface Turn {
+    runId: string;
+    threadId: string | null;
+    /** Set with `coalesce` on: the files the turn was sent with. */
+    attachments?: number;
+    /** Set with `coalesce` on: from the webhook taking the (first) message to the turn starting. */
+    queueWaitMs?: number;
+  }
+
+  /** A burst led by `leader` was handled (its turn started, or every message was stopped). */
+  const batchDoneKey = (leader: string) => `${name}:coalesce:done:${leader}`;
 
   /**
    * The message itself: an answer, a press, a decision, or a turn. Returns the run to read, if any.
    * A turn is started once per message, however often this runs: its run id is kept under the
-   * message id before anything else can fail.
+   * message id before anything else can fail. A burst (`batch`, from `coalesce`) is one turn: each
+   * message's files prepared (and refused) as if alone, texts joined in order, files together.
    */
   const act = async (
     received: InboundMessage,
     actor: Actor,
     threadId: string | null,
-  ): Promise<{ runId: string; threadId: string | null } | null> => {
+    extra: { batch?: InboundMessage[]; receivedAt?: number; leader?: string } = {},
+  ): Promise<Turn | null> => {
     const service = await serviceFor();
     const store = await storeFor(service);
+    const batch = extra.batch !== undefined && extra.batch.length > 1 ? extra.batch : undefined;
     const turnKey = `${name}:turn:${received.id}`;
+    const markDone = async () => {
+      if (extra.leader !== undefined) await store.set(batchDoneKey(extra.leader), '1', dedupeTtlMs);
+    };
     const started = await store.get(turnKey);
     if (started !== null && started !== '') {
       // This phase ran to its end before (a retry, a recovery): the same outcome.
-      return JSON.parse(started) as { runId: string; threadId: string | null } | null;
+      await markDone();
+      return JSON.parse(started) as Turn | null;
     }
     /** What this message came to, kept so a phase that runs again does not do it twice. */
-    const done = async (result: { runId: string; threadId: string | null } | null) => {
+    const done = async (result: Turn | null) => {
       await store.set(turnKey, JSON.stringify(result), dedupeTtlMs);
+      await markDone();
       return result;
     };
     const texts = await textsFor(service, { actor, message: received });
@@ -1803,46 +1960,81 @@ export function handleChannel(
       actor,
       message: received,
     });
-    const recovered = await recoverButtonId(service, store, texts, actor, threadId, received);
-    const message = recovered === undefined ? received : { ...received, buttonId: recovered };
-    const ours = message.buttonId !== undefined && BUTTON_ID.test(message.buttonId);
-    if (!ours) {
-      const waiting = await store.get(questionKey(message.conversation));
-      const pending = waiting === null ? null : (JSON.parse(waiting) as PendingQuestions);
-      if (pending !== null && (pending.threadId === null || pending.threadId === threadId)) {
-        const resume = await answerQuestion(service, store, texts, out, actor, message, pending);
-        if (resume !== 'expired')
-          return done(resume === null ? null : { runId: resume, threadId: pending.threadId });
+    let message = received;
+    let uiButton: UiButton | null = null;
+    if (batch === undefined) {
+      // A burst never holds a control message: those are handled alone.
+      const recovered = await recoverButtonId(service, store, texts, actor, threadId, received);
+      message = recovered === undefined ? received : { ...received, buttonId: recovered };
+      const ours = message.buttonId !== undefined && BUTTON_ID.test(message.buttonId);
+      if (!ours) {
+        const waiting = await store.get(questionKey(message.conversation));
+        const pending = waiting === null ? null : (JSON.parse(waiting) as PendingQuestions);
+        if (pending !== null && (pending.threadId === null || pending.threadId === threadId)) {
+          const resume = await answerQuestion(service, store, texts, out, actor, message, pending);
+          if (resume !== 'expired')
+            return done(resume === null ? null : { runId: resume, threadId: pending.threadId });
+        }
       }
+      if (await pressButton(service, out, actor, threadId, message)) return done(null);
+      // A component's button (or list entry): the user's next turn, as a UI action — the same thing
+      // a sandbox's `agent.send` and an A2UI button become.
+      uiButton = await pressedUiButton(store, message);
     }
-    if (await pressButton(service, out, actor, threadId, message)) return done(null);
-    // A component's button (or list entry): the user's next turn, as a UI action — the same thing a
-    // sandbox's `agent.send` and an A2UI button become.
-    const uiButton = await pressedUiButton(store, message);
-    const media = uiButton === null ? await attachMedia(service, texts, out, actor, message) : null;
-    let inbound: ChannelInbound = {
-      text:
-        uiButton !== null
-          ? uiActionText(
-              channelButtonAction(uiButton.button, {
-                ...(uiButton.componentId !== undefined
-                  ? { componentId: uiButton.componentId }
-                  : {}),
-                ...(uiButton.title !== undefined ? { title: uiButton.title } : {}),
-              }),
-            )
-          : [message.text, ...(media?.extra ?? [])]
-              .filter((part) => part.trim() !== '')
-              .join('\n\n'),
-      attachments: media?.refs ?? [],
-    };
+    let inbound: ChannelInbound;
+    if (batch !== undefined) {
+      const parts: ChannelInboundPart[] = [];
+      for (const part of batch) {
+        const partOut =
+          part.id === received.id
+            ? out
+            : outbox(store, `${name}:out:msg:${part.id}`, part.conversation, {
+                actor,
+                message: part,
+              });
+        const media = await attachMedia(service, texts, partOut, actor, part, batch);
+        parts.push({
+          message: part,
+          text: [part.text, ...media.extra].filter((piece) => piece.trim() !== '').join('\n\n'),
+          attachments: media.refs,
+        });
+      }
+      inbound = {
+        text: parts
+          .map((part) => part.text)
+          .filter((piece) => piece.trim() !== '')
+          .join('\n\n'),
+        attachments: parts.flatMap((part) => part.attachments),
+        parts,
+      };
+    } else {
+      const media =
+        uiButton === null ? await attachMedia(service, texts, out, actor, message) : null;
+      inbound = {
+        text:
+          uiButton !== null
+            ? uiActionText(
+                channelButtonAction(uiButton.button, {
+                  ...(uiButton.componentId !== undefined
+                    ? { componentId: uiButton.componentId }
+                    : {}),
+                  ...(uiButton.title !== undefined ? { title: uiButton.title } : {}),
+                }),
+              )
+            : [message.text, ...(media?.extra ?? [])]
+                .filter((part) => part.trim() !== '')
+                .join('\n\n'),
+        attachments: media?.refs ?? [],
+      };
+    }
     if (options.transformInbound)
       inbound = await options.transformInbound(inbound, {
-        ...hookContext(message),
+        ...hookContext(message, batch),
         actor,
         threadId,
       });
     if (
+      batch === undefined &&
       inbound.attachments.length === 0 &&
       (await decideByText(service, store, texts, out, actor, threadId, message, inbound.text))
     )
@@ -1890,6 +2082,7 @@ export function handleChannel(
             channel: name,
             conversation: message.conversation,
             messageId: message.id,
+            ...(batch !== undefined ? { messageIds: batch.map((part) => part.id) } : {}),
           },
         },
         sendOptions,
@@ -1914,7 +2107,18 @@ export function handleChannel(
     }
     // A queued message starts later under its own id: its answer is read the same way.
     const runId = sent.queued === true ? (sent.runId ?? sent.messageId) : sent.runId;
-    const turn = await done({ runId, threadId: sent.threadId });
+    // What a turn grouped (and how long it waited) is told only with `coalesce` on.
+    const measured = options.coalesce !== undefined;
+    const queueWaitMs =
+      measured && extra.receivedAt !== undefined
+        ? Math.max(0, Date.now() - extra.receivedAt)
+        : undefined;
+    const turn = await done({
+      runId,
+      threadId: sent.threadId,
+      ...(measured ? { attachments: inbound.attachments.length } : {}),
+      ...(queueWaitMs !== undefined ? { queueWaitMs } : {}),
+    });
     if (threadId === null) await options.onThreadCreated?.(sent.threadId, actor, message);
     await options.onTurnStarted?.({
       runId,
@@ -1922,8 +2126,173 @@ export function handleChannel(
       actor,
       message,
       queued: sent.queued === true,
+      ...(batch !== undefined ? { coalesced: batch } : {}),
+      ...(queueWaitMs !== undefined ? { queueWaitMs } : {}),
     });
     return turn;
+  };
+
+  // ── coalescing: the conversation's burst log ────────────────────────────────
+  //
+  // With `coalesce` on, the webhook appends each message it takes to its conversation's log (a slot
+  // per message, taken with an atomic claim) before starting its job. Jobs still run one at a time
+  // per conversation, in order: the first one to run LEADS a burst — it waits (durably) for the
+  // conversation to go quiet, then claims every later message of the log that may join it (an owner
+  // key per message, claimed once) and makes them one turn. A message's own job, when its turn
+  // comes, finds it owned by a leader whose burst was handled and ends there. A message nobody
+  // claimed (it came after the burst closed, or is a control message) leads the next one. The log is
+  // only how a leader sees what arrived — a message missing from it is still handled by its own job.
+
+  const logKey = (conversation: string, slot: number) => `${name}:coalesce:${conversation}:${slot}`;
+  const logTailKey = (conversation: string) => `${name}:coalesce:${conversation}:tail`;
+  const logHeadKey = (conversation: string) => `${name}:coalesce:${conversation}:head`;
+  const ownerKey = (messageId: string) => `${name}:coalesce:owner:${messageId}`;
+  /** Consecutive empty slots after which the log is taken to end (a slot claimed, never written). */
+  const LOG_GAP = 3;
+  const MAX_LOG_PROBES = 500;
+  /** The longest log entry (a MySQL `TEXT` holds 64 KB). */
+  const MAX_LOG_ENTRY = 60_000;
+
+  interface LogEntry {
+    id: string;
+    at: number;
+    message: InboundMessage;
+  }
+
+  /** Append a message to its conversation's log — a slot taken with a claim, then written. */
+  const appendToLog = async (store: ChannelStore, message: InboundMessage, at: number) => {
+    const conversation = message.conversation;
+    const tail = Number((await store.get(logTailKey(conversation))) ?? '0');
+    let slot = Number.isFinite(tail) && tail >= 0 ? tail : 0;
+    // The whole message, for the leader to handle it — without the provider's payload when that
+    // is too big for a store's text column; too big even so → left to its own job.
+    let value = JSON.stringify({ id: message.id, at, message } satisfies LogEntry);
+    if (value.length > MAX_LOG_ENTRY)
+      value = JSON.stringify({ id: message.id, at, message: { ...message, raw: null } });
+    if (value.length > MAX_LOG_ENTRY) return;
+    for (let probe = 0; probe < MAX_LOG_PROBES; probe++, slot++) {
+      if (!(await store.claim(logKey(conversation, slot), dedupeTtlMs))) continue;
+      await store.set(logKey(conversation, slot), value, dedupeTtlMs);
+      await store.set(logTailKey(conversation), String(slot + 1), dedupeTtlMs);
+      return;
+    }
+    // A log this full: the message is handled by its own job, alone.
+  };
+
+  /**
+   * `leader` owns `messageId` — now, or since an earlier run of this phase. A claim left without its
+   * owner (a phase that died between the two writes) is taken: only one job of a conversation looks
+   * at its log at a time.
+   */
+  const own = async (store: ChannelStore, messageId: string, leader: string) => {
+    const key = ownerKey(messageId);
+    if (!(await store.claim(key, dedupeTtlMs))) {
+      const owner = await store.get(key);
+      if (owner !== null && owner !== '') return owner === leader;
+    }
+    await store.set(key, leader, dedupeTtlMs);
+    return true;
+  };
+
+  /** What `gather` came to: wait until `wakeAt`, the burst to make one turn, or already handled. */
+  type Gathered = { wakeAt: number } | { batch: InboundMessage[] } | { absorbed: string };
+
+  /** A message that is never grouped: a press, a text decision — and what `when` turns away. */
+  const groupable = (service: ChannelTurnService, message: InboundMessage) => {
+    if (message.buttonId !== undefined || message.buttonWithoutId === true) return false;
+    if (message.text.trim() !== '') {
+      const vocabulary =
+        service.actionProposalVocabulary?.() ?? DEFAULT_TEXT_ACTION_PROPOSAL_VOCABULARY;
+      if (parseTextActionProposalCommand(message.text, vocabulary).status === 'command')
+        return false;
+    }
+    return options.coalesce?.when?.(message) ?? true;
+  };
+
+  /**
+   * One look at the burst `job`'s message would lead: wait more (`wakeAt`), or claim it and the
+   * messages that join it. A message a leader already took ends its own job (`absorbed`) — unless
+   * that leader's burst was never handled (it failed before its turn), then it goes on alone.
+   */
+  const gather = async (job: ChannelJob & { kind: 'message' }): Promise<Gathered> => {
+    const service = await serviceFor();
+    const store = await storeFor(service);
+    const self = job.message;
+    const alone: Gathered = { batch: [self] };
+    if (!(await own(store, self.id, self.id))) {
+      const owner = await store.get(ownerKey(self.id));
+      if (owner !== null && (await store.get(batchDoneKey(owner))) !== null)
+        return { absorbed: owner };
+      return alone;
+    }
+    const config = options.coalesce;
+    if (config === undefined || !(config.quietMs > 0)) return alone;
+    // Every message of a question in progress is an answer, read one at a time.
+    if (!groupable(service, self) || (await store.get(questionKey(self.conversation))) !== null)
+      return alone;
+    const maxMessages = Math.max(1, Math.floor(config.maxMessages ?? 20));
+    const maxWaitMs = config.maxWaitMs ?? Math.max(30_000, config.quietMs);
+    const receivedAt = job.receivedAt ?? Date.now();
+    const conversation = self.conversation;
+    const slotOf = (value: string | null) => {
+      const slot = Number(value ?? '0');
+      return Number.isFinite(slot) && slot >= 0 ? Math.floor(slot) : 0;
+    };
+    const head = slotOf(await store.get(logHeadKey(conversation)));
+    const tail = slotOf(await store.get(logTailKey(conversation)));
+    const joining: Array<LogEntry & { slot: number }> = [];
+    /** Slots of messages nobody had taken when they were read (but this one). */
+    const open: number[] = [];
+    let lastSlot: number | undefined;
+    let seenSelf = false;
+    let lastAt = receivedAt;
+    let gap = 0;
+    let closed = false;
+    for (let slot = head; slot < Math.max(head, tail) + MAX_LOG_PROBES; slot++) {
+      const saved = await store.get(logKey(conversation, slot));
+      if (saved === null) {
+        gap++;
+        if (gap >= LOG_GAP && slot >= tail) break;
+        continue;
+      }
+      gap = 0;
+      lastSlot = slot;
+      const entry = JSON.parse(saved) as LogEntry;
+      if (entry.id === self.id) {
+        seenSelf = true;
+        continue;
+      }
+      const owner = await store.get(ownerKey(entry.id));
+      if (owner !== null && owner !== '') continue;
+      open.push(slot);
+      // What came before this message (out of order, by a hair) is left to its own job.
+      if (closed || (!seenSelf && entry.at < receivedAt)) continue;
+      if (
+        joining.length + 1 >= maxMessages ||
+        entry.message.from !== self.from ||
+        !groupable(service, entry.message)
+      ) {
+        closed = true;
+        continue;
+      }
+      joining.push({ ...entry, slot });
+      lastAt = Math.max(lastAt, entry.at);
+    }
+    const now = Date.now();
+    const wakeAt = Math.min(lastAt + config.quietMs, receivedAt + maxWaitMs);
+    if (!closed && joining.length + 1 < maxMessages && now < wakeAt) return { wakeAt };
+    const batch = [self];
+    const taken = new Set<number>();
+    for (const entry of joining)
+      if (await own(store, entry.id, self.id)) {
+        batch.push(entry.message);
+        taken.add(entry.slot);
+      }
+    // Where the next leader starts reading: the first message nobody has taken.
+    const left = open.filter((slot) => !taken.has(slot));
+    const next = left.length > 0 ? Math.min(...left) : lastSlot !== undefined ? lastSlot + 1 : head;
+    if (next !== head) await store.set(logHeadKey(conversation), String(next), dedupeTtlMs);
+    return { batch };
   };
 
   const retry = <T>(fn: () => Promise<T>) => withRetries(fn, options.retry);
@@ -1950,8 +2319,115 @@ export function handleChannel(
     }
   };
 
-  /** One job, phase by phase — each phase a checkpoint under a durable engine. */
-  const run = async (job: ChannelJob, step: ChannelStepRunner): Promise<void> => {
+  /**
+   * One phase of a job, from its input alone — what a dispatched step runs in whatever process it
+   * lands on, and what an inline / local step calls. Each is retried (`retry`) and returns JSON.
+   */
+  const phase = async (which: ChannelPhase, input: ChannelPhaseInput): Promise<unknown> => {
+    const { job } = input;
+    switch (which) {
+      case 'timeout': {
+        if (job.kind !== 'timeout') throw new Error(`phase timeout of a ${job.kind} job`);
+        return retry(async () => {
+          const service = await serviceFor();
+          const store = await storeFor(service);
+          // Answered in time: nothing to do.
+          if (!(await settleQuestion(store, job.runId, job.toolCallId, 'timeout'))) return false;
+          // Nobody answered: the agent goes on on its own assumptions.
+          const key = questionKey(job.conversation);
+          const waiting = await store.get(key);
+          const pending = waiting === null ? null : (JSON.parse(waiting) as PendingQuestions);
+          if (pending?.runId === job.runId && pending.toolCallId === job.toolCallId)
+            await store.delete(key);
+          await service
+            .skip({
+              runId: job.runId,
+              toolCallId: job.toolCallId,
+              answeredByRef: job.actor.id,
+              answeredVia: name,
+            })
+            .catch(() => {});
+          await executor().enqueue(
+            {
+              kind: 'resume',
+              channel: name,
+              conversation: job.conversation,
+              runId: job.streamRunId,
+              threadId: job.threadId,
+              actor: job.actor,
+            },
+            jobId(name, 'resume', job.runId, job.toolCallId),
+          );
+          return true;
+        });
+      }
+      case 'gather': {
+        if (job.kind !== 'message') throw new Error(`phase gather of a ${job.kind} job`);
+        return retry(() => gather(job));
+      }
+      case 'prepare': {
+        if (job.kind !== 'message') throw new Error(`phase prepare of a ${job.kind} job`);
+        return retry(async () => {
+          const prepared = await prepare(job.message, input.batch);
+          if (prepared.stop && job.coalesce === true) {
+            // Every message of the burst stopped at its gate: handled.
+            const service = await serviceFor();
+            await (await storeFor(service)).set(batchDoneKey(job.message.id), '1', dedupeTtlMs);
+          }
+          return prepared;
+        });
+      }
+      case 'act': {
+        if (job.kind !== 'message') throw new Error(`phase act of a ${job.kind} job`);
+        const prepared = input.prepared as Prepared & { stop: false };
+        const messages = prepared.messages ?? [job.message];
+        const [first = job.message] = messages;
+        return retry(() =>
+          act(first, prepared.actor, prepared.threadId, {
+            ...(messages.length > 1 ? { batch: messages } : {}),
+            ...(job.receivedAt !== undefined ? { receivedAt: job.receivedAt } : {}),
+            ...(job.coalesce === true ? { leader: job.message.id } : {}),
+          }),
+        );
+      }
+      case 'read': {
+        return retry(async () => {
+          const service = await serviceFor();
+          const store = await storeFor(service);
+          if (job.kind === 'resume')
+            return readTurn(
+              service,
+              store,
+              job.actor,
+              job.runId,
+              job.threadId,
+              job.conversation,
+              null,
+            );
+          if (job.kind !== 'message') throw new Error(`phase read of a ${job.kind} job`);
+          const prepared = input.prepared as Prepared & { stop: false };
+          const turn = input.turn as Turn;
+          const [first = job.message] = prepared.messages ?? [job.message];
+          return readTurn(
+            service,
+            store,
+            prepared.actor,
+            turn.runId,
+            turn.threadId,
+            job.message.conversation,
+            first,
+          );
+        });
+      }
+    }
+  };
+
+  /** What a `read` checkpointed: its outcome (a run recorded before it said so: `replied`). */
+  const outcomeOf = (value: unknown): ChannelTurnOutcome =>
+    typeof value === 'string' ? (value as ChannelTurnOutcome) : 'replied';
+
+  /** One job, phase by phase — each phase a checkpoint (or a dispatched step) under a durable engine. */
+  const run = async (job: ChannelJob, io: ChannelJobIo): Promise<void> => {
     const message = job.kind === 'message' ? job.message : null;
     /** What `onTurnEnded` is told — a question's timeout is not a turn (the resume it starts is). */
     const ended: ChannelTurnEnded = {
@@ -1961,108 +2437,101 @@ export function handleChannel(
       message,
       runId: job.kind === 'resume' ? job.runId : null,
       threadId: job.kind === 'resume' ? job.threadId : null,
-      // A step a durable engine had checkpointed before is not run again here: what it came to.
       outcome: 'replied',
     };
+    /** Not told: a burst's wait (the job goes on later), or a message another job's turn took. */
+    let quiet = false;
+    let waiting = false;
     try {
       if (job.kind === 'timeout') {
-        await step('timeout', () =>
-          retry(async () => {
-            const service = await serviceFor();
-            const store = await storeFor(service);
-            // Answered in time: nothing to do.
-            if (!(await settleQuestion(store, job.runId, job.toolCallId, 'timeout'))) return false;
-            // Nobody answered: the agent goes on on its own assumptions.
-            const key = questionKey(job.conversation);
-            const waiting = await store.get(key);
-            const pending = waiting === null ? null : (JSON.parse(waiting) as PendingQuestions);
-            if (pending?.runId === job.runId && pending.toolCallId === job.toolCallId)
-              await store.delete(key);
-            await service
-              .skip({
-                runId: job.runId,
-                toolCallId: job.toolCallId,
-                answeredByRef: job.actor.id,
-                answeredVia: name,
-              })
-              .catch(() => {});
-            await executor().enqueue(
-              {
-                kind: 'resume',
-                channel: name,
-                conversation: job.conversation,
-                runId: job.streamRunId,
-                threadId: job.threadId,
-                actor: job.actor,
-              },
-              jobId(name, 'resume', job.runId, job.toolCallId),
-            );
-            return true;
-          }),
-        );
+        await io.phase('timeout', { job });
         return;
       }
       if (job.kind === 'resume') {
-        await step('read', () =>
-          retry(async () => {
-            const service = await serviceFor();
-            ended.outcome = await readTurn(
-              service,
-              await storeFor(service),
-              job.actor,
-              job.runId,
-              job.threadId,
-              job.conversation,
-              null,
-            );
-            return null;
-          }),
-        );
+        ended.outcome = outcomeOf(await io.phase('read', { job }));
         return;
       }
-      const received = job.message;
-      const prepared = await step('prepare', () => retry(() => prepare(received)));
+      let batch: InboundMessage[] | undefined;
+      if (job.coalesce === true) {
+        for (let round = 0; ; round++) {
+          const gathered = await io.phase<Gathered>('gather', { job, round });
+          if ('wakeAt' in gathered) {
+            waiting = true;
+            await io.sleepUntil(gathered.wakeAt);
+            waiting = false;
+            continue;
+          }
+          if ('absorbed' in gathered) {
+            quiet = true;
+            return;
+          }
+          if (gathered.batch.length > 1) batch = gathered.batch;
+          break;
+        }
+      }
+      const prepared = await io.phase<Prepared>('prepare', {
+        job,
+        ...(batch !== undefined ? { batch } : {}),
+      });
       ended.actor = prepared.actor ?? null;
       if (prepared.stop) {
         ended.outcome = 'stopped';
         return;
       }
       ended.threadId = prepared.threadId;
-      const turn = await step('act', () =>
-        retry(() => act(received, prepared.actor, prepared.threadId)),
-      );
+      const through = prepared.messages;
+      if (through !== undefined && through.length > 0) ended.message = through[0] ?? message;
+      if (through !== undefined && through.length > 1) ended.coalesced = through;
+      const turn = await io.phase<Turn | null>('act', { job, prepared });
       if (turn === null) {
         ended.outcome = 'handled';
         return;
       }
       ended.runId = turn.runId;
       ended.threadId = turn.threadId;
-      await step('read', () =>
-        retry(async () => {
-          const service = await serviceFor();
-          ended.outcome = await readTurn(
-            service,
-            await storeFor(service),
-            prepared.actor,
-            turn.runId,
-            turn.threadId,
-            received.conversation,
-            received,
-          );
-          return null;
-        }),
-      );
+      if (turn.attachments !== undefined) ended.attachments = turn.attachments;
+      if (turn.queueWaitMs !== undefined) ended.queueWaitMs = turn.queueWaitMs;
+      ended.outcome = outcomeOf(await io.phase('read', { job, prepared, turn }));
     } catch (error) {
+      if (waiting && isControlFlowSignal(error)) {
+        // The burst's wait suspended the run: it goes on (here or elsewhere) once it is due.
+        quiet = true;
+        throw error;
+      }
       if ((error as { name?: unknown } | null)?.name === 'WorkflowSuspended') {
         ended.outcome = 'interrupted';
         throw error;
       }
       ended.outcome = 'failed';
       ended.error = error;
-      report(error, message);
+      report(error, ended.message);
     } finally {
-      if (job.kind !== 'timeout') await turnEnded(ended);
+      if (job.kind !== 'timeout' && !quiet) await turnEnded(ended);
     }
+  };
+
+  /** Each dispatched phase's liveness window: what it may take, with a margin. */
+  const stepTimeoutMs = (which: ChannelPhase): number => {
+    const margin = 2 * 60_000;
+    switch (which) {
+      case 'read':
+        // The turn, the outcome of a proposal it left, and the sends.
+        return timeoutMs + Math.max(0, outcomeTimeoutMs) + margin;
+      case 'act':
+        // Media downloads, `prepareMedia` (a transcription), the turn's start — retried.
+        return 15 * 60_000;
+      case 'prepare':
+        return 10 * 60_000;
+      default:
+        return margin;
+    }
+  };
+
+  const runner: ChannelRunner = {
+    run,
+    phase,
+    stepTimeoutMs,
+    ...(options.durableSteps === false ? { dispatched: false } : {}),
   };
 
   let current: ChannelExecutor | undefined;
@@ -2080,17 +2549,26 @@ export function handleChannel(
         `[@adonis-agora/agent] channel ${name}: \`durable: true\` but no durable engine is wired (\`durable: true\` in config/agent.ts) — messages are handled in this process`,
       );
     if (engine !== undefined) {
-      registerChannelWorkflows(engine, runnerFor);
+      registerChannelWorkflows(engine, runnerFor, stepServerFor(engine));
       current = durableExecutor(engine);
       return current;
     }
-    current = inlineExecutor((job) => run(job, (_name, fn) => fn()));
+    current = inlineExecutor((job) => run(job, inlineIo(runner)));
     return current;
   };
 
+  /** Where `engine`'s channel phases are dispatched: the option, else the agent engine's transport. */
+  function stepServerFor(engine: ChannelWorkflowEngine): ChannelStepServer | undefined {
+    if (options.durableSteps === false) return undefined;
+    if (options.durableSteps !== undefined) return options.durableSteps;
+    return engine === (registeredAgentEngine() as unknown)
+      ? (registeredAgentStepServer() as ChannelStepServer | undefined)
+      : undefined;
+  }
+
   registry.set(name, {
     adapter,
-    run,
+    runner,
     relay: (proposal, conversation, service) => relay(proposal, conversation, service),
     follow: (conversation, run) =>
       executor().enqueue(
@@ -2107,7 +2585,8 @@ export function handleChannel(
   });
   // Registered on the engine as soon as there is one: a restarted process resumes the jobs a crash
   // interrupted only for workflows it knows.
-  if (typeof options.durable === 'object') registerChannelWorkflows(options.durable, runnerFor);
+  if (typeof options.durable === 'object')
+    registerChannelWorkflows(options.durable, runnerFor, stepServerFor(options.durable));
   else if (options.durable !== false) followAgentEngine();
 
   const notify = async (event: Omit<ChannelWebhookEvent, 'channel'>) => {
@@ -2173,12 +2652,23 @@ export function handleChannel(
       const store = await storeFor(await serviceFor());
       // Taken before the 200: a store or an engine that is down answers 500, and the provider
       // retries.
+      const coalesce = options.coalesce !== undefined && options.coalesce.quietMs > 0;
       for (const message of messages) {
         const key = `${name}:${message.id}`;
         if (!(await store.claim(key, dedupeTtlMs))) continue;
         try {
+          const receivedAt = Date.now();
+          // A burst's leader finds it in the conversation's log; its own job runs either way.
+          if (coalesce) await appendToLog(store, message, receivedAt);
           await executor().enqueue(
-            { kind: 'message', channel: name, conversation: message.conversation, message },
+            {
+              kind: 'message',
+              channel: name,
+              conversation: message.conversation,
+              message,
+              receivedAt,
+              ...(coalesce ? { coalesce: true } : {}),
+            },
             jobId(name, 'message', message.id),
           );
         } catch (error) {
