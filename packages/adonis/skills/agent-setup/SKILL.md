@@ -309,6 +309,12 @@ own flows: `unknownSender`, `beforeTurn`, `canDeliver`, `texts` as a function, `
 `onTurnEnded` (always, once this process is done with a message or a run resumed after its question — `replied`/`failed`/`timeout`/`blocked`/`parked`/`stopped`/`handled`/`interrupted` (`message: null` on resumes, per attempt; throws logged and ignored); stop a "typing…" presence begun in `acknowledge` there),
 `renderComponent` (components as files), `prepareMedia` / `mediaLimits` / `transformInbound`,
 `formatOutcome`, `onWebhook`, `allowRemember: false`.
+Durably, each phase is a dispatched step (`agora.channel.prepare` / `.act` / `.read` / `.gather` / `.timeout`) served on the
+engine's transport by every process that created the handler (`durableSteps: false` → local steps).
+`coalesce: { quietMs, maxWaitMs?, maxMessages?, when? }` (off by default) makes a burst of messages of
+one conversation ONE turn (texts joined, all files attached) after `quietMs` of quiet — a durable
+sleep under the engine; button presses, text decisions and question answers are never grouped; hooks
+get `coalesced` (and `inbound.parts`, `attachments`, `queueWaitMs`).
 Replies are text-only by default (components → `fallbackText`), or files `renderComponent` makes of them (`OutboundMessage.media` where the adapter declares `capabilities.media`), converted to the channel's markdown and split
 at its length limit. Media is downloaded and attached when `attachments` is configured (else the
 person is told why not). `ask` questions go out as numbered text, one at a time; the next messages

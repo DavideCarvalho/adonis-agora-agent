@@ -5,17 +5,29 @@ import type { InboundMessage } from './types.js';
 
 /**
  * How a channel's inbound messages are processed: one {@link ChannelJob} per message, in order per
- * conversation, each made of named phases ({@link ChannelStepRunner}).
+ * conversation, each made of named phases.
  *
  * - {@link inlineExecutor}: in this process, after the `200`. A restart loses what was in flight.
  * - {@link durableExecutor}: as `@adonis-agora/durable` runs — persisted before the `200`, one at a
- *   time per conversation (a singleton key), each phase a checkpointed step, and resumed by the
- *   engine's recovery after a crash.
+ *   time per conversation (a singleton key), each phase a checkpointed step (a dispatched one, when
+ *   the engine has somewhere to serve it), and resumed by the engine's recovery after a crash.
  */
 
 /** What a channel processes: a message, the rest of a run after its question, a question timing out. */
 export type ChannelJob =
-  | { kind: 'message'; channel: string; conversation: string; message: InboundMessage }
+  | {
+      kind: 'message';
+      channel: string;
+      conversation: string;
+      message: InboundMessage;
+      /** When the webhook took it (epoch ms) — what a turn's queue wait is measured from. */
+      receivedAt?: number;
+      /**
+       * Recorded in the conversation's burst log when it was taken (`coalesce` on): the job first
+       * looks for a burst to join, or to lead.
+       */
+      coalesce?: boolean;
+    }
   | {
       /** Read a run's stream (again) and deliver what was not delivered yet. */
       kind: 'resume';
@@ -39,11 +51,44 @@ export type ChannelJob =
       actor: Actor;
     };
 
-/** Runs one phase of a job: checkpointed (durable) or just called (inline). Results are JSON. */
-export type ChannelStepRunner = <T>(name: string, fn: () => Promise<T>) => Promise<T>;
+/**
+ * The phases a job is made of. Each one is rebuilt from its (JSON) input — the job and what the
+ * phases before it returned — so it can run in any process that registered the channel.
+ */
+export type ChannelPhase = 'gather' | 'prepare' | 'act' | 'read' | 'timeout';
 
-/** What runs a job — the registered channel's processor. */
-export type ChannelJobRunner = (job: ChannelJob, step: ChannelStepRunner) => Promise<void>;
+/** What one phase is handed: the job, and what the phases before it came to (all JSON). */
+export interface ChannelPhaseInput {
+  job: ChannelJob;
+  /** `gather`: which look at the burst this is (0, 1, …). */
+  round?: number;
+  /** The messages the turn is made of, when it groups several (a burst). */
+  batch?: InboundMessage[];
+  /** What `prepare` came to. */
+  prepared?: unknown;
+  /** What `act` came to. */
+  turn?: unknown;
+}
+
+/** Runs one phase: checkpointed (durable — in this process, or dispatched) or just called (inline). */
+export type ChannelPhaseRunner = <T>(phase: ChannelPhase, input: ChannelPhaseInput) => Promise<T>;
+
+/** How a job runs its phases, and how it waits for a burst to end. */
+export interface ChannelJobIo {
+  phase: ChannelPhaseRunner;
+  /** Wait until `at` (epoch ms): the durable engine's sleep, else a timer. */
+  sleepUntil(at: number): Promise<void>;
+}
+
+/** What a registered channel gives the executors: its job, and each of its phases on its own. */
+export interface ChannelRunner {
+  run(job: ChannelJob, io: ChannelJobIo): Promise<void>;
+  phase(phase: ChannelPhase, input: ChannelPhaseInput): Promise<unknown>;
+  /** How long a dispatched phase may go without an answer before the engine gives up on it. */
+  stepTimeoutMs(phase: ChannelPhase): number;
+  /** `false` → this channel's phases always run as `localStep`s (`durableSteps: false`). */
+  dispatched?: boolean;
+}
 
 export interface ChannelExecutor {
   readonly durable: boolean;
@@ -67,6 +112,26 @@ export function jobId(...parts: string[]): string {
 /** The order key: one channel conversation. */
 const lockKey = (job: Pick<ChannelJob, 'channel' | 'conversation'>) =>
   `${job.channel}:${job.conversation}`;
+
+/** The checkpoint name of a phase run in-process — `gather` takes one per look at the burst. */
+const localStepName = (phase: ChannelPhase, input: ChannelPhaseInput) =>
+  phase === 'gather' ? `gather:${input.round ?? 0}` : phase;
+
+/** A timer, for a wait the durable engine cannot hold. */
+const timerUntil = (at: number) =>
+  new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, Math.max(0, at - Date.now()));
+    (timer as { unref?: () => void }).unref?.();
+  });
+
+/** Each phase called right here, a wait a timer: what the inline executor runs a job with. */
+export function inlineIo(runner: Pick<ChannelRunner, 'phase'>): ChannelJobIo {
+  return {
+    phase: <T>(phase: ChannelPhase, input: ChannelPhaseInput) =>
+      runner.phase(phase, input) as Promise<T>,
+    sleepUntil: timerUntil,
+  };
+}
 
 /** In this process: a promise chain per conversation. Nothing survives a restart. */
 export function inlineExecutor(run: (job: ChannelJob) => Promise<void>): ChannelExecutor {
@@ -98,6 +163,21 @@ export function inlineExecutor(run: (job: ChannelJob) => Promise<void>): Channel
   };
 }
 
+/** What a dispatched step handler is given besides its input — a durable `StepLogger`'s slice. */
+export interface ChannelStepLog {
+  /** Tell the engine the step is alive (rearms its timeout, where the transport carries beats). */
+  heartbeat?(progress?: unknown): void;
+}
+
+/**
+ * Where dispatched steps are served BY NAME — a durable `Transport` with `handle` (every built-in
+ * one has it: in-memory, BullMQ, database). A handler registered here runs in whatever process the
+ * transport hands the step to.
+ */
+export interface ChannelStepServer {
+  handle(name: string, fn: (input: unknown, log?: ChannelStepLog) => Promise<unknown>): void;
+}
+
 /**
  * The slice of an `@adonis-agora/durable` `WorkflowEngine` the channels use — the engine itself
  * satisfies it (`channels.handle(adapter, { durable: engine })`).
@@ -116,6 +196,13 @@ export interface ChannelWorkflowEngine {
     opts?: { startAt?: number | Date },
   ): Promise<unknown>;
   waitForRun?(runId: string, opts?: { timeoutMs?: number; terminal?: boolean }): Promise<unknown>;
+  /**
+   * Serve a dispatched step by name — for an engine that serves its own steps. `@adonis-agora/durable`'s
+   * engine serves them on its transport instead: the channels find it in the app's container (or take
+   * it as `channels.handle(…, { durableSteps: transport })`). Neither → the phases run in the process
+   * that runs the workflow (`ctx.localStep`).
+   */
+  handleStep?(name: string, fn: (input: unknown, log?: ChannelStepLog) => Promise<unknown>): void;
 }
 
 /** The slice of a durable `WorkflowCtx` a channel job uses. */
@@ -125,56 +212,210 @@ export interface ChannelWorkflowCtx {
     fn: () => Promise<T>,
     options?: { retries?: number; backoff?: 'fixed' | 'exp'; backoffMs?: number },
   ): Promise<T>;
+  /**
+   * A dispatched step, routed to the handler served under `name` in any process. Absent → the
+   * phases run as `localStep`s.
+   */
+  step?<T>(
+    name: string,
+    input: unknown,
+    options?: { retries?: number; timeoutMs?: number; pickupTimeoutMs?: number },
+  ): Promise<T>;
+  /** Suspend the run until `when` (durable). Absent → {@link sleep}, else a timer in this process. */
+  sleepUntil?(when: number | Date): Promise<void>;
+  /** Suspend the run for `duration` ms (durable). */
+  sleep?(duration: number): Promise<void>;
 }
 
 /** The workflow a message (or a resume) runs as: one at a time per channel conversation. */
 export const CHANNEL_JOB_WORKFLOW = 'agora.channel.job';
 /** A question's timeout: runs on its own, so it never waits behind the conversation. */
 export const CHANNEL_TIMER_WORKFLOW = 'agora.channel.timer';
+/** The dispatched step a phase runs as: `agora.channel.prepare`, `agora.channel.read`, … */
+export const channelPhaseStep = (phase: ChannelPhase) => `agora.channel.${phase}`;
+const PHASES: readonly ChannelPhase[] = ['gather', 'prepare', 'act', 'read', 'timeout'];
 
-/** A control-flow signal a driving dispatcher may surface out of `start` — not a failure. */
-const isControlFlowSignal = (error: unknown) => {
-  const name = (error as { name?: unknown } | null)?.name;
-  return name === 'WorkflowSuspended' || name === 'ContinueAsNew';
+/** `@adonis-agora/durable`'s stamp on its control-flow signals (a global symbol). */
+const CONTROL_FLOW = Symbol.for('@agora/durable:control-flow');
+
+/** A control-flow signal a workflow body surfaces (a suspend for a sleep, say) — not a failure. */
+export const isControlFlowSignal = (error: unknown) => {
+  if (error === null || typeof error !== 'object') return false;
+  const name = (error as { name?: unknown }).name;
+  return (
+    name === 'WorkflowSuspended' ||
+    name === 'ContinueAsNew' ||
+    name === 'WorkflowBlocked' ||
+    CONTROL_FLOW in error
+  );
 };
 
 const registeredOn = new WeakSet<object>();
+const servedOn = new WeakSet<object>();
+/** The step server each engine's channel phases are dispatched to, once one is known. */
+const stepServers = new WeakMap<object, ChannelStepServer>();
+
+/** How often a dispatched phase tells the engine it is still running. */
+const HEARTBEAT_MS = 10_000;
+/** How long a phase waits for its channel to be registered in the process it landed on. */
+const REGISTRATION_WAIT_MS = 60_000;
+
+const notRegistered = (channel: string) =>
+  new Error(
+    `[@adonis-agora/agent] channel "${channel}" is not registered in this process — create its handler (channels.handle) at boot in every process that runs durable work`,
+  );
+
+/** The channel's runner, waiting a minute for a handler created lazily (on its first webhook). */
+async function runnerIn(
+  runnerFor: (channel: string) => ChannelRunner | undefined,
+  channel: string,
+): Promise<ChannelRunner> {
+  const deadline = Date.now() + REGISTRATION_WAIT_MS;
+  for (;;) {
+    const runner = runnerFor(channel);
+    if (runner !== undefined) return runner;
+    if (Date.now() >= deadline) throw notRegistered(channel);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+}
+
+/**
+ * Serve every channel phase on `server`, once: the handler finds the channel named in the input in
+ * whatever process the step lands on, and runs that phase from its input alone.
+ */
+function servePhases(
+  server: ChannelStepServer,
+  runnerFor: (channel: string) => ChannelRunner | undefined,
+): void {
+  if (servedOn.has(server)) return;
+  servedOn.add(server);
+  for (const phase of PHASES) {
+    server.handle(channelPhaseStep(phase), async (input, log) => {
+      const { channel, ...rest } = input as ChannelPhaseInput & { channel: string };
+      const runner = await runnerIn(runnerFor, channel);
+      const beat = setInterval(() => log?.heartbeat?.(), HEARTBEAT_MS);
+      (beat as { unref?: () => void }).unref?.();
+      try {
+        return (await runner.phase(phase, rest)) ?? null;
+      } finally {
+        clearInterval(beat);
+      }
+    });
+  }
+}
+
+/** The durable wait: `sleepUntil`, else `sleep`, else (an engine without either) a timer. */
+const durableSleep =
+  (ctx: ChannelWorkflowCtx) =>
+  (at: number): Promise<void> => {
+    if (typeof ctx.sleepUntil === 'function') return ctx.sleepUntil(at);
+    if (typeof ctx.sleep === 'function') return ctx.sleep(Math.max(1, at - Date.now()));
+    return timerUntil(at);
+  };
 
 /**
  * Register the channel workflows on `engine`, once. Their body finds the job's channel with
  * `runnerFor` — the handler `channels.handle()` registered under that name IN THIS PROCESS. A
  * process that resumes channel jobs must have created the same handlers.
+ *
+ * - version `1`: every phase a `ctx.localStep`, in the process running the workflow — kept so runs
+ *   started before an upgrade finish on the path they were recorded on;
+ * - version `2` (new runs): each phase a DISPATCHED step (`agora.channel.<phase>`) when `server` (or
+ *   `engine.handleStep`) serves them — any process that registered the channel runs it, any
+ *   process continues the workflow — else a `localStep`; and a burst (`coalesce`) waited for with
+ *   the engine's durable sleep. Which of the two a run uses is recorded in its first step.
  */
 export function registerChannelWorkflows(
   engine: ChannelWorkflowEngine,
-  runnerFor: (channel: string) => ChannelJobRunner | undefined,
+  runnerFor: (channel: string) => ChannelRunner | undefined,
+  server?: ChannelStepServer,
 ): void {
+  const given =
+    server ??
+    (typeof engine.handleStep === 'function'
+      ? { handle: engine.handleStep.bind(engine) }
+      : undefined);
+  if (given !== undefined && !stepServers.has(engine)) {
+    stepServers.set(engine, given);
+    servePhases(given, runnerFor);
+  }
   if (registeredOn.has(engine)) return;
   registeredOn.add(engine);
-  const body = async (ctx: ChannelWorkflowCtx, input: unknown) => {
-    const job = input as ChannelJob;
-    // A handler created lazily (on its first webhook) may not exist yet in the process that
-    // recovered this run: give it a minute before failing the job.
-    await ctx.localStep(
+
+  /** The channel is registered here — given a minute for a handler created lazily. */
+  const channelStep = <T>(ctx: ChannelWorkflowCtx, job: ChannelJob, value: () => T) =>
+    ctx.localStep(
       'channel',
       async () => {
-        if (runnerFor(job.channel) === undefined)
-          throw new Error(
-            `[@adonis-agora/agent] channel "${job.channel}" is not registered in this process — create its handler (channels.handle) at boot in every process that runs durable work`,
-          );
-        return true;
+        if (runnerFor(job.channel) === undefined) throw notRegistered(job.channel);
+        return value();
       },
       { retries: 30, backoff: 'fixed', backoffMs: 2000 },
     );
-    const run = runnerFor(job.channel);
-    if (run === undefined) return null;
-    await run(job, (name, fn) => ctx.localStep(name, fn));
+
+  const localIo = (ctx: ChannelWorkflowCtx, runner: ChannelRunner): ChannelJobIo => ({
+    phase: <T>(phase: ChannelPhase, input: ChannelPhaseInput) =>
+      ctx.localStep(localStepName(phase, input), () => runner.phase(phase, input) as Promise<T>),
+    sleepUntil: durableSleep(ctx),
+  });
+
+  const dispatchedIo = (
+    ctx: ChannelWorkflowCtx,
+    runner: ChannelRunner,
+    channel: string,
+  ): ChannelJobIo => ({
+    phase: <T>(phase: ChannelPhase, input: ChannelPhaseInput) => {
+      const step = ctx.step;
+      if (typeof step !== 'function') throw new Error('[@adonis-agora/agent] ctx.step is gone');
+      // A liveness window per phase: a step whose job was lost (a worker gone, a broker that
+      // dropped it) is dispatched once more after it, then fails the job — never `pending` forever.
+      return step.call(
+        ctx,
+        channelPhaseStep(phase),
+        { channel, ...input },
+        { timeoutMs: runner.stepTimeoutMs(phase), retries: 2 },
+      ) as Promise<T>;
+    },
+    sleepUntil: durableSleep(ctx),
+  });
+
+  const v1 = async (ctx: ChannelWorkflowCtx, input: unknown) => {
+    const job = input as ChannelJob;
+    await channelStep(ctx, job, () => true);
+    const runner = runnerFor(job.channel);
+    if (runner === undefined) return null;
+    // As version 1 always ran: no burst to wait for (its jobs never recorded one), phases local.
+    await runner.run(
+      job.kind === 'message' ? { ...job, coalesce: false } : job,
+      localIo(ctx, runner),
+    );
     return null;
   };
-  engine.register(CHANNEL_JOB_WORKFLOW, '1', body, {
-    singleton: { key: (input) => lockKey(input as ChannelJob), limit: 1 },
-  });
-  engine.register(CHANNEL_TIMER_WORKFLOW, '1', body);
+
+  const v2 = async (ctx: ChannelWorkflowCtx, input: unknown) => {
+    const job = input as ChannelJob;
+    const mode = await channelStep(ctx, job, () => ({
+      dispatched:
+        stepServers.has(engine) &&
+        typeof ctx.step === 'function' &&
+        runnerFor(job.channel)?.dispatched !== false,
+    }));
+    const runner = runnerFor(job.channel);
+    if (runner === undefined) return null;
+    await runner.run(
+      job,
+      mode.dispatched === true ? dispatchedIo(ctx, runner, job.channel) : localIo(ctx, runner),
+    );
+    return null;
+  };
+
+  const singleton = {
+    singleton: { key: (input: unknown) => lockKey(input as ChannelJob), limit: 1 },
+  };
+  engine.register(CHANNEL_JOB_WORKFLOW, '1', v1, singleton);
+  engine.register(CHANNEL_JOB_WORKFLOW, '2', v2, singleton);
+  engine.register(CHANNEL_TIMER_WORKFLOW, '1', v1);
+  engine.register(CHANNEL_TIMER_WORKFLOW, '2', v2);
 }
 
 /** As durable runs on `engine` — see {@link registerChannelWorkflows}. */
@@ -184,7 +425,9 @@ export function durableExecutor(engine: ChannelWorkflowEngine): ChannelExecutor 
     try {
       await engine.start(workflow, job, id, at === undefined ? undefined : { startAt: at });
     } catch (error) {
-      if (!isControlFlowSignal(error)) throw error;
+      // A run a driving dispatcher suspended (or continued as new) while starting it: taken.
+      const name = (error as { name?: unknown } | null)?.name;
+      if (name !== 'WorkflowSuspended' && name !== 'ContinueAsNew') throw error;
     }
   };
   return {

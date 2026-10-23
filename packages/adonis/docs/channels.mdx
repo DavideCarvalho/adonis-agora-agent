@@ -380,6 +380,7 @@ When the agent runs on [`@adonis-agora/durable`](/docs/agent/durability/durable-
 - **Persisted before the `200`.** Each message is started as a run of the `agora.channel.job` workflow under an id derived from the provider's message id (`agora.channel:<channel>:message:<id>`) before the webhook is acknowledged. An engine (or store) that cannot take it answers `500`, the message id is released, and the provider retries.
 - **One at a time per conversation.** The workflow is a singleton per `<channel>:<conversation>`: a second message waits (durably, in order) until the first one's reply was sent — the per-conversation lock a queue job used to need. A question the turn asks does not hold it: the answer is the next message.
 - **Phases as steps, retried.** A job is three checkpointed steps — `prepare` (the sender, `unknownSender`, `beforeTurn`, the thread), `act` (an answer, a press, a decision, or the turn: media, `transformInbound`, `AgentService.send`) and `read` (the turn's stream, delivered). Each is retried with backoff (`retry: { attempts, backoffMs, maxBackoffMs, retryable }` — 3 attempts from 1 s by default; a refusal that retrying cannot change, such as a `QuotaBlockedError` or a provider `4xx`, is not retried). What still fails goes to `onError`.
+- **Phases dispatched to any process.** Each phase is a [dispatched step](/docs/durable/concepts/workflows-and-steps#steps) — `agora.channel.prepare`, `agora.channel.act`, `agora.channel.read` (and `agora.channel.gather`, `agora.channel.timeout`) — served on the durable engine's transport by every process that created the channel's handler. Any of them runs a phase, and any of them continues the job: nothing is pinned to the process that took the webhook or started the workflow. A phase's input is plain JSON (the job and what the phases before it returned), so it is rebuilt wherever it lands. See [Where the phases run](#where-the-phases-run).
 - **Recovered after a crash.** A process that dies mid-message leaves its run to the engine's recovery, which resumes it on another process (or the restarted one): completed steps are not run again, the turn is never started twice (its run id is kept under the message id), and the reply of a turn that finished while the process was down is read from the run's stream (which [replays from its start](/docs/agent/redis-streaming)) and sent.
 - **Never answered twice.** Every outgoing message takes a numbered slot in the channel store before it is sent, so a step that runs again skips what already went; a send that fails frees its slot for the retry. The outcome of a proposal is claimed once, as before.
 
@@ -387,7 +388,42 @@ The recovering process must know the channel: create the handlers at boot, in ev
 
 What can still be lost is a message whose send was in flight when the process died (sent at most once: it is not repeated). Hooks before the reply (`actor`, `unknownSender`, `beforeTurn`, `prepareMedia`, `transformInbound`, `onTurnStarted`) may run again when a step is retried or recovered — make their side effects idempotent (key them by `message.id`).
 
+### Where the phases run
+
+With the agent's engine (`durable: true` in `config/agent.ts`) the phases are served on the engine's transport (`@adonis-agora/durable`'s container binding — the in-memory one when none is configured, else BullMQ, the database…). With an engine you pass (`durable: engine`), hand its transport too: `durableSteps: transport` (or give the engine a `handleStep(name, fn)`). With neither — or `durableSteps: false` — each phase is a `ctx.localStep` in the process that runs the workflow, as before.
+
+Each dispatched phase carries a liveness timeout, so a step whose job was lost (a worker gone, a broker that dropped it) is dispatched once more and then fails the job instead of waiting forever: `read` gets `timeoutMs` + `outcomeTimeoutMs` + 2 minutes, `act` 15 minutes (downloads, `prepareMedia`, the turn's start), `prepare` 10 minutes, `gather` and a question's `timeout` 2 minutes. A phase heartbeats while it runs, so on a transport that carries heartbeats the window is silence, not duration. A phase that fails comes back to `onError` as the engine's step error (its message is the original one).
+
+The channel workflows are at version `2`. Version `1` — every phase a local step, no bursts — stays registered, so a run started before an upgrade finishes on the path it was recorded on.
+
 **Without a durable engine** the same pipeline runs in the web process after the `200`: in order per conversation, with retries and the same at-most-once sends, but nothing survives a restart — a process that stops mid-turn loses that reply (the provider will not retry an acknowledged webhook). `await handler.drain()` from a shutdown hook waits for what is in flight.
+
+## Bursts: several messages, one turn
+
+People write in bursts — "oi" / "tudo bem?" / "queria saber X", or ten PDFs in a row — and by default every message is a turn of its own, one at a time: the tenth file is answered minutes after the first. `coalesce` makes a burst ONE turn:
+
+```ts
+channels.handle(whatsapp, {
+  // …
+  coalesce: { quietMs: 3000 }, // maxWaitMs: 30_000, maxMessages: 20 by default
+})
+```
+
+- A message waits until its conversation has been **quiet for `quietMs`** — at most `maxWaitMs` from the first message being taken, at most `maxMessages` messages. Then the burst is one turn: the texts **joined in order** (a blank line between them), **every file attached**. Each message's files go through `mediaLimits` / `prepareMedia` / refusals exactly as if it were alone — a refused file is answered and the rest still make the turn.
+- **Control messages are never grouped**: a button press (ours or a component's), a text decision (`yes`, `no #ID`, in the configured vocabulary) and every message while a [question](#questions) waits for its answer are handled on their own, in order — and one ends the burst before it. `when(message)` keeps more out (`when: (m) => (m.media?.length ?? 0) > 0` groups only files).
+- **Messages that arrive while a grouped turn runs go to the next turn** (the conversation is still one at a time).
+- **Durable and multi-instance.** With a durable engine the wait is the engine's durable sleep — the leading message's run is `suspended` with a wake time, visible in the durable dashboard, and resumed by whichever process polls timers first (wake-up granularity: the worker's poll interval, 1 s by default). Inline, it is a timer in the web process.
+- **Exactly once.** The webhook still answers `200` only after the message is persisted (and recorded in the conversation's burst log in the channel store); dedupe by message id is unchanged. Every message keeps its own job: the first to run leads the burst and **claims** the others (one owner key per message, in the channel store); a claimed message's own job ends without a turn once the leader's turn started. A leader that fails before its turn leaves the others to their own jobs — a message is never dropped and never answered twice, through retries, recoveries and redelivered webhooks.
+
+What hooks see for a grouped turn — every field below is set **only** when `coalesce` grouped several messages (or, for the numbers, when `coalesce` is on), so a channel without `coalesce` gets exactly what it always did:
+
+| Hook | What it gets |
+| --- | --- |
+| `actor`, `unknownSender`, `beforeTurn` | called **per message**, as if each were alone (their replies keyed by that message); `context.coalesced` lists the whole burst. A message `beforeTurn` stops is left out of the turn; the others go on. |
+| `prepareMedia` | per file, with its own `message`, and `context.coalesced`. |
+| `transformInbound(inbound, context)` | once: `inbound.text` / `inbound.attachments` merged, `inbound.parts` = `[{ message, text, attachments }]` per message (to put each caption next to its file), `context.message` the first message, `context.coalesced` all of them. |
+| `onTurnStarted` / `onTurnEnded` | once for the turn: `message` = the first message, `coalesced` = all of them, `attachments` = how many files it was sent with, `queueWaitMs` = from the webhook taking the first message to the turn starting. A message grouped into another's turn has no `onTurnEnded` of its own. |
+| `AgentService.send` | `hostContext.messageIds` lists every message (`messageId` is the first). |
 
 ## Hooks
 
@@ -399,8 +435,8 @@ Generic hooks for what an app does around the conversation — each optional:
 | `beforeTurn(message, actor, context)` | before anything else for a known sender — answers, presses, decisions, turns | `'continue'` (or nothing), `'stop'`, `{ reply }` or `{ replies }` (sent, then stop). Terms to accept, an account to finish, a quota. |
 | `canDeliver(delivery)` | before **every** message sent — replies, cards, questions, relayed outcomes | `false` drops it. `delivery` has the `conversation`, the `outbound` message, `kind` (`reply`, `card`, `question`, `outcome`, `gate`, `notice`), the `actor` / `actorRef`, the inbound `message` and the `proposal`. Re-check that the number still belongs to the account. |
 | `texts` as a function | per message (and per relayed outcome) | the texts for `{ actor, message, proposal }` — the actor's locale. |
-| `onTurnStarted({ runId, threadId, actor, message, queued })` | a message started (or queued) a turn | — record its channel, start a meter. |
-| `onTurnEnded({ channel, conversation, actor, message, runId, threadId, outcome, error })` | **always**, once this process is done with a message (or with a run resumed after its question), whatever it came to | — stop what you started for it (a "typing…" presence, a meter). `outcome`: `replied` (the stream ended — possibly having sent nothing), `failed` (a failed turn, or the job failed after its retries: `error` set), `timeout`, `blocked`, `parked` (waits for an answer; the resumed run ends with its own call, `message: null`), `stopped` (unknown sender or `beforeTurn` — no turn), `handled` (an answer, a press, a decision — no turn to read), `interrupted` (a durable engine took the job away mid-way). Per attempt: a durable job that runs again (a crash, a lease taken over) tells each process that ran it. Not called for a question's timer itself. What it throws is logged and ignored. |
+| `onTurnStarted({ runId, threadId, actor, message, queued, coalesced?, queueWaitMs? })` | a message (or a [burst](#bursts-several-messages-one-turn)) started (or queued) a turn | — record its channel, start a meter. |
+| `onTurnEnded({ channel, conversation, actor, message, runId, threadId, outcome, error, coalesced?, attachments?, queueWaitMs? })` | **always**, once this process is done with a message (or with a run resumed after its question), whatever it came to | — stop what you started for it (a "typing…" presence, a meter). `outcome`: `replied` (the stream ended — possibly having sent nothing), `failed` (a failed turn, or the job failed after its retries: `error` set), `timeout`, `blocked`, `parked` (waits for an answer; the resumed run ends with its own call, `message: null`), `stopped` (unknown sender or `beforeTurn` — no turn), `handled` (an answer, a press, a decision — no turn to read), `interrupted` (a durable engine took the job away mid-way). Per attempt: a durable job that runs again (a crash, a lease taken over) tells each process that ran it. Not called for a question's timer itself. What it throws is logged and ignored. |
 | `uiCapabilities` + `renderComponent(component, context)` | a component the turn drew | a file (a chart as an image), text, several, or nothing for its `fallbackText`. |
 | `mediaLimits`, `prepareMedia`, `transformInbound` | an inbound file / the message going to the agent | see [Media](#media). |
 | `formatOutcome(proposal, { text, texts })` | an executed proposal | the outcome and its follow-ups, in order. See [Outcomes](#proposals-buttons-and-text). |
@@ -466,6 +502,8 @@ A channel without `capabilities.media` gets the reply's `fallbackText` (or capti
 | `onThreadCreated(threadId, actor, message)` | — | A new thread was created for the conversation. |
 | `unknownSender`, `beforeTurn`, `canDeliver`, `onTurnStarted`, `renderComponent`, `mediaLimits`, `prepareMedia`, `transformInbound`, `formatOutcome`, `onWebhook` | — | See [Hooks](#hooks). |
 | `durable` | the agent's engine when it runs durably | `false` → in this process; an engine → that one. See [Durable processing](#durable-processing). |
+| `durableSteps` | the agent engine's transport | Where the phases run as dispatched steps (anything with `handle(name, fn)`); `false` → local steps. See [Where the phases run](#where-the-phases-run). |
+| `coalesce` | off | `{ quietMs, maxWaitMs?, maxMessages?, when? }` — a burst of messages as one turn. See [Bursts](#bursts-several-messages-one-turn). |
 | `retry` | 3 attempts, from 1 s | `{ attempts, backoffMs, maxBackoffMs, retryable(error) }` per phase. |
 | `allowRemember` | `true` | `false` refuses "always in this conversation" in text decisions. |
 | `uiCapabilities` | `{ components: [] }` | What the turn may draw (with `renderComponent`). |

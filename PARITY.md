@@ -15,3 +15,12 @@ Capabilities delivered alongside a parallel change in Aviary, recorded here unti
 | Capability | Agora | Aviary |
 | --- | --- | --- |
 | Run metrics: TTFT, cost/model on run, run.failed/run.cancelled diagnostics, tool timing, dashboard latency | yes | paired delivery |
+
+## Pending ports
+
+Capabilities Agora delivered whose Aviary port (`packages/channels` in [Aviary](https://github.com/DavideCarvalho/nestjs-agent)) is still to do.
+
+| Capability | Agora | Aviary |
+| --- | --- | --- |
+| Text channels: `coalesce` — a burst of messages of one conversation as one turn (durable sleep, control messages never grouped, `coalesced` / `parts` / `queueWaitMs` on the hooks) | yes | not ported |
+| Text channels: phases as dispatched durable steps (`agora.channel.<phase>`, workflow version `2`, version `1` kept for in-flight runs) | yes | not ported |
