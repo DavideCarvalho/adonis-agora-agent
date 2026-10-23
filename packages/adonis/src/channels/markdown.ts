@@ -148,6 +148,57 @@ function tableRow(row: string[], header: string[], dialect: Dialect): string {
   return dialect.bullet + (lead && body ? `${lead}${separator}${body}` : lead || body);
 }
 
+/** A GitHub table found in a turn's text: header cells and body rows, as the model wrote them. */
+export interface MarkdownTable {
+  header: string[];
+  rows: string[][];
+}
+
+/** A turn's text cut around its tables (`source` is the table as written, to fall back to). */
+export type MarkdownPiece =
+  | { kind: 'text'; text: string }
+  | { kind: 'table'; table: MarkdownTable; source: string };
+
+/**
+ * Cut `text` around its GitHub tables (header, divider, rows), outside fenced code. Text pieces
+ * keep their line breaks; the pieces joined back with `\n` are the input.
+ */
+export function splitTables(text: string): MarkdownPiece[] {
+  const rows = text.split('\n');
+  const pieces: MarkdownPiece[] = [];
+  let prose: string[] = [];
+  let fenced = false;
+  const flushProse = () => {
+    if (prose.length > 0) pieces.push({ kind: 'text', text: prose.join('\n') });
+    prose = [];
+  };
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]!;
+    if (/^\s{0,3}```/.test(row)) fenced = !fenced;
+    const divider = rows[index + 1];
+    if (!fenced && TABLE_ROW.test(row) && divider !== undefined && TABLE_DIVIDER.test(divider)) {
+      const start = index;
+      const body: string[][] = [];
+      index += 2;
+      while (index < rows.length && TABLE_ROW.test(rows[index]!)) {
+        body.push(cells(rows[index]!));
+        index += 1;
+      }
+      flushProse();
+      pieces.push({
+        kind: 'table',
+        table: { header: cells(row), rows: body },
+        source: rows.slice(start, index).join('\n'),
+      });
+      index -= 1;
+      continue;
+    }
+    prose.push(row);
+  }
+  flushProse();
+  return pieces;
+}
+
 /** Every line through {@link line}, except GitHub tables, which become bullet lists. */
 function withoutTables(rows: string[], dialect: Dialect): string[] {
   const out: string[] = [];
@@ -157,7 +208,7 @@ function withoutTables(rows: string[], dialect: Dialect): string[] {
     if (TABLE_ROW.test(row) && divider !== undefined && TABLE_DIVIDER.test(divider)) {
       const header = cells(row);
       index += 2;
-      while (index < rows.length && TABLE_ROW.test(rows[index]!) && rows[index]!.includes('|')) {
+      while (index < rows.length && TABLE_ROW.test(rows[index]!)) {
         out.push(tableRow(cells(rows[index]!), header, dialect));
         index += 1;
       }

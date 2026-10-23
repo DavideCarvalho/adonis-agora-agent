@@ -44,6 +44,9 @@ export {
 export { ChannelDeliveryError, type ChannelFetch, ChannelMediaTooLargeError } from './http.js';
 export {
   escapeTelegramMarkdown,
+  type MarkdownPiece,
+  type MarkdownTable,
+  splitTables,
   toChannelMarkdown,
   unescapeTelegramMarkdown,
 } from './markdown.js';

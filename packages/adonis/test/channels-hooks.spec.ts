@@ -405,6 +405,45 @@ describe('channel hooks', () => {
     expect(texts(failed.outbox)).toEqual(['Sorry, something went wrong. Please try again.']);
   });
 
+  it('renderTable sends a table of the reply in its place — the text around it in order', async () => {
+    const run = () => {
+      const { adapter, outbox } = fakeAdapter({ media: true });
+      const seen: unknown[] = [];
+      const handle = channels.handle(adapter, {
+        service: fakeService([
+          {
+            t: 'text',
+            v: 'Here they are:\n\n| Name | Age | Weight |\n|---|---|---|\n| Ana | 3 | 14 kg |\n\nAnd the pair:\n\n| A | B |\n|---|---|\n| x | y |\n\nAnything else?',
+          },
+        ]),
+        actor: () => actor,
+        thread: () => 't',
+        renderTable: (table, context) => {
+          seen.push({ table, runId: typeof context.runId });
+          return table.header.length >= 3
+            ? { media: { kind: 'image', url: 'https://img.example.com/table.png' } }
+            : null;
+        },
+      });
+      return { handle, outbox, seen };
+    };
+    const { handle, outbox, seen } = run();
+    await handle(makeCtx(inbound('tables')).ctx);
+    await handle.drain();
+    expect(seen).toEqual([
+      {
+        table: { header: ['Name', 'Age', 'Weight'], rows: [['Ana', '3', '14 kg']] },
+        runId: 'string',
+      },
+      { table: { header: ['A', 'B'], rows: [['x', 'y']] }, runId: 'string' },
+    ]);
+    expect(outbox.map((item) => item.message)).toEqual([
+      { text: 'Here they are:' },
+      { text: '', media: { kind: 'image', url: 'https://img.example.com/table.png' } },
+      { text: 'And the pair:\n\n- *x*: y\n\nAnything else?' },
+    ]);
+  });
+
   it('a file reply on a channel without files sends its fallback text', async () => {
     const { adapter, outbox } = fakeAdapter();
     const handle = channels.handle(adapter, {

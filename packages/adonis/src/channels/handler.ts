@@ -50,7 +50,7 @@ import {
   withRetries,
 } from './executor.js';
 import { ChannelMediaTooLargeError } from './http.js';
-import { toChannelMarkdown } from './markdown.js';
+import { type MarkdownTable, splitTables, toChannelMarkdown } from './markdown.js';
 import { formatChannelQuestion, parseChannelAnswer } from './questions.js';
 import { splitMessage } from './split.js';
 import { type ChannelStore, InMemoryChannelStore, lucidChannelStore } from './store.js';
@@ -470,6 +470,21 @@ export interface ChannelHandleOptions {
   renderComponent?(
     component: ChannelComponent,
     context: { actor: Actor; conversation: string; runId: string; rendered: number },
+  ):
+    | ChannelReply
+    | ChannelReply[]
+    | null
+    | undefined
+    | Promise<ChannelReply | ChannelReply[] | null | undefined>;
+  /**
+   * A table in the turn's reply text (GitHub markdown): what to send in its place — a file (the
+   * table as an image), text, several — or `null`/`undefined` to keep it in the text, where the
+   * channel's markdown turns it into a list. The text around it goes as usual: before the table's
+   * replies, and after them.
+   */
+  renderTable?(
+    table: MarkdownTable,
+    context: { actor: Actor; conversation: string; runId: string },
   ):
     | ChannelReply
     | ChannelReply[]
@@ -1623,6 +1638,31 @@ export function handleChannel(
     let timedOut = false;
     let position = 0;
     const deadlineAt = Date.now() + timeoutMs;
+    /** The reply text, its tables through {@link ChannelHandleOptions.renderTable} when there is one. */
+    const replyText = async (value: string) => {
+      if (!options.renderTable) return out.text(value, 'reply');
+      let pending = '';
+      const sendPending = async () => {
+        if (pending.trim() !== '') await out.text(pending.trim(), 'reply');
+        pending = '';
+      };
+      for (const piece of splitTables(value)) {
+        if (piece.kind === 'text') {
+          pending += `${piece.text}\n`;
+          continue;
+        }
+        const replies = replyList(
+          await options.renderTable(piece.table, { actor, conversation, runId }),
+        );
+        if (replies.length === 0) {
+          pending += `${piece.source}\n`;
+          continue;
+        }
+        await sendPending();
+        for (const reply of replies) await out.reply(reply, 'reply');
+      }
+      await sendPending();
+    };
     const flush = async (end: boolean) => {
       const batch = [...rendered.values()];
       rendered.clear();
@@ -1632,7 +1672,7 @@ export function handleChannel(
       parts.length = 0;
       for (const [index, segment] of segments.entries()) {
         if (index % 2 === 0) {
-          if (segment.trim() !== '') await out.text(segment.trim(), 'reply');
+          if (segment.trim() !== '') await replyText(segment.trim());
           continue;
         }
         const messages = natives.get(segment) ?? [];
