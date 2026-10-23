@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.86.1
+
+### Patch Changes
+
+- [#459](https://github.com/DavideCarvalho/adonis-agora-agent/pull/459) [`e5c84f6`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/e5c84f6a0c75f8b568650bd0d3bf3023e64d7756) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - fix(ai-sdk): a summarizing `historyWindow` no longer fails the turn. The summary goes into the thread as a `system` message and AI SDK 7 rejects those by default (`AI_InvalidPromptError: System messages are not allowed…`), so every turn of a thread long enough to be summarized errored. `aiSdkModel` now passes `allowSystemInMessages: true`.
+
 ## 0.86.0
 
 ### Minor Changes
