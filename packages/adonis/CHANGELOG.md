@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.89.0
+
+### Minor Changes
+
+- [#467](https://github.com/DavideCarvalho/adonis-agora-agent/pull/467) [`71d2b45`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/71d2b457d1d2ea8d511b38f76a0c1f5ad4fd778d) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Channels: `renderTable` option — a table in the turn's reply text can go as something else (the table as an image), with the text around it in order; `null` keeps it as the list the channel's markdown makes. `splitTables` (exported) cuts a text around its GitHub tables.
+
 ## 0.88.0
 
 ### Minor Changes
