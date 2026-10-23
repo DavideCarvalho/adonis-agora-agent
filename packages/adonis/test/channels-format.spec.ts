@@ -8,6 +8,7 @@ import {
   ptBrChannelQuestionTexts,
   redisChannelStore,
   splitMessage,
+  splitTables,
   toChannelMarkdown,
   unescapeTelegramMarkdown,
 } from '../src/channels/index.js';
@@ -125,6 +126,32 @@ describe('toChannelMarkdown — tables', () => {
   it('a pipe outside a table stays as written', () => {
     expect(toChannelMarkdown('a | b\n---', 'whatsapp')).toBe('a | b\n');
     expect(toChannelMarkdown('use `a | b` here', 'whatsapp')).toBe('use `a | b` here');
+  });
+});
+
+describe('splitTables', () => {
+  it('cuts the text around its tables, not inside fenced code', () => {
+    const text = [
+      'Before',
+      '| A | B |',
+      '|---|---|',
+      '| 1 | 2 |',
+      'After',
+      '```',
+      '| C | D |',
+      '|---|---|',
+      '```',
+    ].join('\n');
+    expect(splitTables(text)).toEqual([
+      { kind: 'text', text: 'Before' },
+      {
+        kind: 'table',
+        table: { header: ['A', 'B'], rows: [['1', '2']] },
+        source: '| A | B |\n|---|---|\n| 1 | 2 |',
+      },
+      { kind: 'text', text: 'After\n```\n| C | D |\n|---|---|\n```' },
+    ]);
+    expect(splitTables('no table here')).toEqual([{ kind: 'text', text: 'no table here' }]);
   });
 });
 
