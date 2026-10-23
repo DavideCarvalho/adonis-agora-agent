@@ -1,5 +1,6 @@
 import { BaseWorkflow, type WorkflowCtx, type WorkflowEngine } from '@adonis-agora/durable';
 import type { HumanReply } from '../../elicitation.js';
+import { PACKAGE_ORIGIN } from '../../package-origin.js';
 import type { AgentRunInput, Decision } from '../../types.js';
 import { errorText } from '../log.js';
 import { addUsage, emptyUsage, type Milestone } from '../turn.js';
@@ -42,7 +43,7 @@ function isSignalTimeout(error: unknown): boolean {
  * container.
  */
 export class OpenCodeRunWorkflow extends BaseWorkflow {
-  static override workflow = { name: OPENCODE_RUN_WORKFLOW, version: '1' };
+  static override workflow = { name: OPENCODE_RUN_WORKFLOW, version: '1', origin: PACKAGE_ORIGIN };
 
   constructor(
     private readonly turns: OpenCodeTurns,

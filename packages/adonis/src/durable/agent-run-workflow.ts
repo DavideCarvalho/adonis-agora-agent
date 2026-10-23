@@ -18,6 +18,7 @@ import { RUN_ENDED_BEFORE_TOOL_CALL } from '../dangling-tool-calls.js';
 import { settleDeadRun } from '../dead-run.js';
 import { settleUnsettledDelegation } from '../delegation.js';
 import type { HumanReply } from '../elicitation.js';
+import { PACKAGE_ORIGIN } from '../package-origin.js';
 import { isReplayIntegrityError } from '../replay-integrity.js';
 import { isChatQueueStore, releaseThreadRun } from '../spi/chat-queue.js';
 import { childSinkWriter } from '../spi/token-stream-sink.js';
@@ -87,7 +88,7 @@ function isControlFlowSignal(error: unknown): boolean {
  * Instantiated by the engine with no arguments; its deps come from {@link getDurableAgentContext}.
  */
 export class AgentRunWorkflow extends BaseWorkflow {
-  static override workflow = { name: 'agora.agent.run', version: '1' };
+  static override workflow = { name: 'agora.agent.run', version: '1', origin: PACKAGE_ORIGIN };
 
   async run(ctx: WorkflowCtx, input: DurableAgentRunInput): Promise<{ text: string }> {
     const context = getDurableAgentContext();
