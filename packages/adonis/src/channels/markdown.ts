@@ -116,6 +116,59 @@ function line(source: string, dialect: Dialect): string {
   return inline(source, dialect);
 }
 
+/** A table row: `| a | b |` (outer pipes optional, at least one inner pipe). */
+const TABLE_ROW = /^\s{0,3}\|?.*\|.*\|?\s*$/;
+/** The row under a table's header: `|---|:--:|`. */
+const TABLE_DIVIDER = /^\s{0,3}\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/;
+
+function cells(row: string): string[] {
+  return row
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/(?<!\\)\|$/, '')
+    .split(/(?<!\\)\|/)
+    .map((cell) => cell.trim().replace(/\\\|/g, '|'));
+}
+
+/**
+ * One table row as a bullet — no chat channel draws tables, and the raw pipes arrive as noise. The
+ * first cell leads in bold; with two columns the second follows it, with more each cell is named
+ * by its header (`*Ana* — Idade: 3; Peso: 14 kg`). Empty cells are left out.
+ */
+function tableRow(row: string[], header: string[], dialect: Dialect): string {
+  const [first = '', ...rest] = row.map((cell) => inline(cell, dialect));
+  const lead = first === '' ? '' : dialect.bold(first);
+  const values = rest.flatMap((cell, index) => {
+    if (cell === '') return [];
+    const name = header.length > 2 ? (header[index + 1] ?? '') : '';
+    return [name === '' ? cell : `${inline(name, dialect)}: ${cell}`];
+  });
+  const separator = header.length > 2 ? ' — ' : ': ';
+  const body = values.join('; ');
+  return dialect.bullet + (lead && body ? `${lead}${separator}${body}` : lead || body);
+}
+
+/** Every line through {@link line}, except GitHub tables, which become bullet lists. */
+function withoutTables(rows: string[], dialect: Dialect): string[] {
+  const out: string[] = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]!;
+    const divider = rows[index + 1];
+    if (TABLE_ROW.test(row) && divider !== undefined && TABLE_DIVIDER.test(divider)) {
+      const header = cells(row);
+      index += 2;
+      while (index < rows.length && TABLE_ROW.test(rows[index]!) && rows[index]!.includes('|')) {
+        out.push(tableRow(cells(rows[index]!), header, dialect));
+        index += 1;
+      }
+      index -= 1;
+      continue;
+    }
+    out.push(line(row, dialect));
+  }
+  return out;
+}
+
 /**
  * Convert a turn's markdown to what `markdown` renders: WhatsApp's `*bold*` `_italic_` `~strike~`,
  * Telegram's MarkdownV2 (every reserved character escaped), or plain text. Links become
@@ -126,11 +179,7 @@ export function toChannelMarkdown(text: string, markdown: ChannelMarkdown): stri
   const fence = /```([\w+-]*)[^\S\n]*\n?([\s\S]*?)\n?```/g;
   let out = '';
   let last = 0;
-  const prose = (source: string) =>
-    source
-      .split('\n')
-      .map((row) => line(row, dialect))
-      .join('\n');
+  const prose = (source: string) => withoutTables(source.split('\n'), dialect).join('\n');
   for (const match of text.matchAll(fence)) {
     const index = match.index ?? 0;
     out += prose(text.slice(last, index));
