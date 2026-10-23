@@ -16,7 +16,10 @@ export interface HistorySelection {
 
 /** A stand-in for the messages a window left out, plus what producing it cost. */
 export interface HistorySummary {
-  /** Prose the loop folds into the window as a leading `system` message. */
+  /**
+   * Prose the loop hands the model in place of the dropped messages — appended to the turn's system
+   * prompt (see {@link HistoryWindow.renderSummary}), never sent as a message of the conversation.
+   */
   text: string;
   /**
    * What the summarizer spent, when it called a model. Recorded as a `summary` usage row, so a
@@ -69,8 +72,9 @@ export interface HistoryWindow {
    */
   select(messages: ModelMessage[], ctx: HistoryWindowContext): HistorySelection;
   /**
-   * Fold the dropped messages into prose the model reads in their place, prepended to the window as
-   * a `system` message. Optional — without it, dropped messages are simply gone.
+   * Fold the dropped messages into prose the model reads in their place, appended to the turn's
+   * system prompt (the provider's instructions channel — AI SDK 7 refuses `system` messages in the
+   * conversation). Optional — without it, dropped messages are simply gone.
    *
    * Runs inside the loop's `history:summarize` checkpoint, so it may call a model or hit the
    * network: the first attempt's result is journaled and every replay reads it back instead of
@@ -78,4 +82,13 @@ export interface HistoryWindow {
    * and only when `select` actually dropped something.
    */
   summarize?(dropped: ModelMessage[], ctx: HistoryWindowContext): Promise<HistorySummary>;
+  /**
+   * How a summary is worded in the system prompt. Undefined → {@link
+   * import('../history-window.js').renderHistorySummary}, a neutral English block. Override to word
+   * it in the agent's own language or house style.
+   *
+   * MUST be pure: it runs outside any checkpoint, over the journaled summary, so a replay renders
+   * the same prompt.
+   */
+  renderSummary?(text: string): string;
 }

@@ -122,6 +122,7 @@ interface PassOptions {
 
 interface PassResult {
   observed: ModelMessage[];
+  observedSystem: string;
   usagePurposes: string[];
 }
 
@@ -139,10 +140,12 @@ async function pass(options: PassOptions): Promise<PassResult> {
   }
 
   let observed: ModelMessage[] = [];
+  let observedSystem = '';
   const deps: AgentLoopDeps = {
     model: new FakeModelProvider((args) => {
       // A copy: the loop pushes the assistant message onto this very array right after the call.
       observed = [...args.messages];
+      observedSystem = args.system;
       return { text: 'final answer' };
     }),
     store,
@@ -164,6 +167,7 @@ async function pass(options: PassOptions): Promise<PassResult> {
   await runAgentLoop(deps, { threadId: thread.id, actor: ACTOR, userText: 'hi' }, hooks);
   return {
     observed,
+    observedSystem,
     usagePurposes: store.usageRows().map((row) => row.purpose),
   };
 }
@@ -194,7 +198,7 @@ describe('runAgentLoop historyWindow wiring', () => {
     expect(journal.namesBetween('load:thread', 'llm:0')).toEqual(['patch:agent:history-select']);
   });
 
-  it('journals the summary and bills it, and hands it to the model as a leading system message', async () => {
+  it('journals the summary and bills it, and hands it to the model in the system prompt', async () => {
     const journal = new Journal();
     const window = new SlidingWindowHistory({
       maxMessages: 2,
@@ -205,17 +209,66 @@ describe('runAgentLoop historyWindow wiring', () => {
       }),
     });
 
-    const { observed, usagePurposes } = await pass({ journal, historyWindow: window });
+    const { observed, observedSystem, usagePurposes } = await pass({
+      journal,
+      historyWindow: window,
+    });
 
     expect(journal.namesBetween('load:thread', 'llm:0')).toEqual([
       'patch:agent:history-select',
       'history:summarize',
       'persist:usage:history',
     ]);
-    expect(observed).toHaveLength(3);
-    expect(observed[0]?.role).toBe('system');
-    expect(observed[0]?.content).toContain('they discussed the manifest');
+    // Only the two kept messages ride as conversation; no `system` message among them.
+    expect(observed).toHaveLength(2);
+    expect(observed.some((message) => message.role === 'system')).toBe(false);
+    expect(observedSystem.startsWith('You are a test agent.')).toBe(true);
+    expect(observedSystem).toContain(
+      '<conversation_summary>\nthey discussed the manifest\n</conversation_summary>',
+    );
     expect(usagePurposes).toContain('summary');
+  });
+
+  it("words the summary with the window's renderSummary", async () => {
+    const window = new SlidingWindowHistory({
+      maxMessages: 2,
+      summarize: async () => ({ text: 'falaram do manifesto' }),
+      renderSummary: (text) => `Resumo da conversa anterior:\n${text}`,
+    });
+
+    const { observedSystem } = await pass({ journal: new Journal(), historyWindow: window });
+
+    expect(observedSystem).toBe(
+      'You are a test agent.\n\nResumo da conversa anterior:\nfalaram do manifesto',
+    );
+  });
+
+  it('lifts the summary out of a replayed history:window checkpoint too', async () => {
+    const journal = new Journal();
+    let calls = 0;
+    const window = new SlidingWindowHistory({
+      maxMessages: 2,
+      summarize: async () => {
+        calls += 1;
+        return { text: `recorded summary ${calls}` };
+      },
+    });
+
+    // A run recorded before the split: the whole fold, summary message included, in one checkpoint.
+    const first = await pass({ journal, historyWindow: window, patched: async () => false });
+    expect(journal.namesBetween('load:thread', 'llm:0')).toEqual(['history:window']);
+    expect(first.observed.some((message) => message.role === 'system')).toBe(false);
+    expect(first.observedSystem).toContain('recorded summary 1');
+
+    // Resumed before its first model call: everything from `llm:0` on is yet to happen.
+    const firstCall = journal.names().indexOf('llm:0');
+    while (journal.names().length > firstCall) journal.dropAt(firstCall);
+
+    const replayed = await pass({ journal, historyWindow: window, patched: async () => false });
+    expect(replayed.observed.some((message) => message.role === 'system')).toBe(false);
+    // Read back from the journal, not summarized again.
+    expect(calls).toBe(1);
+    expect(replayed.observedSystem).toBe(first.observedSystem);
   });
 
   it('does not summarize when the window dropped nothing', async () => {
