@@ -1,9 +1,0 @@
----
-'@adonis-agora/agent': minor
----
-
-The model can see WHEN the person sent each message (opt-in), and the send time is stored with it:
-
-- **`sentAt` on messages.** `StoredMessage`, `AppendMessageInput`, `AgentRunInput`, `QueuedMessage` and `EnqueueMessageInput` gain an optional `sentAt` (ISO 8601) — when the person sent the message, when that is not when it was stored. `agent_message` and `agent_queued_message` gain a nullable `sent_at` column, added by `createAgentTables`' schema repair (at boot; with `autoCreateTables: false`, re-run the `create_agent_tables` migration — until then the store keeps working and simply does not store send times, with one warning at startup).
-- **Who fills it.** Text channels: `InboundMessage.sentAt` (epoch ms) is read from the provider (Evolution / Whatsmiau `messageTimestamp`, WhatsApp Cloud `timestamp`, Telegram `date`) and handed to the turn; a `coalesce` burst takes its first message's (each part's is on `inbound.parts[i].message.sentAt`). `AgentService.send` / `chat` take `sentAt?: Date | string | number`, and `POST <path>/chat` a `sentAt` (ISO or epoch ms; unreadable → ignored, future → now). A queued send records when it was queued (or its own `sentAt`), not when its turn started. Everything else falls back to `createdAt`.
-- **`messageTimestamps` (new, optional).** `{ timeZone?: string | ((actor) => string | undefined); format?: (sentAt, ctx) => string }` in `config/agent.ts`: every user message the model reads — old ones included — starts with a label, `[sent 2026-10-23T11:17-03:00]` by default (`defaultMessageTimestampFormat`). Only the model's view: stored content, `getThread` and the UI are untouched. Applied inside `load:thread`, so a durable replay reads the same prompt back, and a `historyWindow` selects over the labelled messages. Omitted → the prompt and the `load:thread` payload are exactly what they were.
