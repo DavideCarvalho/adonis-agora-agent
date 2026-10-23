@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.89.1
+
+### Patch Changes
+
+- [#466](https://github.com/DavideCarvalho/adonis-agora-agent/pull/466) [`abac116`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/abac116b97266995f7309428744f84be78b021ea) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Durable runs started by this package are now stamped with `origin: '@adonis-agora/agent'` (`agora.agent.run`, `agora.agent.opencode.run`, `agora.channel.job`, `agora.channel.timer`), so the durable console's ORIGIN facet separates the library's runs from the app's own.
+
 ## 0.89.0
 
 ### Minor Changes
