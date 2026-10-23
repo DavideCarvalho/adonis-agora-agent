@@ -392,6 +392,7 @@ export class InMemoryAgentStore
       ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
       ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
       ...(input.hostContext !== undefined ? { hostContext: input.hostContext } : {}),
+      ...(input.sentAt !== undefined ? { sentAt: input.sentAt } : {}),
       ...(input.interrupt === true ? { interrupt: true } : {}),
       createdAt: ts,
       updatedAt: ts,
@@ -578,6 +579,7 @@ export class InMemoryAgentStore
       ...(input.actionProposalOutcome !== undefined
         ? { actionProposalOutcome: snapshotActionProposal(input.actionProposalOutcome) }
         : {}),
+      ...(input.sentAt !== undefined ? { sentAt: input.sentAt } : {}),
     };
     row.messages.push(message);
     row.updatedAt = message.createdAt;

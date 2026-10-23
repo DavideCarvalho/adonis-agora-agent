@@ -75,6 +75,14 @@ export interface InboundMessage {
    * exactly one.
    */
   buttonWithoutId?: boolean;
+  /**
+   * When the person sent it, in epoch milliseconds — the provider's own timestamp (Evolution /
+   * Whatsmiau `messageTimestamp`, WhatsApp Cloud `timestamp`, Telegram `date`). Stored with the turn's
+   * message (`StoredMessage.sentAt`), so a turn that waited (a queue, a `coalesce` burst) still knows
+   * when it was said — what `messageTimestamps` shows the model. Absent when the provider sent none
+   * (a Telegram button press): the message's `createdAt` stands for it.
+   */
+  sentAt?: number;
   /** The provider's payload, untouched. */
   raw: unknown;
 }

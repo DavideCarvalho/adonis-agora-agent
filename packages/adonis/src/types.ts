@@ -405,6 +405,11 @@ export interface AgentRunInput {
   /** Files attached to the latest user message (image/PDF). Persisted with it and sent to the model. */
   attachments?: MessageAttachment[];
   /**
+   * When the person sent {@link userText} (ISO 8601), stored with it as `StoredMessage.sentAt`.
+   * Omitted → the message's own `createdAt` stands for it.
+   */
+  sentAt?: string;
+  /**
    * The persona of {@link agentName} this turn runs under. An id ({@link Persona.id}) is the durable
    * form: the service resolves it from the send, the thread's pin and the agent's default BEFORE the
    * run starts, and the loop looks its definition up once, in the `persona:resolve` checkpoint. A
@@ -668,6 +673,13 @@ export interface StoredMessage {
    * nobody rated it, or on a store that does not record feedback.
    */
   feedback?: MessageFeedback;
+  /**
+   * When the person SENT this message (ISO 8601), when it differs from when it was stored: a text
+   * channel's provider timestamp (a turn that waited in a queue is stored minutes later), the time a
+   * queued send was queued, or one the send named (`ChatParams.sentAt`). Absent on every other
+   * message — read {@link createdAt} then. What `messageTimestamps` shows the model.
+   */
+  sentAt?: string;
   createdAt: string;
 }
 

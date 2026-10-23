@@ -55,7 +55,12 @@ import type {
 } from '../types.js';
 import type { UiCapabilities } from '../ui-capabilities.js';
 import { LucidActionProposalStore } from './lucid-action-proposal-store.js';
-import { AGENT_TABLES, ensureAgentTables, hasToolCallIdColumn } from './lucid-schema.js';
+import {
+  AGENT_TABLES,
+  ensureAgentTables,
+  hasSentAtColumns,
+  hasToolCallIdColumn,
+} from './lucid-schema.js';
 import { withStoreTransaction } from './sqlite-transactions.js';
 
 // ── Structural Lucid typing (copied from telescope) ──────────────────────────
@@ -225,6 +230,7 @@ function queuedMessageFromRow(row: Record<string, unknown>): QueuedMessage {
     ...(uiCapabilities !== undefined ? { uiCapabilities } : {}),
     ...(hostContext !== undefined ? { hostContext } : {}),
     ...(toInt(row.interrupt) === 1 ? { interrupt: true } : {}),
+    ...(row.sent_at !== null && row.sent_at !== undefined ? { sentAt: msToIso(row.sent_at) } : {}),
     createdAt: msToIso(row.created_at),
     updatedAt: msToIso(row.updated_at),
   };
@@ -279,6 +285,11 @@ export class LucidAgentStore
    * the store provisions the schema itself; see {@link checkToolCallSchema} for when it is not.
    */
   private toolCallsScoped = true;
+  /**
+   * Whether `agent_message` / `agent_queued_message` have `sent_at`. Always so when the store
+   * provisions the schema; see {@link checkToolCallSchema} for when it is not.
+   */
+  private sentAtColumns = true;
 
   constructor(
     private readonly db: LucidDatabaseLike,
@@ -312,6 +323,14 @@ export class LucidAgentStore
    * and says so once, at startup.
    */
   private async checkToolCallSchema(): Promise<void> {
+    this.sentAtColumns = await hasSentAtColumns(this.db);
+    if (!this.sentAtColumns) {
+      console.warn(
+        '[@adonis-agora/agent] agent_message has no sent_at column. With autoCreateTables off the ' +
+          'schema is yours: add a migration that calls createAgentTables(). Until it runs, send times ' +
+          '(sentAt) are not stored, and messageTimestamps labels messages with their created_at.',
+      );
+    }
     this.toolCallsScoped = await hasToolCallIdColumn(this.db);
     if (!this.toolCallsScoped) {
       console.warn(
@@ -418,7 +437,10 @@ export class LucidAgentStore
       'desc',
     );
     if (limit !== undefined) query.limit(limit);
-    const rows = await query.select(...TURN_MESSAGE_COLUMNS);
+    const rows = await query.select(
+      ...TURN_MESSAGE_COLUMNS,
+      ...(this.sentAtColumns ? ['sent_at'] : []),
+    );
     return rows.reverse().map(rowToMessage);
   }
 
@@ -518,6 +540,7 @@ export class LucidAgentStore
           ui: m.ui ?? null,
           action_proposal_outcome: m.action_proposal_outcome ?? null,
           ...(typeof m.agent_name === 'string' ? { agent_name: m.agent_name } : {}),
+          ...(m.sent_at !== null && m.sent_at !== undefined ? { sent_at: toInt(m.sent_at) } : {}),
           created_at: toInt(m.created_at),
         });
       }
@@ -674,6 +697,7 @@ export class LucidAgentStore
         page_context: input.pageContext !== undefined ? safeJson(input.pageContext) : null,
         ui_capabilities: input.uiCapabilities !== undefined ? safeJson(input.uiCapabilities) : null,
         host_context: input.hostContext !== undefined ? safeJson(input.hostContext) : null,
+        ...this.sentAtColumn(input.sentAt),
         interrupt: input.interrupt === true ? 1 : 0,
         position,
         created_at: now,
@@ -798,6 +822,7 @@ export class LucidAgentStore
         input.actionProposalOutcome !== undefined
           ? canonicalActionProposalJson(input.actionProposalOutcome)
           : null,
+      ...this.sentAtColumn(input.sentAt),
       created_at: now,
     });
     // Keep the thread's `updated_at` in step so list ordering reflects the latest activity.
@@ -824,7 +849,18 @@ export class LucidAgentStore
       ...(input.actionProposalOutcome !== undefined
         ? { actionProposalOutcome: snapshotActionProposal(input.actionProposalOutcome) }
         : {}),
+      ...(input.sentAt !== undefined && this.sentAtColumns ? { sentAt: input.sentAt } : {}),
     };
+  }
+
+  /**
+   * `{ sent_at }` for an insert, only when there is one to write and the column exists — a database
+   * whose `sent_at` has not been added yet (`autoCreateTables: false`) keeps every write working.
+   */
+  private sentAtColumn(sentAt: string | undefined): { sent_at?: number } {
+    if (sentAt === undefined || !this.sentAtColumns) return {};
+    const at = Date.parse(sentAt);
+    return Number.isFinite(at) ? { sent_at: at } : {};
   }
 
   /**
@@ -1356,5 +1392,6 @@ function rowToMessage(row: Record<string, unknown>): StoredMessage {
     ...(ui !== undefined ? { ui } : {}),
     ...(outcome !== undefined ? { actionProposalOutcome: outcome } : {}),
     ...(feedback !== undefined && feedback !== null ? { feedback } : {}),
+    ...(row.sent_at !== null && row.sent_at !== undefined ? { sentAt: msToIso(row.sent_at) } : {}),
   };
 }

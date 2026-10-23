@@ -23,4 +23,5 @@ Capabilities Agora delivered whose Aviary port (`packages/channels` in [Aviary](
 | Capability | Agora | Aviary |
 | --- | --- | --- |
 | Text channels: `coalesce` — a burst of messages of one conversation as one turn (durable sleep, control messages never grouped, `coalesced` / `parts` / `queueWaitMs` on the hooks) | yes | not ported |
+| Message send time: `sentAt` on inbound channel messages (provider timestamp), sends and stored/queued messages; opt-in `messageTimestamps` labels user messages in the model's view (`[sent …]`) without changing stored content | yes | not ported |
 | Text channels: phases as dispatched durable steps (`agora.channel.<phase>`, workflow version `2`, version `1` kept for in-flight runs) | yes | not ported |

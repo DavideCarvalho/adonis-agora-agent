@@ -53,6 +53,7 @@ import {
   rememberToolDefinition,
   writeMemory,
 } from './memory.js';
+import { type MessageTimestampsConfig, messageTimestampLabeller } from './message-timestamps.js';
 import {
   channelChoiceLimits,
   createNegotiatedUiCollector,
@@ -259,6 +260,14 @@ export interface AgentLoopDeps<TOutput = unknown> {
    * does. Applied once per run. See {@link SlidingWindowHistory} for the built-in.
    */
   historyWindow?: HistoryWindow;
+  /**
+   * Show the model when the person sent each message — a label in front of every user message of
+   * the history it reads (`[sent 2026-10-23T11:17-03:00] …`), from `StoredMessage.sentAt`, else the
+   * message's `createdAt`. Only the model's view: stored content and thread reads are untouched.
+   * Undefined → messages reach the model as stored, and `load:thread` records byte-identical
+   * payloads. See {@link MessageTimestampsConfig}.
+   */
+  messageTimestamps?: MessageTimestampsConfig;
   /**
    * Rewrites `{ system, messages }` before EVERY model call of the turn — masking identifiers,
    * stamping a policy preamble, collapsing an oversized tool result. Every step, not once per run,
@@ -1009,6 +1018,23 @@ function toModelMessage(message: ModelMessage | StoredMessage): ModelMessage {
 }
 
 /**
+ * How a stored message reaches the model this turn: {@link toModelMessage}, and with
+ * `messageTimestamps` configured, each user message labelled with when it was sent. Applied inside
+ * `load:thread`, so the labels are part of the recorded payload (a replay reads them back rather than
+ * labelling again) and a `historyWindow` selects over labelled messages. Without the option this is
+ * exactly `toModelMessage`, and `load:thread` records what it always did.
+ */
+function modelViewOf(
+  deps: AgentLoopDeps,
+  input: Pick<AgentRunInput, 'threadId' | 'actor'>,
+): (message: ModelMessage | StoredMessage) => ModelMessage {
+  const config = deps.messageTimestamps;
+  if (config === undefined) return toModelMessage;
+  const label = messageTimestampLabeller(config, input);
+  return (message) => label(message, toModelMessage(message));
+}
+
+/**
  * How many of the thread's newest rows to ask for — the window's own row ceiling, or nothing at all,
  * which asks for the transcript.
  *
@@ -1046,9 +1072,11 @@ function turnMessageLimit(window: HistoryWindow | undefined): number | undefined
  */
 async function readThreadForTurn(
   deps: AgentLoopDeps,
-  threadId: string,
+  input: Pick<AgentRunInput, 'threadId' | 'actor'>,
   messageLimit: number | undefined,
 ): Promise<ThreadForTurn> {
+  const { threadId } = input;
+  const toModel = modelViewOf(deps, input);
   const windowing = deps.store as Partial<ThreadTurnReader>;
   if (typeof windowing.loadThreadForTurn === 'function') {
     const page = await windowing.loadThreadForTurn({
@@ -1058,7 +1086,7 @@ async function readThreadForTurn(
     return page === null
       ? { messages: [], title: null, hasAssistantMessage: false }
       : {
-          messages: await settleHistory(deps, page.messages.map(toModelMessage)),
+          messages: await settleHistory(deps, page.messages.map(toModel)),
           title: page.title,
           hasAssistantMessage: page.hasAssistantMessage,
         };
@@ -1070,7 +1098,7 @@ async function readThreadForTurn(
       ? stored
       : stored.slice(Math.max(0, stored.length - Math.max(0, messageLimit)));
   return {
-    messages: await settleHistory(deps, window.map(toModelMessage)),
+    messages: await settleHistory(deps, window.map(toModel)),
     title: thread?.title ?? null,
     hasAssistantMessage: stored.some((message) => message.role === 'assistant'),
   };
@@ -3201,17 +3229,17 @@ async function runAgentTurn<TOutput = unknown>(
         runId: hooks.runId,
         ...(persona !== undefined ? { persona: persona.id } : {}),
         ...(input.attachments !== undefined ? { attachments: input.attachments } : {}),
+        ...(input.sentAt !== undefined ? { sentAt: input.sentAt } : {}),
       }),
     );
   }
 
   const thread = threadForTurn(
     await hooks.step<RecordedThreadLoad | null>('load:thread', () =>
-      readThreadForTurn(deps, input.threadId, turnMessageLimit(deps.historyWindow)).then(
-        (loaded) =>
-          loaded === null
-            ? { messages: [], actionApprovalMode: deps.actionApprovalMode ?? 'blocking' }
-            : { ...loaded, actionApprovalMode: deps.actionApprovalMode ?? 'blocking' },
+      readThreadForTurn(deps, input, turnMessageLimit(deps.historyWindow)).then((loaded) =>
+        loaded === null
+          ? { messages: [], actionApprovalMode: deps.actionApprovalMode ?? 'blocking' }
+          : { ...loaded, actionApprovalMode: deps.actionApprovalMode ?? 'blocking' },
       ),
     ),
   );

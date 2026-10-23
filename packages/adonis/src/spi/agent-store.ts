@@ -70,6 +70,8 @@ export interface AppendMessageInput {
   reasoningMs?: number;
   /** Components pushed during this step. See {@link StoredMessage.ui}. */
   ui?: AgentUiComponent[];
+  /** When the person sent it (ISO 8601). See {@link StoredMessage.sentAt}. */
+  sentAt?: string;
 }
 
 export interface RecordToolCallInput {

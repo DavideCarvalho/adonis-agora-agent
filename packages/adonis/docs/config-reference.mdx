@@ -109,6 +109,22 @@ retrievalFilter: (actor) => ({ tenantRef: actor.tenantRef }),
 
 `new SlidingWindowHistory({ maxMessages, maxTokens })` keeps the newest messages that fit a count, a token budget, or both — whichever cuts more wins, and the newest message always rides. Adding `summarize: summarizeWithModel(model)` folds what the window left out into a leading `system` summary, at the cost of one extra non-streamed model call per run, recorded as a `summary` usage row. Pass any `HistoryWindow` of your own for a window the built-in can't express; `estimateMessageTokens` and `DEFAULT_HISTORY_SUMMARY_INSTRUCTION` are exported for composing one. See [Bounding the history](/docs/agent/concepts/agent-loop#bounding-the-history).
 
+### `messageTimestamps`
+
+`{ timeZone?: string | ((actor) => string | undefined); format?: (sentAt: Date, ctx) => string }`. Show the model **when the person sent each message**: every user message of the history a turn reads — old ones included — starts with a label, `[sent 2026-10-23T11:17-03:00] the feeding started just now` by default (ISO 8601 to the minute, in `timeZone`, default `'UTC'`). `format` returns your own label (`''` leaves a message unlabelled); `ctx` is `{ actor, threadId, timeZone, message: { role, content } }`. **Omit → messages reach the model exactly as stored**, and the prompt is byte-for-byte what it was before the option existed.
+
+The send time is the message's `sentAt` — a [text channel](/docs/agent/channels#when-a-message-was-sent)'s provider timestamp, the time a queued send was queued, or `sentAt` on a send (`POST /agent/chat { sentAt }`, `AgentService.send({ sentAt })`) — else its `createdAt`. Only the model's view changes: the stored content, `GET /agent/threads/:id` and the UI are untouched. The labels are added while the turn reads its thread, inside `load:thread`, so a durable replay reads back the same prompt, and a `historyWindow` selects over the labelled messages (a token budget counts the labels).
+
+```ts
+messageTimestamps: {
+  timeZone: (actor) => actor.attributes?.timeZone ?? 'America/Sao_Paulo',
+  format: (sentAt, { timeZone }) =>
+    `[enviada ${DateTime.fromJSDate(sentAt).setZone(timeZone).toFormat('dd/MM HH:mm')}]`,
+},
+```
+
+Tell the model what the label means in your system prompt ("the label is when the person sent the message; 'now' in a message means that time").
+
 ### `authorizer` / `rolesPolicy`
 
 `RolesPolicy`. The tool authorization gate; `authorizer` and `rolesPolicy` are **aliases** — pass either. **Defaults to `DefaultToolAuthorizer`** (role-set intersection against `tool.roles ?? defaultRoles`; open when that list is empty). Swap it to plug an ability-aware policy. See [Authorization](/docs/agent/governance/authorization).

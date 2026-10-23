@@ -1,4 +1,5 @@
 import { utcDay } from './agent-deps.js';
+import { normalizeSentAt } from './message-timestamps.js';
 import type { AgentRunner } from './spi/agent-runner.js';
 import type { AgentStore } from './spi/agent-store.js';
 import type { AttachmentStagingStore } from './spi/attachment-staging.js';
@@ -350,6 +351,7 @@ export class ChatQueueService {
       ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
       ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
       ...(input.hostContext !== undefined ? { hostContext: input.hostContext } : {}),
+      ...(input.sentAt !== undefined ? { sentAt: input.sentAt } : {}),
     });
     await store.setQueuePause(threadId, { reason, message, at: new Date().toISOString() });
     await store.releaseActiveStream(threadId, next.runId);
@@ -414,11 +416,14 @@ export class ChatQueueService {
   private async inputFor(message: QueuedMessage): Promise<AgentRunInput> {
     const attachments = await this.freshAttachments(message.actor, message.attachments ?? []);
     const { agentName, persona } = await this.targetFor(message);
+    const sentAt = queuedSentAt(message);
     return {
       threadId: message.threadId,
       actor: message.actor,
       userText: message.content,
       day: utcDay(),
+      // It was sent when it was queued (or at the time the send named), not when it starts.
+      ...(sentAt !== undefined ? { sentAt } : {}),
       ...(agentName !== undefined ? { agentName } : {}),
       // An id, never the definition: the run journals the definition itself (`persona:resolve`).
       ...(persona !== undefined ? { persona } : {}),
@@ -502,4 +507,9 @@ function queueFrame(
  */
 export function isThreadTurn(input: { sinkRunId?: unknown; parentRunId?: unknown }): boolean {
   return input.sinkRunId === undefined && input.parentRunId === undefined;
+}
+
+/** When a queued message was sent: the time its send named, else when it was queued. */
+function queuedSentAt(message: QueuedMessage): string | undefined {
+  return normalizeSentAt(message.sentAt ?? message.createdAt);
 }

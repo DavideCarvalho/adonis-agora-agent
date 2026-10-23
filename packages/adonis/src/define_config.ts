@@ -7,6 +7,7 @@ import type { GenuiFactory } from './genui/factory.js';
 import type { AgentGovernanceAuthorize } from './governance-gate.js';
 import type { McpServerConfig } from './mcp-client/options.js';
 import type { MemoryConfig } from './memory.js';
+import type { MessageTimestampsConfig } from './message-timestamps.js';
 import type { PriceCatalogOptions } from './pricing/boot-pricing.js';
 import type { SkillsConfig } from './skills.js';
 import type { ActionProposalOutcome } from './spi/action-proposal-outcome-store.js';
@@ -385,6 +386,16 @@ export interface AgentConfig {
    * for a window it cannot express.
    */
   historyWindow?: HistoryWindow;
+  /**
+   * Show the model WHEN the person sent each message: every user message of the history it reads
+   * (old ones included) starts with a label — `[sent 2026-10-23T11:17-03:00] …` by default, in
+   * `timeZone`, or whatever `format` returns. The send time is the message's `sentAt` (a text
+   * channel's provider timestamp, a queued send's queue time, `sentAt` on a send) else its
+   * `createdAt`. Only the model's view: the stored content, `getThread` and the UI are untouched, and
+   * a {@link AgentConfig.historyWindow} selects over the labelled messages. Omit → messages reach the
+   * model as stored (the prompt is exactly what it was before this option existed).
+   */
+  messageTimestamps?: MessageTimestampsConfig;
   /**
    * Authored procedures the model can pull in mid-turn, scoped by tokens a host resolver orders —
    * see `skills.ts`. The catalog costs one line per skill in the system prompt; a body arrives as a

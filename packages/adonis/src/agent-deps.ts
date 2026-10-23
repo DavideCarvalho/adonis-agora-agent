@@ -1,6 +1,7 @@
 import type { ActionApprovalMode } from './action-proposal-receipt.js';
 import type { AgentIntake } from './elicitation.js';
 import type { MemoryConfig } from './memory.js';
+import type { MessageTimestampsConfig } from './message-timestamps.js';
 import type { ResolveToolUiCatalog, ToolUiChannelGuide } from './negotiated-tool-ui.js';
 import type { SkillsConfig } from './skills.js';
 import type { AgentStore } from './spi/agent-store.js';
@@ -73,6 +74,8 @@ export interface AgentDeps {
   toolTransientRetry?: ToolTransientRetrySetting;
   /** Bounds how much of the persisted thread rides the model call each turn. Omit → full history every turn. */
   historyWindow?: HistoryWindow;
+  /** Show the model when each user message was sent. Omit → messages reach it as stored. */
+  messageTimestamps?: MessageTimestampsConfig;
   /**
    * Authored procedures the model can pull in mid-turn, scoped by the host's own tokens. Omit → no
    * catalog block and no `skill` tool.

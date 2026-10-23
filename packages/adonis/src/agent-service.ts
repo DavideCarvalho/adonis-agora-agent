@@ -16,6 +16,7 @@ import {
 import type { ChatQueueService } from './chat-queue-service.js';
 import { RunNotActiveError, settleDeadRun } from './dead-run.js';
 import { readElicitationQuestions, validateElicitationAnswer } from './elicitation-input.js';
+import { normalizeSentAt } from './message-timestamps.js';
 import { personaCatalogEntry } from './personas.js';
 import type { ActionProposalMutationResult } from './spi/action-proposal-store.js';
 import type { AgentRunner } from './spi/agent-runner.js';
@@ -119,6 +120,14 @@ export interface ChatParams {
    * never shown to the model or to clients. Set by in-process callers, never from a request body.
    */
   hostContext?: AgentHostContext;
+  /**
+   * When the person sent this message, when that is not "now": a channel's provider timestamp, a
+   * client that sends what it buffered offline. A `Date`, an ISO 8601 string or epoch milliseconds;
+   * stored with the message (`StoredMessage.sentAt`) and what `messageTimestamps` shows the model.
+   * Unreadable → ignored; in the future → now. Omitted → the message's `createdAt` stands for it
+   * (for a send that waits in the queue, the time it was queued).
+   */
+  sentAt?: Date | string | number;
 }
 
 /** How {@link AgentService.send} treats one send. */
@@ -622,12 +631,14 @@ export class AgentService {
       await this.pinThreadPersona(threadId, params.personaId);
     }
 
+    const sentAt = params.regenerate === true ? undefined : normalizeSentAt(params.sentAt);
     const input: AgentRunInput = {
       threadId,
       actor: params.actor,
       userText: params.message,
       day: utcDay(),
       agentName,
+      ...(sentAt !== undefined ? { sentAt } : {}),
       ...(persona !== undefined ? { persona } : {}),
       ...(params.pageContext !== undefined ? { pageContext: params.pageContext } : {}),
       ...(params.uiCapabilities !== undefined ? { uiCapabilities: params.uiCapabilities } : {}),
@@ -719,6 +730,7 @@ export class AgentService {
       ...(input.pageContext !== undefined ? { pageContext: input.pageContext } : {}),
       ...(input.uiCapabilities !== undefined ? { uiCapabilities: input.uiCapabilities } : {}),
       ...(input.hostContext !== undefined ? { hostContext: input.hostContext } : {}),
+      ...(input.sentAt !== undefined ? { sentAt: input.sentAt } : {}),
       ...(interrupting !== undefined ? { interrupt: true, at: 'head' as const } : {}),
     });
     let runId: string | undefined;

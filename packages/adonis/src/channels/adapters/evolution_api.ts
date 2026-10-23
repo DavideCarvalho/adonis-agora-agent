@@ -6,6 +6,7 @@ import {
   fetchBytes,
   mediaFilename,
   postJson,
+  providerSentAt,
   queryParam,
   record,
   safeEqual,
@@ -219,6 +220,7 @@ function parseOne(
   // Whatsmiau forwards a button press as `messageType: 'buttonsResponseMessage'` with only the
   // label in `message.conversation` — the button's id is lost.
   const pressWithoutId = !button && !file && REPLY_TYPES.has(str(data.messageType) ?? '');
+  const sentAt = providerSentAt(data.messageTimestamp);
   return {
     id,
     from: addressOf(sender),
@@ -229,6 +231,7 @@ function parseOne(
     ...(button ? { buttonId: button.id } : {}),
     ...(pressWithoutId ? { buttonWithoutId: true } : {}),
     ...(file ? { media: [file.media] } : {}),
+    ...(sentAt !== undefined ? { sentAt } : {}),
     raw: data,
   };
 }

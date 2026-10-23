@@ -2065,6 +2065,8 @@ export function handleChannel(
     // narrowed to it), and the components arrive whole, for the history and for native delivery.
     const drawsNatively = options.uiCapabilities === undefined && (await genuiFor()) !== null;
     const sendOptions: ChatSendOptions = { textDecisions: false };
+    // When the person said it: the provider's time — a burst's first message's, when it begins.
+    const sentAt = (batch ?? [message]).find((part) => part.sentAt !== undefined)?.sentAt;
     let sent: Awaited<ReturnType<ChannelTurnService['send']>>;
     try {
       sent = await service.send(
@@ -2074,6 +2076,7 @@ export function handleChannel(
           ...(threadId !== null ? { threadId } : {}),
           ...(options.agentName !== undefined ? { agentName: options.agentName } : {}),
           ...(inbound.attachments.length > 0 ? { attachments: inbound.attachments } : {}),
+          ...(sentAt !== undefined ? { sentAt } : {}),
           ...(drawsNatively
             ? {}
             : { uiCapabilities: options.uiCapabilities ?? { components: [] } }),
