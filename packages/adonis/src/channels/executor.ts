@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { PACKAGE_ORIGIN } from '../package-origin.js';
 import type { Actor } from '../types.js';
 import { ChannelDeliveryError } from './http.js';
 import type { InboundMessage } from './types.js';
@@ -187,7 +188,11 @@ export interface ChannelWorkflowEngine {
     name: string,
     version: string,
     fn: (ctx: ChannelWorkflowCtx, input: unknown) => Promise<unknown>,
-    opts?: { singleton?: { key: (input: unknown) => string; limit?: number } },
+    opts?: {
+      singleton?: { key: (input: unknown) => string; limit?: number };
+      /** Package attribution stamped on every run (`WorkflowRun.origin`). */
+      origin?: string;
+    },
   ): void;
   start(
     workflow: string,
@@ -409,13 +414,15 @@ export function registerChannelWorkflows(
     return null;
   };
 
+  const origin = { origin: PACKAGE_ORIGIN };
   const singleton = {
+    ...origin,
     singleton: { key: (input: unknown) => lockKey(input as ChannelJob), limit: 1 },
   };
   engine.register(CHANNEL_JOB_WORKFLOW, '1', v1, singleton);
   engine.register(CHANNEL_JOB_WORKFLOW, '2', v2, singleton);
-  engine.register(CHANNEL_TIMER_WORKFLOW, '1', v1);
-  engine.register(CHANNEL_TIMER_WORKFLOW, '2', v2);
+  engine.register(CHANNEL_TIMER_WORKFLOW, '1', v1, origin);
+  engine.register(CHANNEL_TIMER_WORKFLOW, '2', v2, origin);
 }
 
 /** As durable runs on `engine` — see {@link registerChannelWorkflows}. */

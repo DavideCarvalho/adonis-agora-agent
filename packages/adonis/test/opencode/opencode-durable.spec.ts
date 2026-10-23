@@ -67,6 +67,7 @@ describe('openCodeDurable', () => {
     expect(textOf(fs)).toBe('echo: hello');
     expect((await terminal(engine, runId)).status).toBe('completed');
     expect((await engine.getRun(runId))?.workflow).toBe('agora.agent.opencode.run');
+    expect((await engine.getRun(runId))?.origin).toBe('@adonis-agora/agent');
     expect((await h.store.getThread(threadId))?.messages.map((m) => m.content)).toEqual([
       'hello',
       'echo: hello',

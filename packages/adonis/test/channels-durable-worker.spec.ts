@@ -104,6 +104,10 @@ describe('durable channels under a single serial worker', () => {
       expect(Date.now() - startedAt).toBeLessThan(2000);
       const turns = await app.engine.listRuns({ workflow: 'agora.agent.run' });
       expect(turns.map((run) => run.status)).toEqual(['completed']);
+      // Both the channel job and the agent turn are attributed to this package.
+      expect(turns.map((run) => run.origin)).toEqual(['@adonis-agora/agent']);
+      const job = await app.engine.getRun('agora.channel:test:message:m-1');
+      expect(job?.origin).toBe('@adonis-agora/agent');
     } finally {
       await app.stop();
     }
