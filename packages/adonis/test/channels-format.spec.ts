@@ -83,6 +83,51 @@ describe('toChannelMarkdown', () => {
   });
 });
 
+describe('toChannelMarkdown — tables', () => {
+  it('two columns: one bullet per row, first cell in bold', () => {
+    const text = [
+      'Ficaram 3:',
+      '',
+      '| Arquivo novo | É o mesmo laudo que |',
+      '|---|---|',
+      '| novembro23 3 | "Vitaminas" (18/11/2023) |',
+      '| junho23 2 | **Progesterona** |',
+      '',
+      'O resto entrou.',
+    ].join('\n');
+    expect(toChannelMarkdown(text, 'whatsapp')).toBe(
+      [
+        'Ficaram 3:',
+        '',
+        '- *novembro23 3*: "Vitaminas" (18/11/2023)',
+        '- *junho23 2*: *Progesterona*',
+        '',
+        'O resto entrou.',
+      ].join('\n'),
+    );
+  });
+
+  it('more columns: each value named by its header; empty cells left out', () => {
+    const text = [
+      'Nome | Idade | Peso',
+      ':-- | --: | ---',
+      'Ana | 3 | 14 kg',
+      'Bia |  | 9 kg',
+    ].join('\n');
+    expect(toChannelMarkdown(text, 'whatsapp')).toBe(
+      ['- *Ana* — Idade: 3; Peso: 14 kg', '- *Bia* — Peso: 9 kg'].join('\n'),
+    );
+    expect(toChannelMarkdown(text, 'none')).toBe(
+      ['- Ana — Idade: 3; Peso: 14 kg', '- Bia — Peso: 9 kg'].join('\n'),
+    );
+  });
+
+  it('a pipe outside a table stays as written', () => {
+    expect(toChannelMarkdown('a | b\n---', 'whatsapp')).toBe('a | b\n');
+    expect(toChannelMarkdown('use `a | b` here', 'whatsapp')).toBe('use `a | b` here');
+  });
+});
+
 describe('splitMessage', () => {
   it('returns short text as one message', () => {
     expect(splitMessage('  hello  ', 10)).toEqual(['hello']);
