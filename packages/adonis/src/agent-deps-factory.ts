@@ -3,6 +3,7 @@ import type { ActionApprovalMode } from './action-proposal-receipt.js';
 import type { AgentDeps } from './agent-deps.js';
 import type { AgentRegistry } from './agent-registry.js';
 import type { MemoryConfig } from './memory.js';
+import type { MessageTimestampsConfig } from './message-timestamps.js';
 import type { ResolveToolUiCatalog, ToolUiChannelGuide } from './negotiated-tool-ui.js';
 import {
   defaultPersonaOf,
@@ -197,6 +198,11 @@ export interface AgentDepsFactoryConfig {
    */
   historyWindow?: HistoryWindow;
   /**
+   * Shared: show every agent's model when each user message was sent. Omit → messages reach the
+   * model as stored.
+   */
+  messageTimestamps?: MessageTimestampsConfig;
+  /**
    * Shared skills seam: the provider a turn lists its catalog from, the resolver that orders an
    * actor's scope tokens, and the catalog ceiling. One deployment, one answer to "which scopes does
    * this actor have". Omit → no catalog block and no `skill` tool for any agent.
@@ -369,6 +375,9 @@ export class AgentDepsFactory {
         : {}),
       ...(this.config.historyWindow !== undefined
         ? { historyWindow: this.config.historyWindow }
+        : {}),
+      ...(this.config.messageTimestamps !== undefined
+        ? { messageTimestamps: this.config.messageTimestamps }
         : {}),
       ...(this.config.skills !== undefined ? { skills: this.config.skills } : {}),
       ...(this.config.memory !== undefined ? { memory: this.config.memory } : {}),

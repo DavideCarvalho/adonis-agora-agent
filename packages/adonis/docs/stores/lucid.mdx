@@ -201,7 +201,8 @@ editing an applied migration is safe, Lucid tracks it by file name.
 <Callout type="warn" title="Upgrading with autoCreateTables: false">
 `createAgentTables` also ALTERs in the columns a newer release added to an existing table (the
 `agent_message` columns `reasoning`, `reasoning_ms` and `ui`, `agent_run.parent_run_id`, the
-`agent_run` columns `ttft_ms`, `error_code` and `model_id`, the
+`agent_run` columns `ttft_ms`, `error_code` and `model_id`, `sent_at` on `agent_message` and
+`agent_queued_message`, the
 `run_id` columns, `agent_thread.queue_pause`) and creates the tables one added
 (`agent_queued_message`, `agent_confirm_token`, `agent_stream_frame`, `agent_channel_state`). With `autoCreateTables: true` that happens as the app starts. With it off, nothing
 runs it for you: after upgrading, add a migration whose `up()` calls `createAgentTables` again (a

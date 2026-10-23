@@ -48,6 +48,7 @@ interface ChatParams {
   regenerate?: boolean               // answer the thread's last user message again
   transient?: boolean                // a new thread left out of the list until promoted
   mode?: 'auto' | 'queue' | 'interrupt' // send() only — chat() always starts or refuses
+  sentAt?: Date | string | number    // when the person sent it, if not now (stored as StoredMessage.sentAt)
 }
 
 await agent.chat(params)  // → { runId, threadId }

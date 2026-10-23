@@ -21,7 +21,7 @@ A turn is an iteration, capped at `maxSteps` (default 8). Each pass asks the mod
 </Step>
 <Step>
 
-**Persist the user message, load history.** The user's text is appended to the thread (stamped with the run that wrote it), then the message history is loaded and mapped into neutral model messages. With a `historyWindow` configured, only what fits its ceiling rides into the turn — see [Bounding the history](#bounding-the-history).
+**Persist the user message, load history.** The user's text is appended to the thread (stamped with the run that wrote it), then the message history is loaded and mapped into neutral model messages. With a `historyWindow` configured, only what fits its ceiling rides into the turn — see [Bounding the history](#bounding-the-history). With [`messageTimestamps`](/docs/agent/config-reference#messagetimestamps), each user message is labelled with when it was sent while it is mapped — inside `load:thread`, so the window selects over labelled messages and a replay reads the same labels back.
 
 </Step>
 <Step>

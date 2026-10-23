@@ -127,6 +127,11 @@ interface ChatBody {
   interrupt?: unknown;
   /** Start a NEW thread transient (left out of `GET threads` until promoted). Ignored with `threadId`. */
   transient?: unknown;
+  /**
+   * When the person sent the message (ISO 8601 or epoch ms), when it is not now — a client sending
+   * what it buffered offline. See `ChatParams.sentAt`; anything else is ignored.
+   */
+  sentAt?: unknown;
 }
 
 /** A send's `mode`, or `null` when it names none of the three. `interrupt: true` is `'interrupt'`. */
@@ -435,6 +440,9 @@ export default class AgentProvider {
         ? { toolTransientRetry: config.toolTransientRetry }
         : {}),
       ...(config.historyWindow !== undefined ? { historyWindow: config.historyWindow } : {}),
+      ...(config.messageTimestamps !== undefined
+        ? { messageTimestamps: config.messageTimestamps }
+        : {}),
       // Personal agents (A2A) resolve no memory or skill scope — see `personalAgentScopes`.
       ...(config.skills !== undefined
         ? { skills: { ...config.skills, scopes: personalAgentScopes(config.skills.scopes) } }
@@ -941,6 +949,9 @@ export default class AgentProvider {
           ...(body.pageContext !== undefined ? { pageContext: body.pageContext } : {}),
           ...(uiCapabilities !== undefined ? { uiCapabilities } : {}),
           ...(refs.length > 0 ? { attachments: refs } : {}),
+          ...(typeof body.sentAt === 'string' || typeof body.sentAt === 'number'
+            ? { sentAt: body.sentAt }
+            : {}),
         });
       } catch (error) {
         if (error instanceof ActionProposalServiceError)

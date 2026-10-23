@@ -52,6 +52,12 @@ export interface QueuedMessage {
   /** The send's `AgentRunInput.hostContext`, carried to the turn it starts. Never on the wire view. */
   hostContext?: AgentHostContext;
   /**
+   * When the person sent it (ISO 8601), when the send named a time (`ChatParams.sentAt`). The turn
+   * it starts records this, else {@link createdAt} — when it was queued — as the message's
+   * `StoredMessage.sentAt`.
+   */
+  sentAt?: string;
+  /**
    * Queued by an interrupt (`POST chat { mode: 'interrupt' }`): the running turn was cancelled to
    * make room for it, so the cancel starts it instead of pausing the queue.
    */
@@ -94,6 +100,8 @@ export interface EnqueueMessageInput {
   pageContext?: PageContext;
   uiCapabilities?: UiCapabilities;
   hostContext?: AgentHostContext;
+  /** When the person sent it (ISO 8601). See {@link QueuedMessage.sentAt}. */
+  sentAt?: string;
   interrupt?: boolean;
   /** `'tail'` (default) runs it after everything already waiting; `'head'` runs it next. */
   at?: 'tail' | 'head';

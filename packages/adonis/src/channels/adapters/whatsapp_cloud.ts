@@ -7,6 +7,7 @@ import {
   mediaFilename,
   postForm,
   postJson,
+  providerSentAt,
   queryParam,
   record,
   safeEqual,
@@ -91,6 +92,7 @@ function parseMessage(message: Record<string, unknown>): InboundMessage | null {
     ? (file.caption ?? '')
     : (str(record(message.text)?.body) ?? str(reply?.title) ?? str(button?.text) ?? buttonId);
   if (text === undefined || (text.trim() === '' && !file)) return null;
+  const sentAt = providerSentAt(message.timestamp);
   return {
     id,
     from,
@@ -98,6 +100,7 @@ function parseMessage(message: Record<string, unknown>): InboundMessage | null {
     text: text.trim(),
     ...(buttonId !== undefined ? { buttonId } : {}),
     ...(file ? { media: [file.media] } : {}),
+    ...(sentAt !== undefined ? { sentAt } : {}),
     raw: message,
   };
 }

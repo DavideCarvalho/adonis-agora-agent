@@ -6,6 +6,7 @@ import {
   mediaFilename,
   postForm,
   postJson,
+  providerSentAt,
   record,
   safeEqual,
   sizeOf,
@@ -200,12 +201,14 @@ export function telegram(options: TelegramOptions): ChannelAdapter {
         const text = (str(message.text) ?? str(message.caption) ?? '').trim();
         if (!chat || !from || from.is_bot === true || !privateOnly(chat)) return null;
         if (text === '' && !media) return null;
+        const sentAt = providerSentAt(message.date);
         return {
           id,
           from: String(from.id),
           conversation: String(chat.id),
           text,
           ...(media ? { media: [media] } : {}),
+          ...(sentAt !== undefined ? { sentAt } : {}),
           raw: update,
         };
       }

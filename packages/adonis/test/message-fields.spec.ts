@@ -54,6 +54,7 @@ const OPTIONAL_FIELDS: Required<Omit<AppendMessageInput, 'threadId' | 'role' | '
   agentName: 'research',
   reasoning: 'The user wants the ship date.',
   reasoningMs: 1840,
+  sentAt: '2026-10-23T14:17:05.000Z',
   ui: [
     {
       id: 'call-1:ui:0',

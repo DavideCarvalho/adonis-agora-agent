@@ -423,7 +423,13 @@ What hooks see for a grouped turn — every field below is set **only** when `co
 | `prepareMedia` | per file, with its own `message`, and `context.coalesced`. |
 | `transformInbound(inbound, context)` | once: `inbound.text` / `inbound.attachments` merged, `inbound.parts` = `[{ message, text, attachments }]` per message (to put each caption next to its file), `context.message` the first message, `context.coalesced` all of them. |
 | `onTurnStarted` / `onTurnEnded` | once for the turn: `message` = the first message, `coalesced` = all of them, `attachments` = how many files it was sent with, `queueWaitMs` = from the webhook taking the first message to the turn starting. A message grouped into another's turn has no `onTurnEnded` of its own. |
-| `AgentService.send` | `hostContext.messageIds` lists every message (`messageId` is the first). |
+| `AgentService.send` | `hostContext.messageIds` lists every message (`messageId` is the first); `sentAt` is the first message's [send time](#when-a-message-was-sent). |
+
+## When a message was sent
+
+Every adapter reads the provider's own timestamp into `InboundMessage.sentAt` (epoch ms): Evolution / Whatsmiau `messageTimestamp`, WhatsApp Cloud `timestamp`, Telegram `date` (a Telegram button press carries none). The channel hands it to the turn (`AgentService.send({ sentAt })`) and it is stored with the person's message as `StoredMessage.sentAt` — so a message that waited (in the [queue](/docs/agent/streaming-and-http#message-queue) behind a running turn, in a [burst](#bursts-several-messages-one-turn)) still knows when it was said. A grouped turn takes its **first** message's time; each message's own is on `inbound.parts[i].message.sentAt` for a `transformInbound` that wants to write them into the text.
+
+Nothing reads it unless you ask: with [`messageTimestamps`](/docs/agent/config-reference#messagetimestamps) in `config/agent.ts` the model sees every user message labelled with when it was sent (`[sent 2026-10-23T11:17-03:00] começou a mamada agora`), so "now" in a message means its send time — not the moment a queued turn, or a later one, reads it. The stored text and what the UI shows stay as the person wrote them.
 
 ## Hooks
 
@@ -571,7 +577,7 @@ export const sms: ChannelAdapter = {
 ```
 
 - `verify(request)` sees `method`, `url` (with the query string), `header(name)`, `params`, the parsed `body` and the `rawBody` string. Compare secrets in constant time.
-- `parse(body)` returns one `InboundMessage`, an array, or `null`. `id` must be the provider's id for the message — retries carry the same one. A button press sets `buttonId` to the pressed button's id.
+- `parse(body)` returns one `InboundMessage`, an array, or `null`. `id` must be the provider's id for the message — retries carry the same one. A button press sets `buttonId` to the pressed button's id. Set `sentAt` (epoch ms) from the provider's send timestamp when it has one — see [When a message was sent](#when-a-message-was-sent).
 - `challenge(request)` (optional) answers a request that is not a message, such as a subscription check, before `verify`.
 - `acknowledge(message)` (optional) runs in the background before the turn — Telegram's `answerCallbackQuery`, or a "typing…" presence (stop it in the handler's `onTurnEnded`, which is called however the message's handling ends).
 - `parse` may put files on `message.media` (`{ kind, contentType?, filename?, sizeBytes?, ref }`); `download(media, { maxBytes })` (optional) fetches one and throws `ChannelMediaTooLargeError` past `maxBytes` without reading the rest. Without `download`, media is answered with `texts.mediaRefused('disabled', …)`.

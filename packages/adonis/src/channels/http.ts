@@ -244,3 +244,22 @@ export function record(value: unknown): Record<string, unknown> | undefined {
 export function str(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
+
+/**
+ * A provider's send timestamp as epoch milliseconds: Unix seconds (WhatsApp, Telegram) or
+ * milliseconds, as a number, a numeric string, or a protobuf `Long` (`{ low, high }`, what Baileys can
+ * forward). `undefined` for anything else.
+ */
+export function providerSentAt(value: unknown): number | undefined {
+  const long = record(value);
+  const raw =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^\d+$/.test(value.trim())
+        ? Number(value.trim())
+        : typeof long?.low === 'number'
+          ? (long.low >>> 0) + (typeof long.high === 'number' ? long.high : 0) * 2 ** 32
+          : Number.NaN;
+  if (!Number.isFinite(raw) || raw <= 0) return undefined;
+  return Math.round(raw > 1e12 ? raw : raw * 1000);
+}

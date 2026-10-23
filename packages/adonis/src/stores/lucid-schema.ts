@@ -176,6 +176,7 @@ export function createTableStatements(): string[] {
       "feedback" TEXT NULL,
       "agent_name" VARCHAR(255) NULL,
       "seq" BIGINT NOT NULL DEFAULT 0,
+      "sent_at" BIGINT NULL,
       "created_at" BIGINT NOT NULL,
       FOREIGN KEY ("thread_id") REFERENCES "${t.threads}" ("id") ON DELETE CASCADE
     )`,
@@ -272,6 +273,7 @@ export function createTableStatements(): string[] {
       "page_context" TEXT NULL,
       "ui_capabilities" TEXT NULL,
       "host_context" TEXT NULL,
+      "sent_at" BIGINT NULL,
       "interrupt" INTEGER NOT NULL DEFAULT 0,
       "position" INTEGER NOT NULL,
       "created_at" BIGINT NOT NULL,
@@ -390,6 +392,10 @@ const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }
   { table: AGENT_TABLES.runs, column: 'ttft_ms', type: 'INTEGER NULL' },
   { table: AGENT_TABLES.runs, column: 'error_code', type: 'VARCHAR(64) NULL' },
   { table: AGENT_TABLES.runs, column: 'model_id', type: 'VARCHAR(255) NULL' },
+  // When the person sent a message / a queued send (epoch ms), when not when it was stored. NULL on
+  // a row from before, and on every message nobody named a send time for: `created_at` stands in.
+  { table: AGENT_TABLES.messages, column: 'sent_at', type: 'BIGINT NULL' },
+  { table: AGENT_TABLES.queuedMessages, column: 'sent_at', type: 'BIGINT NULL' },
 ];
 
 /**
@@ -417,6 +423,19 @@ async function hasColumn(db: LucidRawRunner, table: string, column: string): Pro
  */
 export function hasToolCallIdColumn(db: LucidRawRunner): Promise<boolean> {
   return hasColumn(schemaRunner(db), AGENT_TABLES.toolCalls, 'call_id');
+}
+
+/**
+ * Whether `agent_message` and `agent_queued_message` have their `sent_at` columns — what
+ * `LucidAgentStore` checks under `autoCreateTables: false`, where the app may boot this version before
+ * its migration has added them. Probed like {@link hasToolCallIdColumn}.
+ */
+export async function hasSentAtColumns(db: LucidRawRunner): Promise<boolean> {
+  const runner = schemaRunner(db);
+  return (
+    (await hasColumn(runner, AGENT_TABLES.messages, 'sent_at')) &&
+    (await hasColumn(runner, AGENT_TABLES.queuedMessages, 'sent_at'))
+  );
 }
 
 /** Rows of a raw query result, whatever the driver wraps them in (`{ rows }`, `[rows, fields]`, rows). */
