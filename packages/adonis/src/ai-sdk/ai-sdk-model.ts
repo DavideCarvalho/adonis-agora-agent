@@ -250,6 +250,10 @@ async function runTurnOn(
     model,
     instructions: args.system,
     messages: mapMessages(args.messages),
+    // `mapMessages` keeps `system` messages in the thread (the `historyWindow` summary is one), and
+    // AI SDK 7 rejects any by default (`AI_InvalidPromptError`), which failed every turn of a thread
+    // long enough to be summarized.
+    allowSystemInMessages: true,
     tools: mapTools(args.tools),
     ...(output !== undefined ? { output } : {}),
     ...(args.abortSignal ? { abortSignal: args.abortSignal } : {}),
