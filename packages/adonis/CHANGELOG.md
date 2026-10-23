@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.88.0
+
+### Minor Changes
+
+- [#464](https://github.com/DavideCarvalho/adonis-agora-agent/pull/464) [`b41277b`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/b41277b56f3bf5474aab9c661b35cd2b29a39c4c) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `toChannelMarkdown` turns GitHub tables into bullet lists (WhatsApp, Telegram and plain text don't draw tables; the raw pipes arrived as noise). The first cell leads in bold; with three or more columns each value is named by its header.
+
 ## 0.87.0
 
 ### Minor Changes
