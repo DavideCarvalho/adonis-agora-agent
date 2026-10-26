@@ -74,6 +74,15 @@ export function streamFrameTableStatement(table: string = AGENT_TABLES.streamFra
 }
 
 /**
+ * The frame buffer's `created_at` index, under `table`: what the sink's TTL purge reads to find the
+ * runs with rows past their window without scanning every row. `run_id` rides along so that lookup
+ * never touches the table itself.
+ */
+export function streamFrameIndexStatement(table: string = AGENT_TABLES.streamFrames): string {
+  return `CREATE INDEX IF NOT EXISTS "${table}_created_idx" ON "${table}" ("created_at", "run_id")`;
+}
+
+/**
  * `CREATE TABLE IF NOT EXISTS` for text channels' state (`lucidChannelStore`), under `table`. The
  * primary key IS the dedupe lock: two deliveries of one message race on the insert and one loses.
  * No foreign key: the rows name provider ids, not agent rows.
@@ -181,6 +190,8 @@ export function createTableStatements(): string[] {
       FOREIGN KEY ("thread_id") REFERENCES "${t.threads}" ("id") ON DELETE CASCADE
     )`,
     `CREATE INDEX IF NOT EXISTS "${t.messages}_thread_created_idx" ON "${t.messages}" ("thread_id", "created_at")`,
+    // A transcript is read in append order (`seq`), which the index above cannot serve.
+    `CREATE INDEX IF NOT EXISTS "${t.messages}_thread_seq_idx" ON "${t.messages}" ("thread_id", "seq")`,
     `CREATE INDEX IF NOT EXISTS "${t.messages}_run_idx" ON "${t.messages}" ("run_id")`,
     `CREATE TABLE IF NOT EXISTS "${t.toolCalls}" (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
@@ -208,6 +219,7 @@ export function createTableStatements(): string[] {
     `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_run_idx" ON "${t.toolCalls}" ("run_id")`,
     `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_call_idx" ON "${t.toolCalls}" ("call_id", "run_id")`,
     `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_status_created_idx" ON "${t.toolCalls}" ("status", "created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_message_idx" ON "${t.toolCalls}" ("message_id")`,
     `CREATE TABLE IF NOT EXISTS "${t.tokenUsage}" (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "thread_id" VARCHAR(255) NOT NULL,
@@ -227,6 +239,8 @@ export function createTableStatements(): string[] {
     )`,
     `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_actor_created_idx" ON "${t.tokenUsage}" ("actor_ref", "created_at")`,
     `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_run_idx" ON "${t.tokenUsage}" ("run_id")`,
+    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_thread_idx" ON "${t.tokenUsage}" ("thread_id")`,
+    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_created_idx" ON "${t.tokenUsage}" ("created_at")`,
     `CREATE TABLE IF NOT EXISTS "${t.modelPricing}" (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "model_id" VARCHAR(255) NOT NULL,
@@ -261,6 +275,7 @@ export function createTableStatements(): string[] {
     `CREATE INDEX IF NOT EXISTS "${t.runs}_started_idx" ON "${t.runs}" ("started_at")`,
     `CREATE INDEX IF NOT EXISTS "${t.runs}_actor_started_idx" ON "${t.runs}" ("actor_ref", "started_at")`,
     `CREATE INDEX IF NOT EXISTS "${t.runs}_status_started_idx" ON "${t.runs}" ("status", "started_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.runs}_thread_started_idx" ON "${t.runs}" ("thread_id", "started_at")`,
     `CREATE TABLE IF NOT EXISTS "${t.queuedMessages}" (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "thread_id" VARCHAR(255) NOT NULL,
@@ -291,6 +306,7 @@ export function createTableStatements(): string[] {
     )`,
     `CREATE INDEX IF NOT EXISTS "${t.confirmTokens}_expires_idx" ON "${t.confirmTokens}" ("expires_at")`,
     streamFrameTableStatement(t.streamFrames),
+    streamFrameIndexStatement(t.streamFrames),
     ...channelStateTableStatements(t.channelState),
     `CREATE TABLE IF NOT EXISTS "${t.genuiCalls}" (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
@@ -733,7 +749,8 @@ export function ensureAgentTables(db: LucidRawRunner): Promise<void> {
 }
 
 /**
- * Idempotently create the Lucid token sink's frame table, under whatever name the sink was given.
+ * Idempotently create the Lucid token sink's frame table and its purge index, under whatever name the
+ * sink was given.
  * What the sink runs for itself (`autoCreateTables`), so it stands up next to ANY store — the
  * in-memory one included — without provisioning the other seven tables. {@link createAgentTables}
  * creates the same table under its default name, so the published migration covers it too.
@@ -743,9 +760,18 @@ export async function ensureStreamFrameTable(
   table: string = AGENT_TABLES.streamFrames,
 ): Promise<void> {
   const runner = schemaRunner(db);
-  if (await hasTable(runner, table)) return;
-  await issue(runner, forDialect(streamFrameTableStatement(table), isMySql(runner)), () =>
-    hasTable(runner, table),
+  const mysql = isMySql(runner);
+  if (!(await hasTable(runner, table))) {
+    await issue(runner, forDialect(streamFrameTableStatement(table), mysql), () =>
+      hasTable(runner, table),
+    );
+  }
+  const name = `${table}_created_idx`;
+  if ((await existingIndexes(runner))?.has(name)) return;
+  await issue(
+    runner,
+    forDialect(streamFrameIndexStatement(table), mysql),
+    async () => (await existingIndexes(runner))?.has(name) ?? false,
   );
 }
 

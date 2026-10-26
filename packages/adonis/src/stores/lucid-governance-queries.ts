@@ -27,7 +27,8 @@ import type {
 import type { AgentPricingStore, CurrentModelPrice } from '../spi/pricing-store.js';
 import { estimateCost, resolveModelPrice } from '../spi/pricing-store.js';
 import { inAppendOrder, type LucidDatabaseLike, toolCallIdOfRow } from './lucid.js';
-import { AGENT_TABLES, ensureAgentTables } from './lucid-schema.js';
+import { AGENT_TABLES, ensureAgentTables, rowsOf } from './lucid-schema.js';
+import { portableSql } from './sql-dialect.js';
 
 function toInt(value: unknown): number {
   if (typeof value === 'number') return value;
@@ -97,19 +98,42 @@ function toStrOrNull(value: unknown): string | null {
   return value === null || value === undefined ? null : String(value);
 }
 
-/** The `agent_token_usage` shape the aggregations bucket over, normalized off the raw Lucid row. */
-interface UsageRow {
+/**
+ * `agent_token_usage` summed per model (and per bucket — an actor, a UTC day — when one was asked
+ * for). The tokens of the rows WITHOUT a provider-reported cost are summed apart, so the estimate
+ * for them is the same sum of per-row estimates the price list would give (an estimate is linear in
+ * the tokens).
+ */
+interface UsageGroup {
   modelId: string;
-  actorRef: string;
-  threadId: string;
-  /** UTC day (`YYYY-MM-DD`) derived from `created_at` (epoch-ms), matching the store's day semantics. */
-  day: string;
+  /** The bucket's key: an actor ref, or a UTC day (`YYYY-MM-DD`). `''` when not bucketed. */
+  bucket: string;
+  requests: number;
   inputTokens: number;
   outputTokens: number;
-  cacheWriteTokens: number | null;
-  cacheReadTokens: number | null;
-  costUsd: number | null;
+  /** Sum of the provider-reported costs (rows without one add nothing). */
+  reportedCostUsd: number;
+  unreported: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheWriteTokens: number;
+    cacheReadTokens: number;
+  };
 }
+
+/** A UTC day in epoch ms, as SQL every dialect evaluates the same: the start of `created_at`'s day. */
+const DAY_START_SQL = `"created_at" - ("created_at" % 86400000)`;
+
+/** Statement-sized slices of an `IN (…)` list. */
+function chunked<T>(values: readonly T[], size = 500): T[][] {
+  const out: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    out.push(values.slice(index, index + size));
+  }
+  return out;
+}
+
+const placeholders = (values: readonly unknown[]) => values.map(() => '?').join(', ');
 
 /** Parse a TEXT JSON column back to a value; `undefined` for null/empty/malformed. */
 function parseJsonCol(text: unknown): unknown {
@@ -120,6 +144,12 @@ function parseJsonCol(text: unknown): unknown {
     return undefined;
   }
 }
+
+/**
+ * A pending call's owning actor in {@link LucidGovernanceQueries.pendingApprovals}'s join: the run's,
+ * else (an unknown run, or one with no actor) the thread's, else `''`.
+ */
+const PENDING_ACTOR_SQL = `COALESCE(NULLIF(r."actor_ref", ''), th."actor_ref", '')`;
 
 /** Default page size + hard cap, mirroring the governance routes' clamp. */
 function clampLimit(limit: number | undefined, fallback = 50): number {
@@ -198,20 +228,6 @@ function toolCallRowToDetail(row: Record<string, unknown>): RunToolCallRow {
   };
 }
 
-function rowToUsage(row: Record<string, unknown>): UsageRow {
-  return {
-    modelId: String(row.model_id),
-    actorRef: String(row.actor_ref),
-    threadId: String(row.thread_id),
-    day: new Date(toInt(row.created_at)).toISOString().slice(0, 10),
-    inputTokens: toInt(row.input_tokens),
-    outputTokens: toInt(row.output_tokens),
-    cacheWriteTokens: toNumOrNull(row.cache_write_tokens),
-    cacheReadTokens: toNumOrNull(row.cache_read_tokens),
-    costUsd: toNumOrNull(row.cost_usd),
-  };
-}
-
 /**
  * A production {@link AgentGovernanceQueries} — the read/analytics half of the store SPI — backed by
  * AdonisJS **Lucid** (Knex) over the same five agent tables {@link import('./lucid.js').LucidAgentStore}
@@ -222,9 +238,10 @@ function rowToUsage(row: Record<string, unknown>): UsageRow {
  * (fetched once per query, exactly like the Drizzle/MikroORM references and the loop's cost fold), so a
  * host that binds its own pricing store controls the cost every governance surface reports. A
  * provider-reported `cost_usd` on a usage row always wins; an unpriced model contributes 0 cost (its
- * tokens still count). Omit the pricing store entirely for a zero-cost read-model. Aggregation is
- * in-process (like `quotaToday`) so UTC-day bucketing stays dialect-portable across SQLite/Postgres/MySQL
- * — the behavioral twin of {@link import('../testing/in-memory-governance-queries.js').InMemoryGovernanceQueries}.
+ * tokens still count). Omit the pricing store entirely for a zero-cost read-model. Usage is summed in
+ * the database, per model, with UTC days bucketed by integer arithmetic on the epoch-ms `created_at`
+ * (the same on SQLite/Postgres/MySQL), and priced here — the behavioral twin of
+ * {@link import('../testing/in-memory-governance-queries.js').InMemoryGovernanceQueries}.
  */
 export class LucidGovernanceQueries implements AgentGovernanceQueries {
   private readonly autoCreateTables: boolean;
@@ -256,58 +273,90 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     return pricing;
   }
 
-  /** Provider-reported cost wins per row; otherwise the cache-aware token estimate (0 when unpriced). */
-  private rowCost(row: UsageRow, pricing: ReadonlyMap<string, CurrentModelPrice>): number {
-    if (row.costUsd !== null) return row.costUsd;
-    const price = resolveModelPrice(pricing, row.modelId);
-    if (price === undefined) return 0;
-    return estimateCost(
-      {
-        inputTokens: row.inputTokens,
-        outputTokens: row.outputTokens,
-        ...(row.cacheWriteTokens !== null ? { cacheWriteTokens: row.cacheWriteTokens } : {}),
-        ...(row.cacheReadTokens !== null ? { cacheReadTokens: row.cacheReadTokens } : {}),
-      },
-      price,
-    );
+  /**
+   * Provider-reported cost wins per row; the rest are priced by the cache-aware token estimate (0
+   * when the model is unpriced).
+   */
+  private groupCost(group: UsageGroup, pricing: ReadonlyMap<string, CurrentModelPrice>): number {
+    const price = resolveModelPrice(pricing, group.modelId);
+    if (price === undefined) return group.reportedCostUsd;
+    return group.reportedCostUsd + estimateCost(group.unreported, price);
   }
 
-  /** The usage ledger rows whose `created_at` falls inside the inclusive UTC-day range. */
-  private async usageInRange(range: GovernanceRange): Promise<UsageRow[]> {
-    const start = Date.parse(`${range.fromDay}T00:00:00.000Z`);
-    const end = Date.parse(`${range.toDay}T23:59:59.999Z`);
-    const rows = await this.db
-      .from(AGENT_TABLES.tokenUsage)
-      .where('created_at', '>=', start)
-      .where('created_at', '<=', end)
-      .select('*');
-    return rows.map(rowToUsage);
+  /**
+   * The usage ledger summed in the database — per model, and per `by` when given — over the
+   * inclusive UTC-day `range` and/or one thread. A dashboard's ranges span every row of a month or
+   * more; summing them is the database's job, not a page of rows shipped to the process per chart.
+   */
+  private async usageGroups(
+    filter: { range?: GovernanceRange; threadId?: string },
+    by?: 'actor' | 'day',
+  ): Promise<UsageGroup[]> {
+    const where: string[] = [];
+    const bindings: unknown[] = [];
+    if (filter.range !== undefined) {
+      where.push(`"created_at" >= ?`, `"created_at" <= ?`);
+      bindings.push(
+        Date.parse(`${filter.range.fromDay}T00:00:00.000Z`),
+        Date.parse(`${filter.range.toDay}T23:59:59.999Z`),
+      );
+    }
+    if (filter.threadId !== undefined) {
+      where.push(`"thread_id" = ?`);
+      bindings.push(filter.threadId);
+    }
+    const bucket = by === 'actor' ? `"actor_ref"` : by === 'day' ? DAY_START_SQL : undefined;
+    const unreported = (column: string) =>
+      `SUM(CASE WHEN "cost_usd" IS NULL THEN COALESCE("${column}", 0) ELSE 0 END)`;
+    const rows = rowsOf(
+      await this.db.rawQuery(
+        portableSql(
+          this.db,
+          `SELECT "model_id" AS model_id, ${bucket !== undefined ? `${bucket} AS bucket, ` : ''}` +
+            `COUNT(*) AS requests, SUM("input_tokens") AS input_tokens, ` +
+            `SUM("output_tokens") AS output_tokens, SUM("cost_usd") AS reported_cost, ` +
+            `${unreported('input_tokens')} AS unreported_input, ` +
+            `${unreported('output_tokens')} AS unreported_output, ` +
+            `${unreported('cache_write_tokens')} AS unreported_cache_write, ` +
+            `${unreported('cache_read_tokens')} AS unreported_cache_read ` +
+            `FROM "${AGENT_TABLES.tokenUsage}"` +
+            (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+            ` GROUP BY "model_id"${bucket !== undefined ? `, ${bucket}` : ''}`,
+        ),
+        bindings,
+      ),
+    );
+    return rows.map((row) => ({
+      modelId: String(row.model_id),
+      bucket:
+        by === 'day'
+          ? new Date(toInt(row.bucket)).toISOString().slice(0, 10)
+          : by === 'actor'
+            ? String(row.bucket)
+            : '',
+      requests: toInt(row.requests),
+      inputTokens: toInt(row.input_tokens),
+      outputTokens: toInt(row.output_tokens),
+      reportedCostUsd: toNumOrNull(row.reported_cost) ?? 0,
+      unreported: {
+        inputTokens: toInt(row.unreported_input),
+        outputTokens: toInt(row.unreported_output),
+        cacheWriteTokens: toInt(row.unreported_cache_write),
+        cacheReadTokens: toInt(row.unreported_cache_read),
+      },
+    }));
   }
 
   async spendByModel(range: GovernanceRange): Promise<ModelSpendRow[]> {
     await this.ready();
     const pricing = await this.loadPricing();
-    const byModel = new Map<
-      string,
-      { requests: number; inputTokens: number; outputTokens: number; costUsd: number }
-    >();
-    for (const row of await this.usageInRange(range)) {
-      const bucket = byModel.get(row.modelId) ?? {
-        requests: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        costUsd: 0,
-      };
-      bucket.requests += 1;
-      bucket.inputTokens += row.inputTokens;
-      bucket.outputTokens += row.outputTokens;
-      bucket.costUsd += this.rowCost(row, pricing);
-      byModel.set(row.modelId, bucket);
-    }
-    const result: ModelSpendRow[] = [];
-    for (const [modelId, bucket] of byModel) {
-      result.push({ modelId, ...bucket });
-    }
+    const result: ModelSpendRow[] = (await this.usageGroups({ range })).map((group) => ({
+      modelId: group.modelId,
+      requests: group.requests,
+      inputTokens: group.inputTokens,
+      outputTokens: group.outputTokens,
+      costUsd: this.groupCost(group, pricing),
+    }));
     result.sort(
       (left, right) => right.costUsd - left.costUsd || left.modelId.localeCompare(right.modelId),
     );
@@ -318,12 +367,12 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     await this.ready();
     const pricing = await this.loadPricing();
     const byActor = new Map<string, { requests: number; totalTokens: number; costUsd: number }>();
-    for (const row of await this.usageInRange(range)) {
-      const bucket = byActor.get(row.actorRef) ?? { requests: 0, totalTokens: 0, costUsd: 0 };
-      bucket.requests += 1;
-      bucket.totalTokens += row.inputTokens + row.outputTokens;
-      bucket.costUsd += this.rowCost(row, pricing);
-      byActor.set(row.actorRef, bucket);
+    for (const group of await this.usageGroups({ range }, 'actor')) {
+      const bucket = byActor.get(group.bucket) ?? { requests: 0, totalTokens: 0, costUsd: 0 };
+      bucket.requests += group.requests;
+      bucket.totalTokens += group.inputTokens + group.outputTokens;
+      bucket.costUsd += this.groupCost(group, pricing);
+      byActor.set(group.bucket, bucket);
     }
     const result: ActorSpendRow[] = [];
     for (const [actorRef, bucket] of byActor) {
@@ -339,11 +388,11 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     await this.ready();
     const pricing = await this.loadPricing();
     const byDay = new Map<string, { totalTokens: number; costUsd: number }>();
-    for (const row of await this.usageInRange(range)) {
-      const bucket = byDay.get(row.day) ?? { totalTokens: 0, costUsd: 0 };
-      bucket.totalTokens += row.inputTokens + row.outputTokens;
-      bucket.costUsd += this.rowCost(row, pricing);
-      byDay.set(row.day, bucket);
+    for (const group of await this.usageGroups({ range }, 'day')) {
+      const bucket = byDay.get(group.bucket) ?? { totalTokens: 0, costUsd: 0 };
+      bucket.totalTokens += group.inputTokens + group.outputTokens;
+      bucket.costUsd += this.groupCost(group, pricing);
+      byDay.set(group.bucket, bucket);
     }
     const result: UsageTrendPoint[] = [];
     for (const [day, bucket] of byDay) {
@@ -353,10 +402,43 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     return result;
   }
 
+  /** `thread_id → value` for one aggregate over `table`'s rows of `threadIds`. */
+  private async perThread(
+    table: string,
+    aggregate: string,
+    threadIds: readonly string[],
+  ): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    for (const chunk of chunked(threadIds)) {
+      const rows = rowsOf(
+        await this.db.rawQuery(
+          portableSql(
+            this.db,
+            `SELECT "thread_id" AS thread_id, ${aggregate} AS value FROM "${table}" ` +
+              `WHERE "thread_id" IN (${placeholders(chunk)}) GROUP BY "thread_id"`,
+          ),
+          chunk,
+        ),
+      );
+      for (const row of rows) out.set(String(row.thread_id), toInt(row.value));
+    }
+    return out;
+  }
+
+  /** How many of `table`'s rows belong to `threadId`. */
+  private async countForThread(table: string, threadId: string): Promise<number> {
+    const [row] = rowsOf(
+      await this.db.rawQuery(
+        portableSql(this.db, `SELECT COUNT(*) AS n FROM "${table}" WHERE "thread_id" = ?`),
+        [threadId],
+      ),
+    );
+    return toInt(row?.n);
+  }
+
   /**
-   * Newest-first recent tool calls, capped at `limit`. Resolves each call's `threadId` through its
-   * owning message (the structural query slice has no `join`, so it's one lookup per call — bounded by
-   * `limit`, mirroring the reference adapters' N+1 for the recent feeds).
+   * Newest-first recent tool calls, capped at `limit`. Each call's `threadId` is its owning
+   * message's, read for the whole page at once.
    */
   async recentToolCalls(limit: number): Promise<ToolCallActivityRow[]> {
     await this.ready();
@@ -365,22 +447,23 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       .orderBy('created_at', 'desc')
       .limit(limit)
       .select('*');
-    const result: ToolCallActivityRow[] = [];
-    for (const call of calls) {
-      const message = await this.db
+    const threadOf = new Map<string, string>();
+    const messageIds = [...new Set(calls.map((call) => String(call.message_id)))];
+    for (const chunk of chunked(messageIds)) {
+      const messages = await this.db
         .from(AGENT_TABLES.messages)
-        .where('id', String(call.message_id))
-        .first();
-      result.push({
-        toolCallId: toolCallIdOfRow(call),
-        toolName: String(call.tool_name),
-        toolType: String(call.tool_type),
-        status: String(call.status),
-        threadId: message === null || message === undefined ? '' : String(message.thread_id),
-        createdAt: new Date(toInt(call.created_at)).toISOString(),
-      });
+        .whereIn('id', chunk)
+        .select('id', 'thread_id');
+      for (const message of messages) threadOf.set(String(message.id), String(message.thread_id));
     }
-    return result;
+    return calls.map((call) => ({
+      toolCallId: toolCallIdOfRow(call),
+      toolName: String(call.tool_name),
+      toolType: String(call.tool_type),
+      status: String(call.status),
+      threadId: threadOf.get(String(call.message_id)) ?? '',
+      createdAt: new Date(toInt(call.created_at)).toISOString(),
+    }));
   }
 
   /**
@@ -395,31 +478,24 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       .orderBy('updated_at', 'desc')
       .limit(limit)
       .select('*');
-    const result: ThreadActivityRow[] = [];
-    for (const thread of threads) {
+    const threadIds = threads.map((thread) => String(thread.id));
+    const messageCounts = await this.perThread(AGENT_TABLES.messages, 'COUNT(*)', threadIds);
+    const tokenTotals = await this.perThread(
+      AGENT_TABLES.tokenUsage,
+      'SUM("input_tokens" + "output_tokens")',
+      threadIds,
+    );
+    return threads.map((thread) => {
       const threadId = String(thread.id);
-      const messages = await this.db
-        .from(AGENT_TABLES.messages)
-        .where('thread_id', threadId)
-        .select('id');
-      const usageRows = await this.db
-        .from(AGENT_TABLES.tokenUsage)
-        .where('thread_id', threadId)
-        .select('input_tokens', 'output_tokens');
-      const totalTokens = usageRows.reduce(
-        (sum, row) => sum + toInt(row.input_tokens) + toInt(row.output_tokens),
-        0,
-      );
-      result.push({
+      return {
         threadId,
         title: String(thread.title),
         actorRef: String(thread.actor_ref),
-        messageCount: messages.length,
-        totalTokens,
+        messageCount: messageCounts.get(threadId) ?? 0,
+        totalTokens: tokenTotals.get(threadId) ?? 0,
         lastActivityAt: new Date(toInt(thread.updated_at)).toISOString(),
-      });
-    }
-    return result;
+      };
+    });
   }
 
   // ── Run lifecycle read-model ───────────────────────────────────────────────
@@ -519,54 +595,74 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
   }
 
   /**
-   * Tool calls sitting `pending_approval`, oldest first (an inbox drains from the back). Each call's
-   * owning actor is resolved through its run (`run_id → agent_run.actor_ref`), falling back to its
-   * thread (`message → agent_thread.actor_ref`) for a call recorded before run tracking. The `actor`
-   * filter is applied after resolution; `limit` caps the returned inbox.
+   * `FROM … WHERE …` over the calls sitting `pending_approval`, each joined to the actor that owns
+   * it: its run's (`run_id`, or its message's, `→ agent_run.actor_ref`), else its thread's
+   * (`message → agent_thread.actor_ref`) for a call recorded before run tracking, else `''`. Joined
+   * rather than looked up per call, so the `actor` filter runs in the database and an inbox costs
+   * one statement however long the backlog.
    */
+  private pendingApprovalsFrom(actor: string | undefined): { sql: string; bindings: unknown[] } {
+    const t = AGENT_TABLES;
+    return {
+      sql:
+        `FROM "${t.toolCalls}" c ` +
+        `LEFT JOIN "${t.messages}" m ON m."id" = c."message_id" ` +
+        `LEFT JOIN "${t.runs}" r ON r."id" = COALESCE(c."run_id", m."run_id") ` +
+        `LEFT JOIN "${t.threads}" th ON th."id" = m."thread_id" ` +
+        `WHERE c."status" = 'pending_approval'` +
+        (actor !== undefined ? ` AND ${PENDING_ACTOR_SQL} = ?` : ''),
+      bindings: actor !== undefined ? [actor] : [],
+    };
+  }
+
+  /** Tool calls sitting `pending_approval`, oldest first; `actor` filters, `limit` caps the inbox. */
   async pendingApprovals(filter: PendingApprovalsFilter = {}): Promise<PendingApprovalRow[]> {
     await this.ready();
     const limit = clampLimit(filter.limit);
-    const calls = await this.db
-      .from(AGENT_TABLES.toolCalls)
-      .where('status', 'pending_approval')
-      .orderBy('created_at', 'asc')
-      .select('*');
-    const result: PendingApprovalRow[] = [];
-    for (const call of calls) {
-      const message = await this.db
-        .from(AGENT_TABLES.messages)
-        .where('id', String(call.message_id))
-        .first();
-      const threadId = message === null || message === undefined ? '' : String(message.thread_id);
+    const from = this.pendingApprovalsFrom(filter.actor);
+    const rows = rowsOf(
+      await this.db.rawQuery(
+        portableSql(
+          this.db,
+          `SELECT c.*, m."thread_id" AS pending_thread_id, m."run_id" AS pending_message_run_id, ` +
+            `${PENDING_ACTOR_SQL} AS pending_actor_ref ${from.sql} ` +
+            `ORDER BY c."created_at" ASC LIMIT ${limit}`,
+        ),
+        from.bindings,
+      ),
+    );
+    return rows.map((call) => {
       const runId =
         call.run_id !== null && call.run_id !== undefined
           ? String(call.run_id)
-          : message?.run_id !== null && message?.run_id !== undefined
-            ? String(message.run_id)
+          : call.pending_message_run_id !== null && call.pending_message_run_id !== undefined
+            ? String(call.pending_message_run_id)
             : null;
-      let actorRef = '';
-      if (runId !== null) {
-        const run = await this.db.from(AGENT_TABLES.runs).where('id', runId).first();
-        if (run !== null && run !== undefined) actorRef = String(run.actor_ref);
-      }
-      if (actorRef === '' && threadId !== '') {
-        const thread = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
-        if (thread !== null && thread !== undefined) actorRef = String(thread.actor_ref);
-      }
-      if (filter.actor !== undefined && actorRef !== filter.actor) continue;
-      result.push({
+      return {
         toolCallId: toolCallIdOfRow(call),
         toolName: String(call.tool_name),
         input: parseJsonCol(call.input),
-        threadId,
+        threadId:
+          call.pending_thread_id === null || call.pending_thread_id === undefined
+            ? ''
+            : String(call.pending_thread_id),
         runId,
-        actorRef,
+        actorRef: String(call.pending_actor_ref ?? ''),
         requestedAt: new Date(toInt(call.created_at)).toISOString(),
-      });
-      if (result.length >= limit) break;
-    }
-    return result;
+      };
+    });
+  }
+
+  async countPendingApprovals(filter: Pick<PendingApprovalsFilter, 'actor'> = {}): Promise<number> {
+    await this.ready();
+    const from = this.pendingApprovalsFrom(filter.actor);
+    const [row] = rowsOf(
+      await this.db.rawQuery(
+        portableSql(this.db, `SELECT COUNT(*) AS n ${from.sql}`),
+        from.bindings,
+      ),
+    );
+    return toInt(row?.n);
   }
 
   /**
@@ -752,14 +848,15 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     if (threadRow === null || threadRow === undefined) return null;
 
     const pricing = await this.loadPricing();
-    const usageRows = await this.db
-      .from(AGENT_TABLES.tokenUsage)
-      .where('thread_id', threadId)
-      .select('*');
-    const usage = usageRows.map(rowToUsage);
-    const totalTokens = usage.reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0);
+    const usage = await this.usageGroups({ threadId });
+    const totalTokens = usage.reduce(
+      (sum, group) => sum + group.inputTokens + group.outputTokens,
+      0,
+    );
     const costUsd =
-      usage.length === 0 ? null : usage.reduce((sum, row) => sum + this.rowCost(row, pricing), 0);
+      usage.length === 0
+        ? null
+        : usage.reduce((sum, group) => sum + this.groupCost(group, pricing), 0);
 
     const runRows = await this.db
       .from(AGENT_TABLES.runs)
@@ -773,14 +870,8 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     )
       .limit(50)
       .select('*');
-    const allRunIds = await this.db
-      .from(AGENT_TABLES.runs)
-      .where('thread_id', threadId)
-      .select('id');
-    const allMessageIds = await this.db
-      .from(AGENT_TABLES.messages)
-      .where('thread_id', threadId)
-      .select('id');
+    const runCount = await this.countForThread(AGENT_TABLES.runs, threadId);
+    const messageCount = await this.countForThread(AGENT_TABLES.messages, threadId);
 
     return {
       threadId: String(threadRow.id),
@@ -792,8 +883,8 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       usage: {
         totalTokens,
         costUsd,
-        runCount: allRunIds.length,
-        messageCount: allMessageIds.length,
+        runCount,
+        messageCount,
       },
       runs: runRows.map(runRowToSummary),
       messages: messageRows.map((row) => ({

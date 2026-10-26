@@ -85,6 +85,7 @@ import {
   withActorLabel,
   withActorLabels,
 } from '../src/index.js';
+import { untilClosed } from '../src/interruptible.js';
 import { McpToolImporter } from '../src/mcp-client/index.js';
 import {
   createToolUiChannelGuide,
@@ -2351,7 +2352,7 @@ export default class AgentProvider {
     raw.writeHead(200, headers);
     raw.write(`event: meta\ndata: ${JSON.stringify({ runId, threadId })}\n\n`);
     const encoder = new AgentSseEncoder(after);
-    for await (const frame of service.subscribe(runId)) {
+    for await (const frame of untilClosed(raw, service.subscribe(runId))) {
       const text = encoder.encode(frame);
       if (text.length > 0) raw.write(text);
     }

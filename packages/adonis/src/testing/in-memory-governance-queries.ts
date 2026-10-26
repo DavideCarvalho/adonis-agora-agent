@@ -341,7 +341,15 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
   }
 
   async pendingApprovals(filter: PendingApprovalsFilter = {}): Promise<PendingApprovalRow[]> {
-    const limit = clampLimit(filter.limit);
+    return this.pendingFor(filter.actor).slice(0, clampLimit(filter.limit));
+  }
+
+  async countPendingApprovals(filter: Pick<PendingApprovalsFilter, 'actor'> = {}): Promise<number> {
+    return this.pendingFor(filter.actor).length;
+  }
+
+  /** Every pending call (of `actor`, when given), oldest first. */
+  private pendingFor(actor: string | undefined): PendingApprovalRow[] {
     const runByThreadActor = new Map<string, string>(
       this.store.governanceRuns().map((run) => [run.runId, run.actorRef]),
     );
@@ -358,7 +366,7 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
         (call.runId !== undefined ? runByThreadActor.get(call.runId) : undefined) ??
         threadActor.get(call.threadId) ??
         '';
-      if (filter.actor !== undefined && actorRef !== filter.actor) continue;
+      if (actor !== undefined && actorRef !== actor) continue;
       result.push({
         toolCallId: call.toolCallId,
         toolName: call.toolName,
@@ -368,7 +376,6 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
         actorRef,
         requestedAt: call.createdAt,
       });
-      if (result.length >= limit) break;
     }
     return result;
   }

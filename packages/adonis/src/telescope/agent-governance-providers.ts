@@ -30,10 +30,9 @@ import type { DataProvider, ExtensionContext } from './telescope-sdk.js';
  *    an opaque CURSOR, not a page number, so it cannot answer "page 3 of 7" either. `agent.runs.recent`
  *    below uses `listRuns` for its FIRST page only, same as Nest's `recentRuns(limit)` — the capped,
  *    non-paged shape both ecosystems already had before A1's paged-table convention existed.
- *  - **Exact pending-approvals count** — `pendingApprovals` returns an array with no `total`; unlike
- *    Nest's `approvalsPage({ page: 1, pageSize: 1 }).total`, there is no cheap way to ask "how many,
- *    without listing them". `agentPendingApprovalsCountProvider` below is therefore a real
- *    approximation — see its own doc comment.
+ *  - **Exact pending-approvals count, from an adapter without `countPendingApprovals`** — that one
+ *    only has `pendingApprovals`, an array with no `total`, so `agentPendingApprovalsCountProvider`
+ *    below falls back to the capped inbox's length — see its own doc comment.
  *
  * Every provider still degrades to an empty-but-valid shape (0 / `[]`) when the read-model isn't
  * bound, exactly like the Nest reference — governance is optional configuration
@@ -455,12 +454,10 @@ interface PendingApprovalTableRow {
 }
 
 /**
- * stat → an APPROXIMATE count of tool calls sitting `pending_approval`, capped at
- * {@link MAX_RECENT_LIMIT}. `AgentGovernanceQueries.pendingApprovals` has no `total` — unlike the
- * Nest reference's exact `approvalsPage({ page: 1, pageSize: 1 }).total`, there is no cheap "how
- * many, without listing them" query on this SPI (see this file's header). A backlog past the cap
- * undercounts here exactly the way Nest's OLD `pendingApprovals(500).length` did before it got an
- * exact query — that regression is accepted, not fixed, until `AgentGovernanceQueries` grows one.
+ * stat → how many tool calls sit `pending_approval`: `AgentGovernanceQueries.countPendingApprovals`,
+ * exact, when the adapter has it (the Lucid and in-memory ones do). An adapter without it is read
+ * through `pendingApprovals`, which caps the inbox at {@link MAX_RECENT_LIMIT} (and the adapter's own
+ * clamp), so a backlog past that cap undercounts.
  */
 export function agentPendingApprovalsCountProvider(): DataProvider {
   return {
@@ -468,6 +465,9 @@ export function agentPendingApprovalsCountProvider(): DataProvider {
     async resolve(_query, _ctx: ExtensionContext) {
       const queries = getTelescopeGovernanceQueries();
       if (!queries) return { value: 0 };
+      if (queries.countPendingApprovals !== undefined) {
+        return { value: await queries.countPendingApprovals() };
+      }
       const rows = await queries.pendingApprovals({ limit: MAX_RECENT_LIMIT });
       return { value: rows.length };
     },

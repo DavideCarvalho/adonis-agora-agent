@@ -3,6 +3,7 @@ import { decodeInterruptId } from '../ag-ui/core/interrupt-id.js';
 import { agUiEvents } from '../ag-ui/stream.js';
 import { type UiAction, uiActionText } from '../genui/actions.js';
 import { validateUiCapabilities } from '../genui/capabilities.js';
+import { untilClosed } from '../interruptible.js';
 import type { ProtocolAdapter, ProtocolAdapterHost } from '../spi/protocol-adapter.js';
 import {
   A2UI_APPROVE_ACTION,
@@ -303,7 +304,7 @@ async function stream(
     for (const message of messages) raw.write(`${JSON.stringify(message)}\n`);
   };
   try {
-    for await (const event of agUiEvents(host.service.subscribe(runId), {
+    for await (const event of agUiEvents(untilClosed(raw, host.service.subscribe(runId)), {
       threadId: options.threadId ?? runId,
       runId,
       streamRunId: runId,

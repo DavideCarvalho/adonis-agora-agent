@@ -759,12 +759,22 @@ interface IoRedisLike {
   publish(channel: string, message: string): Promise<number>;
   del(...keys: string[]): Promise<number>;
   expire(key: string, seconds: number): Promise<number>;
+  multi(): IoRedisMultiLike;
   duplicate(): IoRedisLike;
   subscribe(channel: string): Promise<unknown>;
   unsubscribe(channel: string): Promise<unknown>;
   on(event: 'message', listener: (channel: string, message: string) => void): unknown;
   off(event: 'message', listener: (channel: string, message: string) => void): unknown;
   quit(): Promise<unknown>;
+}
+
+/** An `ioredis` MULTI: queued commands, sent and run together on `exec()`. */
+interface IoRedisMultiLike {
+  rpush(key: string, value: string): IoRedisMultiLike;
+  expire(key: string, seconds: number): IoRedisMultiLike;
+  publish(channel: string, message: string): IoRedisMultiLike;
+  /** Each command's `[error, result]`, or `null` when the transaction was discarded. */
+  exec(): Promise<[Error | null, unknown][] | null>;
 }
 
 /** The `@adonisjs/redis` manager surface used to reach a connection's underlying `ioredis` client. */
@@ -828,6 +838,15 @@ function adaptIoRedis(io: IoRedisLike): RedisStreamClient {
     },
     expire: async (key, seconds) => {
       await io.expire(key, seconds);
+    },
+    append: async (key, value, ttlSeconds, channel, message) => {
+      const multi = io.multi().rpush(key, value);
+      if (ttlSeconds > 0) multi.expire(key, ttlSeconds);
+      const replies = await multi.publish(channel, message).exec();
+      // A MULTI resolves even when a command in it failed; the failure is in that command's reply.
+      for (const [error] of replies ?? []) {
+        if (error !== null) throw error;
+      }
     },
   };
 }

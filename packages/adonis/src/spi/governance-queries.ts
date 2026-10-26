@@ -349,6 +349,12 @@ export interface AgentGovernanceQueries {
   runDetail(runId: string): Promise<RunDetail | null>;
   /** Tool calls sitting `pending_approval`, oldest first (an inbox drains from the back). */
   pendingApprovals(filter?: PendingApprovalsFilter): Promise<PendingApprovalRow[]>;
+  /**
+   * OPTIONAL: how many tool calls sit `pending_approval` (for `actor` alone, when given) — the exact
+   * total {@link pendingApprovals} would page through, without listing them. Absent → a count stat
+   * reads the capped inbox's length instead.
+   */
+  countPendingApprovals?(filter?: Pick<PendingApprovalsFilter, 'actor'>): Promise<number>;
   /** Per-tool call/failure/rejection/latency rollup over the range, highest call count first. */
   perToolStats(range?: ToolStatsRange): Promise<PerToolStatRow[]>;
   /** Success/failure/cancel rates + mean settled duration over the range. */

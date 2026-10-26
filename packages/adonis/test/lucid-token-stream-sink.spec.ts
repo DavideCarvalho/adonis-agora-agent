@@ -15,6 +15,7 @@ import {
   tokenSinks,
 } from '../src/index.js';
 import { portableSql } from '../src/stores/sql-dialect.js';
+import { indexNames } from './helpers/index-names.js';
 import { makeMemoryDb } from './helpers/make-db.js';
 import { openBackend } from './helpers/real-db.js';
 
@@ -104,6 +105,14 @@ async function collect(sink: TokenStreamSink, runId: string): Promise<StreamFram
   const frames: StreamFrame[] = [];
   for await (const frame of sink.subscribe(runId)) frames.push(frame);
   return frames;
+}
+
+/** `promise`'s value, or `'pending'` when it has not settled within a second. */
+function settlesSoon<T>(promise: Promise<T>): Promise<T | 'pending'> {
+  return Promise.race([
+    promise,
+    new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 1000)),
+  ]);
 }
 
 const textOf = (frames: StreamFrame[]) =>
@@ -391,6 +400,101 @@ describe.each(backends)('LucidTokenStreamSink on $name', (backend) => {
       }
       expect(await sink.has(`${runId}-stale`)).toBe(false);
       expect(await sink.has(runId)).toBe(true);
+    });
+
+    it('coalesces reasoning deltas, and the argument deltas of one tool call, like text', async () => {
+      const sink = sinkOn(0, { flushMs: 40 });
+      const writer = sink.open(runId);
+      const reasoning = (text: string): StreamFrame => ({
+        t: 'event',
+        event: { kind: 'reasoning', text },
+      });
+      const args = (id: string, delta: string): StreamFrame => ({
+        t: 'event',
+        event: { kind: 'tool-input-delta', id, delta },
+      });
+      for (let index = 0; index < 40; index++) await writer.write(reasoning(`r${index} `));
+      for (let index = 0; index < 40; index++) await writer.write(args('call-a', `${index},`));
+      for (let index = 0; index < 40; index++) await writer.write(args('call-b', `${index};`));
+      await writer.end();
+
+      const frames = await collect(sinkOn(1), runId);
+      const range = (n: number, f: (i: number) => string) =>
+        Array.from({ length: n }, (_, i) => f(i)).join('');
+      expect(frames).toEqual([
+        reasoning(range(40, (i) => `r${i} `)),
+        args(
+          'call-a',
+          range(40, (i) => `${i},`),
+        ),
+        args(
+          'call-b',
+          range(40, (i) => `${i};`),
+        ),
+      ]);
+      // Three rows and the end marker — not a hundred and twenty-one.
+      expect(await rowCount(runId)).toBe(4);
+    });
+
+    it('ends a subscriber whose run was purged under it, instead of polling for good', async () => {
+      const sink = sinkOn(0);
+      const writer = sink.open(runId);
+      await writer.write(step(0));
+      const iterator = sinkOn(1).subscribe(runId)[Symbol.asyncIterator]();
+      expect((await iterator.next()).value).toEqual(step(0));
+      // Parked past its TTL: the purge takes its rows.
+      expect(await sink.purgeExpired(Date.now() + 2 * 3_600_000)).toBe(1);
+      expect(await settlesSoon(iterator.next())).toEqual({ done: true, value: undefined });
+    });
+
+    it('follows a run whose numbering restarted under it, without skipping a frame', async () => {
+      const sink = sinkOn(0, { flushMs: 0 });
+      const writer = sink.open(runId);
+      for (let index = 0; index < 3; index++) await writer.write(step(index));
+      const iterator = sinkOn(1).subscribe(runId)[Symbol.asyncIterator]();
+      for (let index = 0; index < 3; index++) {
+        expect((await iterator.next()).value).toEqual(step(index));
+      }
+      // The run is purged while parked, then resumes: its rows start over at 1, under a cursor at 3.
+      await sink.purgeExpired(Date.now() + 2 * 3_600_000);
+      await sleep(5);
+      await writer.write(step(10));
+      await writer.write(step(11));
+      await writer.end();
+      const rest: unknown[] = [];
+      for (let next = await settlesSoon(iterator.next()); next !== 'pending' && !next.done; ) {
+        rest.push(next.value);
+        next = await settlesSoon(iterator.next());
+      }
+      expect(rest).toEqual([step(10), step(11)]);
+    });
+
+    it('stops polling as soon as its consumer returns', async () => {
+      const sink = sinkOn(0);
+      await sink.open(runId).write(step(0));
+      const iterator = sinkOn(1).subscribe(runId)[Symbol.asyncIterator]();
+      await iterator.next();
+      const pending = iterator.next();
+      expect(await settlesSoon(Promise.all([pending, iterator.return?.()]))).not.toBe('pending');
+      expect(await pending).toEqual({ done: true, value: undefined });
+    });
+
+    it('purges through a created_at index, and keeps a run with any row inside its TTL', async () => {
+      const sink = sinkOn(0, { ttlSeconds: 60 });
+      await sink.ensureSchema();
+      const db = asDb(dbs[0] as Database);
+      expect(await indexNames(db, backend.table)).toContain(`${backend.table}_created_idx`);
+      const old = Date.now() - 120_000;
+      await db.table(backend.table).insert({ run_id: runId, seq: 1, frame: '{}', created_at: old });
+      await db
+        .table(backend.table)
+        .insert({ run_id: runId, seq: 2, frame: '{}', created_at: Date.now() });
+      await db
+        .table(backend.table)
+        .insert({ run_id: `${runId}-old`, seq: 1, frame: null, created_at: old });
+      expect(await sink.purgeExpired()).toBe(1);
+      expect(await rowCount(runId)).toBe(2);
+      expect(await rowCount(`${runId}-old`)).toBe(0);
     });
 
     it('does not create the table under autoCreateTables: false', async () => {

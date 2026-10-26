@@ -15,7 +15,6 @@ import {
   type RecordRunStartInput,
   type RecordToolCallInput,
   type RecordUsageInput,
-  sumUsage,
   type ThreadTurnPage,
   type ThreadTurnQuery,
   type ThreadTurnReader,
@@ -60,7 +59,9 @@ import {
   ensureAgentTables,
   hasSentAtColumns,
   hasToolCallIdColumn,
+  rowsOf,
 } from './lucid-schema.js';
+import { portableSql } from './sql-dialect.js';
 import { withStoreTransaction } from './sqlite-transactions.js';
 
 // ── Structural Lucid typing (copied from telescope) ──────────────────────────
@@ -577,6 +578,12 @@ export class LucidAgentStore
     await this.init();
     const row = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
     return typeof row?.default_agent === 'string' ? row.default_agent : null;
+  }
+
+  async modelForThread(threadId: string): Promise<string | null> {
+    await this.init();
+    const row = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
+    return typeof row?.model === 'string' ? row.model : null;
   }
 
   async personaForThread(threadId: string): Promise<string | null> {
@@ -1279,39 +1286,42 @@ export class LucidAgentStore
 
   async usageBetween(actorRef: string, fromDay: string, toDay: string): Promise<UsageTotals> {
     await this.init();
-    const rows = await this.db
-      .from(AGENT_TABLES.tokenUsage)
-      .where('actor_ref', actorRef)
-      .where('created_at', '>=', Date.parse(`${fromDay}T00:00:00.000Z`))
-      .where('created_at', '<=', Date.parse(`${toDay}T23:59:59.999Z`))
-      .select('input_tokens', 'output_tokens', 'cost_usd', 'cost_source');
-    return sumUsage(
-      rows.map((row) => ({
-        inputTokens: toInt(row.input_tokens),
-        outputTokens: toInt(row.output_tokens),
-        costUsd: row.cost_usd === null || row.cost_usd === undefined ? null : Number(row.cost_usd),
-        costSource: typeof row.cost_source === 'string' ? row.cost_source : null,
-      })),
+    // Summed by the database: a month of an active actor's ledger is thousands of rows, read on
+    // every send that checks the quota. Same arithmetic as `sumUsage` — an unpriced row adds 0.
+    const [row] = rowsOf(
+      await this.db.rawQuery(
+        portableSql(
+          this.db,
+          `SELECT COALESCE(SUM("input_tokens" + "output_tokens"), 0) AS used_tokens, ` +
+            `COALESCE(SUM("cost_usd"), 0) AS cost_usd, ` +
+            `COALESCE(SUM(CASE WHEN "cost_source" = 'estimate' THEN "cost_usd" ELSE 0 END), 0) AS estimated_cost_usd ` +
+            `FROM "${AGENT_TABLES.tokenUsage}" WHERE "actor_ref" = ? AND "created_at" >= ? AND "created_at" <= ?`,
+        ),
+        [actorRef, Date.parse(`${fromDay}T00:00:00.000Z`), Date.parse(`${toDay}T23:59:59.999Z`)],
+      ),
     );
+    return {
+      usedTokens: toInt(row?.used_tokens),
+      costUsd: Number(row?.cost_usd ?? 0),
+      estimatedCostUsd: Number(row?.estimated_cost_usd ?? 0),
+    };
   }
 
   async quotaToday(actorRef: string, day: string): Promise<{ usedTokens: number }> {
     await this.init();
     // Inclusive UTC day window over epoch-ms `created_at`. Cache tokens are subsets of input/output
     // and are NEVER re-added, so summing input+output is the whole-day token spend.
-    const start = Date.parse(`${day}T00:00:00.000Z`);
-    const end = Date.parse(`${day}T23:59:59.999Z`);
-    const rows = await this.db
-      .from(AGENT_TABLES.tokenUsage)
-      .where('actor_ref', actorRef)
-      .where('created_at', '>=', start)
-      .where('created_at', '<=', end)
-      .select('input_tokens', 'output_tokens');
-    const usedTokens = rows.reduce(
-      (sum, row) => sum + toInt(row.input_tokens) + toInt(row.output_tokens),
-      0,
+    const [row] = rowsOf(
+      await this.db.rawQuery(
+        portableSql(
+          this.db,
+          `SELECT COALESCE(SUM("input_tokens" + "output_tokens"), 0) AS used_tokens ` +
+            `FROM "${AGENT_TABLES.tokenUsage}" WHERE "actor_ref" = ? AND "created_at" >= ? AND "created_at" <= ?`,
+        ),
+        [actorRef, Date.parse(`${day}T00:00:00.000Z`), Date.parse(`${day}T23:59:59.999Z`)],
+      ),
     );
-    return { usedTokens };
+    return { usedTokens: toInt(row?.used_tokens) };
   }
 }
 

@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "components": [],
+  "jsx": false,
+  "assets": {
+    "kit": null,
+    "css": null,
+    "tailwind": null
+  }
+}

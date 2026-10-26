@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ModelCatalogView, ModelProvider, ModelTurnArgs } from '../src/index.js';
+import { InMemoryAgentStore } from '../src/testing/index.js';
 import { type BootedApp, bootAgentApp, readSse } from './helpers/boot-agent-app.js';
 
 const catalog: ModelCatalogView = {
@@ -83,6 +84,39 @@ describe('model catalog', () => {
     await patch(null);
     await readSse(await send(url, { message: 'and again', threadId }));
     expect(seen).toEqual([undefined, 'mini', undefined]);
+  });
+
+  it('reads a thread’s pinned model as one column, not through the whole transcript', async () => {
+    /** Records which caller asked for a full thread read. */
+    class RecordingStore extends InMemoryAgentStore {
+      readonly fullReads: string[] = [];
+      override async getThread(threadId: string) {
+        this.fullReads.push(new Error().stack ?? '');
+        return super.getThread(threadId);
+      }
+    }
+    const store = new RecordingStore();
+    const seen: (string | undefined)[] = [];
+    booted = await bootAgentApp({
+      model: echoModel(seen),
+      models: catalog,
+      stores: { recording: async () => store },
+      store: 'recording',
+    });
+    const { url } = booted;
+    const first = await send(url, { message: 'hi' });
+    const threadId = first.headers.get('x-agent-thread-id') as string;
+    await readSse(first);
+    await fetch(`${url}/agent/threads/${threadId}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ model: 'mini' }),
+    });
+
+    store.fullReads.length = 0;
+    await readSse(await send(url, { message: 'again', threadId }));
+    expect(seen.at(-1)).toBe('mini');
+    expect(store.fullReads.filter((stack) => stack.includes('resolveModel'))).toEqual([]);
   });
 
   it('answers an empty catalog and refuses any model when none is configured', async () => {

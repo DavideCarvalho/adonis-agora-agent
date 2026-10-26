@@ -295,6 +295,12 @@ export interface AgentStore {
    */
   personaForThread?(threadId: string): Promise<string | null>;
   /**
+   * OPTIONAL: the catalog model pinned on the thread (`UpdateThreadInput.model`), or `null` when it
+   * has none or does not exist — one scalar, like {@link defaultAgentForThread}, read on every send
+   * that names no model. A store without it is read through `getThread`.
+   */
+  modelForThread?(threadId: string): Promise<string | null>;
+  /**
    * OPTIONAL: make a transient thread a regular one, listed by `listThreads` from then on. A thread
    * that is not transient is left as it is. Absent → `POST <path>/threads/:id/promote` answers `501`.
    */

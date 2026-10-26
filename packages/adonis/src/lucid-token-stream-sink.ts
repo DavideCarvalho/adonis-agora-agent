@@ -1,3 +1,5 @@
+import { CoalescedWrites } from './coalesced-writes.js';
+import { interruptible, sleepUnlessAborted } from './interruptible.js';
 import type { SinkWriter, StreamFrame, TokenStreamSink } from './spi/token-stream-sink.js';
 import type { LucidDatabaseLike } from './stores/lucid.js';
 import { AGENT_TABLES, ensureStreamFrameTable, rowsOf } from './stores/lucid-schema.js';
@@ -15,7 +17,7 @@ const DEFAULT_IDLE_POLL_INTERVAL_MS = 1000;
 /** How long a run has to write nothing before its subscribers slow down to the idle interval. */
 const IDLE_AFTER_MS = 5000;
 
-/** Default window (ms) consecutive `text` frames are gathered over before they are written as one row. */
+/** Default window (ms) consecutive deltas are gathered over before they are written as one row. */
 const DEFAULT_FLUSH_MS = 50;
 
 /** Rows read per query, so a long run's replay is paged rather than loaded whole. */
@@ -46,10 +48,10 @@ export interface LucidTokenStreamSinkOptions {
    */
   idlePollIntervalMs?: number;
   /**
-   * Window (ms) consecutive `text` frames are gathered over and written as ONE row — a model
-   * streams token by token, and a row per token is more writes than a database should take for a
-   * chat answer. Any other frame, and `end()`, write what is gathered first, so order is kept.
-   * Defaults to 50. `0` writes every frame as its own row.
+   * Window (ms) consecutive deltas — answer text, reasoning, one tool call's argument text — are
+   * gathered over and written as ONE row: a model streams token by token, and a row per token is
+   * more writes than a database should take for a chat answer. Any other frame, and `end()`, write
+   * what is gathered first, so order is kept. Defaults to 50. `0` writes every frame as its own row.
    */
   flushMs?: number;
   /**
@@ -69,17 +71,6 @@ export interface LucidTokenStreamSinkOptions {
    * Set `false` when the published migration (`createAgentTables`) owns the schema.
    */
   autoCreateTables?: boolean;
-}
-
-/** One run's write side in this process: the text being gathered, and the writes already queued. */
-interface RunWrites {
-  text: string | null;
-  timer: ReturnType<typeof setTimeout> | undefined;
-  /** Settles when every write queued so far has been attempted. Never rejects. */
-  tail: Promise<void>;
-  pending: number;
-  /** A gathered write that failed on its timer, with nobody awaiting it — reported by the next call. */
-  failure: { error: unknown } | undefined;
 }
 
 function toInt(value: unknown): number {
@@ -107,8 +98,6 @@ function isUniqueViolation(error: unknown): boolean {
   return e.errno === 1062 || e.number === 2627;
 }
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 /**
  * A multi-replica {@link TokenStreamSink} over the app's SQL database (through `@adonisjs/lucid`) —
  * for a deployment with several replicas and NO Redis. The replica running the model turn appends
@@ -121,8 +110,9 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  *
  *  - **Delivery is polled.** There is no publish to wake a subscriber, so a frame waits up to
  *    `pollIntervalMs` (250 ms) before a browser sees it.
- *  - **Text is coalesced on the way in.** Consecutive `text` frames written within `flushMs`
- *    (50 ms) are stored as ONE `text` frame holding their concatenation. The stored rows are the
+ *  - **Deltas are coalesced on the way in.** Consecutive `text` frames written within `flushMs`
+ *    (50 ms) are stored as ONE `text` frame holding their concatenation, and so are consecutive
+ *    reasoning deltas, and consecutive argument deltas of one tool call. The stored rows are the
  *    run's stream: every subscriber, on every replica, reads the same rows in the same order, so
  *    the SSE event ids `AgentSseEncoder` counts from them — and an `after` cursor — stay exact. They
  *    are NOT the ids the in-process sink would have produced for the same run (it numbers every
@@ -133,6 +123,10 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * collision into a retry. A run normally has ONE writer, and then no append ever collides; the
  * retry exists for a parent whose delegated children (each forwarding into its stream, possibly
  * from another replica) write at once. Nothing depends on ordering across runs.
+ *
+ * A subscriber notices when the rows it has read are gone: it ends when the run has none left
+ * (purged past its TTL, or `close()`d), and starts over from the first row when the run's numbering
+ * restarted under it (a run parked past its TTL that then wrote again).
  *
  * Text a writer is still gathering lives in the process for at most `flushMs`; a process that dies
  * in that window loses it from the LIVE stream (the persisted message is unaffected).
@@ -147,7 +141,7 @@ export class LucidTokenStreamSink implements TokenStreamSink {
   private readonly ttlSeconds: number;
   private readonly autoPurge: boolean;
   private readonly autoCreateTables: boolean;
-  private readonly writes = new Map<string, RunWrites>();
+  private readonly writes: CoalescedWrites;
   private provisioned: Promise<void> | undefined;
   private lastAutoPurge = 0;
 
@@ -170,6 +164,9 @@ export class LucidTokenStreamSink implements TokenStreamSink {
     this.ttlSeconds = options.ttlSeconds ?? DEFAULT_TTL_SECONDS;
     this.autoPurge = options.autoPurge ?? true;
     this.autoCreateTables = options.autoCreateTables ?? true;
+    this.writes = new CoalescedWrites(this.flushMs, (runId, frame) =>
+      this.append(runId, frame === null ? null : JSON.stringify(frame)),
+    );
   }
 
   /**
@@ -185,70 +182,6 @@ export class LucidTokenStreamSink implements TokenStreamSink {
       });
     }
     return this.provisioned;
-  }
-
-  private runWrites(runId: string): RunWrites {
-    let state = this.writes.get(runId);
-    if (state === undefined) {
-      state = {
-        text: null,
-        timer: undefined,
-        tail: Promise.resolve(),
-        pending: 0,
-        failure: undefined,
-      };
-      this.writes.set(runId, state);
-    }
-    return state;
-  }
-
-  /** Forget a run's write state once nothing is gathered, queued or left to report. */
-  private release(runId: string, state: RunWrites): void {
-    if (
-      state.pending === 0 &&
-      state.text === null &&
-      state.failure === undefined &&
-      this.writes.get(runId) === state
-    ) {
-      this.writes.delete(runId);
-    }
-  }
-
-  /** Queue `work` behind every write already queued for the run, so rows land in call order. */
-  private enqueue(runId: string, state: RunWrites, work: () => Promise<void>): Promise<void> {
-    state.pending += 1;
-    const next = state.tail.then(work);
-    state.tail = next
-      .then(
-        () => undefined,
-        () => undefined,
-      )
-      .then(() => {
-        state.pending -= 1;
-        this.release(runId, state);
-      });
-    return next;
-  }
-
-  /** Queue the gathered text (if any) as one `text` row. */
-  private flushText(runId: string, state: RunWrites): Promise<void> {
-    if (state.timer !== undefined) {
-      clearTimeout(state.timer);
-      state.timer = undefined;
-    }
-    if (state.text === null) return Promise.resolve();
-    const frame: StreamFrame = { t: 'text', v: state.text };
-    state.text = null;
-    return this.enqueue(runId, state, () => this.append(runId, JSON.stringify(frame)));
-  }
-
-  /** Raise, once, a gathered write that failed with nobody awaiting it. */
-  private raiseFailure(state: RunWrites): void {
-    const failure = state.failure;
-    if (failure !== undefined) {
-      state.failure = undefined;
-      throw failure.error;
-    }
   }
 
   /** Append one row to the run — a frame, or the end marker (`null`). */
@@ -280,63 +213,54 @@ export class LucidTokenStreamSink implements TokenStreamSink {
    */
   open(runId: string): SinkWriter {
     return {
-      write: async (frame: StreamFrame) => {
-        const state = this.runWrites(runId);
-        this.raiseFailure(state);
-        if (frame.t === 'text' && this.flushMs > 0) {
-          state.text = (state.text ?? '') + frame.v;
-          // Counted from the FIRST gathered token, not the last: a steady stream still reaches the
-          // table every `flushMs`, instead of being held for as long as the model keeps talking.
-          if (state.timer === undefined) {
-            state.timer = setTimeout(() => {
-              state.timer = undefined;
-              this.flushText(runId, state).catch((error: unknown) => {
-                state.failure = { error };
-              });
-            }, this.flushMs);
-          }
-          return;
-        }
-        const flushed = this.flushText(runId, state);
-        const appended = this.enqueue(runId, state, () =>
-          this.append(runId, JSON.stringify(frame)),
-        );
-        await Promise.all([flushed, appended]);
-      },
-      flush: async () => {
-        const state = this.runWrites(runId);
-        const flushed = this.flushText(runId, state);
-        await Promise.all([flushed, state.tail]);
-        this.raiseFailure(state);
-        this.release(runId, state);
-      },
+      write: (frame: StreamFrame) => this.writes.write(runId, frame),
+      flush: () => this.writes.flush(runId),
       end: async () => {
-        const state = this.runWrites(runId);
-        const flushed = this.flushText(runId, state);
-        const ended = this.enqueue(runId, state, () => this.append(runId, null));
-        await Promise.all([flushed, ended]);
-        this.raiseFailure(state);
-        this.release(runId, state);
+        await this.writes.end(runId);
         this.purgeInBackground();
       },
     };
   }
 
-  async *subscribe(runId: string): AsyncIterable<StreamFrame> {
+  subscribe(runId: string): AsyncIterable<StreamFrame> {
+    return interruptible((signal) => this.follow(runId, signal));
+  }
+
+  private async *follow(runId: string, signal: AbortSignal): AsyncGenerator<StreamFrame> {
     await this.ensureSchema();
+    // The last row read, by number and by write time. It is read again with every page, so its
+    // absence is seen: a run whose rows went has nothing left to follow, and a number held by a
+    // row written at another time belongs to a run that started numbering over.
     let cursor = 0;
+    let cursorAt = 0;
     let quietSince = Date.now();
-    while (true) {
+    while (!signal.aborted) {
       const rows = await this.db
         .from(this.table)
         .where('run_id', runId)
-        .where('seq', '>', cursor)
+        .where('seq', '>=', cursor)
         .orderBy('seq', 'asc')
-        .limit(READ_PAGE)
-        .select('seq', 'frame');
+        .limit(cursor > 0 ? READ_PAGE + 1 : READ_PAGE)
+        .select('seq', 'frame', 'created_at');
+      let fresh = rows;
+      if (cursor > 0) {
+        const head = rows[0];
+        if (
+          head === undefined ||
+          toInt(head.seq) !== cursor ||
+          toInt(head.created_at) !== cursorAt
+        ) {
+          if (!(await this.has(runId))) return;
+          cursor = 0;
+          cursorAt = 0;
+          continue;
+        }
+        fresh = rows.slice(1);
+      }
       let ended = false;
-      for (const row of rows) {
+      for (const row of fresh) {
         cursor = toInt(row.seq);
+        cursorAt = toInt(row.created_at);
         if (row.frame === null || row.frame === undefined) {
           ended = true;
           continue;
@@ -346,13 +270,14 @@ export class LucidTokenStreamSink implements TokenStreamSink {
       if (ended) {
         return;
       }
-      if (rows.length > 0) {
+      if (fresh.length > 0) {
         quietSince = Date.now();
         // A full page means there may be more already written: read on without waiting.
-        if (rows.length >= READ_PAGE) continue;
+        if (fresh.length >= READ_PAGE) continue;
       }
-      await sleep(
+      await sleepUnlessAborted(
         Date.now() - quietSince >= IDLE_AFTER_MS ? this.idlePollIntervalMs : this.pollIntervalMs,
+        signal,
       );
     }
   }
@@ -363,15 +288,7 @@ export class LucidTokenStreamSink implements TokenStreamSink {
   }
 
   async close(runId: string): Promise<void> {
-    const state = this.writes.get(runId);
-    if (state !== undefined) {
-      if (state.timer !== undefined) clearTimeout(state.timer);
-      state.timer = undefined;
-      state.text = null;
-      state.failure = undefined;
-      await state.tail;
-      this.writes.delete(runId);
-    }
+    await this.writes.discard(runId);
     await this.ensureSchema();
     await this.db.from(this.table).where('run_id', runId).delete();
   }
@@ -389,22 +306,39 @@ export class LucidTokenStreamSink implements TokenStreamSink {
     if (this.ttlSeconds <= 0) return 0;
     await this.ensureSchema();
     const cutoff = now - this.ttlSeconds * 1000;
-    // Two steps rather than one `DELETE … WHERE run_id IN (SELECT … FROM the same table)`, which
-    // MySQL refuses. A run that writes between the two was idle for the whole TTL a moment ago.
-    const lapsed = rowsOf(
+    // A run has lapsed when it has a row older than the cutoff and none newer. Both halves read an
+    // index — `created_at` for the old rows, the primary key for a candidate's newer ones — so a
+    // purge costs what has aged out rather than a scan of the table. Separate statements rather
+    // than one `DELETE … WHERE run_id IN (SELECT … FROM the same table)`, which MySQL refuses; a
+    // run that writes in between was idle for the whole TTL a moment ago.
+    const candidates = rowsOf(
       await this.db.rawQuery(
         portableSql(
           this.db,
-          `SELECT "run_id" AS run_id FROM "${this.table}" GROUP BY "run_id" HAVING MAX("created_at") < ?`,
+          `SELECT DISTINCT "run_id" AS run_id FROM "${this.table}" WHERE "created_at" < ?`,
         ),
         [cutoff],
       ),
     ).map((row) => String(row.run_id));
-    for (let index = 0; index < lapsed.length; index += PURGE_CHUNK) {
-      await this.db
-        .from(this.table)
-        .whereIn('run_id', lapsed.slice(index, index + PURGE_CHUNK))
-        .delete();
+    const lapsed: string[] = [];
+    for (let index = 0; index < candidates.length; index += PURGE_CHUNK) {
+      const chunk = candidates.slice(index, index + PURGE_CHUNK);
+      const live = new Set(
+        rowsOf(
+          await this.db.rawQuery(
+            portableSql(
+              this.db,
+              `SELECT DISTINCT "run_id" AS run_id FROM "${this.table}" ` +
+                `WHERE "run_id" IN (${chunk.map(() => '?').join(', ')}) AND "created_at" >= ?`,
+            ),
+            [...chunk, cutoff],
+          ),
+        ).map((row) => String(row.run_id)),
+      );
+      const gone = chunk.filter((run) => !live.has(run));
+      if (gone.length === 0) continue;
+      await this.db.from(this.table).whereIn('run_id', gone).delete();
+      lapsed.push(...gone);
     }
     return lapsed.length;
   }

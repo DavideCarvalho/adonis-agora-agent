@@ -318,6 +318,30 @@ describe('output processors (incremental gate)', () => {
     expect(textFrames(frames).join('')).toBe('ab #### cd');
   });
 
+  it('rules on a long answer a bounded number of times, and still streams it whole and redacted', async () => {
+    // Every pass reads the whole prefix so far, so one pass per token costs the square of the
+    // answer. A pass per half window keeps it linear.
+    let passes = 0;
+    const counted: OutputProcessor = {
+      name: 'counted-redact',
+      incremental: { lookbackChars: 64 },
+      process: (answer) => {
+        passes += 1;
+        return { action: 'replace', text: answer.text.replace(/xxxx/g, '####') };
+      },
+    };
+    const answer = 'lorem ipsum xxxx dolor sit amet '.repeat(60);
+    const { result, frames } = await run({
+      model: new ChunkedModel([answer]),
+      outputProcessors: [counted],
+    });
+    const redacted = answer.replace(/xxxx/g, '####');
+    expect(result.text).toBe(redacted);
+    expect(textFrames(frames).join('')).toBe(redacted);
+    // 1920 characters, one frame each: ~60 prefix passes plus the whole-answer pass, not 1921.
+    expect(passes).toBeLessThanOrEqual(Math.ceil(answer.length / 32) + 1);
+  });
+
   it('downgrades the whole chain when one member declares nothing', async () => {
     const { frames } = await run({
       model: new ChunkedModel(['abcdefghij']),
@@ -379,7 +403,8 @@ describe('output processors (incremental gate)', () => {
     const attempt = () =>
       run({ journal, model: new ChunkedModel(['abcdefghij']), outputProcessors: [flaky] });
 
-    // The first attempt released the lookback-bounded prefix, then died in the gate.
+    // The first attempt released a lookback-bounded prefix ('abcd', ruled on at 8 characters, as the
+    // gate runs every lookbackChars / 2 of them), then died in the gate.
     await expect(attempt()).rejects.toThrow(ProcessorFailedError);
     journal.rewind();
     failTheGate = false;
@@ -388,6 +413,6 @@ describe('output processors (incremental gate)', () => {
     // so the reader gets the tail rather than the answer a second time.
     const resumed = await attempt();
     expect(resumed.result.text).toBe('abcdefghij');
-    expect(textFrames(resumed.frames)).toEqual(['fghij']);
+    expect(textFrames(resumed.frames)).toEqual(['efghij']);
   });
 });

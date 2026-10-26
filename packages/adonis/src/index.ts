@@ -513,6 +513,7 @@ export {
   ensureChannelStateTable,
   ensureStreamFrameTable,
   schemaRunner,
+  streamFrameIndexStatement,
   streamFrameTableStatement,
 } from './stores/lucid-schema.js';
 export type {
