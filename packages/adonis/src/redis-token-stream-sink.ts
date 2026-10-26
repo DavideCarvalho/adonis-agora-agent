@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { CoalescedWrites } from './coalesced-writes.js';
 import { interruptible, untilAborted } from './interruptible.js';
 import type { RedisStreamClient } from './redis-stream-client.js';
@@ -17,6 +18,29 @@ const FLUSH_MS = 50;
  * that expire publish nothing, and this is how it learns that the run it follows is gone.
  */
 const IDLE_CHECK_MS = 60_000;
+
+/**
+ * Property of a stored element holding its write id: this process's id and a counter, so no two
+ * elements ever written are the same string — a list that started over never reads as the one a
+ * subscriber was following, even when it repeats the same frames.
+ */
+const WRITE_ID = '#';
+
+const processId = randomBytes(6).toString('base64url');
+let writeCount = 0;
+
+/** `frame` as a list element, stamped with a write id no other element has. */
+function encodeElement(frame: StreamFrame): string {
+  writeCount += 1;
+  return `${JSON.stringify(frame).slice(0, -1)},"${WRITE_ID}":"${processId}.${writeCount.toString(36)}"}`;
+}
+
+/** The frame a list element holds, with or without a write id. */
+function decodeElement(encoded: string): StreamFrame {
+  const parsed = JSON.parse(encoded) as StreamFrame & { [WRITE_ID]?: string };
+  if (parsed[WRITE_ID] !== undefined) delete parsed[WRITE_ID];
+  return parsed;
+}
 
 export interface RedisTokenStreamSinkOptions {
   /** Key/channel namespace. Defaults to `agent:stream`. Keys are `${keyPrefix}:${runId}:...`. */
@@ -50,7 +74,9 @@ export interface RedisTokenStreamSinkOptions {
  *
  * A subscriber reads the terminal marker once when it attaches and otherwise waits for the `end`
  * message. It ends when the run's keys expired under it, and starts over from the first element when
- * the list was started again (a run parked past its TTL that then wrote again).
+ * the list was started again (a run parked past its TTL that then wrote again). Each element carries
+ * a write id unique to it, which is how a restarted list is told apart from the one being followed;
+ * subscribers strip it, so readers get exactly the frames written.
  *
  * The host supplies a {@link RedisStreamClient} adapter over its own Redis driver; `subscribe` needs a
  * connection in subscriber mode (see the client docs). Wire it with `defineConfig({ sink:
@@ -99,7 +125,7 @@ export class RedisTokenStreamSink implements TokenStreamSink {
       await this.client.publish(this.channel(runId), 'end');
       return;
     }
-    const encoded = JSON.stringify(frame);
+    const encoded = encodeElement(frame);
     if (this.client.append !== undefined) {
       await this.client.append(chunks, encoded, this.ttlSeconds, this.channel(runId), 'chunk');
       return;
@@ -140,7 +166,9 @@ export class RedisTokenStreamSink implements TokenStreamSink {
       if (await this.hasEnded(runId)) ended = true;
       let index = 0;
       // The last element read, read again with every drain so a list that is not the one read
-      // (expired, or started over) is noticed.
+      // (expired, or started over) is noticed. Elements carry a write id, so the comparison holds
+      // even when the restarted run writes the same frames; elements without one are compared as
+      // they are.
       let last: string | undefined;
       while (!signal.aborted) {
         const drainsToEnd = ended;
@@ -161,7 +189,7 @@ export class RedisTokenStreamSink implements TokenStreamSink {
         for (const encoded of fresh) {
           index += 1;
           last = encoded;
-          yield JSON.parse(encoded) as StreamFrame;
+          yield decodeElement(encoded);
         }
         // The end marker is written after the last frame, so a drain begun after it was seen has
         // everything; one that began before reads once more.

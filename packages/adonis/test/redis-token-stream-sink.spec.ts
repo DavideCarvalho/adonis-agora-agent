@@ -334,6 +334,64 @@ describe('RedisTokenStreamSink subscriber', () => {
     expect(rest).toEqual([stepFrame(10), stepFrame(11)]);
   });
 
+  it('follows a restarted run that repeats the frames it began with, from its first frame', async () => {
+    const server = new FakeRedisServer();
+    const sink = new RedisTokenStreamSink(server.client());
+    const writer = sink.open('run-repeat');
+    for (let index = 0; index < 3; index++) await writer.write(stepFrame(index));
+    const iterator = sink.subscribe('run-repeat')[Symbol.asyncIterator]();
+    for (let index = 0; index < 3; index++) {
+      expect((await iterator.next()).value).toEqual(stepFrame(index));
+    }
+    // The keys expire and the run starts again with the same frames, before the subscriber reads on.
+    server.lists.clear();
+    server.values.clear();
+    for (let index = 0; index < 4; index++) await writer.write(stepFrame(index));
+    await writer.end();
+    const rest: unknown[] = [];
+    for (let next = await settlesSoon(iterator.next()); next !== 'pending' && !next.done; ) {
+      rest.push(next.value);
+      next = await settlesSoon(iterator.next());
+    }
+    expect(rest).toEqual([stepFrame(0), stepFrame(1), stepFrame(2), stepFrame(3)]);
+  });
+
+  it('reads a list whose elements carry no write id, as written before they had one', async () => {
+    const server = new FakeRedisServer();
+    server.lists.set('agent:stream:run-plain:chunks', [
+      JSON.stringify(stepFrame(0)),
+      JSON.stringify(text('hi')),
+    ]);
+    const sink = new RedisTokenStreamSink(server.client());
+    const iterator = sink.subscribe('run-plain')[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toEqual(stepFrame(0));
+    expect((await iterator.next()).value).toEqual(text('hi'));
+    server.lists.get('agent:stream:run-plain:chunks')?.push(JSON.stringify(text('!')));
+    server.values.set('agent:stream:run-plain:state', 'ended');
+    for (const handler of server.subs.get('agent:stream:run-plain') ?? []) handler('end');
+    expect(await iterator.next()).toEqual({ done: false, value: text('!') });
+    expect(await settlesSoon(iterator.next())).toEqual({ done: true, value: undefined });
+  });
+
+  it('hands subscribers the frames exactly as written, without the stored write id', async () => {
+    const server = new FakeRedisServer();
+    const sink = new RedisTokenStreamSink(server.client());
+    const writer = sink.open('run-exact');
+    const approval: StreamFrame = {
+      t: 'approval',
+      runId: 'run-exact',
+      id: 'c1',
+      toolName: 'send',
+      input: { to: 'x' },
+    };
+    await writer.write(approval);
+    await writer.write(stepFrame(0));
+    await writer.end();
+    const stored = server.lists.get('agent:stream:run-exact:chunks') ?? [];
+    expect(new Set(stored).size).toBe(2);
+    expect(await collect(sink.subscribe('run-exact'))).toStrictEqual([approval, stepFrame(0)]);
+  });
+
   it('ends when the run’s keys expired under it, on its next quiet check', async () => {
     vi.useFakeTimers();
     try {
