@@ -276,8 +276,8 @@ importers:
         specifier: 2.1.3
         version: 2.1.3(effect@4.0.1)
       '@qdrant/js-client-rest':
-        specifier: 1.19.0
-        version: 1.19.0(typescript@7.0.2)
+        specifier: 1.20.0
+        version: 1.20.0(typescript@7.0.2)
       '@resvg/resvg-js':
         specifier: 2.6.2
         version: 2.6.2
@@ -322,13 +322,13 @@ importers:
         version: 19.3.0(@types/react@19.3.0)
       agent-0-56:
         specifier: npm:@adonis-agora/agent@0.56.0
-        version: '@adonis-agora/agent@0.56.0(b19ee5bcf40184292029bf5340441835)'
+        version: '@adonis-agora/agent@0.56.0(79698c56a16ae2951bb118562316c14d)'
       agent-0-58:
         specifier: npm:@adonis-agora/agent@0.58.0
-        version: '@adonis-agora/agent@0.58.0(b19ee5bcf40184292029bf5340441835)'
+        version: '@adonis-agora/agent@0.58.0(79698c56a16ae2951bb118562316c14d)'
       agent-0-59:
         specifier: npm:@adonis-agora/agent@0.59.0
-        version: '@adonis-agora/agent@0.59.0(b19ee5bcf40184292029bf5340441835)'
+        version: '@adonis-agora/agent@0.59.0(79698c56a16ae2951bb118562316c14d)'
       ai:
         specifier: 7.0.150
         version: 7.0.150(zod@4.6.7)
@@ -2046,8 +2046,8 @@ packages:
   '@protobufjs/utf8@1.1.2':
     resolution: {integrity: sha512-b1UQwcEZ4yCnMCD8DAL1VlbvBJE9/IX4FTIp7BG1xYpf29SLazLSrqUkj4w7Y5y7cCVP6E5tcqqcI0xemPkHug==}
 
-  '@qdrant/js-client-rest@1.19.0':
-    resolution: {integrity: sha512-1+QLUHsWp+WV4PE35FLnH2ckxotWrQEqi/F3t4goF3cCThR0ZxLVtOC4OoOi/E1iyj/iIYBdbuACWMuQ15NAnA==}
+  '@qdrant/js-client-rest@1.20.0':
+    resolution: {integrity: sha512-NhvW4z3rbxYc1e+ksHci5hE8vNBpbi5YoB7z3dzaVcskM2el7O/exNg5fclAN+G5MXn/TRx2Rcie8YTXo2YQdg==}
     engines: {node: '>=22.0.0'}
     peerDependencies:
       typescript: '>=4.7'
@@ -6003,8 +6003,8 @@ packages:
   undici-types@8.9.0:
     resolution: {integrity: sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==}
 
-  undici@7.29.0:
-    resolution: {integrity: sha512-IDxfleLmmbSskfWSUATiN1nfn2rDuvnMOqb5CWR92iIfojA0Ud+ulOAAEQ57LPr9rWmsreUyf5lwyao+7GNNVw==}
+  undici@7.29.1:
+    resolution: {integrity: sha512-RYONW2MeafgYlkVOKYKkA/Ag7BmXqgIWCa8t1m0JcxrQg9pI9lEqRhAOruOBCbAohOa/gkCF+iPi9hrgvTzu6Q==}
     engines: {node: '>=20.18.1'}
 
   undici@7.30.1:
@@ -6381,7 +6381,7 @@ snapshots:
       zod: 3.25.76
       zod-to-json-schema: 3.25.2(zod@3.25.76)
 
-  '@adonis-agora/agent@0.56.0(b19ee5bcf40184292029bf5340441835)':
+  '@adonis-agora/agent@0.56.0(79698c56a16ae2951bb118562316c14d)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.30.1(supports-color@10.2.2)(zod@4.6.7)
       '@standard-schema/spec': 1.1.0
@@ -6395,7 +6395,7 @@ snapshots:
       '@adonisjs/core': 7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1)
       '@adonisjs/lucid': 22.4.2(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(@adonisjs/core@7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.6(@types/node@26.6.5))(pg@8.23.1)(supports-color@10.2.2)
       '@adonisjs/redis': 11.0.0(@adonisjs/core@7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2)
-      '@qdrant/js-client-rest': 1.19.0(typescript@7.0.2)
+      '@qdrant/js-client-rest': 1.20.0(typescript@7.0.2)
       ai: 7.0.150(zod@4.6.7)
       node-sql-parser: 5.4.0
       react: 19.3.1
@@ -6404,7 +6404,7 @@ snapshots:
       - '@cfworker/json-schema'
       - supports-color
 
-  '@adonis-agora/agent@0.58.0(b19ee5bcf40184292029bf5340441835)':
+  '@adonis-agora/agent@0.58.0(79698c56a16ae2951bb118562316c14d)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.30.1(supports-color@10.2.2)(zod@4.6.7)
       '@standard-schema/spec': 1.1.0
@@ -6418,7 +6418,7 @@ snapshots:
       '@adonisjs/core': 7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1)
       '@adonisjs/lucid': 22.4.2(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(@adonisjs/core@7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.6(@types/node@26.6.5))(pg@8.23.1)(supports-color@10.2.2)
       '@adonisjs/redis': 11.0.0(@adonisjs/core@7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2)
-      '@qdrant/js-client-rest': 1.19.0(typescript@7.0.2)
+      '@qdrant/js-client-rest': 1.20.0(typescript@7.0.2)
       ai: 7.0.150(zod@4.6.7)
       node-sql-parser: 5.4.0
       react: 19.3.1
@@ -6427,7 +6427,7 @@ snapshots:
       - '@cfworker/json-schema'
       - supports-color
 
-  '@adonis-agora/agent@0.59.0(b19ee5bcf40184292029bf5340441835)':
+  '@adonis-agora/agent@0.59.0(79698c56a16ae2951bb118562316c14d)':
     dependencies:
       '@modelcontextprotocol/sdk': 1.30.1(supports-color@10.2.2)(zod@4.6.7)
       '@standard-schema/spec': 1.1.0
@@ -6441,7 +6441,7 @@ snapshots:
       '@adonisjs/core': 7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1)
       '@adonisjs/lucid': 22.4.2(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(@adonisjs/core@7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.6(@types/node@26.6.5))(pg@8.23.1)(supports-color@10.2.2)
       '@adonisjs/redis': 11.0.0(@adonisjs/core@7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(supports-color@10.2.2)
-      '@qdrant/js-client-rest': 1.19.0(typescript@7.0.2)
+      '@qdrant/js-client-rest': 1.20.0(typescript@7.0.2)
       ai: 7.0.150(zod@4.6.7)
       node-sql-parser: 5.4.0
       react: 19.3.1
@@ -7787,11 +7787,11 @@ snapshots:
 
   '@protobufjs/utf8@1.1.2': {}
 
-  '@qdrant/js-client-rest@1.19.0(typescript@7.0.2)':
+  '@qdrant/js-client-rest@1.20.0(typescript@7.0.2)':
     dependencies:
       '@qdrant/openapi-typescript-fetch': 1.2.6
       typescript: 7.0.2
-      undici: 7.29.0
+      undici: 7.29.1
 
   '@qdrant/openapi-typescript-fetch@1.2.6': {}
 
@@ -12088,7 +12088,7 @@ snapshots:
 
   undici-types@8.9.0: {}
 
-  undici@7.29.0: {}
+  undici@7.29.1: {}
 
   undici@7.30.1: {}
 
