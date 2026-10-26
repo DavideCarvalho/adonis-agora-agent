@@ -36,7 +36,22 @@ Omit `sink` entirely to keep the in-process sink (`tokenSinks.memory()` selects 
 
 `ttlSeconds` is the knob that keeps Redis from filling up: the framework never calls the sink's `close()`, so a run's replay buffer has no natural end of life. One hour is long enough that a client re-attaching after a browser restart still replays the whole run, and short enough that yesterday's transcripts aren't sitting in memory. Raise it if you re-attach on a longer horizon; set `0` only if something else prunes the keys.
 
+## What it does
+
+- **Write.** Each frame is an `RPUSH` onto `<keyPrefix>:<runId>:chunks`, a refresh of that key's TTL, and a `PUBLISH` on `<keyPrefix>:<runId>` to wake the subscribers. The end of the run sets `<keyPrefix>:<runId>:state` and publishes `end`.
+- **Coalesce.** Consecutive deltas written within 50 ms are pushed as **one** frame holding their concatenation: `text` frames, `reasoning` deltas, and the `tool-input-delta`s of one tool call. Every reader appends these deltas, so the rendered text is the same; a client receives fewer, larger frames. Any other frame, and the end of the run, push the gathered delta first, so order is kept. A process that dies inside that window loses the gathered delta from the *live* stream; the persisted message is unaffected.
+- **Read.** A subscriber replays the list, then follows the channel. It reads the end marker once when it attaches; after that it relies on the `end` message. After 60 s without a message it reads the list on its own, because expiring keys publish nothing: when the run's keys are gone it ends, and when the list started over (a run parked past `ttlSeconds` that then wrote again) it replays from the new first element instead of skipping frames.
+- **Disconnect.** When the browser closes the SSE connection, the route ends its subscription and the subscriber unsubscribes.
+
+<Callout type="info" title="Event ids and the `after` cursor">
+SSE event ids are counted from the list, so every replica numbers a run's events the same and `?after=<seq>` resumes exactly on any pod. They are not the ids the in-process sink would have given the same run (it stores every delta as its own frame), which only matters to a cursor carried across a change of sink.
+</Callout>
+
+## Bring your own client
+
 Passing a `client` lets you drive a non-Adonis Redis driver or a test double directly — the factory uses it verbatim. Under the hood the adapter uses a dedicated duplicated connection per subscribe (a subscribed Redis connection can't run other commands).
+
+`RedisStreamClient.append(key, value, ttlSeconds, channel, message)` is optional. It does a frame's `RPUSH`, `EXPIRE` (skipped when `ttlSeconds` is `0`) and `PUBLISH`, in that order, in one round trip — a `MULTI` or a pipeline. The `@adonisjs/redis` adapter implements it with `MULTI`. A client without it gets the three commands one after another, a round trip each.
 
 ## Pair with the durable runner
 

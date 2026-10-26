@@ -99,7 +99,20 @@ missing `run_id` columns in). It sets `disableTransactions = true` because the h
 connection from the pool.
 </Callout>
 
-Threads are indexed on `(actor_ref, updated_at)` for list ordering, messages on `(thread_id, created_at)` for load, and usage on `(actor_ref, created_at)` so the daily quota scan stays fast. Booleans are stored as `INTEGER` (0/1) and timestamps as `BIGINT` epoch-ms — no dialect-only types.
+The indexes follow the reads the store and the [governance read-model](/docs/agent/governance/read-model) make:
+
+| Table | Indexed on | Read by |
+| --- | --- | --- |
+| `agent_thread` | `(actor_ref, updated_at)` | thread lists |
+| `agent_message` | `(thread_id, created_at)`, `(thread_id, seq)`, `(run_id)` | loading a thread, a transcript in `seq` order, a run's messages |
+| `agent_tool_call` | `(message_id)`, `(run_id)`, `(call_id, run_id)`, `(status, created_at)` | a message's calls, a run's calls, lookups by the model's call id, the approvals inbox |
+| `agent_token_usage` | `(actor_ref, created_at)`, `(thread_id)`, `(created_at)`, `(run_id)` | the quota windows, per-thread usage, the spend rollups over a date range, a run's usage |
+| `agent_run` | `(started_at)`, `(actor_ref, started_at)`, `(status, started_at)`, `(thread_id, started_at)` | the run list and its filters, a thread's recent runs |
+| `agent_stream_frame` | `(created_at, run_id)` | the [Lucid sink's](/docs/agent/sql-streaming#cleanup) TTL purge |
+
+Each index is named after its table and columns (for example `agent_message_thread_seq_idx`, `agent_token_usage_created_idx`) and is looked up by name in the catalog before it is created, so an index you created yourself under the same name is left alone.
+
+Booleans are stored as `INTEGER` (0/1) and timestamps as `BIGINT` epoch-ms — no dialect-only types.
 
 The DDL is written once and spoken in each dialect's own terms. On **MySQL** that means backtick
 identifiers, `LONGTEXT` where the others say `TEXT` (MySQL's `TEXT` stops at 64 KB, and a long answer
@@ -120,11 +133,16 @@ them in either order. A row written before the column existed holds 0 and sorts 
 A persisted tool call is addressable by exactly the id the model emitted — the same id a client sends to `POST /agent/tool-call/approve`. That invariant is what makes HITL approval resolve the right pending call.
 </Callout>
 
+<Callout type="info" title="New indexes on a large table">
+`createAgentTables` issues a plain `CREATE INDEX`. On Postgres that blocks writes to the table while the index builds, which on a large `agent_message` or `agent_token_usage` can stall live turns for as long as the build takes. To avoid it, create the missing indexes yourself first with `CREATE INDEX CONCURRENTLY` under the same names (for example `CREATE INDEX CONCURRENTLY "agent_message_thread_seq_idx" ON "agent_message" ("thread_id", "seq")`); the next boot or migration finds them and skips them. MySQL 8 builds a secondary index online, and SQLite holds the database's write lock for the build either way.
+</Callout>
+
 ## Behavior details
 
 - **`forkThread` and `truncateFrom` run in a transaction.** `forkThread` copies kept messages under fresh ids onto a new thread; `truncateFrom` deletes doomed messages' tool calls explicitly (not only via FK cascade) so it works on SQLite even without `PRAGMA foreign_keys=ON`.
 - **`appendMessage` bumps the thread's `updated_at`**, so thread lists reflect the latest activity.
-- **`quotaToday` sums input + output tokens over the inclusive UTC day.** Cache tokens are subsets and are never re-added, so the sum is the whole-day spend.
+- **`quotaToday` sums input + output tokens over the inclusive UTC day.** Cache tokens are subsets and are never re-added, so the sum is the whole-day spend. It and `usageBetween` (the quota's day and month windows) are one `SUM` in the database over the `(actor_ref, created_at)` index, so the store fetches one row per window rather than the window's ledger.
+- **`modelForThread` reads one column.** A send that names no model reads the model pinned on its thread through this optional `AgentStore` method, as `personaForThread` and `defaultAgentForThread` do for theirs, instead of loading the thread. A custom store without it is read through `getThread`.
 - **`loadThreadForTurn` reads the window a turn sends, not the transcript.** The newest `messageLimit` messages ordered by the database, projected to the columns a model turn reads (`usage`, `follow_ups` and `run_id` stay in the table). `hasAssistantMessage` is a separate one-row existence check over the *whole* thread. The loop probes for this method structurally, so this is an optimization rather than a contract — see [The read a turn makes](/docs/agent/concepts/agent-loop#the-read-a-turn-makes).
 
 ## Auto-created tables, and turning that off
@@ -204,7 +222,7 @@ editing an applied migration is safe, Lucid tracks it by file name.
 `agent_run` columns `ttft_ms`, `error_code` and `model_id`, `sent_at` on `agent_message` and
 `agent_queued_message`, the
 `run_id` columns, `agent_thread.queue_pause`) and creates the tables one added
-(`agent_queued_message`, `agent_confirm_token`, `agent_stream_frame`, `agent_channel_state`). With `autoCreateTables: true` that happens as the app starts. With it off, nothing
+(`agent_queued_message`, `agent_confirm_token`, `agent_stream_frame`, `agent_channel_state`), and the indexes a newer release added (see the table above). With `autoCreateTables: true` that happens as the app starts. With it off, nothing
 runs it for you: after upgrading, add a migration whose `up()` calls `createAgentTables` again (a
 copy of the published `create_agent_tables` migration under a new timestamp does exactly that) —
 it only adds what is missing.

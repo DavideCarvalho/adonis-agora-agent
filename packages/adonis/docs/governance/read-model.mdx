@@ -251,7 +251,9 @@ interface CurrentModelPrice extends ModelPriceInput {
 
 `estimateCost(usage, price)` is the pure function every surface shares — the SQL adapter and the in-memory one both call it, so a rollup and a run detail can never disagree about what a turn cost. Its arithmetic is documented in [Quota & cost](/docs/agent/governance/quota-and-cost#cost--real-when-known-estimated-otherwise).
 
-The matching `AgentGovernanceQueries` methods for the read routes are `spendByModel`, `spendByActor`, `usageTrend`, `recentToolCalls`, `recentThreads`, `threadDetail?`, `listRuns`, `runDetail`, `pendingApprovals`, `perToolStats`, and `runReliability`.
+The matching `AgentGovernanceQueries` methods for the read routes are `spendByModel`, `spendByActor`, `usageTrend`, `recentToolCalls`, `recentThreads`, `threadDetail?`, `listRuns`, `runDetail`, `pendingApprovals`, `perToolStats`, and `runReliability`. `countPendingApprovals?({ actor? })` is optional: the exact number of calls sitting `pending_approval`, without listing them. The Telescope pending-approvals stat uses it when the adapter has it and otherwise counts the capped inbox. `LucidGovernanceQueries` and `InMemoryGovernanceQueries` implement it.
+
+`LucidGovernanceQueries` aggregates in the database: the spend rollups and the usage trend are `GROUP BY` the model plus the actor or the UTC day, so they return one row per group rather than the range's ledger; `recentThreads`, `recentToolCalls` and `threadDetail` read a page's threads, counts and usage in a fixed number of statements; and the approvals inbox, with its `actor` filter and `limit`, is one joined statement however long the backlog.
 
 ## The per-actor approvals inbox
 
@@ -261,7 +263,7 @@ There's one more route mounted alongside the read-model that is **not** behind `
 | --- | --- |
 | `GET /agent/approvals/mine` | The **calling actor's own** pending HITL approvals, oldest first. Query: `limit?` (default `50`, clamped to `200`). |
 
-It reads the same store as the governance inbox — `pendingApprovals({ actor })` filters by the owning run's `actor_ref` — but is always scoped to `actor.id`, so it needs no admin gate. This is the route a non-admin surface (a coordinator's chat, an operator console) polls to discover *its own* suspended tool calls, even when the cross-actor `GET /agent/governance/approvals/pending` inbox above is ADMIN-only. The two are complementary: `approvals/mine` is per-actor and always available; `governance/approvals/pending` is platform-wide and governance-gated.
+It reads the same store as the governance inbox — `pendingApprovals({ actor })` filters by the call's owning actor: its run's `actor_ref`, or, for a call with no run, its thread's — but is always scoped to `actor.id`, so it needs no admin gate. This is the route a non-admin surface (a coordinator's chat, an operator console) polls to discover *its own* suspended tool calls, even when the cross-actor `GET /agent/governance/approvals/pending` inbox above is ADMIN-only. The two are complementary: `approvals/mine` is per-actor and always available; `governance/approvals/pending` is platform-wide and governance-gated.
 
 ## Run lifecycle tracking
 

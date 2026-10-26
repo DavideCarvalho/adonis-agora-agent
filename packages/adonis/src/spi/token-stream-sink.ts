@@ -90,7 +90,11 @@ export interface SinkWriter {
 export interface TokenStreamSink {
   /** Open (or reopen) the writer for a run. */
   open(runId: string): SinkWriter | Promise<SinkWriter>;
-  /** Replay buffered frames for the run, then yield live ones until `end()`. */
+  /**
+   * Replay buffered frames for the run, then yield live ones until `end()`. The SSE routes call the
+   * iterator's `return()` when the client disconnects, so a subscriber waiting for a frame should let
+   * that end its wait and release what it holds (a poll loop, a pub/sub subscription).
+   */
   subscribe(runId: string): AsyncIterable<StreamFrame>;
   /** Drop any buffer/resources for the run. */
   close(runId: string): void | Promise<void>;
