@@ -174,6 +174,15 @@ export function toolCallIdOfRow(row: Record<string, unknown>): string {
   return row.call_id !== null && row.call_id !== undefined ? String(row.call_id) : String(row.id);
 }
 
+/** Statement-sized slices of an `IN (…)` list (well under every dialect's bind-parameter cap). */
+function inChunks<T>(values: readonly T[], size = 500): T[][] {
+  const out: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    out.push(values.slice(index, index + size));
+  }
+  return out;
+}
+
 function toInt(value: unknown): number {
   if (typeof value === 'number') return value;
   if (typeof value === 'bigint') return Number(value);
@@ -910,10 +919,14 @@ export class LucidAgentStore
       const cutoff = rows.findIndex((m) => String(m.id) === messageId);
       if (cutoff < 0) return;
       const doomed = rows.slice(cutoff).map((m) => String(m.id));
-      for (const mid of doomed) {
-        // Delete tool calls explicitly (works on SQLite without FK cascade), then the message.
-        await trx.from(AGENT_TABLES.toolCalls).where('message_id', mid).delete();
-        await trx.from(AGENT_TABLES.messages).where('id', mid).delete();
+      // Delete tool calls explicitly (works on SQLite without FK cascade), then the messages. A slice
+      // of ids per statement rather than two statements per message: same rows gone, same
+      // transaction, a bounded number of round trips however long the dropped tail is.
+      for (const ids of inChunks(doomed)) {
+        await trx.from(AGENT_TABLES.toolCalls).whereIn('message_id', ids).delete();
+      }
+      for (const ids of inChunks(doomed)) {
+        await trx.from(AGENT_TABLES.messages).whereIn('id', ids).delete();
       }
     });
   }
@@ -1007,7 +1020,8 @@ export class LucidAgentStore
     if (input.remember !== undefined) patch.remember = input.remember ? 1 : 0;
     if (input.decidedVia !== undefined) patch.decided_via = input.decidedVia;
     if (input.status === 'executed' || input.status === 'failed') patch.executed_at = Date.now();
-    const row = await this.findToolCall(input.toolCallId, input.runId);
+    // Only the row's key is read: the update never needs the call's input/output payloads.
+    const row = await this.findToolCall(input.toolCallId, input.runId, ['id']);
     if (row === null) return;
     await this.db.from(AGENT_TABLES.toolCalls).where('id', String(row.id)).update(patch);
   }
@@ -1021,12 +1035,16 @@ export class LucidAgentStore
   private async findToolCall(
     toolCallId: string,
     runId?: string,
+    columns: readonly string[] = ['*'],
   ): Promise<Record<string, unknown> | null> {
     const table = AGENT_TABLES.toolCalls;
     if (this.toolCallsScoped) {
       const query = this.db.from(table).where('call_id', toolCallId);
       if (runId !== undefined) query.where('run_id', runId);
-      const [newest] = await query.orderBy('created_at', 'desc').limit(1).select('*');
+      const [newest] = await query
+        .orderBy('created_at', 'desc')
+        .limit(1)
+        .select(...columns);
       if (newest !== undefined) return newest;
     }
     const bare = this.db.from(table).where('id', toolCallId);
@@ -1039,12 +1057,16 @@ export class LucidAgentStore
   /** Attach, per message, the approval record of every call on it a policy put to a person. */
   private async withApprovals(messages: StoredMessage[]): Promise<StoredMessage[]> {
     if (messages.length === 0) return messages;
+    // Only calls a policy put to a person carry an `approver` (every other one maps to no approval
+    // record, see `toolCallApprovalFromRow`), so the rest are left in the database rather than read
+    // — input and output payloads included — on every thread open.
     const rows = await this.db
       .from(AGENT_TABLES.toolCalls)
       .whereIn(
         'message_id',
         messages.map((message) => message.id),
       )
+      .where('approver', 'is not', null)
       .orderBy('created_at', 'asc')
       .orderBy('id', 'asc')
       .select('*');
@@ -1067,17 +1089,21 @@ export class LucidAgentStore
     const scope = await this.getThreadActionProposalScope(threadId);
     if (!scope) return [];
     const names = new Set(await this.rememberedActionProposalTools(scope));
-    const messageIds = (
-      await this.db.from(AGENT_TABLES.messages).where('thread_id', threadId).select('id')
-    ).map((row) => String(row.id));
-    if (messageIds.length) {
-      const rows = await this.db
-        .from(AGENT_TABLES.toolCalls)
-        .whereIn('message_id', messageIds)
-        .where('remember', 1)
-        .select('tool_name');
-      for (const row of rows) names.add(String(row.tool_name));
-    }
+    // Joined through the thread's messages in one statement, rather than reading every message id of
+    // the thread and sending them all back as an `IN (…)` list — a long thread made that list (and
+    // its bind parameters) grow with every turn.
+    const rows = rowsOf(
+      await this.db.rawQuery(
+        portableSql(
+          this.db,
+          `SELECT c."tool_name" AS tool_name FROM "${AGENT_TABLES.toolCalls}" c ` +
+            `INNER JOIN "${AGENT_TABLES.messages}" m ON m."id" = c."message_id" ` +
+            `WHERE m."thread_id" = ? AND c."remember" = 1`,
+        ),
+        [threadId],
+      ),
+    );
+    for (const row of rows) names.add(String(row.tool_name));
     return [...names];
   }
 
