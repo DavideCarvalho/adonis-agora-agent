@@ -14,6 +14,8 @@
  * so a package.json edge back from here to there would be circular. See
  * `providers/dashboard_provider.ts`'s module doc for the full story.
  */
+// The dashboard-gate return contract (identical across every `@adonis-agora/*` console).
+export type { AuthorizeDecision, AuthorizeResult } from '../authorize-decision.js';
 export type {
   AccessDeniedInfo,
   AccessDeniedPageOptions,

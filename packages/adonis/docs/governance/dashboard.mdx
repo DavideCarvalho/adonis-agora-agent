@@ -45,7 +45,7 @@ export default defineConfig({
 | --- | --- | --- |
 | `enabled` | `true` | `false` keeps the routes off entirely. |
 | `path` | `<agentPath>/dashboard` | Where the SPA mounts. |
-| `authorize` | — | An **extra** gate, run after the actor resolves. Return `false` (or throw) → `403`. |
+| `authorize` | — | An **extra** gate, run after the actor resolves. Returns an [`AuthorizeResult`](#the-authorize-contract): `false` / `{ allowed: false }` (or throw) → `403`, `{ allowed: false, reason: 'unauthenticated' }` → `401`. |
 | `onUnauthenticated` | — | Runs when the actor resolver itself rejects the caller. |
 | `accessDenied` | — | Tweak or replace the [access-denied page](#the-access-denied-page) a refused browser sees. |
 
@@ -60,11 +60,31 @@ export default defineConfig({
 })
 ```
 
+### The authorize contract
+
+Both hooks return the same `AuthorizeResult` every `@adonis-agora/*` console uses:
+
+```ts
+import type { AuthorizeDecision, AuthorizeResult } from '@adonis-agora/agent/dashboard'
+
+// AuthorizeResult = boolean | { allowed: boolean; reason?: 'unauthenticated' | 'forbidden' }
+```
+
+| Return | Status |
+| --- | --- |
+| `true` / `{ allowed: true }` | allowed |
+| `{ allowed: false, reason: 'unauthenticated' }` | `401` |
+| `{ allowed: false, reason: 'forbidden' }` | `403` |
+| `false` / `{ allowed: false }` | `403` |
+| throws | `403` |
+
+A denying `{ allowed: false }` is a truthy object — the gates normalise it, so it denies; never test a hook's result with `if (!result)` yourself. If the hook answers the request itself (a redirect), that answer is kept. The console answers with the access-denied page; the `/agent/governance/*` routes with JSON.
+
 Note the asymmetry: `governanceAuthorize` gates the data, `dashboard.authorize` gates the page. Omitting the latter means any actor your resolver accepts can *load* the console — but every panel in it still goes through `governanceAuthorize`, so they will see an empty shell of `403`s. Setting both is what produces a coherent experience.
 
 ### The access-denied page
 
-A rejected request gets a `401` (nobody resolved) or a `403` (`authorize` said no) — and, since the console's routes are only ever hit by a browser, the body is a real page rather than JSON: a dark card in the console's visual language showing the status, a sentence explaining the refusal and a "Back to app" link. It carries no inline script, so a nonce'd `script-src` CSP cannot break it (its one inline `<style>` picks up `@adonisjs/shield`'s request nonce). Outside production, a thrown resolver/`authorize` message is shown on it as a developer detail.
+A rejected request gets a `401` (nobody resolved, or `authorize` returned `reason: 'unauthenticated'`) or a `403` (`authorize` said no) — and, since the console's routes are only ever hit by a browser, the body is a real page rather than JSON: a dark card in the console's visual language showing the status, a sentence explaining the refusal and a "Back to app" link. It carries no inline script, so a nonce'd `script-src` CSP cannot break it (its one inline `<style>` picks up `@adonisjs/shield`'s request nonce). Outside production, a thrown resolver/`authorize` message is shown on it as a developer detail.
 
 Tweak it with `accessDenied` — every field optional:
 

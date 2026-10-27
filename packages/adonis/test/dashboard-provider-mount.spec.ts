@@ -272,4 +272,42 @@ describe('embedded dashboard_provider mount vs. the agent governance gate', () =
     expect(response.status).toBe(302);
     expect(response.headers.get('location')).toBe('/acesso-negado');
   });
+
+  it('maps AuthorizeResult decisions to the access-denied page status', async () => {
+    booted = await bootApp({
+      governanceAuthorize: adminOnly,
+      dashboardAuthorize: (actor) => {
+        if (actor.id === 'allowed-object') return { allowed: true };
+        if (actor.id === 'anonymous-ish') return { allowed: false, reason: 'unauthenticated' };
+        if (actor.id === 'forbidden') return { allowed: false, reason: 'forbidden' };
+        if (actor.id === 'bare-object') return { allowed: false };
+        if (actor.id === 'throws') throw new Error('policy blew up');
+        if (actor.id === 'true') return true;
+        return false;
+      },
+    });
+    const as = (id: string) =>
+      fetch(`${booted?.url}/agent/dashboard/assets/index.js`, {
+        redirect: 'manual',
+        headers: { 'x-actor-id': id, 'x-actor-roles': 'PATIENT' },
+      });
+
+    // Allowed: the gate passes and the request reaches the asset handler (no SPA built in tests, so
+    // whatever it answers, it is NOT the gate's 401/403 page).
+    for (const id of ['true', 'allowed-object']) {
+      const response = await as(id);
+      expect([401, 403], id).not.toContain(response.status);
+    }
+
+    const unauthenticated = await as('anonymous-ish');
+    expect(unauthenticated.status).toBe(401);
+    expect(unauthenticated.headers.get('content-type')).toContain('text/html');
+    expect(await unauthenticated.text()).toContain('<h1>Sign in required</h1>');
+
+    for (const id of ['forbidden', 'bare-object', 'bare-false', 'throws']) {
+      const response = await as(id);
+      expect(response.status, id).toBe(403);
+      expect(response.headers.get('content-type'), id).toContain('text/html');
+    }
+  });
 });

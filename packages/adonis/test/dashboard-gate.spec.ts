@@ -134,6 +134,48 @@ describe('evaluateDashboardGate', () => {
   });
 });
 
+describe('evaluateDashboardGate — AuthorizeResult decision objects', () => {
+  it('allows { allowed: true }', async () => {
+    expect(await evaluateDashboardGate(ctx, resolverFor(admin), () => ({ allowed: true }))).toEqual(
+      {
+        ok: true,
+      },
+    );
+  });
+
+  it('denies { allowed: false } with 403 even though the object is truthy', async () => {
+    expect(
+      await evaluateDashboardGate(ctx, resolverFor(coordinator), () => ({ allowed: false })),
+    ).toEqual({ ok: false, status: 403, error: 'forbidden' });
+  });
+
+  it("maps reason 'forbidden' to 403", async () => {
+    expect(
+      await evaluateDashboardGate(ctx, resolverFor(coordinator), async () => ({
+        allowed: false,
+        reason: 'forbidden' as const,
+      })),
+    ).toEqual({ ok: false, status: 403, error: 'forbidden' });
+  });
+
+  it("maps reason 'unauthenticated' to 401", async () => {
+    expect(
+      await evaluateDashboardGate(ctx, resolverFor(coordinator), async () => ({
+        allowed: false,
+        reason: 'unauthenticated' as const,
+      })),
+    ).toEqual({ ok: false, status: 401, error: 'unauthorized' });
+  });
+
+  it('denies bare false with 403', async () => {
+    expect(await evaluateDashboardGate(ctx, resolverFor(coordinator), () => false)).toEqual({
+      ok: false,
+      status: 403,
+      error: 'forbidden',
+    });
+  });
+});
+
 describe('resolveDashboardConfig — authorize passthrough', () => {
   it('defaults authorize to undefined (any resolved actor allowed)', () => {
     expect(resolveDashboardConfig({}).authorize).toBeUndefined();

@@ -95,6 +95,7 @@ export {
   DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES,
   DEFAULT_MAX_ATTACHMENT_BYTES,
 } from './attachment-limits.js';
+export type { AuthorizeDecision, AuthorizeResult } from './authorize-decision.js';
 export { ClosedToolAuthorizer, DefaultToolAuthorizer } from './authorizer.js';
 export * from './base-tool.js';
 export {

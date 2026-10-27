@@ -115,7 +115,8 @@ export default class AgentDashboardProvider {
   /**
    * Resolve the actor through the agent config's resolver, mirroring the governance routes, then run
    * the optional `authorize` gate. Returns `true` to proceed; replies `401` on a missing/failed
-   * resolver and `403` when `authorize` denies the resolved actor. The decision itself lives in the
+   * resolver (or `authorize` returning `{ allowed: false, reason: 'unauthenticated' }`) and `403`
+   * when `authorize` otherwise denies (`false`, `{ allowed: false }`, `reason: 'forbidden'`, or throws). The decision itself lives in the
    * router-free {@link evaluateDashboardGate} so it can be unit tested; this only writes the response
    * — the access-denied PAGE (a browser is what hits these routes), via the shared
    * {@link answerDashboardDenial}, which also stands down when `authorize` already redirected.

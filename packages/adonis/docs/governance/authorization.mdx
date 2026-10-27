@@ -132,12 +132,13 @@ import { defineConfig } from '@adonis-agora/agent'
 export default defineConfig({
   // ...
   // Runs AFTER the actor is resolved (the caller is already authenticated).
-  // Return false → the route replies 403. Typically an ADMIN check.
+  // Return false / { allowed: false } → 403; { allowed: false, reason: 'unauthenticated' } → 401.
+  // Typically an ADMIN check.
   governanceAuthorize: (actor, _ctx) => actor.roles?.includes('ADMIN') ?? false,
 })
 ```
 
-Its type is `AgentGovernanceAuthorize = (actor, ctx) => boolean | Promise<boolean>`, and it is applied by `evaluateGovernanceGate`, which is **fail-closed**: an `authorize` that *throws* denies with `403` exactly like a `false` return.
+Its type is `AgentGovernanceAuthorize = (actor, ctx) => AuthorizeResult | Promise<AuthorizeResult>` (`AuthorizeResult = boolean | { allowed: boolean; reason?: 'unauthenticated' | 'forbidden' }`), and it is applied by `evaluateGovernanceGate`, which is **fail-closed**: `false`, `{ allowed: false }` and `reason: 'forbidden'` deny with `403`, `reason: 'unauthenticated'` with `401`, and an `authorize` that *throws* denies with `403` exactly like a `false` return. A redirect the hook wrote itself is kept instead of the JSON body. On owner-scoped routes the same predicate only decides whether the caller is cross-actor *privileged*: any denial (whatever its `reason`) just means "not privileged", and ownership decides.
 
 <Callout type="warn" title="A thrown message never reaches production clients">
 When `authorize` throws, the `403` body carries the error's message **only outside production**. In

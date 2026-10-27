@@ -222,6 +222,47 @@ describe('governance route mounting', () => {
     expect(await allowed.json()).toEqual([expect.objectContaining({ model: 'gpt-test' })]);
   });
 
+  it('maps AuthorizeResult decisions to 401/403 JSON on the governance routes', async () => {
+    booted = await bootApp((actor) => {
+      if (actor.id === 'allowed-object') return { allowed: true };
+      if (actor.id === 'anonymous-ish') return { allowed: false, reason: 'unauthenticated' };
+      if (actor.id === 'forbidden') return { allowed: false, reason: 'forbidden' };
+      if (actor.id === 'bare-object') return { allowed: false };
+      if (actor.id === 'throws') throw new Error('policy blew up');
+      if (actor.id === 'true') return true;
+      return false;
+    });
+    const as = (id: string) => fetch(`${booted?.url}/agent/governance/spend/model`, asActor(id));
+
+    for (const id of ['true', 'allowed-object']) {
+      expect((await as(id)).status, id).toBe(200);
+    }
+
+    const unauthenticated = await as('anonymous-ish');
+    expect(unauthenticated.status).toBe(401);
+    expect(unauthenticated.headers.get('content-type')).toContain('application/json');
+
+    for (const id of ['forbidden', 'bare-object', 'bare-false', 'throws']) {
+      const response = await as(id);
+      expect(response.status, id).toBe(403);
+      expect(response.headers.get('content-type'), id).toContain('application/json');
+    }
+  });
+
+  it('keeps a redirect the governance gate wrote itself instead of the default JSON', async () => {
+    booted = await bootApp((_actor, ctx) => {
+      ctx.response.redirect().toPath('/entrar');
+      return { allowed: false, reason: 'unauthenticated' };
+    });
+
+    const response = await fetch(`${booted.url}/agent/governance/spend/model`, {
+      ...asActor('patient-1'),
+      redirect: 'manual',
+    });
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe('/entrar');
+  });
+
   it('serves GET governance/reliability with turn latency, failures by code and tool percentiles', async () => {
     const store = new InMemoryAgentStore();
     const actor = { id: 'u1' };

@@ -231,8 +231,10 @@ export interface AgentConfig {
   /**
    * Authorization gate for the cross-actor `/agent/governance/*` read routes. It runs after the actor
    * is resolved (the caller is authenticated) and decides whether THIS actor may read the platform-wide
-   * governance read-model — every actor's spend, usage, threads, and pending HITL approvals. Return
-   * `false` to deny (the route replies `403`).
+   * governance read-model — every actor's spend, usage, threads, and pending HITL approvals. Returns
+   * an `AuthorizeResult`: `true`/`{ allowed: true }` allows; `false`/`{ allowed: false }` (or
+   * `reason: 'forbidden'`) denies with `403`; `{ allowed: false, reason: 'unauthenticated' }` denies
+   * with `401`; throwing denies with `403`. A `location` header or body the hook wrote itself is kept.
    *
    * **The routes mount only when this gate exists.** Omit it and `/agent/governance/*` is NOT mounted
    * at all (every route answers `404`), because an ungated cross-actor read-model exposes every

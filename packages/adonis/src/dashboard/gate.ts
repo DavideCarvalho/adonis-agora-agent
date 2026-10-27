@@ -1,4 +1,5 @@
 import type { HttpContext } from '@adonisjs/core/http';
+import { resolveAuthorizeResult } from '../authorize-decision.js';
 import type { ActorResolver } from '../spi/actor-resolver.js';
 import { type AccessDeniedInfo, resolveAccessDeniedPage } from './access_denied_page.js';
 import type {
@@ -14,7 +15,8 @@ export type DashboardGateVerdict = { ok: true } | { ok: false; status: 401 | 403
  * Decide whether a request may reach the dashboard, WITHOUT touching the response — so it is unit
  * testable free of the AdonisJS router/app: resolve the actor through the agent config's resolver
  * (missing/failed → `401`), then run the optional `authorize` gate over the resolved actor
- * (denied/threw → `403`).
+ * (`true`/`{ allowed: true }` → proceed; `{ allowed: false, reason: 'unauthenticated' }` → `401`;
+ * `false`, `{ allowed: false }` or `reason: 'forbidden'` → `403`; threw → `403`).
  *
  * This gates the SPA **shell**, and only the shell. It is NOT what decides whether the console's data
  * is readable, and it is no longer the last line of defence it once had to be:
@@ -71,8 +73,12 @@ export async function evaluateDashboardGate(
   }
   if (authorize !== undefined) {
     try {
-      if (!(await authorize(actor, ctx))) {
-        return { ok: false, status: 403, error: 'forbidden' };
+      // A denying decision object is truthy — normalise, never truth-test the raw result.
+      const decision = resolveAuthorizeResult(await authorize(actor, ctx));
+      if (!decision.allowed) {
+        return decision.status === 401
+          ? { ok: false, status: 401, error: 'unauthorized' }
+          : { ok: false, status: 403, error: 'forbidden' };
       }
     } catch (error) {
       return {
