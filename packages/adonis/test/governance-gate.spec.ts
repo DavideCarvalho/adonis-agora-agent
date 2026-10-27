@@ -77,3 +77,37 @@ describe('evaluateGovernanceGate', () => {
     expect(verdict).toEqual({ ok: false, status: 403, error: 'forbidden' });
   });
 });
+
+describe('evaluateGovernanceGate — AuthorizeResult decision objects', () => {
+  it('allows { allowed: true }', async () => {
+    const verdict = await evaluateGovernanceGate(admin, ctx, () => ({ allowed: true }));
+    expect(verdict).toEqual({ ok: true, status: 200 });
+  });
+
+  it('denies { allowed: false } with 403 even though the object is truthy', async () => {
+    const verdict = await evaluateGovernanceGate(member, ctx, () => ({ allowed: false }));
+    expect(verdict).toEqual({ ok: false, status: 403, error: 'forbidden' });
+  });
+
+  it("maps reason 'forbidden' to 403", async () => {
+    const verdict = await evaluateGovernanceGate(member, ctx, async () => ({
+      allowed: false,
+      reason: 'forbidden' as const,
+    }));
+    expect(verdict).toEqual({ ok: false, status: 403, error: 'forbidden' });
+  });
+
+  it("maps reason 'unauthenticated' to 401", async () => {
+    const verdict = await evaluateGovernanceGate(member, ctx, async () => ({
+      allowed: false,
+      reason: 'unauthenticated' as const,
+    }));
+    expect(verdict).toEqual({ ok: false, status: 401, error: 'unauthorized' });
+  });
+
+  it('denies (403) a malformed result from an untyped hook', async () => {
+    const untyped = (() => ({ ok: true })) as unknown as () => boolean;
+    const verdict = await evaluateGovernanceGate(admin, ctx, untyped);
+    expect(verdict).toEqual({ ok: false, status: 403, error: 'forbidden' });
+  });
+});

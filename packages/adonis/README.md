@@ -284,6 +284,13 @@ export default defineConfig({
 })
 ```
 
+Both `governanceAuthorize` and `dashboard.authorize` return an `AuthorizeResult` —
+`boolean | { allowed: boolean; reason?: 'unauthenticated' | 'forbidden' }` (types exported from
+`@adonis-agora/agent` and `@adonis-agora/agent/dashboard`). `true`/`{ allowed: true }` allows;
+`{ allowed: false, reason: 'unauthenticated' }` answers `401`; `false`, `{ allowed: false }`,
+`reason: 'forbidden'` or a throw answer `403`. The console answers with its access-denied page, the
+governance routes with JSON; a redirect the hook wrote itself is kept.
+
 See [Governance dashboard](./docs/governance/dashboard.mdx) for the full config shape.
 
 <details>

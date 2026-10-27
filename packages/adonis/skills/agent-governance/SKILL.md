@@ -208,6 +208,25 @@ refuses to mount rather than serve eight dead panels.
 Source: `packages/adonis/src/dashboard/define_config.ts` (`decideDashboardMount`,
 `NO_GOVERNANCE_GATE_WARNING`).
 
+### HIGH — truth-testing an `AuthorizeResult` yourself
+
+```ts
+// Wrong — { allowed: false } is a truthy object, so this lets a denied actor through.
+if (await config.governanceAuthorize(actor, ctx)) serveAdminData()
+```
+
+```ts
+// Correct — let the gate normalise it (true/{allowed:true} allow; reason 'unauthenticated' → 401;
+// false/{allowed:false}/reason 'forbidden'/throw → 403).
+const verdict = await evaluateGovernanceGate(actor, ctx, config.governanceAuthorize)
+if (!verdict.ok) return ctx.response.status(verdict.status).json({ message: verdict.error })
+```
+
+Mechanism: `governanceAuthorize` and `dashboard.authorize` return
+`AuthorizeResult = boolean | { allowed: boolean; reason?: 'unauthenticated' | 'forbidden' }` —
+the dashboard-gate contract shared by every `@adonis-agora/*` console.
+Source: `packages/adonis/src/authorize-decision.ts`, `packages/adonis/src/governance-gate.ts`.
+
 ### MEDIUM — giving a per-agent resolver a different identity than the global one
 
 ```ts

@@ -1,11 +1,14 @@
 import type { HttpContext } from '@adonisjs/core/http';
+import { type AuthorizeResult, resolveAuthorizeResult } from './authorize-decision.js';
 import type { Actor } from './types.js';
 
 /**
  * Authorization gate for the cross-actor `/agent/governance/*` read routes. It runs AFTER the actor
  * is resolved (so the caller is already authenticated), and decides whether THIS actor may read the
- * platform-wide governance read-model (every actor's spend/usage/threads/approvals). Return `false`
- * to deny (the route replies `403`).
+ * platform-wide governance read-model (every actor's spend/usage/threads/approvals). Returns an
+ * {@link AuthorizeResult}: `true`/`{ allowed: true }` allows; `false`/`{ allowed: false }` denies
+ * with `403`; `{ allowed: false, reason: 'unauthenticated' }` denies with `401` and
+ * `{ allowed: false, reason: 'forbidden' }` with `403`. Throwing denies with `403`.
  *
  * The gate is what makes those routes exist: omit it and the provider does NOT mount
  * `/agent/governance/*` at all (every route answers `404`). Set it to mount them gated, or set
@@ -19,12 +22,15 @@ import type { Actor } from './types.js';
 export type AgentGovernanceAuthorize = (
   actor: Actor,
   ctx: HttpContext,
-) => boolean | Promise<boolean>;
+) => AuthorizeResult | Promise<AuthorizeResult>;
 
 /** The decision {@link evaluateGovernanceGate} returns: proceed, or reply `status` with `error`. */
 export interface GovernanceGateVerdict {
   ok: boolean;
-  /** The HTTP status to reply when `!ok` (always `403` here — the caller is already authenticated). */
+  /**
+   * The HTTP status to reply when `!ok`: `403`, or `401` when `authorize` returned
+   * `{ allowed: false, reason: 'unauthenticated' }`.
+   */
   status: number;
   error?: string;
 }
@@ -34,8 +40,11 @@ export interface GovernanceGateVerdict {
  * core of the provider's governance gate, extracted so it can be unit tested without booting an app.
  *
  * - No `authorize` configured → `{ ok: true }` (see the caveat below — the provider never gets here).
- * - `authorize` returns truthy → `{ ok: true }`.
- * - `authorize` returns falsy → `{ ok: false, status: 403 }`.
+ * - `authorize` returns `true` / `{ allowed: true }` → `{ ok: true }`.
+ * - `authorize` returns `false` / `{ allowed: false }` (no reason) / `{ allowed: false, reason:
+ *   'forbidden' }` → `{ ok: false, status: 403 }`. A denying decision object is truthy, so it is
+ *   normalised via {@link resolveAuthorizeResult}, never truth-tested.
+ * - `authorize` returns `{ allowed: false, reason: 'unauthenticated' }` → `{ ok: false, status: 401 }`.
  * - `authorize` throws → `{ ok: false, status: 403 }` (fail-closed). `debug` decides whether the
  *   thrown `.message` reaches the client (`true`, e.g. local dev — the message is meant for whoever
  *   is wiring `governanceAuthorize`, useful to see while testing it) or a generic `'forbidden'`
@@ -62,8 +71,11 @@ export async function evaluateGovernanceGate(
 ): Promise<GovernanceGateVerdict> {
   if (authorize === undefined) return { ok: true, status: 200 };
   try {
-    const allowed = await authorize(actor, ctx);
-    return allowed ? { ok: true, status: 200 } : { ok: false, status: 403, error: 'forbidden' };
+    const decision = resolveAuthorizeResult(await authorize(actor, ctx));
+    if (decision.allowed) return { ok: true, status: 200 };
+    return decision.status === 401
+      ? { ok: false, status: 401, error: 'unauthorized' }
+      : { ok: false, status: 403, error: 'forbidden' };
   } catch (error) {
     return {
       ok: false,

@@ -47,7 +47,7 @@ governance !== undefined && governanceAuthorize !== undefined
 The read-model is what there is to read; the gate is who may read it. Neither alone mounts anything. The read-model is usually already there by default, so in practice the gate is the switch:
 
 - **Omit `governanceAuthorize`** and `/agent/governance/*` is **not mounted at all**: every one of these paths answers `404`. Fail-closed by omission — an ungated cross-actor read-model would hand every actor's spend, usage, threads and approvals to any authenticated caller. The provider logs a boot warning naming both ways forward.
-- **Set it** — typically an ADMIN check — and the routes mount **gated**: each resolves the actor through the same resolver as the chat routes (`401` on failure), then runs `governanceAuthorize` (`403` on deny — the gate is **fail-closed**, so a throw denies too).
+- **Set it** — typically an ADMIN check — and the routes mount **gated**: each resolves the actor through the same resolver as the chat routes (`401` on failure), then runs `governanceAuthorize` (`403` on deny, `401` when it returns `{ allowed: false, reason: 'unauthenticated' }` — the gate is **fail-closed**, so a throw denies too).
 - **Set `governanceAuthorize: () => true`** to deliberately restore the old behaviour of letting ANY authenticated actor read them — the historical default, but now greppable and reviewable rather than implicit.
 
 `GET /agent/approvals/mine` is **unaffected** by all of this: it stays mounted whenever the read-model resolves, gate or no gate, and is always scoped to the calling actor's own pending approvals.

@@ -2060,7 +2060,8 @@ export default class AgentProvider {
 
   /**
    * Resolve the actor for a cross-actor governance route, then apply the optional `governanceAuthorize`
-   * gate. Replies `401` (unresolved actor) or `403` (gate denied/threw) and returns `null` so the
+   * gate. Replies `401` (unresolved actor, or the gate returned `reason: 'unauthenticated'`) or `403`
+   * (gate denied/threw) — unless the gate already answered the request itself — and returns `null` so the
    * handler short-circuits; otherwise returns the resolved actor. The gate decision itself lives in the
    * router-free {@link evaluateGovernanceGate} so it can be unit tested.
    */
@@ -2078,7 +2079,10 @@ export default class AgentProvider {
       !this.app.inProduction,
     );
     if (!verdict.ok) {
-      ctx.response.status(verdict.status).json({ message: verdict.error });
+      // The hook may have answered the request itself (a redirect, a custom body) — keep that answer.
+      if (!governanceResponseAnswered(ctx)) {
+        ctx.response.status(verdict.status).json({ message: verdict.error });
+      }
       return null;
     }
     return actor;
@@ -2391,4 +2395,15 @@ function resumableStaging(
     return undefined;
   }
   return candidate as ResumableAttachmentStaging;
+}
+
+/**
+ * Whether a `governanceAuthorize` hook already answered this request — a redirect (`location` header)
+ * or a body queued on the response — so the governance gate must not overwrite it. Mirrors the
+ * dashboard gate's `answerDashboardDenial` rule; reads `hasLazyBody`/`headersSent` structurally.
+ */
+function governanceResponseAnswered(ctx: HttpContext): boolean {
+  if (ctx.response.getHeader('location')) return true;
+  const response = ctx.response as unknown as { hasLazyBody?: unknown; headersSent?: unknown };
+  return response.hasLazyBody === true || response.headersSent === true;
 }
