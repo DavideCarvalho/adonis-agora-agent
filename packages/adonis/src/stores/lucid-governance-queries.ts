@@ -124,6 +124,9 @@ interface UsageGroup {
 /** A UTC day in epoch ms, as SQL every dialect evaluates the same: the start of `created_at`'s day. */
 const DAY_START_SQL = `"created_at" - ("created_at" % 86400000)`;
 
+/** The message columns a run trace or thread drill-down reports (see `RunMessageRow`). */
+const TRACE_MESSAGE_COLUMNS = ['id', 'role', 'content', 'created_at'] as const;
+
 /** Statement-sized slices of an `IN (…)` list. */
 function chunked<T>(values: readonly T[], size = 500): T[][] {
   const out: T[][] = [];
@@ -555,10 +558,11 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     const runRow = await this.db.from(AGENT_TABLES.runs).where('id', runId).first();
     if (runRow === null || runRow === undefined) return null;
 
+    // Projected to what a trace row shows: a message's tool payloads, reasoning and UI stay put.
     const messageRows = await inAppendOrder(
       this.db.from(AGENT_TABLES.messages).where('run_id', runId),
       'asc',
-    ).select('*');
+    ).select(...TRACE_MESSAGE_COLUMNS);
     const toolCallRows = await this.db
       .from(AGENT_TABLES.toolCalls)
       .where('run_id', runId)
@@ -688,7 +692,9 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     let query = this.db.from(AGENT_TABLES.toolCalls);
     if (start !== undefined) query = query.where('created_at', '>=', start);
     if (end !== undefined) query = query.where('created_at', '<=', end);
-    const calls = await query.select('*');
+    // The four columns the stats are built from: every call in the range is read, and its input and
+    // output payloads (often the bulk of the row) have no part in a count or a latency.
+    const calls = await query.select('tool_name', 'tool_type', 'status', 'execution_ms');
 
     const byTool = new Map<
       string,
@@ -869,7 +875,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       'desc',
     )
       .limit(50)
-      .select('*');
+      .select(...TRACE_MESSAGE_COLUMNS);
     const runCount = await this.countForThread(AGENT_TABLES.runs, threadId);
     const messageCount = await this.countForThread(AGENT_TABLES.messages, threadId);
 
