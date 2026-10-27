@@ -44,6 +44,25 @@ describe('provisioning a schema that is already current', () => {
     expect(statements.filter((sql) => /^(CREATE INDEX|ALTER)/.test(sql))).toEqual([]);
   });
 
+  it('indexes what the store and the read-model look rows up by', async () => {
+    db = makeMemoryDb();
+    await createAgentTables(asStoreDb(db));
+    const rows = (await db.rawQuery(
+      `SELECT tbl_name AS tbl, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL`,
+    )) as { tbl: string; sql: string }[];
+    const columns = rows.map((row) => `${row.tbl}${/\(([^)]*)\)\s*$/.exec(row.sql)?.[1]}`);
+    expect(columns).toEqual(
+      expect.arrayContaining([
+        'agent_message"thread_id", "seq"',
+        'agent_tool_call"message_id"',
+        'agent_token_usage"thread_id"',
+        'agent_token_usage"created_at"',
+        'agent_run"thread_id", "started_at"',
+        'agent_stream_frame"created_at", "run_id"',
+      ]),
+    );
+  });
+
   it('still creates an index that is missing', async () => {
     db = makeMemoryDb();
     await createAgentTables(asStoreDb(db));

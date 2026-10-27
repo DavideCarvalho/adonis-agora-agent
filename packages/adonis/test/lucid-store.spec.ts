@@ -249,6 +249,16 @@ describe('LucidAgentStore', () => {
     expect(await store.personaForThread('missing')).toBeNull();
   });
 
+  it('reads the model pinned on a thread as one column', async () => {
+    const thread = await store.createThread({ actor });
+    expect(await store.modelForThread(thread.id)).toBeNull();
+    await store.updateThread(thread.id, { model: 'gpt-mini' });
+    expect(await store.modelForThread(thread.id)).toBe('gpt-mini');
+    await store.updateThread(thread.id, { model: null });
+    expect(await store.modelForThread(thread.id)).toBeNull();
+    expect(await store.modelForThread('missing')).toBeNull();
+  });
+
   it('forks a thread up to a message (in a transaction)', async () => {
     const thread = await store.createThread({ actor, persona: 'default', title: 'Src' });
     const m1 = await store.appendMessage({ threadId: thread.id, role: 'user', content: 'one' });

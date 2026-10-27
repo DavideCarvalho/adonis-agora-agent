@@ -248,6 +248,9 @@ interface StartedQueuedTurn {
 
 const EMPTY_QUEUE: ChatQueueState = { items: [], paused: null };
 
+/** The most often a streaming answer re-renders the chat (ms): 20 frames a second. */
+const STREAM_RENDER_THROTTLE_MS = 50;
+
 let localQueueSequence = 0;
 
 /** The user message a queued message becomes once its turn starts. */
@@ -541,6 +544,9 @@ export function useAgentChat<B extends AgentBackend = AgentBackend>(
   const chat = useChat({
     transport,
     id: chatId,
+    // A model streams a token at a time; publishing each one re-renders the chat and rebuilds its
+    // transcript per token. `experimental_throttle` is the spelling every `@ai-sdk/react` 4.x reads.
+    experimental_throttle: STREAM_RENDER_THROTTLE_MS,
     resume: options.resumeRunId !== undefined,
     ...(options.initialMessages !== undefined ? { messages: options.initialMessages } : {}),
     onData: (part) => {

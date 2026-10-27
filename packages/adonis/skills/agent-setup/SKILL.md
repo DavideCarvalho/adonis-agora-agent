@@ -202,8 +202,8 @@ Under an `engine`, `durable: true` is refused at boot unless the engine is durab
 
 No Redis? `tokenSinks.lucid()` keeps the frames in the app's SQL database instead
 (table `agent_stream_frame`, created with the other agent tables). Subscribers poll
-(`pollIntervalMs`, default 250) and streamed text is coalesced into one row per
-`flushMs` (default 50), so it is slower and it loads the database — prefer Redis when
+(`pollIntervalMs`, default 250) and streamed deltas (text, reasoning, one tool call's
+arguments) are coalesced into one row per `flushMs` (default 50), so it is slower and it loads the database — prefer Redis when
 it is there. Rows lapse `ttlSeconds` after a run's last write (`purgeExpired()`).
 
 ```ts

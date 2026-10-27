@@ -343,13 +343,19 @@ export class AgentService {
       return locked.model;
     }
     const pinned =
-      requested === undefined && threadId !== undefined
-        ? ((await this.store.getThread(threadId))?.model ?? null)
-        : null;
+      requested === undefined && threadId !== undefined ? await this.pinnedModel(threadId) : null;
     const model = requested ?? pinned;
     return model === null || model === undefined
       ? undefined
       : this.assertModelAllowed(actor, agent, model);
+  }
+
+  /** The model pinned on the thread: one column when the store projects it, else the full read. */
+  private async pinnedModel(threadId: string): Promise<string | null> {
+    if (this.store.modelForThread !== undefined) {
+      return this.store.modelForThread(threadId);
+    }
+    return (await this.store.getThread(threadId))?.model ?? null;
   }
 
   /**

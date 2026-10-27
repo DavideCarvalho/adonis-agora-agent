@@ -31,4 +31,17 @@ export interface RedisStreamClient {
    * `@adonisjs/redis` adapter always provides it, so the default Redis sink bounds every run's keys.
    */
   expire?(key: string, seconds: number): Promise<void>;
+  /**
+   * OPTIONAL: RPUSH `value` onto `key`, EXPIRE it after `ttlSeconds` (skipped when `0`) and PUBLISH
+   * `message` on `channel` — in that order, in ONE round trip (a MULTI or a pipeline). What the sink
+   * writes for every frame; a client without it gets the three commands one after another. The
+   * `@adonisjs/redis` adapter provides it.
+   */
+  append?(
+    key: string,
+    value: string,
+    ttlSeconds: number,
+    channel: string,
+    message: string,
+  ): Promise<void>;
 }

@@ -117,13 +117,13 @@ The vocabulary remains compatible with Aviary's [stream protocol](https://github
 | `title` | the thread was titled from its first message |
 | `cancelled` | the run was stopped — the last frame before `done`, so a truncated answer reads as one |
 
-Every event frame carries an SSE `id:` — its 1-based position in the run (`id: 7` above `data: {"kind":"text",…}`). The number belongs to the frame, not the connection: the same frame has the same id on the `POST` that started the run and on every later `GET …/stream`. `GET /agent/chat/:runId/stream?after=<n>` (or the standard `Last-Event-ID` header; `after` wins) sends only the frames numbered above `n`, still preceded by `meta` — which is how the Agora React client resumes a dropped stream without re-rendering what it has. `meta`, `done` and `error` carry no id. When nothing is buffered under the run any more (it ended while the client was away, or its buffer went with a restarted process), the route answers `404`, read as "nothing to resume"; a sink reports that through the optional `TokenStreamSink.has` (the in-process, in-memory and Redis sinks implement it).
+Every event frame carries an SSE `id:` — its 1-based position in the run (`id: 7` above `data: {"kind":"text",…}`). The number belongs to the frame, not the connection: the same frame has the same id on the `POST` that started the run and on every later `GET …/stream`. `GET /agent/chat/:runId/stream?after=<n>` (or the standard `Last-Event-ID` header; `after` wins) sends only the frames numbered above `n`, still preceded by `meta` — which is how the Agora React client resumes a dropped stream without re-rendering what it has. `meta`, `done` and `error` carry no id. When nothing is buffered under the run any more (it ended while the client was away, its buffer passed the sink's replay window, or it went with a restarted process), the route answers `404`, read as "nothing to resume"; a sink reports that through the optional `TokenStreamSink.has` (the in-process, in-memory and Redis sinks implement it).
 
 A failed run ends with `event: error` + `data: {"code","message"}` instead of `done`; the codes are `quota_exceeded`, `output_rejected`, `structured_output_invalid` and `run_failed`.
 
 Frames are written from inside the loop's existing checkpoints, so a durable replay never streams one twice and no checkpoint moved.
 
-The response also sets `X-Agent-Run-Id` and `X-Agent-Thread-Id` headers (plus `Cache-Control: no-cache, no-transform` and `X-Accel-Buffering: no` so proxies don't buffer the stream). The stream ends only on run **completion** — the token sink stays open across a HITL suspend, so an approved-then-resumed run keeps one continuous stream.
+The response also sets `X-Agent-Run-Id` and `X-Agent-Thread-Id` headers (plus `Cache-Control: no-cache, no-transform` and `X-Accel-Buffering: no` so proxies don't buffer the stream). The stream ends only on run **completion** — the token sink stays open across a HITL suspend, so an approved-then-resumed run keeps one continuous stream. When the client closes the connection first, the route (native, AG-UI and A2UI alike) ends its subscription to the run; the run itself keeps going.
 
 ## Persisted history
 
@@ -268,7 +268,7 @@ The requirement is decided inside the call's own `persist:toolcall` checkpoint, 
 Streams survive a dropped connection. A late subscriber to `GET /agent/chat/:runId/stream` replays the run's buffered chunks first, then follows live until `done`. Combined with the thread's `activeRunId`, a reloading client can find the in-flight run and rejoin its stream.
 
 <Callout type="warn" title="Single-replica by default">
-Re-attach works because the default token sink buffers per run in process memory. That makes it single-replica: a run started on one instance can only be re-attached on that same instance. Switch to the [Redis sink](/docs/agent/redis-streaming) — or, without Redis, the [Lucid sink](/docs/agent/sql-streaming) — so any pod can serve any run's stream, and pair it with the [durable runner](/docs/agent/durability/durable-runner) for cross-instance resume.
+Re-attach works because the default token sink buffers per run in process memory, for one hour after the run's last write — a run parked on a person for longer than that is still resumed, but a client attaching afterwards replays only what it wrote since. That makes it single-replica: a run started on one instance can only be re-attached on that same instance. Switch to the [Redis sink](/docs/agent/redis-streaming) — or, without Redis, the [Lucid sink](/docs/agent/sql-streaming) — so any pod can serve any run's stream, and pair it with the [durable runner](/docs/agent/durability/durable-runner) for cross-instance resume.
 </Callout>
 
 ## Consuming the stream

@@ -326,6 +326,10 @@ export class InMemoryAgentStore
     return this.threads.get(threadId)?.defaultAgent ?? null;
   }
 
+  async modelForThread(threadId: string): Promise<string | null> {
+    return this.threads.get(threadId)?.model ?? null;
+  }
+
   async personaForThread(threadId: string): Promise<string | null> {
     return this.threads.get(threadId)?.persona ?? null;
   }

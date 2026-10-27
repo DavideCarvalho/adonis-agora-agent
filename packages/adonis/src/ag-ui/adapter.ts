@@ -7,6 +7,7 @@ import {
 } from '../a2ui/core.js';
 import type { AgentService } from '../agent-service.js';
 import { uiActionText } from '../genui/actions.js';
+import { untilClosed } from '../interruptible.js';
 import type { ProtocolAdapter, ProtocolAdapterHost } from '../spi/protocol-adapter.js';
 import type { Actor, PageContext } from '../types.js';
 import {
@@ -510,7 +511,10 @@ async function pipe(
   // follow the rest of the run on `chat/:runId/stream?after=<id>` once this AG-UI run ends.
   const cursor = { seq: 0 };
   try {
-    for await (const event of agUiEvents(service.subscribe(runId), { ...options, cursor })) {
+    for await (const event of agUiEvents(untilClosed(raw, service.subscribe(runId)), {
+      ...options,
+      cursor,
+    })) {
       if (event.type === 'RUN_FINISHED' || event.type === 'RUN_ERROR') terminal = true;
       raw.write(agUiSse(event, cursor.seq));
     }

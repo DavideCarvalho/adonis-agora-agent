@@ -68,18 +68,36 @@ export function fold(s: string): string {
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+const keywordPatterns = new Map<string, RegExp | null>();
+
+/** The matcher for a word list, built once per distinct list (bounded like {@link compileGuardPattern}). */
+function keywordPattern(words: readonly string[]): RegExp | null {
+  const key = words.join('\u0000');
+  let re = keywordPatterns.get(key);
+  if (re === undefined) {
+    const clean = words.map((w) => fold(w.trim())).filter(Boolean);
+    re =
+      clean.length === 0
+        ? null
+        : new RegExp(
+            `(?<![\\p{L}\\p{N}_])(?:${clean.map(escapeRe).join('|')})(?![\\p{L}\\p{N}_])`,
+            'gu',
+          );
+    if (keywordPatterns.size > 1_000) keywordPatterns.clear();
+    keywordPatterns.set(key, re);
+  }
+  return re;
+}
+
 /** Whole-word, case- and accent-insensitive keyword/phrase matching. */
 export function detectKeywords(
   text: string,
   words: readonly string[],
   label = 'keywords',
 ): Finding[] {
-  const clean = words.map((w) => fold(w.trim())).filter(Boolean);
-  if (clean.length === 0) return [];
-  const re = new RegExp(
-    `(?<![\\p{L}\\p{N}_])(?:${clean.map(escapeRe).join('|')})(?![\\p{L}\\p{N}_])`,
-    'gu',
-  );
+  const re = keywordPattern(words);
+  if (re === null) return [];
+  re.lastIndex = 0;
   const folded = fold(text);
   const out: Finding[] = [];
   for (let m = re.exec(folded); m; m = re.exec(folded)) {

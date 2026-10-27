@@ -54,7 +54,7 @@ A few of the numbers have caveats worth knowing before you act on them:
 - **Average run duration** is a mean over settled runs, not a percentile — a single very slow run moves it. The **Run latency** distributions are the percentiles: completed turns a person started (a delegation's child run is part of its parent's turn), from `run.finished`. A turn that streamed no text has no time to first token.
 - **Active runs** is `run.started` minus every ending — `run.finished`, `run.failed` and `run.cancelled` — in the window.
 - **Failures by code** groups `run.failed` by the stable code its stream `error` frame carried (`quota_exceeded`, `model_no_output`, `run_failed`…).
-- **Pending approvals** counts the inbox up to 500 rows, so a backlog larger than that reads as exactly 500.
+- **Pending approvals** is exact when the read-model adapter implements the optional `countPendingApprovals` (the Lucid and in-memory ones do). An adapter without it is counted through the inbox, capped at 500 rows, so a larger backlog reads as 500.
 - **Zero-hit rate** is the fraction of retrievals that returned no passages, gauged with warn at 10% and bad at 25%. A rising line usually means the corpus lost coverage or a [retrieval filter](/docs/agent/retrieval/rag) is scoping too tightly.
 - The **spend rollups price an unpriced model at $0**, so seed the pricing table before reading a total as authoritative.
 

@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { RedisStreamClient, StreamFrame } from '../src/index.js';
-import { InProcessTokenStreamSink, RedisTokenStreamSink } from '../src/index.js';
+import {
+  InProcessTokenStreamSink,
+  RedisTokenStreamSink,
+  type TokenStreamSink,
+  tokenSinks,
+} from '../src/index.js';
 
 /**
  * An in-memory stand-in for a Redis server (NOT a client) shared across sink instances — modelling the
@@ -89,8 +94,8 @@ describe('RedisTokenStreamSink', () => {
 
     const frames = await collected;
     expect(textOf(frames)).toBe('Hello, world');
-    // Frame boundaries are preserved 1:1 (each write → one yielded frame → one SSE `data:` frame).
-    expect(frames).toEqual([text('Hel'), text('lo, '), text('world')]);
+    // Tokens written within the flush window arrive as one frame holding their concatenation.
+    expect(frames).toEqual([text('Hello, world')]);
   });
 
   it('replays buffered chunks for a late subscriber that connects after the run ended', async () => {
@@ -188,5 +193,288 @@ describe('RedisTokenStreamSink', () => {
     expect([...server.lists.keys()]).toContain('custom:ns:run-1:chunks');
     expect([...server.values.keys()]).toContain('custom:ns:run-1:state');
     expect([...server.subs.keys()]).toContain('custom:ns:run-1');
+  });
+});
+
+/** {@link FakeRedisServer}'s client, counting every command it is sent. */
+function countingClient(server: FakeRedisServer, options: { pipelined?: boolean } = {}) {
+  const calls: Record<string, number> = {};
+  const inner = server.client();
+  const count = <A extends unknown[], R>(name: string, fn: (...args: A) => R) =>
+    ((...args: A) => {
+      calls[name] = (calls[name] ?? 0) + 1;
+      return fn(...args);
+    }) as (...args: A) => R;
+  const client: RedisStreamClient = {
+    rpush: count('rpush', inner.rpush),
+    lrange: count('lrange', inner.lrange),
+    set: count('set', inner.set),
+    get: count('get', inner.get),
+    publish: count('publish', inner.publish),
+    subscribe: count('subscribe', inner.subscribe),
+    del: count('del', inner.del),
+    expire: count('expire', inner.expire as NonNullable<RedisStreamClient['expire']>),
+    ...(options.pipelined === true
+      ? {
+          append: count(
+            'append',
+            async (key: string, value: string, ttl: number, channel: string, message: string) => {
+              await inner.rpush(key, value);
+              if (ttl > 0) await inner.expire?.(key, ttl);
+              await inner.publish(channel, message);
+            },
+          ),
+        }
+      : {}),
+  };
+  return { client, calls };
+}
+
+const stepFrame = (index: number): StreamFrame => ({
+  t: 'event',
+  event: { kind: 'step-start', index } as never,
+});
+
+/** `promise`'s value, or `'pending'` when it has not settled within a few hundred ms. */
+function settlesSoon<T>(promise: Promise<T>): Promise<T | 'pending'> {
+  return Promise.race([
+    promise,
+    new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 300)),
+  ]);
+}
+
+describe('RedisTokenStreamSink round trips', () => {
+  it('pushes a streamed answer as a handful of frames, not three commands per token', async () => {
+    const server = new FakeRedisServer();
+    const { client, calls } = countingClient(server);
+    const writer = new RedisTokenStreamSink(client).open('run-tokens');
+    const tokens = Array.from({ length: 200 }, (_, index) => `t${index} `);
+    for (const token of tokens) await writer.write(text(token));
+    await writer.end();
+
+    expect(
+      textOf(await collect(new RedisTokenStreamSink(server.client()).subscribe('run-tokens'))),
+    ).toBe(tokens.join(''));
+    expect(calls.rpush).toBe(1);
+    expect(calls.publish).toBe(2);
+  });
+
+  it('coalesces reasoning deltas and one tool call’s argument deltas too', async () => {
+    const server = new FakeRedisServer();
+    const sink = new RedisTokenStreamSink(server.client());
+    const writer = sink.open('run-deltas');
+    for (let i = 0; i < 20; i++) {
+      await writer.write({ t: 'event', event: { kind: 'reasoning', text: `${i}` } });
+    }
+    for (let i = 0; i < 20; i++) {
+      await writer.write({
+        t: 'event',
+        event: { kind: 'tool-input-delta', id: 'c1', delta: `${i}` },
+      });
+    }
+    await writer.end();
+    const digits = Array.from({ length: 20 }, (_, i) => `${i}`).join('');
+    expect(await collect(sink.subscribe('run-deltas'))).toEqual([
+      { t: 'event', event: { kind: 'reasoning', text: digits } },
+      { t: 'event', event: { kind: 'tool-input-delta', id: 'c1', delta: digits } },
+    ]);
+  });
+
+  it('writes each frame in one round trip when the client can pipeline', async () => {
+    const server = new FakeRedisServer();
+    const { client, calls } = countingClient(server, { pipelined: true });
+    const writer = new RedisTokenStreamSink(client).open('run-pipelined');
+    for (let index = 0; index < 5; index++) await writer.write(stepFrame(index));
+    await writer.end();
+    expect(calls.append).toBe(5);
+    expect(calls.rpush ?? 0).toBe(0);
+    expect(calls.expire ?? 0).toBe(2); // the end marker's TTLs
+    expect(
+      (await collect(new RedisTokenStreamSink(server.client()).subscribe('run-pipelined'))).length,
+    ).toBe(5);
+  });
+
+  it('reads the terminal marker once per subscription, not once per frame', async () => {
+    const server = new FakeRedisServer();
+    const reader = countingClient(server);
+    const followed = collect(new RedisTokenStreamSink(reader.client).subscribe('run-live'));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const writer = new RedisTokenStreamSink(server.client()).open('run-live');
+    for (let index = 0; index < 30; index++) {
+      await writer.write(stepFrame(index));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    await writer.end();
+    expect((await followed).length).toBe(30);
+    expect(reader.calls.get).toBe(1);
+  });
+});
+
+describe('RedisTokenStreamSink subscriber', () => {
+  it('follows a run whose list started over under it, without skipping a frame', async () => {
+    const server = new FakeRedisServer();
+    const sink = new RedisTokenStreamSink(server.client());
+    const writer = sink.open('run-restart');
+    for (let index = 0; index < 3; index++) await writer.write(stepFrame(index));
+    const iterator = sink.subscribe('run-restart')[Symbol.asyncIterator]();
+    for (let index = 0; index < 3; index++) {
+      expect((await iterator.next()).value).toEqual(stepFrame(index));
+    }
+    // Parked past the TTL: the keys expire (no message), then the run writes again.
+    server.lists.clear();
+    server.values.clear();
+    await writer.write(stepFrame(10));
+    await writer.write(stepFrame(11));
+    await writer.end();
+    const rest: unknown[] = [];
+    for (let next = await settlesSoon(iterator.next()); next !== 'pending' && !next.done; ) {
+      rest.push(next.value);
+      next = await settlesSoon(iterator.next());
+    }
+    expect(rest).toEqual([stepFrame(10), stepFrame(11)]);
+  });
+
+  it('follows a restarted run that repeats the frames it began with, from its first frame', async () => {
+    const server = new FakeRedisServer();
+    const sink = new RedisTokenStreamSink(server.client());
+    const writer = sink.open('run-repeat');
+    for (let index = 0; index < 3; index++) await writer.write(stepFrame(index));
+    const iterator = sink.subscribe('run-repeat')[Symbol.asyncIterator]();
+    for (let index = 0; index < 3; index++) {
+      expect((await iterator.next()).value).toEqual(stepFrame(index));
+    }
+    // The keys expire and the run starts again with the same frames, before the subscriber reads on.
+    server.lists.clear();
+    server.values.clear();
+    for (let index = 0; index < 4; index++) await writer.write(stepFrame(index));
+    await writer.end();
+    const rest: unknown[] = [];
+    for (let next = await settlesSoon(iterator.next()); next !== 'pending' && !next.done; ) {
+      rest.push(next.value);
+      next = await settlesSoon(iterator.next());
+    }
+    expect(rest).toEqual([stepFrame(0), stepFrame(1), stepFrame(2), stepFrame(3)]);
+  });
+
+  it('reads a list whose elements carry no write id, as written before they had one', async () => {
+    const server = new FakeRedisServer();
+    server.lists.set('agent:stream:run-plain:chunks', [
+      JSON.stringify(stepFrame(0)),
+      JSON.stringify(text('hi')),
+    ]);
+    const sink = new RedisTokenStreamSink(server.client());
+    const iterator = sink.subscribe('run-plain')[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toEqual(stepFrame(0));
+    expect((await iterator.next()).value).toEqual(text('hi'));
+    server.lists.get('agent:stream:run-plain:chunks')?.push(JSON.stringify(text('!')));
+    server.values.set('agent:stream:run-plain:state', 'ended');
+    for (const handler of server.subs.get('agent:stream:run-plain') ?? []) handler('end');
+    expect(await iterator.next()).toEqual({ done: false, value: text('!') });
+    expect(await settlesSoon(iterator.next())).toEqual({ done: true, value: undefined });
+  });
+
+  it('hands subscribers the frames exactly as written, without the stored write id', async () => {
+    const server = new FakeRedisServer();
+    const sink = new RedisTokenStreamSink(server.client());
+    const writer = sink.open('run-exact');
+    const approval: StreamFrame = {
+      t: 'approval',
+      runId: 'run-exact',
+      id: 'c1',
+      toolName: 'send',
+      input: { to: 'x' },
+    };
+    await writer.write(approval);
+    await writer.write(stepFrame(0));
+    await writer.end();
+    const stored = server.lists.get('agent:stream:run-exact:chunks') ?? [];
+    expect(new Set(stored).size).toBe(2);
+    expect(await collect(sink.subscribe('run-exact'))).toStrictEqual([approval, stepFrame(0)]);
+  });
+
+  it('ends when the run’s keys expired under it, on its next quiet check', async () => {
+    vi.useFakeTimers();
+    try {
+      const server = new FakeRedisServer();
+      const sink = new RedisTokenStreamSink(server.client());
+      await sink.open('run-gone').write(stepFrame(0));
+      const iterator = sink.subscribe('run-gone')[Symbol.asyncIterator]();
+      expect((await iterator.next()).value).toEqual(stepFrame(0));
+      server.lists.clear();
+      const next = iterator.next();
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect(await Promise.race([next, Promise.resolve('pending' as const)])).toEqual({
+        done: true,
+        value: undefined,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('unsubscribes as soon as its consumer returns', async () => {
+    const server = new FakeRedisServer();
+    const sink = new RedisTokenStreamSink(server.client());
+    await sink.open('run-idle').write(stepFrame(0));
+    const iterator = sink.subscribe('run-idle')[Symbol.asyncIterator]();
+    await iterator.next();
+    const pending = iterator.next();
+    expect(await settlesSoon(Promise.all([pending, iterator.return?.()]))).not.toBe('pending');
+    expect(server.subs.get('agent:stream:run-idle')?.size ?? 0).toBe(0);
+  });
+});
+
+describe('the @adonisjs/redis adapter of tokenSinks.redis()', () => {
+  it('writes each frame as one MULTI — push, TTL and publish in a single round trip', async () => {
+    const sent: string[] = [];
+    const lists = new Map<string, string[]>();
+    const multi = () => {
+      const queued: (() => void)[] = [];
+      const chain = {
+        rpush: (key: string, value: string) => {
+          queued.push(() => {
+            lists.set(key, [...(lists.get(key) ?? []), value]);
+          });
+          return chain;
+        },
+        expire: () => chain,
+        publish: () => chain,
+        exec: async () => {
+          sent.push('multi');
+          for (const run of queued) run();
+          return queued.map(() => [null, 1] as [null, number]);
+        },
+      };
+      return chain;
+    };
+    const io = {
+      rpush: async () => {
+        sent.push('rpush');
+        return 1;
+      },
+      lrange: async () => [],
+      set: async () => {
+        sent.push('set');
+      },
+      get: async () => null,
+      publish: async () => {
+        sent.push('publish');
+        return 0;
+      },
+      del: async () => 0,
+      expire: async () => {
+        sent.push('expire');
+        return 1;
+      },
+      multi,
+    };
+    const app = {
+      container: { make: async () => ({ connection: () => ({ ioConnection: io }) }) },
+    };
+    const sink = await tokenSinks.redis()({ app } as never);
+    const writer = await (sink as TokenStreamSink).open('run-io');
+    for (let index = 0; index < 3; index++) await writer.write(stepFrame(index));
+    expect(sent).toEqual(['multi', 'multi', 'multi']);
+    expect(lists.get('agent:stream:run-io:chunks')).toHaveLength(3);
   });
 });

@@ -82,6 +82,8 @@ function Chat() {
 
 That is a complete chat: it streams, it survives a reload mid-answer, and a message sent while a turn runs is queued instead of refused.
 
+While an answer streams, the hook publishes it at most every 50 ms (`useChat`'s `experimental_throttle`), so a chat re-renders about 20 times a second rather than once per token.
+
 ### What `<AgentProvider>` does for an Adonis app
 
 | | Default | Change it with |

@@ -20,6 +20,7 @@ const LUCID_STORE_SPECS = [
   'test/delegation-cycle.spec.ts',
   'test/fake-model-provider-ids.spec.ts',
   'test/genui-telemetry-lucid.spec.ts',
+  'test/governance-queries-batching.spec.ts',
   'test/governance-queries-lucid.spec.ts',
   'test/governance-runs.spec.ts',
   'test/inline-agent.spec.ts',

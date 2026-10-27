@@ -388,7 +388,7 @@ describe('recent activity + approvals inbox providers', () => {
     });
   });
 
-  it('pendingApprovalsCount is the length of pendingApprovals(limit)', async () => {
+  it('pendingApprovalsCount is the length of pendingApprovals(limit) for an adapter that cannot count', async () => {
     const rows: PendingApprovalRow[] = [
       {
         toolCallId: 'c1',
@@ -413,6 +413,23 @@ describe('recent activity + approvals inbox providers', () => {
     expect(await agentPendingApprovalsCountProvider().resolve(undefined, ctx)).toEqual({
       value: 2,
     });
+  });
+
+  it('pendingApprovalsCount asks an adapter that can count for the exact total', async () => {
+    let listed = false;
+    setTelescopeGovernanceQueries(
+      fakeQueries({
+        pendingApprovals: async () => {
+          listed = true;
+          return [];
+        },
+        countPendingApprovals: async () => 1234,
+      }),
+    );
+    expect(await agentPendingApprovalsCountProvider().resolve(undefined, ctx)).toEqual({
+      value: 1234,
+    });
+    expect(listed).toBe(false);
   });
 
   it('pendingApprovalsTable drops `input` and keeps the rest', async () => {

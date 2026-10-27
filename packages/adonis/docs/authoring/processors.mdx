@@ -102,6 +102,12 @@ only emits its prefix early, and the gate then asserts the settled answer `start
 already released, raising `ProcessorFailedError` if not. A window too short for a pattern fails
 loudly instead of streaming the text it was supposed to redact.
 
+The chain re-runs over the prefix once at least `lookbackChars / 2` new characters have arrived since
+its last run, not on every streamed frame, so a long answer costs a number of passes proportional to
+its length rather than to its square. Text is therefore released in chunks of about half the window;
+the whole-answer pass releases whatever is still held when the model call ends, so the streamed and
+stored text are the same either way.
+
 <Callout type="info" title="Tool calls on the incremental path">
 A provider reports its tool calls when `runTurn` **returns**, so on the incremental path
 `ModelAnswer.toolCalls` is empty until the authoritative whole-answer pass, which always sees them.

@@ -199,7 +199,9 @@ export interface IncrementalGate {
  * The chain runs over the whole PREFIX accumulated so far rather than over each new frame, so a
  * processor always sees well-formed text and never has to reassemble a pattern split across frames —
  * which is what makes {@link import('./spi/processors.js').IncrementalGating}'s promise a claim
- * about prefixes. It runs once per streamed text frame.
+ * about prefixes. It runs once at least half of `lookbackChars` new characters have arrived since its
+ * last run, so a long answer costs a bounded number of passes per window rather than one per token;
+ * the whole-answer pass releases whatever text is still held when the model call ends.
  *
  * Only an EXTENSION of what the reader already has is ever written: a chain whose output stops
  * agreeing with its earlier output has broken its promise, and the loop's whole-answer pass reports
@@ -215,7 +217,12 @@ export function createIncrementalGate(args: {
   writer: SinkWriter;
 }): IncrementalGate {
   const { processors, ctx, lookbackChars, writer } = args;
+  // How much new text the chain waits for between two runs. Every run re-reads the whole prefix, so
+  // running it per frame costs the square of the answer's length; half the window still releases
+  // text well before the held-back tail fills, and the whole-answer pass writes whatever is left.
+  const advanceEvery = Math.max(1, Math.floor(lookbackChars / 2));
   let raw = '';
+  let ruledOn = 0;
   let released = '';
   let rejection: GateRejection | undefined;
   /** A prefix the chain could not rule on. Text stops flowing; the whole-answer pass decides. */
@@ -228,6 +235,7 @@ export function createIncrementalGate(args: {
     if (raw.length === 0) {
       return;
     }
+    ruledOn = raw.length;
     let settled: OutputGateResult;
     try {
       settled = await runOutputProcessors({
@@ -263,7 +271,7 @@ export function createIncrementalGate(args: {
     }
     if (frame.t === 'text') {
       raw += frame.v;
-      if (!stalled) {
+      if (!stalled && raw.length - ruledOn >= advanceEvery) {
         await advance();
       }
       return;

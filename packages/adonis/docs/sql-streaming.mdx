@@ -21,16 +21,17 @@ export default defineConfig({
 })
 ```
 
-Nothing about the routes, the SSE envelope or the client changes. The sink works with any store (it only needs a Lucid connection). It is tested on Postgres and SQLite; the SQL is written to be portable to MySQL, but that path is not covered by the test suite.
+Nothing about the routes, the SSE envelope or the client changes. The sink works with any store (it only needs a Lucid connection). It is tested on SQLite, Postgres 16 and MySQL 8.4.
 
 ## What it does
 
 - **Write.** The replica running the turn appends each frame to `agent_stream_frame` (`run_id`, `seq`, `frame`, `created_at`; primary key `(run_id, seq)`). `seq` starts at 1 per run and has no gaps. The row whose `frame` is `NULL` is the end marker.
-- **Read.** A subscriber reads the rows past its cursor, in order, every `pollIntervalMs`, until it meets the end marker. One that attaches late — or after the run ended — replays from the first row.
-- **Coalesce.** A model streams token by token, and a row per token is more writes than a chat answer deserves. Consecutive `text` frames written within `flushMs` are stored as **one** `text` frame holding their concatenation. Any other frame, and the end of the run, write the gathered text first, so order is kept.
+- **Read.** A subscriber reads the rows past its cursor, in order, every `pollIntervalMs`, until it meets the end marker. One that attaches late — or after the run ended — replays from the first row. Each read also re-reads the last row the subscriber already has, which is how it notices that the rows it read are gone: when the run has no rows left (purged past its TTL, or `close()`d) the subscriber ends, and when the run's numbering started over (a run parked past its TTL that then wrote again) it replays from the new first row instead of skipping frames.
+- **Coalesce.** A model streams token by token, and a row per token is more writes than a chat answer deserves. Consecutive deltas written within `flushMs` are stored as **one** frame holding their concatenation: `text` frames, `reasoning` deltas, and the `tool-input-delta`s of one tool call. Every reader appends these deltas, so the merged frame renders the same. Any other frame, and the end of the run, write the gathered delta first, so order is kept.
+- **Disconnect.** When the browser closes the SSE connection, the route ends its subscription, so a run parked on a person is not polled for a client that left.
 
 <Callout type="info" title="Event ids and the `after` cursor">
-SSE event ids are counted from the stored frames, and every replica reads the same rows in the same order — so `GET <path>/chat/:runId/stream?after=<seq>` resumes exactly, whichever replica answers. The ids are not the ones the in-process sink would have given the same run (it stores every token as its own frame), which only matters to a cursor carried across a change of sink — a deploy that switches sinks should let running streams finish.
+SSE event ids are counted from the stored frames, and every replica reads the same rows in the same order — so `GET <path>/chat/:runId/stream?after=<seq>` resumes exactly, whichever replica answers. The ids are not the ones the in-process sink would have given the same run (it stores every delta as its own frame), which only matters to a cursor carried across a change of sink — a deploy that switches sinks should let running streams finish.
 </Callout>
 
 ## Configuration
@@ -41,7 +42,7 @@ SSE event ids are counted from the stored frames, and every replica reads the sa
 | `tableName` | `agent_stream_frame` | The frame table. |
 | `pollIntervalMs` | `250` | Gap between two reads of a run being followed — the most a frame waits before a browser sees it. |
 | `idlePollIntervalMs` | `1000` | Gap once the run has written nothing for five seconds (parked on a human, a slow tool). The next frame puts the subscriber back on `pollIntervalMs`. |
-| `flushMs` | `50` | Window consecutive `text` frames are gathered over. `0` writes every frame as its own row. |
+| `flushMs` | `50` | Window consecutive deltas (text, reasoning, one tool call's arguments) are gathered over, counted from the first one. `0` writes every frame as its own row. |
 | `ttlSeconds` | `3600` | How long a run's rows are kept after its **last** write. `0` keeps them until you delete them. |
 | `autoPurge` | `true` | Purge lapsed runs after a run ends, at most once a minute per replica. |
 | `autoCreateTables` | `true` | Create the frame table as the app starts. With `false`, the published migration (`createAgentTables`) creates it. |
@@ -61,8 +62,10 @@ await new LucidTokenStreamSink(db).purgeExpired()
 
 `close(runId)` deletes one run's rows at once.
 
+The purge reads the `(created_at, run_id)` index on the frame table to find runs with a row older than the cutoff, then checks those candidates for a newer row through the primary key. Its cost follows the number of rows that aged out, not the size of the table.
+
 <Callout type="warn" title="Upgrading with autoCreateTables: false">
-`agent_stream_frame` is one of the nine tables `createAgentTables` creates. If your schema is owned by migrations, add one whose `up()` calls `createAgentTables` again — it only adds what is missing.
+`agent_stream_frame` and its `agent_stream_frame_created_idx` index (`created_at`, `run_id`) are created by `createAgentTables`. With `autoCreateTables: true` the sink adds a missing index as the app starts. If your schema is owned by migrations, add one whose `up()` calls `createAgentTables` again — it only adds what is missing. Under a custom `tableName`, the index is `<tableName>_created_idx`, and `streamFrameIndexStatement(tableName)` returns its DDL.
 </Callout>
 
 ## What it costs
@@ -72,7 +75,7 @@ await new LucidTokenStreamSink(db).purgeExpired()
 - **A crash window.** Text a writer is still gathering lives in the process for at most `flushMs`. A process that dies in that window loses it from the *live* stream; the persisted message is unaffected.
 - **A parked run outlives its buffer.** The TTL counts from the run's last write, so a run parked on a person for longer than `ttlSeconds` has its buffered frames purged while it waits. It still resumes and writes what comes next, but a browser attaching afterwards replays only from there — the persisted thread is the record of what came before. Raise `ttlSeconds` (or set `0` and purge on your own schedule) if people routinely answer later than that.
 
-Use [Redis](/docs/agent/redis-streaming) when you already run it, when you want token-by-token delivery, or when the number of concurrent streams makes polling your database the bottleneck. There is no `LISTEN`/`NOTIFY` wake-up on Postgres: the sink stays on the portable query surface every Lucid dialect has.
+Use [Redis](/docs/agent/redis-streaming) when you already run it, when you want pushed rather than polled delivery, or when the number of concurrent streams makes polling your database the bottleneck. There is no `LISTEN`/`NOTIFY` wake-up on Postgres: the sink stays on the portable query surface every Lucid dialect has.
 
 ## Several replicas without Redis
 
