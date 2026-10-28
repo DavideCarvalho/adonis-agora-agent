@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.91.3
+
+### Patch Changes
+
+- [#499](https://github.com/DavideCarvalho/adonis-agora-agent/pull/499) [`a4c8098`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/a4c80986963cf7dd9145c260a89e7e58619c957c) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - perf(lucid): `forkThread` and `recordGenuiCalls` now write their rows with multi-row inserts (Lucid's `multiInsert`) instead of one INSERT per row — forking a 200-message thread goes from 201 statements to 6, recording 100 genui calls from 100 to 4. Rows, order and transaction are unchanged; consecutive rows are batched only when they set the same columns, and a client without `multiInsert` (a custom structural `LucidInsertBuilderLike`) keeps the per-row path. `LucidInsertBuilderLike` gains an optional `multiInsert` member.
+
 ## 0.91.2
 
 ### Patch Changes
