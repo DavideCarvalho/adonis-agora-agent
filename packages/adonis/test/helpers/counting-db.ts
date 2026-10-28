@@ -7,7 +7,7 @@ export interface DbTraffic {
   rows: number;
 }
 
-const TERMINAL = new Set(['first', 'select', 'update', 'delete', 'insert']);
+const TERMINAL = new Set(['first', 'select', 'update', 'delete', 'insert', 'multiInsert']);
 
 /**
  * `db`, counting every statement sent through it and every row those statements returned. Builders

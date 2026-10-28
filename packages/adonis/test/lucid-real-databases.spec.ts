@@ -64,6 +64,55 @@ describeEachBackend('the Lucid stores on a real database', (backend) => {
     expect(truncated.map((message) => message.content)).toEqual(contents.slice(0, 4));
   });
 
+  it('forks mixed-shape messages and records genui calls in multi-row inserts', async () => {
+    const thread = await store.createThread({ actor, persona: 'default' });
+    let last = '';
+    for (let index = 0; index < 60; index++) {
+      last = (
+        await store.appendMessage({
+          threadId: thread.id,
+          role: index % 2 === 0 ? 'user' : 'assistant',
+          content: `m${index}`,
+          ...(index % 4 === 1 ? { agentName: 'helper' } : {}),
+          ...(index % 9 === 2 ? { sentAt: new Date(1_700_000_000_000 + index).toISOString() } : {}),
+        })
+      ).id;
+    }
+    const fork = await store.forkThread(thread.id, last);
+    const strip = async (threadId: string) =>
+      (await store.getThread(threadId))?.messages.map(({ id: _id, ...rest }) => rest);
+    expect(await strip(fork.id)).toEqual(await strip(thread.id));
+
+    const calls = Array.from({ length: 50 }, (_, index) => ({
+      toolCallId: `call-${String(index).padStart(2, '0')}`,
+      runId: 'run-1',
+      threadId: thread.id,
+      actorRef: actor.id,
+      step: index,
+      toolName: 'ui__show',
+      channel: 'web',
+      mode: 'sandbox' as const,
+      modelId: 'm',
+      attempt: 1,
+      outcome: 'ok' as const,
+      validity: 'first_try' as const,
+      inputTokens: index,
+      outputTokens: 1,
+      payloadBytes: 20,
+      ...(index % 3 === 0 ? { payload: `{"n":${index}}` } : {}),
+    }));
+    await store.recordGenuiCalls(calls);
+    await store.recordGenuiCalls(calls.slice(0, 5));
+    const rows = await handle.store
+      .from(AGENT_TABLES.genuiCalls)
+      .where('thread_id', thread.id)
+      .orderBy('id', 'asc')
+      .select('id', 'step', 'payload');
+    expect(rows.map((row) => [row.id, Number(row.step), row.payload ?? null])).toEqual(
+      calls.map((call) => [call.toolCallId, call.step, call.payload ?? null]),
+    );
+  });
+
   it('stores a message and a tool output far past 64 KB', async () => {
     const thread = await store.createThread({ actor, persona: 'default' });
     const big = 'x'.repeat(300_000);
