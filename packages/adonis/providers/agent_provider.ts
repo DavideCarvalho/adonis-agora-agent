@@ -86,7 +86,7 @@ import {
   withActorLabels,
 } from '../src/index.js';
 import { untilClosed } from '../src/interruptible.js';
-import { McpToolImporter } from '../src/mcp-client/index.js';
+import type { McpToolImporter } from '../src/mcp-client/index.js';
 import {
   createToolUiChannelGuide,
   type ResolveToolUiCatalog,
@@ -169,6 +169,20 @@ function catalogOf(model: unknown): ModelCatalog | undefined {
 }
 
 /** A decision's `via` is provenance persisted on the call — bounded like any other stored label. */
+/**
+ * The MCP client (and through it `@modelcontextprotocol/sdk`) loads on first use: an app that
+ * configures no `mcpServers` never pays its parse time or heap. One import per process; a failed
+ * import is not cached, so the next boot attempt retries.
+ */
+let mcpImporterModule: Promise<typeof import('../src/mcp-client/importer.js')> | undefined;
+function loadMcpImporter(): Promise<typeof import('../src/mcp-client/importer.js')> {
+  mcpImporterModule ??= import('../src/mcp-client/importer.js').catch((error: unknown) => {
+    mcpImporterModule = undefined;
+    throw error;
+  });
+  return mcpImporterModule;
+}
+
 const MAX_VIA_LENGTH = 64;
 
 /** `remember` from a decision body: `false` when absent, `null` when malformed. */
@@ -669,6 +683,7 @@ export default class AgentProvider {
     if (servers.length === 0) {
       return;
     }
+    const { McpToolImporter } = await loadMcpImporter();
     const importer = new McpToolImporter(servers, registry, {
       warn: (message) => console.warn(`[@adonis-agora/agent] ${message}`),
     });
