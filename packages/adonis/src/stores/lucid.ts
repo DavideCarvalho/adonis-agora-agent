@@ -86,6 +86,11 @@ export interface LucidQueryBuilderLike {
 
 export interface LucidInsertBuilderLike {
   insert(row: Record<string, unknown>): Promise<unknown>;
+  /**
+   * Optional multi-row insert (Lucid's `InsertQueryBuilder.multiInsert`). When present, the store
+   * writes a batch of rows in one statement; when absent it falls back to one `insert` per row.
+   */
+  multiInsert?(rows: Record<string, unknown>[]): PromiseLike<unknown>;
 }
 
 /** A query client — the base connection or a transaction client (both expose `from`/`table`). */
@@ -181,6 +186,58 @@ function inChunks<T>(values: readonly T[], size = 500): T[][] {
     out.push(values.slice(index, index + size));
   }
   return out;
+}
+
+/** Bind parameters per multi-row INSERT: under SQLite's historical 999 cap, far under the rest. */
+const MAX_INSERT_PARAMS = 900;
+
+/** The columns a row actually sets (an `undefined` value is left to the column default either way). */
+function insertSignature(row: Record<string, unknown>): string {
+  return Object.keys(row)
+    .filter((key) => row[key] !== undefined)
+    .sort()
+    .join(',');
+}
+
+/**
+ * Inserts `rows` into `table` in order, through `client` (a transaction client keeps them in it).
+ * With `multiInsert` available, consecutive rows that set the same columns go out as one statement
+ * (sliced under {@link MAX_INSERT_PARAMS}), so every row is written exactly as its own `insert`
+ * would write it; without it, one `insert` per row.
+ */
+async function insertRows(
+  client: LucidClientLike,
+  table: string,
+  rows: readonly Record<string, unknown>[],
+): Promise<void> {
+  // A builder is inert until awaited, so probing one for the capability sends nothing.
+  if (rows.length > 1 && typeof client.table(table).multiInsert === 'function') {
+    let run: Record<string, unknown>[] = [];
+    let runSignature = '';
+    let runCap = 1;
+    const flush = async () => {
+      const builder = client.table(table);
+      if (run.length === 1) await builder.insert(run[0] as Record<string, unknown>);
+      else if (run.length > 1) await builder.multiInsert?.(run);
+      run = [];
+    };
+    for (const row of rows) {
+      const signature = insertSignature(row);
+      if (run.length > 0 && (signature !== runSignature || run.length >= runCap)) await flush();
+      if (run.length === 0) {
+        runSignature = signature;
+        runCap = Math.max(
+          1,
+          Math.floor(MAX_INSERT_PARAMS / Math.max(1, signature.split(',').length)),
+        );
+      }
+      // Same columns as the run; an `undefined` key is dropped, as the column default it means.
+      run.push(Object.fromEntries(Object.entries(row).filter(([, value]) => value !== undefined)));
+    }
+    await flush();
+    return;
+  }
+  for (const row of rows) await client.table(table).insert(row);
 }
 
 function toInt(value: unknown): number {
@@ -530,9 +587,12 @@ export class LucidAgentStore
         updated_at: now,
         deleted_at: null,
       });
-      for (const [index, m] of kept.entries()) {
-        // New message id: the message PK is unique, so a fork copies content under fresh ids.
-        await trx.table(AGENT_TABLES.messages).insert({
+      // New message ids: the message PK is unique, so a fork copies content under fresh ids.
+      // Written in batches (one statement per run of same-shaped rows) inside the same transaction.
+      await insertRows(
+        trx,
+        AGENT_TABLES.messages,
+        kept.map((m, index) => ({
           id: crypto.randomUUID(),
           // Numbered afresh in the order just read, so the copy reads back in the original's order.
           seq: index + 1,
@@ -552,8 +612,8 @@ export class LucidAgentStore
           ...(typeof m.agent_name === 'string' ? { agent_name: m.agent_name } : {}),
           ...(m.sent_at !== null && m.sent_at !== undefined ? { sent_at: toInt(m.sent_at) } : {}),
           created_at: toInt(m.created_at),
-        });
-      }
+        })),
+      );
       return {
         id,
         title,
@@ -1228,8 +1288,10 @@ export class LucidAgentStore
       const ids = rows.map((row) => row.toolCallId);
       // A call recorded again (a replayed step) replaces its row.
       await trx.from(AGENT_TABLES.genuiCalls).whereIn('id', ids).delete();
-      for (const row of rows) {
-        await trx.table(AGENT_TABLES.genuiCalls).insert({
+      await insertRows(
+        trx,
+        AGENT_TABLES.genuiCalls,
+        rows.map((row) => ({
           id: row.toolCallId,
           run_id: row.runId,
           thread_id: row.threadId,
@@ -1254,8 +1316,8 @@ export class LucidAgentStore
           payload_bytes: row.payloadBytes,
           payload: row.payload ?? null,
           created_at: Date.now(),
-        });
-      }
+        })),
+      );
     });
   }
 
