@@ -371,6 +371,11 @@ export {
   type RedisTokenStreamSinkOptions,
 } from './redis-token-stream-sink.js';
 export { isReplayIntegrityError } from './replay-integrity.js';
+export {
+  ResilientTokenStreamSink,
+  type ResilientTokenStreamSinkOptions,
+  type StreamFailure,
+} from './resilient-token-stream-sink.js';
 export type {
   Latency,
   RunFailureCodeRow,
