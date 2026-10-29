@@ -11,6 +11,7 @@ import {
   type AgentStore,
   type AppendMessageInput,
   type CreateThreadInput,
+  type ForkThreadOptions,
   type RecordRunEndInput,
   type RecordRunStartInput,
   type RecordToolCallInput,
@@ -552,7 +553,11 @@ export class LucidAgentStore
       .update({ deleted_at: Date.now() });
   }
 
-  async forkThread(threadId: string, fromMessageId: string): Promise<ThreadSummary> {
+  async forkThread(
+    threadId: string,
+    fromMessageId: string,
+    options: ForkThreadOptions = {},
+  ): Promise<ThreadSummary> {
     await this.init();
     return withStoreTransaction(this.db, async (trx) => {
       const source = await trx.from(AGENT_TABLES.threads).where('id', threadId).first();
@@ -572,8 +577,9 @@ export class LucidAgentStore
       const persona = pinnedPersona(source.persona);
       await trx.table(AGENT_TABLES.threads).insert({
         id,
-        actor_ref: source.actor_ref,
-        tenant_ref: source.tenant_ref ?? null,
+        actor_ref: options.actorRef ?? source.actor_ref,
+        tenant_ref:
+          options.tenantRef !== undefined ? options.tenantRef : (source.tenant_ref ?? null),
         title,
         persona: persona ?? '',
         transient: 0,

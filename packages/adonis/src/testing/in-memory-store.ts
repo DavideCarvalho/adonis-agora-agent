@@ -29,7 +29,7 @@ import type {
   ActionProposalOutcomeLease,
   ActionProposalOutcomeStore,
 } from '../spi/action-proposal-outcome-store.js';
-import { sumUsage, type UsageTotals } from '../spi/agent-store.js';
+import { type ForkThreadOptions, sumUsage, type UsageTotals } from '../spi/agent-store.js';
 import { type ToolCallApprovalState, toolCallApprovalFromRow } from '../spi/approval-policy.js';
 import type {
   ChatQueueStore,
@@ -267,7 +267,11 @@ export class InMemoryAgentStore
     this.threads.delete(threadId);
   }
 
-  async forkThread(threadId: string, fromMessageId: string): Promise<ThreadSummary> {
+  async forkThread(
+    threadId: string,
+    fromMessageId: string,
+    options: ForkThreadOptions = {},
+  ): Promise<ThreadSummary> {
     const source = this.threads.get(threadId);
     if (source === undefined) {
       throw new Error(`thread ${threadId} not found`);
@@ -278,8 +282,8 @@ export class InMemoryAgentStore
     const ts = this.now();
     const row: ThreadRow = {
       id,
-      actorRef: source.actorRef,
-      tenantRef: source.tenantRef,
+      actorRef: options.actorRef ?? source.actorRef,
+      tenantRef: options.tenantRef !== undefined ? options.tenantRef : source.tenantRef,
       title: source.title,
       persona: source.persona,
       transient: false,

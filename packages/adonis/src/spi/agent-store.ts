@@ -18,6 +18,17 @@ import type {
 import type { ActionProposalOutcome } from './action-proposal-outcome-store.js';
 import type { ToolCallApprovalState } from './approval-policy.js';
 
+/**
+ * Who owns a fork. Absent → the source thread's owner (forking your own conversation). Given, the
+ * copy belongs to that actor — "continue this conversation" from a link someone shared: the reader
+ * gets their own copy to go on from, and the original stays its owner's.
+ */
+export interface ForkThreadOptions {
+  actorRef?: string;
+  /** The copy's tenant. Absent → the source's; `null` → none. */
+  tenantRef?: string | null;
+}
+
 export interface CreateThreadInput {
   actor: Actor;
   /**
@@ -275,7 +286,11 @@ export interface AgentStore {
   getThreadActorRef(threadId: string): Promise<string | null>;
   listThreads(actorRef: string, limit?: number): Promise<ThreadSummary[]>;
   softDeleteThread(threadId: string): Promise<void>;
-  forkThread(threadId: string, fromMessageId: string): Promise<ThreadSummary>;
+  forkThread(
+    threadId: string,
+    fromMessageId: string,
+    options?: ForkThreadOptions,
+  ): Promise<ThreadSummary>;
   setTitle(threadId: string, title: string): Promise<void>;
   /**
    * OPTIONAL: patch a thread's settings. Needed to pin a model on a thread (`PATCH <path>/threads/:id
