@@ -91,7 +91,7 @@ Or set [`durable: true`](/docs/agent/durability/durable-runner), which is the ri
 | `listThreads(actorRef)` | `ThreadSummary[]` | |
 | `getThread(threadId)` | `ThreadDetail \| null` | |
 | `deleteThread(threadId)` | `void` | Soft delete. |
-| `forkThread(threadId, fromMessageId)` | `ThreadSummary` | Branch or regenerate. |
+| `forkThread(threadId, fromMessageId, { actorRef?, tenantRef? }?)` | `ThreadSummary` | Branch or regenerate. With `actorRef`, the copy belongs to someone else — "continue this conversation" from a shared link; the source stays its owner's. `tenantRef` absent keeps the source's tenant (even with a new `actorRef`), `null` clears it, a value sets it: forking across tenants, pass both. Like every method here, it checks no ownership — decide who may fork what before calling it. |
 | `quotaToday(actorRef)` | `{ usedTokens }` | |
 | `resolvePersona(agentName?, id?)` | `Persona \| undefined` | Synchronous. The definition, for reading — a send resolves its own (send → thread pin → default). |
 | `personaCatalog(agentName?)` | `PersonaCatalogEntry[]` | Synchronous. |

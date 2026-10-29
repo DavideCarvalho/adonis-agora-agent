@@ -20,7 +20,7 @@ import { normalizeSentAt } from './message-timestamps.js';
 import { personaCatalogEntry } from './personas.js';
 import type { ActionProposalMutationResult } from './spi/action-proposal-store.js';
 import type { AgentRunner } from './spi/agent-runner.js';
-import type { AgentStore } from './spi/agent-store.js';
+import type { AgentStore, ForkThreadOptions } from './spi/agent-store.js';
 import {
   type ApprovalDecisionRef,
   mayDecideApproval,
@@ -1578,8 +1578,18 @@ export class AgentService {
     return this.store.truncateFrom(threadId, messageId);
   }
 
-  forkThread(threadId: string, fromMessageId: string): Promise<ThreadSummary> {
-    return this.store.forkThread(threadId, fromMessageId);
+  /**
+   * Copy a thread up to `fromMessageId` (inclusive) into a new one. With `options.actorRef`, the copy
+   * belongs to that actor — see {@link ForkThreadOptions}. `options.tenantRef` is separate: absent,
+   * the copy keeps the SOURCE's tenant, even when it now belongs to someone else; `null` clears it;
+   * a value sets it. Forking across tenants, pass both.
+   */
+  forkThread(
+    threadId: string,
+    fromMessageId: string,
+    options?: ForkThreadOptions,
+  ): Promise<ThreadSummary> {
+    return this.store.forkThread(threadId, fromMessageId, options);
   }
 
   async quotaToday(actorRef: string): Promise<{ usedTokens: number }> {

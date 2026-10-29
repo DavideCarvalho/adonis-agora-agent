@@ -139,7 +139,7 @@ A persisted tool call is addressable by exactly the id the model emitted — the
 
 ## Behavior details
 
-- **`forkThread` and `truncateFrom` run in a transaction.** `forkThread` copies kept messages under fresh ids onto a new thread; `truncateFrom` deletes doomed messages' tool calls explicitly (not only via FK cascade) so it works on SQLite even without `PRAGMA foreign_keys=ON`.
+- **`forkThread` and `truncateFrom` run in a transaction.** `forkThread` copies kept messages under fresh ids onto a new thread, owned by the source's `actor_ref` and `tenant_ref` unless `ForkThreadOptions` names others; `truncateFrom` deletes doomed messages' tool calls explicitly (not only via FK cascade) so it works on SQLite even without `PRAGMA foreign_keys=ON`.
 - **`appendMessage` bumps the thread's `updated_at`**, so thread lists reflect the latest activity.
 - **`quotaToday` sums input + output tokens over the inclusive UTC day.** Cache tokens are subsets and are never re-added, so the sum is the whole-day spend. It and `usageBetween` (the quota's day and month windows) are one `SUM` in the database over the `(actor_ref, created_at)` index, so the store fetches one row per window rather than the window's ledger.
 - **`modelForThread` reads one column.** A send that names no model reads the model pinned on its thread through this optional `AgentStore` method, as `personaForThread` and `defaultAgentForThread` do for theirs, instead of loading the thread. A custom store without it is read through `getThread`.
