@@ -68,6 +68,7 @@ import {
   QuotaBlockedError,
   REQUESTER_APPROVER,
   RegenerateNeedsThreadError,
+  ResilientTokenStreamSink,
   type Retriever,
   type RolesPolicy,
   RunNotActiveError,
@@ -722,8 +723,15 @@ export default class AgentProvider {
 
   async #resolveSink(config: AgentConfig): Promise<TokenStreamSink> {
     const sink = config.sink;
-    if (sink === undefined) return new InProcessTokenStreamSink();
-    return typeof sink === 'function' ? sink({ app: this.app }) : sink;
+    const resolved =
+      sink === undefined
+        ? new InProcessTokenStreamSink()
+        : typeof sink === 'function'
+          ? await sink({ app: this.app })
+          : sink;
+    // A broken live stream (Redis out of memory, a dropped connection) must not fail the run: the
+    // answer is persisted either way, and a reload shows it. See `ResilientTokenStreamSink`.
+    return new ResilientTokenStreamSink(resolved);
   }
 
   /**
