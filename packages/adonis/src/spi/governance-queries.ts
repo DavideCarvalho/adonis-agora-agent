@@ -1,5 +1,6 @@
 import type { GenuiStats } from '../genui-telemetry.js';
 import type { Latency, RunFailureCodeRow } from '../run-metrics.js';
+import type { RunTimings } from './agent-store.js';
 
 /**
  * A read-model over the persisted agent data (usage ⋈ pricing, tool calls, threads) for the
@@ -40,6 +41,58 @@ export interface ActorSpendRow {
   requests: number;
   totalTokens: number;
   costUsd: number;
+}
+
+/**
+ * Spend for one feature over a range — agent turns and usage recorded outside them
+ * (`AgentService.recordUsage`) side by side. An agent-turn row recorded before features existed is
+ * reported under `agent`.
+ */
+export interface FeatureSpendRow {
+  feature: string;
+  /**
+   * `'agent'` for rows an agent turn wrote, `'external'` for rows recorded through
+   * `AgentService.recordUsage`. A feature recorded both ways is two rows.
+   */
+  source: 'agent' | 'external';
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** Seconds of audio billed; `0` when none. */
+  audioSeconds: number;
+  /** Characters billed; `0` when none. */
+  characters: number;
+  /** Provider-reported plus estimated cost (an unpriced row's tokens priced from the pricing table). */
+  costUsd: number;
+}
+
+/**
+ * One actor's spend on one feature over a range — the report "cost by actor and by feature". Group
+ * the rows by `actorRef` or by `feature` for either total. Platform cost (`actorRef: null` on
+ * `recordUsage`) is the actor `@platform`.
+ */
+export interface UsageBreakdownRow {
+  actorRef: string;
+  /** Display label for `actorRef`, when an `actorDirectory` is bound and knows one. */
+  actorLabel?: string;
+  feature: string;
+  source: 'agent' | 'external';
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  audioSeconds: number;
+  characters: number;
+  costUsd: number;
+  /** The part of `costUsd` that is an estimate (recorded as one, or priced here from tokens). */
+  estimatedCostUsd: number;
+}
+
+/** Filters for {@link AgentGovernanceQueries.usageBreakdown}, on top of the day range. */
+export interface UsageBreakdownFilter {
+  /** Exact `actor_ref`. */
+  actor?: string;
+  /** Exact feature (`agent` matches the rows from before features too). */
+  feature?: string;
 }
 
 /** One point on the daily usage/cost trend. */
@@ -137,6 +190,19 @@ export interface RunSummaryRow {
   errorCode?: string | null;
   /** The completed run's last model; optional, as `ttftMs`. */
   modelId?: string | null;
+  /**
+   * Enqueue → body start (see `RecordRunStartInput.queueMs`); optional, as `ttftMs`; `null` when the
+   * run did not record one.
+   */
+  queueMs?: number | null;
+  /** The completed run's model time, summed over its model calls; optional, as `ttftMs`. */
+  modelMs?: number | null;
+  /** The completed run's tool time, wall-clock (parallel calls once); optional, as `ttftMs`. */
+  toolsMs?: number | null;
+  /** Model calls the completed run measured; optional, as `ttftMs`. */
+  modelCalls?: number | null;
+  /** Tool calls the completed run measured; optional, as `ttftMs`. */
+  toolCalls?: number | null;
 }
 
 /**
@@ -173,6 +239,8 @@ export interface RunToolCallRow {
 export interface RunUsageRow {
   modelId: string;
   purpose: string;
+  /** What the row was for (`agent`, `agent:<name>`, or an app's feature); optional for old adapters. */
+  feature?: string | null;
   inputTokens: number;
   outputTokens: number;
   costUsd: number | null;
@@ -187,6 +255,12 @@ export interface RunDetail {
   /** The subset of `toolCalls` still `pending_approval`. */
   approvals: RunToolCallRow[];
   usage: RunUsageRow[];
+  /**
+   * Where the run's time went, step by step — what the completed run persisted (see
+   * {@link RunTimings}). `null` for a run that did not complete or predates timings; optional for an
+   * adapter that predates it.
+   */
+  timings?: RunTimings | null;
 }
 
 /** Filters for {@link AgentGovernanceQueries.pendingApprovals}. */
@@ -334,6 +408,19 @@ export interface AgentGovernanceQueries {
   spendByModel(range: GovernanceRange): Promise<ModelSpendRow[]>;
   spendByActor(range: GovernanceRange): Promise<ActorSpendRow[]>;
   usageTrend(range: GovernanceRange): Promise<UsageTrendPoint[]>;
+  /**
+   * OPTIONAL: spend per feature over the range, agent turns and recorded usage side by side,
+   * costliest first. Absent → `GET <path>/governance/spend/feature` answers `501`.
+   */
+  spendByFeature?(range: GovernanceRange): Promise<FeatureSpendRow[]>;
+  /**
+   * OPTIONAL: spend per actor × feature over the range, costliest first — the report behind "cost by
+   * actor and by feature". Absent → `GET <path>/governance/usage/breakdown` answers `501`.
+   */
+  usageBreakdown?(
+    range: GovernanceRange,
+    filter?: UsageBreakdownFilter,
+  ): Promise<UsageBreakdownRow[]>;
   recentToolCalls(limit: number): Promise<ToolCallActivityRow[]>;
   recentThreads(limit: number): Promise<ThreadActivityRow[]>;
 

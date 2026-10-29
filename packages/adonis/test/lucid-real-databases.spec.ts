@@ -5,7 +5,9 @@ import {
   dropAgentTables,
   LucidAgentStore,
   LucidConfirmTokenStore,
+  tokenUsageTableStatement,
 } from '../src/index.js';
+import { indexNames } from './helpers/index-names.js';
 import { type BackendDb, describeEachBackend, openBackend } from './helpers/real-db.js';
 
 /**
@@ -201,8 +203,8 @@ describeEachBackend('the Lucid stores on a real database', (backend) => {
         [AGENT_TABLES.threads]: ['model', 'queue_pause', 'default_agent'],
         [AGENT_TABLES.messages]: ['reasoning', 'reasoning_ms', 'ui', 'feedback', 'agent_name'],
         [AGENT_TABLES.toolCalls]: ['approver', 'expires_at', 'remember', 'decided_via'],
-        [AGENT_TABLES.runs]: ['parent_run_id'],
-        [AGENT_TABLES.tokenUsage]: ['cost_source'],
+        [AGENT_TABLES.runs]: ['parent_run_id', 'timings'],
+        [AGENT_TABLES.tokenUsage]: ['cost_source', 'feature'],
       };
       for (const [table, columns] of Object.entries(later)) {
         for (const column of columns) {
@@ -227,6 +229,81 @@ describeEachBackend('the Lucid stores on a real database', (backend) => {
       const detail = await agedStore.getThread(thread.id);
       expect(detail?.messages.map((each) => each.content)).toEqual(['old row', 'new row']);
       expect(await agedStore.defaultAgentForThread(thread.id)).toBe('researcher');
+      // Current now: a second pass repairs nothing.
+      expect(await createAgentTables(aged.store)).toEqual([]);
+    } finally {
+      await aged.close();
+    }
+  });
+
+  it('makes an old ledger’s thread_id nullable, keeping its rows, indexes and cascade', async () => {
+    const aged = await openBackend(backend);
+    try {
+      const agedStore = new LucidAgentStore(aged.store);
+      const thread = await agedStore.createThread({ actor, persona: 'default' });
+      const other = await agedStore.createThread({ actor, persona: 'default' });
+      const usage = { inputTokens: 3, outputTokens: 2 };
+      await agedStore.recordUsage({
+        threadId: thread.id,
+        actorRef: actor.id,
+        modelId: 'm',
+        purpose: 'chat',
+        usage,
+      });
+      await agedStore.recordUsage({
+        threadId: other.id,
+        actorRef: actor.id,
+        modelId: 'm',
+        purpose: 'chat',
+        usage,
+      });
+      // The ledger as it was provisioned before usage could be recorded without a thread.
+      const t = AGENT_TABLES.tokenUsage;
+      if (backend === 'postgres') {
+        await aged.store.rawQuery(`ALTER TABLE "${t}" ALTER COLUMN "thread_id" SET NOT NULL`);
+      } else if (backend === 'mysql') {
+        await aged.store.rawQuery(
+          `ALTER TABLE \`${t}\` MODIFY \`thread_id\` VARCHAR(255) NOT NULL`,
+        );
+      } else {
+        await aged.store.rawQuery(`ALTER TABLE "${t}" RENAME TO "${t}_new"`);
+        await aged.store.rawQuery(
+          tokenUsageTableStatement(t).replace(
+            '"thread_id" VARCHAR(255) NULL',
+            '"thread_id" VARCHAR(255) NOT NULL',
+          ),
+        );
+        await aged.store.rawQuery(`INSERT INTO "${t}" SELECT * FROM "${t}_new"`);
+        await aged.store.rawQuery(`DROP TABLE "${t}_new"`);
+      }
+      await expect(
+        agedStore.recordUsage({ actorRef: actor.id, modelId: 'm', purpose: 'external', usage }),
+      ).rejects.toThrow();
+
+      const repairs = await createAgentTables(aged.store);
+
+      expect(repairs).toContain(`${t}.thread_id`);
+      await agedStore.recordUsage({
+        actorRef: actor.id,
+        modelId: 'whisper-1',
+        purpose: 'external',
+        feature: 'transcription',
+        usage: { inputTokens: 0, outputTokens: 0 },
+        audioSeconds: 30,
+      });
+      expect(await aged.db.from(t).count('* as n').first()).toMatchObject({ n: expect.anything() });
+      expect((await aged.db.from(t).select('id')).length).toBe(3);
+      expect(await indexNames(aged.store, t)).toEqual(
+        expect.arrayContaining([
+          `${t}_actor_created_idx`,
+          `${t}_run_idx`,
+          `${t}_feature_created_idx`,
+        ]),
+      );
+      // The foreign key survived: a deleted thread still takes its rows with it.
+      await aged.db.from(AGENT_TABLES.threads).where('id', thread.id).delete();
+      expect(await aged.db.from(t).where('thread_id', thread.id)).toEqual([]);
+      expect((await aged.db.from(t).select('id')).length).toBe(2);
       // Current now: a second pass repairs nothing.
       expect(await createAgentTables(aged.store)).toEqual([]);
     } finally {

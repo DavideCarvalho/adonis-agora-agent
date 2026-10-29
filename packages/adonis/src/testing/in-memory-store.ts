@@ -16,6 +16,7 @@ import type {
   RecordRunStartInput,
   RecordToolCallInput,
   RecordUsageInput,
+  RunTimings,
   StoredMessage,
   ThreadDetail,
   ThreadSummary,
@@ -73,7 +74,16 @@ interface ToolCallRow {
 
 interface UsageRow {
   actorRef: string;
-  threadId: string;
+  /** `null` for usage recorded outside any conversation. */
+  threadId: string | null;
+  feature?: string;
+  provider?: string;
+  tenantRef?: string;
+  audioSeconds?: number;
+  characters?: number;
+  requests?: number;
+  metadata?: Record<string, unknown>;
+
   runId?: string;
   modelId: string;
   purpose: string;
@@ -107,12 +117,24 @@ interface RunRow {
   errorCode?: string;
   modelId?: string;
   durable: boolean;
+  queueMs?: number;
+  timings?: RunTimings;
 }
 
 /** A recorded usage row exposed to the governance read-model (input/output split + thread/day). */
 export interface GovernanceUsageRow {
   actorRef: string;
-  threadId: string;
+  /** `null` for usage recorded outside any conversation (`AgentService.recordUsage`). */
+  threadId: string | null;
+  /** What the spend was for; absent on an agent-turn row from before features (read as `agent`). */
+  feature?: string;
+  provider?: string;
+  tenantRef?: string;
+  audioSeconds?: number;
+  characters?: number;
+  requests?: number;
+  metadata?: Record<string, unknown>;
+
   runId?: string;
   modelId: string;
   purpose?: string;
@@ -166,6 +188,8 @@ export interface GovernanceRunRow {
   errorCode?: string;
   modelId?: string;
   durable: boolean;
+  queueMs?: number;
+  timings?: RunTimings;
 }
 
 /** A recorded message exposed to the governance read-model (for run-detail assembly). */
@@ -855,7 +879,8 @@ export class InMemoryAgentStore
     const createdAt = this.now();
     this.usage.push({
       actorRef: input.actorRef,
-      threadId: input.threadId,
+      threadId: input.threadId ?? null,
+      ...ledgerExtras(input),
       modelId: input.modelId,
       purpose: input.purpose,
       inputTokens: input.usage.inputTokens,
@@ -894,6 +919,7 @@ export class InMemoryAgentStore
       ...(input.actor.tenantRef !== undefined ? { tenantRef: input.actor.tenantRef } : {}),
       ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
       ...(input.parentRunId !== undefined ? { parentRunId: input.parentRunId } : {}),
+      ...(input.queueMs !== undefined ? { queueMs: Math.max(0, Math.round(input.queueMs)) } : {}),
     });
   }
 
@@ -914,6 +940,7 @@ export class InMemoryAgentStore
     if (input.ttftMs !== undefined) row.ttftMs = input.ttftMs;
     if (input.errorCode !== undefined) row.errorCode = input.errorCode;
     if (input.modelId !== undefined) row.modelId = input.modelId;
+    if (input.timings !== undefined) row.timings = structuredClone(input.timings);
   }
 
   async usageBetween(actorRef: string, fromDay: string, toDay: string): Promise<UsageTotals> {
@@ -946,6 +973,7 @@ export class InMemoryAgentStore
     return this.usage.map((row) => ({
       actorRef: row.actorRef,
       threadId: row.threadId,
+      ...ledgerExtras(row),
       modelId: row.modelId,
       purpose: row.purpose,
       inputTokens: row.inputTokens,
@@ -1053,4 +1081,25 @@ export class InMemoryAgentStore
       activeRunId: row.activeStreamId ?? null,
     };
   }
+}
+
+/** The ledger fields beyond tokens, copied when present (`feature`, units, `metadata`…). */
+function ledgerExtras(row: {
+  feature?: string;
+  provider?: string;
+  tenantRef?: string;
+  audioSeconds?: number;
+  characters?: number;
+  requests?: number;
+  metadata?: Record<string, unknown>;
+}): Partial<GovernanceUsageRow> {
+  return {
+    ...(row.feature !== undefined ? { feature: row.feature } : {}),
+    ...(row.provider !== undefined ? { provider: row.provider } : {}),
+    ...(row.tenantRef !== undefined ? { tenantRef: row.tenantRef } : {}),
+    ...(row.audioSeconds !== undefined ? { audioSeconds: row.audioSeconds } : {}),
+    ...(row.characters !== undefined ? { characters: row.characters } : {}),
+    ...(row.requests !== undefined ? { requests: row.requests } : {}),
+    ...(row.metadata !== undefined ? { metadata: structuredClone(row.metadata) } : {}),
+  };
 }

@@ -2,6 +2,7 @@ import { resolveApiBase } from './api-base.js';
 import type {
   ActorSpendRow,
   CurrentModelPrice,
+  FeatureSpendRow,
   GenuiStats,
   GovernanceRange,
   GovernanceThreadDetail,
@@ -105,6 +106,17 @@ export class AgentClient {
 
   spendByActor(range: GovernanceRange): Promise<ActorSpendRow[]> {
     return this.get<ActorSpendRow[]>('/governance/spend/actor', {
+      from: range.fromDay,
+      to: range.toDay,
+    });
+  }
+
+  /**
+   * `GET /agent/governance/spend/feature` — spend per feature, agent turns and recorded usage side by
+   * side. Rejects with a `501` {@link AgentApiError} (see {@link isUnsupported}) on an older server.
+   */
+  spendByFeature(range: GovernanceRange): Promise<FeatureSpendRow[]> {
+    return this.get<FeatureSpendRow[]>('/governance/spend/feature', {
       from: range.fromDay,
       to: range.toDay,
     });

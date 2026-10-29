@@ -15,6 +15,8 @@ Capabilities delivered alongside a parallel change in Aviary, recorded here unti
 | Capability | Agora | Aviary |
 | --- | --- | --- |
 | Run metrics: TTFT, cost/model on run, run.failed/run.cancelled diagnostics, tool timing, dashboard latency | yes | paired delivery |
+| Usage ledger beyond agent turns: `recordUsage` (feature, units, platform actor, nullable thread), `usage.recorded` event, spend by feature / actor × feature, dashboard panel | yes | paired delivery |
+| Run timings: queue / model / tools totals and per-step breakdown on the run row, `run.finished` / `run.failed`, dashboard run view | yes | paired delivery |
 
 ## Pending ports
 

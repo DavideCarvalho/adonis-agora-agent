@@ -40,6 +40,7 @@ function everyRunStartField(threadId: string): Required<RecordRunStartInput> {
     agentName: 'researcher',
     parentRunId: 'run-parent',
     durable: true,
+    queueMs: 42,
   };
 }
 
@@ -55,6 +56,7 @@ describe('a recorded run round-trips every field it was started with', () => {
       agentName: started.agentName,
       parentRunId: started.parentRunId,
       durable: started.durable,
+      queueMs: started.queueMs,
     });
   });
 

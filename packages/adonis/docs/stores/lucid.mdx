@@ -81,7 +81,7 @@ Eleven tables (names from the `AGENT_TABLES` constant; `agent_run`, the run life
 | `agent_action_proposal` | independent proposal snapshot, exact identity hashes, decision, version fence and embedded execution work/lease |
 | `agent_message` | one row per message: role, content, and JSON columns for `tool_calls` / `tool_results` / `follow_ups` / `usage` / `ui`, plus the step's streamed `reasoning` and `reasoning_ms` |
 | `agent_tool_call` | one row per tool call — the model-supplied `toolCallId` is in `call_id`, and the PK is that id scoped to its assistant message (`<message_id>:<toolCallId>`), because a provider only promises the id is unique within one response. A row written before `call_id` existed has it NULL and the bare id as PK. With tool name/type, input/output, status, timing, and `executed_by_ref` |
-| `agent_token_usage` | the usage ledger: input/output tokens, cache breakdown, `model_id`, `purpose`, and `cost_usd` |
+| `agent_token_usage` | the usage ledger: input/output tokens, cache breakdown, `model_id`, `purpose`, `cost_usd` / `cost_source`, `feature`, `provider`, `tenant_ref`, the non-token units (`audio_seconds`, `characters`, `requests`) and `metadata`. `thread_id` is nullable: usage [recorded outside a conversation](/docs/agent/governance/quota-and-cost#recording-usage-outside-agent-turns) has none |
 | `agent_model_pricing` | per-model pricing rows for cost estimation (see [Quota & cost](/docs/agent/governance/quota-and-cost)) |
 | `agent_queued_message` | the [message queue](/docs/agent/streaming-and-http#message-queue): messages sent while a turn was running, per thread, in run order (`position`), with everything the send carried (actor, attachments, agent, model, page context, `interrupt`). The thread's pause lives in `agent_thread.queue_pause` |
 | `agent_confirm_token` | confirm tokens already spent, for single-use [confirmed writes](/docs/agent/mcp#writes-with-a-human-gate-defineconfirmedtool) (`LucidConfirmTokenStore`): the token's SHA-256 (PK), actor, tool, `expires_at` |
@@ -95,7 +95,11 @@ Eleven tables (names from the `AGENT_TABLES` constant; `agent_run`, the run life
 `autoCreateTables` runs, so the migration and the auto-created schema can never disagree — and the
 migration is **idempotent**: safe against an empty database, against one the library already
 provisioned, and against one left over from a version that predates run tracking (it ALTERs the
-missing `run_id` columns in). It sets `disableTransactions = true` because the helper takes its own
+missing `run_id` columns in). The same pass makes an old ledger's `agent_token_usage.thread_id`
+nullable: `ALTER COLUMN … DROP NOT NULL` on Postgres, `MODIFY` on MySQL, and on SQLite — which cannot
+change a column in place — a rebuild of that one table (created under a scratch name, rows copied,
+renamed) inside a savepoint. The foreign key to `agent_thread` and its cascade are kept, and the
+table's indexes are recreated. Postgres takes a brief exclusive lock on the table for it, once. It sets `disableTransactions = true` because the helper takes its own
 connection from the pool.
 </Callout>
 
@@ -106,8 +110,10 @@ The indexes follow the reads the store and the [governance read-model](/docs/age
 | `agent_thread` | `(actor_ref, updated_at)` | thread lists |
 | `agent_message` | `(thread_id, created_at)`, `(thread_id, seq)`, `(run_id)` | loading a thread, a transcript in `seq` order, a run's messages |
 | `agent_tool_call` | `(message_id)`, `(run_id)`, `(call_id, run_id)`, `(status, created_at)` | a message's calls, a run's calls, lookups by the model's call id, the approvals inbox |
-| `agent_token_usage` | `(actor_ref, created_at)`, `(thread_id)`, `(created_at)`, `(run_id)` | the quota windows, per-thread usage, the spend rollups over a date range, a run's usage |
+| `agent_token_usage` | `(actor_ref, created_at)`, `(thread_id)`, `(created_at)`, `(run_id)`, `(feature, created_at)` | the quota windows, per-thread usage, the spend rollups over a date range, a run's usage, spend by feature |
 | `agent_run` | `(started_at)`, `(actor_ref, started_at)`, `(status, started_at)`, `(thread_id, started_at)` | the run list and its filters, a thread's recent runs |
+
+`agent_run` also holds where each run's time went — `queue_ms`, `model_ms`, `tools_ms`, `model_calls`, `tool_calls`, and the per-step breakdown as JSON in `timings` (see [run timings](/docs/agent/diagnostics#where-a-runs-time-goes)).
 | `agent_stream_frame` | `(created_at, run_id)` | the [Lucid sink's](/docs/agent/sql-streaming#cleanup) TTL purge |
 
 Each index is named after its table and columns (for example `agent_message_thread_seq_idx`, `agent_token_usage_created_idx`) and is looked up by name in the catalog before it is created, so an index you created yourself under the same name is left alone.

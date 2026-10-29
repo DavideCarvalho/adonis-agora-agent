@@ -93,6 +93,7 @@ Or set [`durable: true`](/docs/agent/durability/durable-runner), which is the ri
 | `deleteThread(threadId)` | `void` | Soft delete. |
 | `forkThread(threadId, fromMessageId, { actorRef?, tenantRef? }?)` | `ThreadSummary` | Branch or regenerate. With `actorRef`, the copy belongs to someone else — "continue this conversation" from a shared link; the source stays its owner's. `tenantRef` absent keeps the source's tenant (even with a new `actorRef`), `null` clears it, a value sets it: forking across tenants, pass both. Like every method here, it checks no ownership — decide who may fork what before calling it. |
 | `quotaToday(actorRef)` | `{ usedTokens }` | |
+| `recordUsage(input, { throwOnError? }?)` | `{ recorded: true } \| { recorded: false, error }` | Record AI spend from outside an agent turn (transcription, TTS, embeddings, a direct SDK call) on the usage ledger. Never throws unless `throwOnError`. See [Quota & cost](/docs/agent/governance/quota-and-cost#recording-usage-outside-agent-turns). |
 | `resolvePersona(agentName?, id?)` | `Persona \| undefined` | Synchronous. The definition, for reading — a send resolves its own (send → thread pin → default). |
 | `personaCatalog(agentName?)` | `PersonaCatalogEntry[]` | Synchronous. |
 | `updateThreadSettings(actor, threadId, { defaultAgent?, model?, persona? })` | `boolean` | What `PATCH /agent/threads/:id` calls. |

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { isUnsupported } from '../client/agent-client.js';
 import { formatCount, formatModelLabel, formatUsd } from '../client/format.js';
 import {
   donutSegments,
@@ -7,11 +8,16 @@ import {
   withShares,
 } from '../client/spend-summary.js';
 import type { TrendMetric } from '../client/trend-path.js';
-import type { GovernanceRange } from '../client/types.js';
+import type { FeatureSpendRow, GovernanceRange } from '../client/types.js';
 import { Donut } from './Donut.js';
 import { TrendChart } from './TrendChart.js';
 import { AsyncBlock, colorAt, Panel, SectionTitle, ShareBar, Stat } from './ui.js';
-import { useSpendByActor, useSpendByModel, useUsageTrend } from './use-governance.js';
+import {
+  useSpendByActor,
+  useSpendByFeature,
+  useSpendByModel,
+  useUsageTrend,
+} from './use-governance.js';
 
 /**
  * The console's landing view: headline spend/usage stats, a spend-by-model donut + table, the daily
@@ -21,6 +27,7 @@ import { useSpendByActor, useSpendByModel, useUsageTrend } from './use-governanc
 export function Overview({ range }: { range: GovernanceRange }) {
   const models = useSpendByModel(range);
   const actors = useSpendByActor(range);
+  const features = useSpendByFeature(range);
   const trend = useUsageTrend(range);
   const [metric, setMetric] = useState<TrendMetric>('costUsd');
 
@@ -110,6 +117,23 @@ export function Overview({ range }: { range: GovernanceRange }) {
           )}
         </AsyncBlock>
       </Panel>
+
+      {/* spend by feature: agent turns and usage recorded outside them, side by side */}
+      {isUnsupported(features.error) ? null : (
+        <Panel>
+          <SectionTitle
+            title="Spend by feature"
+            hint="agent turns and recorded usage (transcription, TTS, direct calls)"
+          />
+          <AsyncBlock
+            state={features}
+            isEmpty={(rows) => rows.length === 0}
+            empty="No spend by feature in this range."
+          >
+            {(rows) => <FeatureTable rows={rows} />}
+          </AsyncBlock>
+        </Panel>
+      )}
 
       {/* usage trend */}
       <Panel>
@@ -202,6 +226,54 @@ export function Overview({ range }: { range: GovernanceRange }) {
           }}
         </AsyncBlock>
       </Panel>
+    </div>
+  );
+}
+
+/** What a feature row billed, in the units it billed by: tokens, audio, characters. */
+function featureUnits(row: FeatureSpendRow): string {
+  const parts: string[] = [];
+  const tokens = row.inputTokens + row.outputTokens;
+  if (tokens > 0) parts.push(`${formatCount(tokens)} tok`);
+  if (row.audioSeconds > 0) parts.push(`${formatCount(Math.round(row.audioSeconds))} s audio`);
+  if (row.characters > 0) parts.push(`${formatCount(row.characters)} chars`);
+  return parts.length > 0 ? parts.join(' · ') : '—';
+}
+
+function FeatureTable({ rows }: { rows: FeatureSpendRow[] }) {
+  const maxCost = Math.max(...rows.map((row) => row.costUsd), 0);
+  return (
+    <div className="table-wrap">
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th>Source</th>
+            <th className="num">Requests</th>
+            <th className="num">Units</th>
+            <th className="num">Cost</th>
+            <th style={{ width: 160 }}>Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={`${row.source}:${row.feature}`}>
+              <td className="mono" title={row.feature}>
+                {row.feature}
+              </td>
+              <td>
+                <span className="muted">{row.source === 'agent' ? 'agent turn' : 'recorded'}</span>
+              </td>
+              <td className="num mono tnum">{formatCount(row.requests)}</td>
+              <td className="num mono tnum">{featureUnits(row)}</td>
+              <td className="num mono tnum">{formatUsd(row.costUsd)}</td>
+              <td>
+                <ShareBar fraction={maxCost > 0 ? row.costUsd / maxCost : 0} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

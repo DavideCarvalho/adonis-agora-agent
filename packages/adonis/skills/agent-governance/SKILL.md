@@ -168,7 +168,7 @@ Source: `packages/adonis/src/actor-resolver.ts` (`HeaderActorResolver` security 
 ### HIGH — expecting `/agent/governance/*` to exist after configuring only `governanceQueries`
 
 ```ts
-// Wrong — read-model resolves, but no gate → the 12 governance routes are NEVER mounted (all 404).
+// Wrong — read-model resolves, but no gate → the 14 governance routes are NEVER mounted (all 404).
 export default defineConfig({ store: 'lucid', stores: { lucid: stores.lucid() } })
 ```
 

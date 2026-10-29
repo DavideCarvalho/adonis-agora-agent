@@ -1,7 +1,10 @@
 import { turnChannel } from './genui/channels.js';
 import { GenuiTurnTelemetry, observeGenuiFrames } from './genui-telemetry.js';
 import { DEFAULT_REFUSAL_REASON } from './refusal.js';
+import { rollupRunTimings, toolsWallClockMs } from './run-timings.js';
 import { observeFirstText } from './turn-timing.js';
+import { usageAttribution } from './usage-attribution.js';
+import { recordUsageRow } from './usage-ledger.js';
 
 export { DEFAULT_REFUSAL_REASON } from './refusal.js';
 
@@ -28,6 +31,7 @@ import {
   publishAgentToolCall,
   publishAgentToolRetry,
   spannedAgent,
+  timedSpan,
 } from './diagnostics.js';
 import {
   type AgentIntake,
@@ -91,7 +95,7 @@ import type {
   ActionProposalStore,
   ActionProposalSupersessionStore,
 } from './spi/action-proposal-store.js';
-import type { AgentStore, ThreadTurnReader } from './spi/agent-store.js';
+import type { AgentStore, RunStepTiming, ThreadTurnReader } from './spi/agent-store.js';
 import { type ApprovalPolicy, DefaultApprovalPolicy } from './spi/approval-policy.js';
 import type { HistoryWindow, HistoryWindowContext } from './spi/history-window.js';
 import { withSelectedModel } from './spi/model-catalog.js';
@@ -396,6 +400,11 @@ interface BufferedModelTurnResult extends ModelTurnResult {
   gateRejection?: GateRejection;
   /** Previews of streaming tool input the turn showed (`ToolHandler.previewInput`). */
   previews?: ShownPreview[];
+  /**
+   * How long the model call took — the `llm.turn` span's own reading — journaled with the turn, so a
+   * replay counts the time the call really took, once. Absent on a turn journaled before it was.
+   */
+  modelMs?: number;
 }
 
 /** Renders retrieved passages as a numbered, citable context block appended to the system prompt. */
@@ -512,6 +521,14 @@ export interface AgentLoopHooks {
    * cached results (stable ids, no double-write, no re-streaming).
    */
   step<T>(name: string, fn: () => Promise<T>): Promise<T>;
+  /**
+   * How long this run waited between being started and its body running, in ms — read ONCE, inside
+   * the `persist:run:start` checkpoint, and journaled with it, so a replay or a resume reports the
+   * first reading instead of the time since. The durable runner answers from the engine's run row
+   * (`createdAt`, stamped when the run was enqueued); the inline runner from its own `start`. Absent
+   * (or `undefined`) → no queue time is recorded.
+   */
+  queueMs?(): number | undefined | Promise<number | undefined>;
   /**
    * Recognizes the runner's control-flow signals (durable suspend / continue-as-new) so the tool
    * transient-retry loop never mistakes one for a retryable tool error. Provided only by the durable
@@ -1173,8 +1190,9 @@ async function applyHistoryWindow(
   if (summary.usage !== undefined) {
     const usage = summary.usage;
     await step('persist:usage:history', () =>
-      deps.store.recordUsage({
+      recordUsageRow(deps.store, {
         threadId: input.threadId,
+        ...usageAttribution(input),
         actorRef: input.actor.id,
         runId: hooks.runId,
         modelId: summary.modelId ?? deps.modelId ?? 'unknown',
@@ -1460,6 +1478,47 @@ interface ToolTurnContext {
    * call is authorized against THIS digest's scopes, never against a fresh resolution.
    */
   memory?: MemoryDigest;
+  /**
+   * The step's tool calls that ran, with their windows, read off their `persist:toolexec` /
+   * `persist:toolfail` checkpoints — the run's tool time. Absent → nothing is collected.
+   */
+  toolTimings?: ToolTimingEntry[];
+}
+
+/** One executed tool call's window, as its persist checkpoint journaled it. */
+interface ToolTimingEntry {
+  toolCallId: string;
+  toolName: string;
+  /** Epoch ms the call started, when known. */
+  at?: number;
+  ms: number;
+}
+
+/** What a tool's persist checkpoint journals about its execution (`{}` when it was not measured). */
+type JournaledToolTiming = { ms?: number; at?: number } | undefined;
+
+/** Note a settled call's journaled execution window on its step. */
+function noteToolTiming(
+  turn: ToolTurnContext,
+  call: ToolCallRequest,
+  journaled: JournaledToolTiming,
+): void {
+  if (turn.toolTimings === undefined || journaled === undefined || journaled === null) return;
+  if (typeof journaled.ms !== 'number') return;
+  turn.toolTimings.push({
+    toolCallId: call.id,
+    toolName: call.name,
+    ms: journaled.ms,
+    ...(typeof journaled.at === 'number' ? { at: journaled.at } : {}),
+  });
+}
+
+/** The execution window a persist checkpoint journals, from the outcome measured in this process. */
+function journalTiming(outcome: ToolOutcome): { ms?: number; at?: number } {
+  return {
+    ...(outcome.durationMs !== undefined ? { ms: outcome.durationMs } : {}),
+    ...(outcome.startedAt !== undefined ? { at: outcome.startedAt } : {}),
+  };
 }
 
 /** A tool call whose kind has been settled by its `persist:toolcall` checkpoint. */
@@ -1493,7 +1552,7 @@ interface SyntheticToolCall {
 
 /** One invocation's result, already reduced to what the persist checkpoint writes. */
 /** How long the tool ran in this process; `replayed` when its checkpoint came from the journal. */
-type ToolTiming = { durationMs?: number; replayed?: true };
+type ToolTiming = { durationMs?: number; startedAt?: number; replayed?: true };
 
 type ToolOutcome =
   | ({ status: 'executed'; output: unknown } & ToolTiming)
@@ -1887,7 +1946,7 @@ async function invokeClaimedTool(
   // Set only when the step's body runs here: a checkpoint read back from the journal has no timing.
   let ranAt: number | undefined;
   const timing = (): ToolTiming =>
-    ranAt === undefined ? { replayed: true } : { durationMs: Date.now() - ranAt };
+    ranAt === undefined ? { replayed: true } : { durationMs: Date.now() - ranAt, startedAt: ranAt };
   try {
     const raw = await hooks.step(`tool:${call.id}`, async () => {
       ranAt = Date.now();
@@ -2084,17 +2143,23 @@ async function recordToolOutcome(
     });
   };
   if (outcome.status === 'failed') {
-    await hooks.step(`persist:toolfail:${call.id}`, async () => {
-      await deps.store.updateToolCall({
-        toolCallId: call.id,
-        runId: hooks.runId,
-        status: 'failed',
-        error: outcome.error,
-        ...executionMs(outcome),
-        ...decided,
-      });
-      await settle();
-    });
+    const journaled: JournaledToolTiming = await hooks.step(
+      `persist:toolfail:${call.id}`,
+      async () => {
+        await deps.store.updateToolCall({
+          toolCallId: call.id,
+          runId: hooks.runId,
+          status: 'failed',
+          error: outcome.error,
+          ...executionMs(outcome),
+          ...decided,
+        });
+        await settle();
+        // Journaled with the checkpoint that records it, so a replay counts the call's time once.
+        return journalTiming(outcome);
+      },
+    );
+    noteToolTiming(turn, call, journaled);
     publishAgentToolCall({
       runId: hooks.runId,
       toolCallId: call.id,
@@ -2111,18 +2176,24 @@ async function recordToolOutcome(
       ...(outcome.denied ? { denied: true } : {}),
     };
   }
-  await hooks.step(`persist:toolexec:${call.id}`, async () => {
-    await deps.store.updateToolCall({
-      toolCallId: call.id,
-      runId: hooks.runId,
-      status: 'executed',
-      output: outcome.output,
-      ...(toolType === 'action' ? { executedByRef: deciderRef } : {}),
-      ...executionMs(outcome),
-      ...decided,
-    });
-    await settle();
-  });
+  const journaled: JournaledToolTiming = await hooks.step(
+    `persist:toolexec:${call.id}`,
+    async () => {
+      await deps.store.updateToolCall({
+        toolCallId: call.id,
+        runId: hooks.runId,
+        status: 'executed',
+        output: outcome.output,
+        ...(toolType === 'action' ? { executedByRef: deciderRef } : {}),
+        ...executionMs(outcome),
+        ...decided,
+      });
+      await settle();
+      // Journaled with the checkpoint that records it, so a replay counts the call's time once.
+      return journalTiming(outcome);
+    },
+  );
+  noteToolTiming(turn, call, journaled);
   publishAgentToolCall({
     runId: hooks.runId,
     toolCallId: call.id,
@@ -2879,8 +2950,9 @@ async function structureAnswer<TOutput>(args: {
       },
     );
     await hooks.step(`persist:usage:structured:${step}:${attempt}`, () =>
-      deps.store.recordUsage({
+      recordUsageRow(deps.store, {
         threadId: input.threadId,
+        ...usageAttribution(input),
         actorRef: input.actor.id,
         runId: hooks.runId,
         modelId: reply.modelId ?? deps.modelId ?? 'unknown',
@@ -3086,11 +3158,33 @@ export async function runAgentLoop<TOutput = unknown>(
   hooks: AgentLoopHooks,
 ): Promise<AgentLoopResult<TOutput>> {
   const startedAt = Date.now();
+  const clock: RunClock = {};
   try {
-    return await runAgentTurn(boundDeps, requested, hooks);
+    return await runAgentTurn(boundDeps, requested, hooks, clock);
   } catch (error) {
-    publishRunEnded(error, requested, hooks, startedAt);
+    publishRunEnded(error, requested, hooks, startedAt, clock);
     throw error;
+  }
+}
+
+/** What the turn learned about its own timing that its terminal diagnostics need. */
+interface RunClock {
+  /** From the journaled `persist:run:start`. */
+  queueMs?: number;
+  /** The steps measured so far — what a failure reports of them. */
+  steps?: RunStepTiming[];
+}
+
+/** The queue time the runner reports, rounded; `undefined` when it has none (or it fails). */
+async function readQueueMs(hooks: AgentLoopHooks): Promise<number | undefined> {
+  if (hooks.queueMs === undefined) return undefined;
+  try {
+    const value = await hooks.queueMs();
+    return typeof value === 'number' && Number.isFinite(value)
+      ? Math.max(0, Math.round(value))
+      : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -3117,25 +3211,41 @@ function publishRunEnded(
   input: AgentRunInput,
   hooks: AgentLoopHooks,
   startedAt: number,
+  clock: RunClock,
 ): void {
   if (!isReplayIntegrityError(error) && hooks.isControlFlowError?.(error) === true) return;
   const base = {
     runId: hooks.runId,
     threadId: input.threadId,
     durationMs: Date.now() - startedAt,
+    ...(clock.queueMs !== undefined ? { queueMs: clock.queueMs } : {}),
     ...runContext(input),
   };
   if (hooks.abortSignal?.aborted === true) {
     publishAgentRunCancelled(base);
     return;
   }
-  publishAgentRunFailed({ ...base, code: streamErrorCode(error) });
+  const timings = clock.steps !== undefined ? rollupRunTimings(clock.steps) : undefined;
+  publishAgentRunFailed({
+    ...base,
+    code: streamErrorCode(error),
+    ...(timings !== undefined
+      ? {
+          modelMs: timings.modelMs,
+          toolsMs: timings.toolsMs,
+          modelCalls: timings.modelCalls,
+          toolCalls: timings.toolCalls,
+          stepTimings: timings.steps,
+        }
+      : {}),
+  });
 }
 
 async function runAgentTurn<TOutput = unknown>(
   boundDeps: AgentLoopDeps<TOutput>,
   requested: AgentRunInput,
   hooks: AgentLoopHooks,
+  clock: RunClock,
 ): Promise<AgentLoopResult<TOutput>> {
   // The persona, FIRST and only when the run names one by id: its definition is read from config
   // once and frozen in this checkpoint, so a run resumed after the persona was edited or removed
@@ -3201,16 +3311,31 @@ async function runAgentTurn<TOutput = unknown>(
   // Open the run (turn) row FIRST — before the quota gate — so even a quota-rejected run is tracked
   // (the runner settles it `failed`). A checkpointed step so a durable replay reuses the ONE row (no
   // duplicate on resume); `run_id` is then stamped onto every message / tool call / usage row below.
-  await hooks.step('persist:run:start', () =>
-    deps.store.recordRunStart({
-      runId: hooks.runId,
-      threadId: input.threadId,
-      actor: input.actor,
-      durable: hooks.durable ?? false,
-      ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
-      ...(input.parentRunId !== undefined ? { parentRunId: input.parentRunId } : {}),
-    }),
+  //
+  // The run's queue time is read INSIDE this checkpoint and journaled with it: the body runs once per
+  // slice of a durable run, and only the first execution of this step is the moment it left the queue.
+  const opened: { queueMs?: number } | undefined = await hooks.step(
+    'persist:run:start',
+    async () => {
+      const queueMs = await readQueueMs(hooks);
+      await deps.store.recordRunStart({
+        runId: hooks.runId,
+        threadId: input.threadId,
+        actor: input.actor,
+        durable: hooks.durable ?? false,
+        ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+        ...(input.parentRunId !== undefined ? { parentRunId: input.parentRunId } : {}),
+        ...(queueMs !== undefined ? { queueMs } : {}),
+      });
+      return queueMs !== undefined ? { queueMs } : {};
+    },
   );
+  if (typeof opened === 'object' && opened !== null && typeof opened.queueMs === 'number') {
+    clock.queueMs = opened.queueMs;
+  }
+  // Where each step's time went, filled as the steps run (or replay from their checkpoints).
+  const stepTimings: RunStepTiming[] = [];
+  clock.steps = stepTimings;
 
   if (deps.quota !== undefined) {
     const quota = deps.quota;
@@ -3404,8 +3529,9 @@ async function runAgentTurn<TOutput = unknown>(
     if (retrieved.usage !== undefined && retrieved.usage.inputTokens > 0) {
       const embeddingUsage = retrieved.usage;
       await hooks.step('persist:usage:embedding', () =>
-        deps.store.recordUsage({
+        recordUsageRow(deps.store, {
           threadId: input.threadId,
+          ...usageAttribution(input),
           actorRef: input.actor.id,
           runId: hooks.runId,
           modelId: embeddingUsage.modelId ?? 'unknown',
@@ -3526,93 +3652,105 @@ async function runAgentTurn<TOutput = unknown>(
     // Stamped from THIS process's registry, which is the one that built `tools` for the call above —
     // and stamped INSIDE the checkpoint, so the kinds are journaled with the calls they describe
     // rather than re-derived by whatever process replays this turn.
-    let turn: BufferedModelTurnResult = await hooks.step(`llm:${i}`, async () =>
-      stampToolKinds(
-        await spannedAgent(
-          'llm.turn',
-          hooks.runId,
-          { runId: hooks.runId, step: i },
-          async (): Promise<BufferedModelTurnResult> => {
-            const incremental =
-              gateMode === 'incremental'
-                ? createIncrementalGate({
-                    processors: outputProcessors,
-                    ctx: processorContext(i),
-                    lookbackChars: gateLookback,
-                    writer,
-                  })
-                : undefined;
-            const buffer = gateMode === 'whole' ? createFrameBuffer() : undefined;
-            // Written from inside this checkpoint, like every frame the model streams, so a replay
-            // that returns the journaled turn never opens the step twice.
-            await writer.write({ t: 'event', event: { kind: 'step-start' } });
-            const announced = announcedToolCalls(incremental?.writer ?? buffer?.writer ?? writer);
-            // A tool that previews its input (genui's streaming tree) gets partial `ui` frames
-            // while the model writes its arguments. Added BELOW the observer: a preview is shown,
-            // never part of what the turn persists.
-            const previews = previewToolInputs(announced.writer, async (name, toolCallId) =>
-              tools.some((definition) => definition.name === name)
-                ? deps.registry.previewInput(name, {
-                    actor: input.actor,
-                    threadId: input.threadId,
-                    toolCallId,
-                    ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
-                    ...(input.uiCapabilities !== undefined
-                      ? { uiCapabilities: input.uiCapabilities }
-                      : {}),
-                    channel: turnChannel(input.pageContext),
-                  })
-                : undefined,
-            );
-            // Reasoning and pushed UI are read off the frames INSIDE this checkpoint, so they are
-            // journaled with the turn and a replay persists the same thinking instead of none.
-            const frames = observeTurnFrames(previews.writer);
-            const result = withTurnFrames(
-              await abortableModelCall(hooks, (signal) =>
-                deps.model.runTurn({
-                  system: prompt.system,
-                  messages: prompt.messages,
-                  tools,
-                  sink: frames.writer,
-                  ...signal,
-                }),
-              ),
-              frames.summary(),
-            );
-            // A provider that streams no tool frames still gets its calls announced — an outcome
-            // for a call the client never saw announced drops the whole message there.
-            await announced.announceRest(result.toolCalls, tools);
-            // Journaled with the turn, so whichever process settles the calls withdraws the same
-            // previews the stream showed.
-            const shownPreviews = previews.shown();
-            const previewed = shownPreviews.length > 0 ? { previews: shownPreviews } : {};
-            if (incremental !== undefined) {
-              await incremental.settled();
-              const refusal = incremental.rejection();
-              return {
-                ...result,
-                ...previewed,
-                releasedText: incremental.released(),
-                ...(refusal !== undefined ? { gateRejection: refusal } : {}),
-              };
-            }
-            return buffer === undefined
-              ? { ...result, ...previewed }
-              : { ...result, ...previewed, bufferedFrames: buffer.frames() };
-          },
-          (result) => ({
-            ...(result.modelId !== undefined ? { modelId: result.modelId } : {}),
-            inputTokens: result.usage.inputTokens,
-            outputTokens: result.usage.outputTokens,
-            textLength: result.text.length,
-            toolCalls: result.toolCalls.length,
-          }),
-        ),
-        { ...deps, actionApprovalMode: thread.actionApprovalMode ?? 'blocking' },
-        input,
-        hooks,
-      ),
-    );
+    let turn: BufferedModelTurnResult = await hooks.step(`llm:${i}`, async () => {
+      const timed = await timedSpan(
+        'llm.turn',
+        hooks.runId,
+        { runId: hooks.runId, step: i },
+        async (): Promise<BufferedModelTurnResult> => {
+          const incremental =
+            gateMode === 'incremental'
+              ? createIncrementalGate({
+                  processors: outputProcessors,
+                  ctx: processorContext(i),
+                  lookbackChars: gateLookback,
+                  writer,
+                })
+              : undefined;
+          const buffer = gateMode === 'whole' ? createFrameBuffer() : undefined;
+          // Written from inside this checkpoint, like every frame the model streams, so a replay
+          // that returns the journaled turn never opens the step twice.
+          await writer.write({ t: 'event', event: { kind: 'step-start' } });
+          const announced = announcedToolCalls(incremental?.writer ?? buffer?.writer ?? writer);
+          // A tool that previews its input (genui's streaming tree) gets partial `ui` frames
+          // while the model writes its arguments. Added BELOW the observer: a preview is shown,
+          // never part of what the turn persists.
+          const previews = previewToolInputs(announced.writer, async (name, toolCallId) =>
+            tools.some((definition) => definition.name === name)
+              ? deps.registry.previewInput(name, {
+                  actor: input.actor,
+                  threadId: input.threadId,
+                  toolCallId,
+                  ...(input.agentName !== undefined ? { agentName: input.agentName } : {}),
+                  ...(input.uiCapabilities !== undefined
+                    ? { uiCapabilities: input.uiCapabilities }
+                    : {}),
+                  channel: turnChannel(input.pageContext),
+                })
+              : undefined,
+          );
+          // Reasoning and pushed UI are read off the frames INSIDE this checkpoint, so they are
+          // journaled with the turn and a replay persists the same thinking instead of none.
+          const frames = observeTurnFrames(previews.writer);
+          const result = withTurnFrames(
+            await abortableModelCall(hooks, (signal) =>
+              deps.model.runTurn({
+                system: prompt.system,
+                messages: prompt.messages,
+                tools,
+                sink: frames.writer,
+                ...signal,
+              }),
+            ),
+            frames.summary(),
+          );
+          // A provider that streams no tool frames still gets its calls announced — an outcome
+          // for a call the client never saw announced drops the whole message there.
+          await announced.announceRest(result.toolCalls, tools);
+          // Journaled with the turn, so whichever process settles the calls withdraws the same
+          // previews the stream showed.
+          const shownPreviews = previews.shown();
+          const previewed = shownPreviews.length > 0 ? { previews: shownPreviews } : {};
+          if (incremental !== undefined) {
+            await incremental.settled();
+            const refusal = incremental.rejection();
+            return {
+              ...result,
+              ...previewed,
+              releasedText: incremental.released(),
+              ...(refusal !== undefined ? { gateRejection: refusal } : {}),
+            };
+          }
+          return buffer === undefined
+            ? { ...result, ...previewed }
+            : { ...result, ...previewed, bufferedFrames: buffer.frames() };
+        },
+        (result) => ({
+          ...(result.modelId !== undefined ? { modelId: result.modelId } : {}),
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          textLength: result.text.length,
+          toolCalls: result.toolCalls.length,
+        }),
+      );
+      // The span's own duration rides the journaled turn, so a replay counts the call once.
+      return {
+        ...(await stampToolKinds(
+          timed.value,
+          { ...deps, actionApprovalMode: thread.actionApprovalMode ?? 'blocking' },
+          input,
+          hooks,
+        )),
+        modelMs: Math.round(timed.durationMs),
+      };
+    });
+    const stepTiming: RunStepTiming = {
+      step: i,
+      ...(typeof turn.modelMs === 'number' ? { modelMs: turn.modelMs } : {}),
+      tools: [],
+      toolsMs: 0,
+    };
+    stepTimings.push(stepTiming);
 
     // The gate runs before ANYTHING downstream: before the held frames reach the subscriber, before
     // the assistant message is persisted, before this text becomes the next step's context.
@@ -3673,8 +3811,9 @@ async function runAgentTurn<TOutput = unknown>(
     );
 
     await hooks.step(`persist:usage:${i}`, () =>
-      deps.store.recordUsage({
+      recordUsageRow(deps.store, {
         threadId: input.threadId,
+        ...usageAttribution(input),
         actorRef: input.actor.id,
         runId: hooks.runId,
         modelId: resolvedModelId,
@@ -3881,6 +4020,7 @@ async function runAgentTurn<TOutput = unknown>(
       actionApprovalMode: thread.actionApprovalMode ?? 'blocking',
       ...(skillOffer !== undefined ? { skills: skillOffer } : {}),
       ...(memoryDigest !== undefined ? { memory: memoryDigest } : {}),
+      toolTimings: [],
     };
     // A model routinely asks for several tools at once, and running them back to back makes the
     // turn cost their sum. Overlapping them is safe here because a checkpoint position is handed
@@ -3931,6 +4071,18 @@ async function runAgentTurn<TOutput = unknown>(
         results.push(await runClaimedToolCall(turnCalls, await claimToolCall(turnCalls, call)));
       }
     }
+    // Settled, in call order: the step's tool time, parallel calls counted once.
+    const ranTools = turnCalls.toolTimings ?? [];
+    const order = new Map(turn.toolCalls.map((call, index) => [call.id, index]));
+    ranTools.sort(
+      (left, right) => (order.get(left.toolCallId) ?? 0) - (order.get(right.toolCallId) ?? 0),
+    );
+    stepTiming.tools = ranTools.map((entry) => ({
+      toolCallId: entry.toolCallId,
+      toolName: entry.toolName,
+      ms: entry.ms,
+    }));
+    stepTiming.toolsMs = toolsWallClockMs(ranTools);
     // The outputs land on the assistant message that made the calls. A reader reopening the thread
     // pairs a call with its result off THAT message, so results that only reached the tool-call
     // table leave every tool in the turn rendering as one still running.
@@ -4081,6 +4233,7 @@ async function runAgentTurn<TOutput = unknown>(
 
   // Every text frame of the turn has gone out by now, so its time to first token is known.
   const firstTextAt = firstText.firstTextAt();
+  const timings = rollupRunTimings(stepTimings);
 
   // Settle the run `completed` with its rollup. Normal completion only — the loop never records a
   // failure (it doesn't catch its own crash; that's the runner's job). A checkpointed step so a
@@ -4097,6 +4250,7 @@ async function runAgentTurn<TOutput = unknown>(
       ...(hasCost ? { costUsd: totalCost } : {}),
       ...(firstTextAt !== undefined ? { ttftMs: firstTextAt - turnStartedAt } : {}),
       ...(lastModelId !== undefined ? { modelId: lastModelId } : {}),
+      timings,
     }),
   );
 
@@ -4111,6 +4265,12 @@ async function runAgentTurn<TOutput = unknown>(
     ...(firstTextAt !== undefined ? { ttftMs: firstTextAt - turnStartedAt } : {}),
     ...(hasCost ? { costUsd: totalCost } : {}),
     ...(lastModelId !== undefined ? { modelId: lastModelId } : {}),
+    ...(clock.queueMs !== undefined ? { queueMs: clock.queueMs } : {}),
+    modelMs: timings.modelMs,
+    toolsMs: timings.toolsMs,
+    modelCalls: timings.modelCalls,
+    toolCalls: timings.toolCalls,
+    stepTimings: timings.steps,
     ...runContext(input),
   });
   return { text: lastText, ...(structured !== undefined ? { object: structured } : {}) };

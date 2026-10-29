@@ -58,6 +58,8 @@ import { LucidActionProposalStore } from './lucid-action-proposal-store.js';
 import {
   AGENT_TABLES,
   ensureAgentTables,
+  hasLedgerColumns,
+  hasRunTimingColumns,
   hasSentAtColumns,
   hasToolCallIdColumn,
   rowsOf,
@@ -358,6 +360,13 @@ export class LucidAgentStore
    * provisions the schema; see {@link checkToolCallSchema} for when it is not.
    */
   private sentAtColumns = true;
+  /**
+   * Whether `agent_token_usage` has the columns usage beyond agent turns writes (`feature`,
+   * `provider`, the units, `metadata`). Always so when the store provisions the schema.
+   */
+  private ledgerColumns = true;
+  /** Whether `agent_run` has the timing columns (`queue_ms`, `model_ms`…). As {@link ledgerColumns}. */
+  private runTimingColumns = true;
 
   constructor(
     private readonly db: LucidDatabaseLike,
@@ -397,6 +406,16 @@ export class LucidAgentStore
         '[@adonis-agora/agent] agent_message has no sent_at column. With autoCreateTables off the ' +
           'schema is yours: add a migration that calls createAgentTables(). Until it runs, send times ' +
           '(sentAt) are not stored, and messageTimestamps labels messages with their created_at.',
+      );
+    }
+    this.ledgerColumns = await hasLedgerColumns(this.db);
+    this.runTimingColumns = await hasRunTimingColumns(this.db);
+    if (!this.ledgerColumns || !this.runTimingColumns) {
+      console.warn(
+        '[@adonis-agora/agent] agent_token_usage / agent_run lack the usage-ledger and run-timing ' +
+          'columns. With autoCreateTables off the schema is yours: add a migration that calls ' +
+          'createAgentTables(). Until it runs, usage rows are written without feature/units/metadata, ' +
+          'usage without a thread is refused, and run timings are not stored.',
       );
     }
     this.toolCallsScoped = await hasToolCallIdColumn(this.db);
@@ -1271,7 +1290,7 @@ export class LucidAgentStore
     await this.init();
     await this.db.table(AGENT_TABLES.tokenUsage).insert({
       id: crypto.randomUUID(),
-      thread_id: input.threadId,
+      thread_id: input.threadId ?? null,
       actor_ref: input.actorRef,
       message_id: input.messageId ?? null,
       model_id: input.modelId,
@@ -1284,6 +1303,17 @@ export class LucidAgentStore
       cost_source: input.costUsd !== undefined ? (input.costSource ?? 'provider') : null,
       run_id: input.runId ?? null,
       created_at: Date.now(),
+      ...(this.ledgerColumns
+        ? {
+            feature: input.feature ?? null,
+            provider: input.provider ?? null,
+            tenant_ref: input.tenantRef ?? null,
+            audio_seconds: input.audioSeconds ?? null,
+            characters: input.characters ?? null,
+            requests: input.requests ?? null,
+            metadata: input.metadata !== undefined ? JSON.stringify(input.metadata) : null,
+          }
+        : {}),
     });
   }
 
@@ -1345,6 +1375,9 @@ export class LucidAgentStore
       cost_usd: null,
       error: null,
       durable: input.durable ? 1 : 0,
+      ...(this.runTimingColumns && input.queueMs !== undefined
+        ? { queue_ms: Math.max(0, Math.round(input.queueMs)) }
+        : {}),
     });
   }
 
@@ -1369,6 +1402,13 @@ export class LucidAgentStore
     if (input.ttftMs !== undefined) patch.ttft_ms = input.ttftMs;
     if (input.errorCode !== undefined) patch.error_code = input.errorCode;
     if (input.modelId !== undefined) patch.model_id = input.modelId;
+    if (input.timings !== undefined && this.runTimingColumns) {
+      patch.model_ms = Math.round(input.timings.modelMs);
+      patch.tools_ms = Math.round(input.timings.toolsMs);
+      patch.model_calls = input.timings.modelCalls;
+      patch.tool_calls = input.timings.toolCalls;
+      patch.timings = JSON.stringify(input.timings.steps);
+    }
     // First terminal wins: only settle a run still `running`, so a late `completed` from the loop can
     // never overwrite a `failed`/`cancelled` the runner already recorded (idempotent under replay too).
     await this.db

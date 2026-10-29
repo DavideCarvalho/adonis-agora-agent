@@ -2,6 +2,7 @@ import { type GenuiStats, genuiRowsInRange, summarizeGenuiCalls } from '../genui
 import type {
   ActorSpendRow,
   AgentGovernanceQueries,
+  FeatureSpendRow,
   GovernanceRange,
   GovernanceThreadDetail,
   ListRunsFilter,
@@ -19,6 +20,8 @@ import type {
   ThreadActivityRow,
   ToolCallActivityRow,
   ToolStatsRange,
+  UsageBreakdownFilter,
+  UsageBreakdownRow,
   UsageTrendPoint,
 } from '../index.js';
 import { summarizeLatency, summarizeRunMetrics } from '../run-metrics.js';
@@ -68,7 +71,22 @@ function runToSummary(run: GovernanceRunRow): RunSummaryRow {
     ttftMs: run.ttftMs ?? null,
     errorCode: run.errorCode ?? null,
     modelId: run.modelId ?? null,
+    queueMs: run.queueMs ?? null,
+    modelMs: run.timings?.modelMs ?? null,
+    toolsMs: run.timings?.toolsMs ?? null,
+    modelCalls: run.timings?.modelCalls ?? null,
+    toolCalls: run.timings?.toolCalls ?? null,
   };
+}
+
+/** The feature a ledger row reports under: its own, else `agent` (an agent row from before features). */
+export function usageFeature(row: { feature?: string | null }): string {
+  return typeof row.feature === 'string' && row.feature !== '' ? row.feature : 'agent';
+}
+
+/** Whether a ledger row came from `AgentService.recordUsage` rather than an agent turn. */
+export function usageSource(row: { purpose?: string | null }): 'agent' | 'external' {
+  return row.purpose === 'external' ? 'external' : 'agent';
 }
 
 /** Map an in-memory tool-call feed row to the read-model {@link RunToolCallRow}. */
@@ -160,7 +178,7 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
         outputTokens: 0,
         costUsd: 0,
       };
-      bucket.requests += 1;
+      bucket.requests += row.requests ?? 1;
       bucket.inputTokens += row.inputTokens;
       bucket.outputTokens += row.outputTokens;
       bucket.costUsd += this.rowCost(row);
@@ -189,7 +207,7 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
         continue;
       }
       const bucket = byActor.get(row.actorRef) ?? { requests: 0, totalTokens: 0, costUsd: 0 };
-      bucket.requests += 1;
+      bucket.requests += row.requests ?? 1;
       bucket.totalTokens += row.inputTokens + row.outputTokens;
       bucket.costUsd += this.rowCost(row);
       byActor.set(row.actorRef, bucket);
@@ -326,6 +344,7 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
       .map((row) => ({
         modelId: row.modelId,
         purpose: row.purpose ?? 'chat',
+        feature: usageFeature(row),
         inputTokens: row.inputTokens,
         outputTokens: row.outputTokens,
         costUsd: row.costUsd ?? null,
@@ -337,7 +356,84 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
       toolCalls,
       approvals: toolCalls.filter((call) => call.status === 'pending_approval'),
       usage,
+      timings: run.timings ?? null,
     };
+  }
+
+  async spendByFeature(range: GovernanceRange): Promise<FeatureSpendRow[]> {
+    const byFeature = new Map<string, FeatureSpendRow>();
+    for (const row of this.store.governanceUsage()) {
+      if (!this.inRange(row.day, range)) continue;
+      const feature = usageFeature(row);
+      const source = usageSource(row);
+      const key = `${source}\u0000${feature}`;
+      const bucket = byFeature.get(key) ?? {
+        feature,
+        source,
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        audioSeconds: 0,
+        characters: 0,
+        costUsd: 0,
+      };
+      bucket.requests += row.requests ?? 1;
+      bucket.inputTokens += row.inputTokens;
+      bucket.outputTokens += row.outputTokens;
+      bucket.audioSeconds += row.audioSeconds ?? 0;
+      bucket.characters += row.characters ?? 0;
+      bucket.costUsd += this.rowCost(row);
+      byFeature.set(key, bucket);
+    }
+    return [...byFeature.values()].sort(
+      (left, right) =>
+        right.costUsd - left.costUsd ||
+        left.feature.localeCompare(right.feature) ||
+        left.source.localeCompare(right.source),
+    );
+  }
+
+  async usageBreakdown(
+    range: GovernanceRange,
+    filter: UsageBreakdownFilter = {},
+  ): Promise<UsageBreakdownRow[]> {
+    const rows = new Map<string, UsageBreakdownRow>();
+    for (const row of this.store.governanceUsage()) {
+      if (!this.inRange(row.day, range)) continue;
+      const feature = usageFeature(row);
+      if (filter.actor !== undefined && row.actorRef !== filter.actor) continue;
+      if (filter.feature !== undefined && feature !== filter.feature) continue;
+      const source = usageSource(row);
+      const key = `${row.actorRef}\u0000${source}\u0000${feature}`;
+      const bucket = rows.get(key) ?? {
+        actorRef: row.actorRef,
+        feature,
+        source,
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        audioSeconds: 0,
+        characters: 0,
+        costUsd: 0,
+        estimatedCostUsd: 0,
+      };
+      const cost = this.rowCost(row);
+      bucket.requests += row.requests ?? 1;
+      bucket.inputTokens += row.inputTokens;
+      bucket.outputTokens += row.outputTokens;
+      bucket.audioSeconds += row.audioSeconds ?? 0;
+      bucket.characters += row.characters ?? 0;
+      bucket.costUsd += cost;
+      if (row.costUsd === undefined || row.costSource === 'estimate')
+        bucket.estimatedCostUsd += cost;
+      rows.set(key, bucket);
+    }
+    return [...rows.values()].sort(
+      (left, right) =>
+        right.costUsd - left.costUsd ||
+        left.actorRef.localeCompare(right.actorRef) ||
+        left.feature.localeCompare(right.feature),
+    );
   }
 
   async pendingApprovals(filter: PendingApprovalsFilter = {}): Promise<PendingApprovalRow[]> {
