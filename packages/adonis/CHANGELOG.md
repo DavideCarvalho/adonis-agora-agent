@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.92.0
+
+### Minor Changes
+
+- [#508](https://github.com/DavideCarvalho/adonis-agora-agent/pull/508) [`3bfb624`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3bfb62431c8233c569e38a17aa6258f52e7511ad) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `forkThread(threadId, fromMessageId, options?)` takes `ForkThreadOptions` — `{ actorRef?, tenantRef? }` — to make the copy belong to someone else. That is "continue this conversation" from a shared link: the reader gets their own copy up to that point to go on from, and the original stays its owner's. Without options nothing changes (the copy is the source owner's), in `AgentService`, the Lucid store and the in-memory store. A custom `AgentStore` keeps compiling (the parameter is optional) and should honour it to support the feature.
+
 ## 0.91.6
 
 ### Patch Changes
