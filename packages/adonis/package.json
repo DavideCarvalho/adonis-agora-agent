@@ -310,7 +310,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.31.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@standard-schema/spec": "1.1.0",
     "@tailwindcss/browser": "4.3.3",
     "acorn": "8.17.0",
