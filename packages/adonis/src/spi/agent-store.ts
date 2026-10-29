@@ -25,7 +25,10 @@ import type { ToolCallApprovalState } from './approval-policy.js';
  */
 export interface ForkThreadOptions {
   actorRef?: string;
-  /** The copy's tenant. Absent → the source's; `null` → none. */
+  /**
+   * The copy's tenant. Absent → the source's (even with a new `actorRef`: forking across tenants,
+   * pass both); `null` → none; a value → that tenant.
+   */
   tenantRef?: string | null;
 }
 

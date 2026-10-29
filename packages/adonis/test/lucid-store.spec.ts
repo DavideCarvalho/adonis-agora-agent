@@ -284,6 +284,15 @@ describe('LucidAgentStore', () => {
     });
     expect(await store.getThreadActorRef(fork.id)).toBe('reader-1');
     expect((await store.getThread(fork.id))?.messages.map((m) => m.content)).toEqual(['one']);
+    // Tenant: `null` clears it, a value sets it, absent keeps the source's (even for a new owner).
+    expect((await store.getThreadActionProposalScope(fork.id))?.tenantRef ?? null).toBeNull();
+    const other = await store.forkThread(thread.id, m1.id, {
+      actorRef: 'reader-2',
+      tenantRef: 'tenant-2',
+    });
+    expect((await store.getThreadActionProposalScope(other.id))?.tenantRef).toBe('tenant-2');
+    const kept = await store.forkThread(thread.id, m1.id, { actorRef: 'reader-3' });
+    expect((await store.getThreadActionProposalScope(kept.id))?.tenantRef).toBe('tenant-1');
     expect((await store.listThreads('reader-1')).map((t) => t.id)).toContain(fork.id);
     // The source stays its owner's.
     expect(await store.getThreadActorRef(thread.id)).toBe('user-1');

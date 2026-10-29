@@ -18,5 +18,18 @@ describe('InMemoryAgentStore.forkThread', () => {
 
     const own = await store.forkThread(thread.id, m1.id);
     expect(await store.getThreadActorRef(own.id)).toBe('user-1');
+
+    // Tenant: absent keeps the source's, `null` clears it, a value sets it.
+    expect((await store.getThreadActionProposalScope(fork.id))?.tenantRef).toBe('tenant-1');
+    const cleared = await store.forkThread(thread.id, m1.id, {
+      actorRef: 'reader-2',
+      tenantRef: null,
+    });
+    expect((await store.getThreadActionProposalScope(cleared.id))?.tenantRef ?? null).toBeNull();
+    const moved = await store.forkThread(thread.id, m1.id, {
+      actorRef: 'reader-3',
+      tenantRef: 't-2',
+    });
+    expect((await store.getThreadActionProposalScope(moved.id))?.tenantRef).toBe('t-2');
   });
 });

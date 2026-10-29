@@ -1580,7 +1580,9 @@ export class AgentService {
 
   /**
    * Copy a thread up to `fromMessageId` (inclusive) into a new one. With `options.actorRef`, the copy
-   * belongs to that actor — see {@link ForkThreadOptions}.
+   * belongs to that actor — see {@link ForkThreadOptions}. `options.tenantRef` is separate: absent,
+   * the copy keeps the SOURCE's tenant, even when it now belongs to someone else; `null` clears it;
+   * a value sets it. Forking across tenants, pass both.
    */
   forkThread(
     threadId: string,
