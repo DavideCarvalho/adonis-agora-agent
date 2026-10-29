@@ -6,6 +6,7 @@ import { AgentApiError } from '../client/agent-client.js';
 import type {
   ActorSpendRow,
   CurrentModelPrice,
+  FeatureSpendRow,
   GenuiStats,
   GovernanceThreadDetail,
   ListRunsResult,
@@ -301,6 +302,29 @@ const emptyGenuiStats: GenuiStats = {
   },
 };
 
+const featureRows: FeatureSpendRow[] = [
+  {
+    feature: 'agent:support',
+    source: 'agent',
+    requests: 12,
+    inputTokens: 9000,
+    outputTokens: 1200,
+    audioSeconds: 0,
+    characters: 0,
+    costUsd: 14.1,
+  },
+  {
+    feature: 'transcription',
+    source: 'external',
+    requests: 3,
+    inputTokens: 0,
+    outputTokens: 0,
+    audioSeconds: 540,
+    characters: 0,
+    costUsd: 1.6,
+  },
+];
+
 function fakeClient(overrides: Partial<AgentClient> = {}): AgentClient {
   return {
     spendByModel: vi.fn().mockResolvedValue(modelRows),
@@ -326,6 +350,7 @@ function fakeClient(overrides: Partial<AgentClient> = {}): AgentClient {
     pricing: vi.fn().mockResolvedValue(prices),
     upsertPrice: vi.fn().mockResolvedValue({ ok: true }),
     genuiStats: vi.fn().mockResolvedValue(genuiStats),
+    spendByFeature: vi.fn().mockResolvedValue(featureRows),
     ...overrides,
   } as unknown as AgentClient;
 }
@@ -361,6 +386,26 @@ describe('Overview', () => {
     expect(client.spendByModel).toHaveBeenCalledWith(RANGE);
     expect(client.usageTrend).toHaveBeenCalledWith(RANGE);
     expect(client.spendByActor).toHaveBeenCalledWith(RANGE);
+  });
+
+  it('shows agent turns and recorded usage side by side by feature', async () => {
+    const client = fakeClient();
+    renderWith(client, <Overview range={RANGE} />);
+    await waitFor(() => expect(screen.getByText('transcription')).toBeTruthy());
+    expect(screen.getByText('agent:support')).toBeTruthy();
+    expect(screen.getByText('recorded')).toBeTruthy();
+    expect(screen.getByText('agent turn')).toBeTruthy();
+    expect(screen.getByText('540 s audio')).toBeTruthy();
+    expect(client.spendByFeature).toHaveBeenCalledWith(RANGE);
+  });
+
+  it('leaves the feature panel out when the server predates it (501)', async () => {
+    const client = fakeClient({
+      spendByFeature: vi.fn().mockRejectedValue(new AgentApiError('GET failed (501)', 501)),
+    } as Partial<AgentClient>);
+    renderWith(client, <Overview range={RANGE} />);
+    await waitFor(() => expect(screen.getAllByText('gpt-4o').length).toBeGreaterThan(0));
+    expect(screen.queryByText('Spend by feature')).toBeNull();
   });
 
   it('shows an empty state when there is no usage', async () => {
@@ -510,6 +555,42 @@ describe('RunDetailView', () => {
     expect(screen.getByText('chat')).toBeTruthy();
     expect(screen.getByText('Tool calls')).toBeTruthy();
     expect(screen.getByText('Usage')).toBeTruthy();
+  });
+
+  it('shows where the time went: queue / model / tools, and each step', async () => {
+    const client = fakeClient({
+      runDetail: vi.fn().mockResolvedValue({
+        ...runDetail,
+        run: { ...runDetail.run, queueMs: 40, modelMs: 3000, toolsMs: 1200 },
+        timings: {
+          modelMs: 3000,
+          toolsMs: 1200,
+          modelCalls: 2,
+          toolCalls: 1,
+          steps: [
+            {
+              step: 0,
+              modelMs: 1800,
+              tools: [{ toolCallId: 'call-1', toolName: 'search_orders', ms: 1200 }],
+              toolsMs: 1200,
+            },
+            { step: 1, modelMs: 1200, tools: [], toolsMs: 0 },
+          ],
+        },
+      } satisfies RunDetail),
+    } as Partial<AgentClient>);
+    renderWith(client, <RunDetailView runId="run-abc12345" onBack={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Where the time went')).toBeTruthy());
+    expect(screen.getByText('2 model calls · 1 tool calls')).toBeTruthy();
+    expect(screen.getByText('Queue')).toBeTruthy();
+    expect(screen.getByText(/search_orders 1\.2/)).toBeTruthy();
+  });
+
+  it('leaves the timing panel out for a run without timings', async () => {
+    const client = fakeClient();
+    renderWith(client, <RunDetailView runId="run-abc12345" onBack={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Where is my order?')).toBeTruthy());
+    expect(screen.queryByText('Where the time went')).toBeNull();
   });
 
   it('shows an empty state when the run is unknown', async () => {

@@ -1,8 +1,10 @@
 import { type GenuiCallRow, type GenuiStats, summarizeGenuiCalls } from '../genui-telemetry.js';
 import { summarizeLatency, summarizeRunMetrics } from '../run-metrics.js';
+import type { RunStepTiming, RunTimings } from '../spi/agent-store.js';
 import type {
   ActorSpendRow,
   AgentGovernanceQueries,
+  FeatureSpendRow,
   GovernanceRange,
   GovernanceThreadDetail,
   ListRunsFilter,
@@ -22,6 +24,8 @@ import type {
   ThreadActivityRow,
   ToolCallActivityRow,
   ToolStatsRange,
+  UsageBreakdownFilter,
+  UsageBreakdownRow,
   UsageTrendPoint,
 } from '../spi/governance-queries.js';
 import type { AgentPricingStore, CurrentModelPrice } from '../spi/pricing-store.js';
@@ -213,7 +217,46 @@ function runRowToSummary(row: Record<string, unknown>): RunSummaryRow {
     ttftMs: toNumOrNull(row.ttft_ms),
     errorCode: toStrOrNull(row.error_code),
     modelId: toStrOrNull(row.model_id),
+    queueMs: toNumOrNull(row.queue_ms),
+    modelMs: toNumOrNull(row.model_ms),
+    toolsMs: toNumOrNull(row.tools_ms),
+    modelCalls: toNumOrNull(row.model_calls),
+    toolCalls: toNumOrNull(row.tool_calls),
   };
+}
+
+/** A run row's persisted {@link RunTimings}, or `null` when it has none (or they do not parse). */
+function runTimingsOf(row: Record<string, unknown>): RunTimings | null {
+  const steps = parseJsonCol(row.timings);
+  if (!Array.isArray(steps)) return null;
+  return {
+    modelMs: toInt(row.model_ms),
+    toolsMs: toInt(row.tools_ms),
+    modelCalls: toInt(row.model_calls),
+    toolCalls: toInt(row.tool_calls),
+    steps: steps as RunStepTiming[],
+  };
+}
+
+/** The feature a ledger row reports under, in SQL: its own, else `agent` (rows from before features). */
+const FEATURE_SQL = `COALESCE("feature", 'agent')`;
+/** Whether a ledger row came from `AgentService.recordUsage` (`external`) or an agent turn. */
+const SOURCE_SQL = `CASE WHEN "purpose" = 'external' THEN 'external' ELSE 'agent' END`;
+
+/** One model's share of a (feature, source[, actor]) bucket, summed by the database. */
+interface FeatureGroup {
+  modelId: string;
+  feature: string;
+  source: 'agent' | 'external';
+  actorRef: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  audioSeconds: number;
+  characters: number;
+  reportedCostUsd: number;
+  recordedEstimateUsd: number;
+  unreported: UsageGroup['unreported'];
 }
 
 /** Map a raw `agent_tool_call` Lucid row to the read-model {@link RunToolCallRow}. */
@@ -405,6 +448,155 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     return result;
   }
 
+  /**
+   * The ledger summed in the database per model and (feature, source), and per actor when `byActor`
+   * — what {@link spendByFeature} and {@link usageBreakdown} price. Same unreported-token split as
+   * {@link usageGroups}, plus the units non-token rows bill by.
+   */
+  private async featureGroups(
+    range: GovernanceRange,
+    byActor: boolean,
+    filter: UsageBreakdownFilter = {},
+  ): Promise<FeatureGroup[]> {
+    const where = [`"created_at" >= ?`, `"created_at" <= ?`];
+    const bindings: unknown[] = [
+      Date.parse(`${range.fromDay}T00:00:00.000Z`),
+      Date.parse(`${range.toDay}T23:59:59.999Z`),
+    ];
+    if (filter.actor !== undefined) {
+      where.push(`"actor_ref" = ?`);
+      bindings.push(filter.actor);
+    }
+    if (filter.feature !== undefined) {
+      where.push(`${FEATURE_SQL} = ?`);
+      bindings.push(filter.feature);
+    }
+    const unreported = (column: string) =>
+      `SUM(CASE WHEN "cost_usd" IS NULL THEN COALESCE("${column}", 0) ELSE 0 END)`;
+    const groups = [`"model_id"`, FEATURE_SQL, SOURCE_SQL, ...(byActor ? [`"actor_ref"`] : [])];
+    const rows = rowsOf(
+      await this.db.rawQuery(
+        portableSql(
+          this.db,
+          `SELECT "model_id" AS model_id, ${FEATURE_SQL} AS feature, ${SOURCE_SQL} AS source, ` +
+            `${byActor ? `"actor_ref" AS actor_ref, ` : ''}` +
+            `SUM(COALESCE("requests", 1)) AS requests, SUM("input_tokens") AS input_tokens, ` +
+            `SUM("output_tokens") AS output_tokens, ` +
+            `SUM(COALESCE("audio_seconds", 0)) AS audio_seconds, ` +
+            `SUM(COALESCE("characters", 0)) AS characters, ` +
+            `SUM("cost_usd") AS reported_cost, ` +
+            `SUM(CASE WHEN "cost_source" = 'estimate' THEN "cost_usd" ELSE 0 END) AS estimated_cost, ` +
+            `${unreported('input_tokens')} AS unreported_input, ` +
+            `${unreported('output_tokens')} AS unreported_output, ` +
+            `${unreported('cache_write_tokens')} AS unreported_cache_write, ` +
+            `${unreported('cache_read_tokens')} AS unreported_cache_read ` +
+            `FROM "${AGENT_TABLES.tokenUsage}" WHERE ${where.join(' AND ')} ` +
+            `GROUP BY ${groups.join(', ')}`,
+        ),
+        bindings,
+      ),
+    );
+    return rows.map((row) => ({
+      modelId: String(row.model_id),
+      feature: String(row.feature),
+      source: String(row.source) === 'external' ? 'external' : 'agent',
+      actorRef: byActor ? String(row.actor_ref) : '',
+      requests: toInt(row.requests),
+      inputTokens: toInt(row.input_tokens),
+      outputTokens: toInt(row.output_tokens),
+      audioSeconds: toNumOrNull(row.audio_seconds) ?? 0,
+      characters: toInt(row.characters),
+      reportedCostUsd: toNumOrNull(row.reported_cost) ?? 0,
+      recordedEstimateUsd: toNumOrNull(row.estimated_cost) ?? 0,
+      unreported: {
+        inputTokens: toInt(row.unreported_input),
+        outputTokens: toInt(row.unreported_output),
+        cacheWriteTokens: toInt(row.unreported_cache_write),
+        cacheReadTokens: toInt(row.unreported_cache_read),
+      },
+    }));
+  }
+
+  /** An unpriced group's tokens at the current price (0 when the model is unpriced). */
+  private unreportedCost(
+    group: { modelId: string; unreported: UsageGroup['unreported'] },
+    pricing: ReadonlyMap<string, CurrentModelPrice>,
+  ): number {
+    const price = resolveModelPrice(pricing, group.modelId);
+    return price === undefined ? 0 : estimateCost(group.unreported, price);
+  }
+
+  async spendByFeature(range: GovernanceRange): Promise<FeatureSpendRow[]> {
+    await this.ready();
+    const pricing = await this.loadPricing();
+    const byFeature = new Map<string, FeatureSpendRow>();
+    for (const group of await this.featureGroups(range, false)) {
+      const key = `${group.source}\u0000${group.feature}`;
+      const bucket = byFeature.get(key) ?? {
+        feature: group.feature,
+        source: group.source,
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        audioSeconds: 0,
+        characters: 0,
+        costUsd: 0,
+      };
+      bucket.requests += group.requests;
+      bucket.inputTokens += group.inputTokens;
+      bucket.outputTokens += group.outputTokens;
+      bucket.audioSeconds += group.audioSeconds;
+      bucket.characters += group.characters;
+      bucket.costUsd += group.reportedCostUsd + this.unreportedCost(group, pricing);
+      byFeature.set(key, bucket);
+    }
+    return [...byFeature.values()].sort(
+      (left, right) =>
+        right.costUsd - left.costUsd ||
+        left.feature.localeCompare(right.feature) ||
+        left.source.localeCompare(right.source),
+    );
+  }
+
+  async usageBreakdown(
+    range: GovernanceRange,
+    filter: UsageBreakdownFilter = {},
+  ): Promise<UsageBreakdownRow[]> {
+    await this.ready();
+    const pricing = await this.loadPricing();
+    const rows = new Map<string, UsageBreakdownRow>();
+    for (const group of await this.featureGroups(range, true, filter)) {
+      const key = `${group.actorRef}\u0000${group.source}\u0000${group.feature}`;
+      const bucket = rows.get(key) ?? {
+        actorRef: group.actorRef,
+        feature: group.feature,
+        source: group.source,
+        requests: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        audioSeconds: 0,
+        characters: 0,
+        costUsd: 0,
+        estimatedCostUsd: 0,
+      };
+      const priced = this.unreportedCost(group, pricing);
+      bucket.requests += group.requests;
+      bucket.inputTokens += group.inputTokens;
+      bucket.outputTokens += group.outputTokens;
+      bucket.audioSeconds += group.audioSeconds;
+      bucket.characters += group.characters;
+      bucket.costUsd += group.reportedCostUsd + priced;
+      bucket.estimatedCostUsd += group.recordedEstimateUsd + priced;
+      rows.set(key, bucket);
+    }
+    return [...rows.values()].sort(
+      (left, right) =>
+        right.costUsd - left.costUsd ||
+        left.actorRef.localeCompare(right.actorRef) ||
+        left.feature.localeCompare(right.feature),
+    );
+  }
+
   /** `thread_id → value` for one aggregate over `table`'s rows of `threadIds`. */
   private async perThread(
     table: string,
@@ -584,6 +776,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     const usage: RunUsageRow[] = usageRows.map((row) => ({
       modelId: String(row.model_id),
       purpose: String(row.purpose),
+      feature: toStrOrNull(row.feature) ?? 'agent',
       inputTokens: toInt(row.input_tokens),
       outputTokens: toInt(row.output_tokens),
       costUsd: toNumOrNull(row.cost_usd),
@@ -595,6 +788,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       toolCalls,
       approvals: toolCalls.filter((call) => call.status === 'pending_approval'),
       usage,
+      timings: runTimingsOf(runRow),
     };
   }
 

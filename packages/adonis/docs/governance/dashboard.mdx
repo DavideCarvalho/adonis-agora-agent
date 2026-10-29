@@ -137,7 +137,7 @@ Nine sections, reachable by hash (`#runs`, `#approvals`, …), with a from/to da
 
 | Section | What it shows |
 | --- | --- |
-| **Overview** | Spend and token stats, spend by model (donut + table), the usage trend, spend by actor. |
+| **Overview** | Spend and token stats, spend by model (donut + table), spend by feature — agent turns and [recorded usage](/docs/agent/governance/quota-and-cost#recording-usage-outside-agent-turns) (transcription, TTS, direct calls) side by side, in the units each billed — the usage trend, spend by actor. |
 | **Runs** | Filterable, cursor-paginated run list (status, agent, actor, date range). A row opens the full trace. |
 | **Threads** | Recent threads, and a drill-down with lifetime usage, recent runs and recent messages. |
 | **Tool calls** | The recent tool-call feed. |
@@ -153,7 +153,7 @@ Two sections write. **Approvals** posts to `/agent/tool-call/approve` and `/agen
 Gate it accordingly. `dashboard.authorize` is the switch, and "anyone authenticated" is not the right value for it.
 </Callout>
 
-The **run trace** (a row in Runs) is where most investigations end up: the run's summary stats, its message timeline, every tool call with the pending-approval subset called out, and the usage ledger row by row — which is where you can see a `null` cost and know the model was unpriced rather than free.
+The **run trace** (a row in Runs) is where most investigations end up: the run's summary stats, where its time went (queue / model / tools / other, then each step's model time and tool calls — see [run timings](/docs/agent/diagnostics#where-a-runs-time-goes)), its message timeline, every tool call with the pending-approval subset called out, and the usage ledger row by row — which is where you can see a `null` cost and know the model was unpriced rather than free.
 
 **Pricing** shows its own panel rather than a generic error when the API answers `501`; that means no `pricingStore` is bound, so there is nothing to edit. See [Quota & cost](/docs/agent/governance/quota-and-cost).
 
@@ -167,13 +167,14 @@ import { AgentClient } from '@adonis-agora/agent-dashboard/client'
 const client = new AgentClient({ baseUrl: '/agent' })
 
 const spend = await client.spendByModel({ fromDay: '2026-03-01', toDay: '2026-03-07' })
+const byFeature = await client.spendByFeature({ fromDay: '2026-03-01', toDay: '2026-03-07' })
 const runs = await client.listRuns({ status: 'failed', first: 50 })
 const trace = await client.runDetail(runs.items[0].runId)
 const thread = await client.threadDetail(trace.run.threadId)
 const prices = await client.pricing()
 ```
 
-Twelve read methods and three writes (`approveToolCall`, `rejectToolCall`, `upsertPrice`). It is a plain `fetch` wrapper — no React, no state — so it works from a server-side script as readily as from a browser.
+Thirteen read methods and three writes (`approveToolCall`, `rejectToolCall`, `upsertPrice`). It is a plain `fetch` wrapper — no React, no state — so it works from a server-side script as readily as from a browser.
 
 ## The standalone package
 

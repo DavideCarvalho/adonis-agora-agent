@@ -133,11 +133,25 @@ export interface UpdateToolCallInput {
 }
 
 export interface RecordUsageInput {
-  threadId: string;
+  /**
+   * The thread the usage belongs to. Absent → usage recorded outside any conversation (a
+   * transcription job, a batch embedding run, a direct SDK call — see `AgentService.recordUsage`).
+   * The ledger's `thread_id` is nullable for exactly that; a store that cannot hold such a row
+   * rejects it.
+   */
+  threadId?: string;
+  /**
+   * Who pays: the actor the row counts against (quota, spend by actor). Platform cost that no actor
+   * pays for is recorded under {@link PLATFORM_ACTOR_REF}, never `''`.
+   */
   actorRef: string;
   messageId?: string;
   modelId: string;
   purpose: UsagePurpose;
+  /**
+   * Tokens spent. A row that bills by another unit (audio seconds, characters) carries `0` / `0`
+   * here and its unit below.
+   */
   usage: MessageUsage;
   /**
    * The turn's USD cost, when known: reported by the provider (a gateway), or estimated by the loop
@@ -152,7 +166,33 @@ export interface RecordUsageInput {
   costSource?: CostSource;
   /** The run (turn) this usage row belongs to, for run-detail assembly + trace deep-links. */
   runId?: string;
+  /**
+   * What the spend was for, free-form (`'transcription'`, `'embeddings'`, `'spellcheck'`). The loop
+   * writes `'agent:<agent name>'` (`'agent'` when the run names no agent). A row written before the
+   * column existed has none, and reports read it as `'agent'`.
+   */
+  feature?: string;
+  /** Who served the call (`'openai'`, `'openrouter'`, `'deepgram'`). Free-form, optional. */
+  provider?: string;
+  /** The tenant the row is attributed to, for multi-tenant reporting. */
+  tenantRef?: string;
+  /** Seconds of audio billed (transcription, speech). */
+  audioSeconds?: number;
+  /** Characters billed (text-to-speech, translation APIs). */
+  characters?: number;
+  /** Billable requests the row stands for, for a provider that bills per call. */
+  requests?: number;
+  /** Anything else worth keeping with the row, as JSON. Never read by the library. */
+  metadata?: Record<string, unknown>;
 }
+
+/**
+ * The `actor_ref` usage nobody in particular pays for is recorded under — platform cost: a nightly
+ * embedding job, a moderation pass over every upload. `actor_ref` stays NOT NULL (every quota and
+ * spend-by-actor query keys on it), so platform cost is one more actor, spelled so no real one can
+ * collide with it. It never counts against any actor's quota.
+ */
+export const PLATFORM_ACTOR_REF = '@platform';
 
 /** Where a usage row's `cost_usd` came from. See {@link RecordUsageInput.costSource}. */
 export type CostSource = 'provider' | 'estimate';
@@ -211,6 +251,51 @@ export interface RecordRunStartInput {
   parentRunId?: string;
   /** True when the run executes as a replay-safe durable workflow, false for the inline runner. */
   durable?: boolean;
+  /**
+   * How long the run waited between being started (enqueued) and its body starting to run, in ms.
+   * Under the durable runner it is the engine's own reading: the run row's `createdAt` (stamped when
+   * `engine.start` enqueued it) to the body's first execution. Inline: the runner's start to the loop
+   * body — about 0. Absent when it could not be read.
+   */
+  queueMs?: number;
+}
+
+/** One tool call's share of a step's time. See {@link RunStepTiming}. */
+export interface RunToolTiming {
+  toolCallId: string;
+  toolName: string;
+  /** How long the tool ran (the `tool.execution` span; `agent_tool_call.execution_ms`). */
+  ms: number;
+}
+
+/** Where one step (one model call and the tools it asked for) spent its time. */
+export interface RunStepTiming {
+  /** The step's index in the run, from 0. */
+  step: number;
+  /** The `llm.turn` span: the model call, streaming included. Absent when it was not measured. */
+  modelMs?: number;
+  /** The step's tool calls that ran, in call order. Approval waits and delegations are not here. */
+  tools: RunToolTiming[];
+  /** Wall-clock the step's tools ran: calls that ran in parallel count once. */
+  toolsMs: number;
+}
+
+/**
+ * Where a run's time went, as persisted on the run row. Every figure is compute that actually ran,
+ * summed from what each step measured when it executed — a durable replay reads the measurement back
+ * from the journal instead of measuring again, so a resumed run's totals cover every slice once, and
+ * the time it spent parked (on an approval, a question, a delegate) is in none of them.
+ */
+export interface RunTimings {
+  /** Sum of every step's {@link RunStepTiming.modelMs}. */
+  modelMs: number;
+  /** Sum of every step's {@link RunStepTiming.toolsMs} (wall-clock, parallel calls once). */
+  toolsMs: number;
+  /** Model calls measured. */
+  modelCalls: number;
+  /** Tool calls measured. */
+  toolCalls: number;
+  steps: RunStepTiming[];
 }
 
 /**
@@ -238,6 +323,8 @@ export interface RecordRunEndInput {
   errorCode?: string;
   /** The last model call's id, on `completed`. */
   modelId?: string;
+  /** Where the run's time went, on `completed`. See {@link RunTimings}. */
+  timings?: RunTimings;
 }
 
 /** Which thread, and how many of its newest messages, {@link ThreadTurnReader.loadThreadForTurn} reads. */

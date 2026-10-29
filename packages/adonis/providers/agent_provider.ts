@@ -1862,6 +1862,44 @@ export default class AgentProvider {
         return ctx.response.json(await gov.usageTrend(range(ctx)));
       });
 
+      // GET /agent/governance/spend/feature — spend per feature over the range: agent turns and the
+      // usage recorded outside them (`AgentService.recordUsage`) side by side. `501` when the bound
+      // governance adapter predates features (an optional SPI method).
+      router.get(g('spend/feature'), async (ctx: HttpContext) => {
+        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
+        if (actor === null) return;
+        if (gov.spendByFeature === undefined) {
+          return ctx.response
+            .status(501)
+            .json({ message: 'this governance adapter does not report spend by feature' });
+        }
+        return ctx.response.json(await gov.spendByFeature(range(ctx)));
+      });
+
+      // GET /agent/governance/usage/breakdown — spend per actor × feature over the range (the
+      // report behind "cost by actor and by feature"). Query: from?, to?, actor?, feature?. `501`
+      // when the bound adapter predates it.
+      router.get(g('usage/breakdown'), async (ctx: HttpContext) => {
+        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
+        if (actor === null) return;
+        if (gov.usageBreakdown === undefined) {
+          return ctx.response
+            .status(501)
+            .json({ message: 'this governance adapter does not report a usage breakdown' });
+        }
+        const filterActor = ctx.request.input('actor');
+        const feature = ctx.request.input('feature');
+        return ctx.response.json(
+          await withActorLabels(
+            await gov.usageBreakdown(range(ctx), {
+              ...(filterActor !== undefined ? { actor: String(filterActor) } : {}),
+              ...(feature !== undefined ? { feature: String(feature) } : {}),
+            }),
+            actorDirectory,
+          ),
+        );
+      });
+
       // GET /agent/governance/tool-calls/recent — newest-first recent tool-call activity feed.
       router.get(g('tool-calls/recent'), async (ctx: HttpContext) => {
         const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);

@@ -60,6 +60,22 @@ export interface ActorSpendRow {
   costUsd: number;
 }
 
+/**
+ * `GET /agent/governance/spend/feature` — spend for one feature over the range: agent turns
+ * (`source: 'agent'`) and usage the app recorded outside them (`'external'`, `AgentService.recordUsage`).
+ * Absent (`501`) on an older server.
+ */
+export interface FeatureSpendRow {
+  feature: string;
+  source: 'agent' | 'external';
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  audioSeconds: number;
+  characters: number;
+  costUsd: number;
+}
+
 /** `GET /agent/governance/usage/trend` — one point on the daily usage/cost trend. */
 export interface UsageTrendPoint {
   day: string;
@@ -146,6 +162,38 @@ export interface RunSummaryRow {
   errorCode?: string | null;
   /** The completed run's last model; absent from an older server. */
   modelId?: string | null;
+  /** Enqueue → the run's body starting in a worker; absent from an older server. */
+  queueMs?: number | null;
+  /** The completed run's model time, summed; absent from an older server. */
+  modelMs?: number | null;
+  /** The completed run's tool time, wall-clock (parallel calls once); absent from an older server. */
+  toolsMs?: number | null;
+  modelCalls?: number | null;
+  toolCalls?: number | null;
+}
+
+/** One tool call's share of a step's time. */
+export interface RunToolTiming {
+  toolCallId: string;
+  toolName: string;
+  ms: number;
+}
+
+/** Where one step (a model call and the tools it asked for) spent its time. */
+export interface RunStepTiming {
+  step: number;
+  modelMs?: number;
+  tools: RunToolTiming[];
+  toolsMs: number;
+}
+
+/** Where a completed run's time went. */
+export interface RunTimings {
+  modelMs: number;
+  toolsMs: number;
+  modelCalls: number;
+  toolCalls: number;
+  steps: RunStepTiming[];
 }
 
 /**
@@ -180,6 +228,8 @@ export interface RunToolCallRow {
 export interface RunUsageRow {
   modelId: string;
   purpose: string;
+  /** What the row was for; absent from an older server. */
+  feature?: string | null;
   inputTokens: number;
   outputTokens: number;
   costUsd: number | null;
@@ -197,6 +247,8 @@ export interface RunDetail {
   /** The subset of `toolCalls` still `pending_approval`. */
   approvals: RunToolCallRow[];
   usage: RunUsageRow[];
+  /** Step-by-step timings of a completed run; `null`/absent when there are none. */
+  timings?: RunTimings | null;
 }
 
 /** Filters for `GET /agent/governance/approvals/pending`. */

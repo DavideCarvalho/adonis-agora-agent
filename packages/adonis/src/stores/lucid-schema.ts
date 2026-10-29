@@ -1,5 +1,5 @@
 import type { LucidRawRunner } from './lucid.js';
-import { isMySql, portableSql } from './sql-dialect.js';
+import { dialectOf, isMySql, portableSql } from './sql-dialect.js';
 
 /**
  * The twelve agent table names. They match the cross-adapter snake_case contract the reference Drizzle
@@ -97,6 +97,44 @@ export function channelStateTableStatements(table: string = AGENT_TABLES.channel
     )`,
     `CREATE INDEX IF NOT EXISTS "${table}_expires_idx" ON "${table}" ("expires_at")`,
   ];
+}
+
+/**
+ * The usage ledger, `agent_token_usage`: one row per billed call — every model call an agent turn
+ * makes, and whatever an app records itself through `AgentService.recordUsage` (transcription, TTS,
+ * batch embeddings, a direct SDK call). `thread_id` is NULL on a row recorded outside any
+ * conversation; the foreign key still cascades a deleted thread's rows away. `feature` says what the
+ * spend was for, `audio_seconds` / `characters` / `requests` hold the units a row bills by when they
+ * are not tokens, and `metadata` is the caller's own JSON.
+ *
+ * Its own function so the SQLite rebuild that makes an old ledger's `thread_id` nullable (see
+ * {@link createAgentTables}) creates exactly this shape under a scratch name.
+ */
+export function tokenUsageTableStatement(table: string = AGENT_TABLES.tokenUsage): string {
+  return `CREATE TABLE IF NOT EXISTS "${table}" (
+      "id" VARCHAR(255) PRIMARY KEY NOT NULL,
+      "thread_id" VARCHAR(255) NULL,
+      "actor_ref" VARCHAR(255) NOT NULL,
+      "message_id" VARCHAR(255) NULL,
+      "model_id" VARCHAR(255) NOT NULL,
+      "purpose" VARCHAR(255) NOT NULL,
+      "input_tokens" INTEGER NOT NULL,
+      "output_tokens" INTEGER NOT NULL,
+      "cache_write_tokens" INTEGER NULL,
+      "cache_read_tokens" INTEGER NULL,
+      "cost_usd" DOUBLE PRECISION NULL,
+      "cost_source" VARCHAR(16) NULL,
+      "run_id" VARCHAR(255) NULL,
+      "created_at" BIGINT NOT NULL,
+      "feature" VARCHAR(255) NULL,
+      "provider" VARCHAR(255) NULL,
+      "tenant_ref" VARCHAR(255) NULL,
+      "audio_seconds" DOUBLE PRECISION NULL,
+      "characters" BIGINT NULL,
+      "requests" INTEGER NULL,
+      "metadata" TEXT NULL,
+      FOREIGN KEY ("thread_id") REFERENCES "${AGENT_TABLES.threads}" ("id") ON DELETE CASCADE
+    )`;
 }
 
 /**
@@ -220,27 +258,12 @@ export function createTableStatements(): string[] {
     `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_call_idx" ON "${t.toolCalls}" ("call_id", "run_id")`,
     `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_status_created_idx" ON "${t.toolCalls}" ("status", "created_at")`,
     `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_message_idx" ON "${t.toolCalls}" ("message_id")`,
-    `CREATE TABLE IF NOT EXISTS "${t.tokenUsage}" (
-      "id" VARCHAR(255) PRIMARY KEY NOT NULL,
-      "thread_id" VARCHAR(255) NOT NULL,
-      "actor_ref" VARCHAR(255) NOT NULL,
-      "message_id" VARCHAR(255) NULL,
-      "model_id" VARCHAR(255) NOT NULL,
-      "purpose" VARCHAR(255) NOT NULL,
-      "input_tokens" INTEGER NOT NULL,
-      "output_tokens" INTEGER NOT NULL,
-      "cache_write_tokens" INTEGER NULL,
-      "cache_read_tokens" INTEGER NULL,
-      "cost_usd" DOUBLE PRECISION NULL,
-      "cost_source" VARCHAR(16) NULL,
-      "run_id" VARCHAR(255) NULL,
-      "created_at" BIGINT NOT NULL,
-      FOREIGN KEY ("thread_id") REFERENCES "${t.threads}" ("id") ON DELETE CASCADE
-    )`,
+    tokenUsageTableStatement(),
     `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_actor_created_idx" ON "${t.tokenUsage}" ("actor_ref", "created_at")`,
     `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_run_idx" ON "${t.tokenUsage}" ("run_id")`,
     `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_thread_idx" ON "${t.tokenUsage}" ("thread_id")`,
     `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_created_idx" ON "${t.tokenUsage}" ("created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_feature_created_idx" ON "${t.tokenUsage}" ("feature", "created_at")`,
     `CREATE TABLE IF NOT EXISTS "${t.modelPricing}" (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "model_id" VARCHAR(255) NOT NULL,
@@ -270,6 +293,12 @@ export function createTableStatements(): string[] {
       "ttft_ms" INTEGER NULL,
       "error_code" VARCHAR(64) NULL,
       "model_id" VARCHAR(255) NULL,
+      "queue_ms" INTEGER NULL,
+      "model_ms" INTEGER NULL,
+      "tools_ms" INTEGER NULL,
+      "model_calls" INTEGER NULL,
+      "tool_calls" INTEGER NULL,
+      "timings" TEXT NULL,
       FOREIGN KEY ("thread_id") REFERENCES "${t.threads}" ("id") ON DELETE CASCADE
     )`,
     `CREATE INDEX IF NOT EXISTS "${t.runs}_started_idx" ON "${t.runs}" ("started_at")`,
@@ -412,7 +441,124 @@ const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }
   // a row from before, and on every message nobody named a send time for: `created_at` stands in.
   { table: AGENT_TABLES.messages, column: 'sent_at', type: 'BIGINT NULL' },
   { table: AGENT_TABLES.queuedMessages, column: 'sent_at', type: 'BIGINT NULL' },
+  // The ledger beyond agent turns (`AgentService.recordUsage`): what the spend was for, who served
+  // it, the tenant, the units it bills by when they are not tokens, and the caller's JSON. NULL on
+  // every row from before — all of them agent-turn rows, which reports read as feature `agent`.
+  { table: AGENT_TABLES.tokenUsage, column: 'feature', type: 'VARCHAR(255) NULL' },
+  { table: AGENT_TABLES.tokenUsage, column: 'provider', type: 'VARCHAR(255) NULL' },
+  { table: AGENT_TABLES.tokenUsage, column: 'tenant_ref', type: 'VARCHAR(255) NULL' },
+  { table: AGENT_TABLES.tokenUsage, column: 'audio_seconds', type: 'DOUBLE PRECISION NULL' },
+  { table: AGENT_TABLES.tokenUsage, column: 'characters', type: 'BIGINT NULL' },
+  { table: AGENT_TABLES.tokenUsage, column: 'requests', type: 'INTEGER NULL' },
+  { table: AGENT_TABLES.tokenUsage, column: 'metadata', type: 'TEXT NULL' },
+  // Where a run's time went: queue wait, model and tool totals, how many of each, and the per-step
+  // breakdown (JSON). NULL on a run from before, and (but `queue_ms`) on one that did not complete.
+  { table: AGENT_TABLES.runs, column: 'queue_ms', type: 'INTEGER NULL' },
+  { table: AGENT_TABLES.runs, column: 'model_ms', type: 'INTEGER NULL' },
+  { table: AGENT_TABLES.runs, column: 'tools_ms', type: 'INTEGER NULL' },
+  { table: AGENT_TABLES.runs, column: 'model_calls', type: 'INTEGER NULL' },
+  { table: AGENT_TABLES.runs, column: 'tool_calls', type: 'INTEGER NULL' },
+  { table: AGENT_TABLES.runs, column: 'timings', type: 'TEXT NULL' },
 ];
+
+/**
+ * Columns that were created `NOT NULL` and are nullable now. `ADD COLUMN` cannot reach them: the
+ * column exists, it only refuses a NULL. `agent_token_usage.thread_id` is the one — usage recorded
+ * outside any conversation has no thread. Its foreign key to `agent_thread` stays (a NULL never
+ * violates it, and a deleted thread still takes its rows with it).
+ */
+const NULLABLE_COLUMNS: readonly { table: string; column: string; type: string }[] = [
+  { table: AGENT_TABLES.tokenUsage, column: 'thread_id', type: 'VARCHAR(255) NULL' },
+];
+
+/**
+ * Whether `table.column` accepts NULL, read from the catalog — `true` also when the catalog cannot
+ * say (an unknown dialect is left alone rather than rebuilt on a guess). Postgres and MySQL through
+ * `information_schema.columns`, SQLite through `PRAGMA table_info`. A read: no lock is taken.
+ */
+async function isNullable(db: LucidRawRunner, table: string, column: string): Promise<boolean> {
+  if (isMySql(db)) {
+    const rows = rowsOf(
+      await db.rawQuery(
+        'SELECT is_nullable AS nullable FROM information_schema.columns ' +
+          'WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+        [table, column],
+      ),
+    );
+    const value = rows[0]?.nullable ?? rows[0]?.NULLABLE;
+    return value === undefined || String(value).toUpperCase() === 'YES';
+  }
+  try {
+    const rows = rowsOf(
+      await db.rawQuery(
+        'SELECT is_nullable AS nullable FROM information_schema.columns ' +
+          'WHERE table_schema = ANY (current_schemas(false)) AND table_name = ? AND column_name = ?',
+        [table, column],
+      ),
+    );
+    const value = rows[0]?.nullable;
+    return value === undefined || String(value).toUpperCase() === 'YES';
+  } catch {
+    // Not Postgres — SQLite has no information_schema.
+  }
+  try {
+    const rows = rowsOf(await db.rawQuery(`PRAGMA table_info("${table}")`));
+    const row = rows.find((each) => String(each.name) === column);
+    return row === undefined || Number(row.notnull) === 0;
+  } catch {
+    return true;
+  }
+}
+
+/** Is this a SQLite client? The one dialect that cannot drop a NOT NULL in place. */
+function isSqlite(db: LucidRawRunner): boolean {
+  return /sqlite|libsql/i.test(dialectOf(db));
+}
+
+/**
+ * Make `table.column` nullable. Postgres and MySQL change the column in place; SQLite cannot, so the
+ * ledger is rebuilt — created under a scratch name in its current shape, the rows copied over, the
+ * old table dropped and the new one renamed — inside a savepoint, so a failure leaves the old table
+ * as it was. Only the usage ledger is ever rebuilt: no table references it, so dropping it breaks no
+ * foreign key, and its indexes are recreated by the index phase that follows.
+ */
+async function makeNullable(
+  db: LucidRawRunner,
+  table: string,
+  column: string,
+  type: string,
+): Promise<void> {
+  const mysql = isMySql(db);
+  if (mysql) {
+    await db.rawQuery(forDialect(`ALTER TABLE "${table}" MODIFY "${column}" ${type}`, true));
+    return;
+  }
+  if (!isSqlite(db)) {
+    await db.rawQuery(`ALTER TABLE "${table}" ALTER COLUMN "${column}" DROP NOT NULL`);
+    return;
+  }
+  if (table !== AGENT_TABLES.tokenUsage) {
+    throw new Error(`[@adonis-agora/agent] cannot make ${table}.${column} nullable on SQLite`);
+  }
+  const scratch = `${table}__rebuild`;
+  const columns = rowsOf(await db.rawQuery(`PRAGMA table_info("${table}")`)).map((row) =>
+    String(row.name),
+  );
+  const list = columns.map((name) => `"${name}"`).join(', ');
+  await db.rawQuery('SAVEPOINT agent_ledger_rebuild');
+  try {
+    await db.rawQuery(`DROP TABLE IF EXISTS "${scratch}"`);
+    await db.rawQuery(tokenUsageTableStatement(scratch));
+    await db.rawQuery(`INSERT INTO "${scratch}" (${list}) SELECT ${list} FROM "${table}"`);
+    await db.rawQuery(`DROP TABLE "${table}"`);
+    await db.rawQuery(`ALTER TABLE "${scratch}" RENAME TO "${table}"`);
+    await db.rawQuery('RELEASE SAVEPOINT agent_ledger_rebuild');
+  } catch (error) {
+    await db.rawQuery('ROLLBACK TO SAVEPOINT agent_ledger_rebuild').catch(() => undefined);
+    await db.rawQuery('RELEASE SAVEPOINT agent_ledger_rebuild').catch(() => undefined);
+    throw error;
+  }
+}
 
 /**
  * Does `table` already have `column`? Probed with a zero-row `SELECT` rather than `information_schema`
@@ -451,6 +597,28 @@ export async function hasSentAtColumns(db: LucidRawRunner): Promise<boolean> {
   return (
     (await hasColumn(runner, AGENT_TABLES.messages, 'sent_at')) &&
     (await hasColumn(runner, AGENT_TABLES.queuedMessages, 'sent_at'))
+  );
+}
+
+/**
+ * Whether `agent_token_usage` has the columns `AgentService.recordUsage` writes, and a nullable
+ * `thread_id` — what `LucidAgentStore` checks under `autoCreateTables: false`. Probed like
+ * {@link hasToolCallIdColumn}.
+ */
+export async function hasLedgerColumns(db: LucidRawRunner): Promise<boolean> {
+  const runner = schemaRunner(db);
+  return (
+    (await hasColumn(runner, AGENT_TABLES.tokenUsage, 'feature')) &&
+    (await hasColumn(runner, AGENT_TABLES.tokenUsage, 'metadata'))
+  );
+}
+
+/** Whether `agent_run` has its timing columns. Probed like {@link hasLedgerColumns}. */
+export async function hasRunTimingColumns(db: LucidRawRunner): Promise<boolean> {
+  const runner = schemaRunner(db);
+  return (
+    (await hasColumn(runner, AGENT_TABLES.runs, 'queue_ms')) &&
+    (await hasColumn(runner, AGENT_TABLES.runs, 'timings'))
   );
 }
 
@@ -526,10 +694,11 @@ async function issue(
   db: LucidRawRunner,
   statement: string,
   done: () => Promise<boolean>,
+  run: () => Promise<unknown> = () => db.rawQuery(statement),
 ): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
     try {
-      await db.rawQuery(statement);
+      await run();
       return;
     } catch (error) {
       if (await done()) return;
@@ -613,6 +782,19 @@ export async function createAgentTables(db: LucidRawRunner): Promise<string[]> {
   }
   for (const { table, column, type } of ADDITIVE_COLUMNS) {
     await addColumn(table, column, type);
+  }
+  // After the added columns (a SQLite rebuild copies every column the table has by then) and before
+  // the indexes (the rebuild drops the old table's, and the index phase puts them back).
+  for (const { table, column, type } of NULLABLE_COLUMNS) {
+    if (await isNullable(db, table, column)) continue;
+    // Several statements on SQLite, so `issue` is handed the change rather than one statement.
+    await issue(
+      db,
+      `${table}.${column} NULL`,
+      () => isNullable(db, table, column),
+      () => makeNullable(db, table, column, type),
+    );
+    repairs.push(`${table}.${column}`);
   }
 
   const indexes = await existingIndexes(db);

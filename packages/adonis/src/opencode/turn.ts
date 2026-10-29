@@ -18,6 +18,8 @@ import type {
   ToolCallRequest,
   ToolResult,
 } from '../types.js';
+import { usageAttribution } from '../usage-attribution.js';
+import { recordUsageRow } from '../usage-ledger.js';
 import type {
   OpenCodeClient,
   OpenCodeEvent,
@@ -701,8 +703,9 @@ export class OpenCodeTurn {
       steps: purpose === 'chat' ? 1 : 0,
     });
     if (cost.costUsd !== undefined) this.priced = true;
-    await this.a.store.recordUsage({
+    await recordUsageRow(this.a.store, {
       threadId: this.a.input.threadId,
+      ...usageAttribution(this.a.input),
       actorRef: this.a.input.actor.id,
       runId: this.a.runId,
       modelId: this.modelId(),

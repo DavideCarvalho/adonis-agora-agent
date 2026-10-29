@@ -5,8 +5,8 @@ import {
   formatTimestamp,
   formatUsd,
 } from '../client/format.js';
-import type { RunToolCallRow } from '../client/types.js';
-import { AsyncBlock, Panel, SectionTitle, Stat, StatusPill } from './ui.js';
+import type { RunDetail, RunToolCallRow } from '../client/types.js';
+import { AsyncBlock, colorAt, Panel, SectionTitle, Stat, StatusPill } from './ui.js';
 import { useRunDetail } from './use-governance.js';
 
 /** Render an arbitrary tool input/output payload as compact one-line JSON (`—` when absent). */
@@ -35,6 +35,96 @@ function ToolCallRow({ row }: { row: RunToolCallRow }) {
       <td className="num mono tnum muted">{formatDuration(row.executionMs)}</td>
       <td className="num mono tnum muted">{formatTimestamp(row.createdAt)}</td>
     </tr>
+  );
+}
+
+/**
+ * Where a run's time went: queue / model / tools, the rest of the wall-clock (persistence, approval
+ * and delegation waits) as "other", and each step's model time and tool calls. Absent when the server
+ * recorded no timings for the run (an older server, a run that did not complete).
+ */
+export function TimingPanel({ detail }: { detail: RunDetail }) {
+  const { run, timings } = detail;
+  if ((timings === null || timings === undefined) && (run.queueMs ?? null) === null) return null;
+  const queue = run.queueMs ?? 0;
+  const model = timings?.modelMs ?? 0;
+  const tools = timings?.toolsMs ?? 0;
+  const other = run.durationMs === null ? 0 : Math.max(0, run.durationMs - model - tools);
+  const parts = [
+    { label: 'Queue', ms: queue },
+    { label: 'Model', ms: model },
+    { label: 'Tools', ms: tools },
+    { label: 'Other', ms: other },
+  ];
+  const total = parts.reduce((sum, part) => sum + part.ms, 0);
+  return (
+    <Panel>
+      <SectionTitle
+        title="Where the time went"
+        hint={
+          timings
+            ? `${formatCount(timings.modelCalls)} model calls · ${formatCount(timings.toolCalls)} tool calls`
+            : 'queue time only'
+        }
+      />
+      <div
+        className="timing-bar"
+        role="img"
+        aria-label={parts.map((part) => `${part.label} ${formatDuration(part.ms)}`).join(', ')}
+        style={{ display: 'flex', height: 10, borderRadius: 4, overflow: 'hidden', gap: 1 }}
+      >
+        {parts.map((part, i) =>
+          part.ms > 0 && total > 0 ? (
+            <span
+              key={part.label}
+              title={`${part.label}: ${formatDuration(part.ms)}`}
+              style={{ flex: part.ms / total, background: colorAt(i) }}
+            />
+          ) : null,
+        )}
+      </div>
+      <div className="legend" style={{ display: 'flex', gap: 16, marginTop: 8, flexWrap: 'wrap' }}>
+        {parts.map((part, i) => (
+          <div className="row" key={part.label}>
+            <span className="swatch" style={{ background: colorAt(i) }} />
+            <span className="name">{part.label}</span>
+            <span className="mono tnum muted">{formatDuration(part.ms)}</span>
+          </div>
+        ))}
+      </div>
+      {timings && timings.steps.length > 0 && (
+        <div className="table-wrap" style={{ marginTop: 12 }}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Step</th>
+                <th className="num">Model</th>
+                <th className="num">Tools</th>
+                <th>Tool calls</th>
+              </tr>
+            </thead>
+            <tbody>
+              {timings.steps.map((step) => (
+                <tr key={step.step}>
+                  <td className="mono">{step.step + 1}</td>
+                  <td className="num mono tnum">{formatDuration(step.modelMs ?? null)}</td>
+                  <td className="num mono tnum">
+                    {formatDuration(step.tools.length > 0 ? step.toolsMs : null)}
+                  </td>
+                  <td className="mono muted">
+                    {step.tools.length === 0
+                      ? '—'
+                      : step.tools
+                          .map((tool) => `${tool.toolName} ${formatDuration(tool.ms)}`)
+                          .join(' · ')}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
   );
 }
 
@@ -88,6 +178,8 @@ export function RunDetailView({ runId, onBack }: { runId: string; onBack: () => 
                   sub={`${formatDuration(run.durationMs)} · ${formatTimestamp(run.startedAt)}`}
                 />
               </div>
+
+              <TimingPanel detail={data} />
 
               {run.error && (
                 <Panel>
@@ -179,6 +271,7 @@ export function RunDetailView({ runId, onBack }: { runId: string; onBack: () => 
                         <tr>
                           <th>Model</th>
                           <th>Purpose</th>
+                          <th>Feature</th>
                           <th className="num">Tokens</th>
                           <th className="num">Cost</th>
                           <th className="num">When</th>
@@ -190,6 +283,7 @@ export function RunDetailView({ runId, onBack }: { runId: string; onBack: () => 
                           <tr key={`${u.modelId}-${u.purpose}-${i}`}>
                             <td title={u.modelId}>{formatModelLabel(u.modelId)}</td>
                             <td className="muted">{u.purpose}</td>
+                            <td className="mono muted">{u.feature ?? '—'}</td>
                             <td className="num mono tnum">
                               {formatCount(u.inputTokens + u.outputTokens)}
                             </td>

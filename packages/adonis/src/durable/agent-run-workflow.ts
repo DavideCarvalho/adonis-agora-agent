@@ -217,6 +217,16 @@ export class AgentRunWorkflow extends BaseWorkflow {
     const hooks: AgentLoopHooks = {
       runId: ctx.runId,
       durable: true,
+      // The engine's own enqueue stamp: the run row's `createdAt` is written when `engine.start` (or a
+      // parent's `ctx.child` / `ctx.startChild`) enqueues the run, so now − createdAt, read on the
+      // body's first execution (the loop calls this inside `persist:run:start`), is how long the run
+      // waited for a worker. The clocks are the enqueuing process's and the worker's.
+      queueMs: async () => {
+        const run = await engine?.getRun(ctx.runId);
+        const createdAt = run?.createdAt;
+        if (createdAt === undefined || createdAt === null) return undefined;
+        return Date.now() - new Date(createdAt).getTime();
+      },
       // HITL: suspend until the run-namespaced signal arrives. This throw escapes the loop cleanly —
       // it happens BEFORE the loop's tool try/catch, so a suspend is never seen as a tool failure.
       // A DELEGATED run suspends on its OWN runId, and that wait is answerable: the pending row it

@@ -86,6 +86,11 @@ export function useSpendByActor(range: GovernanceRange) {
   return useAsync(() => client.spendByActor(range), [client, rangeKey(range)]);
 }
 
+export function useSpendByFeature(range: GovernanceRange) {
+  const client = useAgentClient();
+  return useAsync(() => client.spendByFeature(range), [client, rangeKey(range)]);
+}
+
 export function useUsageTrend(range: GovernanceRange) {
   const client = useAgentClient();
   return useAsync(() => client.usageTrend(range), [client, rangeKey(range)]);

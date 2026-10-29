@@ -54,7 +54,7 @@ export {
   withBuiltInTools,
 } from './agent-loop.js';
 export { AgentRegistry } from './agent-registry.js';
-export type { ChatParams } from './agent-service.js';
+export type { AiUsageInput, AiUsageOptions, AiUsageResult, ChatParams } from './agent-service.js';
 export {
   AgentService,
   type AgentServiceOptions,
@@ -383,6 +383,7 @@ export type {
   RunMetricsSample,
 } from './run-metrics.js';
 export { summarizeLatency, summarizeRunMetrics } from './run-metrics.js';
+export { rollupRunTimings, type ToolWindow, toolsWallClockMs } from './run-timings.js';
 export { InlineAgentRunner } from './runners/inline-agent-runner.js';
 export {
   actorScope,
@@ -521,6 +522,7 @@ export {
   schemaRunner,
   streamFrameIndexStatement,
   streamFrameTableStatement,
+  tokenUsageTableStatement,
 } from './stores/lucid-schema.js';
 export type {
   AgentApprovalRequest,

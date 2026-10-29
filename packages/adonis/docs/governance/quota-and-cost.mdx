@@ -35,7 +35,7 @@ The `quotas.*` factories, `LedgerQuotaStore` and `GET /agent/quota/today` are go
 
 ## The usage ledger
 
-Every model turn is recorded to the `agent_token_usage` table via `store.recordUsage(...)`, independently of whether a quota is enforced. Each row carries:
+Every model turn is recorded to the `agent_token_usage` table via `store.recordUsage(...)`, independently of whether a quota is enforced — and so is the AI spend your app records itself, outside any agent turn ([below](#recording-usage-outside-agent-turns)). Each row carries:
 
 - `input_tokens` / `output_tokens` — the turn's token counts.
 - `cache_write_tokens` / `cache_read_tokens` — prompt-cache breakdown when the provider reports it. **These are subsets of `input_tokens`, never added on top** — so token totals and quota don't change when a breakdown is present.
@@ -45,8 +45,63 @@ Every model turn is recorded to the `agent_token_usage` table via `store.recordU
   `title` / `follow_ups`).
 - `cost_usd` is the turn's cost: the provider's **actual** cost when a gateway reports it, else the estimate from the pricing table, else null (see below).
 - `cost_source` says where `cost_usd` came from: `'provider'` or `'estimate'`. It is NULL on an unpriced row, and on rows from before the column existed, which only ever held a reported cost.
+- `feature` — what the spend was for. An agent turn writes `agent:<agent name>` (`agent` for a run that names no agent); a row you record names its own (`transcription`, `embeddings`…). NULL on a row from before the column, and every report reads that as `agent`.
+- `thread_id` / `run_id` — the conversation and the run, when there is one. Both are NULL on usage recorded outside a conversation.
+- `provider`, `tenant_ref`, and the units a row bills by when they are not tokens: `audio_seconds`, `characters`, `requests`. `metadata` is the caller's own JSON, never read by the library.
 
 Reasoning tokens, when reported, are a subset of `output_tokens` — observability only, billed at the output rate.
+
+## Recording usage outside agent turns
+
+An app pays for AI that never goes through an agent turn: transcription (billed by audio seconds), text-to-speech (by characters), embeddings in a batch job, a spellcheck that calls the OpenAI or OpenRouter SDK directly. `AgentService.recordUsage` writes those to the **same ledger**, so the budget windows, the governance rollups and the dashboard see one total.
+
+```ts
+import { AgentService } from '@adonis-agora/agent'
+import app from '@adonisjs/core/services/app'
+
+const agent = await app.container.make(AgentService) // or @inject() it
+
+await agent.recordUsage({
+  actorRef: user.id,          // who pays — null for platform cost
+  feature: 'transcription',   // free-form: what it was for
+  modelId: 'whisper-1',
+  provider: 'openai',
+  audioSeconds: 312.4,
+  costUsd: 0.0312,            // when you know it
+  costSource: 'estimate',     // 'provider' (the default) when the provider reported it
+  metadata: { meetingId },
+})
+
+await agent.recordUsage({
+  actorRef: null,             // nobody in particular: platform cost
+  feature: 'embeddings',
+  modelId: 'text-embedding-3-small',
+  inputTokens: 48_200,
+  requests: 12,
+})
+```
+
+| Field | |
+| --- | --- |
+| `actorRef` | Who pays. `null` is platform cost, recorded under the actor `PLATFORM_ACTOR_REF` (`'@platform'`): `actor_ref` stays non-null, so every per-actor query keeps working and the platform shows up as one more row in spend by actor. |
+| `feature` | Required, free-form. What a cost-by-feature report groups by. |
+| `modelId`, `provider?` | The model, and who served it. |
+| `inputTokens?`, `outputTokens?`, `cacheReadTokens?`, `cacheWriteTokens?` | Tokens, when it billed tokens. Absent → `0`. |
+| `audioSeconds?`, `characters?`, `requests?` | The other units. `requests` is how many billable calls the row stands for (absent → one). |
+| `costUsd?`, `costSource?` | The cost when you know it. Absent → unpriced: the rollups price its tokens from the [pricing table](#the-pricing-table), and a row with no tokens reads `$0`. |
+| `threadId?`, `runId?`, `tenantRef?`, `metadata?` | Attribution. Nothing requires a thread. |
+
+**It never throws into your flow.** A failed write (the database is down, a schema the migration has not caught up with) or an invalid input (an empty `feature`, a negative amount) is logged and answered with `{ recorded: false, error }`; a good one with `{ recorded: true }`. The spend already happened, and losing the row is a reporting gap, not a reason to fail the user's transcription. Where it must fail the caller, pass `{ throwOnError: true }`.
+
+### What counts toward the quota
+
+A recorded row counts against its actor exactly like an agent turn:
+
+- **Token windows** sum `input_tokens + output_tokens`. A row that bills by audio seconds or characters carries `0` tokens and adds nothing to a token ceiling — seconds are not tokens, and converting them would invent a number. Its tokens are also bumped on the configured `QuotaStore`, the counter the loop gates on.
+- **USD windows** sum `cost_usd`, so every priced row counts, whatever its unit. To budget transcription or TTS, give the row its `costUsd` and set a `usd` ceiling.
+- **Platform cost** (`actorRef: null`) counts against nobody.
+
+So a token-only budget does not limit audio; a USD budget limits everything that was priced.
 
 ## Cost — real when known, estimated otherwise
 
@@ -303,4 +358,4 @@ is fully accounted.
 
 ## The governance read-model
 
-Cost/usage aggregation lives behind one interface, `AgentGovernanceQueries` — `spendByModel`, `spendByActor`, `usageTrend`, run lifecycle, tool stats, reliability, and the approvals inbox — so a dashboard and a Telescope tab can consume the same rolled-up numbers. Wire `governanceQueries.lucid()` **and** a `governanceAuthorize` gate to mount the `/agent/governance/*` routes (priced against the same `pricingStore`) — without the gate they are not mounted at all — and consume them from the [dashboard SPA](/docs/agent/governance/dashboard) or the [Telescope tab](/docs/agent/governance/telescope). The in-memory implementation ships in the [testing kit](/docs/agent/testing). See [Governance read-model](/docs/agent/governance/read-model).
+Cost/usage aggregation lives behind one interface, `AgentGovernanceQueries` — `spendByModel`, `spendByActor`, `spendByFeature`, `usageBreakdown` (cost by actor × feature over a window), `usageTrend`, run lifecycle, tool stats, reliability, and the approvals inbox — so a dashboard and a Telescope tab can consume the same rolled-up numbers. Wire `governanceQueries.lucid()` **and** a `governanceAuthorize` gate to mount the `/agent/governance/*` routes (priced against the same `pricingStore`) — without the gate they are not mounted at all — and consume them from the [dashboard SPA](/docs/agent/governance/dashboard) or the [Telescope tab](/docs/agent/governance/telescope). The in-memory implementation ships in the [testing kit](/docs/agent/testing). See [Governance read-model](/docs/agent/governance/read-model).

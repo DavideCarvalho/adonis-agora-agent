@@ -100,9 +100,12 @@ export class InlineAgentRunner implements AgentRunner {
     options: AgentRunStartOptions = {},
   ): Promise<{ runId: string }> {
     const runId = options.runId ?? crypto.randomUUID();
+    // Queue time inline is the gap between this call and the loop body starting — no queue, so ~0.
+    const acceptedAt = Date.now();
     const day = input.day ?? utcDay();
     const deps = this.factory.forAgent(input.agentName);
     const hooks = this.topLevelHooks({
+      acceptedAt,
       runId,
       input,
       deps,
@@ -316,11 +319,14 @@ export class InlineAgentRunner implements AgentRunner {
     chainBelow: readonly string[];
     /** How many delegations deep this run already is. */
     depth: number;
+    /** When {@link start} was called: the start of the run's (inline, ~0) queue time. */
+    acceptedAt: number;
   }): AgentLoopHooks {
-    const { runId, input, deps, actor, day, chainBelow, depth } = args;
+    const { runId, input, deps, actor, day, chainBelow, depth, acceptedAt } = args;
     return {
       runId,
       durable: false,
+      queueMs: () => Date.now() - acceptedAt,
       // The loop ends the stream when the turn completes. Just before, the thread passes to the next
       // queued message (or is released), and the reader is told which — so by the time a client sees
       // the run end, the thread is already free or already running what it queued.

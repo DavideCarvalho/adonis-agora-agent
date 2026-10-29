@@ -8,6 +8,7 @@
  * (dashboard / telescope) reads.
  */
 import diagnostics_channel, { type Channel } from 'node:diagnostics_channel';
+import type { RunStepTiming } from './spi/agent-store.js';
 import type { AgentStreamErrorCode } from './stream-events.js';
 
 const EMIT_SLOT = Symbol.for('@agora/diagnostics:emit');
@@ -73,6 +74,21 @@ export interface AgentRunFinished extends AgentRunContext {
   costUsd?: number;
   /** The model of the run's last model call. */
   modelId?: string;
+  /**
+   * Enqueue → the run's body starting in a worker (the durable engine's run row `createdAt`, so the
+   * enqueuing process's clock against the worker's); about 0 inline. Absent when it was not read.
+   */
+  queueMs?: number;
+  /** Every model call's `llm.turn` time, summed. */
+  modelMs?: number;
+  /** Tool time, wall-clock: tools a step ran in parallel count once. */
+  toolsMs?: number;
+  /** Model calls measured. */
+  modelCalls?: number;
+  /** Tool calls measured. */
+  toolCalls?: number;
+  /** Each step's model time and its tool calls (name and ms). */
+  stepTimings?: RunStepTiming[];
 }
 /**
  * A run that ended in an error (the loop threw). `code` is the stable code the stream's `error`
@@ -84,12 +100,22 @@ export interface AgentRunFailed extends AgentRunContext {
   code: AgentStreamErrorCode;
   /** From the turn's start in this process to the failure. */
   durationMs: number;
+  /** Enqueue → body start, as on {@link AgentRunFinished.queueMs}; absent when not read yet. */
+  queueMs?: number;
+  /** What the run measured before it failed, as on {@link AgentRunFinished}. */
+  modelMs?: number;
+  toolsMs?: number;
+  modelCalls?: number;
+  toolCalls?: number;
+  stepTimings?: RunStepTiming[];
 }
 /** A run someone stopped (its abort signal fired) before it finished. */
 export interface AgentRunCancelled extends AgentRunContext {
   runId: string;
   threadId: string;
   durationMs: number;
+  /** Enqueue → body start, as on {@link AgentRunFinished.queueMs}; absent when not read yet. */
+  queueMs?: number;
 }
 export interface AgentDelegated {
   runId: string;
@@ -118,6 +144,34 @@ export interface AgentToolRetry {
   message: string;
 }
 
+/**
+ * One row written to the usage ledger — an agent turn's model call (chat, structured output, history
+ * summary, retrieval embedding) or spend an app recorded through `AgentService.recordUsage`. Every AI
+ * cost goes through this one event. Amounts and attribution only: never content, never `metadata`.
+ */
+export interface AgentUsageRecorded {
+  /** Who pays; `@platform` for platform cost. */
+  actorRef: string;
+  /** What the spend was for: `agent:<name>` (or `agent`) for an agent turn, the app's own otherwise. */
+  feature: string;
+  /** The ledger `purpose`: `chat`, `structured_output`, `summary`, `embedding`… or `external`. */
+  purpose: string;
+  modelId: string;
+  provider?: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  audioSeconds?: number;
+  characters?: number;
+  requests?: number;
+  costUsd?: number;
+  costSource?: 'provider' | 'estimate';
+  threadId?: string;
+  runId?: string;
+  tenantRef?: string;
+}
+
 /** Maps each event name to its payload type, so {@link publishAgent} is checked at the call site. */
 export interface AgentDiagnosticPayloads {
   'run.started': AgentRunStarted;
@@ -130,6 +184,7 @@ export interface AgentDiagnosticPayloads {
   delegated: AgentDelegated;
   retrieved: AgentRetrieved;
   'tool.retry': AgentToolRetry;
+  'usage.recorded': AgentUsageRecorded;
 }
 
 export type AgentDiagnosticEvent = keyof AgentDiagnosticPayloads;
@@ -183,6 +238,9 @@ export function publishAgentRetrieved(payload: AgentRetrieved): void {
 }
 export function publishAgentToolRetry(payload: AgentToolRetry): void {
   publishAgent('tool.retry', payload);
+}
+export function publishAgentUsageRecorded(payload: AgentUsageRecorded): void {
+  publishAgent('usage.recorded', payload);
 }
 
 // ── Run-tracing spans ─────────────────────────────────────────────────────────
@@ -337,12 +395,29 @@ export async function spannedAgent<E extends AgentSpanEvent, T>(
   run: () => Promise<T>,
   summarize: (value: T) => Record<string, unknown>,
 ): Promise<T> {
+  return (await timedSpan(event, traceId, payload, run, summarize)).value;
+}
+
+/**
+ * {@link spannedAgent}, also handing back how long the operation took — the SAME reading the span's
+ * `asyncEnd` carries as `durationMs`, taken whether or not anyone subscribes. What the loop persists
+ * as a run's model time, so the run row and the trace never disagree. Same replay rule: call it
+ * inside a step body, and journal the duration with the step's result.
+ */
+export async function timedSpan<E extends AgentSpanEvent, T>(
+  event: E,
+  traceId: string,
+  payload: AgentSpanPayloads[E],
+  run: () => Promise<T>,
+  summarize: (value: T) => Record<string, unknown>,
+): Promise<{ value: T; durationMs: number }> {
   const channels = getSpanChannels(event);
+  const startedAt = performance.now();
   if (!anySpanSubscribed(channels)) {
-    return run();
+    const value = await run();
+    return { value, durationMs: performance.now() - startedAt };
   }
   const spanId = nextSpanId();
-  const startedAt = performance.now();
   publishSpanPhase(channels.start, 'start', event, spanId, traceId, { payload });
   publishSpanPhase(channels.end, 'end', event, spanId, traceId, {
     durationMs: performance.now() - startedAt,
@@ -356,11 +431,12 @@ export async function spannedAgent<E extends AgentSpanEvent, T>(
     } catch {
       result = undefined;
     }
+    const durationMs = performance.now() - startedAt;
     publishSpanPhase(channels.asyncEnd, 'asyncEnd', event, spanId, traceId, {
       ...(result !== undefined ? { result } : {}),
-      durationMs: performance.now() - startedAt,
+      durationMs,
     });
-    return value;
+    return { value, durationMs };
   } catch (error) {
     publishSpanPhase(channels.error, 'error', event, spanId, traceId, {
       error,

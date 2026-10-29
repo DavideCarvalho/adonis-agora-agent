@@ -20,7 +20,13 @@ import { normalizeSentAt } from './message-timestamps.js';
 import { personaCatalogEntry } from './personas.js';
 import type { ActionProposalMutationResult } from './spi/action-proposal-store.js';
 import type { AgentRunner } from './spi/agent-runner.js';
-import type { AgentStore, ForkThreadOptions } from './spi/agent-store.js';
+import {
+  type AgentStore,
+  type CostSource,
+  type ForkThreadOptions,
+  PLATFORM_ACTOR_REF,
+  type RecordUsageInput,
+} from './spi/agent-store.js';
 import {
   type ApprovalDecisionRef,
   mayDecideApproval,
@@ -60,6 +66,7 @@ import type {
 } from './types.js';
 import type { UiCapabilities } from './ui-capabilities.js';
 import { validateUiCapabilities } from './ui-capabilities.js';
+import { recordUsageRow } from './usage-ledger.js';
 
 /** A feedback comment is stored with the message — bounded like any other stored text. */
 const MAX_FEEDBACK_COMMENT_LENGTH = 2000;
@@ -1595,6 +1602,158 @@ export class AgentService {
   async quotaToday(actorRef: string): Promise<{ usedTokens: number }> {
     return this.store.quotaToday(actorRef, utcDay());
   }
+
+  /**
+   * Record AI spend that did not come from an agent turn — a transcription, a TTS render, a batch of
+   * embeddings, a direct OpenAI/OpenRouter SDK call — on the same ledger the agent's turns write, so
+   * cost, quota and the dashboard see one figure.
+   *
+   * It never throws into the caller's flow by default: a failed write (the database is down, the
+   * schema predates the ledger columns) or an invalid input is logged and answered with
+   * `{ recorded: false, error }`. Pass `{ throwOnError: true }` where losing the row must fail the
+   * caller.
+   *
+   * Counted against `actorRef`'s quota like an agent turn: its tokens in the token windows (a row
+   * with no tokens — audio seconds, characters — adds 0 there), its `costUsd` in the USD windows,
+   * and its tokens bumped on the configured `QuotaStore`. `actorRef: null` is platform cost, recorded
+   * under {@link PLATFORM_ACTOR_REF} and counted against nobody.
+   */
+  async recordUsage(input: AiUsageInput, options: AiUsageOptions = {}): Promise<AiUsageResult> {
+    try {
+      const row = usageRow(input);
+      await recordUsageRow(this.store, row);
+      const tokens = row.usage.inputTokens + row.usage.outputTokens;
+      if (row.actorRef !== PLATFORM_ACTOR_REF && tokens > 0) {
+        const quota = this.deps.forAgent().quota;
+        if (quota !== undefined) {
+          await quota.bump(row.actorRef, utcDay(), tokens).catch((error: unknown) => {
+            console.warn(
+              `[@adonis-agora/agent] recordUsage: the row was written, the quota counter was not bumped: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          });
+        }
+      }
+      return { recorded: true };
+    } catch (failure) {
+      const error = failure instanceof Error ? failure : new Error(String(failure));
+      if (options.throwOnError === true) throw error;
+      console.warn(
+        `[@adonis-agora/agent] recordUsage(${String(input.feature)}) was not recorded: ${error.message}`,
+      );
+      return { recorded: false, error };
+    }
+  }
+}
+
+/**
+ * AI spend recorded from outside an agent turn — see {@link AgentService.recordUsage}. Every unit is
+ * optional: a row carries whatever the provider bills by (tokens, audio seconds, characters,
+ * requests) and its cost when known.
+ */
+export interface AiUsageInput {
+  /** Who pays. `null` → platform cost, recorded under {@link PLATFORM_ACTOR_REF}. */
+  actorRef: string | null;
+  /** What the spend was for, free-form: `'transcription'`, `'embeddings'`, `'spellcheck'`. */
+  feature: string;
+  modelId: string;
+  /** Who served it (`'openai'`, `'openrouter'`, `'deepgram'`). */
+  provider?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  /** Subset of `inputTokens` served from the prompt cache. */
+  cacheReadTokens?: number;
+  /** Subset of `inputTokens` written to the prompt cache. */
+  cacheWriteTokens?: number;
+  audioSeconds?: number;
+  characters?: number;
+  requests?: number;
+  /**
+   * The USD cost, when known. Absent → unpriced: governance still prices its tokens from the pricing
+   * table, and a row with no tokens reads as $0.
+   */
+  costUsd?: number;
+  /** Where `costUsd` came from. Default `'provider'` (the provider reported it). */
+  costSource?: CostSource;
+  /** The conversation it belongs to, when there is one. */
+  threadId?: string;
+  /** The agent run it belongs to, when there is one. */
+  runId?: string;
+  tenantRef?: string;
+  /** Anything else to keep with the row, as JSON. */
+  metadata?: Record<string, unknown>;
+}
+
+/** How {@link AgentService.recordUsage} reacts to a failure. */
+export interface AiUsageOptions {
+  /** Rethrow a failed write (or an invalid input) instead of logging it. Default `false`. */
+  throwOnError?: boolean;
+}
+
+/** What {@link AgentService.recordUsage} answers. */
+export type AiUsageResult = { recorded: true } | { recorded: false; error: Error };
+
+/** A non-negative finite number, or `undefined`; anything else is a caller bug, refused. */
+function amount(name: string, value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new TypeError(`recordUsage: ${name} must be a non-negative number, got ${String(value)}`);
+  }
+  return value;
+}
+
+/** {@link AiUsageInput} as the store's ledger row, validated. */
+function usageRow(input: AiUsageInput): RecordUsageInput {
+  if (typeof input.feature !== 'string' || input.feature.trim() === '') {
+    throw new TypeError('recordUsage: feature is required');
+  }
+  if (typeof input.modelId !== 'string' || input.modelId.trim() === '') {
+    throw new TypeError('recordUsage: modelId is required');
+  }
+  if (input.actorRef !== null && (typeof input.actorRef !== 'string' || input.actorRef === '')) {
+    throw new TypeError(
+      'recordUsage: actorRef must be a non-empty string, or null for platform cost',
+    );
+  }
+  if (
+    input.costSource !== undefined &&
+    input.costSource !== 'provider' &&
+    input.costSource !== 'estimate'
+  ) {
+    throw new TypeError("recordUsage: costSource must be 'provider' or 'estimate'");
+  }
+  const whole = (name: string, value: number | undefined) => {
+    const parsed = amount(name, value);
+    return parsed === undefined ? undefined : Math.round(parsed);
+  };
+  const cacheRead = whole('cacheReadTokens', input.cacheReadTokens);
+  const cacheWrite = whole('cacheWriteTokens', input.cacheWriteTokens);
+  const audioSeconds = amount('audioSeconds', input.audioSeconds);
+  const characters = whole('characters', input.characters);
+  const requests = whole('requests', input.requests);
+  const costUsd = amount('costUsd', input.costUsd);
+  return {
+    actorRef: input.actorRef ?? PLATFORM_ACTOR_REF,
+    feature: input.feature,
+    modelId: input.modelId,
+    purpose: 'external',
+    usage: {
+      inputTokens: whole('inputTokens', input.inputTokens) ?? 0,
+      outputTokens: whole('outputTokens', input.outputTokens) ?? 0,
+      ...(cacheRead !== undefined ? { cacheReadTokens: cacheRead } : {}),
+      ...(cacheWrite !== undefined ? { cacheWriteTokens: cacheWrite } : {}),
+    },
+    ...(input.provider !== undefined ? { provider: input.provider } : {}),
+    ...(audioSeconds !== undefined ? { audioSeconds } : {}),
+    ...(characters !== undefined ? { characters } : {}),
+    ...(requests !== undefined ? { requests } : {}),
+    ...(costUsd !== undefined ? { costUsd, costSource: input.costSource ?? 'provider' } : {}),
+    ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
+    ...(input.runId !== undefined ? { runId: input.runId } : {}),
+    ...(input.tenantRef !== undefined ? { tenantRef: input.tenantRef } : {}),
+    ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+  };
 }
 
 /** `params` with its `uiCapabilities` validated (a `TypeError` when malformed). */
