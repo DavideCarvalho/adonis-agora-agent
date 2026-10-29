@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.91.5
+
+### Patch Changes
+
+- fix(deps): update dependency acorn to v8.19.0 ([#461](https://github.com/DavideCarvalho/adonis-agora-agent/issues/461))
+
 ## 0.91.4
 
 ### Patch Changes
