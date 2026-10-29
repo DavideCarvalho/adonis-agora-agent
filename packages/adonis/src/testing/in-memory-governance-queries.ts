@@ -178,7 +178,7 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
         outputTokens: 0,
         costUsd: 0,
       };
-      bucket.requests += 1;
+      bucket.requests += row.requests ?? 1;
       bucket.inputTokens += row.inputTokens;
       bucket.outputTokens += row.outputTokens;
       bucket.costUsd += this.rowCost(row);
@@ -207,7 +207,7 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
         continue;
       }
       const bucket = byActor.get(row.actorRef) ?? { requests: 0, totalTokens: 0, costUsd: 0 };
-      bucket.requests += 1;
+      bucket.requests += row.requests ?? 1;
       bucket.totalTokens += row.inputTokens + row.outputTokens;
       bucket.costUsd += this.rowCost(row);
       byActor.set(row.actorRef, bucket);

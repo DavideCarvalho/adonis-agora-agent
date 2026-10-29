@@ -87,7 +87,7 @@ await agent.recordUsage({
 | `feature` | Required, free-form. What a cost-by-feature report groups by. |
 | `modelId`, `provider?` | The model, and who served it. |
 | `inputTokens?`, `outputTokens?`, `cacheReadTokens?`, `cacheWriteTokens?` | Tokens, when it billed tokens. Absent → `0`. |
-| `audioSeconds?`, `characters?`, `requests?` | The other units. `requests` is how many billable calls the row stands for (absent → one). |
+| `audioSeconds?`, `characters?`, `requests?` | The other units. `requests` is how many billable calls the row stands for (absent → one; at least 1). |
 | `costUsd?`, `costSource?` | The cost when you know it. Absent → unpriced: the rollups price its tokens from the [pricing table](#the-pricing-table), and a row with no tokens reads `$0`. |
 | `threadId?`, `runId?`, `tenantRef?`, `metadata?` | Attribution. Nothing requires a thread. |
 

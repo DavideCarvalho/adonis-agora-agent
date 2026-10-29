@@ -119,6 +119,8 @@ interface UsageBreakdownRow extends FeatureSpendRow {
 }
 ```
 
+`requests` counts ledger rows — one per model call — except a row [recorded outside an agent turn](/docs/agent/governance/quota-and-cost#recording-usage-outside-agent-turns) with its own `requests`, which counts as that many, in every rollup alike. With `autoCreateTables: false` and a migration that has not added the ledger columns yet, the rollups read every row as an agent turn's (feature `agent`, one request) rather than fail.
+
 `costUsd` here is **non-nullable**, and an unpriced model contributes `0` — see the warning in [Quota & cost](/docs/agent/governance/quota-and-cost#cost--real-when-known-estimated-otherwise).
 
 ### Activity feeds

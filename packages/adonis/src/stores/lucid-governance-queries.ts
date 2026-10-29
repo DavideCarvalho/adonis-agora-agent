@@ -31,7 +31,7 @@ import type {
 import type { AgentPricingStore, CurrentModelPrice } from '../spi/pricing-store.js';
 import { estimateCost, resolveModelPrice } from '../spi/pricing-store.js';
 import { inAppendOrder, type LucidDatabaseLike, toolCallIdOfRow } from './lucid.js';
-import { AGENT_TABLES, ensureAgentTables, rowsOf } from './lucid-schema.js';
+import { AGENT_TABLES, ensureAgentTables, hasLedgerColumns, rowsOf } from './lucid-schema.js';
 import { portableSql } from './sql-dialect.js';
 
 function toInt(value: unknown): number {
@@ -240,6 +240,22 @@ function runTimingsOf(row: Record<string, unknown>): RunTimings | null {
 
 /** The feature a ledger row reports under, in SQL: its own, else `agent` (rows from before features). */
 const FEATURE_SQL = `COALESCE("feature", 'agent')`;
+/**
+ * The ledger expressions when the schema predates the ledger columns (`autoCreateTables: false`,
+ * migration not run yet): every row is an agent turn's, one request, billed in tokens.
+ */
+const LEGACY_LEDGER = {
+  feature: `'agent'`,
+  requests: '1',
+  audioSeconds: '0',
+  characters: '0',
+} as const;
+const CURRENT_LEDGER = {
+  feature: FEATURE_SQL,
+  requests: `COALESCE("requests", 1)`,
+  audioSeconds: `COALESCE("audio_seconds", 0)`,
+  characters: `COALESCE("characters", 0)`,
+} as const;
 /** Whether a ledger row came from `AgentService.recordUsage` (`external`) or an agent turn. */
 const SOURCE_SQL = `CASE WHEN "purpose" = 'external' THEN 'external' ELSE 'agent' END`;
 
@@ -305,6 +321,21 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     return this.autoCreateTables ? ensureAgentTables(this.db) : Promise.resolve();
   }
 
+  private ledgerExpressions: Promise<typeof CURRENT_LEDGER | typeof LEGACY_LEDGER> | undefined;
+
+  /**
+   * The SQL the rollups read the ledger columns through. With `autoCreateTables` on they always
+   * exist; off, the app's migration may not have added them yet, and the reports then read every row
+   * as an agent turn's rather than fail. Probed once.
+   */
+  private ledger(): Promise<typeof CURRENT_LEDGER | typeof LEGACY_LEDGER> {
+    if (this.autoCreateTables) return Promise.resolve(CURRENT_LEDGER);
+    this.ledgerExpressions ??= hasLedgerColumns(this.db).then((present) =>
+      present ? CURRENT_LEDGER : LEGACY_LEDGER,
+    );
+    return this.ledgerExpressions;
+  }
+
   /** Provision the shared schema now (what the agent provider calls at app start). Idempotent. */
   ensureSchema(): Promise<void> {
     return this.ready();
@@ -359,7 +390,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
         portableSql(
           this.db,
           `SELECT "model_id" AS model_id, ${bucket !== undefined ? `${bucket} AS bucket, ` : ''}` +
-            `COUNT(*) AS requests, SUM("input_tokens") AS input_tokens, ` +
+            `SUM(${(await this.ledger()).requests}) AS requests, SUM("input_tokens") AS input_tokens, ` +
             `SUM("output_tokens") AS output_tokens, SUM("cost_usd") AS reported_cost, ` +
             `${unreported('input_tokens')} AS unreported_input, ` +
             `${unreported('output_tokens')} AS unreported_output, ` +
@@ -458,6 +489,8 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     byActor: boolean,
     filter: UsageBreakdownFilter = {},
   ): Promise<FeatureGroup[]> {
+    const ledger = await this.ledger();
+    const featureSql = ledger.feature;
     const where = [`"created_at" >= ?`, `"created_at" <= ?`];
     const bindings: unknown[] = [
       Date.parse(`${range.fromDay}T00:00:00.000Z`),
@@ -468,22 +501,22 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       bindings.push(filter.actor);
     }
     if (filter.feature !== undefined) {
-      where.push(`${FEATURE_SQL} = ?`);
+      where.push(`${featureSql} = ?`);
       bindings.push(filter.feature);
     }
     const unreported = (column: string) =>
       `SUM(CASE WHEN "cost_usd" IS NULL THEN COALESCE("${column}", 0) ELSE 0 END)`;
-    const groups = [`"model_id"`, FEATURE_SQL, SOURCE_SQL, ...(byActor ? [`"actor_ref"`] : [])];
+    const groups = [`"model_id"`, featureSql, SOURCE_SQL, ...(byActor ? [`"actor_ref"`] : [])];
     const rows = rowsOf(
       await this.db.rawQuery(
         portableSql(
           this.db,
-          `SELECT "model_id" AS model_id, ${FEATURE_SQL} AS feature, ${SOURCE_SQL} AS source, ` +
+          `SELECT "model_id" AS model_id, ${featureSql} AS feature, ${SOURCE_SQL} AS source, ` +
             `${byActor ? `"actor_ref" AS actor_ref, ` : ''}` +
-            `SUM(COALESCE("requests", 1)) AS requests, SUM("input_tokens") AS input_tokens, ` +
+            `SUM(${ledger.requests}) AS requests, SUM("input_tokens") AS input_tokens, ` +
             `SUM("output_tokens") AS output_tokens, ` +
-            `SUM(COALESCE("audio_seconds", 0)) AS audio_seconds, ` +
-            `SUM(COALESCE("characters", 0)) AS characters, ` +
+            `SUM(${ledger.audioSeconds}) AS audio_seconds, ` +
+            `SUM(${ledger.characters}) AS characters, ` +
             `SUM("cost_usd") AS reported_cost, ` +
             `SUM(CASE WHEN "cost_source" = 'estimate' THEN "cost_usd" ELSE 0 END) AS estimated_cost, ` +
             `${unreported('input_tokens')} AS unreported_input, ` +

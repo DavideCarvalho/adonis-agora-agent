@@ -175,3 +175,43 @@ describe('createAgentTables repairs a run table that predates parent tracking', 
     expect(await hasParentColumn()).toBe(true);
   });
 });
+
+describe('the governance rollups on a schema that predates the ledger columns', () => {
+  it('read every row as an agent turn instead of failing (autoCreateTables: false)', async () => {
+    await createAgentTables(asStoreDb(db));
+    const raw = db.connection('sqlite');
+    // The app owns the schema and has not run the migration that adds the ledger columns.
+    await raw.rawQuery('DROP INDEX IF EXISTS "agent_token_usage_feature_created_idx"');
+    for (const column of [
+      'feature',
+      'provider',
+      'tenant_ref',
+      'audio_seconds',
+      'characters',
+      'requests',
+      'metadata',
+    ]) {
+      await raw.schema.alterTable('agent_token_usage', (table) => table.dropColumn(column));
+    }
+    const store = new LucidAgentStore(asStoreDb(db));
+    const actor = { id: 'u1', roles: ['ADMIN'] };
+    const thread = await store.createThread({ actor, persona: 'default' });
+    await raw.table('agent_token_usage').insert({
+      id: 'u-1',
+      thread_id: thread.id,
+      actor_ref: 'u1',
+      model_id: 'm',
+      purpose: 'chat',
+      input_tokens: 3,
+      output_tokens: 2,
+      created_at: Date.now(),
+    });
+    const gov = new LucidGovernanceQueries(asStoreDb(db), undefined, { autoCreateTables: false });
+    const today = new Date().toISOString().slice(0, 10);
+    const range = { fromDay: today, toDay: today };
+    expect(await gov.spendByFeature(range)).toMatchObject([
+      { feature: 'agent', source: 'agent', requests: 1, inputTokens: 3 },
+    ]);
+    expect((await gov.spendByModel(range))[0]?.requests).toBe(1);
+  });
+});

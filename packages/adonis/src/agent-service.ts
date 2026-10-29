@@ -1711,7 +1711,10 @@ function usageRow(input: AiUsageInput): RecordUsageInput {
   if (typeof input.modelId !== 'string' || input.modelId.trim() === '') {
     throw new TypeError('recordUsage: modelId is required');
   }
-  if (input.actorRef !== null && (typeof input.actorRef !== 'string' || input.actorRef === '')) {
+  if (
+    input.actorRef !== null &&
+    (typeof input.actorRef !== 'string' || input.actorRef.trim() === '')
+  ) {
     throw new TypeError(
       'recordUsage: actorRef must be a non-empty string, or null for platform cost',
     );
@@ -1732,6 +1735,10 @@ function usageRow(input: AiUsageInput): RecordUsageInput {
   const audioSeconds = amount('audioSeconds', input.audioSeconds);
   const characters = whole('characters', input.characters);
   const requests = whole('requests', input.requests);
+  // Absent means one billable request; zero would make the row count as none.
+  if (requests !== undefined && requests < 1) {
+    throw new TypeError(`recordUsage: requests must be at least 1, got ${String(input.requests)}`);
+  }
   const costUsd = amount('costUsd', input.costUsd);
   return {
     actorRef: input.actorRef ?? PLATFORM_ACTOR_REF,

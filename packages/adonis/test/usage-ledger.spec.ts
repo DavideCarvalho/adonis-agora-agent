@@ -308,7 +308,26 @@ for (const backend of backends) {
           { throwOnError: true },
         ),
       ).rejects.toThrow(/audioSeconds/);
+      for (const bad of [
+        { actorRef: '   ', feature: 'f', modelId: 'm' },
+        { actorRef: 'alice', feature: 'f', modelId: 'm', requests: 0 },
+      ]) {
+        await expect(service.recordUsage(bad, { throwOnError: true })).rejects.toThrow(TypeError);
+      }
       expect(write).not.toHaveBeenCalled();
+    });
+
+    it('counts a row’s own requests the same way in every rollup', async () => {
+      await service.recordUsage({
+        actorRef: 'alice',
+        feature: 'embeddings',
+        modelId: 'text-embedding-3-small',
+        inputTokens: 10,
+        requests: 12,
+      });
+      expect((await gov.spendByModel(range))[0]?.requests).toBe(12);
+      expect((await gov.spendByActor(range))[0]?.requests).toBe(12);
+      expect((await gov.spendByFeature?.(range))?.[0]?.requests).toBe(12);
     });
   });
 }
