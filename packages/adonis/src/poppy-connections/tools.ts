@@ -79,7 +79,7 @@ function explain(prefix: string, error: unknown): Record<string, unknown> {
         next: `Call ${prefix}connect with these scopes; the person approves them on the company.`,
       };
     }
-    if (error.code === 'sign_in_required' || error.code === 'invalid_token') {
+    if (error.code === 'invalid_token') {
       return { error: 'not_connected', next: `Call ${prefix}connect first.` };
     }
   }
@@ -286,12 +286,15 @@ export async function talkToCompany(
       if (reply.authorization.error === 'no_read_scope') {
         out.error = 'needs_permission';
         out.next = `The connection has no read-only permission: call ${prefix}connect, or ${prefix}request (confirmed).`;
-      } else if (!act && reply.authorization.error === 'insufficient_scope') {
+      } else if (
+        !act &&
+        reply.authorization.connected !== false &&
+        reply.authorization.error === 'insufficient_scope'
+      ) {
         out.error = 'needs_action';
         out.next = `That needs the company to act: use ${prefix}request with the same message (the person confirms), or ${prefix}connect if it still lacks permission${reply.authorization.scope ? ` (${reply.authorization.scope})` : ''}.`;
       } else {
-        out.error =
-          reply.authorization.error === 'sign_in_required' ? 'not_connected' : 'needs_permission';
+        out.error = reply.authorization.connected === false ? 'not_connected' : 'needs_permission';
         if (reply.authorization.scope) out.scopes = reply.authorization.scope.split(' ');
         out.next = `Call ${prefix}connect${reply.authorization.scope ? ' with these scopes' : ''}.`;
       }

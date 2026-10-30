@@ -1,5 +1,5 @@
 /**
- * @experimental Personal Agent Protocol ("Poppy") Draft 0.1 — this app's agent acting on OTHER
+ * @experimental Personal Agent Protocol ("Poppy") Draft 0.3 — this app's agent acting on OTHER
  * Poppy Companies for its users. Tracks the spec; WILL change, possibly in breaking ways.
  */
 export {

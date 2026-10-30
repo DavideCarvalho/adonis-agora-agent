@@ -37,6 +37,8 @@ export {
 export type { PoppyExchange, PoppyHandlerOptions, PoppyStreamWriter } from './handler.js';
 export { adonisExchange, createPoppyHandler, nodeExchange, publicOrigin } from './handler.js';
 export type {
+  PoppyAuthor,
+  PoppyAuthorType,
   PoppyContext,
   PoppyErrorCode,
   PoppyEvent,
@@ -45,14 +47,11 @@ export type {
   PoppyEventType,
   PoppyInboundMessage,
   PoppyResponder,
-  PoppySender,
   PoppyStatus,
 } from './protocol.js';
 export {
   POPPY_PROTOCOL_TYPE,
   POPPY_PROTOCOL_VERSION,
-  POPPY_READ_SCOPE,
-  POPPY_WRITE_SCOPE,
   PoppyError,
 } from './protocol.js';
 export type { PoppyRedisClient, RedisPoppyStoreOptions } from './redis-store.js';

@@ -33,7 +33,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * appends never share one; a message claim, an event key and the reader lease are `SET … NX`.
  * Conversations are JSON values; events one key each (`…:evt:<conversation>:<seq>`).
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.1 (https://personalagentprotocol.org/docs/spec),
+ * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
  * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
  * ways, outside semver majors while it is a draft.
  */

@@ -1,30 +1,34 @@
 import { createHash, randomBytes } from 'node:crypto';
 
 /**
- * The wire format of Personal Agent Protocol ("Poppy", Draft 0.1, §7) conversations: messages,
- * events, statuses and the error codes of §7.13. Hand-rolled like the A2A surface — the rules are
+ * The wire format of Personal Agent Protocol ("Poppy", Draft 0.3, §7) conversations: messages,
+ * events, statuses and the error codes of §8.13. Hand-rolled like the A2A surface — the rules are
  * few and exact, and unknown fields are ignored everywhere (§3.1, §3.3).
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.1 (https://personalagentprotocol.org/docs/spec),
+ * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
  * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
  * ways, outside semver majors while it is a draft.
  */
 
 /** The `protocol_version` this surface implements. */
-export const POPPY_PROTOCOL_VERSION = '0.1';
+export const POPPY_PROTOCOL_VERSION = '0.3';
 
-/** The `type` of this surface's entry in `poppy.json` `agent.protocols` (§7.1). */
+/** The `type` of this surface's entry in `poppy.json` `agent.protocols` (§8.1). */
 export const POPPY_PROTOCOL_TYPE = 'poppy';
-
-/** The account scopes the protocol defines (§4.4). Companies may add their own. */
-export const POPPY_READ_SCOPE = 'poppy:read';
-export const POPPY_WRITE_SCOPE = 'poppy:write';
 
 export type PoppyStatus = 'working' | 'idle' | 'queued' | 'closed';
 export type PoppyResponder = 'agent' | 'human';
-export type PoppySender = 'agent' | 'human';
+export type PoppyAuthorType = 'agent' | 'human';
 
-/** Facts about the User's situation (§7.4). Other fields are kept as sent. */
+/** Who wrote a message (§8.4). Only Company messages have `id`, `name` and `image`. */
+export interface PoppyAuthor {
+  type: PoppyAuthorType;
+  id?: string;
+  name?: string;
+  image?: string;
+}
+
+/** Facts about the User's situation (§8.4). Other fields are kept as sent. */
 export interface PoppyContext {
   locale?: string;
   time_zone?: string;
@@ -32,20 +36,20 @@ export interface PoppyContext {
   [field: string]: unknown;
 }
 
-/** A message as the Personal Agent sends it (§7.4). */
+/** A message as the Personal Agent sends it (§8.4). */
 export interface PoppyInboundMessage {
   id: string;
-  sender: PoppySender;
+  author: { type: PoppyAuthorType };
   text?: string;
   data?: Record<string, unknown>;
   context?: PoppyContext;
 }
 
-/** A message as it appears in a `message` event (§7.5): `role` says which side it came from. */
+/** A message as it appears in a `message` event (§8.5): `role` says which side it came from. */
 export interface PoppyEventMessage {
   id: string;
   role: 'user' | 'company';
-  sender: PoppySender;
+  author: PoppyAuthor;
   text?: string;
   data?: Record<string, unknown>;
   context?: PoppyContext;
@@ -59,7 +63,7 @@ export type PoppyEventType =
   | 'direct_opened'
   | 'direct_closed';
 
-/** One event of a conversation (§7.5): `id`, `type`, `created_at`, and the type's own fields. */
+/** One event of a conversation (§8.5): `id`, `type`, `created_at`, and the type's own fields. */
 export interface PoppyEvent {
   id: string;
   type: PoppyEventType | (string & {});
@@ -71,11 +75,11 @@ export interface PoppyEvent {
 export type PoppyEventBody =
   | { type: 'message'; message: PoppyEventMessage }
   | { type: 'state'; status: PoppyStatus; responder: PoppyResponder }
-  | { type: 'authorization'; error: 'sign_in_required' | 'insufficient_scope'; scope?: string }
+  | { type: 'authorization'; error: 'insufficient_scope'; scope: string }
   | { type: 'user_requested'; reason: string }
   | { type: 'direct_opened' | 'direct_closed'; conversation_id: string };
 
-/** The conversation errors of §7.13, plus the request errors this surface answers. */
+/** The conversation errors of §8.13, plus the request errors this surface answers. */
 const ERRORS = {
   conversation_not_found: 404,
   conversation_closed: 409,
@@ -86,7 +90,8 @@ const ERRORS = {
   invalid_request: 400,
   /** §3.3 — a request handled only with an extension the Personal Agent does not list. */
   extension_required: 403,
-  sign_in_required: 403,
+  /** Answered as a challenge without an error code (§7): the request needs the account. */
+  account_required: 401,
   not_found: 404,
   method_not_allowed: 405,
   request_too_large: 413,
@@ -97,7 +102,7 @@ const ERRORS = {
 export type PoppyErrorCode = keyof typeof ERRORS;
 
 /**
- * A Poppy error, answered as `{ "error": code, … }` like an OAuth error response (§7.13). `extra`
+ * A Poppy error, answered as `{ "error": code, … }` like an OAuth error response (§8.13). `extra`
  * carries what a code adds — `conversation_id` for `direct_conversation_open`, `extension` for
  * `extension_required`. An app hook may throw one to refuse a request.
  */
@@ -124,7 +129,7 @@ export class PoppyError extends Error {
   }
 }
 
-/** IDs are 1–256 characters of the URL-safe base64 alphabet (§7.2). */
+/** IDs are 1–256 characters of the URL-safe base64 alphabet (§8.2). */
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/;
 
 export function isPoppyId(value: unknown): value is string {
@@ -148,12 +153,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** A validated `POST {endpoint}` / `POST {endpoint}/{id}/messages` body. */
 export interface PoppySendBody {
   message: PoppyInboundMessage;
-  /** Only on `POST {endpoint}`: start a Direct Conversation under this one (§7.10). */
+  /** Only on `POST {endpoint}`: start a Direct Conversation under this one (§8.10). */
   parentConversationId?: string;
 }
 
 /**
- * Parse a message request (§7.3, §7.4). Unknown fields — on the body, the message or its context —
+ * Parse a message request (§8.3, §8.4). Unknown fields — on the body, the message or its context —
  * are ignored, never refused (§3.3). Only the fields the protocol defines are kept.
  */
 export function parseSendBody(raw: string, opts: { allowParent: boolean }): PoppySendBody {
@@ -170,8 +175,9 @@ export function parseSendBody(raw: string, opts: { allowParent: boolean }): Popp
   if (!isPoppyId(message.id)) {
     throw new PoppyError('invalid_request', 'message.id must be 1-256 URL-safe base64 characters');
   }
-  if (message.sender !== 'agent' && message.sender !== 'human') {
-    throw new PoppyError('invalid_request', 'message.sender must be "agent" or "human"');
+  const authorType = isRecord(message.author) ? message.author.type : undefined;
+  if (authorType !== 'agent' && authorType !== 'human') {
+    throw new PoppyError('invalid_request', 'message.author.type must be "agent" or "human"');
   }
   if (message.text !== undefined && typeof message.text !== 'string') {
     throw new PoppyError('invalid_request', 'message.text must be a string');
@@ -209,7 +215,7 @@ export function parseSendBody(raw: string, opts: { allowParent: boolean }): Popp
   return {
     message: {
       id: message.id,
-      sender: message.sender,
+      author: { type: authorType },
       ...(message.text !== undefined ? { text: message.text as string } : {}),
       ...(message.data !== undefined ? { data: message.data as Record<string, unknown> } : {}),
       ...(context !== undefined ? { context: { ...context } } : {}),
@@ -232,7 +238,7 @@ function canonical(value: unknown): string {
 }
 
 /**
- * The fingerprint a retry is compared by (§7.3): the message's content and, for a first message,
+ * The fingerprint a retry is compared by (§8.3): the message's content and, for a first message,
  * the conversation it was addressed to. Unknown fields were dropped by the parser, so a retry that
  * adds one is still the same message.
  */

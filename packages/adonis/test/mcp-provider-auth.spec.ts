@@ -30,7 +30,7 @@ const oauthAuth: McpAuth = {
     if (token === 'web') throw new McpAuthError('token was not issued for MCP');
     if (token === 'weak') throw new McpAuthError('missing scope', { status: 403 });
     if (token === 'signed-out') {
-      throw new McpAuthError('sign in', { status: 403, error: 'sign_in_required' });
+      throw new McpAuthError('sign in', { status: 403, error: 'insufficient_scope' });
     }
     if (token !== 'good') throw new Error('invalid or expired access token');
     return {
@@ -173,11 +173,11 @@ describe('mcp_provider: the 401 sends the client to the login', () => {
 });
 
 describe('mcp_provider: a typed refusal can name its own challenge error', () => {
-  it('sign_in_required (a signed-out Poppy Session) reaches WWW-Authenticate', async () => {
+  it('an explicit error code reaches WWW-Authenticate', async () => {
     booted = await bootApp({ auth: oauthAuth });
     const res = await post(booted, 'signed-out');
     expect(res.status).toBe(403);
-    expect(res.headers.get('www-authenticate')).toContain('error="sign_in_required"');
+    expect(res.headers.get('www-authenticate')).toContain('error="insufficient_scope"');
   });
 });
 

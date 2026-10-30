@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { isIP } from 'node:net';
+import { isBlockedAddress } from './safe_fetch.js';
 
-/** A random URL-safe ID. 16 bytes = 128 random bits, the floor the spec sets for `jti` (4.2). */
+/** A random URL-safe ID. 16 bytes = 128 random bits, what the guides suggest for a `jti`. */
 export function randomId(prefix = '', bytes = 16): string {
   return prefix + randomBytes(bytes).toString('base64url');
 }
@@ -38,6 +40,15 @@ export function isLoopbackHost(hostname: string): boolean {
   );
 }
 
+/**
+ * Whether a URL's host is visibly internal: `localhost` or an address literal section 3 forbids. A
+ * name that resolves to one is refused where the connection is made (`safe_fetch.ts`).
+ */
+export function isInternalHost(hostname: string): boolean {
+  const h = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return isLoopbackHost(h) || (isIP(h) !== 0 && isBlockedAddress(h));
+}
+
 export interface SecurityOptions {
   /**
    * NON-SPEC. Lets `http:` URLs through every place the spec demands HTTPS (client_id,
@@ -60,8 +71,12 @@ export function requireSecureUrl(value: unknown, what: string, sec: SecurityOpti
   } catch {
     throw new TypeError(`${what} is not a valid URL: ${value}`);
   }
-  if (url.protocol === 'https:') return url;
-  if (url.protocol === 'http:' && sec.insecureDev) return url;
+  if (url.protocol === 'https:' || (url.protocol === 'http:' && sec.insecureDev)) {
+    if (!sec.insecureDev && isInternalHost(url.hostname)) {
+      throw new TypeError(`${what} points to an internal address (${url.hostname})`);
+    }
+    return url;
+  }
   throw new TypeError(
     `${what} must be an https:// URL (got ${url.protocol}//${url.host})${
       url.protocol === 'http:' ? '. Pass --insecure-dev to allow http:// for local testing.' : ''
@@ -69,9 +84,9 @@ export function requireSecureUrl(value: unknown, what: string, sec: SecurityOpti
   );
 }
 
-/** Strip a single leading `www.` and lowercase, as the spec compares domains (3.1). */
+/** Domains are compared ignoring case, with no other normalization (3.1). */
 export function normalizeDomain(domain: string): string {
-  return domain.toLowerCase().replace(/^www\./, '');
+  return domain.toLowerCase();
 }
 
 /** `Retry-After` as seconds: either delta-seconds or an HTTP-date. */
@@ -122,22 +137,31 @@ export function parseWwwAuthenticate(header: string | null): WwwAuthChallenge[] 
   return out;
 }
 
-/** The first `error` found in any challenge of a `WWW-Authenticate` header. */
+/**
+ * The first `error` found in any challenge of a `WWW-Authenticate` header, or, for a challenge
+ * without an error code (section 7), the `scope` it names.
+ */
 export function wwwAuthError(header: string | null): {
   error?: string | undefined;
   scope?: string | undefined;
   description?: string | undefined;
+  resourceMetadata?: string | undefined;
 } {
-  for (const c of parseWwwAuthenticate(header)) {
+  const challenges = parseWwwAuthenticate(header);
+  for (const c of challenges) {
     if (c.params.error) {
       return {
         error: c.params.error,
         scope: c.params.scope,
         description: c.params.error_description,
+        ...(c.params.resource_metadata ? { resourceMetadata: c.params.resource_metadata } : {}),
       };
     }
   }
-  return {};
+  const first = challenges[0];
+  return first
+    ? { scope: first.params.scope, resourceMetadata: first.params.resource_metadata }
+    : {};
 }
 
 /** A space-separated scope string as a set (OAuth scope syntax, RFC 6749 3.3). */

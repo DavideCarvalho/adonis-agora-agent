@@ -351,7 +351,7 @@ describe('poppy-connections: connect flows', () => {
     });
     expect(await done.text()).toContain('Connected to Fake Co');
     const [row] = await app.store.listConnections('account-1');
-    expect(row!.scope).toBe('poppy:read');
+    expect(row!.scope).toBe('orders:read');
     const pending = await app.store.getPending(app.connections.connectIdFor('run-1:call-1'));
     expect(JSON.stringify(pending)).not.toContain('hunter2');
     expect(row!.state).not.toContain('hunter2');
@@ -396,7 +396,7 @@ describe('poppy-connections: tools at the company', () => {
       await preflight(app, 'write', { company: app.fake.domain, tool: 'place_order' }),
     ).toMatchObject({ status: 'denied' });
 
-    // Mediated grants only poppy:read.
+    // Mediated grants only orders:read.
     const link = await connectLink(app);
     await fetch(`${link}/mediated`, {
       method: 'POST',
@@ -443,7 +443,7 @@ describe('poppy-connections: tools at the company', () => {
         detail: expect.stringContaining('"sku": "x"'),
       },
     });
-    // Approved, but the connection lacks poppy:write → a step-up, not a failure.
+    // Approved, but the connection lacks orders:write → a step-up, not a failure.
     expect(
       await tool(app, 'write', {
         company: app.fake.domain,
@@ -452,10 +452,10 @@ describe('poppy-connections: tools at the company', () => {
       }),
     ).toMatchObject({
       error: 'needs_permission',
-      scopes: ['poppy:write'],
+      scopes: ['orders:write'],
     });
-    // Step up through connect (Direct grants poppy:write), then the write runs.
-    const more = await connectLink(app, { scopes: ['poppy:write'] }, 'call-2');
+    // Step up through connect (Direct grants orders:write), then the write runs.
+    const more = await connectLink(app, { scopes: ['orders:write'] }, 'call-2');
     await direct(app, more);
     expect(
       await tool(app, 'write', {
@@ -530,8 +530,8 @@ describe('poppy-connections: tools at the company', () => {
       message: 'show my orders',
     })) as Record<string, unknown>;
     expect(asked.reply).toContain('Here are your orders.');
-    const used = [...app.fake.tokens.values()].filter((t) => t.signedIn && !t.bearer);
-    expect(used.some((t) => t.scope === 'poppy:read')).toBe(true);
+    const used = [...app.fake.tokens.values()].filter((t) => !t.resource);
+    expect(used.some((t) => t.scope === 'orders:read')).toBe(true);
     const requested = (await tool(app, 'request', {
       company: app.fake.domain,
       message: 'hello',

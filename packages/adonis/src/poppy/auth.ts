@@ -3,33 +3,36 @@ import type { Actor } from '../types.js';
 /**
  * Who a Poppy request comes from: a Personal Agent (`clientId`) acting for one of its Users
  * (`userId`, the pairwise User ID — not an account) in one Session. `signedIn`, with the app
- * account (`accountId`) and `scopes`, once the User signed in here (§4.4); a signed-out token has
- * neither. The shape `@adonis-agora/authkit-server` answers.
+ * account (`accountId`) and `scopes`, on a request that carries an access token (§5.4); a signed-out
+ * request has neither. The shape `@adonis-agora/authkit-server` answers.
  */
 export interface PoppyPrincipal {
   /** The opaque, stable id the Personal Agent gave this User here. */
   userId: string;
-  /** The app account, when the Session is signed in; `null` signed out. */
+  /** Which of the User's agents this Session is for (§5.1), if the Personal Agent says. */
+  agentId?: string | null;
+  /** The app account, when the request carries an access token; `null` signed out. */
   accountId: string | null;
   /** The Personal Agent's `client_id` (its metadata document URL). */
   clientId: string;
-  /** The token's account scopes (`poppy:read`, `poppy:write`, custom). Empty signed out. */
+  /** The access token's scopes. Empty signed out. */
   scopes: string[];
   sessionId: string;
   signedIn: boolean;
   /** The `resource` the token was issued for (RFC 8707), or `null`. */
   resource?: string | null;
-  tokenType?: 'DPoP' | 'Bearer';
+  /** The access token's scheme; `null` signed out. */
+  tokenType?: 'DPoP' | 'Bearer' | null;
   /** What the app's `personalAgents.poppy.toActor` answered, when it has one. */
   actor?: Actor;
 }
 
-/** The request a resolver verifies — the Session Token and its DPoP proof are in `headers`. */
+/** The request a resolver verifies — the `Poppy-Session` JWT and any access token are in `headers`. */
 export interface PoppyAuthRequest {
   method: string;
-  /** The full PUBLIC request URL (the DPoP `htu` is checked against it; the query is ignored). */
+  /** The full PUBLIC request URL (the Session JWT's `htu` is checked against it; the query is ignored). */
   url: string;
-  /** The request's headers as received (lower-cased names) — `authorization` and `dpop` included. */
+  /** The request's headers as received (lower-cased names) — `poppy-session`, `authorization` and `dpop` included. */
   headers: Record<string, string | string[] | undefined>;
 }
 
@@ -46,30 +49,32 @@ export interface PoppyAuthOptions {
 
 export type PoppyAuthFailure = {
   ok: false;
-  status: 400 | 401 | 403;
+  status: 400 | 401 | 403 | 429;
+  /** `null`: a challenge without a code (§8, the request needs the account) or a rate limit (§5.6). */
   error:
+    | 'invalid_session'
     | 'invalid_token'
-    | 'sign_in_required'
     | 'insufficient_scope'
     | 'invalid_dpop_proof'
     | 'use_dpop_nonce'
-    | (string & {});
+    | (string & {})
+    | null;
   scope?: string;
-  /** The challenge to answer with, verbatim. */
-  wwwAuthenticate: string;
-  /** For logs and the body's `error_description` — never the token. */
+  /** The challenge to answer with, verbatim; `null` for `invalid_session` and rate limits. */
+  wwwAuthenticate: string | null;
+  /** For logs and `invalid_session`'s `error_description` — never a token. */
   description?: string;
-  /** Extra headers to answer with (`DPoP-Nonce`). */
+  /** Extra headers to answer with (`DPoP-Nonce`, `Retry-After`). */
   headers?: Record<string, string>;
 };
 
 export type PoppyAuthResult = { ok: true; principal: PoppyPrincipal } | PoppyAuthFailure;
 
 /**
- * Verifies a request's Session Token. `@adonis-agora/authkit-server` installs one in the global
+ * Verifies a request's Session header and any access token. `@adonis-agora/authkit-server` installs one in the global
  * slot {@link POPPY_AUTHENTICATE_SLOT}; an app can pass its own (`definePoppyConfig({ authenticate })`).
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.1 (https://personalagentprotocol.org/docs/spec),
+ * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
  * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
  * ways, outside semver majors while it is a draft.
  */

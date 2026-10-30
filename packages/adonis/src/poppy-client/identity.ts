@@ -1,5 +1,5 @@
-import { SignJWT } from 'jose';
-import { importSigningKey, type StoredKey } from './keys.js';
+import { type JWK, SignJWT } from 'jose';
+import { bareEcPublicJwk, importSigningKey, type StoredKey } from './keys.js';
 import type { ClientMetadata } from './types.js';
 import { nowSeconds, randomId, requireSecureUrl, type SecurityOptions } from './util.js';
 
@@ -15,12 +15,15 @@ export interface IdentityConfig {
   extensions?: Record<string, { version: string }> | undefined;
 }
 
-/** Lifetime of every assertion this agent signs. The browser assertion caps at 60s (section 5). */
+/** Lifetime of a client assertion (the guides suggest at most five minutes). */
 export const ASSERTION_TTL_SECONDS = 60;
+export const DELEGATION_TYP = 'pap-delegation+jwt';
+/** How long a delegation lasts, within the 24 hours 5.2 allows. */
+export const DELEGATION_TTL_SECONDS = 7 * 3600;
 
 /**
  * The Personal Agent's identity (4.1): its `client_id` URL, its metadata document, and the
- * keys from `jwks_uri` that sign client assertions, Session assertions and browser assertions.
+ * keys from `jwks_uri` that sign client assertions and the delegations of Session JWT keys.
  */
 export class AgentIdentity {
   readonly baseUrl: string;
@@ -83,15 +86,15 @@ export class AgentIdentity {
   }
 
   /**
-   * `private_key_jwt` client assertion (RFC 7523 section 2.2): `iss` = `sub` = `client_id`,
-   * `aud` = the authorization server (its token endpoint by default), fresh `jti`.
+   * `private_key_jwt` client assertion (4.1, RFC 7523): `iss` = `sub` = `client_id`, `aud` = the
+   * Company's issuer as a single string, short-lived, with `iat` and a fresh `jti`.
    */
-  clientAssertion(audience: string): Promise<string> {
+  clientAssertion(issuer: string): Promise<string> {
     const iat = nowSeconds();
     return this.sign({
       iss: this.clientId,
       sub: this.clientId,
-      aud: audience,
+      aud: issuer,
       iat,
       exp: iat + ASSERTION_TTL_SECONDS,
       jti: randomId(),
@@ -99,41 +102,16 @@ export class AgentIdentity {
   }
 
   /**
-   * The JWT bearer grant assertion that starts or renews a Session (4.2): names the agent in
-   * `iss` and the User ID in `sub`; `aud` is the token endpoint as a single string.
+   * A delegation (5.2): vouches for one delegated public key. It names no User or Company. Its
+   * times are rounded to the hour, as the guides suggest, so they say less about when it was made.
    */
-  sessionAssertion(userId: string, tokenEndpoint: string): Promise<string> {
-    const iat = nowSeconds();
-    return this.sign({
-      iss: this.clientId,
-      sub: userId,
-      aud: tokenEndpoint,
-      iat,
-      exp: iat + ASSERTION_TTL_SECONDS,
-      jti: randomId(),
-    });
-  }
-
-  /** Browser assertion (section 5), header `typ: poppy-browser+jwt`, `exp` <= `iat` + 60. */
-  browserAssertion(input: {
-    userId: string;
-    endpoint: string;
-    sessionId: string;
-    returnTo: string;
-  }): Promise<string> {
-    const iat = nowSeconds();
-    return this.sign(
-      {
-        iss: this.clientId,
-        sub: input.userId,
-        aud: input.endpoint,
-        session_id: input.sessionId,
-        return_to: input.returnTo,
-        iat,
-        exp: iat + ASSERTION_TTL_SECONDS,
-        jti: randomId(),
-      },
-      'poppy-browser+jwt',
+  async delegate(publicJwk: JWK): Promise<{ jwt: string; exp: number }> {
+    const iat = Math.floor(nowSeconds() / 3600) * 3600;
+    const exp = iat + DELEGATION_TTL_SECONDS;
+    const jwt = await this.sign(
+      { iss: this.clientId, cnf: { jwk: bareEcPublicJwk(publicJwk) }, iat, exp, jti: randomId() },
+      DELEGATION_TYP,
     );
+    return { jwt, exp };
   }
 }

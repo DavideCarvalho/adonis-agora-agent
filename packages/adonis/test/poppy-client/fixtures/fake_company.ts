@@ -1,9 +1,9 @@
 /**
- * An in-process FAKE Poppy Company, written strictly from the spec (Draft 0.1). It doubles as a
+ * An in-process FAKE Poppy Company, written strictly from the spec (Draft 0.3). It doubles as a
  * conformance check of the client: every request the agent makes is verified the way a real
- * Company MUST verify it (private_key_jwt, JWT bearer assertion, DPoP proofs with nonce/ath/jti
- * replay, PKCE, iss, scopes, Bearer-only-at-MCP, browser assertion rules), and violations are
- * recorded in `violations` so tests can assert there were none.
+ * Company MUST verify it (private_key_jwt, the Session JWT and its delegation, DPoP proofs with
+ * nonce/ath/jti replay, PKCE, iss, scopes, browser join rules), and violations are recorded in
+ * `violations` so tests can assert there were none.
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -13,40 +13,46 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import {
   calculateJwkThumbprint,
   createLocalJWKSet,
+  decodeJwt,
   decodeProtectedHeader,
   EmbeddedJWK,
+  importJWK,
   type JWK,
   jwtVerify,
 } from 'jose';
 import { z } from 'zod';
 
+const MEDIATED_GRANT = 'https://personalagentprotocol.org/grant/mediated-sign-in';
 const id = (p: string) => p + randomBytes(9).toString('base64url');
 const now = () => Math.floor(Date.now() / 1000);
 
 interface Session {
+  key: string;
   id: string;
   clientId: string;
   userId: string;
   account?: string | undefined;
-  scope: string;
   ended?: boolean | undefined;
-  /** The Account Token the Session was signed in with. */
-  viaToken?: string | undefined;
 }
-interface AccessToken {
+/** What a verified request is: the shape the Company's handlers use. */
+interface Principal {
   sessionId: string;
   clientId: string;
   userId: string;
   scope: string;
   signedIn: boolean;
+}
+interface AccessToken {
+  clientId: string;
+  account: string;
+  scope: string;
   jkt?: string | undefined;
-  bearer: boolean;
   resource?: string | undefined;
+  viaToken: string;
   exp: number;
 }
 interface AccountToken {
   clientId: string;
-  userId: string;
   account: string;
   scope: string;
   revoked?: boolean | undefined;
@@ -77,8 +83,14 @@ export interface FakeOptions {
   rateLimitOnce?: boolean | undefined;
   /** Access token lifetime. */
   accessTtl?: number | undefined;
-  /** Rotate the Account Token on refresh. */
+  /** Rotate the refresh token on refresh. */
   rotateAccountToken?: boolean | undefined;
+  /** No `dpop_signing_alg_values_supported`: the Company issues Bearer tokens. */
+  noDpop?: boolean | undefined;
+  /** Valid protected resource metadata with no authorization servers: signed-out only. */
+  noIssuer?: boolean | undefined;
+  /** A service with its own tokens: `/api` publishes metadata whose `resource` isn't the domain. */
+  apiResource?: boolean | undefined;
 }
 
 export class FakeCompany {
@@ -86,10 +98,9 @@ export class FakeCompany {
   origin = '';
   readonly violations: string[] = [];
   readonly log: string[] = [];
-  /** The user revokes the agent at this Company: Account Tokens die, Sessions are signed out. */
+  /** The user revokes the agent at this Company: refresh tokens die, Sessions are signed out. */
   revokeAtCompany(): void {
     for (const at of this.accountTokens.values()) at.revoked = true;
-    for (const session of this.sessions.values()) session.account = undefined;
   }
 
   /** Answer every MCP request 401 with a bare JSON body, no WWW-Authenticate (as some servers do). */
@@ -108,11 +119,20 @@ export class FakeCompany {
     string,
     { clientId: string; scope: string; polls: number; lastPoll?: number }
   >();
-  readonly mediated = new Map<string, { sessionId: string; scope: string; attempts: number }>();
+  readonly mediated = new Map<string, { clientId: string; scope: string; attempts: number }>();
   readonly conversations = new Map<string, Conversation>();
   readonly seenJti = new Set<string>();
   readonly lastEventIdHeaders: string[] = [];
-  readonly browserJoins: { sessionId: string; returnTo: string }[] = [];
+  readonly browserJoins: { sessionId: string; account?: string | undefined }[] = [];
+  readonly browserCodes = new Map<
+    string,
+    { cookie: string; sessionId?: string; account?: string | undefined; used?: boolean }
+  >();
+  readonly feedback: unknown[] = [];
+  /** Answer feedback with this alternative (HTTP 200) instead of 202. */
+  feedbackAlternative: unknown;
+  /** Delegated key thumbprint → the one User ID it may sign for (5.2). */
+  private readonly delegatedKeys = new Map<string, string>();
   private nonce = id('n_');
   private rateLimited = false;
   private subscribers = new Map<string, Set<(chunk: string) => void>>();
@@ -125,6 +145,9 @@ export class FakeCompany {
   constructor(readonly opts: FakeOptions = {}) {}
 
   get issuer() {
+    return this.opts.noIssuer ? undefined : this.origin;
+  }
+  get identifier() {
     return this.origin;
   }
   get domain() {
@@ -157,21 +180,18 @@ export class FakeCompany {
 
   poppyJson() {
     return {
-      protocol_version: '0.1',
+      protocol_version: '0.3',
       organization: { name: 'Fake Co', domain: '127.0.0.1' },
       auth: {
-        issuer: this.issuer,
-        direct: { scopes: ['poppy:read', 'poppy:write', 'addresses'] },
-        device: { scopes: ['poppy:read', 'poppy:write'] },
-        mediated: {
-          endpoint: `${this.origin}/poppy/sign-in`,
-          fields: [
-            { name: 'email', label: 'Email', secret: false },
-            { name: 'password', label: 'Password', secret: true },
-          ],
-          scopes: ['poppy:read'],
+        scopes: {
+          'orders:read': 'See your orders',
+          'orders:write': 'Change your orders',
+          addresses: 'Manage saved shipping addresses',
         },
-        custom_scopes: { addresses: 'Manage saved shipping addresses' },
+        scope_hints: {
+          'orders:read': { changes: 'none', personal_data: true },
+          'orders:write': { changes: 'irreversible', personal_data: true },
+        },
         future_field: 'ignored',
       },
       agent: {
@@ -181,12 +201,24 @@ export class FakeCompany {
         ],
       },
       web: { browser_session_endpoint: `${this.origin}/poppy/browser-session` },
+      feedback: { endpoint: `${this.origin}/poppy/feedback` },
+      excluded_tasks: { url: `${this.origin}/poppy/excluded-tasks.json` },
       apis: [
         { type: 'graphql', url: 'https://ignored.example/graphql', description: 'unknown type' },
         { type: 'openapi', url: `${this.origin}/openapi.json`, description: 'Orders' },
         { type: 'mcp', url: this.mcpUrl, description: 'Tools' },
       ],
-      extensions: { 'example.com/unknown': { version: '9' } },
+      extensions: {
+        'example.com/unknown': { version: '9' },
+        'mediated-sign-in': {
+          version: '1',
+          fields: [
+            { name: 'email', label: 'Email', secret: false },
+            { name: 'password', label: 'Password', secret: true },
+          ],
+          scopes: ['orders:read'],
+        },
+      },
     };
   }
 
@@ -258,7 +290,7 @@ export class FakeCompany {
     return true;
   }
 
-  /** private_key_jwt (RFC 7523 2.2). Returns the client_id or undefined. */
+  /** private_key_jwt (4.1): `aud` is the issuer, as a single string. Returns the client_id. */
   private async clientAuth(form: URLSearchParams): Promise<string | undefined> {
     const clientId = form.get('client_id');
     if (!clientId) return undefined;
@@ -276,7 +308,7 @@ export class FakeCompany {
         {
           issuer: clientId,
           subject: clientId,
-          audience: [this.tokenEndpoint, this.issuer],
+          audience: this.origin,
           algorithms: ['ES256'],
         },
       );
@@ -330,25 +362,19 @@ export class FakeCompany {
 
   private issue(
     res: ServerResponse,
-    s: Session,
+    grant: { clientId: string; account: string; viaToken: string },
     opts: {
       jkt?: string | undefined;
-      scope?: string | undefined;
+      scope: string;
       resource?: string | undefined;
       refreshToken?: string | undefined;
-      extra?: Record<string, unknown> | undefined;
     },
   ) {
-    const scope = opts.scope ?? s.scope;
     const access = id('at_');
     this.tokens.set(access, {
-      sessionId: s.id,
-      clientId: s.clientId,
-      userId: s.userId,
-      scope,
-      signedIn: Boolean(s.account),
+      ...grant,
+      scope: opts.scope,
       jkt: opts.jkt,
-      bearer: !opts.jkt,
       resource: opts.resource,
       exp: now() + (this.opts.accessTtl ?? 3600),
     });
@@ -356,19 +382,12 @@ export class FakeCompany {
       access_token: access,
       token_type: opts.jkt ? 'DPoP' : 'Bearer',
       expires_in: this.opts.accessTtl ?? 3600,
-      scope,
-      session_id: s.id,
-      signed_in: Boolean(s.account),
+      scope: opts.scope,
       unknown_future_field: true,
-      ...opts.extra,
     };
-    if (opts.refreshToken) {
-      body.refresh_token = opts.refreshToken;
-      body.refresh_token_expires_in = 2592000;
-    }
+    if (opts.refreshToken) body.refresh_token = opts.refreshToken;
     this.send(res, 200, body);
   }
-
   private narrow(requested: string | null, allowed: string): string | null {
     if (!requested) return allowed;
     const allow = new Set(allowed.split(' ').filter(Boolean));
@@ -376,18 +395,13 @@ export class FakeCompany {
     return req.every((s) => allow.has(s)) ? req.join(' ') : null;
   }
 
-  /** Sign a Session in and mint an Account Token (end of every sign-in type, 4.4). */
-  private signIn(s: Session, scope: string, via: string) {
-    const account = `acct_${s.userId}`;
-    if (s.account && s.account !== account) return undefined;
-    s.account = account;
-    s.scope = scope;
+  /** End of every sign-in type (4.7): a refresh token. The server doesn't know the Session. */
+  private signIn(clientId: string, scope: string, via: string) {
+    const account = 'acct_1';
     const rt = id('pat_');
-    s.viaToken = rt;
-    this.accountTokens.set(rt, { clientId: s.clientId, userId: s.userId, account, scope, via });
-    return rt;
+    this.accountTokens.set(rt, { clientId, account, scope, via });
+    return { rt, grant: { clientId, account, viaToken: rt } };
   }
-
   /* ------------------------------------------------------------------ router */
 
   private async handle(req: IncomingMessage, res: ServerResponse) {
@@ -396,14 +410,37 @@ export class FakeCompany {
     this.log.push(`${req.method} ${p}`);
     if (p === '/.well-known/poppy.json')
       return this.send(res, 200, this.poppyJson(), { 'cache-control': 'max-age=60' });
+    if (p === '/.well-known/oauth-protected-resource') {
+      return this.send(res, 200, {
+        resource: this.origin,
+        ...(this.opts.noIssuer ? {} : { authorization_servers: [this.origin] }),
+      });
+    }
+    if (p === '/.well-known/oauth-protected-resource/mcp') {
+      return this.send(res, 200, {
+        resource: this.mcpUrl,
+        ...(this.opts.noIssuer ? {} : { authorization_servers: [this.origin] }),
+      });
+    }
+    if (p === '/.well-known/oauth-protected-resource/api' && this.opts.apiResource) {
+      return this.send(res, 200, { resource: `${this.origin}/api` });
+    }
     if (p === '/.well-known/oauth-authorization-server') {
       return this.send(res, 200, {
-        issuer: this.issuer,
+        issuer: this.origin,
         token_endpoint: this.tokenEndpoint,
         revocation_endpoint: `${this.origin}/oauth/revoke`,
         authorization_endpoint: `${this.origin}/oauth/authorize`,
         device_authorization_endpoint: `${this.origin}/oauth/device`,
-        poppy_domains: ['127.0.0.1', 'fake.example'],
+        grant_types_supported: [
+          'refresh_token',
+          'authorization_code',
+          'urn:ietf:params:oauth:grant-type:device_code',
+          MEDIATED_GRANT,
+        ],
+        scopes_supported: ['orders:read', 'orders:write', 'addresses'],
+        protected_resources: [this.origin, 'https://fake.example', this.mcpUrl],
+        ...(this.opts.noDpop ? {} : { dpop_signing_alg_values_supported: ['ES256'] }),
         some_other_field: 'ignored',
       });
     }
@@ -417,10 +454,30 @@ export class FakeCompany {
       if (d) d.polls = Number.POSITIVE_INFINITY;
       return this.send(res, 200, {});
     }
-    if (p.startsWith('/poppy/sign-in') && req.method === 'POST')
-      return this.mediatedSignIn(req, res, url);
+    if (p === '/poppy/browser-session' && req.method === 'GET') return this.browserPage(res);
+    if (p === '/poppy/browser-session/authorize' && req.method === 'POST')
+      return this.browserAuthorize(req, res, url);
     if (p === '/poppy/browser-session' && req.method === 'POST')
       return this.browserSession(req, res);
+    if (p === '/poppy/feedback' && req.method === 'POST') return this.feedbackRoute(req, res, url);
+    if (p === '/poppy/excluded-tasks.json') {
+      return this.send(res, 200, {
+        tasks: [
+          {
+            task: 'Send a wire transfer',
+            alternative: {
+              instructions: 'Only in the app',
+              references: [
+                { type: 'web', url: `${this.origin}/wire` },
+                { type: 'openapi', url: 'https://evil.example/openapi.json', operation_id: 'x' },
+                { type: 'future', url: 'x' },
+              ],
+            },
+          },
+          { task: 'Close an account' },
+        ],
+      });
+    }
     if (p.startsWith('/poppy/conversations')) return this.conversationsRoute(req, res, url);
     if (p === '/openapi.json') {
       return this.send(res, 200, {
@@ -429,7 +486,7 @@ export class FakeCompany {
         servers: [{ url: '/api' }],
         paths: {
           '/public': { get: { summary: 'Public info' } },
-          '/orders': { get: { summary: 'Your orders (poppy:read)' } },
+          '/orders': { get: { summary: 'Your orders (orders:read)' } },
           '/addresses': { post: { summary: 'Add an address (addresses)' } },
         },
       });
@@ -445,8 +502,11 @@ export class FakeCompany {
     const form = new URLSearchParams(await this.body(req));
     const clientId = await this.clientAuth(form);
     if (!clientId) return this.oauthError(res, 401, 'invalid_client');
+    if (form.has('session_id')) this.violation('session_id sent to the token endpoint');
+    if (req.headers['poppy-session']) this.violation('Session header sent to the token endpoint');
     let jkt: string | undefined;
     if (req.headers.dpop) {
+      if (this.opts.noDpop) this.violation('DPoP proof for an issuer that lists no algorithms');
       const d = await this.dpop(req, this.tokenEndpoint);
       if (d.error === 'use_dpop_nonce')
         return this.oauthError(res, 400, 'use_dpop_nonce', { 'dpop-nonce': this.nonce });
@@ -454,88 +514,32 @@ export class FakeCompany {
       jkt = d.jkt;
     }
     const resource = form.get('resource') ?? undefined;
-    if (!jkt) {
-      // Bearer only for an MCP server (4.3).
-      if (resource !== this.mcpUrl) {
-        this.violation('token request without DPoP for a non-MCP resource');
-        return this.oauthError(res, 400, 'invalid_dpop_proof');
-      }
+    if (resource && resource !== this.mcpUrl && resource !== `${this.origin}/api`) {
+      return this.oauthError(res, 400, 'invalid_target');
     }
+    if (resource === this.mcpUrl) jkt = undefined; // Bearer is the MCP baseline (7).
     const grant = form.get('grant_type');
-    const sessionId = form.get('session_id');
     const scopeReq = form.get('scope');
-
-    if (grant === 'urn:ietf:params:oauth:grant-type:jwt-bearer') {
-      const { jwks } = await this.client(clientId);
-      const assertion = form.get('assertion') ?? '';
-      let sub: string;
-      try {
-        const h = decodeProtectedHeader(assertion);
-        if (h.typ === 'poppy-browser+jwt') return this.oauthError(res, 400, 'invalid_grant');
-        const { payload } = await jwtVerify(assertion, createLocalJWKSet(jwks), {
-          issuer: clientId,
-          audience: this.tokenEndpoint,
-          algorithms: ['ES256'],
-        });
-        if (typeof payload.aud !== 'string')
-          this.violation('session assertion aud must be a string');
-        if (!payload.exp || !payload.iat || payload.exp - payload.iat > 300)
-          this.violation('session assertion not short-lived');
-        if (!this.checkJti(payload.jti, 'session assertion'))
-          return this.oauthError(res, 400, 'invalid_grant');
-        sub = String(payload.sub);
-        if (!/^usr_[A-Za-z0-9_-]{16,}$/.test(sub))
-          this.violation(`User ID looks non-opaque: ${sub}`);
-      } catch (e) {
-        this.violation(`session assertion: ${(e as Error).message}`);
-        return this.oauthError(res, 400, 'invalid_grant');
-      }
-      let s: Session | undefined;
-      if (sessionId) {
-        s = this.sessions.get(sessionId);
-        if (!s || s.ended || s.clientId !== clientId || s.userId !== sub)
-          return this.oauthError(res, 400, 'invalid_session');
-        if (s.account) return this.oauthError(res, 400, 'invalid_grant'); // signed-in: renew with the Account Token
-      } else {
-        s = { id: id('ses_'), clientId, userId: sub, scope: '' };
-        this.sessions.set(s.id, s);
-      }
-      return this.issue(res, s, { jkt, scope: '', resource });
-    }
-
     if (grant === 'refresh_token') {
       const rt = form.get('refresh_token') ?? '';
       const at = this.accountTokens.get(rt);
       if (!at || at.revoked || at.clientId !== clientId)
         return this.oauthError(res, 400, 'invalid_grant');
-      let s: Session | undefined;
-      if (sessionId) {
-        s = this.sessions.get(sessionId);
-        if (!s || s.ended || s.clientId !== clientId || s.userId !== at.userId)
-          return this.oauthError(res, 400, 'invalid_session');
-        if (s.account && s.account !== at.account)
-          return this.oauthError(res, 400, 'account_mismatch');
-      } else {
-        s = { id: id('ses_'), clientId, userId: at.userId, scope: '' };
-        this.sessions.set(s.id, s);
-      }
-      s.account = at.account;
-      s.scope = at.scope;
-      s.viaToken = rt;
       const scope = this.narrow(scopeReq, at.scope);
       if (scope === null) return this.oauthError(res, 400, 'invalid_scope');
       let rotated: string | undefined;
       if (this.opts.rotateAccountToken) {
         at.revoked = true;
         rotated = id('pat_');
-        s.viaToken = rotated;
         this.accountTokens.set(rotated, { ...at, revoked: false });
       }
-      return this.issue(res, s, { jkt, scope, resource, refreshToken: rotated });
+      return this.issue(
+        res,
+        { clientId, account: at.account, viaToken: rotated ?? rt },
+        { jkt, scope, resource, refreshToken: rotated },
+      );
     }
-
     if (grant === 'authorization_code') {
-      if (!jkt) return this.oauthError(res, 400, 'invalid_dpop_proof');
       const c = this.codes.get(form.get('code') ?? '');
       if (!c || c.used || c.clientId !== clientId)
         return this.oauthError(res, 400, 'invalid_grant');
@@ -547,13 +551,9 @@ export class FakeCompany {
         this.violation('PKCE verifier mismatch');
         return this.oauthError(res, 400, 'invalid_grant');
       }
-      const s = this.sessions.get(sessionId ?? '');
-      if (!s || s.clientId !== clientId) return this.oauthError(res, 400, 'invalid_session');
-      const rt = this.signIn(s, c.scope, 'direct');
-      if (!rt) return this.oauthError(res, 400, 'account_mismatch');
-      return this.issue(res, s, { jkt, refreshToken: rt });
+      const { rt, grant: g } = this.signIn(clientId, c.scope, 'direct');
+      return this.issue(res, g, { jkt, scope: c.scope, refreshToken: rt });
     }
-
     if (grant === 'urn:ietf:params:oauth:grant-type:device_code') {
       const d = this.devices.get(form.get('device_code') ?? '');
       if (!d || d.clientId !== clientId) return this.oauthError(res, 400, 'invalid_grant');
@@ -561,16 +561,57 @@ export class FakeCompany {
       const pending = this.opts.devicePendingPolls ?? 1;
       if (d.polls <= pending) return this.oauthError(res, 400, 'authorization_pending');
       if (d.polls === pending + 1) return this.oauthError(res, 400, 'slow_down');
-      const s = this.sessions.get(sessionId ?? '');
-      if (!s || s.clientId !== clientId) return this.oauthError(res, 400, 'invalid_session');
       this.devices.delete(form.get('device_code')!);
-      const rt = this.signIn(s, d.scope, 'device');
-      if (!rt) return this.oauthError(res, 400, 'account_mismatch');
-      return this.issue(res, s, { jkt, refreshToken: rt });
+      const { rt, grant: g } = this.signIn(clientId, d.scope, 'device');
+      return this.issue(res, g, { jkt, scope: d.scope, refreshToken: rt });
     }
+    if (grant === MEDIATED_GRANT) return this.mediatedGrant(res, form, clientId, jkt);
     return this.oauthError(res, 400, 'unsupported_grant_type');
   }
-
+  /* ------------------------------------------------------------------ mediated */
+  private mediatedGrant(
+    res: ServerResponse,
+    form: URLSearchParams,
+    clientId: string,
+    jkt: string | undefined,
+  ) {
+    const signInId = form.get('sign_in_id');
+    if (signInId) {
+      if (form.has('email') || form.has('password') || form.has('scope'))
+        this.violation('credentials or scope re-sent with the one-time code');
+      const pending = this.mediated.get(signInId);
+      if (!pending || pending.clientId !== clientId)
+        return this.oauthError(res, 400, 'invalid_grant');
+      if (form.get('one_time_code') !== '123456') {
+        pending.attempts++;
+        if (pending.attempts >= 3) {
+          this.mediated.delete(signInId);
+          return this.oauthError(res, 400, 'invalid_grant');
+        }
+        return this.send(res, 400, {
+          error: 'code_required',
+          sign_in_id: signInId,
+          sent_to: 'x',
+          expires_in: 600,
+        });
+      }
+      this.mediated.delete(signInId);
+      const { rt, grant } = this.signIn(clientId, pending.scope, 'mediated');
+      return this.issue(res, grant, { jkt, scope: pending.scope, refreshToken: rt });
+    }
+    if (form.get('scope') !== 'orders:read') return this.oauthError(res, 400, 'invalid_scope');
+    if (form.get('email') !== 'dana@example.com' || form.get('password') !== 'hunter2') {
+      return this.oauthError(res, 400, 'invalid_grant');
+    }
+    const id2 = id('sgn_');
+    this.mediated.set(id2, { clientId, scope: 'orders:read', attempts: 0 });
+    this.send(res, 400, {
+      error: 'code_required',
+      sign_in_id: id2,
+      sent_to: 'Text to the phone number ending in 71',
+      expires_in: 600,
+    });
+  }
   private async revoke(req: IncomingMessage, res: ServerResponse) {
     const form = new URLSearchParams(await this.body(req));
     const clientId = await this.clientAuth(form);
@@ -578,19 +619,9 @@ export class FakeCompany {
     if (form.get('token_type_hint') !== 'refresh_token')
       this.violation('revocation without token_type_hint=refresh_token');
     const at = this.accountTokens.get(form.get('token') ?? '');
-    if (at && at.clientId === clientId) {
-      at.revoked = true;
-      // Sign out every Session signed in with it; they continue signed out (4.9).
-      for (const s of this.sessions.values()) {
-        if (s.viaToken === form.get('token') && s.clientId === clientId) {
-          s.account = undefined;
-          s.scope = '';
-        }
-      }
-    }
+    if (at && at.clientId === clientId) at.revoked = true;
     this.send(res, 200);
   }
-
   private async authorize(url: URL, res: ServerResponse) {
     const q = url.searchParams;
     const clientId = q.get('client_id') ?? '';
@@ -607,7 +638,7 @@ export class FakeCompany {
     if (!scope) this.violation('sign-in without scope');
     const back = new URL(redirectUri);
     back.searchParams.set('state', q.get('state') ?? '');
-    back.searchParams.set('iss', this.issuer);
+    back.searchParams.set('iss', this.origin);
     if (q.get('login_hint') === 'deny') {
       back.searchParams.set('error', 'access_denied');
     } else {
@@ -629,7 +660,7 @@ export class FakeCompany {
     const clientId = await this.clientAuth(form);
     if (!clientId) return this.oauthError(res, 401, 'invalid_client');
     const scope = form.get('scope') ?? '';
-    if (!scope.split(' ').every((s) => ['poppy:read', 'poppy:write'].includes(s)))
+    if (!scope.split(' ').every((s) => ['orders:read', 'orders:write', 'addresses'].includes(s)))
       return this.oauthError(res, 400, 'invalid_scope');
     const deviceCode = id('dc_');
     this.devices.set(deviceCode, { clientId, scope, polls: 0 });
@@ -645,48 +676,156 @@ export class FakeCompany {
 
   /* ------------------------------------------------------------------ resource auth */
 
-  /** DPoP-bound Session Token check for APIs/conversations (4.3). Bearer is rejected here. */
+  /** Verifies the `Poppy-Session` JWT and its delegation (5.2, 5.3). */
+  private async verifySession(
+    req: IncomingMessage,
+    url: URL,
+    token: string | undefined,
+  ): Promise<{ clientId: string; sid: string; sub: string } | string> {
+    const jwt = req.headers['poppy-session'];
+    if (typeof jwt !== 'string') {
+      this.violation(`no Session header on ${req.method} ${url.pathname}`);
+      return 'no Session header';
+    }
+    const fail = (why: string) => {
+      this.violation(`Session JWT: ${why}`);
+      return why;
+    };
+    try {
+      const h = decodeProtectedHeader(jwt);
+      if (h.typ !== 'poppy-session+jwt') return fail('typ');
+      if (h.alg !== 'ES256') return fail('alg');
+      if (typeof h.pap_dlg !== 'string') return fail('no pap_dlg');
+      const claims = decodeJwt(jwt);
+      const clientId = String(claims.iss);
+      const { jwks } = await this.client(clientId);
+      const { payload: dlg, protectedHeader: dh } = await jwtVerify(
+        h.pap_dlg,
+        createLocalJWKSet(jwks),
+        { typ: 'pap-delegation+jwt', issuer: clientId, algorithms: ['ES256'] },
+      );
+      if (dh.typ !== 'pap-delegation+jwt') return fail('delegation typ');
+      if (!dlg.iat || !dlg.exp || dlg.exp - dlg.iat > 24 * 3600) return fail('delegation lifetime');
+      if ('sub' in dlg || 'aud' in dlg) return fail('delegation names a User or Company');
+      const jwk = (dlg.cnf as { jwk: JWK }).jwk;
+      if ('d' in jwk) return fail('private key in delegation');
+      const thumb = await calculateJwkThumbprint(jwk);
+      if (h.kid !== thumb) return fail('kid is not the thumbprint');
+      const { payload } = await jwtVerify(jwt, await importJWK(jwk, 'ES256'), {
+        typ: 'poppy-session+jwt',
+        algorithms: ['ES256'],
+      });
+      if (payload.aud !== this.identifier) return fail(`aud ${String(payload.aud)}`);
+      if (payload.htm !== req.method) return fail(`htm ${String(payload.htm)}`);
+      const htu = new URL(url);
+      htu.search = '';
+      if (payload.htu !== htu.toString()) return fail(`htu ${String(payload.htu)}`);
+      if (typeof payload.iat !== 'number' || Math.abs(now() - payload.iat) > 60) return fail('iat');
+      if (!this.checkJti(payload.jti, 'Session JWT')) return 'jti';
+      if (typeof payload.sid !== 'string' || !/^[A-Za-z0-9_-]{16,256}$/.test(payload.sid))
+        return fail('sid');
+      const sub = String(payload.sub);
+      if (!/^usr_[A-Za-z0-9_-]{16,}$/.test(sub)) return fail(`User ID looks non-opaque: ${sub}`);
+      const owner = this.delegatedKeys.get(thumb);
+      if (owner && owner !== sub) return fail('a delegated key signed for two User IDs');
+      this.delegatedKeys.set(thumb, sub);
+      const ath = token ? createHash('sha256').update(token).digest('base64url') : undefined;
+      if (payload.ath !== ath) return fail('ath');
+      return { clientId, sid: payload.sid, sub };
+    } catch (e) {
+      return fail((e as Error).message);
+    }
+  }
+
+  /** The Session header, then the access token if any (5.3, 4.5). */
   private async resourceAuth(
     req: IncomingMessage,
     res: ServerResponse,
     url: URL,
-  ): Promise<AccessToken | undefined> {
+  ): Promise<Principal | undefined> {
     const auth = req.headers.authorization ?? '';
     if (url.search.includes('access_token')) this.violation('token in URL');
     const [scheme, token] = auth.split(' ');
-    if (scheme !== 'DPoP' || !token) {
-      if (scheme === 'Bearer') this.violation('Bearer token used outside MCP');
-      this.send(res, 401, undefined, { 'www-authenticate': 'DPoP error="invalid_token"' });
+    const v = await this.verifySession(req, url, token);
+    if (typeof v === 'string') {
+      this.send(res, 400, { error: 'invalid_session', error_description: v });
       return undefined;
     }
-    const t = this.tokens.get(token);
-    if (!t || t.exp < now() || t.bearer) {
-      this.send(res, 401, undefined, { 'www-authenticate': 'DPoP error="invalid_token"' });
+    let signedIn: AccessToken | undefined;
+    if (token) {
+      const t = this.tokens.get(token);
+      const chall = { 'www-authenticate': `${t?.jkt ? 'DPoP' : 'Bearer'} error="invalid_token"` };
+      if (!t || t.exp < now() || this.accountTokens.get(t.viaToken)?.revoked) {
+        this.send(res, 401, undefined, chall);
+        return undefined;
+      }
+      if (t.clientId !== v.clientId) {
+        this.send(res, 400, { error: 'invalid_session' });
+        return undefined;
+      }
+      if (scheme !== (t.jkt ? 'DPoP' : 'Bearer')) {
+        this.violation(`token sent with scheme ${scheme}`);
+        this.send(res, 401, undefined, chall);
+        return undefined;
+      }
+      const wanted =
+        url.pathname.startsWith('/api/') && this.opts.apiResource
+          ? `${this.origin}/api`
+          : undefined;
+      if ((url.pathname === '/mcp' ? this.mcpUrl : wanted) !== t.resource) {
+        this.send(res, 401, undefined, {
+          'www-authenticate': `Bearer error="invalid_token", resource_metadata="${this.origin}/.well-known/oauth-protected-resource${url.pathname === '/mcp' ? '/mcp' : '/api'}"`,
+        });
+        return undefined;
+      }
+      if (t.jkt) {
+        const d = await this.dpop(req, url.toString(), token);
+        if (d.error === 'use_dpop_nonce') {
+          this.send(res, 401, undefined, {
+            'www-authenticate': 'DPoP error="use_dpop_nonce"',
+            'dpop-nonce': this.nonce,
+          });
+          return undefined;
+        }
+        if (d.error || d.jkt !== t.jkt) {
+          if (!d.error) this.violation('DPoP key does not match token binding');
+          this.send(res, 401, undefined, { 'www-authenticate': 'DPoP error="invalid_dpop_proof"' });
+          return undefined;
+        }
+      }
+      signedIn = t;
+    } else if (req.headers.dpop) {
+      this.violation('DPoP proof without an access token');
+    }
+    const key = `${v.clientId}|${v.sid}`;
+    let s = this.sessions.get(key);
+    if (!s) {
+      s = { key, id: v.sid, clientId: v.clientId, userId: v.sub };
+      this.sessions.set(key, s);
+    }
+    if (s.ended || s.userId !== v.sub) {
+      this.send(res, 400, { error: 'invalid_session' });
       return undefined;
     }
-    const d = await this.dpop(req, url.toString(), token);
-    if (d.error === 'use_dpop_nonce') {
-      this.send(res, 401, undefined, {
-        'www-authenticate': 'DPoP error="use_dpop_nonce"',
-        'dpop-nonce': this.nonce,
-      });
-      return undefined;
+    if (signedIn) {
+      if (s.account && s.account !== signedIn.account) {
+        this.send(res, 400, { error: 'invalid_session' });
+        return undefined;
+      }
+      s.account = signedIn.account;
     }
-    if (d.error || d.jkt !== t.jkt) {
-      if (!d.error) this.violation('DPoP key does not match token binding');
-      this.send(res, 401, undefined, { 'www-authenticate': 'DPoP error="invalid_dpop_proof"' });
-      return undefined;
-    }
-    // Sign-out takes effect right away (4.9 SHOULD).
-    const s = this.sessions.get(t.sessionId);
-    if (t.signedIn && !s?.account) return { ...t, signedIn: false, scope: '' };
-    return t;
+    return {
+      sessionId: s.id,
+      clientId: s.clientId,
+      userId: s.userId,
+      scope: signedIn?.scope ?? '',
+      signedIn: signedIn !== undefined,
+    };
   }
-
   private async api(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (this.opts.rateLimitOnce && !this.rateLimited) {
       this.rateLimited = true;
-      return this.send(res, 429, { error: 'rate_limited' }, { 'retry-after': '1' });
+      return this.send(res, 429, undefined, { 'retry-after': '1' });
     }
     const t = await this.resourceAuth(req, res, url);
     if (!t) return;
@@ -695,24 +834,20 @@ export class FakeCompany {
       return this.send(res, 200, { hello: 'world', signed_in: t.signedIn });
     if (url.pathname === '/api/orders') {
       if (!t.signedIn)
+        return this.send(res, 401, undefined, { 'www-authenticate': 'Bearer scope="orders:read"' });
+      if (!scopes.has('orders:read')) {
         return this.send(res, 403, undefined, {
-          'www-authenticate': 'DPoP error="sign_in_required"',
-        });
-      if (!scopes.has('poppy:read')) {
-        return this.send(res, 403, undefined, {
-          'www-authenticate': 'DPoP error="insufficient_scope", scope="poppy:read"',
+          'www-authenticate': 'Bearer error="insufficient_scope", scope="orders:read"',
         });
       }
       return this.send(res, 200, { orders: [{ id: 'ord_1042', item: 'jacket' }] });
     }
     if (url.pathname === '/api/addresses') {
       if (!t.signedIn)
-        return this.send(res, 403, undefined, {
-          'www-authenticate': 'DPoP error="sign_in_required"',
-        });
+        return this.send(res, 401, undefined, { 'www-authenticate': 'Bearer scope="addresses"' });
       if (!scopes.has('addresses')) {
         return this.send(res, 403, undefined, {
-          'www-authenticate': 'DPoP error="insufficient_scope", scope="addresses"',
+          'www-authenticate': 'Bearer error="insufficient_scope", scope="addresses"',
         });
       }
       return this.send(res, 201, { ok: true });
@@ -720,134 +855,91 @@ export class FakeCompany {
     this.send(res, 404, { error: 'not_found' });
   }
 
-  /* ------------------------------------------------------------------ mediated */
-
-  private async mediatedSignIn(req: IncomingMessage, res: ServerResponse, url: URL) {
+  /* ------------------------------------------------------------------ browser join (6) */
+  private browserPage(res: ServerResponse) {
+    const code = id('bc_');
+    const cookie = id('jc_');
+    this.browserCodes.set(code, { cookie });
+    res.writeHead(200, {
+      'content-type': 'text/html',
+      'cache-control': 'no-store',
+      'set-cookie': `__Host-poppy_join=${cookie}; Path=/; Max-Age=60; Secure; HttpOnly; SameSite=Strict`,
+    });
+    res.end(
+      `<!doctype html><form method="post" action="/poppy/browser-session"><input type="hidden" name="code" value="${code}"><button>Continue</button></form>`,
+    );
+  }
+  private async browserAuthorize(req: IncomingMessage, res: ServerResponse, url: URL) {
     const t = await this.resourceAuth(req, res, url);
     if (!t) return;
     const body = JSON.parse((await this.body(req)) || '{}');
-    const parts = url.pathname.split('/');
-    if (parts.length === 4) {
-      const pending = this.mediated.get(parts[3] ?? '');
-      if (!pending || pending.sessionId !== t.sessionId)
-        return this.send(res, 200, { status: 'failed' });
-      if (body.credentials) this.violation('credentials re-sent with the one-time code');
-      if (body.code !== '123456') {
-        pending.attempts++;
-        return this.send(
-          res,
-          200,
-          pending.attempts >= 3
-            ? { status: 'failed' }
-            : { status: 'code_required', sign_in_id: parts[3] },
-        );
-      }
-      this.mediated.delete(parts[3] ?? '');
-      const s = this.sessions.get(t.sessionId)!;
-      const rt = this.signIn(s, pending.scope, 'mediated')!;
-      const access = id('at_');
-      this.tokens.set(access, { ...t, scope: pending.scope, signedIn: true, exp: now() + 3600 });
-      return this.send(res, 200, {
-        status: 'complete',
-        access_token: access,
-        token_type: 'DPoP',
-        expires_in: 3600,
-        refresh_token: rt,
-        scope: pending.scope,
-        session_id: s.id,
-        signed_in: true,
-      });
-    }
-    if (body.scope !== 'poppy:read') return this.send(res, 400, { error: 'invalid_scope' });
-    const { email, password } = body.credentials ?? {};
-    if (email !== 'dana@example.com' || password !== 'hunter2')
-      return this.send(res, 200, { status: 'failed' });
-    const signInId = id('sgn_');
-    this.mediated.set(signInId, { sessionId: t.sessionId, scope: body.scope, attempts: 0 });
-    this.send(res, 200, {
-      status: 'code_required',
-      sign_in_id: signInId,
-      code: { sent_to: 'Text to the phone number ending in 71' },
-      expires_at: new Date(Date.now() + 600_000).toISOString(),
-    });
+    const entry = this.browserCodes.get(String(body.code));
+    if (!entry || entry.sessionId) return this.send(res, 400, { error: 'invalid_request' });
+    entry.sessionId = t.sessionId;
+    entry.account = t.signedIn ? 'acct_1' : undefined;
+    res.writeHead(204);
+    res.end();
   }
-
-  /* ------------------------------------------------------------------ browser */
-
   private async browserSession(req: IncomingMessage, res: ServerResponse) {
-    if (new URL(req.url ?? '/', this.origin).search)
-      this.violation('browser assertion endpoint called with a query');
+    if (new URL(req.url ?? '/', this.origin).search) this.violation('browser join with a query');
     const form = new URLSearchParams(await this.body(req));
-    const assertion = form.get('assertion') ?? '';
-    try {
-      const h = decodeProtectedHeader(assertion);
-      if (h.typ !== 'poppy-browser+jwt') throw new Error('typ');
-      const unverified = JSON.parse(
-        Buffer.from(assertion.split('.')[1] ?? '', 'base64url').toString(),
-      );
-      const { jwks } = await this.client(unverified.iss);
-      const { payload } = await jwtVerify(assertion, createLocalJWKSet(jwks), {
-        audience: `${this.origin}/poppy/browser-session`,
-        typ: 'poppy-browser+jwt',
-      });
-      if ((payload.exp ?? 0) - (payload.iat ?? 0) > 60) throw new Error('exp > iat + 60');
-      if (!this.checkJti(payload.jti, 'browser assertion')) throw new Error('jti');
-      const s = this.sessions.get(String(payload.session_id));
-      if (!s || s.clientId !== payload.iss || s.userId !== payload.sub) throw new Error('session');
-      const returnTo = new URL(String(payload.return_to));
-      if (returnTo.hostname !== '127.0.0.1') throw new Error('return_to');
-      this.browserJoins.push({ sessionId: s.id, returnTo: returnTo.toString() });
-      res.writeHead(303, {
-        location: returnTo.toString(),
-        'set-cookie': `fake_session=${s.id}; Path=/; Secure; HttpOnly; SameSite=Lax`,
-      });
-      res.end();
-    } catch (e) {
-      this.violation(`browser assertion: ${(e as Error).message}`);
-      res.writeHead(400).end('bad assertion');
+    const entry = this.browserCodes.get(form.get('code') ?? '');
+    const cookie = /__Host-poppy_join=([^;]+)/.exec(req.headers.cookie ?? '')?.[1];
+    if (!entry || entry.used || !entry.sessionId || entry.cookie !== cookie) {
+      if (entry) entry.used = true;
+      res.writeHead(400).end('bad join');
+      return;
     }
+    entry.used = true;
+    this.browserJoins.push({ sessionId: entry.sessionId, account: entry.account });
+    res.writeHead(303, {
+      location: '/',
+      'set-cookie': `__Host-fake_session=${entry.sessionId}; Path=/; Secure; HttpOnly`,
+    });
+    res.end();
   }
-
+  /* ------------------------------------------------------------------ feedback (9.3) */
+  private async feedbackRoute(req: IncomingMessage, res: ServerResponse, url: URL) {
+    const t = await this.resourceAuth(req, res, url);
+    if (!t) return;
+    const body = JSON.parse((await this.body(req)) || '{}');
+    if ('kind' in body) this.violation('feedback has no kind in 0.3');
+    this.feedback.push(body);
+    if (this.feedbackAlternative) return this.send(res, 200, this.feedbackAlternative);
+    res.writeHead(202);
+    res.end();
+  }
   /* ------------------------------------------------------------------ MCP */
 
   private async mcp(req: IncomingMessage, res: ServerResponse, url: URL) {
-    const [scheme, token] = (req.headers.authorization ?? '').split(' ');
-    const t = this.tokens.get(token ?? '');
     if (this.bareMcpErrors) {
       res.writeHead(401, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ error: 'token invalid, expired or revoked' }));
     }
-    if (scheme !== 'Bearer' || !t || !t.bearer || t.resource !== this.mcpUrl || t.exp < now()) {
-      if (scheme === 'DPoP') this.violation('DPoP token sent to MCP');
-      res.writeHead(401, {
-        'www-authenticate': `Bearer error="invalid_token", resource_metadata="${this.origin}/.well-known/oauth-protected-resource/mcp"`,
-      });
-      return res.end();
+    if ((req.headers.authorization ?? '').startsWith('DPoP')) {
+      this.violation('DPoP token sent to MCP');
     }
-    void url;
+    const t = await this.resourceAuth(req, res, url);
+    if (!t) return;
     this.mcpCalls++;
     const raw = req.method === 'POST' ? await this.body(req) : undefined;
     const rpc = raw ? JSON.parse(raw) : undefined;
-    // A signed-in Bearer whose Session was signed out meanwhile (the user revoked the agent here):
-    // its tools need a signed-in Session (4.4) — the agent's Account Token has to sign it back in.
-    if (rpc?.method === 'tools/call' && t.signedIn && !this.sessions.get(t.sessionId)?.account) {
-      res.writeHead(403, {
-        'content-type': 'application/json',
-        'www-authenticate': 'Bearer error="sign_in_required"',
-      });
-      return res.end(JSON.stringify({ error: 'sign_in_required' }));
-    }
-    // `place_order` needs poppy:write: a Company refuses it before running (RFC 6750 §3.1 step-up).
-    if (
-      rpc?.method === 'tools/call' &&
-      rpc.params?.name === 'place_order' &&
-      !` ${t.scope ?? ''} `.includes(' poppy:write ')
-    ) {
-      res.writeHead(403, {
-        'content-type': 'application/json',
-        'www-authenticate': 'Bearer error="insufficient_scope", scope="poppy:write"',
-      });
-      return res.end(JSON.stringify({ error: 'insufficient_scope' }));
+    // `place_order` needs orders:write: refused before it runs, with a challenge (7).
+    if (rpc?.method === 'tools/call' && rpc.params?.name === 'place_order') {
+      if (!t.signedIn) {
+        res.writeHead(401, {
+          'content-type': 'application/json',
+          'www-authenticate': `Bearer scope="orders:write", resource_metadata="${this.origin}/.well-known/oauth-protected-resource/mcp"`,
+        });
+        return res.end();
+      }
+      if (!` ${t.scope} `.includes(' orders:write ')) {
+        res.writeHead(403, {
+          'content-type': 'application/json',
+          'www-authenticate': 'Bearer error="insufficient_scope", scope="orders:write"',
+        });
+        return res.end(JSON.stringify({ error: 'insufficient_scope' }));
+      }
     }
     const server = new McpServer({ name: 'fake-co', version: '1.0.0' });
     server.registerTool(
@@ -948,7 +1040,7 @@ export class FakeCompany {
   }
 
   /** The fake Company Agent. */
-  private respond(c: Conversation, t: AccessToken, msg: Record<string, unknown>) {
+  private respond(c: Conversation, t: Principal, msg: Record<string, unknown>) {
     this.setState(c, 'working');
     setTimeout(() => {
       if (c.status === 'closed') return;
@@ -963,23 +1055,22 @@ export class FakeCompany {
           message: {
             id: mid,
             role: 'company',
-            sender: c.responder,
+            author: { type: c.responder },
             text: replyText,
             ...(data ? { data } : {}),
           },
         });
       };
       if (/order/i.test(text)) {
-        if (!t.signedIn || !t.scope.split(' ').includes('poppy:read')) {
-          this.push(
-            c,
-            t.signedIn
-              ? { type: 'authorization', error: 'insufficient_scope', scope: 'poppy:read' }
-              : { type: 'authorization', error: 'sign_in_required' },
-          );
+        if (!t.signedIn || !t.scope.split(' ').includes('orders:read')) {
+          this.push(c, {
+            type: 'authorization',
+            error: 'insufficient_scope',
+            scope: 'orders:read',
+          });
           reply('Please sign in so I can look up your orders.');
         } else {
-          c.owner = `acct_${t.userId}`;
+          c.owner = 'acct_1';
           c.account = c.owner;
           reply('Here are your orders.', { orders: [{ id: 'ord_1042', item: 'jacket' }] });
         }
@@ -996,9 +1087,9 @@ export class FakeCompany {
     }, 20);
   }
 
-  private owns(c: Conversation, t: AccessToken) {
+  private owns(c: Conversation, t: Principal) {
     if (c.clientId !== t.clientId || c.userId !== t.userId) return false;
-    if (c.account && !t.signedIn) return 'sign_in_required';
+    if (c.account && !t.signedIn) return 'account_required';
     return true;
   }
 
@@ -1064,9 +1155,9 @@ export class FakeCompany {
     const c = this.conversations.get(convId ?? '');
     const owns = c ? this.owns(c, t) : false;
     if (!c || owns === false) return this.send(res, 404, { error: 'conversation_not_found' });
-    if (owns === 'sign_in_required')
+    if (owns === 'account_required')
       return this.send(res, 403, undefined, {
-        'www-authenticate': 'DPoP error="sign_in_required"',
+        'www-authenticate': 'Bearer scope="orders:read"',
       });
 
     if (action === 'messages' && req.method === 'POST') {
@@ -1115,7 +1206,8 @@ export class FakeCompany {
   private checkOutgoing(m: Record<string, unknown>) {
     if (typeof m?.id !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(m.id))
       this.violation('bad message id');
-    if (m?.sender !== 'agent' && m?.sender !== 'human') this.violation('bad sender');
+    const authorType = (m?.author as { type?: string } | undefined)?.type;
+    if (authorType !== 'agent' && authorType !== 'human') this.violation('bad author');
     if (m?.text === undefined && m?.data === undefined && m?.context === undefined)
       this.violation('empty message');
   }

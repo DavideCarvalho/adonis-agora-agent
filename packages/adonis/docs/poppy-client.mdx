@@ -8,7 +8,7 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 <Callout type="warn" title="Experimental — tracks a draft spec">
 This implements the [Personal Agent Protocol (Poppy)](https://personalagentprotocol.org/docs/spec)
-**Draft 0.1** (`protocol_version` major `0`). The spec is still in development and can change in ways
+**Draft 0.3** (`protocol_version` exactly `0.3`). The spec is still in development and can change in ways
 that aren't backward compatible; this client tracks it and **will change, possibly in breaking ways and
 outside semver majors**, as the spec evolves.
 </Callout>
@@ -21,23 +21,25 @@ to end. It is written strictly against the spec, not against any particular serv
 
 | Spec | Implemented |
 | --- | --- |
-| 3 Discovery | `/.well-known/poppy.json` over HTTPS, HTTPS-only redirects, `organization.domain` must match the requested host (ignoring `www.`), major `protocol_version` check, unknown fields/extensions/API types/protocol types ignored, RFC 8414 metadata (path-aware URL), exact `issuer` match, `poppy_domains` must list the domain, required endpoints, `Cache-Control: max-age` caching |
-| 4.1 Agent identity | ES256 key pair, Client ID Metadata Document (`client_id` = its own URL, `jwks_uri` and `redirect_uris` on the same origin), `private_key_jwt` client assertions (RFC 7523) with fresh 128-bit `jti`, `serve-identity` HTTP server |
-| 4.2 Sessions | JWT bearer grant (`iss`=client_id, `sub`=User ID, `aud`=token endpoint as a string, 60s `exp`, 128-bit `jti`), renewal with `session_id`, `invalid_session` → new Session, random opaque per-Company User IDs (`usr_…`, never derived from PII) |
-| 4.3 Session Tokens | DPoP (RFC 9449) on every token/API/conversation request: `typ dpop+jwt`, ES256, public `jwk`, `jti`, `htm`, `htu` (no query/fragment), `iat`, `ath`, `DPoP-Nonce` + `use_dpop_nonce` retry with fresh assertions; one DPoP key per User per Company; Bearer only for MCP with `resource` = the MCP `url`; `scope`/`resource` narrowing; token downgrade (`Bearer` when a proof was sent) rejected; 429 `Retry-After` honoured |
-| 4.4 Signing in | scopes checked against each sign-in type; granted vs requested scope reported; replaced Account Tokens revoked |
-| 4.5 Direct | authorization code + PKCE S256 + `state`, RFC 9207 `iss` exact check, `session_id` on the exchange; callback via `serve-identity` (relayed through the state dir) or an in-process listener for `http://localhost` identities, or paste the redirect URL |
-| 4.6 Device | RFC 8628 polling with `interval`, `authorization_pending`, `slow_down` (+5s), `access_denied`/`expired_token` stop |
-| 4.7 Mediated | prompts for `auth.mediated.fields` (secret ones hidden, never logged), credentials only to `auth.mediated.endpoint`, `code_required` → `POST {endpoint}/{sign_in_id}` with only the code, `failed`/`expired` |
-| 4.8 Account Tokens | stored per Company (issuer) + local profile in a 0600 state file; later Sessions start signed in; rotation honoured; `invalid_grant` → continue signed out; `sign_in_required` → retry with the Account Token |
-| 4.9 Sign-out | `disconnect` → RFC 7009 with `token_type_hint=refresh_token`; Sessions continue signed out |
-| 5 Web browsing | `poppy-browser+jwt` assertion (`aud`=endpoint, `session_id`, `return_to` on the Company domain, `exp` ≤ `iat`+60) delivered as an auto-submitting form POST from a one-shot local page (never in a URL) |
-| 6 APIs | `openapi`: generic calls with DPoP, base URL from `servers[0]`, tokens never sent to a foreign origin, `WWW-Authenticate` errors mapped; `mcp`: MCP TypeScript SDK client over Streamable HTTP with a Bearer Session Token for that server, re-minted on `invalid_token` |
-| 7 Conversations | start/send with agent-chosen idempotent message IDs (safe retries), `context` (`locale`, `time_zone`, `user_available`), `data` parts, events by long-poll or SSE with `Last-Event-ID` resume and de-duplication, `text-delta` shown provisionally and replaced by the final message (dropped on reconnect), `cursor_expired` restart, `authorization` events → sign in and continue, `user_requested` → Direct Conversation with `parent_conversation_id` (`sender: human`), handoff, close, unknown event types skipped |
-| LLM mode | `ask`: tiny autonomous agent via OpenRouter tool calling (conversation + MCP tools), `--max-steps` cap, MCP tools without `readOnlyHint` need consent (`--yes` or a prompt), tokens never enter model context |
+| 3 Discovery | `/.well-known/poppy.json` over HTTPS, HTTPS-only redirects that must end at the well-known path with no query, `organization.domain` is the host that served it (ignoring case only), exact `protocol_version`, the issuer from protected resource metadata (RFC 9728), `protected_resources` checked, no fallback to the domain after an error, unknown fields/extensions/API types ignored |
+| 3 Addresses | every connection to a Company's URL, redirects included, refuses loopback, private and link-local addresses: checked in the socket's own lookup, so the IP checked is the IP connected. `--insecure-dev` lifts it; a `fetch` you inject replaces it |
+| 3.2 Companies without an issuer | signed-out Sessions only, identified by `https://{domain}`; 404 or metadata without servers establish it; a known issuer isn't dropped on a 404 |
+| 4.1 Agent identity | ES256 keys, Client ID Metadata Document, `private_key_jwt` client assertions with `aud` = the issuer as a string |
+| 4.2 Direct | authorization code + PKCE S256 + `state`, RFC 9207 `iss` exact check; callback via `serve-identity` (relayed through the state dir) or an in-process listener |
+| 4.3 Device | RFC 8628 polling with `interval`, `authorization_pending`, `slow_down` (+5s); the link's host checked against the issuer and `protected_resources`, shown with the Company's name and domain |
+| 4.4–4.7 Tokens | refresh tokens per Company + local profile in a 0600 state file, rotation honoured, one refresh at a time, a response may omit `refresh_token` and `scope`, `invalid_grant` → continue signed out, replaced tokens revoked, narrower tokens |
+| 4.5 Access tokens | DPoP proofs only when the issuer lists `ES256` (nonce retry included), scheme from `token_type`; `resource` from a service's protected resource metadata, refetched on `invalid_token` |
+| 5.1–5.3 Sessions | a `Poppy-Session` JWT per request (`typ`, `kid` thumbprint, `pap_dlg`, `sid`, `sub`, `htm`, `htu`, `ath`), a delegated key per User ID with a `pap-delegation+jwt` of 7 hours and rounded times; `invalid_session` → one new Session |
+| 5.5 Sign-out | `disconnect` → RFC 7009 with `token_type_hint=refresh_token`; the Session continues signed out |
+| 6 Web browsing | the code read from the page of the agent's own browser (`browserJoinCode`), authorized with `authorizeBrowserJoin`. The browser itself is yours to drive |
+| 7 APIs | `openapi`: generic calls, base URL from `servers[0]`, nothing sent to a foreign origin, `WWW-Authenticate` errors mapped (a code-less challenge is `insufficient_scope`); `mcp`: MCP TypeScript SDK client over Streamable HTTP with a Bearer token for `resource` = its `url`, or signed out with the Session header only |
+| 8 Conversations | start/send with agent-chosen idempotent message IDs (safe retries), `author`, `context`, `data`, events by long-poll or SSE with `Last-Event-ID`, `text-delta`, handoff, Direct Conversations, `authorization` events, unknown `status`/`responder` values |
+| 9 Task coverage | `excludedTasks` and `sendFeedback`, with alternatives whose unlisted references are dropped |
+| Mediated Sign-In extension | prompts for `extensions.mediated-sign-in.fields` (secret ones hidden, never logged), credentials only to the token endpoint, `code_required` → `sign_in_id` + `one_time_code` |
+| LLM mode | `ask`: tiny autonomous agent via OpenRouter tool calling (conversation + MCP tools), `--max-steps` cap, MCP tools without `readOnlyHint` need consent (`--yes` or a prompt), tokens never exposed to the model |
 
-Not implemented: extensions (none are advertised; unknown ones are ignored), Personal Agent-side
-OpenAPI schema validation.
+Not implemented: the Operations extension, Web Bot Auth operator signatures (a SHOULD, for edges that
+need them), blind signing, Agent IDs, anonymous User IDs, Personal Agent-side OpenAPI schema validation.
 
 ## CLI
 
@@ -48,7 +50,7 @@ npx poppy-agent --help          # or: pnpm exec poppy-agent --help, inside a pro
 ```
 
 State lives in `~/.config/poppy-agent/state.json` (or `--state` / `$POPPY_AGENT_STATE`), mode 0600:
-the agent's private keys, per-Company User IDs, DPoP keys, Account Tokens, Session Tokens and
+the agent's private keys, per-Company User IDs, DPoP and delegated keys, refresh and access tokens, and
 conversation cursors. `--profile <name>` acts for another local user (different User IDs).
 
 ### Identity: `client_id` must be HTTPS
@@ -82,8 +84,8 @@ poppy-agent serve-identity --insecure-dev        # or let `signin` serve it in-p
 
 ```sh
 poppy-agent discover example.com
-poppy-agent session example.com [--new] [--scope poppy:read] [--resource <url>]
-poppy-agent signin example.com --method direct|device|mediated --scope "poppy:read poppy:write"
+poppy-agent session example.com [--new] [--scope orders:read] [--resource <url>]
+poppy-agent signin example.com --method direct|device|mediated --scope "orders:read orders:write"
 poppy-agent status
 poppy-agent apis example.com
 poppy-agent api example.com GET /orders
@@ -91,15 +93,16 @@ poppy-agent api example.com POST /addresses --data '{"line1":"…"}'
 poppy-agent mcp tools example.com
 poppy-agent mcp call example.com search_products '{"query":"jacket"}'
 poppy-agent chat example.com          # /help inside for /data /context /as /handoff /signin /direct /decline /leave /close
-poppy-agent open example.com https://example.com/orders [--print]
+poppy-agent open example.com [--page <file>]
 poppy-agent disconnect example.com
 OPENROUTER_API_KEY=… poppy-agent ask example.com "Is the insulated jacket available in M?" [--model …] [--max-steps 8] [--yes]
 ```
 
-In `chat`, what you type is sent with `sender: "agent"` by default (you act as the agent's brain).
-`/as human` marks messages as the User's own words (7.8); in a Direct Conversation they are always
-`human`. `open` warns that browser assertions must only be posted from a browser the agent controls
-(section 5); use a dedicated or automation browser profile, or `--print` and load the page there.
+In `chat`, what you type is sent with `author.type: "agent"` by default (you act as the agent's brain).
+`/as human` marks messages as the User's own words (8.8); in a Direct Conversation they are always
+`human`. `open` authorizes a browser join (section 6): load the printed endpoint in a browser the agent controls,
+never the User's own, give the command the code from that page (or the saved page with `--page`), and
+submit the form there.
 
 ## Testing against a local Agora app (MeuProntoo / Lastro)
 
@@ -107,8 +110,8 @@ With an app serving Poppy (`@adonis-agora/authkit-server`'s `personalAgents.popp
 package's [conversation endpoint](/docs/agent/poppy)):
 
 1. **Run the app** with Poppy enabled, e.g. `http://localhost:3333`. Check
-   `curl http://localhost:3333/.well-known/poppy.json` and the issuer's
-   `/.well-known/oauth-authorization-server` (it must list the app's domain in `poppy_domains`).
+   `curl http://localhost:3333/.well-known/poppy.json`, `/.well-known/oauth-protected-resource` and the issuer's
+   `/.well-known/oauth-authorization-server` (it must list the app's domain in `protected_resources`).
 2. **Let the dev server accept an http `client_id`** (its dev-only setting for Client ID Metadata
    Documents over http/localhost), or use a tunnel for the agent identity and keep the app on
    HTTPS (e.g. its own tunnel) to stay spec-compliant.
@@ -122,7 +125,7 @@ package's [conversation endpoint](/docs/agent/poppy)):
 4. **Discover and start a Session**:
    ```sh
    poppy-agent discover localhost:3333 --insecure-dev
-   poppy-agent session localhost:3333 --insecure-dev         # signed out, DPoP-bound
+   poppy-agent session localhost:3333 --insecure-dev         # signed out: only the Session header
    ```
 5. **Sign in** with whatever the app offers:
    ```sh
@@ -132,7 +135,7 @@ package's [conversation endpoint](/docs/agent/poppy)):
    ```
 6. **Use it**: `apis`, `api …`, `mcp tools …`, `chat localhost:3333 --insecure-dev`
    (try asking for account data to trigger an `authorization` event, `/signin`, and continue),
-   `open localhost:3333 http://localhost:3333/ --insecure-dev`, `ask …`.
+   `open localhost:3333 --insecure-dev`, `ask …`.
 7. **Sign out**: `poppy-agent disconnect localhost:3333 --insecure-dev`, then `session` again shows
    `signed_in: false` on the same `session_id`.
 
@@ -151,18 +154,18 @@ const store = await StateStore.open();
 const agent = new PoppyAgent({ store, identity: new AgentIdentity(store.data.identity!) });
 const company = await agent.company('example.com');
 const conv = new ConversationClient(company);
-const { conversation_id } = await conv.start({ id: newMessageId(), sender: 'agent', text: 'Hi' });
+const { conversation_id } = await conv.start({ id: newMessageId(), author: { type: 'agent' }, text: 'Hi' });
 for await (const item of conv.follow(conversation_id, { untilSettled: true })) console.log(item);
 ```
 
 ## Tests
 
 The package's tests (`test/poppy-client/`) run unit tests plus end-to-end tests against an
-in-process **fake Poppy Company** (`test/poppy-client/fixtures/fake_company.ts`): `poppy.json`, RFC 8414
-metadata, a token endpoint verifying `private_key_jwt`, JWT bearer assertions and DPoP (nonce,
-`ath`, `jti` replay, key binding), authorization/device/mediated sign-in, revocation, an OpenAPI
-API, a conversation endpoint with JSON long-poll and SSE (deltas, dropped streams), a browser
-session endpoint and an MCP server. Each check a Company MUST perform is recorded as a violation
+in-process **fake Poppy Company** (`test/poppy-client/fixtures/fake_company.ts`): `poppy.json`, RFC 9728 and
+RFC 8414 metadata, a token endpoint verifying `private_key_jwt` and DPoP (nonce, `ath`, `jti` replay, key
+binding), Session JWT and delegation checks, authorization/device/mediated sign-in, revocation, an OpenAPI
+API, a conversation endpoint with JSON long-poll and SSE (deltas, dropped streams), a three-step
+browser join, feedback and excluded tasks, and an MCP server. Each check a Company MUST perform is recorded as a violation
 when the client breaks it, so the fake doubles as a conformance check of the client.
 
 To try the CLI by hand against the fake:

@@ -31,7 +31,7 @@ export class DiscoveryError extends PoppyError {
   }
 }
 
-/** OAuth error response from the token, device, or revocation endpoint (4.2). */
+/** OAuth error response from the token, device, or revocation endpoint (4.7). */
 export class OAuthError extends PoppyError {
   readonly retryAfter?: number | undefined;
   constructor(
@@ -50,8 +50,9 @@ export class OAuthError extends PoppyError {
 }
 
 /**
- * A resource (API, conversation, mediated sign-in) rejected the token, via `WWW-Authenticate`
- * (section 6): `invalid_token`, `sign_in_required`, `insufficient_scope`, DPoP errors.
+ * A resource (API, conversation, MCP server) refused the access token, or wants one, through
+ * `WWW-Authenticate` (section 7): `invalid_token`, `insufficient_scope`, DPoP errors. A challenge
+ * without an error code is reported as `insufficient_scope`, as the spec says to handle it.
  */
 export class ResourceAuthError extends PoppyError {
   /** Scopes the Company says are needed, for `insufficient_scope`. */
@@ -70,7 +71,7 @@ export class ResourceAuthError extends PoppyError {
   }
 }
 
-/** A conversation error with a JSON `error` body (7.13). */
+/** A request refused with a JSON `error` body (5.3, 8.13), such as `invalid_session`. */
 export class ConversationError extends PoppyError {
   /** For `direct_conversation_open`: the open Direct Conversation. */
   readonly conversationId?: string | undefined;

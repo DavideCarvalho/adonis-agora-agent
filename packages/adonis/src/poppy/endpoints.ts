@@ -5,7 +5,7 @@
  * Like `Symbol.for('@adonis-agora/oauth:resources')` for MCP, the contract is the global symbol:
  * neither package imports the other.
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.1 (https://personalagentprotocol.org/docs/spec),
+ * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
  * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
  * ways, outside semver majors while it is a draft.
  */
@@ -13,7 +13,7 @@ export const POPPY_ENDPOINTS_SLOT = Symbol.for('@adonis-agora/poppy:endpoints');
 
 /** What the slot holds: absolute URLs, by kind. */
 export interface PoppyEndpoints {
-  /** The conversation endpoint (§7) — the `endpoint` of the `poppy` protocol entry. */
+  /** The conversation endpoint (§8) — the `endpoint` of the `poppy` protocol entry. */
   conversations?: string;
   [kind: string]: string | undefined;
 }

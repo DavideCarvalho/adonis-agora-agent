@@ -16,12 +16,12 @@ import { randomId, requireSecureUrl, sleep } from './util.js';
 
 const ID_RE = /^[A-Za-z0-9_-]{1,256}$/;
 
-/** A fresh message ID: URL-safe base64, prefixed, unique for the User (7.2, 7.3). */
+/** A fresh message ID: URL-safe base64, prefixed, unique for the User (8.2, 8.3). */
 export function newMessageId(): string {
   return randomId('msg_', 12);
 }
 
-/** Picks the `poppy` conversation protocol entry (7.1); unknown types are skipped. */
+/** Picks the `poppy` conversation protocol entry (8.1); unknown types are skipped. */
 export function poppyProtocol(company: CompanyClient): PoppyProtocolEntry | undefined {
   return company.document.agent?.protocols?.find((p) => p?.type === 'poppy');
 }
@@ -29,7 +29,7 @@ export function poppyProtocol(company: CompanyClient): PoppyProtocolEntry | unde
 export type StreamItem =
   | { kind: 'event'; event: ConversationEvent }
   | { kind: 'delta'; delta: TextDelta }
-  /** The reader reconnected; any provisional `text-delta` pieces must be dropped (7.6). */
+  /** The reader reconnected; any provisional `text-delta` pieces must be dropped (8.6). */
   | { kind: 'reconnected' }
   /** `cursor_expired`: the read restarted from the beginning; part of history is missing. */
   | { kind: 'history_gap' };
@@ -45,13 +45,12 @@ export interface FollowOptions {
 }
 
 /**
- * Client for one Company's Poppy conversation endpoint (section 7). Every request carries the
- * Session Token with a DPoP proof (7.2), through `CompanyClient.fetch`.
+ * Client for one Company's Poppy conversation endpoint (section 8). Every request carries the
+ * Session header (8.2) and, when signed in, an access token, through `CompanyClient.fetch`.
  */
 export class ConversationClient {
   readonly endpoint: string;
-  private readonly resource?: string | undefined;
-  /** Narrower scope for every request of this client (4.3 "Narrower tokens"), when set. */
+  /** Narrower scope for every request of this client (4.4), when set. */
   private readonly scope?: string | undefined;
 
   constructor(
@@ -64,7 +63,6 @@ export class ConversationClient {
     this.endpoint = requireSecureUrl(entry.endpoint, 'agent endpoint', company.security)
       .toString()
       .replace(/\/+$/, '');
-    this.resource = entry.resource;
     this.scope = options.scope;
   }
 
@@ -83,7 +81,7 @@ export class ConversationClient {
 
   /**
    * POST with retries on network errors / 5xx. Safe because the message ID makes the request
-   * idempotent: the Company returns the original response for a repeat (7.3).
+   * idempotent: the Company returns the original response for a repeat (8.3).
    */
   private async post<T>(
     url: string,
@@ -97,7 +95,7 @@ export class ConversationClient {
           method: 'POST',
           headers: { 'content-type': 'application/json', accept: 'application/json' },
           body: JSON.stringify(body),
-          resource: this.resource,
+          service: this.endpoint,
           scope: this.scope,
         });
         if (res.status >= 500 && attempt < retries) {
@@ -132,7 +130,7 @@ export class ConversationClient {
     if (patch.parent !== undefined) rec.parentConversationId = patch.parent;
   }
 
-  /** Starts a conversation (7.3), or a Direct Conversation with `parentConversationId` (7.10). */
+  /** Starts a conversation (8.3), or a Direct Conversation with `parentConversationId` (8.10). */
   async start(
     message: OutgoingMessage,
     opts: {
@@ -154,7 +152,7 @@ export class ConversationClient {
     return r.body;
   }
 
-  /** Sends another message (7.3). Returns 202 with `status`/`responder` (+ events with `wait`). */
+  /** Sends another message (8.3). Returns 202 with `status`/`responder` (+ events with `wait`). */
   async send(
     id: string,
     message: OutgoingMessage,
@@ -168,14 +166,14 @@ export class ConversationClient {
     return r.body;
   }
 
-  /** One read of events after `cursor` (7.5). */
+  /** One read of events after `cursor` (8.5). */
   async read(
     id: string,
     opts: { cursor?: string | undefined; wait?: number | undefined } = {},
   ): Promise<EventsPage> {
     const { body } = await this.company.json<EventsPage>(this.url(id, '/events', opts), {
       headers: { accept: 'application/json' },
-      resource: this.resource,
+      service: this.endpoint,
       scope: this.scope,
     });
     if (!Array.isArray(body?.events))
@@ -183,12 +181,12 @@ export class ConversationClient {
     return body;
   }
 
-  /** Asks for a person at the Company (7.9). */
+  /** Asks for a person at the Company (8.9). */
   async handoff(id: string): Promise<ConversationState> {
     return (await this.post<ConversationState>(this.url(id, '/handoff'), {})).body;
   }
 
-  /** Closes the conversation (7.12). */
+  /** Closes the conversation (8.12). */
   async close(id: string): Promise<ConversationState> {
     const r = (await this.post<ConversationState>(this.url(id, '/close'), {})).body;
     this.remember(id, { closed: true });
@@ -228,7 +226,7 @@ export class ConversationClient {
       this.remember(id, { cursor });
       await this.company.save();
       if (page.has_more) continue;
-      if (page.status !== 'working' || Date.now() > deadline) {
+      if (isSettled(page.status) || Date.now() > deadline) {
         return { events, state: { status: page.status, responder: page.responder } };
       }
     }
@@ -296,11 +294,11 @@ export class ConversationClient {
         const headers: Record<string, string> = {
           accept: useStream ? 'text/event-stream' : 'application/json',
         };
-        // Reconnects carry Last-Event-ID in place of `cursor` (7.6).
+        // Reconnects carry Last-Event-ID in place of `cursor` (8.6).
         if (useStream && cursor) headers['last-event-id'] = cursor;
         res = await this.company.fetch(
           this.url(id, '/events', useStream ? {} : { cursor, wait: opts.wait ?? 25 }),
-          { headers, signal: opts.signal, resource: this.resource, scope: this.scope },
+          { headers, signal: opts.signal, service: this.endpoint, scope: this.scope },
         );
       } catch (e) {
         if (opts.signal?.aborted) return;
@@ -344,7 +342,7 @@ export class ConversationClient {
         await sleep(250, opts.signal).catch(() => {});
         continue;
       }
-      // The Company answered with JSON: it doesn't stream, so long-poll from now on (7.6).
+      // The Company answered with JSON: it doesn't stream, so long-poll from now on (8.6).
       useStream = false;
       const page = (await readJson<EventsPage>(res)) as EventsPage;
       status = page?.status ?? status;
@@ -374,13 +372,18 @@ function safeJson<T>(s: string): T | undefined {
   }
 }
 
-/** 7.4: `id` + `sender` required, and at least one of `text`, `data`, `context`. */
+/** An unknown status counts as `working` (8.7): only these end a wait. */
+function isSettled(status: string | undefined): boolean {
+  return status === 'idle' || status === 'queued' || status === 'closed';
+}
+
+/** 8.4: `id` + `author.type` required, and at least one of `text`, `data`, `context`. */
 function checkMessage(m: OutgoingMessage) {
   if (!ID_RE.test(m.id))
     throw new ConversationError('invalid_message', { description: 'bad message id' });
-  if (m.sender !== 'agent' && m.sender !== 'human') {
+  if (m.author?.type !== 'agent' && m.author?.type !== 'human') {
     throw new ConversationError('invalid_message', {
-      description: 'sender must be agent or human',
+      description: 'author.type must be agent or human',
     });
   }
   if (m.text === undefined && m.data === undefined && m.context === undefined) {

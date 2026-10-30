@@ -9,7 +9,7 @@ export interface PoppyCompanyPolicy {
   scopes?: string[];
   /**
    * Scopes that only READ — what `ask` narrows its token to, so a plain question can never make the
-   * Company act (an action takes `request`, which the person confirms). Default `['poppy:read']`.
+   * Company act (an action takes `request`, which the person confirms). Default: the scopes the Company hints change nothing (`auth.scope_hints`, `changes: none`).
    */
   readScopes?: string[];
 }
@@ -85,7 +85,7 @@ export const DEFAULT_POPPY_CONNECTIONS_TEXTS: PoppyConnectionsTexts = {
 /**
  * `config/poppy_connections.ts` — this app's agent acting on OTHER Poppy Companies for its users.
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.1 (https://personalagentprotocol.org/docs/spec):
+ * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec):
  * this API WILL change as the spec evolves — possibly in breaking ways, outside semver majors.
  */
 export interface PoppyConnectionsConfig {
@@ -175,5 +175,5 @@ export function normalizeDomain(value: string): string {
   try {
     if (/^[a-z]+:\/\//.test(trimmed)) return new URL(trimmed).host;
   } catch {}
-  return trimmed.replace(/^www\./, '');
+  return trimmed;
 }

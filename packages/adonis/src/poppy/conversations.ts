@@ -15,6 +15,7 @@ import {
   derivedPoppyId,
   messageFingerprint,
   newPoppyId,
+  type PoppyAuthor,
   PoppyError,
   type PoppyEvent,
   type PoppyEventBody,
@@ -22,7 +23,6 @@ import {
   type PoppyInboundMessage,
   type PoppyResponder,
   type PoppySendBody,
-  type PoppySender,
   type PoppyStatus,
 } from './protocol.js';
 import {
@@ -47,12 +47,12 @@ export interface PoppyHookContext {
  *  - `'queued'` — someone will join: call {@link PoppyConversations.humanJoined} when they do, or
  *    {@link PoppyConversations.handoffUnavailable} if nobody can.
  *  - `'joined'` — a person took it now.
- *  - `{ unavailable }` — nobody can; the text is what the Company Agent says (§7.9).
+ *  - `{ unavailable }` — nobody can; the text is what the Company Agent says (§8.9).
  */
 export type PoppyHandoffDecision = 'queued' | 'joined' | { unavailable: string };
 
 /**
- * How the app brings a person in (§7.9). Without these, a handoff is answered by the Company Agent
+ * How the app brings a person in (§8.9). Without these, a handoff is answered by the Company Agent
  * saying no one is available — the conversation stays with the agent.
  */
 export interface PoppyHandoffHooks {
@@ -65,11 +65,11 @@ export interface PoppyHandoffHooks {
    * the agent does not answer those. Route it to your support tool.
    */
   message?(ctx: PoppyHookContext & { message: PoppyEventMessage }): void | Promise<void>;
-  /** The conversation closed while a person was handling it or being found (§7.12). */
+  /** The conversation closed while a person was handling it or being found (§8.12). */
   cancel?(ctx: PoppyHookContext): void | Promise<void>;
 }
 
-/** Notified when the Personal Agent opens or closes a Direct Conversation (§7.10). */
+/** Notified when the Personal Agent opens or closes a Direct Conversation (§8.10). */
 export interface PoppyDirectHooks {
   opened?(ctx: PoppyHookContext & { parentId: string }): void | Promise<void>;
   closed?(ctx: PoppyHookContext & { parentId: string }): void | Promise<void>;
@@ -77,11 +77,11 @@ export interface PoppyDirectHooks {
 
 /** What the Company Agent says on its own. */
 export interface PoppyTexts {
-  /** A handoff with no one to take it (§7.9). */
+  /** A handoff with no one to take it (§8.9). */
   handoffUnavailable: string;
   /** A turn that failed before saying anything. */
   failed: string;
-  /** Asked in a Direct Conversation alongside an `authorization` event (§7.11 SHOULD). */
+  /** Asked in a Direct Conversation alongside an `authorization` event (§8.11 SHOULD). */
   signIn: string;
   /** An action that ran — `{title}` is the app's confirmation title (default {@link formatPoppyAction}). */
   actionSucceeded: string;
@@ -104,7 +104,7 @@ export const DEFAULT_POPPY_TEXTS: PoppyTexts = {
 export type PoppyActionOutcome = A2aTurnOutcome;
 
 /**
- * Words an action for the reply's text (§7: the message must make sense without `data`). Return
+ * Words an action for the reply's text (§8: the message must make sense without `data`). Return
  * `null` to leave it out. Default {@link formatPoppyAction}.
  */
 export type PoppyActionFormatter = (
@@ -158,7 +158,7 @@ export interface PoppyConversationsOptions {
   onError?: (error: unknown, context: string) => void;
 }
 
-/** What a read answers (§7.5). */
+/** What a read answers (§8.5). */
 export interface PoppyReadResult {
   conversation_id: string;
   events: PoppyEvent[];
@@ -168,7 +168,7 @@ export interface PoppyReadResult {
   responder: PoppyResponder;
 }
 
-/** What a stream yields: a stored event, or a provisional piece of text (§7.6). */
+/** What a stream yields: a stored event, or a provisional piece of text (§8.6). */
 export type PoppyStreamItem =
   | { kind: 'event'; event: PoppyEvent }
   | { kind: 'delta'; messageId: string; text: string }
@@ -184,7 +184,7 @@ export function poppyActorId(clientId: string, userId: string): string {
   return `poppy:${createHash('sha256').update(`${clientId}\n${userId}`).digest('hex').slice(0, 40)}`;
 }
 
-/** The idempotency owner of §7.3: message ids are unique per User of a Personal Agent. */
+/** The idempotency owner of §8.3: message ids are unique per User of a Personal Agent. */
 function ownerKey(principal: PoppyPrincipal): string {
   return createHash('sha256').update(`${principal.clientId}\n${principal.userId}`).digest('hex');
 }
@@ -212,7 +212,7 @@ function turnText(messages: PoppyEventMessage[]): string {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Poppy conversations (§7) over the agent runtime: the state machine, the event log and the turns.
+ * Poppy conversations (§8) over the agent runtime: the state machine, the event log and the turns.
  * HTTP-free — `createPoppyHandler` puts the protocol's requests on it, and the app drives the
  * Company side through it (a person joining, their messages, `user_requested`).
  *
@@ -222,7 +222,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * then appends the reply as a `message` event. A replica that finds a conversation `working` with
  * no pump picks it up, so a reply survives the process that started it.
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.1 (https://personalagentprotocol.org/docs/spec),
+ * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
  * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
  * ways, outside semver majors while it is a draft.
  */
@@ -269,7 +269,7 @@ export class PoppyConversations {
     };
   }
 
-  /** The account a signed-in principal is — what a conversation binds to once used (§7.2). */
+  /** The account a signed-in principal is — what a conversation binds to once used (§8.2). */
   async #accountOf(principal: PoppyPrincipal): Promise<string | null> {
     if (!principal.signedIn) return null;
     return principal.accountId ?? (await this.actorOf(principal)).id;
@@ -284,9 +284,9 @@ export class PoppyConversations {
   }
 
   /**
-   * The conversation, when `principal` may use it (§7.2): the same Personal Agent and User — and
+   * The conversation, when `principal` may use it (§8.2): the same Personal Agent and User — and
    * once it used an account, a token signed in to that account. Anything else is indistinguishable
-   * from no conversation, except a signed-out token of its own User: `sign_in_required` (§7.11).
+   * from no conversation, except a signed-out request of its own User: a challenge (§8.11).
    */
   async #owned(principal: PoppyPrincipal, id: string): Promise<PoppyConversationRecord> {
     const conversation = await this.options.store.getConversation(id);
@@ -301,7 +301,7 @@ export class PoppyConversations {
         return conversation;
       }
       if (conversation.userId === principal.userId) {
-        throw new PoppyError('sign_in_required', 'This conversation used your account: sign in');
+        throw new PoppyError('account_required', 'This conversation used your account: sign in');
       }
       throw new PoppyError('conversation_not_found');
     }
@@ -337,7 +337,7 @@ export class PoppyConversations {
     return event;
   }
 
-  /** Change status and/or responder; every change is a `state` event (§7.7). */
+  /** Change status and/or responder; every change is a `state` event (§8.7). */
   async #setState(
     conversation: PoppyConversationRecord,
     next: { status?: PoppyStatus; responder?: PoppyResponder },
@@ -355,13 +355,13 @@ export class PoppyConversations {
   #companyMessage(
     text: string | undefined,
     data: Record<string, unknown> | undefined,
-    sender: PoppySender,
+    author: PoppyAuthor,
     id = newPoppyId('msg'),
   ): PoppyEventMessage {
     return {
       id,
       role: 'company',
-      sender,
+      author,
       ...(text !== undefined && text !== '' ? { text } : {}),
       ...(data !== undefined ? { data } : {}),
     };
@@ -381,7 +381,7 @@ export class PoppyConversations {
     let parent: PoppyConversationRecord | null = null;
     if (body.parentConversationId !== undefined) {
       parent = await this.#owned(principal, body.parentConversationId);
-      // A Direct Conversation is not a parent (§7.10): as a parent, it does not exist.
+      // A Direct Conversation is not a parent (§8.10): as a parent, it does not exist.
       if (parent.parentId !== null) throw new PoppyError('conversation_not_found');
     }
 
@@ -405,7 +405,7 @@ export class PoppyConversations {
         if (claim.fingerprint !== fingerprint) throw new PoppyError('message_id_conflict');
         const existing = await this.options.store.getConversation(claim.conversationId);
         if (existing) {
-          // A retried first message: the conversation it already started (§7.3).
+          // A retried first message: the conversation it already started (§8.3).
           return { ...claim.response, conversationId: claim.conversationId };
         }
         // Claimed by a delivery that died before creating it: take it over.
@@ -491,7 +491,7 @@ export class PoppyConversations {
     await this.options.store.updateConversation(conversation.id, { openDirectId: null });
   }
 
-  /** `POST {endpoint}/{id}/messages` — another message (§7.3). */
+  /** `POST {endpoint}/{id}/messages` — another message (§8.3). */
   async send(
     principal: PoppyPrincipal,
     conversationId: string,
@@ -502,7 +502,7 @@ export class PoppyConversations {
     const owner = ownerKey(principal);
     const fingerprint = messageFingerprint(conversationId, body);
 
-    // A retry is answered as before, whatever happened since (§7.3).
+    // A retry is answered as before, whatever happened since (§8.3).
     return this.#locked(conversationId, async () => {
       const conversation = (await this.options.store.getConversation(owned.id)) ?? owned;
       const content = hasContent(body.message);
@@ -531,7 +531,7 @@ export class PoppyConversations {
       }
 
       const patch: PoppyConversationPatch = { grant: this.#grant(principal, actor) };
-      // Once it is used signed in, the conversation belongs to that account (§7.2).
+      // Once it is used signed in, the conversation belongs to that account (§8.2).
       if (principal.signedIn && conversation.accountRef === null) {
         patch.accountRef = await this.#accountOf(principal);
       }
@@ -574,7 +574,7 @@ export class PoppyConversations {
     if (hasContent(message)) this.#kick(conversation.id);
   }
 
-  /** `GET {endpoint}/{id}/events` without streaming — read (and wait for) events (§7.5). */
+  /** `GET {endpoint}/{id}/events` without streaming — read (and wait for) events (§8.5). */
   async read(
     principal: PoppyPrincipal,
     conversationId: string,
@@ -584,7 +584,7 @@ export class PoppyConversations {
     return this.readOwned(conversation, options);
   }
 
-  /** A read of a conversation already checked — also what a POST with `wait` answers (§7.3). */
+  /** A read of a conversation already checked — also what a POST with `wait` answers (§8.3). */
   async readOwned(
     conversation: PoppyConversationRecord,
     options: { cursor?: string; waitMs?: number },
@@ -616,7 +616,7 @@ export class PoppyConversations {
   }
 
   /**
-   * `GET {endpoint}/{id}/events` as SSE (§7.6): the events after `cursor`, then new ones as they
+   * `GET {endpoint}/{id}/events` as SSE (§8.6): the events after `cursor`, then new ones as they
    * come, with `text-delta` pieces of a reply being written in this process. Ends when `signal`
    * aborts, or once the conversation is closed and every event was sent.
    */
@@ -702,7 +702,7 @@ export class PoppyConversations {
     });
   }
 
-  /** The position after which a read starts (§7.5): unknown → `invalid_cursor`, pruned → expired. */
+  /** The position after which a read starts (§8.5): unknown → `invalid_cursor`, pruned → expired. */
   async #cursorSeq(conversation: PoppyConversationRecord, cursor?: string): Promise<number> {
     if (cursor === undefined) return 0;
     const seq = await this.options.store.findEventSeq(conversation.id, cursor);
@@ -728,7 +728,7 @@ export class PoppyConversations {
     }
   }
 
-  /** `POST {endpoint}/{id}/handoff` — ask for a person at the Company (§7.9). */
+  /** `POST {endpoint}/{id}/handoff` — ask for a person at the Company (§8.9). */
   async requestHandoff(
     principal: PoppyPrincipal,
     conversationId: string,
@@ -753,10 +753,10 @@ export class PoppyConversations {
     }
     const hooks = this.options.handoff;
     if (!hooks) {
-      // No people to hand off to: the Company Agent says so, and keeps the conversation (§7.9).
+      // No people to hand off to: the Company Agent says so, and keeps the conversation (§8.9).
       await this.#append(conversation.id, {
         type: 'message',
-        message: this.#companyMessage(this.#texts.handoffUnavailable, undefined, 'agent'),
+        message: this.#companyMessage(this.#texts.handoffUnavailable, undefined, { type: 'agent' }),
       });
       return { status: conversation.status, responder: conversation.responder };
     }
@@ -783,7 +783,7 @@ export class PoppyConversations {
     return { status: queued.status, responder: queued.responder };
   }
 
-  /** `POST {endpoint}/{id}/close` — close the conversation (§7.12). */
+  /** `POST {endpoint}/{id}/close` — close the conversation (§8.12). */
   async closeByAgent(
     principal: PoppyPrincipal,
     conversationId: string,
@@ -806,7 +806,7 @@ export class PoppyConversations {
   }
 
   /**
-   * Close a conversation (§7.12): its open Direct Conversation first, a pending handoff is
+   * Close a conversation (§8.12): its open Direct Conversation first, a pending handoff is
    * cancelled, and a `closed` state event added. Nothing it started is undone. Idempotent.
    */
   async close(conversationId: string): Promise<{ status: PoppyStatus; responder: PoppyResponder }> {
@@ -854,7 +854,7 @@ export class PoppyConversations {
     return { status: 'closed', responder: closed.responder };
   }
 
-  /** The Company Agent hands off to a person on its own (§7.9) — e.g. from one of your tools. */
+  /** The Company Agent hands off to a person on its own (§8.9) — e.g. from one of your tools. */
   async handoff(
     conversationId: string,
   ): Promise<{ status: PoppyStatus; responder: PoppyResponder }> {
@@ -863,7 +863,7 @@ export class PoppyConversations {
     return this.#handoff(conversation, 'company');
   }
 
-  /** A person at the Company joined: `responder` becomes `human` (§7.7). */
+  /** A person at the Company joined: `responder` becomes `human` (§8.7). */
   async humanJoined(
     conversationId: string,
   ): Promise<{ status: PoppyStatus; responder: PoppyResponder }> {
@@ -893,7 +893,7 @@ export class PoppyConversations {
 
   /**
    * No one could take a queued handoff: the Company Agent says why, and the conversation goes back
-   * to `idle` with the agent (§7.9).
+   * to `idle` with the agent (§8.9).
    */
   async handoffUnavailable(
     conversationId: string,
@@ -906,7 +906,7 @@ export class PoppyConversations {
       }
       await this.#append(conversationId, {
         type: 'message',
-        message: this.#companyMessage(reason, undefined, 'agent'),
+        message: this.#companyMessage(reason, undefined, { type: 'agent' }),
       });
       const updated = await this.#setState(conversation, { status: 'idle', responder: 'agent' });
       return { status: updated.status, responder: updated.responder };
@@ -914,22 +914,22 @@ export class PoppyConversations {
   }
 
   /**
-   * Add a Company message — a person's (`sender: 'human'`, while they handle the conversation) or
+   * Add a Company message — a person's (`author.type: 'human'`, while they handle the conversation) or
    * an automated one. Answers the message's id.
    */
   async postMessage(
     conversationId: string,
-    message: { text?: string; data?: Record<string, unknown>; sender: PoppySender },
+    message: { text?: string; data?: Record<string, unknown>; author: PoppyAuthor },
   ): Promise<string> {
     const conversation = await this.#require(conversationId);
     if (conversation.status === 'closed') throw new PoppyError('conversation_closed');
-    const event = this.#companyMessage(message.text, message.data, message.sender);
+    const event = this.#companyMessage(message.text, message.data, message.author);
     await this.#append(conversationId, { type: 'message', message: event });
     return event.id;
   }
 
   /**
-   * Ask to talk with the User directly (§7.10): a `user_requested` event. Only the Personal Agent
+   * Ask to talk with the User directly (§8.10): a `user_requested` event. Only the Personal Agent
    * opens the Direct Conversation, once the User agrees.
    */
   async requestUser(conversationId: string, reason: string): Promise<void> {
@@ -1078,7 +1078,7 @@ export class PoppyConversations {
             poppy: {
               conversationId: conversation.id,
               direct: conversation.parentId !== null,
-              sender: last?.sender ?? 'agent',
+              sender: last?.author?.type ?? 'agent',
               signedIn: grant.signedIn,
               context: conversation.context,
             },
@@ -1192,7 +1192,7 @@ export class PoppyConversations {
 
   /**
    * Write a turn's reply: a `message` event (text, and `data` for components and executed actions),
-   * then an `authorization` event when the turn needed a scope the token does not carry (§7.11).
+   * then an `authorization` event when the turn needed a scope the token does not carry (§8.11).
    */
   async #reply(
     conversation: PoppyConversationRecord,
@@ -1209,7 +1209,7 @@ export class PoppyConversations {
     const store = this.options.store;
     const current = await store.getConversation(conversation.id);
     await store.updateConversation(conversation.id, { activeRunId: null });
-    // A closed conversation takes no more events from its agent (§7.12).
+    // A closed conversation takes no more events from its agent (§8.12).
     if (!current || current.status === 'closed') return;
 
     const components = turn.components.map((frame) => ({
@@ -1252,7 +1252,7 @@ export class PoppyConversations {
           message: this.#companyMessage(
             text,
             Object.keys(data).length > 0 ? data : undefined,
-            'agent',
+            { type: 'agent' },
             derivedPoppyId('msg', `reply:${runId}`),
           ),
         },
@@ -1268,7 +1268,7 @@ export class PoppyConversations {
         conversation.id,
         {
           type: 'authorization',
-          error: grant.signedIn ? 'insufficient_scope' : 'sign_in_required',
+          error: 'insufficient_scope',
           scope: missing.join(' '),
         },
         `authorization:${runId}`,
@@ -1282,7 +1282,7 @@ export class PoppyConversations {
             message: this.#companyMessage(
               this.#texts.signIn,
               undefined,
-              'agent',
+              { type: 'agent' },
               derivedPoppyId('msg', `sign-in:${runId}`),
             ),
           },

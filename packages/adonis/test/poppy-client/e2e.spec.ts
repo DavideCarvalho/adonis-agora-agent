@@ -2,9 +2,9 @@ import { stat } from 'node:fs/promises';
 import { afterEach, assert, describe, it, vi } from 'vitest';
 import { callOpenApi } from '../../src/poppy-client/api.js';
 import {
-  autoSubmitFormHtml,
-  createBrowserAssertion,
-  serveOneShotPage,
+  authorizeBrowserJoin,
+  browserJoinCode,
+  browserSessionEndpoint,
 } from '../../src/poppy-client/browser.js';
 import {
   ConversationClient,
@@ -23,6 +23,7 @@ import {
   startDirectSignIn,
   submitMediatedCode,
 } from '../../src/poppy-client/signin.js';
+import { excludedTasks, sendFeedback } from '../../src/poppy-client/task_coverage.js';
 import { rejects } from './fixtures/assert.js';
 import type { World } from './fixtures/setup.js';
 import { browse, world } from './fixtures/setup.js';
@@ -34,7 +35,7 @@ let w: World;
 const noViolations = (assert: { deepEqual: (a: unknown, b: unknown) => void }) =>
   assert.deepEqual(w.fake.violations, []);
 
-async function directSignIn(scope = 'poppy:read poppy:write') {
+async function directSignIn(scope = 'orders:read orders:write') {
   const c = await w.agent.company(w.fake.domain);
   const pending = await startDirectSignIn(c, scope);
   const back = await browse(pending.url);
@@ -57,36 +58,50 @@ async function collect(
   return items;
 }
 
-describe('sessions (4.1-4.3)', () => {
+describe('sessions (section 5)', () => {
   afterEach(async () => w.cleanup());
 
-  it('starts a signed-out Session with DPoP + nonce retry, and renews it with session_id', async () => {
+  it('a signed-out request carries only the Session header: delegated key, delegation, sid', async () => {
     w = await world({ requireNonce: true });
     const c = await w.agent.company(w.fake.domain);
-    const t1 = await c.token();
-    assert.isFalse(t1.signedIn);
-    assert.equal(t1.tokenType, 'DPoP');
+    assert.isNull(await c.token());
     assert.match(c.userId, /^usr_/);
-    const t2 = await c.token({ forceRenew: true });
-    assert.equal(t2.sessionId, t1.sessionId);
-    assert.notEqual(t2.accessToken, t1.accessToken);
     const r = await callOpenApi(c, { method: 'GET', path: '/public' });
     assert.equal(r.status, 200);
     assert.deepEqual(r.body, { hello: 'world', signed_in: false });
-    assert.isTrue(w.fake.log.some((l) => l === 'oauth error use_dpop_nonce'));
+    const sid = c.sessionId;
+    await callOpenApi(c, { method: 'GET', path: '/public' });
+    assert.equal(c.sessionId, sid);
+    assert.equal(w.fake.sessions.size, 1);
+    assert.notInclude(
+      w.fake.log.join(' '),
+      '/oauth/token',
+      'a signed-out Session needs nothing from the authorization server',
+    );
     const mode = (await stat(w.store.path)).mode & 0o777;
     assert.equal(mode, 0o600);
     noViolations(assert);
   });
 
-  it('invalid_session starts a new Session', async () => {
+  it('invalid_session starts a new Session once, then stops', async () => {
     w = await world();
     const c = await w.agent.company(w.fake.domain);
-    const t1 = await c.token();
-    w.fake.sessions.get(t1.sessionId)!.ended = true;
-    const t2 = await c.token({ forceRenew: true });
-    assert.notEqual(t2.sessionId, t1.sessionId);
+    await callOpenApi(c, { method: 'GET', path: '/public' });
+    const old = c.sessionId;
+    [...w.fake.sessions.values()][0]!.ended = true;
+    const r = await callOpenApi(c, { method: 'GET', path: '/public' });
+    assert.equal(r.status, 200);
+    assert.notEqual(c.sessionId, old);
+    assert.isTrue(w.logs.some((l) => l.includes('invalid_session')));
     noViolations(assert);
+
+    const original = w.fake.sessions.set.bind(w.fake.sessions);
+    w.fake.sessions.set = ((k: string, v: { ended?: boolean }) => {
+      v.ended = true;
+      return original(k, v as never);
+    }) as never;
+    for (const s of w.fake.sessions.values()) s.ended = true;
+    await rejects(() => callOpenApi(c, { method: 'GET', path: '/public' }), /invalid_session/);
   });
 
   it('429 Retry-After is waited out', async () => {
@@ -96,16 +111,27 @@ describe('sessions (4.1-4.3)', () => {
     assert.equal(r.status, 200);
     assert.isTrue(w.logs.some((l) => l.includes('Retry-After')));
   });
+
+  it('a Company without an issuer offers only signed-out Sessions, named by its domain', async () => {
+    w = await world({ noIssuer: true });
+    const c = await w.agent.company(w.fake.domain);
+    assert.equal(c.issuer, w.fake.origin);
+    assert.isUndefined(c.discovered.metadata);
+    assert.deepEqual(eligibleSignInTypes(c, 'orders:read'), []);
+    const r = await callOpenApi(c, { method: 'GET', path: '/public' });
+    assert.equal(r.status, 200);
+    noViolations(assert);
+  });
 });
 
-describe('sign-in (4.4-4.9)', () => {
+describe('sign-in (section 4)', () => {
   afterEach(async () => w.cleanup());
 
-  it('Direct Sign-In: PKCE, state, iss, session_id; then signed-in API calls', async () => {
+  it('Direct Sign-In: PKCE, state, iss; then signed-in API calls', async () => {
     w = await world();
     const { c, result } = await directSignIn();
-    assert.equal(result.grantedScope, 'poppy:read poppy:write');
-    assert.isTrue((await c.token()).signedIn);
+    assert.equal(result.grantedScope, 'orders:read orders:write');
+    assert.isNotNull(await c.token());
     assert.equal(w.callbacks.length, 1);
     const r = await callOpenApi(c, { method: 'GET', path: '/orders' });
     assert.equal(r.status, 200);
@@ -115,18 +141,18 @@ describe('sign-in (4.4-4.9)', () => {
   it('Direct Sign-In callback relay through the state dir', async () => {
     w = await world();
     const c = await w.agent.company(w.fake.domain);
-    const pending = await startDirectSignIn(c, 'poppy:read');
+    const pending = await startDirectSignIn(c, 'orders:read');
     const waiting = waitForRelayedCallback(w.dir, pending.state, { pollMs: 20 });
     await browse(pending.url);
     const params = await waiting;
     await completeDirectSignIn(c, pending, params);
-    assert.isTrue((await c.token()).signedIn);
+    assert.isNotNull(await c.token());
   });
 
   it('Direct Sign-In rejects a wrong iss, a wrong state, and access_denied', async () => {
     w = await world();
     const c = await w.agent.company(w.fake.domain);
-    const pending = await startDirectSignIn(c, 'poppy:read');
+    const pending = await startDirectSignIn(c, 'orders:read');
     const back = await browse(pending.url);
     const swapped = new URLSearchParams(back.searchParams);
     swapped.set('iss', 'https://other.example');
@@ -141,9 +167,9 @@ describe('sign-in (4.4-4.9)', () => {
   it('scopes are checked against the sign-in type', async () => {
     w = await world();
     const c = await w.agent.company(w.fake.domain);
-    assert.deepEqual(eligibleSignInTypes(c, 'poppy:read'), ['direct', 'device', 'mediated']);
-    assert.deepEqual(eligibleSignInTypes(c, 'addresses'), ['direct']);
-    await rejects(() => mediatedSignIn(c, 'poppy:write', {}), /can't grant/);
+    assert.deepEqual(eligibleSignInTypes(c, 'orders:read'), ['direct', 'device', 'mediated']);
+    assert.deepEqual(eligibleSignInTypes(c, 'addresses'), ['direct', 'device']);
+    await rejects(() => mediatedSignIn(c, 'orders:write', {}), /can't grant/);
   });
 
   it('Device Sign-In polls through authorization_pending and slow_down', async () => {
@@ -152,77 +178,101 @@ describe('sign-in (4.4-4.9)', () => {
     const sleeps: number[] = [];
     const polls: string[] = [];
     let shown = '';
-    const r = await deviceSignIn(c, 'poppy:read', {
-      display: (i) => (shown = i.userCode),
+    const r = await deviceSignIn(c, 'orders:read', {
+      display: (i) => {
+        shown = i.userCode;
+        assert.equal(i.organization.name, 'Fake Co');
+      },
       sleep: async (ms) => void sleeps.push(ms),
       onPoll: (s) => polls.push(s),
     });
     assert.equal(shown, 'WDJB-MJHT');
     assert.deepEqual(polls, ['authorization_pending', 'authorization_pending', 'slow_down']);
     assert.deepEqual(sleeps, [1000, 1000, 1000, 6000]);
-    assert.equal(r.grantedScope, 'poppy:read');
+    assert.equal(r.grantedScope, 'orders:read');
     noViolations(assert);
   });
 
-  it('a Session the Company ended is replaced during sign-in (invalid_session)', async () => {
+  it('a device link on a foreign host is never shown', async () => {
     w = await world({ devicePendingPolls: 0 });
     const c = await w.agent.company(w.fake.domain);
-    const old = (await c.token()).sessionId;
-    w.fake.sessions.delete(old); // the Company ended it (expiry, reset…)
-    const r = await deviceSignIn(c, 'poppy:read', {
-      display: () => {},
-      sleep: async () => {},
+    const real = c.tokens.deviceAuthorization.bind(c.tokens);
+    c.tokens.deviceAuthorization = async (scope) => ({
+      ...(await real(scope)),
+      verification_uri: 'http://evil.example/device',
     });
-    assert.equal(r.grantedScope, 'poppy:read');
-    assert.notEqual(c.state.sessionId, old);
-    noViolations(assert);
+    let shown = false;
+    await rejects(
+      () =>
+        deviceSignIn(c, 'orders:read', {
+          display: () => {
+            shown = true;
+          },
+          sleep: async () => {},
+        }),
+      /isn't this Company's/,
+    );
+    assert.isFalse(shown);
   });
 
   it('Mediated Sign-In with a one-time code', async () => {
     w = await world();
     const c = await w.agent.company(w.fake.domain);
-    const failed = await mediatedSignIn(c, 'poppy:read', {
+    const failed = await mediatedSignIn(c, 'orders:read', {
       email: 'dana@example.com',
       password: 'wrong',
     });
     assert.equal(failed.status, 'failed');
-    const first = await mediatedSignIn(c, 'poppy:read', {
+    const first = await mediatedSignIn(c, 'orders:read', {
       email: 'dana@example.com',
       password: 'hunter2',
     });
     assert.equal(first.status, 'code_required');
     if (first.status !== 'code_required') return;
     assert.equal(first.sentTo, 'Text to the phone number ending in 71');
-    const wrong = await submitMediatedCode(c, 'poppy:read', first.signInId, '000000');
+    const wrong = await submitMediatedCode(c, 'orders:read', first.signInId, '000000');
     assert.equal(wrong.status, 'code_required');
-    const done = await submitMediatedCode(c, 'poppy:read', first.signInId, '123456');
+    const done = await submitMediatedCode(c, 'orders:read', first.signInId, '123456');
     assert.equal(done.status, 'complete');
-    assert.isTrue((await c.token()).signedIn);
+    assert.isNotNull(await c.token());
     assert.notInclude(JSON.stringify(w.logs), 'hunter2');
     noViolations(assert);
   });
 
-  it('Account Token starts later Sessions signed in, rotation is honoured, narrower scope works', async () => {
-    w = await world({ rotateAccountToken: true });
+  it('a refresh token serves a new Session too; rotation is honoured; narrower scope works', async () => {
+    w = await world({ rotateAccountToken: true, accessTtl: 1 });
     const { c } = await directSignIn();
     const first = c.state.accountToken!.refreshToken;
     await c.newSession();
-    const t = await c.token();
-    assert.isTrue(t.signedIn);
+    assert.equal((await callOpenApi(c, { method: 'GET', path: '/orders' })).status, 200);
     assert.notEqual(c.state.accountToken!.refreshToken, first);
-    const narrow = await c.token({ scope: 'poppy:read' });
-    assert.equal(narrow.scope, 'poppy:read');
+    const narrow = await c.token({ scope: 'orders:read' });
+    assert.equal(narrow?.scope, 'orders:read');
     noViolations(assert);
   });
 
-  it('sign_in_required → retried with the Account Token; insufficient_scope surfaces the scope', async () => {
+  it('a refresh response without refresh_token keeps the one we have', async () => {
+    w = await world();
+    const { c } = await directSignIn();
+    const first = c.state.accountToken!.refreshToken;
+    const t = await c.token({ forceRenew: true });
+    assert.isNotNull(t);
+    assert.equal(c.state.accountToken!.refreshToken, first);
+  });
+
+  it('a challenge without a code is insufficient_scope; so is a token without the scope', async () => {
     w = await world();
     const c = await w.agent.company(w.fake.domain);
-    await rejects(
-      () => callOpenApi(c, { method: 'POST', path: '/addresses', body: {} }),
-      /sign_in_required/,
-    );
-    await directSignIn('poppy:read');
+    try {
+      await callOpenApi(c, { method: 'POST', path: '/addresses', body: {} });
+      assert.fail('expected a challenge');
+    } catch (e) {
+      assert.instanceOf(e, ResourceAuthError);
+      assert.equal((e as ResourceAuthError).code, 'insufficient_scope');
+      assert.equal((e as ResourceAuthError).status, 401);
+      assert.equal((e as ResourceAuthError).scope, 'addresses');
+    }
+    await directSignIn('orders:read');
     try {
       await callOpenApi(c, { method: 'POST', path: '/addresses', body: {} });
       assert.fail('expected insufficient_scope');
@@ -232,46 +282,70 @@ describe('sign-in (4.4-4.9)', () => {
     }
   });
 
-  it('disconnect revokes the Account Token and Sessions continue signed out', async () => {
+  it('disconnect revokes the refresh token and the Session continues signed out', async () => {
     w = await world();
     const { c } = await directSignIn();
-    const sid = c.state.sessionId;
+    const sid = c.sessionId;
     assert.isTrue(await c.signOut());
-    const t = await c.token();
-    assert.isFalse(t.signedIn);
-    assert.equal(t.sessionId, sid);
+    assert.isNull(await c.token());
+    assert.equal(c.sessionId, sid);
+    assert.equal((await callOpenApi(c, { method: 'GET', path: '/public' })).status, 200);
     noViolations(assert);
   });
 
-  it('a revoked Account Token (invalid_grant) means continuing signed out', async () => {
+  it('a revoked refresh token: invalid_token, invalid_grant, then signed out', async () => {
     w = await world();
     const { c } = await directSignIn();
-    for (const at of w.fake.accountTokens.values()) at.revoked = true;
-    await c.newSession();
-    const t = await c.token();
-    assert.isFalse(t.signedIn);
+    w.fake.revokeAtCompany();
+    const r = await callOpenApi(c, { method: 'GET', path: '/public' });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { hello: 'world', signed_in: false });
     assert.isUndefined(c.state.accountToken);
+    noViolations(assert);
   });
 
-  it('replacing the Account Token revokes the old one', async () => {
+  it('a new sign-in revokes the refresh token it replaces', async () => {
     w = await world();
-    await directSignIn('poppy:read');
+    await directSignIn('orders:read');
     const old = [...w.fake.accountTokens.values()][0];
-    const { c } = await directSignIn('poppy:read poppy:write');
+    const { c } = await directSignIn('orders:read orders:write');
     assert.isTrue(old?.revoked);
     assert.equal((await callOpenApi(c, { method: 'GET', path: '/orders' })).status, 200);
-    // The Company signed the Session out behind our back: the Account Token signs it back in.
-    w.fake.sessions.get(c.state.sessionId!)!.account = undefined;
+  });
+
+  it("DPoP is the Company's choice: without it in the metadata, plain Bearer and no proof", async () => {
+    w = await world({ noDpop: true });
+    const { c } = await directSignIn();
+    assert.equal(c.state.tokens.default?.tokenType, 'Bearer');
     assert.equal((await callOpenApi(c, { method: 'GET', path: '/orders' })).status, 200);
+    noViolations(assert);
+  });
+
+  it('with DPoP in the metadata: a bound token, its proof, and a nonce retry', async () => {
+    w = await world({ requireNonce: true });
+    const { c } = await directSignIn();
+    assert.equal(c.state.tokens.default?.tokenType, 'DPoP');
+    assert.equal((await callOpenApi(c, { method: 'GET', path: '/orders' })).status, 200);
+    assert.isTrue(w.fake.log.includes('oauth error use_dpop_nonce'));
+    noViolations(assert);
+  });
+
+  it('a service with its own tokens: resource from its protected resource metadata', async () => {
+    w = await world({ apiResource: true, noDpop: true });
+    const { c } = await directSignIn();
+    assert.equal((await callOpenApi(c, { method: 'GET', path: '/orders' })).status, 200);
+    const own = Object.values(c.state.tokens).find((t) => t.resource === `${w.fake.origin}/api`);
+    assert.isDefined(own);
+    noViolations(assert);
   });
 });
 
-describe('APIs (6)', () => {
+describe('APIs (7)', () => {
   afterEach(async () => w.cleanup());
 
-  it('MCP over streamable HTTP with a Bearer token issued for its url', async () => {
+  it('MCP over streamable HTTP: Session header, and a Bearer token issued for its url', async () => {
     w = await world();
-    const c = await w.agent.company(w.fake.domain);
+    const { c } = await directSignIn('orders:read');
     const mcp = await connectMcp(c);
     const { tools } = await mcp.client.listTools();
     assert.includeMembers(
@@ -289,11 +363,28 @@ describe('APIs (6)', () => {
       );
     assert.instanceOf(refused, ResourceAuthError);
     assert.equal((refused as ResourceAuthError).code, 'insufficient_scope');
-    assert.equal((refused as ResourceAuthError).scope, 'poppy:write');
+    assert.equal((refused as ResourceAuthError).scope, 'orders:write');
     await mcp.close();
     const bearer = Object.values(c.state.tokens).find((t) => t.tokenType === 'Bearer');
     assert.equal(bearer?.resource, w.fake.mcpUrl);
-    assert.equal(bearer?.sessionId, c.state.sessionId);
+    noViolations(assert);
+  });
+
+  it('signed out, MCP takes only the Session header; a tool that needs the account challenges', async () => {
+    w = await world();
+    const c = await w.agent.company(w.fake.domain);
+    const mcp = await connectMcp(c);
+    const r = await mcp.client.callTool({ name: 'search_products', arguments: { query: 'boots' } });
+    assert.include(JSON.stringify(r.content), 'insulated boots');
+    const refused = await mcp.client
+      .callTool({ name: 'place_order', arguments: { sku: 'x' } })
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    assert.equal((refused as ResourceAuthError).code, 'insufficient_scope');
+    assert.equal((refused as ResourceAuthError).status, 401);
+    await mcp.close();
     noViolations(assert);
   });
 
@@ -316,7 +407,7 @@ describe('conversations (7)', () => {
     const conv = new ConversationClient(c);
     const start = await conv.start({
       id: newMessageId(),
-      sender: 'agent',
+      author: { type: 'agent' },
       text: 'hello',
       context: { locale: 'en-US', time_zone: 'America/Los_Angeles', user_available: true },
     });
@@ -335,7 +426,7 @@ describe('conversations (7)', () => {
     await new Promise((r) => setTimeout(r, 100));
     await conv.send(start.conversation_id, {
       id: newMessageId(),
-      sender: 'agent',
+      author: { type: 'agent' },
       text: 'second',
       data: { n: 2 },
     });
@@ -360,7 +451,11 @@ describe('conversations (7)', () => {
     w = await world({ dropStreamAfterFirstMessage: true });
     const c = await w.agent.company(w.fake.domain);
     const conv = new ConversationClient(c);
-    const start = await conv.start({ id: newMessageId(), sender: 'agent', text: 'hello' });
+    const start = await conv.start({
+      id: newMessageId(),
+      author: { type: 'agent' },
+      text: 'hello',
+    });
     await new Promise((r) => setTimeout(r, 150)); // the reply is already in the backlog
     const ac = new AbortController();
     const items = await collect(
@@ -377,7 +472,7 @@ describe('conversations (7)', () => {
     w = await world();
     const c = await w.agent.company(w.fake.domain);
     const conv = new ConversationClient(c);
-    const m = { id: newMessageId(), sender: 'agent' as const, text: 'hi' };
+    const m = { id: newMessageId(), author: { type: 'agent' } as const, text: 'hi' };
     const a = await conv.start(m);
     const b = await conv.start(m);
     assert.equal(b.conversation_id, a.conversation_id);
@@ -393,7 +488,11 @@ describe('conversations (7)', () => {
     const closed = await conv.close(a.conversation_id);
     assert.equal(closed.status, 'closed');
     try {
-      await conv.send(a.conversation_id, { id: newMessageId(), sender: 'agent', text: 'more' });
+      await conv.send(a.conversation_id, {
+        id: newMessageId(),
+        author: { type: 'agent' },
+        text: 'more',
+      });
       assert.fail('expected conversation_closed');
     } catch (e) {
       assert.instanceOf(e, ConversationError);
@@ -406,7 +505,7 @@ describe('conversations (7)', () => {
     w = await world();
     const c = await w.agent.company(w.fake.domain);
     const conv = new ConversationClient(c);
-    const a = await conv.start({ id: newMessageId(), sender: 'agent', text: 'hi' });
+    const a = await conv.start({ id: newMessageId(), author: { type: 'agent' }, text: 'hi' });
     await conv.collect(a.conversation_id);
     // Nothing changes the state now (like a handoff with no one available): no `state` event.
     const drained = (async () => {
@@ -427,14 +526,15 @@ describe('conversations (7)', () => {
     const conv = new ConversationClient(c);
     const { conversation_id: id } = await conv.start({
       id: newMessageId(),
-      sender: 'agent',
+      author: { type: 'agent' },
       text: 'show my orders',
     });
     const first = await conv.collect(id);
     const auth = first.events.find((e) => e.type === 'authorization');
-    assert.equal(auth?.error, 'sign_in_required');
-    await directSignIn('poppy:read');
-    await conv.send(id, { id: newMessageId(), sender: 'agent', text: 'orders please' });
+    assert.equal(auth?.error, 'insufficient_scope');
+    assert.equal(auth?.scope, 'orders:read');
+    await directSignIn('orders:read');
+    await conv.send(id, { id: newMessageId(), author: { type: 'agent' }, text: 'orders please' });
     const second = await conv.collect(id);
     const reply = second.events.find((e) => e.type === 'message' && e.message?.role === 'company');
     assert.deepEqual(reply?.message?.data, { orders: [{ id: 'ord_1042', item: 'jacket' }] });
@@ -447,17 +547,17 @@ describe('conversations (7)', () => {
     const conv = new ConversationClient(c);
     const { conversation_id: parent } = await conv.start({
       id: newMessageId(),
-      sender: 'agent',
+      author: { type: 'agent' },
       text: 'need a specialist',
     });
     const r = await conv.collect(parent);
     assert.isTrue(r.events.some((e) => e.type === 'user_requested'));
     const direct = await conv.start(
-      { id: newMessageId(), sender: 'human', text: 'Hi, it is me' },
+      { id: newMessageId(), author: { type: 'human' }, text: 'Hi, it is me' },
       { parentConversationId: parent },
     );
     await rejects(
-      () => conv.send(parent, { id: newMessageId(), sender: 'agent', text: 'x' }),
+      () => conv.send(parent, { id: newMessageId(), author: { type: 'agent' }, text: 'x' }),
       /direct_conversation_open/,
     );
     await conv.close(direct.conversation_id);
@@ -468,36 +568,81 @@ describe('conversations (7)', () => {
   });
 });
 
-describe('web browsing (5)', () => {
+describe('web browsing (6)', () => {
   afterEach(async () => w.cleanup());
 
-  it('poppy-browser+jwt form POST (body, not URL) joins the Session', async () => {
-    w = await world();
-    const c = await w.agent.company(w.fake.domain);
-    await rejects(() => createBrowserAssertion(c, 'https://evil.example/'), /return_to/);
-    const { endpoint, assertion, sessionId } = await createBrowserAssertion(
-      c,
-      `${w.fake.origin}/orders`,
-    );
-    const html = autoSubmitFormHtml(endpoint, assertion);
-    assert.include(html, 'method="post"');
-    assert.notInclude(endpoint, assertion);
-    const page = await serveOneShotPage(html);
-    assert.notInclude(page.url, assertion);
-    const served = await (await fetch(page.url)).text();
-    assert.equal(served, html);
-    assert.equal((await fetch(page.url)).status, 404, 'one-shot');
-    page.close();
-    // Play the controlled browser: submit the form.
-    const res = await fetch(endpoint, {
+  /** Plays the agent's own browser. */
+  async function loadPage(endpoint: string) {
+    const res = await fetch(endpoint);
+    const cookie = (res.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+    return { html: await res.text(), cookie };
+  }
+  const submit = (endpoint: string, code: string, cookie: string) =>
+    fetch(endpoint, {
       method: 'POST',
       redirect: 'manual',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ assertion }).toString(),
+      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie },
+      body: new URLSearchParams({ code }).toString(),
     });
+
+  it('the three steps: page, authorize with the access token, submit with the cookie', async () => {
+    w = await world();
+    const { c } = await directSignIn();
+    const endpoint = browserSessionEndpoint(c);
+    const { html, cookie } = await loadPage(endpoint);
+    const code = browserJoinCode(html);
+    await authorizeBrowserJoin(c, code);
+    const res = await submit(endpoint, code, cookie);
     assert.equal(res.status, 303);
-    assert.include(res.headers.get('set-cookie') ?? '', 'HttpOnly');
-    assert.deepEqual(w.fake.browserJoins, [{ sessionId, returnTo: `${w.fake.origin}/orders` }]);
+    assert.deepEqual(w.fake.browserJoins, [{ sessionId: c.sessionId, account: 'acct_1' }]);
+    // The code works once.
+    assert.equal((await submit(endpoint, code, cookie)).status, 400);
+    await rejects(() => authorizeBrowserJoin(c, code), /invalid_request/);
+    noViolations(assert);
+  });
+
+  it('a signed-out join, and a browser without the cookie is refused', async () => {
+    w = await world();
+    const c = await w.agent.company(w.fake.domain);
+    const endpoint = browserSessionEndpoint(c);
+    const page = await loadPage(endpoint);
+    const code = browserJoinCode(page.html);
+    await authorizeBrowserJoin(c, code);
+    assert.equal((await submit(endpoint, code, '')).status, 400);
+    const again = await loadPage(endpoint);
+    const second = browserJoinCode(again.html);
+    await authorizeBrowserJoin(c, second);
+    assert.equal((await submit(endpoint, second, again.cookie)).status, 303);
+    assert.deepEqual(w.fake.browserJoins, [{ sessionId: c.sessionId, account: undefined }]);
+    assert.throws(() => browserJoinCode('<form></form>'), /no code field/);
+    noViolations(assert);
+  });
+});
+
+describe('task coverage (9)', () => {
+  afterEach(async () => w.cleanup());
+
+  it('excluded tasks: public, and references to unlisted APIs or unknown types are dropped', async () => {
+    w = await world();
+    const c = await w.agent.company(w.fake.domain);
+    const tasks = await excludedTasks(c);
+    assert.deepEqual(
+      tasks.map((t) => t.task),
+      ['Send a wire transfer', 'Close an account'],
+    );
+    assert.deepEqual(tasks[0]?.alternative?.references, [
+      { type: 'web', url: `${w.fake.origin}/wire` },
+    ]);
+  });
+
+  it('feedback: 202 without a body, or 200 with an alternative', async () => {
+    w = await world();
+    const c = await w.agent.company(w.fake.domain);
+    const report = { task: 'Pay with a gift card', description: 'No way to apply one.' };
+    assert.isNull(await sendFeedback(c, report));
+    w.fake.feedbackAlternative = { instructions: 'Apply it at checkout.' };
+    assert.equal((await sendFeedback(c, report))?.instructions, 'Apply it at checkout.');
+    assert.deepEqual(w.fake.feedback[0], report);
     noViolations(assert);
   });
 });

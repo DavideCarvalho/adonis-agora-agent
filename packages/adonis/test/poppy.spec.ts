@@ -66,6 +66,24 @@ const fakeResolver: PoppyAuthenticate = async (request, options) => {
       wwwAuthenticate: 'DPoP error="insufficient_scope", scope="poppy:read"',
     };
   }
+  if (user === 'bad-session') {
+    return {
+      ok: false,
+      status: 400,
+      error: 'invalid_session',
+      description: 'expired',
+      wwwAuthenticate: null,
+    };
+  }
+  if (user === 'limited') {
+    return {
+      ok: false,
+      status: 429,
+      error: null,
+      wwwAuthenticate: null,
+      headers: { 'Retry-After': '30' },
+    };
+  }
   if (user === 'nonce') {
     return {
       ok: false,
@@ -211,7 +229,7 @@ async function get(h: Harness, path: string, headers = U1) {
 
 let messageIds = 0;
 const msg = (text: string, extra: Record<string, unknown> = {}) => ({
-  message: { id: `msg_${++messageIds}`, sender: 'agent', text, ...extra },
+  message: { id: `msg_${++messageIds}`, author: { type: 'agent' }, text, ...extra },
 });
 
 /** Read events until `until` holds over everything read so far. */
@@ -309,11 +327,23 @@ describe('Poppy routing and auth', () => {
     expect(seen.options).toBeUndefined();
   });
 
+  it('invalid_session is a JSON body with no challenge; a rate limit passes Retry-After', async () => {
+    harness = await setup(() => ({ text: 'hi' }));
+    const bad = await post(harness, '', msg('hi'), auth('bad-session'));
+    expect(bad.status).toBe(400);
+    expect(bad.body).toEqual({ error: 'invalid_session', error_description: 'expired' });
+    expect(bad.headers.get('www-authenticate')).toBeNull();
+    const limited = await post(harness, '', msg('hi'), auth('limited'));
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('retry-after')).toBe('30');
+    expect(limited.headers.get('www-authenticate')).toBeNull();
+  });
+
   it('forwards a refusal headers (DPoP-Nonce) and description, under its status', async () => {
     harness = await setup(() => ({ text: 'hi' }));
     const res = await post(harness, '', msg('hi'), auth('nonce'));
     expect(res.status).toBe(401);
-    expect(res.body).toEqual({ error: 'use_dpop_nonce', error_description: 'Use the DPoP nonce' });
+    expect(res.body).toEqual({});
     expect(res.headers.get('dpop-nonce')).toBe('n-123');
     expect(res.headers.get('www-authenticate')).toBe('DPoP error="use_dpop_nonce"');
     expect(res.headers.get('cache-control')).toBe('no-store');
@@ -323,11 +353,11 @@ describe('Poppy routing and auth', () => {
     harness = await setup(() => ({ text: 'hi' }));
     const missing = await post(harness, '', '{not json', {} as never);
     expect(missing.status).toBe(401);
-    expect(missing.body).toEqual({ error: 'invalid_token' });
+    expect(missing.body).toEqual({});
     expect(missing.headers.get('www-authenticate')).toBe('DPoP error="invalid_token"');
     const forbidden = await post(harness, '', msg('hi'), auth('forbidden'));
     expect(forbidden.status).toBe(403);
-    expect(forbidden.body).toEqual({ error: 'insufficient_scope', scope: 'poppy:read' });
+    expect(forbidden.body).toEqual({});
     expect(forbidden.headers.get('www-authenticate')).toContain('insufficient_scope');
   });
 });
@@ -356,13 +386,13 @@ describe('Poppy messages (§7.3, §7.4)', () => {
     expect(first.events.map((e) => e.type)).toEqual(['message', 'state', 'message', 'state']);
     expect(first.events[0]?.message).toMatchObject({
       role: 'user',
-      sender: 'agent',
+      author: { type: 'agent' },
       text: 'The jacket is not warm enough.',
     });
     expect(first.events[1]).toMatchObject({ status: 'working', responder: 'agent' });
     expect(companyMessages(first.events)[0]?.message).toMatchObject({
       role: 'company',
-      sender: 'agent',
+      author: { type: 'agent' },
       text: expect.stringMatching(/^reply to/),
     });
     expect(first.last).toMatchObject({ status: 'idle', responder: 'agent', has_more: false });
@@ -370,7 +400,7 @@ describe('Poppy messages (§7.3, §7.4)', () => {
     const second = await post(
       harness,
       `/${id}/messages`,
-      msg('Medium, please.', { sender: 'human' }),
+      msg('Medium, please.', { author: { type: 'human' } }),
     );
     expect(second.status).toBe(202);
     expect(second.body).toEqual({ conversation_id: id, status: 'working', responder: 'agent' });
@@ -378,7 +408,7 @@ describe('Poppy messages (§7.3, §7.4)', () => {
     expect(
       all.events.find((e) => (e.message as any)?.text === 'Medium, please.')?.message,
     ).toMatchObject({
-      sender: 'human',
+      author: { type: 'human' },
     });
   });
 
@@ -403,7 +433,7 @@ describe('Poppy messages (§7.3, §7.4)', () => {
 
   it('a retried message (same id, same content) is accepted once — first message included', async () => {
     harness = await setup(() => ({ text: 'once' }));
-    const body = { message: { id: 'msg_retry_1', sender: 'agent', text: 'hi' } };
+    const body = { message: { id: 'msg_retry_1', author: { type: 'agent' }, text: 'hi' } };
     const a = await post(harness, '', body);
     // Unknown fields are ignored (§3.3): still the same message.
     const b = await post(harness, '', { ...body, future: 1, message: { ...body.message, x: 2 } });
@@ -412,7 +442,7 @@ describe('Poppy messages (§7.3, §7.4)', () => {
     const id = a.body.conversation_id;
     await readUntil(harness, id, settled);
 
-    const later = { message: { id: 'msg_retry_2', sender: 'agent', text: 'again' } };
+    const later = { message: { id: 'msg_retry_2', author: { type: 'agent' }, text: 'again' } };
     const c = await post(harness, `/${id}/messages`, later);
     const d = await post(harness, `/${id}/messages`, later);
     expect(d.status).toBe(202);
@@ -430,14 +460,18 @@ describe('Poppy messages (§7.3, §7.4)', () => {
 
   it('a reused id with different content is message_id_conflict (409)', async () => {
     harness = await setup(() => ({ text: 'ok' }));
-    const a = await post(harness, '', { message: { id: 'msg_c', sender: 'agent', text: 'one' } });
+    const a = await post(harness, '', {
+      message: { id: 'msg_c', author: { type: 'agent' }, text: 'one' },
+    });
     const id = a.body.conversation_id;
-    const b = await post(harness, '', { message: { id: 'msg_c', sender: 'agent', text: 'two' } });
+    const b = await post(harness, '', {
+      message: { id: 'msg_c', author: { type: 'agent' }, text: 'two' },
+    });
     expect(b.status).toBe(409);
     expect(b.body.error).toBe('message_id_conflict');
     // Unique per User, not per conversation.
     const c = await post(harness, `/${id}/messages`, {
-      message: { id: 'msg_c', sender: 'agent', text: 'one' },
+      message: { id: 'msg_c', author: { type: 'agent' }, text: 'one' },
     });
     expect(c.status).toBe(409);
     expect(c.body.error).toBe('message_id_conflict');
@@ -445,7 +479,7 @@ describe('Poppy messages (§7.3, §7.4)', () => {
     const d = await post(
       harness,
       '',
-      { message: { id: 'msg_c', sender: 'agent', text: 'two' } },
+      { message: { id: 'msg_c', author: { type: 'agent' }, text: 'two' } },
       auth('u2||out'),
     );
     expect(d.status).toBe(201);
@@ -454,11 +488,11 @@ describe('Poppy messages (§7.3, §7.4)', () => {
   it('validates messages: a field is required, ids are URL-safe, JSON is JSON', async () => {
     harness = await setup(() => ({ text: 'ok' }));
     for (const body of [
-      { message: { id: 'msg_v1', sender: 'agent' } },
-      { message: { id: 'bad id!', sender: 'agent', text: 'x' } },
+      { message: { id: 'msg_v1', author: { type: 'agent' } } },
+      { message: { id: 'bad id!', author: { type: 'agent' }, text: 'x' } },
       { message: { id: 'msg_v2', sender: 'robot', text: 'x' } },
-      { message: { id: 'msg_v3', sender: 'agent', data: [1] } },
-      { message: { id: 'msg_v4', sender: 'agent', context: { user_available: 'yes' } } },
+      { message: { id: 'msg_v3', author: { type: 'agent' }, data: [1] } },
+      { message: { id: 'msg_v4', author: { type: 'agent' }, context: { user_available: 'yes' } } },
       {},
       '{',
     ]) {
@@ -471,12 +505,16 @@ describe('Poppy messages (§7.3, §7.4)', () => {
   it('a context-only message updates context without a turn; data reaches the model as JSON', async () => {
     harness = await setup(() => ({ text: 'ok' }));
     const created = await post(harness, '', {
-      message: { id: 'msg_ctx0', sender: 'agent', context: { locale: 'en-US', time_zone: 'UTC' } },
+      message: {
+        id: 'msg_ctx0',
+        author: { type: 'agent' },
+        context: { locale: 'en-US', time_zone: 'UTC' },
+      },
     });
     expect(created.body.status).toBe('idle');
     const id = created.body.conversation_id;
     await post(harness, `/${id}/messages`, {
-      message: { id: 'msg_ctx1', sender: 'agent', context: { user_available: false } },
+      message: { id: 'msg_ctx1', author: { type: 'agent' }, context: { user_available: false } },
     });
     await sleep(100);
     expect(harness.agent?.model.calls.length).toBe(0);
@@ -486,7 +524,12 @@ describe('Poppy messages (§7.3, §7.4)', () => {
       user_available: false,
     });
     await post(harness, `/${id}/messages`, {
-      message: { id: 'msg_ctx2', sender: 'agent', text: 'Seats please', data: { seat: '14A' } },
+      message: {
+        id: 'msg_ctx2',
+        author: { type: 'agent' },
+        text: 'Seats please',
+        data: { seat: '14A' },
+      },
     });
     await readUntil(harness, id, (e) => companyMessages(e).length === 1);
     const sent = JSON.stringify(harness.agent?.model.calls[0]?.messages);
@@ -510,12 +553,12 @@ describe('Poppy events (§7.5)', () => {
   it('pages with cursor and has_more; an empty read keeps the cursor', async () => {
     harness = await setup(() => ({ text: 'ok' }));
     const created = await post(harness, '', {
-      message: { id: 'msg_p0', sender: 'agent', context: { locale: 'en' } },
+      message: { id: 'msg_p0', author: { type: 'agent' }, context: { locale: 'en' } },
     });
     const id = created.body.conversation_id;
     for (let i = 1; i <= 104; i++) {
       await post(harness, `/${id}/messages`, {
-        message: { id: `msg_p${i}`, sender: 'agent', context: { n: i } },
+        message: { id: `msg_p${i}`, author: { type: 'agent' }, context: { n: i } },
       });
     }
     const page1 = await get(harness, `/${id}/events`);
@@ -562,17 +605,20 @@ describe('Poppy events (§7.5)', () => {
   it('wait returns as soon as an event arrives, and an empty list on timeout', async () => {
     harness = await setup(() => ({ text: 'ok' }));
     const id = (
-      await post(harness, '', { message: { id: 'msg_w0', sender: 'agent', context: {} } })
+      await post(harness, '', { message: { id: 'msg_w0', author: { type: 'agent' }, context: {} } })
     ).body.conversation_id;
     const start = await get(harness, `/${id}/events`);
     const startedAt = Date.now();
-    const timedOut = await get(harness, `/${id}/events?cursor=${start.body.cursor}&wait=0.3`);
+    const timedOut = await get(harness, `/${id}/events?cursor=${start.body.cursor}&wait=1`);
     expect(timedOut.body.events).toEqual([]);
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(250);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(900);
+    const fractional = await get(harness, `/${id}/events?wait=0.3`);
+    expect(fractional.status).toBe(400);
+    expect(fractional.body.error).toBe('invalid_request');
     const pending = get(harness, `/${id}/events?cursor=${start.body.cursor}&wait=5`);
     await sleep(100);
     await post(harness, `/${id}/messages`, {
-      message: { id: 'msg_w1', sender: 'agent', context: { a: 1 } },
+      message: { id: 'msg_w1', author: { type: 'agent' }, context: { a: 1 } },
     });
     const woke = await pending;
     expect(woke.body.events[0].type).toBe('message');
@@ -773,7 +819,7 @@ describe('Poppy scopes (§7.11)', () => {
     const { events } = await readUntil(h, id, (e) => e.some((x) => x.type === 'authorization'));
     expect(h.ran).toEqual([]);
     expect(events.find((e) => e.type === 'authorization')).toMatchObject({
-      error: 'sign_in_required',
+      error: 'insufficient_scope',
       scope: 'poppy:read',
     });
 
@@ -851,9 +897,9 @@ describe('Poppy scopes (§7.11)', () => {
     const id = (await post(h, '', msg('hi'), acct)).body.conversation_id;
     await readUntil(h, id, settled, acct);
     const signedOut = await get(h, `/${id}/events`, auth('u1||out'));
-    expect(signedOut.status).toBe(403);
-    expect(signedOut.body.error).toBe('sign_in_required');
-    expect(signedOut.headers.get('www-authenticate')).toBe('DPoP error="sign_in_required"');
+    expect(signedOut.status).toBe(401);
+    expect(signedOut.body).toEqual({});
+    expect(signedOut.headers.get('www-authenticate')).toBe('Bearer');
     const otherAccount = await get(h, `/${id}/events`, auth('u1|poppy:read|in|acct-2'));
     expect(otherAccount.status).toBe(404);
     expect(otherAccount.body.error).toBe('conversation_not_found');
@@ -1076,7 +1122,7 @@ describe('Poppy actions and components', () => {
     expect(companyMessages(events)[0]?.message).toEqual({
       id: expect.stringMatching(/^msg_/),
       role: 'company',
-      sender: 'agent',
+      author: { type: 'agent' },
       text: 'Order A-1: shipped.',
       data: {
         components: [
@@ -1099,7 +1145,7 @@ describe('Poppy handoff (§7.9) and close (§7.12)', () => {
     expect(res.body).toEqual({ conversation_id: id, status: 'idle', responder: 'agent' });
     const after = await get(harness, `/${id}/events`);
     expect(companyMessages(after.body.events).at(-1)?.message).toMatchObject({
-      sender: 'agent',
+      author: { type: 'agent' },
       text: 'No one is available to take this conversation right now.',
     });
   });
@@ -1128,7 +1174,7 @@ describe('Poppy handoff (§7.9) and close (§7.12)', () => {
     expect(waiting.body.status).toBe('queued');
     expect(forwarded).toEqual(['The order is A-1.']);
     expect(await h.conversations.humanJoined(id)).toEqual({ status: 'idle', responder: 'human' });
-    await h.conversations.postMessage(id, { text: 'Hi, I am Sam.', sender: 'human' });
+    await h.conversations.postMessage(id, { text: 'Hi, I am Sam.', author: { type: 'human' } });
     await post(h, `/${id}/messages`, msg('Medium.'));
     expect(forwarded).toEqual(['The order is A-1.', 'Medium.']);
     await sleep(100);
@@ -1140,7 +1186,7 @@ describe('Poppy handoff (§7.9) and close (§7.12)', () => {
       .map((e) => `${e.status}/${e.responder}`);
     expect(states).toEqual(['working/agent', 'idle/agent', 'queued/agent', 'idle/human']);
     expect(companyMessages(events).at(-1)?.message).toMatchObject({
-      sender: 'human',
+      author: { type: 'human' },
       text: 'Hi, I am Sam.',
     });
 
@@ -1223,7 +1269,7 @@ describe('Poppy Direct Conversations (§7.10)', () => {
 
     const direct = await post(h, '', {
       parent_conversation_id: parent,
-      message: { id: 'msg_direct_1', sender: 'human', text: 'Hi, I have a question.' },
+      message: { id: 'msg_direct_1', author: { type: 'human' }, text: 'Hi, I have a question.' },
     });
     expect(direct.status).toBe(201);
     const directId = direct.body.conversation_id;
@@ -1308,12 +1354,12 @@ describe('Poppy Direct Conversations (§7.10)', () => {
       toolRoles: (name) => agent.registry.spec(name)?.roles,
     });
     const parent = (
-      await post(harness, '', { message: { id: 'msg_d0', sender: 'agent', context: {} } })
+      await post(harness, '', { message: { id: 'msg_d0', author: { type: 'agent' }, context: {} } })
     ).body.conversation_id;
     const directId = (
       await post(harness, '', {
         parent_conversation_id: parent,
-        message: { id: 'msg_d1', sender: 'human', text: 'my orders?' },
+        message: { id: 'msg_d1', author: { type: 'human' }, text: 'my orders?' },
       })
     ).body.conversation_id;
     const { events } = await readUntil(harness, directId, (e) =>
@@ -1322,7 +1368,7 @@ describe('Poppy Direct Conversations (§7.10)', () => {
     await readUntil(harness, directId, settled);
     const all = (await get(harness, `/${directId}/events`)).body.events as PoppyEvent[];
     expect(events.find((e) => e.type === 'authorization')).toMatchObject({
-      error: 'sign_in_required',
+      error: 'insufficient_scope',
     });
     expect(companyMessages(all).at(-1)?.message.text).toMatch(/sign in/);
   });

@@ -43,7 +43,7 @@ function summarize(events: ConversationEvent[]) {
   for (const ev of events) {
     if (ev.type === 'message' && ev.message?.role !== 'user') {
       out.push({
-        from: `company:${ev.message?.sender}`,
+        from: `company:${ev.message?.author?.type}`,
         text: ev.message?.text,
         data: ev.message?.data,
       });
@@ -149,7 +149,7 @@ export async function ask(
     if (name === 'talk_to_company' && conv) {
       const message = {
         id: newMessageId(),
-        sender: 'agent' as const,
+        author: { type: 'agent' as const },
         text: String(args.text ?? ''),
         data:
           typeof args.data === 'object' && args.data
@@ -167,14 +167,14 @@ export async function ask(
       for (const ev of events) {
         if (ev.type === 'message' && ev.message?.role !== 'user') {
           opts.log(
-            `  company[${ev.message?.sender}]: ${ev.message?.text ?? ''}${ev.message?.data ? ` ${JSON.stringify(ev.message.data)}` : ''}`,
+            `  company[${ev.message?.author?.type}]: ${ev.message?.text ?? ''}${ev.message?.data ? ` ${JSON.stringify(ev.message.data)}` : ''}`,
           );
         }
         if (ev.type === 'user_requested') {
           // 7.10: only the Personal Agent starts Direct Conversations; the user isn't here.
           await conv.send(conversationId, {
             id: newMessageId(),
-            sender: 'agent',
+            author: { type: 'agent' },
             text: 'The user is not available to talk right now.',
             context: { user_available: false },
           });

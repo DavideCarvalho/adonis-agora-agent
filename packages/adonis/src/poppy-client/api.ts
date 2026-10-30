@@ -5,7 +5,7 @@ import { readJson } from './http.js';
 import type { PoppyApiEntry } from './types.js';
 import { requireSecureUrl } from './util.js';
 
-/** API types this client understands (section 6). Others are skipped. */
+/** API types this client understands (section 7). Others are skipped. */
 export const KNOWN_API_TYPES = ['openapi', 'mcp'];
 
 export function listApis(company: CompanyClient): PoppyApiEntry[] {
@@ -36,14 +36,14 @@ export interface OpenApiDoc {
   [k: string]: unknown;
 }
 
-/** Loads an OpenAPI description. Tried without a token first; with DPoP if that's refused. */
+/** Loads an OpenAPI description. Tried as a public document first; through the Session if that's refused. */
 export async function loadOpenApi(company: CompanyClient, api: PoppyApiEntry): Promise<OpenApiDoc> {
   const res = await company.http.request(api.url, { headers: { accept: 'application/json' } });
   if (res.ok) return (await readJson<OpenApiDoc>(res)) ?? {};
   if (res.status === 401 || res.status === 403) {
     const { body } = await company.json<OpenApiDoc>(api.url, {
       headers: { accept: 'application/json' },
-      resource: api.resource,
+      service: api.url,
     });
     return body ?? {};
   }
@@ -57,8 +57,9 @@ export function apiBaseUrl(doc: OpenApiDoc, api: PoppyApiEntry): string {
 }
 
 /**
- * Calls an endpoint of a listed OpenAPI API with a DPoP Session Token (section 6). Refuses
- * absolute URLs outside the API's own origin, so tokens never go to a third party.
+ * Calls an endpoint of a listed OpenAPI API (section 7), through the Session and, when signed in,
+ * with an access token. Refuses absolute URLs outside the API's own origin, so nothing goes to a
+ * third party.
  */
 export async function callOpenApi(
   company: CompanyClient,
@@ -80,7 +81,7 @@ export async function callOpenApi(
   if (!allowed.has(url.origin)) {
     throw new PoppyError(
       'foreign_origin',
-      `${url.origin} is not this API's origin; refusing to send the token`,
+      `${url.origin} is not this API's origin; refusing to send credentials`,
     );
   }
   requireSecureUrl(url.toString(), 'API URL', company.security);
@@ -90,11 +91,15 @@ export async function callOpenApi(
     method: input.method.toUpperCase(),
     headers,
     body: input.body === undefined ? undefined : JSON.stringify(input.body),
-    resource: api.resource,
+    service: base,
     scope: input.scope,
   });
-  if (res.status === 401 || res.status === 403) {
-    if (res.headers.get('www-authenticate')) await throwForResponse(res);
+  if ((res.status === 401 || res.status === 403) && res.headers.get('www-authenticate')) {
+    await throwForResponse(res);
+  }
+  if (res.status === 400) {
+    const refused = await readJson<{ error?: string }>(res.clone());
+    if (refused?.error === 'invalid_session') await throwForResponse(res);
   }
   const text = await res.text();
   let body: unknown = text;

@@ -13,56 +13,40 @@ export interface McpConnection {
 }
 
 /**
- * Connects to a listed MCP server over Streamable HTTP with a Bearer Session Token issued for
- * that server's `url` (4.3 "Bearer tokens", section 6). On `invalid_token` the token is
- * re-minted once and the request retried; a `403` `insufficient_scope` / `sign_in_required`
- * rejects the call with a {@link ResourceAuthError} carrying the needed `scope`.
+ * Connects to a listed MCP server over Streamable HTTP (section 7): the Session header on every
+ * request and, when signed in, a Bearer access token requested with `resource` set to the server's
+ * `url`. A challenge rejects the call with a {@link ResourceAuthError} naming the needed `scope`.
  */
 export async function connectMcp(
   company: CompanyClient,
   apiIndex?: number | undefined,
 ): Promise<McpConnection> {
   const api = pickApi(company, 'mcp', apiIndex);
-  // `resource` MUST be the MCP server's `url` from poppy.json (4.3).
-  const resource = api.url;
-  let token = await company.bearerFor(resource);
   const authedFetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
-    for (let attempt = 0; ; attempt++) {
-      const headers = new Headers(init?.headers);
-      headers.set('authorization', `Bearer ${token}`);
-      const res = await company.http.fetch(input, { ...init, headers });
-      const err = wwwAuthError(res.headers.get('www-authenticate'));
-      if (res.status === 401 && attempt === 0 && (!err.error || err.error === 'invalid_token')) {
-        token = await company.bearerFor(resource, true);
-        continue;
-      }
-      // A signed-in Bearer whose Session was signed out meanwhile (4.4): the Account Token signs
-      // it back in — or, revoked, answers invalid_grant and the client continues signed out.
-      if (
-        res.status === 403 &&
-        attempt === 0 &&
-        err.error === 'sign_in_required' &&
-        company.accountToken
-      ) {
-        await res.body?.cancel().catch(() => {});
-        token = await company.bearerFor(resource, true);
-        continue;
-      }
-      // A tool behind a scope the user did not grant (MCP scope step-up, RFC 6750 §3.1): surface it
-      // like any other resource, so the caller can sign in again with `scope`.
-      if (
-        res.status === 403 &&
-        (err.error === 'insufficient_scope' || err.error === 'sign_in_required')
-      ) {
-        await res.body?.cancel().catch(() => {});
-        throw new ResourceAuthError(err.error, {
-          status: 403,
-          description: err.description,
-          scope: err.scope,
-        });
-      }
-      return res;
+    const headers: Record<string, string> = {};
+    new Headers(init?.headers).forEach((value, key) => {
+      headers[key] = value;
+    });
+    const res = await company.fetch(String(input), {
+      method: init?.method ?? 'GET',
+      headers,
+      ...(typeof init?.body === 'string' ? { body: init.body } : {}),
+      ...(init?.signal ? { signal: init.signal } : {}),
+      // `resource` MUST be the MCP server's `url` from poppy.json, and Bearer is MCP's baseline (7).
+      resource: api.url,
+      bearer: true,
+    });
+    const challenge = res.headers.get('www-authenticate');
+    if ((res.status === 401 || res.status === 403) && challenge) {
+      const err = wwwAuthError(challenge);
+      await res.body?.cancel().catch(() => {});
+      throw new ResourceAuthError(err.error ?? 'insufficient_scope', {
+        status: res.status,
+        description: err.description,
+        scope: err.scope,
+      });
     }
+    return res;
   };
   const transport = new StreamableHTTPClientTransport(new URL(api.url), { fetch: authedFetch });
   const client = new Client({ name: 'poppy-agent', version: '0.0.0' });

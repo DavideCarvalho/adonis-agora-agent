@@ -33,7 +33,7 @@ function configOf(app: ApplicationService): Config | undefined {
  * the agent identity routes, the connect pages and callback, the `poppy_*` tools, and — when the
  * config has `api` — `GET/DELETE {path}/api/connections` for the app's own settings UI.
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.1 — will change as the spec evolves.
+ * @experimental Tracks Personal Agent Protocol Draft 0.3 — will change as the spec evolves.
  */
 export default class PoppyConnectionsProvider {
   #service: Promise<PoppyConnections> | null = null;

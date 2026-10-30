@@ -4,8 +4,8 @@ import { isMySql } from '../stores/sql-dialect.js';
 
 /**
  * What one owner (a person/account of this app) holds at one Company: the Company's issuer and
- * domain, the scope granted, and the sealed client state (User ID, DPoP key, Account Token, Session
- * Tokens). `status`: `pending` while signing in, `active` with an Account Token, `revoked` after a
+ * domain, the scope granted, and the sealed client state (User ID, keys, refresh token, access
+ * tokens). `status`: `pending` while signing in, `active` with an refresh token, `revoked` after a
  * disconnect (either side).
  */
 export interface PoppyConnectionRecord {

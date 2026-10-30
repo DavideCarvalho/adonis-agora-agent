@@ -1,5 +1,5 @@
 /**
- * Wire types from the Personal Agent Protocol (Poppy) Draft 0.1.
+ * Wire types from the Personal Agent Protocol (Poppy) Draft 0.3.
  *
  * Every object is "open": the spec requires both sides to ignore fields they don't recognize
  * (3.3), so these interfaces only name what this client reads, and keep an index signature.
@@ -11,22 +11,34 @@ export interface PoppyDocument {
   auth?: PoppyAuth | undefined;
   agent?: { protocols: PoppyProtocolEntry[]; [k: string]: unknown } | undefined;
   web?: { browser_session_endpoint?: string | undefined; [k: string]: unknown };
+  feedback?: { endpoint: string; [k: string]: unknown } | undefined;
+  excluded_tasks?: { url: string; [k: string]: unknown } | undefined;
   apis?: PoppyApiEntry[] | undefined;
   extensions?: Record<string, { version: string; [k: string]: unknown }> | undefined;
   [k: string]: unknown;
 }
 
+/** Sign-in details (3.1). The sign-in types come from the issuer's `grant_types_supported`. */
 export interface PoppyAuth {
-  issuer: string;
-  direct?: { scopes: string[]; [k: string]: unknown } | undefined;
-  device?: { scopes: string[]; [k: string]: unknown } | undefined;
-  mediated?: {
-    endpoint: string;
-    fields: MediatedField[];
-    scopes: string[];
-    [k: string]: unknown;
-  };
-  custom_scopes?: Record<string, string> | undefined;
+  /** Required only when the protected resource metadata lists several authorization servers. */
+  issuer?: string | undefined;
+  scopes?: Record<string, string> | undefined;
+  scope_hints?: Record<string, ScopeHint> | undefined;
+  [k: string]: unknown;
+}
+
+/** What a scope allows (4.7). A `changes` value this client doesn't know counts as `irreversible`. */
+export interface ScopeHint {
+  changes: string;
+  personal_data: boolean;
+  [k: string]: unknown;
+}
+
+/** The `mediated-sign-in` extension entry of `poppy.json`. */
+export interface MediatedExtension {
+  version: string;
+  fields: MediatedField[];
+  scopes: string[];
   [k: string]: unknown;
 }
 
@@ -40,7 +52,8 @@ export interface MediatedField {
 export interface PoppyProtocolEntry {
   type: string;
   endpoint: string;
-  resource?: string | undefined;
+  /** The interface needs the account from the start (3.2); unknown values are ignored. */
+  access?: string | undefined;
   [k: string]: unknown;
 }
 
@@ -48,18 +61,28 @@ export interface PoppyApiEntry {
   type: string;
   url: string;
   description?: string | undefined;
-  resource?: string | undefined;
   [k: string]: unknown;
 }
 
-/** RFC 8414 metadata, plus the Poppy `poppy_domains` field (3.2). */
+/** RFC 9728 metadata of a resource (3.2, 4.5). */
+export interface ProtectedResourceMetadata {
+  resource: string;
+  authorization_servers?: string[] | undefined;
+  dpop_signing_alg_values_supported?: string[] | undefined;
+  [k: string]: unknown;
+}
+
+/** RFC 8414 metadata the Personal Agent uses (3.2). */
 export interface AuthServerMetadata {
   issuer: string;
   token_endpoint: string;
   revocation_endpoint: string;
+  grant_types_supported: string[];
+  protected_resources: string[];
   authorization_endpoint?: string | undefined;
   device_authorization_endpoint?: string | undefined;
-  poppy_domains: string[];
+  scopes_supported?: string[] | undefined;
+  dpop_signing_alg_values_supported?: string[] | undefined;
   [k: string]: unknown;
 }
 
@@ -75,20 +98,19 @@ export interface ClientMetadata {
   [k: string]: unknown;
 }
 
-/** Token endpoint success response (4.2, 4.4). */
+/** Token endpoint success response (4.7, RFC 6749 section 5.1). */
 export interface TokenResponse {
   access_token: string;
   token_type: string;
-  expires_in: number;
+  expires_in?: number | undefined;
+  /** Left out only when the Company granted exactly the scopes requested. */
   scope?: string | undefined;
-  session_id: string;
-  signed_in: boolean;
+  /** Sign-in always returns one; refresh may leave it out. */
   refresh_token?: string | undefined;
-  refresh_token_expires_in?: number | undefined;
   [k: string]: unknown;
 }
 
-/** RFC 8628 device authorization response (4.6). */
+/** RFC 8628 device authorization response (4.3). */
 export interface DeviceAuthorizationResponse {
   device_code: string;
   user_code: string;
@@ -99,16 +121,7 @@ export interface DeviceAuthorizationResponse {
   [k: string]: unknown;
 }
 
-export type MediatedStatus = 'complete' | 'code_required' | 'failed' | 'expired';
-
-export interface MediatedResponse extends Partial<TokenResponse> {
-  status: MediatedStatus;
-  sign_in_id?: string | undefined;
-  code?: { sent_to?: string | undefined; [k: string]: unknown };
-  expires_at?: string | undefined;
-}
-
-/* ---------------------------------------------------------------- Conversations (section 7) */
+/* ---------------------------------------------------------------- Conversations (section 8) */
 
 export interface MessageContext {
   locale?: string | undefined;
@@ -117,10 +130,19 @@ export interface MessageContext {
   [k: string]: unknown;
 }
 
-/** A message the Personal Agent sends (7.4). */
+/** Who wrote a message (8.4). Only Company messages have `id`, `name`, `image`. */
+export interface MessageAuthor {
+  type: 'agent' | 'human';
+  id?: string | undefined;
+  name?: string | undefined;
+  image?: string | undefined;
+  [k: string]: unknown;
+}
+
+/** A message the Personal Agent sends (8.4). */
 export interface OutgoingMessage {
   id: string;
-  sender: 'agent' | 'human';
+  author: { type: 'agent' | 'human' };
   text?: string | undefined;
   data?: Record<string, unknown> | undefined;
   context?: MessageContext | undefined;
@@ -130,14 +152,15 @@ export interface OutgoingMessage {
 export interface EventMessage {
   id: string;
   role?: 'user' | 'company' | undefined;
-  sender: 'agent' | 'human';
+  author: MessageAuthor;
   text?: string | undefined;
   data?: Record<string, unknown> | undefined;
   [k: string]: unknown;
 }
 
-export type ConversationStatus = 'working' | 'idle' | 'queued' | 'closed';
-export type Responder = 'agent' | 'human';
+/** Later versions may add values: an unknown status reads as `working`, an unknown responder as `human` (8.7). */
+export type ConversationStatus = 'working' | 'idle' | 'queued' | 'closed' | (string & {});
+export type Responder = 'agent' | 'human' | (string & {});
 
 export interface ConversationEvent {
   id: string;
@@ -172,6 +195,28 @@ export interface EventsPage extends ConversationState {
   events: ConversationEvent[];
   cursor?: string | undefined;
   has_more: boolean;
+  [k: string]: unknown;
+}
+
+/** Another way to do a task (9.2). */
+export interface TaskAlternative {
+  instructions?: string | undefined;
+  references?: TaskReference[] | undefined;
+  [k: string]: unknown;
+}
+
+export interface TaskReference {
+  type: string;
+  url?: string | undefined;
+  operation_id?: string | undefined;
+  tool?: string | undefined;
+  [k: string]: unknown;
+}
+
+/** The public document of tasks the Company chose not to offer (9.1). */
+export interface ExcludedTask {
+  task: string;
+  alternative?: TaskAlternative | undefined;
   [k: string]: unknown;
 }
 

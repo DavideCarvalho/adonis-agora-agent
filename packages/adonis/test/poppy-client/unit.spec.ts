@@ -3,6 +3,7 @@ import { afterEach, assert, describe, it } from 'vitest';
 import {
   authServerMetadataUrl,
   discover,
+  protectedResourceMetadataUrl,
   validatePoppyDocument,
   wellKnownUrlFor,
 } from '../../src/poppy-client/discovery.js';
@@ -10,18 +11,20 @@ import { DpopKey, htuOf } from '../../src/poppy-client/dpop.js';
 import { DiscoveryError } from '../../src/poppy-client/errors.js';
 import { AgentIdentity } from '../../src/poppy-client/identity.js';
 import { generateEs256Key } from '../../src/poppy-client/keys.js';
+import { signSessionJwt } from '../../src/poppy-client/session_jwt.js';
 import { parseSse } from '../../src/poppy-client/sse.js';
 import {
   parseRetryAfter,
   parseWwwAuthenticate,
+  requireSecureUrl,
   wwwAuthError,
 } from '../../src/poppy-client/util.js';
 import { rejects } from './fixtures/assert.js';
 
 const doc = (over: Record<string, unknown> = {}) => ({
-  protocol_version: '0.1',
+  protocol_version: '0.3',
   organization: { name: 'Ex', domain: 'example.com' },
-  auth: { issuer: 'https://auth.example.com', direct: { scopes: ['poppy:read'] } },
+  auth: { scopes: { 'orders:read': 'See your orders' } },
   agent: {
     protocols: [{ type: 'poppy', endpoint: 'https://api.example.com/poppy/conversations' }],
   },
@@ -32,9 +35,17 @@ const meta = (over: Record<string, unknown> = {}) => ({
   token_endpoint: 'https://auth.example.com/oauth/token',
   revocation_endpoint: 'https://auth.example.com/oauth/revoke',
   authorization_endpoint: 'https://auth.example.com/oauth/authorize',
-  poppy_domains: ['example.com'],
+  grant_types_supported: ['refresh_token', 'authorization_code'],
+  protected_resources: ['https://example.com'],
   ...over,
 });
+const PRM = 'https://example.com/.well-known/oauth-protected-resource';
+const prm = (over: Record<string, unknown> = {}) => ({
+  resource: 'https://example.com',
+  authorization_servers: ['https://auth.example.com'],
+  ...over,
+});
+const AS = 'https://auth.example.com/.well-known/oauth-authorization-server';
 
 function mockFetch(routes: Record<string, () => Response>) {
   const calls: string[] = [];
@@ -58,36 +69,47 @@ const redirect = (to: string) => () =>
   new Response(null, { status: 302, headers: { location: to } });
 
 describe('discovery (section 3)', () => {
-  it('valid document + metadata, unknown fields ignored', async () => {
+  it('valid document, issuer from protected resource metadata, unknown fields ignored', async () => {
     const { fn } = mockFetch({
       'https://example.com/.well-known/poppy.json': json(doc({ future: 1 })),
-      'https://auth.example.com/.well-known/oauth-authorization-server': json(
-        meta({ extra: true }),
-      ),
+      [PRM]: json(prm()),
+      [AS]: json(meta({ extra: true })),
     });
     const d = await discover('example.com', { fetch: fn });
     assert.equal(d.document.organization.name, 'Ex');
+    assert.equal(d.identifier, 'https://auth.example.com');
     assert.equal(d.metadata?.token_endpoint, 'https://auth.example.com/oauth/token');
   });
 
-  it('www. is ignored when matching organization.domain', async () => {
-    const { fn } = mockFetch({
-      'https://www.example.com/.well-known/poppy.json': json(doc()),
-      'https://auth.example.com/.well-known/oauth-authorization-server': json(meta()),
-    });
-    assert.equal((await discover('www.example.com', { fetch: fn })).domain, 'www.example.com');
+  it('www. is not ignored: organization.domain is the host that served the document', async () => {
+    const { fn } = mockFetch({ 'https://www.example.com/.well-known/poppy.json': json(doc()) });
+    await rejects(() => discover('www.example.com', { fetch: fn }), /organization.domain/);
+    assert.doesNotThrow(() => validatePoppyDocument(doc(), 'EXAMPLE.com'));
   });
 
-  it('follows HTTPS redirects; the redirected host does not count', async () => {
-    const { fn, calls } = mockFetch({
-      'https://example.com/.well-known/poppy.json': redirect(
-        'https://cdn.provider.net/ex/poppy.json',
+  it('a redirect counts: the document speaks for the final host', async () => {
+    const { fn } = mockFetch({
+      'https://www.example.com/.well-known/poppy.json': redirect(
+        'https://example.com/.well-known/poppy.json',
       ),
-      'https://cdn.provider.net/ex/poppy.json': json(doc()),
-      'https://auth.example.com/.well-known/oauth-authorization-server': json(meta()),
+      'https://example.com/.well-known/poppy.json': json(doc()),
+      [PRM]: json(prm()),
+      [AS]: json(meta()),
     });
-    await discover('example.com', { fetch: fn });
-    assert.include(calls, 'https://cdn.provider.net/ex/poppy.json');
+    assert.equal((await discover('www.example.com', { fetch: fn })).domain, 'example.com');
+  });
+
+  it('a redirect must end at the well-known path, with no query', async () => {
+    for (const to of [
+      'https://cdn.provider.net/ex/poppy.json',
+      'https://example.com/.well-known/poppy.json?x=1',
+    ]) {
+      const { fn } = mockFetch({
+        'https://example.com/.well-known/poppy.json': redirect(to),
+        [to]: json(doc()),
+      });
+      await rejects(() => discover('example.com', { fetch: fn }), /well-known path/);
+    }
   });
 
   it('refuses a redirect to http://', async () => {
@@ -97,77 +119,153 @@ describe('discovery (section 3)', () => {
     await rejects(() => discover('example.com', { fetch: fn }), /https/);
   });
 
-  it('refuses plain http without --insecure-dev', async () => {
+  it('refuses plain http without --insecure-dev, and internal addresses', async () => {
     assert.throws(() => wellKnownUrlFor('http://localhost:3333'), /insecure-dev/);
     assert.equal(
       wellKnownUrlFor('localhost:3333', { insecureDev: true }).toString(),
       'http://localhost:3333/.well-known/poppy.json',
     );
+    for (const host of ['127.0.0.1', '10.0.0.1', '169.254.169.254', '[::1]', 'localhost']) {
+      assert.throws(() => requireSecureUrl(`https://${host}/x`, 'url', {}), /internal/, host);
+    }
+    assert.doesNotThrow(() => requireSecureUrl('https://example.com/x', 'url', {}));
   });
 
   it('domain mismatch', () => {
-    assert.throws(() => validatePoppyDocument(doc(), 'evil.com'), /does not match/);
+    assert.throws(() => validatePoppyDocument(doc(), 'evil.com'), /is not the host/);
   });
 
-  it('unsupported major version, minor bumps fine', () => {
-    assert.throws(
-      () => validatePoppyDocument(doc({ protocol_version: '1.0' }), 'example.com'),
-      /major/,
-    );
-    assert.doesNotThrow(() =>
-      validatePoppyDocument(doc({ protocol_version: '0.7' }), 'example.com'),
-    );
+  it('before 1.0 only the exact major.minor is usable', () => {
+    for (const version of ['1.0', '0.2', '0.4']) {
+      assert.throws(
+        () => validatePoppyDocument(doc({ protocol_version: version }), 'example.com'),
+        /not supported/,
+      );
+    }
+    assert.doesNotThrow(() => validatePoppyDocument(doc(), 'example.com'));
   });
 
-  it('auth required with agent/apis/browser endpoint; one of agent/apis/web required', () => {
-    assert.throws(
-      () => validatePoppyDocument(doc({ auth: undefined }), 'example.com'),
-      /auth is required/,
-    );
+  it('auth is optional; one of agent/apis/web required', () => {
+    assert.doesNotThrow(() => validatePoppyDocument(doc({ auth: undefined }), 'example.com'));
     assert.throws(
       () =>
         validatePoppyDocument(
-          { protocol_version: '0.1', organization: { name: 'x', domain: 'example.com' } },
+          { protocol_version: '0.3', organization: { name: 'x', domain: 'example.com' } },
           'example.com',
         ),
       /at least one/,
     );
-    assert.doesNotThrow(() =>
-      validatePoppyDocument(
-        { protocol_version: '0.1', organization: { name: 'x', domain: 'example.com' }, web: {} },
-        'example.com',
-      ),
+  });
+
+  it('no issuer: 404 or metadata without servers; other failures never fall back', async () => {
+    const poppy = { 'https://example.com/.well-known/poppy.json': json(doc()) };
+    const absent = await discover('example.com', { fetch: mockFetch(poppy).fn });
+    assert.equal(absent.identifier, 'https://example.com');
+    assert.equal(absent.noIssuer, 'not_found');
+    const empty = await discover('example.com', {
+      fetch: mockFetch({ ...poppy, [PRM]: json(prm({ authorization_servers: [] })) }).fn,
+    });
+    assert.equal(empty.noIssuer, 'metadata');
+    assert.isUndefined(empty.metadata);
+
+    await rejects(
+      () =>
+        discover('example.com', {
+          fetch: mockFetch({ ...poppy, [PRM]: () => new Response('x', { status: 500 }) }).fn,
+        }),
+      /HTTP 500/,
+    );
+    await rejects(
+      () =>
+        discover('example.com', {
+          fetch: mockFetch({ ...poppy, [PRM]: () => new Response('not json') }).fn,
+        }),
+      /not JSON/,
+    );
+    await rejects(
+      () =>
+        discover('example.com', {
+          fetch: mockFetch({ ...poppy, [PRM]: json(prm({ resource: 'https://other.com' })) }).fn,
+        }),
+      /resource/,
+    );
+    // auth.issuer without metadata that lists it.
+    await rejects(
+      () =>
+        discover('example.com', {
+          fetch: mockFetch({
+            'https://example.com/.well-known/poppy.json': json(
+              doc({ auth: { issuer: 'https://auth.example.com' } }),
+            ),
+          }).fn,
+        }),
+      /auth.issuer/,
     );
   });
 
-  it('issuer must match exactly and poppy_domains must list the domain', async () => {
+  it('several authorization servers: auth.issuer picks one of them', async () => {
+    const servers = {
+      authorization_servers: ['https://staff.example.com', 'https://auth.example.com'],
+    };
+    const withIssuer = doc({ auth: { issuer: 'https://auth.example.com' } });
+    const d = await discover('example.com', {
+      fetch: mockFetch({
+        'https://example.com/.well-known/poppy.json': json(withIssuer),
+        [PRM]: json(prm(servers)),
+        [AS]: json(meta()),
+      }).fn,
+    });
+    assert.equal(d.identifier, 'https://auth.example.com');
+    await rejects(
+      () =>
+        discover('example.com', {
+          fetch: mockFetch({
+            'https://example.com/.well-known/poppy.json': json(doc()),
+            [PRM]: json(prm(servers)),
+          }).fn,
+        }),
+      /auth.issuer/,
+    );
+  });
+
+  it('issuer must match exactly, and protected_resources must list the domain', async () => {
     for (const bad of [
       meta({ issuer: 'https://auth.example.com/' }),
-      meta({ poppy_domains: ['other.com'] }),
-      meta({ poppy_domains: undefined }),
+      meta({ protected_resources: ['https://other.com'] }),
+      meta({ protected_resources: undefined }),
     ]) {
       const { fn } = mockFetch({
         'https://example.com/.well-known/poppy.json': json(doc()),
-        'https://auth.example.com/.well-known/oauth-authorization-server': json(bad),
+        [PRM]: json(prm()),
+        [AS]: json(bad),
       });
       await rejects(() => discover('example.com', { fetch: fn }), DiscoveryError as any);
     }
   });
 
-  it('required endpoints', async () => {
-    const { fn } = mockFetch({
-      'https://example.com/.well-known/poppy.json': json(doc()),
-      'https://auth.example.com/.well-known/oauth-authorization-server': json(
-        meta({ authorization_endpoint: undefined }),
-      ),
-    });
-    await rejects(() => discover('example.com', { fetch: fn }), /authorization_endpoint/);
+  it('required fields follow grant_types_supported', async () => {
+    for (const [bad, why] of [
+      [meta({ authorization_endpoint: undefined }), /authorization_endpoint/],
+      [meta({ grant_types_supported: ['authorization_code'] }), /refresh_token/],
+      [meta({ grant_types_supported: undefined }), /grant_types_supported/],
+    ] as const) {
+      const { fn } = mockFetch({
+        'https://example.com/.well-known/poppy.json': json(doc()),
+        [PRM]: json(prm()),
+        [AS]: json(bad),
+      });
+      await rejects(() => discover('example.com', { fetch: fn }), why);
+    }
   });
 
-  it('RFC 8414 metadata URL with an issuer path', () => {
+  it('RFC 8414 and RFC 9728 metadata URLs with a path', () => {
     assert.equal(
       authServerMetadataUrl('https://auth.example.com/tenant1').toString(),
       'https://auth.example.com/.well-known/oauth-authorization-server/tenant1',
+    );
+    assert.equal(
+      protectedResourceMetadataUrl('https://example.com/mcp').toString(),
+      'https://example.com/.well-known/oauth-protected-resource/mcp',
     );
   });
 
@@ -176,7 +274,8 @@ describe('discovery (section 3)', () => {
     const cache = new HttpJsonCache();
     const { fn, calls } = mockFetch({
       'https://example.com/.well-known/poppy.json': json(doc(), { 'cache-control': 'max-age=60' }),
-      'https://auth.example.com/.well-known/oauth-authorization-server': json(meta()),
+      [PRM]: json(prm()),
+      [AS]: json(meta()),
     });
     await discover('example.com', { fetch: fn, cache });
     await discover('example.com', { fetch: fn, cache });
@@ -206,7 +305,7 @@ describe('assertions and proofs', () => {
     assert.equal(htuOf('https://a.example/p?q#f'), 'https://a.example/p');
   });
 
-  it('identity: client_id, metadata, session and browser assertions', async () => {
+  it('identity: client_id, metadata, client assertion, delegation', async () => {
     const id = new AgentIdentity({
       baseUrl: 'https://agent.example/',
       clientName: 'A',
@@ -217,21 +316,53 @@ describe('assertions and proofs', () => {
     assert.deepEqual(m.redirect_uris, ['https://agent.example/oauth/callback']);
     assert.equal(m.token_endpoint_auth_method, 'private_key_jwt');
     for (const k of id.jwks().keys) assert.notProperty(k, 'd');
-    const a = decodeJwt(await id.sessionAssertion('usr_x', 'https://auth.example.com/oauth/token'));
+    const a = decodeJwt(await id.clientAssertion('https://auth.example.com'));
     assert.equal(a.iss, m.client_id);
-    assert.equal(a.aud, 'https://auth.example.com/oauth/token');
+    assert.equal(a.sub, m.client_id);
+    assert.equal(a.aud, 'https://auth.example.com');
     assert.isAtMost(Number(a.exp) - Number(a.iat), 60);
-    const b = await id.browserAssertion({
-      userId: 'usr_x',
-      endpoint: 'https://ex.com/b',
-      sessionId: 's',
-      returnTo: 'https://ex.com/',
-    });
-    assert.equal(decodeProtectedHeader(b).typ, 'poppy-browser+jwt');
+
+    const key = await generateEs256Key();
+    const { jwt, exp } = await id.delegate(key.publicJwk);
+    assert.equal(decodeProtectedHeader(jwt).typ, 'pap-delegation+jwt');
+    const dlg = decodeJwt(jwt);
+    assert.equal(dlg.exp, exp);
+    assert.isAtMost(Number(dlg.exp) - Number(dlg.iat), 24 * 3600);
+    assert.equal(Number(dlg.iat) % 3600, 0);
+    assert.notProperty(dlg, 'sub');
+    assert.notProperty(dlg, 'aud');
+    assert.notProperty((dlg.cnf as { jwk: object }).jwk, 'd');
     assert.throws(
       () => new AgentIdentity({ baseUrl: 'http://agent.example', clientName: 'A', keys: [] }),
       /https/,
     );
+  });
+
+  it('Session JWT: typ, kid, pap_dlg, htu without query, ath only with a token', async () => {
+    const key = await generateEs256Key();
+    const base = {
+      key,
+      delegation: 'dlg',
+      clientId: 'https://agent.example/agent.json',
+      audience: 'https://auth.example.com',
+      sid: 'sid123',
+      userId: 'usr_x',
+      method: 'post',
+      url: 'https://api.example.com/x?y=1',
+    };
+    const signedOut = await signSessionJwt(base);
+    const h = decodeProtectedHeader(signedOut);
+    assert.equal(h.typ, 'poppy-session+jwt');
+    assert.equal(h.alg, 'ES256');
+    assert.equal(h.kid, key.kid);
+    assert.equal(h.pap_dlg, 'dlg');
+    const c = decodeJwt(signedOut);
+    assert.equal(c.htm, 'POST');
+    assert.equal(c.htu, 'https://api.example.com/x');
+    assert.notProperty(c, 'ath');
+    assert.notProperty(c, 'agent_id');
+    assert.isString(decodeJwt(await signSessionJwt({ ...base, accessToken: 't' })).ath);
+    assert.equal(decodeJwt(await signSessionJwt({ ...base, agentId: 'a' })).agent_id, 'a');
   });
 });
 

@@ -1,5 +1,5 @@
 export { apiBaseUrl, callOpenApi, listApis, loadOpenApi, pickApi } from './api.js';
-export { autoSubmitFormHtml, createBrowserAssertion, serveOneShotPage } from './browser.js';
+export { authorizeBrowserJoin, browserJoinCode, browserSessionEndpoint } from './browser.js';
 export {
   CompanyClient,
   PoppyAgent,
@@ -19,9 +19,10 @@ export {
   type Discovered,
   discover,
   HttpJsonCache,
-  SUPPORTED_MAJOR_VERSIONS,
+  SUPPORTED_PROTOCOL_VERSIONS,
   validateMetadata,
   validatePoppyDocument,
+  validateProtectedResourceMetadata,
   wellKnownUrlFor,
 } from './discovery.js';
 export { DpopKey, htuOf } from './dpop.js';
@@ -38,12 +39,16 @@ export { startIdentityServer, waitForRelayedCallback } from './identity_server.j
 export { generateEs256Key, type StoredKey } from './keys.js';
 export { ask, DEFAULT_MODEL } from './llm.js';
 export { connectMcp, type McpConnection } from './mcp.js';
+export { createSafeFetch, isBlockedAddress, safeFetch } from './safe_fetch.js';
+export { SESSION_JWT_TYP, signSessionJwt } from './session_jwt.js';
 export {
   completeDirectSignIn,
   deviceSignIn,
   eligibleSignInTypes,
   type MediatedOutcome,
+  mediatedExtension,
   mediatedSignIn,
+  offeredSignInTypes,
   type PendingDirectSignIn,
   pollDeviceSignInOnce,
   type SignInType,
@@ -52,5 +57,6 @@ export {
 } from './signin.js';
 export { parseSse } from './sse.js';
 export { defaultStatePath, StateStore } from './store.js';
+export { excludedTasks, sendFeedback } from './task_coverage.js';
 export { TokenClient } from './token_client.js';
 export type * from './types.js';

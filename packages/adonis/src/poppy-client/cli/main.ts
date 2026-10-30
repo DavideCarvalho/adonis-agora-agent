@@ -1,6 +1,7 @@
+import { readFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { callOpenApi, listApis, loadOpenApi } from '../api.js';
-import { autoSubmitFormHtml, createBrowserAssertion, serveOneShotPage } from '../browser.js';
+import { authorizeBrowserJoin, browserJoinCode, browserSessionEndpoint } from '../browser.js';
 import { type CompanyClient, PoppyAgent, type SignInResult } from '../company.js';
 import { ConversationClient, newMessageId, poppyProtocol } from '../conversations.js';
 import { discover } from '../discovery.js';
@@ -15,7 +16,9 @@ import {
   completeDirectSignIn,
   deviceSignIn,
   eligibleSignInTypes,
+  mediatedExtension,
   mediatedSignIn,
+  offeredSignInTypes,
   type SignInType,
   startDirectSignIn,
   submitMediatedCode,
@@ -27,7 +30,7 @@ import { Prompter } from './prompt.js';
 
 const HELP = `poppy-agent — reference Personal Agent for the Personal Agent Protocol (Poppy)
 
-  EXPERIMENTAL. Implements spec Draft 0.1 (https://personalagentprotocol.org/docs/spec).
+  EXPERIMENTAL. Implements spec Draft 0.3 (https://personalagentprotocol.org/docs/spec).
   The spec is still in development; this client tracks it and WILL change, possibly in
   breaking ways, as the spec evolves.
 
@@ -44,7 +47,7 @@ Sessions & sign-in (4)
   session <domain> [--new] [--scope <s>] [--resource <url>]
   signin <domain> [--method direct|device|mediated] [--scope "<scopes>"] [--no-open]
   status [domain]
-  disconnect <domain>                   revoke the Account Token (RFC 7009)
+  disconnect <domain>                   revoke the refresh token (RFC 7009)
 APIs (6)
   apis <domain>                         list APIs (and OpenAPI operations)
   api <domain> <METHOD> <path> [--data <json>] [--api <n>] [--scope <s>]
@@ -53,7 +56,7 @@ APIs (6)
 Conversations (7)
   chat <domain> [--conversation <id>] [--as agent|human] [--no-stream]
 Web browsing (5)
-  open <domain> <return_to> [--print]   form-POST a poppy-browser+jwt assertion
+  open <domain> [--page <file>]         authorize a browser join: code from that browser's page
 LLM mode
   ask <domain> "<task>" [--model <id>] [--max-steps <n>] [--yes]
                                         needs OPENROUTER_API_KEY (default model ${DEFAULT_MODEL})
@@ -61,7 +64,6 @@ LLM mode
 Global options
   --state <file>      state file (default $POPPY_AGENT_STATE or ~/.config/poppy-agent/state.json), mode 0600
   --profile <name>    local user to act for (default "default"); each gets its own User IDs
-  --client-assertion-aud token_endpoint|issuer   aud of private_key_jwt (default token_endpoint)
   --insecure-dev      NON-SPEC: allow http:// URLs (client_id, discovery, endpoints). Local testing only.
                       Also: POPPY_AGENT_INSECURE_DEV=1
 `;
@@ -97,14 +99,12 @@ function loadIdentity(ctx: Ctx): AgentIdentity {
 }
 
 function makeAgent(ctx: Ctx): PoppyAgent {
-  const aud = ctx.values['client-assertion-aud'];
   return new PoppyAgent({
     store: ctx.store,
     identity: loadIdentity(ctx),
     profile: ctx.profile,
     insecureDev: ctx.insecureDev,
     log: (l) => err(dim(`· ${l}`)),
-    tokenClient: { clientAssertionAudience: aud === 'issuer' ? 'issuer' : 'token_endpoint' },
   });
 }
 
@@ -143,11 +143,10 @@ export async function runCli(argv: string[]): Promise<number> {
       conversation: { type: 'string' },
       as: { type: 'string' },
       'no-stream': { type: 'boolean' },
-      print: { type: 'boolean' },
+      page: { type: 'string' },
       model: { type: 'string' },
       'max-steps': { type: 'string' },
       yes: { type: 'boolean' },
-      'client-assertion-aud': { type: 'string' },
     },
   });
   const [command, ...args] = positionals;
@@ -172,8 +171,6 @@ export async function runCli(argv: string[]): Promise<number> {
       err(
         `error: insufficient_scope — the Company needs "${e.scope ?? '?'}". Run: poppy-agent signin <domain> --scope "${e.scope ?? ''}"`,
       );
-    } else if (e instanceof ResourceAuthError && e.code === 'sign_in_required') {
-      err('error: sign_in_required — run: poppy-agent signin <domain>');
     } else {
       err(`error: ${(e as Error).message}`);
     }
@@ -209,12 +206,12 @@ async function dispatch(ctx: Ctx, command: string, args: string[]): Promise<numb
         JSON.stringify(
           {
             user_id: c.userId,
-            session_id: t.sessionId,
-            signed_in: t.signedIn,
-            scope: t.scope,
-            token_type: t.tokenType,
-            expires_at: new Date(t.expiresAt).toISOString(),
-            account_token: c.accountToken
+            session_id: c.sessionId,
+            signed_in: t !== null,
+            scope: t?.scope ?? '',
+            token_type: t?.tokenType ?? null,
+            expires_at: t ? new Date(t.expiresAt).toISOString() : null,
+            refresh_token: c.accountToken
               ? { scope: c.accountToken.scope, via: c.accountToken.via }
               : null,
           },
@@ -236,17 +233,15 @@ async function dispatch(ctx: Ctx, command: string, args: string[]): Promise<numb
       const revoked = await c.signOut();
       out(
         revoked
-          ? 'Account Token revoked; Sessions continue signed out.'
-          : 'No Account Token for this Company.',
+          ? 'Refresh token revoked; Sessions continue signed out.'
+          : 'No refresh token for this Company.',
       );
       return 0;
     }
     case 'apis': {
       const c = await company(ctx, args[0]);
       for (const a of listApis(c)) {
-        out(
-          `${bold(`[${a.type}]`)} ${a.url}${a.resource ? ` (resource ${a.resource})` : ''} — ${a.description ?? ''}`,
-        );
+        out(`${bold(`[${a.type}]`)} ${a.url} — ${a.description ?? ''}`);
         if (a.type === 'openapi') {
           try {
             const doc = await loadOpenApi(c, a);
@@ -286,7 +281,7 @@ async function dispatch(ctx: Ctx, command: string, args: string[]): Promise<numb
     case 'chat':
       return cmdChat(ctx, args[0]);
     case 'open':
-      return cmdOpen(ctx, args[0], args[1]);
+      return cmdOpen(ctx, args[0]);
     case 'ask':
       return cmdAsk(ctx, args[0], args.slice(1).join(' '));
     default:
@@ -358,9 +353,8 @@ async function cmdServeIdentity(ctx: Ctx): Promise<number> {
 /* --------------------------------------------------------------------------- sign-in */
 
 function defaultScope(c: CompanyClient, method: SignInType): string {
-  const offered = c.document.auth?.[method]?.scopes ?? [];
-  const broad = offered.filter((s) => s === 'poppy:read' || s === 'poppy:write');
-  return (broad.length ? broad : offered).join(' ');
+  if (method === 'mediated') return (mediatedExtension(c)?.scopes ?? []).join(' ');
+  return (c.metadata.scopes_supported ?? Object.keys(c.document.auth?.scopes ?? {})).join(' ');
 }
 
 async function signIn(
@@ -369,9 +363,7 @@ async function signIn(
   method?: SignInType | undefined,
   scope?: string | undefined,
 ): Promise<SignInResult | undefined> {
-  const eligible = scope
-    ? eligibleSignInTypes(c, scope)
-    : (['direct', 'device', 'mediated'] as const).filter((t) => c.document.auth?.[t]);
+  const eligible = scope ? eligibleSignInTypes(c, scope) : offeredSignInTypes(c);
   const chosen = method ?? eligible[0];
   if (!chosen) {
     err(
@@ -389,7 +381,7 @@ async function signIn(
     result = await deviceSignIn(c, wanted, {
       display: (i) => {
         out(
-          `Open ${bold(i.verificationUriComplete ?? i.verificationUri)} and enter the code ${bold(i.userCode)}`,
+          `${bold(i.organization.name)} (${i.organization.domain}): open ${bold(i.verificationUriComplete ?? i.verificationUri)} and enter the code ${bold(i.userCode)}`,
         );
         out(dim(`(expires in ${i.expiresIn}s; waiting…)`));
       },
@@ -397,7 +389,7 @@ async function signIn(
     });
   } else result = await mediatedFlow(ctx, c, wanted);
   if (result) {
-    out(`Signed in. Granted scope: "${result.grantedScope}" (session ${result.sessionId})`);
+    out(`Signed in. Granted scope: "${result.grantedScope}" `);
     if (result.missingScopes.length)
       out(`Note: the User did not grant ${result.missingScopes.join(', ')}`);
   }
@@ -462,7 +454,7 @@ async function mediatedFlow(
   c: CompanyClient,
   scope: string,
 ): Promise<SignInResult | undefined> {
-  const mediated = c.document.auth!.mediated!;
+  const mediated = mediatedExtension(c)!;
   const credentials: Record<string, string> = {};
   for (const f of mediated.fields) {
     credentials[f.name] = f.secret
@@ -473,7 +465,7 @@ async function mediatedFlow(
   for (const k of Object.keys(credentials)) credentials[k] = '';
   while (outcome.status === 'code_required') {
     const code = await ctx.prompter.ask(
-      `One-time code${outcome.sentTo ? ` (${outcome.sentTo})` : ''}${outcome.expiresAt ? `, before ${outcome.expiresAt}` : ''}: `,
+      `One-time code${outcome.sentTo ? ` (${outcome.sentTo})` : ''}${outcome.expiresIn ? `, within ${outcome.expiresIn}s` : ''}: `,
     );
     outcome = await submitMediatedCode(c, scope, outcome.signInId, code.trim());
   }
@@ -491,14 +483,14 @@ async function cmdStatus(ctx: Ctx, domain?: string): Promise<number> {
     `identity: ${id ? `${id.baseUrl}/agent.json` : '(none: run init)'}   profile: ${ctx.profile}`,
   );
   for (const s of Object.values(companies)) {
-    if (domain && !s.domains.includes(domain.toLowerCase().replace(/^www\./, ''))) continue;
-    const t = s.tokens.dpop;
+    if (domain && !s.domains.includes(domain.toLowerCase())) continue;
+    const t = s.tokens.default;
     out(`${bold(s.issuer)}  (${s.domains.join(', ')})`);
     out(
-      `  user_id ${s.userId}   session ${s.sessionId ?? '-'}   ${t ? `signed_in=${t.signedIn} scope="${t.scope}" expires ${new Date(t.expiresAt).toISOString()}` : ''}`,
+      `  user_id ${s.userId}   session ${s.sessionId ?? '-'}   ${s.accountToken ? 'signed in' : 'signed out'}${t ? ` scope="${t.scope}" expires ${new Date(t.expiresAt).toISOString()}` : ''}`,
     );
     out(
-      `  account token: ${s.accountToken ? `yes (scope "${s.accountToken.scope}", via ${s.accountToken.via})` : 'no'}`,
+      `  refresh token: ${s.accountToken ? `yes (scope "${s.accountToken.scope}", via ${s.accountToken.via})` : 'no'}`,
     );
     const convs = Object.entries(s.conversations).filter(([, c]) => !c.closed);
     if (convs.length) out(`  open conversations: ${convs.map(([k]) => k).join(', ')}`);
@@ -536,25 +528,22 @@ async function cmdMcp(ctx: Ctx, args: string[]): Promise<number> {
 
 /* --------------------------------------------------------------------------- open */
 
-async function cmdOpen(ctx: Ctx, domain?: string | undefined, returnTo?: string): Promise<number> {
-  if (!domain || !returnTo) throw new PoppyError('usage', 'open <domain> <return_to>');
+async function cmdOpen(ctx: Ctx, domain?: string | undefined): Promise<number> {
+  if (!domain) throw new PoppyError('usage', 'open <domain> [--page <file>]');
   const c = await company(ctx, domain);
-  const { endpoint, assertion } = await createBrowserAssertion(c, returnTo);
-  const page = await serveOneShotPage(autoSubmitFormHtml(endpoint, assertion));
+  const endpoint = browserSessionEndpoint(c);
   err(
     dim(
-      "Spec 5: browser assertions MUST be posted only from a browser the Personal Agent controls, never from the User's own browser. Use a dedicated/automation browser profile.",
+      "Section 6: join only a browser this agent controls, never the User's own, and take the code only from the page it loaded.",
     ),
   );
-  out(`Load this page (once, within 60s) in the agent-controlled browser:\n  ${page.url}`);
-  out(
-    dim(
-      `It form-POSTs the assertion to ${endpoint}, which sets the Session cookie and 303s to return_to.`,
-    ),
-  );
-  if (!ctx.values.print) openInBrowser(page.url);
-  await Promise.race([page.served, new Promise((r) => setTimeout(r, 60_000))]);
-  page.close();
+  out(`In the agent-controlled browser, load:\n  ${endpoint}`);
+  const page = str(ctx.values.page);
+  const code = page
+    ? browserJoinCode(await readFile(page, 'utf8'))
+    : (await ctx.prompter.askSecret('Code from that page (the form field `code`): ')).trim();
+  await authorizeBrowserJoin(c, code);
+  out('Authorized. Now submit the form in that browser, within its 60 seconds.');
   return 0;
 }
 
@@ -640,7 +629,7 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
         const m = ev.message!;
         provisional.delete(m.id);
         if (m.role === 'user') return; // our own message, echoed back
-        let line = `${tag}${bold(`company[${m.sender}]`)}: ${m.text ?? ''}`;
+        let line = `${tag}${bold(`company[${m.author?.name ?? m.author?.type}]`)}: ${m.text ?? ''}`;
         if (m.data) line += `\n${dim(JSON.stringify(m.data, null, 2))}`;
         print(line);
         return;
@@ -731,7 +720,7 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
     if (!line) continue;
     try {
       if (!line.startsWith('/')) {
-        await send({ sender: directId ? 'human' : sender, text: line });
+        await send({ author: { type: directId ? 'human' : sender }, text: line });
         continue;
       }
       const [cmd, ...rest] = line.split(' ');
@@ -742,7 +731,7 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
         sender = restText === 'human' ? 'human' : 'agent';
         out(dim(`now sending as ${sender}`));
       } else if (cmd === '/data') {
-        await send({ sender: directId ? 'human' : sender, data: JSON.parse(restText) });
+        await send({ author: { type: directId ? 'human' : sender }, data: JSON.parse(restText) });
       } else if (cmd === '/context') {
         const context: MessageContext = {};
         for (const kv of rest) {
@@ -750,7 +739,7 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
           if (!k) continue;
           context[k] = val === 'true' ? true : val === 'false' ? false : val;
         }
-        await send({ sender: 'agent', context });
+        await send({ author: { type: 'agent' }, context });
       } else if (cmd === '/status') {
         if (!mainId) out('no conversation yet');
         else {
@@ -778,14 +767,14 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
         );
         if (r) {
           pendingAuth = undefined;
-          out(dim('Continue the conversation; the new Session Token is used from now on.'));
+          out(dim('Continue the conversation; the new access token is used from now on.'));
         }
       } else if (cmd === '/direct') {
         if (!mainId) out('no conversation yet');
         else {
           const message: OutgoingMessage = {
             id: newMessageId(),
-            sender: 'human',
+            author: { type: 'human' },
             text: restText || 'Hi, I am here.',
             context: { user_available: true },
           };
@@ -800,7 +789,7 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
         else {
           await conv.send(mainId, {
             id: newMessageId(),
-            sender: 'agent',
+            author: { type: 'agent' },
             text: pendingUserRequest
               ? 'The user declined to talk directly right now.'
               : 'The user is not available.',
