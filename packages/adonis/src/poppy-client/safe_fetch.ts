@@ -92,6 +92,10 @@ export function isBlockedAddress(ip: string): boolean {
   if (g.every((x) => x === 0)) return true; // ::
   if (g.slice(0, 7).every((x) => x === 0) && g7 === 1) return true; // ::1
   // IPv4-mapped and IPv4-compatible: the IPv4 address decides.
+  // IPv4-translated (::ffff:0:a.b.c.d) and NAT64 (64:ff9b::a.b.c.d) also reach an IPv4 address.
+  const translated = g.slice(0, 4).every((x) => x === 0) && g[4] === 0xffff && g5 === 0;
+  const nat64 = g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0);
+  if (translated || nat64) return isBlockedAddress(`${g6 >> 8}.${g6 & 255}.${g7 >> 8}.${g7 & 255}`);
   if (g.slice(0, 5).every((x) => x === 0) && (g5 === 0xffff || g5 === 0)) {
     return isBlockedAddress(`${g6 >> 8}.${g6 & 255}.${g7 >> 8}.${g7 & 255}`);
   }

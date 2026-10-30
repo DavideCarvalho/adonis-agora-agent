@@ -23,7 +23,8 @@ function safeAlternative(
       })
     : undefined;
   if (typeof alternative.instructions !== 'string' && !references?.length) return undefined;
-  return { ...alternative, ...(references ? { references } : {}) };
+  const { references: _raw, ...rest } = alternative;
+  return { ...rest, ...(references ? { references } : {}) };
 }
 
 /** The public list of tasks the Company chose not to offer (9.1): a GET with no token. */
