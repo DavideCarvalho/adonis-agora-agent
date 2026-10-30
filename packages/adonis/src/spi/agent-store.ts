@@ -184,6 +184,12 @@ export interface RecordUsageInput {
   requests?: number;
   /** Anything else worth keeping with the row, as JSON. Never read by the library. */
   metadata?: Record<string, unknown>;
+  /**
+   * `false` keeps the row out of the agent's quota: `quotaToday`, `usageBetween` (the token and USD
+   * windows) skip it, and no `QuotaStore` counter is bumped for it. It stays in the ledger, every
+   * report and `usage.recorded`. For spend the app budgets on its own. Absent → `true`.
+   */
+  countsTowardsQuota?: boolean;
 }
 
 /**

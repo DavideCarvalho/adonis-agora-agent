@@ -170,6 +170,8 @@ export interface AgentUsageRecorded {
   threadId?: string;
   runId?: string;
   tenantRef?: string;
+  /** `false` when the row is kept out of the agent's quota; absent when it counts. */
+  countsTowardsQuota?: false;
 }
 
 /** Maps each event name to its payload type, so {@link publishAgent} is checked at the call site. */

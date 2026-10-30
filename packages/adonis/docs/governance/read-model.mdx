@@ -66,7 +66,7 @@ All read-only (`GET`), all mounted only when a `governanceAuthorize` gate exists
 | `GET /agent/governance/spend/actor` | Per-actor token + cost rollup over the range. |
 | `GET /agent/governance/usage/trend` | The daily token + cost trend over the range. |
 | `GET /agent/governance/spend/feature` | Spend per feature over the range — agent turns and [recorded usage](/docs/agent/governance/quota-and-cost#recording-usage-outside-agent-turns) side by side. `501` on an adapter without `spendByFeature`. |
-| `GET /agent/governance/usage/breakdown` | Spend per actor × feature over the range — cost by actor and by feature. Query: `from?`, `to?`, `actor?`, `feature?`. `501` on an adapter without `usageBreakdown`. |
+| `GET /agent/governance/usage/breakdown` | Spend per actor × feature — cost by actor and by feature. Query: `from?`, `to?` (UTC days) or `since?` + `until?` (ISO instants, `until` exclusive — a billing period that is not whole UTC days), `actor?`, `feature?`, `reprice?` (`false` → recorded cost only). `501` on an adapter without `usageBreakdown`. |
 | `GET /agent/governance/tool-calls/recent` | Newest-first recent tool-call activity feed. |
 | `GET /agent/governance/threads/recent` | Newest-first recent thread activity feed. |
 | `GET /agent/governance/runs` | Filterable, cursor-paginated run list, newest-first. Query: `actor?`, `agent?`, `status?`, `from?`, `to?`, `after?`, `first?`. |
@@ -116,8 +116,14 @@ interface FeatureSpendRow {
 interface UsageBreakdownRow extends FeatureSpendRow {
   actorRef: string; actorLabel?: string   // platform cost is the actor `@platform`
   estimatedCostUsd: number                // the part of costUsd that is an estimate
+  unpricedRows: number                    // rows recorded with no cost_usd
 }
+
+// usageBreakdown(range: GovernanceRange | { from: string | Date; to: string | Date }, filter?)
+// filter: { actor?, feature?, reprice?: boolean }
 ```
+
+By default an unpriced row is priced from its tokens and the pricing table, as in every other rollup; `reprice: false` leaves it at `0`, so `costUsd` is recorded cost only and `unpricedRows` says how much is missing from it.
 
 `requests` counts ledger rows — one per model call — except a row [recorded outside an agent turn](/docs/agent/governance/quota-and-cost#recording-usage-outside-agent-turns) with its own `requests`, which counts as that many, in every rollup alike. With `autoCreateTables: false` and a migration that has not added the ledger columns yet, the rollups read every row as an agent turn's (feature `agent`, one request) rather than fail.
 

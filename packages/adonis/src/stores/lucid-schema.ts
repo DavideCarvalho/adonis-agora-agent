@@ -133,6 +133,7 @@ export function tokenUsageTableStatement(table: string = AGENT_TABLES.tokenUsage
       "characters" BIGINT NULL,
       "requests" INTEGER NULL,
       "metadata" TEXT NULL,
+      "counts_towards_quota" INTEGER NOT NULL DEFAULT 1,
       FOREIGN KEY ("thread_id") REFERENCES "${AGENT_TABLES.threads}" ("id") ON DELETE CASCADE
     )`;
 }
@@ -451,6 +452,13 @@ const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }
   { table: AGENT_TABLES.tokenUsage, column: 'characters', type: 'BIGINT NULL' },
   { table: AGENT_TABLES.tokenUsage, column: 'requests', type: 'INTEGER NULL' },
   { table: AGENT_TABLES.tokenUsage, column: 'metadata', type: 'TEXT NULL' },
+  // 0 keeps a row out of the agent's quota windows (`recordUsage({ countsTowardsQuota: false })`).
+  // Every row from before counted, hence the default.
+  {
+    table: AGENT_TABLES.tokenUsage,
+    column: 'counts_towards_quota',
+    type: 'INTEGER NOT NULL DEFAULT 1',
+  },
   // Where a run's time went: queue wait, model and tool totals, how many of each, and the per-step
   // breakdown (JSON). NULL on a run from before, and (but `queue_ms`) on one that did not complete.
   { table: AGENT_TABLES.runs, column: 'queue_ms', type: 'INTEGER NULL' },
@@ -611,6 +619,11 @@ export async function hasLedgerColumns(db: LucidRawRunner): Promise<boolean> {
     (await hasColumn(runner, AGENT_TABLES.tokenUsage, 'feature')) &&
     (await hasColumn(runner, AGENT_TABLES.tokenUsage, 'metadata'))
   );
+}
+
+/** Whether `agent_token_usage` has `counts_towards_quota`. Probed like {@link hasLedgerColumns}. */
+export function hasQuotaFlagColumn(db: LucidRawRunner): Promise<boolean> {
+  return hasColumn(schemaRunner(db), AGENT_TABLES.tokenUsage, 'counts_towards_quota');
 }
 
 /** Whether `agent_run` has its timing columns. Probed like {@link hasLedgerColumns}. */

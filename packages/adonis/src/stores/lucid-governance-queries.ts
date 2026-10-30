@@ -22,12 +22,14 @@ import type {
   RunTrendPoint,
   RunUsageRow,
   ThreadActivityRow,
+  TimestampRange,
   ToolCallActivityRow,
   ToolStatsRange,
   UsageBreakdownFilter,
   UsageBreakdownRow,
   UsageTrendPoint,
 } from '../spi/governance-queries.js';
+import { rangeBounds } from '../spi/governance-queries.js';
 import type { AgentPricingStore, CurrentModelPrice } from '../spi/pricing-store.js';
 import { estimateCost, resolveModelPrice } from '../spi/pricing-store.js';
 import { inAppendOrder, type LucidDatabaseLike, toolCallIdOfRow } from './lucid.js';
@@ -272,6 +274,7 @@ interface FeatureGroup {
   characters: number;
   reportedCostUsd: number;
   recordedEstimateUsd: number;
+  unpricedRows: number;
   unreported: UsageGroup['unreported'];
 }
 
@@ -485,17 +488,15 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
    * {@link usageGroups}, plus the units non-token rows bill by.
    */
   private async featureGroups(
-    range: GovernanceRange,
+    range: GovernanceRange | TimestampRange,
     byActor: boolean,
     filter: UsageBreakdownFilter = {},
   ): Promise<FeatureGroup[]> {
     const ledger = await this.ledger();
     const featureSql = ledger.feature;
-    const where = [`"created_at" >= ?`, `"created_at" <= ?`];
-    const bindings: unknown[] = [
-      Date.parse(`${range.fromDay}T00:00:00.000Z`),
-      Date.parse(`${range.toDay}T23:59:59.999Z`),
-    ];
+    const { start, end } = rangeBounds(range);
+    const where = [`"created_at" >= ?`, `"created_at" < ?`];
+    const bindings: unknown[] = [start, end];
     if (filter.actor !== undefined) {
       where.push(`"actor_ref" = ?`);
       bindings.push(filter.actor);
@@ -519,6 +520,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
             `SUM(${ledger.characters}) AS characters, ` +
             `SUM("cost_usd") AS reported_cost, ` +
             `SUM(CASE WHEN "cost_source" = 'estimate' THEN "cost_usd" ELSE 0 END) AS estimated_cost, ` +
+            `SUM(CASE WHEN "cost_usd" IS NULL THEN 1 ELSE 0 END) AS unpriced_rows, ` +
             `${unreported('input_tokens')} AS unreported_input, ` +
             `${unreported('output_tokens')} AS unreported_output, ` +
             `${unreported('cache_write_tokens')} AS unreported_cache_write, ` +
@@ -541,6 +543,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       characters: toInt(row.characters),
       reportedCostUsd: toNumOrNull(row.reported_cost) ?? 0,
       recordedEstimateUsd: toNumOrNull(row.estimated_cost) ?? 0,
+      unpricedRows: toInt(row.unpriced_rows),
       unreported: {
         inputTokens: toInt(row.unreported_input),
         outputTokens: toInt(row.unreported_output),
@@ -592,11 +595,12 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
   }
 
   async usageBreakdown(
-    range: GovernanceRange,
+    range: GovernanceRange | TimestampRange,
     filter: UsageBreakdownFilter = {},
   ): Promise<UsageBreakdownRow[]> {
     await this.ready();
-    const pricing = await this.loadPricing();
+    const reprice = filter.reprice !== false;
+    const pricing = reprice ? await this.loadPricing() : new Map<string, CurrentModelPrice>();
     const rows = new Map<string, UsageBreakdownRow>();
     for (const group of await this.featureGroups(range, true, filter)) {
       const key = `${group.actorRef}\u0000${group.source}\u0000${group.feature}`;
@@ -611,8 +615,10 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
         characters: 0,
         costUsd: 0,
         estimatedCostUsd: 0,
+        unpricedRows: 0,
       };
-      const priced = this.unreportedCost(group, pricing);
+      const priced = reprice ? this.unreportedCost(group, pricing) : 0;
+      bucket.unpricedRows += group.unpricedRows;
       bucket.requests += group.requests;
       bucket.inputTokens += group.inputTokens;
       bucket.outputTokens += group.outputTokens;

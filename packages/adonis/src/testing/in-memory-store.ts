@@ -83,6 +83,8 @@ interface UsageRow {
   characters?: number;
   requests?: number;
   metadata?: Record<string, unknown>;
+  /** `false` → left out of the quota windows. */
+  countsTowardsQuota?: boolean;
 
   runId?: string;
   modelId: string;
@@ -134,6 +136,8 @@ export interface GovernanceUsageRow {
   characters?: number;
   requests?: number;
   metadata?: Record<string, unknown>;
+  /** `false` → left out of the quota windows. */
+  countsTowardsQuota?: boolean;
 
   runId?: string;
   modelId: string;
@@ -881,6 +885,7 @@ export class InMemoryAgentStore
       actorRef: input.actorRef,
       threadId: input.threadId ?? null,
       ...ledgerExtras(input),
+      ...(input.countsTowardsQuota === false ? { countsTowardsQuota: false } : {}),
       modelId: input.modelId,
       purpose: input.purpose,
       inputTokens: input.usage.inputTokens,
@@ -946,14 +951,20 @@ export class InMemoryAgentStore
   async usageBetween(actorRef: string, fromDay: string, toDay: string): Promise<UsageTotals> {
     return sumUsage(
       this.usage.filter(
-        (row) => row.actorRef === actorRef && row.day >= fromDay && row.day <= toDay,
+        (row) =>
+          row.actorRef === actorRef &&
+          row.day >= fromDay &&
+          row.day <= toDay &&
+          row.countsTowardsQuota !== false,
       ),
     );
   }
 
   async quotaToday(actorRef: string, day: string): Promise<{ usedTokens: number }> {
     const usedTokens = this.usage
-      .filter((row) => row.actorRef === actorRef && row.day === day)
+      .filter(
+        (row) => row.actorRef === actorRef && row.day === day && row.countsTowardsQuota !== false,
+      )
       .reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0);
     return { usedTokens };
   }
@@ -974,6 +985,7 @@ export class InMemoryAgentStore
       actorRef: row.actorRef,
       threadId: row.threadId,
       ...ledgerExtras(row),
+      ...(row.countsTowardsQuota === false ? { countsTowardsQuota: false } : {}),
       modelId: row.modelId,
       purpose: row.purpose,
       inputTokens: row.inputTokens,
