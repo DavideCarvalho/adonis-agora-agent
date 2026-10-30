@@ -1877,7 +1877,8 @@ export default class AgentProvider {
       });
 
       // GET /agent/governance/usage/breakdown — spend per actor × feature over the range (the
-      // report behind "cost by actor and by feature"). Query: from?, to?, actor?, feature?. `501`
+      // report behind "cost by actor and by feature"). Query: from?, to? (UTC days) or since?, until?
+      // (ISO instants), actor?, feature?, reprice? (`false` → recorded cost only). `501`
       // when the bound adapter predates it.
       router.get(g('usage/breakdown'), async (ctx: HttpContext) => {
         const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
@@ -1889,11 +1890,26 @@ export default class AgentProvider {
         }
         const filterActor = ctx.request.input('actor');
         const feature = ctx.request.input('feature');
+        // `since` / `until` (ISO instants, `until` exclusive) replace the day range when both are given.
+        const since = ctx.request.input('since');
+        const until = ctx.request.input('until');
+        const window =
+          since !== undefined && until !== undefined
+            ? { from: String(since), to: String(until) }
+            : range(ctx);
+        if (
+          'from' in window &&
+          (Number.isNaN(Date.parse(window.from)) || Number.isNaN(Date.parse(window.to)))
+        ) {
+          return ctx.response.status(400).json({ message: 'since and until must be ISO instants' });
+        }
+        const reprice = ctx.request.input('reprice');
         return ctx.response.json(
           await withActorLabels(
-            await gov.usageBreakdown(range(ctx), {
+            await gov.usageBreakdown(window, {
               ...(filterActor !== undefined ? { actor: String(filterActor) } : {}),
               ...(feature !== undefined ? { feature: String(feature) } : {}),
+              ...(reprice === 'false' || reprice === false ? { reprice: false } : {}),
             }),
             actorDirectory,
           ),

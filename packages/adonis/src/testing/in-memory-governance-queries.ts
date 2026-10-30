@@ -18,6 +18,7 @@ import type {
   RunToolCallRow,
   RunTrendPoint,
   ThreadActivityRow,
+  TimestampRange,
   ToolCallActivityRow,
   ToolStatsRange,
   UsageBreakdownFilter,
@@ -25,6 +26,7 @@ import type {
   UsageTrendPoint,
 } from '../index.js';
 import { summarizeLatency, summarizeRunMetrics } from '../run-metrics.js';
+import { rangeBounds } from '../spi/governance-queries.js';
 import { modelPriceCandidates } from '../spi/pricing-store.js';
 import type {
   GovernanceRunRow,
@@ -394,12 +396,15 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
   }
 
   async usageBreakdown(
-    range: GovernanceRange,
+    range: GovernanceRange | TimestampRange,
     filter: UsageBreakdownFilter = {},
   ): Promise<UsageBreakdownRow[]> {
+    const reprice = filter.reprice !== false;
+    const { start, end } = rangeBounds(range);
     const rows = new Map<string, UsageBreakdownRow>();
     for (const row of this.store.governanceUsage()) {
-      if (!this.inRange(row.day, range)) continue;
+      const at = Date.parse(row.createdAt);
+      if (at < start || at >= end) continue;
       const feature = usageFeature(row);
       if (filter.actor !== undefined && row.actorRef !== filter.actor) continue;
       if (filter.feature !== undefined && feature !== filter.feature) continue;
@@ -416,8 +421,10 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
         characters: 0,
         costUsd: 0,
         estimatedCostUsd: 0,
+        unpricedRows: 0,
       };
-      const cost = this.rowCost(row);
+      const cost = row.costUsd !== undefined || reprice ? this.rowCost(row) : 0;
+      if (row.costUsd === undefined) bucket.unpricedRows += 1;
       bucket.requests += row.requests ?? 1;
       bucket.inputTokens += row.inputTokens;
       bucket.outputTokens += row.outputTokens;

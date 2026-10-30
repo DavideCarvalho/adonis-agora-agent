@@ -85,6 +85,39 @@ export interface UsageBreakdownRow {
   costUsd: number;
   /** The part of `costUsd` that is an estimate (recorded as one, or priced here from tokens). */
   estimatedCostUsd: number;
+  /** Rows recorded with no `cost_usd` — the ones `costUsd` priced from tokens, or left at `0`. */
+  unpricedRows: number;
+}
+
+/**
+ * A window of instants for {@link AgentGovernanceQueries.usageBreakdown}, for a report that is not
+ * whole UTC days (a billing period in the app's time zone): `from` inclusive, `to` exclusive. ISO
+ * strings or `Date`s.
+ */
+export interface TimestampRange {
+  from: string | Date;
+  to: string | Date;
+}
+
+/** The epoch-ms `[start, end)` a {@link GovernanceRange} or a {@link TimestampRange} covers. */
+export function rangeBounds(range: GovernanceRange | TimestampRange): {
+  start: number;
+  end: number;
+} {
+  if ('fromDay' in range) {
+    return {
+      start: Date.parse(`${range.fromDay}T00:00:00.000Z`),
+      end: Date.parse(`${range.toDay}T23:59:59.999Z`) + 1,
+    };
+  }
+  const instant = (value: string | Date) =>
+    value instanceof Date ? value.getTime() : Date.parse(value);
+  const start = instant(range.from);
+  const end = instant(range.to);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    throw new TypeError('usageBreakdown: from and to must be instants (ISO strings or Dates)');
+  }
+  return { start, end };
 }
 
 /** Filters for {@link AgentGovernanceQueries.usageBreakdown}, on top of the day range. */
@@ -93,6 +126,12 @@ export interface UsageBreakdownFilter {
   actor?: string;
   /** Exact feature (`agent` matches the rows from before features too). */
   feature?: string;
+  /**
+   * Price rows recorded without a cost from their tokens and the pricing table (the default, as
+   * every other rollup does). `false` reports recorded cost only: an unpriced row adds `0`, and
+   * {@link UsageBreakdownRow.unpricedRows} says how many there were.
+   */
+  reprice?: boolean;
 }
 
 /** One point on the daily usage/cost trend. */
@@ -418,7 +457,7 @@ export interface AgentGovernanceQueries {
    * actor and by feature". Absent → `GET <path>/governance/usage/breakdown` answers `501`.
    */
   usageBreakdown?(
-    range: GovernanceRange,
+    range: GovernanceRange | TimestampRange,
     filter?: UsageBreakdownFilter,
   ): Promise<UsageBreakdownRow[]>;
   recentToolCalls(limit: number): Promise<ToolCallActivityRow[]>;

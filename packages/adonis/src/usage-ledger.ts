@@ -32,5 +32,6 @@ export async function recordUsageRow(store: AgentStore, input: RecordUsageInput)
     ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
     ...(input.runId !== undefined ? { runId: input.runId } : {}),
     ...(input.tenantRef !== undefined ? { tenantRef: input.tenantRef } : {}),
+    ...(input.countsTowardsQuota === false ? { countsTowardsQuota: false as const } : {}),
   });
 }

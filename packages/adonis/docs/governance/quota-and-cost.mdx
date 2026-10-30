@@ -85,11 +85,12 @@ await agent.recordUsage({
 | --- | --- |
 | `actorRef` | Who pays. `null` is platform cost, recorded under the actor `PLATFORM_ACTOR_REF` (`'@platform'`): `actor_ref` stays non-null, so every per-actor query keeps working and the platform shows up as one more row in spend by actor. |
 | `feature` | Required, free-form. What a cost-by-feature report groups by. |
-| `modelId`, `provider?` | The model, and who served it. |
+| `modelId?`, `provider?` | The model, and who served it. A call whose provider named no model leaves `modelId` out (or `null`); it is recorded as `'unknown'`, the loop's own convention. |
 | `inputTokens?`, `outputTokens?`, `cacheReadTokens?`, `cacheWriteTokens?` | Tokens, when it billed tokens. Absent → `0`. |
 | `audioSeconds?`, `characters?`, `requests?` | The other units. `requests` is how many billable calls the row stands for (absent → one; at least 1). |
 | `costUsd?`, `costSource?` | The cost when you know it. Absent → unpriced: the rollups price its tokens from the [pricing table](#the-pricing-table), and a row with no tokens reads `$0`. |
 | `threadId?`, `runId?`, `tenantRef?`, `metadata?` | Attribution. Nothing requires a thread. |
+| `countsTowardsQuota?` | `false` keeps the row out of the agent's quota ([below](#what-counts-toward-the-quota)). Default `true`. |
 
 **It never throws into your flow.** A failed write (the database is down, a schema the migration has not caught up with) or an invalid input (an empty `feature`, a negative amount) is logged and answered with `{ recorded: false, error }`; a good one with `{ recorded: true }`. The spend already happened, and losing the row is a reporting gap, not a reason to fail the user's transcription. Where it must fail the caller, pass `{ throwOnError: true }`.
 
@@ -102,6 +103,20 @@ A recorded row counts against its actor exactly like an agent turn:
 - **Platform cost** (`actorRef: null`) counts against nobody.
 
 So a token-only budget does not limit audio; a USD budget limits everything that was priced.
+
+**Spend you budget yourself.** The agent's quota is the assistant's budget. If the app meters some AI on its own (indexing a library into embeddings, a spellcheck with its own allowance), counting it here too would lock a person out of the assistant for the rest of the day. Pass `countsTowardsQuota: false`:
+
+```ts
+await agent.recordUsage({
+  actorRef: user.id,
+  feature: 'embeddings',
+  modelId: 'text-embedding-3-small',
+  inputTokens: 480_000,
+  countsTowardsQuota: false,
+})
+```
+
+The row is still in the ledger, in every report (spend by model, actor and feature, the breakdown) and on `usage.recorded`, which then carries `countsTowardsQuota: false`. `quotaToday` and `usageBetween` skip it (so do the token and USD windows), and the `QuotaStore` counter is not bumped. It is stored in `agent_token_usage.counts_towards_quota` (`INTEGER NOT NULL DEFAULT 1`, so every row from before counts). The quota reads add `AND counts_towards_quota = 1` to the rows the `(actor_ref, created_at)` index already narrows to one actor's window, so they stay one index range scan. With `autoCreateTables: false` and a migration that has not added the column yet, every row counts, and the store warns once at boot.
 
 ## Cost — real when known, estimated otherwise
 

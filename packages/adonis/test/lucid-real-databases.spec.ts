@@ -204,7 +204,7 @@ describeEachBackend('the Lucid stores on a real database', (backend) => {
         [AGENT_TABLES.messages]: ['reasoning', 'reasoning_ms', 'ui', 'feedback', 'agent_name'],
         [AGENT_TABLES.toolCalls]: ['approver', 'expires_at', 'remember', 'decided_via'],
         [AGENT_TABLES.runs]: ['parent_run_id', 'timings'],
-        [AGENT_TABLES.tokenUsage]: ['cost_source', 'feature'],
+        [AGENT_TABLES.tokenUsage]: ['cost_source', 'feature', 'counts_towards_quota'],
       };
       for (const [table, columns] of Object.entries(later)) {
         for (const column of columns) {

@@ -1623,7 +1623,7 @@ export class AgentService {
       const row = usageRow(input);
       await recordUsageRow(this.store, row);
       const tokens = row.usage.inputTokens + row.usage.outputTokens;
-      if (row.actorRef !== PLATFORM_ACTOR_REF && tokens > 0) {
+      if (row.actorRef !== PLATFORM_ACTOR_REF && row.countsTowardsQuota !== false && tokens > 0) {
         const quota = this.deps.forAgent().quota;
         if (quota !== undefined) {
           await quota.bump(row.actorRef, utcDay(), tokens).catch((error: unknown) => {
@@ -1657,7 +1657,8 @@ export interface AiUsageInput {
   actorRef: string | null;
   /** What the spend was for, free-form: `'transcription'`, `'embeddings'`, `'spellcheck'`. */
   feature: string;
-  modelId: string;
+  /** The model that served it. Absent, `null` or blank (the provider named none) → `'unknown'`. */
+  modelId?: string | null;
   /** Who served it (`'openai'`, `'openrouter'`, `'deepgram'`). */
   provider?: string;
   inputTokens?: number;
@@ -1683,6 +1684,13 @@ export interface AiUsageInput {
   tenantRef?: string;
   /** Anything else to keep with the row, as JSON. */
   metadata?: Record<string, unknown>;
+  /**
+   * `false` keeps the row out of the agent's quota — spend the app budgets on its own (indexing a
+   * library, a spellcheck with its own allowance). It stays in the ledger, the reports and
+   * `usage.recorded`; `quotaToday` / `usageBetween` (token and USD windows) skip it, and the
+   * `QuotaStore` counter is not bumped. Default `true`.
+   */
+  countsTowardsQuota?: boolean;
 }
 
 /** How {@link AgentService.recordUsage} reacts to a failure. */
@@ -1708,9 +1716,16 @@ function usageRow(input: AiUsageInput): RecordUsageInput {
   if (typeof input.feature !== 'string' || input.feature.trim() === '') {
     throw new TypeError('recordUsage: feature is required');
   }
-  if (typeof input.modelId !== 'string' || input.modelId.trim() === '') {
-    throw new TypeError('recordUsage: modelId is required');
+  if (input.modelId !== undefined && input.modelId !== null && typeof input.modelId !== 'string') {
+    throw new TypeError('recordUsage: modelId must be a string when given');
   }
+  if (input.countsTowardsQuota !== undefined && typeof input.countsTowardsQuota !== 'boolean') {
+    throw new TypeError('recordUsage: countsTowardsQuota must be a boolean');
+  }
+  const modelId =
+    typeof input.modelId === 'string' && input.modelId.trim() !== ''
+      ? input.modelId
+      : UNKNOWN_MODEL;
   if (
     input.actorRef !== null &&
     (typeof input.actorRef !== 'string' || input.actorRef.trim() === '')
@@ -1743,7 +1758,7 @@ function usageRow(input: AiUsageInput): RecordUsageInput {
   return {
     actorRef: input.actorRef ?? PLATFORM_ACTOR_REF,
     feature: input.feature,
-    modelId: input.modelId,
+    modelId,
     purpose: 'external',
     usage: {
       inputTokens: whole('inputTokens', input.inputTokens) ?? 0,
@@ -1760,8 +1775,12 @@ function usageRow(input: AiUsageInput): RecordUsageInput {
     ...(input.runId !== undefined ? { runId: input.runId } : {}),
     ...(input.tenantRef !== undefined ? { tenantRef: input.tenantRef } : {}),
     ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+    ...(input.countsTowardsQuota === false ? { countsTowardsQuota: false } : {}),
   };
 }
+
+/** The `model_id` a row whose provider named no model is recorded under — the loop's own convention. */
+export const UNKNOWN_MODEL = 'unknown';
 
 /** `params` with its `uiCapabilities` validated (a `TypeError` when malformed). */
 function withValidCapabilities(params: ChatParams): ChatParams {

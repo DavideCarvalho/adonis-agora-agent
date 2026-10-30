@@ -59,6 +59,7 @@ import {
   AGENT_TABLES,
   ensureAgentTables,
   hasLedgerColumns,
+  hasQuotaFlagColumn,
   hasRunTimingColumns,
   hasSentAtColumns,
   hasToolCallIdColumn,
@@ -365,6 +366,8 @@ export class LucidAgentStore
    * `provider`, the units, `metadata`). Always so when the store provisions the schema.
    */
   private ledgerColumns = true;
+  /** Whether `agent_token_usage` has `counts_towards_quota`. As {@link ledgerColumns}. */
+  private quotaFlagColumn = true;
   /** Whether `agent_run` has the timing columns (`queue_ms`, `model_ms`…). As {@link ledgerColumns}. */
   private runTimingColumns = true;
 
@@ -409,6 +412,14 @@ export class LucidAgentStore
       );
     }
     this.ledgerColumns = await hasLedgerColumns(this.db);
+    this.quotaFlagColumn = await hasQuotaFlagColumn(this.db);
+    if (!this.quotaFlagColumn) {
+      console.warn(
+        '[@adonis-agora/agent] agent_token_usage has no counts_towards_quota column. With autoCreateTables ' +
+          'off the schema is yours: add a migration that calls createAgentTables(). Until it runs, every ' +
+          'usage row counts towards the quota, countsTowardsQuota: false included.',
+      );
+    }
     this.runTimingColumns = await hasRunTimingColumns(this.db);
     if (!this.ledgerColumns || !this.runTimingColumns) {
       console.warn(
@@ -1314,6 +1325,9 @@ export class LucidAgentStore
             metadata: input.metadata !== undefined ? JSON.stringify(input.metadata) : null,
           }
         : {}),
+      ...(this.quotaFlagColumn
+        ? { counts_towards_quota: input.countsTowardsQuota === false ? 0 : 1 }
+        : {}),
     });
   }
 
@@ -1418,6 +1432,14 @@ export class LucidAgentStore
       .update(patch);
   }
 
+  /**
+   * The rows a quota window counts. A filter on the rows the `(actor_ref, created_at)` index already
+   * narrows to one actor's window, so it adds no scan of its own.
+   */
+  private quotaPredicate(): string {
+    return this.quotaFlagColumn ? ` AND "counts_towards_quota" = 1` : '';
+  }
+
   async usageBetween(actorRef: string, fromDay: string, toDay: string): Promise<UsageTotals> {
     await this.init();
     // Summed by the database: a month of an active actor's ledger is thousands of rows, read on
@@ -1429,7 +1451,7 @@ export class LucidAgentStore
           `SELECT COALESCE(SUM("input_tokens" + "output_tokens"), 0) AS used_tokens, ` +
             `COALESCE(SUM("cost_usd"), 0) AS cost_usd, ` +
             `COALESCE(SUM(CASE WHEN "cost_source" = 'estimate' THEN "cost_usd" ELSE 0 END), 0) AS estimated_cost_usd ` +
-            `FROM "${AGENT_TABLES.tokenUsage}" WHERE "actor_ref" = ? AND "created_at" >= ? AND "created_at" <= ?`,
+            `FROM "${AGENT_TABLES.tokenUsage}" WHERE "actor_ref" = ? AND "created_at" >= ? AND "created_at" <= ?${this.quotaPredicate()}`,
         ),
         [actorRef, Date.parse(`${fromDay}T00:00:00.000Z`), Date.parse(`${toDay}T23:59:59.999Z`)],
       ),
@@ -1450,7 +1472,7 @@ export class LucidAgentStore
         portableSql(
           this.db,
           `SELECT COALESCE(SUM("input_tokens" + "output_tokens"), 0) AS used_tokens ` +
-            `FROM "${AGENT_TABLES.tokenUsage}" WHERE "actor_ref" = ? AND "created_at" >= ? AND "created_at" <= ?`,
+            `FROM "${AGENT_TABLES.tokenUsage}" WHERE "actor_ref" = ? AND "created_at" >= ? AND "created_at" <= ?${this.quotaPredicate()}`,
         ),
         [actorRef, Date.parse(`${day}T00:00:00.000Z`), Date.parse(`${day}T23:59:59.999Z`)],
       ),

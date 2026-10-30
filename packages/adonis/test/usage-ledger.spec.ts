@@ -273,6 +273,87 @@ for (const backend of backends) {
       expect(finished?.queueMs).toBeTypeOf('number');
     });
 
+    it('keeps a countsTowardsQuota: false row out of the quota, and in the ledger and reports', async () => {
+      await service.recordUsage({
+        actorRef: 'alice',
+        feature: 'embeddings',
+        modelId: 'text-embedding-3-small',
+        inputTokens: 50_000,
+        costUsd: 0.5,
+        countsTowardsQuota: false,
+      });
+      await service.recordUsage({
+        actorRef: 'alice',
+        feature: 'spellcheck',
+        modelId: 'gpt-4o-mini',
+        inputTokens: 100,
+        outputTokens: 20,
+        costUsd: 0.0001,
+      });
+      expect(await store.quotaToday('alice', today)).toEqual({ usedTokens: 120 });
+      const between = await store.usageBetween?.('alice', today, today);
+      expect(between?.usedTokens).toBe(120);
+      expect(between?.costUsd).toBeCloseTo(0.0001, 8);
+      expect((await quota.check('alice', today)).usedTokens).toBe(120);
+      const features = await gov.spendByFeature?.(range);
+      expect(features?.find((row) => row.feature === 'embeddings')?.inputTokens).toBe(50_000);
+      const breakdown = await gov.usageBreakdown?.(range, { feature: 'embeddings' });
+      expect(breakdown?.[0]?.costUsd).toBeCloseTo(0.5, 8);
+      if (raw !== undefined) {
+        const rows = await raw
+          .from(AGENT_TABLES.tokenUsage)
+          .orderBy('feature')
+          .select('feature', 'counts_towards_quota');
+        expect(rows.map((row) => [row.feature, Number(row.counts_towards_quota)])).toEqual([
+          ['embeddings', 0],
+          ['spellcheck', 1],
+        ]);
+      }
+    });
+
+    it('records a call whose provider named no model under `unknown`', async () => {
+      expect(
+        await service.recordUsage({ actorRef: 'alice', feature: 'rag-chat', inputTokens: 10 }),
+      ).toEqual({ recorded: true });
+      await service.recordUsage({
+        actorRef: 'alice',
+        feature: 'rag-chat',
+        modelId: null,
+        inputTokens: 5,
+      });
+      const models = await gov.spendByModel(range);
+      expect(models.map((row) => [row.modelId, row.inputTokens])).toEqual([['unknown', 15]]);
+    });
+
+    it('breaks usage down over a timestamp window, counting unpriced rows, with or without repricing', async () => {
+      const before = new Date(Date.now() - 1000).toISOString();
+      await service.recordUsage({
+        actorRef: 'alice',
+        feature: 'chat',
+        modelId: 'priced-model',
+        inputTokens: 1_000_000,
+      });
+      await service.recordUsage({
+        actorRef: 'alice',
+        feature: 'chat',
+        modelId: 'priced-model',
+        inputTokens: 10,
+        costUsd: 0.25,
+      });
+      const after = new Date(Date.now() + 1000).toISOString();
+      const priced = await gov.usageBreakdown?.({ from: before, to: after });
+      expect(priced?.[0]).toMatchObject({ feature: 'chat', unpricedRows: 1, requests: 2 });
+      const recordedOnly = await gov.usageBreakdown?.(
+        { from: before, to: after },
+        { reprice: false },
+      );
+      expect(recordedOnly?.[0]?.costUsd).toBeCloseTo(0.25, 8);
+      expect(recordedOnly?.[0]?.unpricedRows).toBe(1);
+      expect(await gov.usageBreakdown?.({ from: after, to: new Date(Date.now() + 5000) })).toEqual(
+        [],
+      );
+    });
+
     it('never throws into the caller by default, and does with throwOnError', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       vi.spyOn(store, 'recordUsage').mockRejectedValue(new Error('database is down'));
