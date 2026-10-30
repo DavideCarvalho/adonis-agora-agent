@@ -307,11 +307,11 @@ in the config, or `ClosedRolesPolicy`, keeps it closed) — except for an actor 
 `personal_agent` role (personal agents — A2A/PACT and Poppy conversations): it reaches only
 tools that declare one of its roles, so a tool with no `roles` is out of its reach even when
 open by default. Write a tool for them with `roles: ['personal_agent']` (anyone's agent) or
-`['scope:<id>']` (a granted scope: a PACT delegation scope, or `scope:poppy:read` / `scope:poppy:write` /
+`['scope:<id>']` (a granted scope: a PACT delegation scope, or `scope:orders:read` / `scope:orders:write` /
 a custom Poppy scope).
 
-> **Experimental:** Poppy (Personal Agent Protocol) is a Draft 0.1 spec still in development
-> (https://personalagentprotocol.org/docs/spec). The Poppy surface implements Draft 0.1 and WILL change
+> **Experimental:** Poppy (Personal Agent Protocol) is a Draft 0.3 spec still in development
+> (https://personalagentprotocol.org/docs/spec). The Poppy surface implements Draft 0.3 and WILL change
 > as the spec evolves — possibly breaking, outside semver majors while it is a draft.
 > To test your Poppy surface end to end, the package ships a reference **personal agent**:
 > `@adonis-agora/agent/poppy-client` (framework-agnostic library, no AdonisJS imports) and the

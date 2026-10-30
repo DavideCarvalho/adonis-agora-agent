@@ -85,12 +85,12 @@ roles — a tool with no `roles` is out of its reach even when open by default �
 memory and skill scopes resolve to none. Nothing changes for any other actor.
 Both personal-agent surfaces build that actor the same way: `personal_agent` plus one
 `scope:<id>` role per granted scope — a PACT delegation's scopes (`a2a_provider`) or a
-signed-in Poppy Session Token's (`poppy_provider`: `scope:poppy:read`, `scope:poppy:write`,
+signed-in Poppy access token's (`poppy_provider`: `scope:orders:read`, `scope:orders:write`,
 custom scopes). A tool behind a missing scope is offered, not run; the refused call is the
 step-up (A2A: an `AUTH_REQUIRED` task; Poppy: an `authorization` event).
 
-> **Experimental:** Poppy (Personal Agent Protocol) is a Draft 0.1 spec still in development
-> (https://personalagentprotocol.org/docs/spec). The Poppy surface implements Draft 0.1 and WILL change
+> **Experimental:** Poppy (Personal Agent Protocol) is a Draft 0.3 spec still in development
+> (https://personalagentprotocol.org/docs/spec). The Poppy surface implements Draft 0.3 and WILL change
 > as the spec evolves — possibly breaking, outside semver majors while it is a draft.
 
 

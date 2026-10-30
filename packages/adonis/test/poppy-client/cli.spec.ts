@@ -28,7 +28,7 @@ describe('cli', () => {
   it('--help shows the draft warning', async () => {
     const { code, text } = await capture(() => runCli(['--help']));
     assert.equal(code, 0);
-    assert.include(text, 'Draft 0.1');
+    assert.include(text, 'Draft 0.3');
     assert.include(text, 'https://personalagentprotocol.org/docs/spec');
   });
 
@@ -40,7 +40,7 @@ describe('cli', () => {
     const d = await capture(() => runCli(['discover', host, ...base]));
     assert.equal(d.code, 0);
     assert.include(d.text, 'NON-SPEC MODE');
-    assert.include(d.text, '"poppy_domains"');
+    assert.include(d.text, '"protected_resources"');
 
     const s = await capture(() => runCli(['session', host, ...base]));
     assert.equal(s.code, 0, s.text);
@@ -52,7 +52,7 @@ describe('cli', () => {
 
     const denied = await capture(() => runCli(['api', host, 'GET', '/orders', ...base]));
     assert.equal(denied.code, 1);
-    assert.include(denied.text, 'sign_in_required');
+    assert.include(denied.text, 'insufficient_scope');
 
     const m = await capture(() => runCli(['mcp', 'tools', host, ...base]));
     assert.equal(m.code, 0, m.text);
@@ -65,7 +65,7 @@ describe('cli', () => {
     assert.include(call.text, 'insulated boots');
 
     const st = await capture(() => runCli(['status', ...base]));
-    assert.include(st.text, 'account token: no');
+    assert.include(st.text, 'refresh token: no');
 
     const dc = await capture(() => runCli(['disconnect', host, ...base]));
     assert.equal(dc.code, 0);

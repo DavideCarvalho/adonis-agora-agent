@@ -14,8 +14,8 @@ import type {
 /**
  * A Poppy conversation as this surface keeps it. It belongs to a Personal Agent (`clientId`) and
  * one of its Users (`userId`); once it used an account here, to that account too (`accountRef`,
- * §7.2). The agent side of it is an agent thread (`threadId`) — a Direct Conversation shares its
- * parent's thread, which is how the Company Agent knows what was said in either (§7.10).
+ * §8.2). The agent side of it is an agent thread (`threadId`) — a Direct Conversation shares its
+ * parent's thread, which is how the Company Agent knows what was said in either (§8.10).
  */
 export interface PoppyConversationRecord {
   id: string;
@@ -30,7 +30,7 @@ export interface PoppyConversationRecord {
   openDirectId: string | null;
   status: PoppyStatus;
   responder: PoppyResponder;
-  /** The User's context as last shared — fields a message leaves out keep their value (§7.4). */
+  /** The User's context as last shared — fields a message leaves out keep their value (§8.4). */
   context: PoppyContext;
   /** The run whose reply is being written, while there is one. */
   activeRunId: string | null;
@@ -47,7 +47,7 @@ export interface PoppyConversationRecord {
   updatedAt: number;
 }
 
-/** The identity a conversation's turns run as: that of its latest request (§7.11). */
+/** The identity a conversation's turns run as: that of its latest request (§8.11). */
 export interface PoppyGrant {
   actor: Actor;
   /** The token's account scopes; empty when signed out. */
@@ -77,7 +77,7 @@ export interface StoredPoppyEvent {
   event: PoppyEvent;
 }
 
-/** What an accepted message keeps for its retries (§7.3). */
+/** What an accepted message keeps for its retries (§8.3). */
 export interface PoppyMessageReceipt {
   fingerprint: string;
   conversationId: string;
@@ -93,7 +93,7 @@ export type PoppyMessageClaim =
  * Where conversations, their events and message receipts live. Events are append-only and read by
  * position, so a cursor replays exactly what came after it, on any replica.
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.1 (https://personalagentprotocol.org/docs/spec),
+ * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
  * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
  * ways, outside semver majors while it is a draft.
  */
@@ -259,7 +259,7 @@ export const POPPY_TABLES = {
  * `CREATE TABLE IF NOT EXISTS` DDL for the Poppy tables — the agent tables' portable dialect
  * (quoted identifiers, epoch-ms `BIGINT`, `TEXT` JSON; `forDialect` adapts it to MySQL). An event's
  * primary key is its position, so two appends racing for one position cannot both win; a message's
- * is its (owner, id), the idempotency lock of §7.3.
+ * is its (owner, id), the idempotency lock of §8.3.
  */
 export function poppyTableStatements(): string[] {
   const t = POPPY_TABLES;

@@ -74,10 +74,10 @@ describe.each(kinds)('poppy connection store (%s)', (_name, make) => {
       updatedAt: 1,
     };
     await store.saveConnection(base);
-    await store.saveConnection({ ...base, status: 'active', scope: 'poppy:read', updatedAt: 2 });
+    await store.saveConnection({ ...base, status: 'active', scope: 'orders:read', updatedAt: 2 });
     await store.saveConnection({ ...base, owner: 'acct-2' });
     expect(await store.listConnections('acct-1')).toEqual([
-      { ...base, status: 'active', scope: 'poppy:read', updatedAt: 2 },
+      { ...base, status: 'active', scope: 'orders:read', updatedAt: 2 },
     ]);
     expect(await store.getConnection('acct-2', base.issuer)).toMatchObject({ status: 'pending' });
     await store.deleteConnection('acct-1', base.issuer);
@@ -89,7 +89,7 @@ describe.each(kinds)('poppy connection store (%s)', (_name, make) => {
       domain: 'shop.example',
       issuer: base.issuer,
       organization: 'Shop',
-      scope: 'poppy:read',
+      scope: 'orders:read',
       actor: { id: 'u1', tenantRef: 'acct-1' },
       threadId: 't1',
       runId: 'r1',

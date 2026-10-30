@@ -11,8 +11,8 @@ import { InMemoryPoppyStore, LucidPoppyStore, type PoppyStore } from '../src/pop
 import { ToolRegistry } from '../src/tool-registry.js';
 
 /**
- * Exposes a registered agent as the Company Agent of Personal Agent Protocol ("Poppy", Draft 0.1)
- * conversations (§7). Reads `config/poppy.ts` and answers, under its `path`:
+ * Exposes a registered agent as the Company Agent of Personal Agent Protocol ("Poppy", Draft 0.3)
+ * conversations (§8). Reads `config/poppy.ts` and answers, under its `path`:
  *
  * - `POST {path}` — start a conversation (or a Direct Conversation) with its first message;
  * - `POST {path}/{id}/messages` — another message;
@@ -20,11 +20,11 @@ import { ToolRegistry } from '../src/tool-registry.js';
  * - `POST {path}/{id}/handoff`, `POST {path}/{id}/close`.
  *
  * Mounted as SERVER middleware, ahead of the router, like the A2A surface: requests are
- * authenticated by their Session Token before the body is read, and never reach the bodyparser,
+ * authenticated by their Session header before the body is read, and never reach the bodyparser,
  * session or CSRF. `PoppyConversations` is bound in the container — the app drives the Company
  * side through it (a person joining, `user_requested`).
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.1 (https://personalagentprotocol.org/docs/spec),
+ * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
  * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
  * ways, outside semver majors while it is a draft.
  */
@@ -86,13 +86,13 @@ export default class PoppyProvider {
     });
   }
 
-  /** Warn, once the app is up, when no one can verify a Session Token: every request is a 501. */
+  /** Warn, once the app is up, when no one can verify a Session header: every request is a 501. */
   async ready() {
     const config = poppyConfigOf(this.app);
     if (!config || config.authenticate !== undefined || globalPoppyAuthenticate()) return;
     const logger = await this.app.container.make('logger');
     logger.warn(
-      'poppy: no Session Token resolver — install @adonis-agora/authkit-server with Poppy enabled, or set `authenticate` in config/poppy.ts. Until then the endpoint answers 501.',
+      'poppy: no Session header resolver — install @adonis-agora/authkit-server with Poppy enabled, or set `authenticate` in config/poppy.ts. Until then the endpoint answers 501.',
     );
   }
 

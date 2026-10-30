@@ -5,47 +5,37 @@ import type { AgentIdentity } from './identity.js';
 import type { AuthServerMetadata, DeviceAuthorizationResponse, TokenResponse } from './types.js';
 import { parseRetryAfter } from './util.js';
 
-export const GRANT_JWT_BEARER = 'urn:ietf:params:oauth:grant-type:jwt-bearer';
 export const GRANT_DEVICE_CODE = 'urn:ietf:params:oauth:grant-type:device_code';
+export const GRANT_MEDIATED_SIGN_IN = 'https://personalagentprotocol.org/grant/mediated-sign-in';
 export const CLIENT_ASSERTION_TYPE = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
 
-export interface TokenClientOptions {
-  /**
-   * `aud` of the client assertion. RFC 7523 allows the token endpoint URL (the default here,
-   * matching the spec's examples) or the issuer identifier.
-   */
-  clientAssertionAudience?: 'token_endpoint' | 'issuer' | undefined;
-}
-
 export interface NarrowingParams {
-  /** Ask for fewer scopes than the Session has (4.3 "Narrower tokens"). */
+  /** Ask for fewer scopes than the refresh token has (4.4). */
   scope?: string | undefined;
-  /** RFC 8707 resource indicator. */
+  /** RFC 8707 resource indicator (4.5). */
   resource?: string | undefined;
 }
 
+/** Client-side RFC 6749 defaults for what a token response may leave out. */
+const DEFAULT_EXPIRES_IN = 3600;
+
 /**
- * OAuth calls against the Company's authorization server (section 4): every request carries
- * a `private_key_jwt` client assertion (4.1), and token requests carry a DPoP proof unless a
- * Bearer token (MCP) is wanted (4.3).
+ * OAuth calls against the Company's authorization server (section 4): every request carries a
+ * `private_key_jwt` client assertion addressed to the issuer (4.1). Token requests carry a DPoP
+ * proof when one is given, and the response's `token_type` says what the Company did with it (4.5).
  */
 export class TokenClient {
   constructor(
     private readonly identity: AgentIdentity,
     readonly metadata: AuthServerMetadata,
     private readonly http: PoppyHttp,
-    private readonly opts: TokenClientOptions = {},
   ) {}
 
   private async clientAuth(): Promise<Record<string, string>> {
-    const aud =
-      this.opts.clientAssertionAudience === 'issuer'
-        ? this.metadata.issuer
-        : this.metadata.token_endpoint;
     return {
       client_id: this.identity.clientId,
       client_assertion_type: CLIENT_ASSERTION_TYPE,
-      client_assertion: await this.identity.clientAssertion(aud),
+      client_assertion: await this.identity.clientAssertion(this.metadata.issuer),
     };
   }
 
@@ -62,6 +52,7 @@ export class TokenClient {
         accept: 'application/json',
       },
       dpop,
+      redirect: 'manual',
       body: async () => {
         const params = { ...(await build()), ...(await this.clientAuth()) };
         const form = new URLSearchParams();
@@ -88,9 +79,13 @@ export class TokenClient {
     });
   }
 
-  /** Any token-endpoint grant. Validates the response shape of 4.2/4.4. */
+  /**
+   * Any token-endpoint grant (4.7). `requested` is what `scope` means when the response leaves it
+   * out: the Company granted exactly the scopes requested (RFC 6749 section 5.1).
+   */
   async token(
     params: () => Promise<Record<string, string | undefined>>,
+    requested: string | undefined,
     dpop?: DpopKey | undefined,
   ): Promise<TokenResponse> {
     const r = await this.post(this.metadata.token_endpoint, params, dpop);
@@ -101,49 +96,28 @@ export class TokenClient {
         description: 'no access_token in token response',
       });
     }
-    if (typeof t.expires_in !== 'number' || !(t.expires_in > 0)) {
-      throw new OAuthError('invalid_response', { description: 'expires_in must be > 0 (4.2)' });
-    }
-    if (typeof t.session_id !== 'string' || !t.session_id) {
-      throw new OAuthError('invalid_response', { description: 'no session_id in token response' });
-    }
-    const expected = dpop ? 'dpop' : 'bearer';
-    if (String(t.token_type).toLowerCase() !== expected) {
-      // RFC 9449 section 5: a client that sent a proof must not accept a downgraded token.
+    const type = String(t.token_type).toLowerCase();
+    if (type !== 'bearer' && type !== 'dpop') {
       throw new OAuthError('invalid_response', {
-        description: `token_type is ${t.token_type}, expected ${dpop ? 'DPoP' : 'Bearer'}`,
+        description: `unsupported token_type ${t.token_type}`,
       });
     }
-    t.signed_in = t.signed_in === true;
-    t.scope = typeof t.scope === 'string' ? t.scope : '';
+    if (type === 'dpop' && !dpop) {
+      throw new OAuthError('invalid_response', {
+        description: 'a DPoP-bound token for a request without a proof',
+      });
+    }
+    if (typeof t.expires_in !== 'number' || !(t.expires_in > 0)) t.expires_in = DEFAULT_EXPIRES_IN;
+    t.scope = typeof t.scope === 'string' ? t.scope : (requested ?? '');
     return t;
   }
 
-  /** JWT bearer grant: starts a Session, or renews a signed-out one with `sessionId` (4.2). */
-  jwtBearer(
-    input: {
-      userId: string;
-      sessionId?: string | undefined;
-      dpop?: DpopKey | undefined;
-    } & NarrowingParams,
-  ): Promise<TokenResponse> {
-    return this.token(
-      async () => ({
-        grant_type: GRANT_JWT_BEARER,
-        assertion: await this.identity.sessionAssertion(input.userId, this.metadata.token_endpoint),
-        session_id: input.sessionId,
-        scope: input.scope,
-        resource: input.resource,
-      }),
-      input.dpop,
-    );
-  }
-
-  /** Account Token grant (4.8): signs a Session in, or starts a new signed-in Session. */
+  /** Refresh (4.4). A token response may leave `refresh_token` out: keep using the one you have. */
   refresh(
     input: {
       refreshToken: string;
-      sessionId?: string | undefined;
+      /** The refresh token's scopes: what `scope` means when the response omits it. */
+      grantedScope: string;
       dpop?: DpopKey | undefined;
     } & NarrowingParams,
   ): Promise<TokenResponse> {
@@ -151,21 +125,21 @@ export class TokenClient {
       async () => ({
         grant_type: 'refresh_token',
         refresh_token: input.refreshToken,
-        session_id: input.sessionId,
         scope: input.scope,
         resource: input.resource,
       }),
+      input.scope ?? input.grantedScope,
       input.dpop,
     );
   }
 
-  /** Direct Sign-In code exchange (4.5 step 4). */
+  /** Direct Sign-In code exchange (4.2). */
   authorizationCode(input: {
     code: string;
     redirectUri: string;
     codeVerifier: string;
-    sessionId: string;
-    dpop: DpopKey;
+    scope: string;
+    dpop?: DpopKey | undefined;
   }): Promise<TokenResponse> {
     return this.token(
       async () => ({
@@ -173,13 +147,13 @@ export class TokenClient {
         code: input.code,
         redirect_uri: input.redirectUri,
         code_verifier: input.codeVerifier,
-        session_id: input.sessionId,
       }),
+      input.scope,
       input.dpop,
     );
   }
 
-  /** Device Sign-In step 1 (4.6). */
+  /** Device Sign-In step 1 (4.3). */
   async deviceAuthorization(scope: string): Promise<DeviceAuthorizationResponse> {
     const endpoint = this.metadata.device_authorization_endpoint;
     if (!endpoint)
@@ -195,23 +169,55 @@ export class TokenClient {
     return d;
   }
 
-  /** Device Sign-In polling (4.6 step 3). Throws `authorization_pending` / `slow_down` etc. */
+  /** Device Sign-In polling (4.3). Throws `authorization_pending` / `slow_down` etc. */
   deviceToken(input: {
     deviceCode: string;
-    sessionId: string;
-    dpop: DpopKey;
+    scope: string;
+    dpop?: DpopKey | undefined;
   }): Promise<TokenResponse> {
     return this.token(
-      async () => ({
-        grant_type: GRANT_DEVICE_CODE,
-        device_code: input.deviceCode,
-        session_id: input.sessionId,
-      }),
+      async () => ({ grant_type: GRANT_DEVICE_CODE, device_code: input.deviceCode }),
+      input.scope,
       input.dpop,
     );
   }
 
-  /** RFC 7009 revocation of an Account Token (4.9). */
+  /** The Mediated Sign-In grant (extension, section 3): credentials as form parameters. */
+  mediated(input: {
+    scope: string;
+    credentials: Record<string, string>;
+    dpop?: DpopKey | undefined;
+  }): Promise<TokenResponse> {
+    return this.token(
+      async () => ({
+        ...input.credentials,
+        grant_type: GRANT_MEDIATED_SIGN_IN,
+        scope: input.scope,
+      }),
+      input.scope,
+      input.dpop,
+    );
+  }
+
+  /** The same grant again with the one-time code, without credentials or `scope` (section 4). */
+  mediatedCode(input: {
+    signInId: string;
+    code: string;
+    scope: string;
+    dpop?: DpopKey | undefined;
+  }): Promise<TokenResponse> {
+    return this.token(
+      async () => ({
+        grant_type: GRANT_MEDIATED_SIGN_IN,
+        sign_in_id: input.signInId,
+        one_time_code: input.code,
+      }),
+      input.scope,
+      input.dpop,
+    );
+  }
+
+  /** RFC 7009 revocation of a refresh token (4.6). */
   async revoke(token: string, hint: 'refresh_token' | 'access_token' = 'refresh_token') {
     const r = await this.post(this.metadata.revocation_endpoint, async () => ({
       token,

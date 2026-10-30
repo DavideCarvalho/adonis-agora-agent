@@ -11,7 +11,8 @@ export function htuOf(url: string | URL): string {
 }
 
 /**
- * A DPoP key (RFC 9449). The agent keeps one per User per Company (4.3); it is never published.
+ * A DPoP key (RFC 9449) for this User at one Company; it is never published. Binding tokens is the
+ * Company's choice (4.5).
  */
 export class DpopKey {
   constructor(readonly stored: StoredKey) {}

@@ -190,7 +190,7 @@ describe('authKitAuth() → a personal agent (Poppy) token', () => {
     accountId: 'acc-1',
     clientId: 'https://agent.example/agent.json',
     grantId: 'pgrant_1',
-    scope: 'poppy:read orders:read',
+    scope: 'orders:read',
     gty: 'poppy',
     isExpired: false,
   };
@@ -210,12 +210,7 @@ describe('authKitAuth() → a personal agent (Poppy) token', () => {
     const actor = (await auth.verify('p1')).extra.actor;
     expect(seen[0]?.personalAgent).toBe(true);
     expect(actor.id).toBe('profile-of-acc-1');
-    expect(actor.roles).toEqual([
-      'account:acc-1',
-      'personal_agent',
-      'scope:poppy:read',
-      'scope:orders:read',
-    ]);
+    expect(actor.roles).toEqual(['account:acc-1', 'personal_agent', 'scope:orders:read']);
   });
 
   it('leaves an MCP client login alone', async () => {
@@ -235,37 +230,8 @@ describe('authKitAuth() → a personal agent (Poppy) token', () => {
   });
 });
 
-describe('authKitAuth() → a signed-out Poppy Session', () => {
-  const slot = Symbol.for('@adonis-agora/poppy:authenticate');
-  afterEach(() => {
-    delete (globalThis as Record<symbol, unknown>)[slot];
-  });
-
-  it('answers sign_in_required (403) for its Bearer token, not invalid_token', async () => {
-    const seen: unknown[] = [];
-    (globalThis as Record<symbol, unknown>)[slot] = async (req: unknown) => {
-      seen.push(req);
-      return { ok: true, principal: { signedIn: false, accountId: null, scopes: [] } };
-    };
-    const { app } = fakeAuthKit({ tokens: {} });
-    const auth = await resolveMcpAuth(authKitAuth(), { app });
-    const err = await auth
-      .verify('poppy-signed-out', { resource: 'https://app.example.com/mcp' })
-      .catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(McpAuthError);
-    expect(err).toMatchObject({ status: 403, error: 'sign_in_required' });
-    expect(seen[0]).toMatchObject({
-      url: 'https://app.example.com/mcp',
-      headers: { authorization: 'Bearer poppy-signed-out' },
-    });
-  });
-
-  it('an unknown token stays a plain Error (anyOf tries the next strategy)', async () => {
-    (globalThis as Record<symbol, unknown>)[slot] = async () => ({
-      ok: false,
-      status: 401,
-      error: 'invalid_token',
-    });
+describe('authKitAuth() → a token this issuer does not know', () => {
+  it('stays a plain Error (anyOf tries the next strategy)', async () => {
     const { app } = fakeAuthKit({ tokens: {} });
     const auth = await resolveMcpAuth(authKitAuth(), { app });
     const err = await auth

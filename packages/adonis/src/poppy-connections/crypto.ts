@@ -1,8 +1,8 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 
 /**
- * Seals what a connection keeps at rest — the Account Token (a long-lived refresh token), the DPoP
- * private key and the Session Tokens — with AES-256-GCM under a key derived from the app's secret
+ * Seals what a connection keeps at rest — the refresh token, the DPoP and delegated
+ * private keys and the access tokens — with AES-256-GCM under a key derived from the app's secret
  * (its `APP_KEY`). A database dump alone does not hand out anybody's access to another company.
  */
 export class Sealer {

@@ -13,9 +13,11 @@ import {
   completeDirectSignIn,
   connectMcp,
   discover,
+  mediatedExtension,
   mediatedSignIn,
   newMessageId,
   OAuthError,
+  offeredSignInTypes,
   PoppyAgent,
   PoppyError,
   pollDeviceSignInOnce,
@@ -83,8 +85,8 @@ type Flow =
 export interface PoppyCompanyReply {
   conversationId: string;
   replies: { text: string; data?: Record<string, unknown> }[];
-  /** The Company said the token lacks something (§7.11). */
-  authorization?: { error: string; scope?: string };
+  /** The Company needs sign-in or more scopes (§8.11). */
+  authorization?: { error: string; scope?: string; connected?: boolean };
   status: string;
 }
 
@@ -98,13 +100,11 @@ export interface PoppyConnectionsOptions {
   log?: (line: string) => void;
 }
 
-const DEFAULT_READ_SCOPES = ['poppy:read'];
-
 /**
  * This app's agent acting on other Poppy Companies for its users: the agent identity, the
  * connections (sealed at rest), the connect flows and the calls the tools make.
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.1 — will change as the spec evolves.
+ * @experimental Tracks Personal Agent Protocol Draft 0.3 — will change as the spec evolves.
  */
 export class PoppyConnections {
   readonly #names = new Map<string, { name: string | undefined; until: number }>();
@@ -251,7 +251,7 @@ export class PoppyConnections {
 
   // ── state ──────────────────────────────────────────────────────────────────
 
-  /** Serialize everything one owner does: Account Tokens rotate, and a lost rotation is a lost login. */
+  /** Serialize everything one owner does: refresh tokens rotate, and a lost rotation is a lost login. */
   async #exclusive<T>(owner: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.#locks.get(owner) ?? Promise.resolve();
     const run = previous.catch(() => {}).then(fn);
@@ -360,7 +360,7 @@ export class PoppyConnections {
     return (await this.list(owner)).find((c) => c.domain === d) ?? null;
   }
 
-  /** Sign out at the Company (revokes the Account Token, §4.9) and mark the connection revoked. */
+  /** Sign out at the Company (revokes the refresh token, §4.9) and mark the connection revoked. */
   async disconnect(owner: string, domain: string): Promise<boolean> {
     return this.withCompany(owner, domain, async (client) => {
       let revoked = false;
@@ -471,15 +471,15 @@ export class PoppyConnections {
     if (pending.status === 'connected')
       return { kind: 'connected', organization: pending.organization };
     return this.withCompany(pending.owner, pending.domain, async (client) => {
-      const auth = client.document.auth;
+      const types = offeredSignInTypes(client);
       return {
         kind: 'open',
         id,
         organization: pending.organization,
-        direct: Boolean(auth?.direct && client.metadata.authorization_endpoint),
-        device: Boolean(auth?.device && client.metadata.device_authorization_endpoint),
+        direct: types.includes('direct'),
+        device: types.includes('device'),
         mediated:
-          auth?.mediated?.fields?.map((f) => ({
+          mediatedExtension(client)?.fields?.map((f) => ({
             name: f.name,
             label: f.label,
             secret: f.secret,
@@ -488,7 +488,7 @@ export class PoppyConnections {
     });
   }
 
-  /** Direct Sign-In (§4.5): the authorization URL to send the browser to. */
+  /** Direct Sign-In (§4.2): the authorization URL to send the browser to. */
   async directUrl(id: string): Promise<string | null> {
     const pending = await this.#openPending(id);
     if (pending === null || pending.status !== 'open') return null;
@@ -531,13 +531,16 @@ export class PoppyConnections {
   }
 
   /**
-   * Mediated Sign-In (§4.7) from this app's own page: the credentials go from the person's browser
+   * Mediated Sign-In (the extension) from this app's own page: the credentials go from the person's browser
    * to this server and straight to the Company — never stored, logged, or shown to the model.
    */
   async mediated(
     id: string,
     credentials: Record<string, string>,
-  ): Promise<{ status: 'connected' | 'code_required' | 'failed' | 'expired'; sentTo?: string }> {
+  ): Promise<{
+    status: 'connected' | 'code_required' | 'failed' | 'expired' | 'denied';
+    sentTo?: string;
+  }> {
     const pending = await this.#openPending(id);
     if (pending === null || pending.status !== 'open') return { status: 'expired' };
     const outcome = await this.withCompany(pending.owner, pending.domain, async (client) => {
@@ -551,7 +554,10 @@ export class PoppyConnections {
   async mediatedCode(
     id: string,
     code: string,
-  ): Promise<{ status: 'connected' | 'code_required' | 'failed' | 'expired'; sentTo?: string }> {
+  ): Promise<{
+    status: 'connected' | 'code_required' | 'failed' | 'expired' | 'denied';
+    sentTo?: string;
+  }> {
     const pending = await this.#openPending(id);
     if (pending === null || pending.flow === null || pending.status !== 'open')
       return { status: 'expired' };
@@ -567,7 +573,10 @@ export class PoppyConnections {
     pending: PoppyPendingConnect,
     result: Awaited<ReturnType<typeof mediatedSignIn>>,
     scope: string,
-  ): Promise<{ status: 'connected' | 'code_required' | 'failed' | 'expired'; sentTo?: string }> {
+  ): Promise<{
+    status: 'connected' | 'code_required' | 'failed' | 'expired' | 'denied';
+    sentTo?: string;
+  }> {
     if (result.status === 'complete') {
       await this.#connected(pending);
       return { status: 'connected' };
@@ -587,7 +596,7 @@ export class PoppyConnections {
     return { status: result.status };
   }
 
-  /** Device Sign-In (§4.6): the code and the Company page where the person approves it. */
+  /** Device Sign-In (§4.3): the code and the Company page where the person approves it. */
   async deviceStart(id: string): Promise<{ userCode: string; verificationUri: string } | null> {
     const pending = await this.#openPending(id);
     if (pending === null || pending.status !== 'open') return null;
@@ -665,8 +674,8 @@ export class PoppyConnections {
   }
 
   /**
-   * One exchange with the Company's agent (§7): `act: false` narrows the token to the read scopes
-   * (`policy.readScopes`, default `poppy:read`), so a question can never make the Company act;
+   * One exchange with the Company's agent (§8): `act: false` narrows the token to the read scopes
+   * (`policy.readScopes`, default the scopes the Company hints change nothing), so a question can never make the Company act;
    * `act: true` uses the whole grant — the tools gate that behind the person's confirmation.
    */
   ask(
@@ -679,7 +688,7 @@ export class PoppyConnections {
       let scope: string | undefined;
       if (!options.act) {
         const granted = new Set((client.accountToken?.scope ?? '').split(' ').filter(Boolean));
-        const read = (policy.readScopes ?? DEFAULT_READ_SCOPES).filter((s) => granted.has(s));
+        const read = (policy.readScopes ?? readOnlyScopes(client)).filter((s) => granted.has(s));
         if (client.accountToken && read.length === 0) {
           return {
             conversationId: '',
@@ -691,7 +700,7 @@ export class PoppyConnections {
         scope = read.length > 0 ? read.join(' ') : undefined;
       }
       const conv = new ConversationClient(client, undefined, { scope });
-      const message = { id: newMessageId(), sender: 'agent' as const, text };
+      const message = { id: newMessageId(), author: { type: 'agent' as const }, text };
       const open = Object.entries(client.state.conversations)
         .filter(
           ([, c]) =>
@@ -728,6 +737,7 @@ export class PoppyConnections {
           } else if (ev.type === 'authorization') {
             reply.authorization = {
               error: String(ev.error ?? 'insufficient_scope'),
+              connected: client.accountToken !== undefined,
               ...(typeof ev.scope === 'string' ? { scope: ev.scope } : {}),
             };
           } else if (ev.type === 'state' && typeof ev.status === 'string') {
@@ -744,19 +754,35 @@ export class PoppyConnections {
   }
 }
 
-/** The scopes a Company offers for signing in, broadest list first. */
+/** The scopes a Company offers for signing in (4.7). */
 function offeredScopes(client: CompanyClient): string[] {
-  const auth = client.document.auth;
-  return auth?.direct?.scopes ?? auth?.device?.scopes ?? auth?.mediated?.scopes ?? [];
+  const metadata = client.discovered.metadata;
+  return (
+    metadata?.scopes_supported ??
+    Object.keys(client.document.auth?.scopes ?? {}).concat(
+      Object.keys(client.document.auth?.scope_hints ?? {}),
+    )
+  );
 }
 
-/** `scope` narrowed to what one sign-in type can grant (falls back to all it offers). */
+/** The scopes whose hint says no action changes anything (4.7). An unknown value isn't `none`. */
+function readOnlyScopes(client: CompanyClient): string[] {
+  return Object.entries(client.document.auth?.scope_hints ?? {})
+    .filter(([, hint]) => hint?.changes === 'none')
+    .map(([scope]) => scope);
+}
+
+/**
+ * `scope` narrowed to what one sign-in type can grant. Only Mediated keeps its own list (falling
+ * back to all of it); Direct and Device grant what the issuer's policies allow.
+ */
 function withinType(
   client: CompanyClient,
   type: 'direct' | 'device' | 'mediated',
   scope: string,
 ): string {
-  const offered = client.document.auth?.[type]?.scopes ?? [];
+  if (type !== 'mediated') return scope;
+  const offered = mediatedExtension(client)?.scopes ?? [];
   const wanted = scope.split(' ').filter((s) => offered.includes(s));
   return (wanted.length > 0 ? wanted : offered).join(' ');
 }

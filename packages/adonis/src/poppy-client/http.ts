@@ -1,5 +1,6 @@
 import type { DpopKey } from './dpop.js';
 import { PoppyError } from './errors.js';
+import { safeFetch } from './safe_fetch.js';
 import { type FetchLike, parseRetryAfter, sleep, wwwAuthError } from './util.js';
 
 export interface HttpOptions {
@@ -19,9 +20,11 @@ export interface PoppyRequestInit {
   body?: (string | (() => Promise<string>)) | undefined;
   /** Signs a DPoP proof for every attempt when set. */
   dpop?: DpopKey | undefined;
-  /** Sent as `Authorization: {scheme} {token}`. Never put in the URL (4.3). */
+  /** Sent as `Authorization: {scheme} {token}`. Never put in the URL (5.6). */
   accessToken?: string | undefined;
   scheme?: 'DPoP' | 'Bearer' | undefined;
+  /** Signs the `Poppy-Session` JWT for every attempt, since each is good for one request (5.2). */
+  session?: (() => Promise<string>) | undefined;
   signal?: AbortSignal | undefined;
   redirect?: 'follow' | 'manual' | 'error' | undefined;
 }
@@ -29,7 +32,7 @@ export interface PoppyRequestInit {
 /**
  * The one place requests leave this client. It signs DPoP proofs, remembers `DPoP-Nonce`
  * values per origin and retries once on `use_dpop_nonce` (RFC 9449 section 8/9), and waits
- * out a 429 `Retry-After` once (4.3, "Rate limits").
+ * out a 429 `Retry-After` once (5.6). Secrets never follow a redirect (3).
  */
 export class PoppyHttp {
   readonly fetch: FetchLike;
@@ -38,7 +41,7 @@ export class PoppyHttp {
   private readonly log?: ((line: string) => void) | undefined;
 
   constructor(opts: HttpOptions = {}) {
-    this.fetch = opts.fetch ?? ((input, init) => globalThis.fetch(input, init));
+    this.fetch = opts.fetch ?? safeFetch;
     this.maxRetryAfter = opts.maxRetryAfterSeconds ?? 30;
     this.log = opts.log;
   }
@@ -52,10 +55,12 @@ export class PoppyHttp {
       const headers = new Headers(init.headers);
       const scheme = init.scheme ?? (init.dpop ? 'DPoP' : 'Bearer');
       if (init.accessToken) headers.set('authorization', `${scheme} ${init.accessToken}`);
-      if (init.dpop) {
+      if (init.session) headers.set('poppy-session', await init.session());
+      const proved = init.dpop && (scheme === 'DPoP' || !init.accessToken);
+      if (proved) {
         headers.set(
           'dpop',
-          await init.dpop.proof({
+          await init.dpop!.proof({
             htm: method,
             htu: url,
             accessToken: scheme === 'DPoP' ? init.accessToken : undefined,
@@ -69,8 +74,9 @@ export class PoppyHttp {
         headers,
         ...(body !== undefined ? { body } : {}),
         ...(init.signal !== undefined ? { signal: init.signal } : {}),
-        // A redirect would change `htu`, so DPoP requests never follow one silently.
-        redirect: init.redirect ?? (init.dpop ? 'manual' : 'follow'),
+        // A redirect would change `htu`, and it never carries the protocol's secrets (3).
+        redirect:
+          init.redirect ?? (init.dpop || init.session || init.accessToken ? 'manual' : 'follow'),
       });
 
       const nonce = res.headers.get('dpop-nonce');

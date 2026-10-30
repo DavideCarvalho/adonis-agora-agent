@@ -10,21 +10,27 @@ export interface TokenRecord {
   /** Epoch ms. */
   expiresAt: number;
   scope: string;
-  sessionId: string;
-  signedIn: boolean;
   /** RFC 8707 resource this token was issued for, if any. */
   resource?: string | undefined;
 }
 
+/** The refresh token of a sign-in (4.4). Stored as `accountToken`, its name before Draft 0.3. */
 export interface AccountTokenRecord {
-  /** The Account Token (an OAuth refresh token). A secret: never logged or shown (4.8). */
+  /** A secret: never logged or shown (10.2). */
   refreshToken: string;
   scope: string;
   obtainedAt: number;
-  /** Epoch ms, from `refresh_token_expires_in` when the Company sets one. */
-  expiresAt?: number | undefined;
   /** Which sign-in type produced it. */
   via: 'direct' | 'device' | 'mediated';
+}
+
+/** The delegated key that signs this User ID's Session JWTs, with its delegation (5.2). */
+export interface DelegationRecord {
+  key: StoredKey;
+  /** The `pap-delegation+jwt`, compact. */
+  jwt: string;
+  /** Epoch seconds: the delegation's `exp`. */
+  exp: number;
 }
 
 export interface ConversationRecord {
@@ -36,18 +42,25 @@ export interface ConversationRecord {
   closed?: boolean | undefined;
 }
 
-/** Everything the agent remembers about one User at one Company (keyed by issuer, 3.2). */
+/** Everything the agent remembers about one User at one Company, by its identifier (3.2). */
 export interface CompanyState {
+  /** The Company's identifier: its issuer, or `https://{domain}` without one (3.2). */
   issuer: string;
+  /** Whether `issuer` is a real OAuth issuer, not the domain fallback. */
+  hasIssuer?: boolean | undefined;
+  /** The protocol version this state was written for; an older one drops tokens and Session. */
+  protocol?: string | undefined;
   domains: string[];
-  /** Opaque, random, per-Company User ID (4.2). Never derived from personal information. */
+  /** Opaque, random, per-Company User ID (5.1). Never derived from personal information. */
   userId: string;
-  /** DPoP key for this User at this Company (4.3). Never published. */
+  /** DPoP key for this User at this Company. Never published. */
   dpopKey: StoredKey;
+  /** One User ID's delegated key: never shared with another User ID (5.2). */
+  delegation?: DelegationRecord | undefined;
   accountToken?: AccountTokenRecord | undefined;
-  /** Session Tokens by key: `dpop` (default) or `dpop|scope|resource` / `bearer|resource`. */
+  /** Access tokens by key: `default`, or `{resource}|{scope}|{bearer}`. */
   tokens: Record<string, TokenRecord>;
-  /** The current Session's ID. Not a credential (4.2). */
+  /** The current Session's `sid`: random, used for no other Session (5.2). Not a credential. */
   sessionId?: string | undefined;
   conversations: Record<string, ConversationRecord>;
 }
@@ -73,7 +86,7 @@ export function defaultStatePath(): string {
 }
 
 /**
- * The local state file. It holds private keys and Account Tokens, so it is written with mode
+ * The local state file. It holds private keys and refresh tokens, so it is written with mode
  * 0600 (directory 0700) and atomically (temp file + rename).
  */
 export class StateStore {

@@ -62,8 +62,8 @@ export interface ProtectedResourceMetadata {
 
 /**
  * The Poppy issuer `@adonis-agora/authkit-server` announces in `Symbol.for('@adonis-agora/poppy:issuer')`
- * when Personal Agent Protocol is on — Poppy §6 requires a listed MCP server's `authorization_servers`
- * to include it, so a Poppy Session Token's issuer is one this server names.
+ * when Personal Agent Protocol is on — Poppy §7 requires a listed MCP server's `authorization_servers`
+ * to include it, so a Poppy access token's issuer is one this server names.
  */
 export function announcedPoppyIssuer(): string | undefined {
   const value = (globalThis as Record<symbol, unknown>)[Symbol.for('@adonis-agora/poppy:issuer')];
@@ -95,7 +95,7 @@ export interface WwwAuthenticateOptions {
    * The RFC 6750 error code. `invalid_token` when the request carried a token that was refused,
    * `insufficient_scope` for a `403`, omitted when no token was sent at all (RFC 6750 §3.1).
    */
-  error?: 'invalid_token' | 'insufficient_scope' | 'sign_in_required';
+  error?: 'invalid_token' | 'insufficient_scope';
   /** The metadata URL (RFC 9728 §5.1). Set only when the auth strategy exposes OAuth metadata. */
   resourceMetadataUrl?: string;
   /** With `insufficient_scope`: the scopes the request needs (RFC 6750 §3), space-separated. */

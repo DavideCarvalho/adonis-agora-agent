@@ -124,7 +124,7 @@ describe('Poppy over a durable runner', () => {
       try {
         const startedAt = Date.now();
         const { conversationId } = await conversations.start(principal, {
-          message: { id: 'msg_1', sender: 'agent', text: 'hi' },
+          message: { id: 'msg_1', author: { type: 'agent' }, text: 'hi' },
         });
         expect(await replyOf(conversations, conversationId, 3000)).toBe('Hello from the agent');
         expect(Date.now() - startedAt).toBeLessThan(2000);
@@ -149,7 +149,7 @@ describe('Poppy over a durable runner', () => {
     });
     try {
       const { conversationId } = await conversations.start(principal, {
-        message: { id: 'msg_1', sender: 'agent', text: 'hi' },
+        message: { id: 'msg_1', author: { type: 'agent' }, text: 'hi' },
       });
       await sleep(300);
       const turns = await app.engine.listRuns({ workflow: 'agora.agent.run' });
@@ -188,7 +188,7 @@ describe('Poppy over a durable runner', () => {
     });
     try {
       const { conversationId } = await conversations.start(principal, {
-        message: { id: 'msg_1', sender: 'agent', text: 'coordinate' },
+        message: { id: 'msg_1', author: { type: 'agent' }, text: 'coordinate' },
       });
       expect(await replyOf(conversations, conversationId, 4000)).toContain('All done.');
     } finally {

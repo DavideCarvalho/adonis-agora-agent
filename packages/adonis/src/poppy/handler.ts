@@ -22,7 +22,7 @@ export interface PoppyExchange {
   url: string;
   /** Lower-cased header names, repeated values joined. */
   headers: Record<string, string | undefined>;
-  /** The headers as received (lower-cased names) — what the Session Token resolver verifies. */
+  /** The headers as received (lower-cased names) — what the Session resolver verifies. */
   rawHeaders: Record<string, string | string[] | undefined>;
   /** The raw body, refused past `limit` bytes. */
   readBody(limit: number): Promise<string>;
@@ -42,13 +42,13 @@ export interface PoppyHandlerOptions {
   /** The endpoint path, no slashes (`'poppy/conversations'`). */
   path: string;
   conversations: PoppyConversations;
-  /** Verifies Session Tokens. Omitted → the global slot, read per request. */
+  /** Verifies Session headers and access tokens. Omitted → the global slot, read per request. */
   authenticate?: PoppyAuthenticate;
   /** Largest accepted request body, in bytes. Default 1 MiB. */
   maxBodyBytes?: number;
   /** Cap on a read's `wait`, in seconds. Default 30. */
   maxWaitSeconds?: number;
-  /** Close a stream after this long; the Personal Agent reconnects (§7.6). Default 5 minutes. */
+  /** Close a stream after this long; the Personal Agent reconnects (§8.6). Default 5 minutes. */
   streamMaxMs?: number;
   /** A comment line this often keeps a stream's proxies from timing it out. Default 15 s. */
   keepAliveMs?: number;
@@ -82,19 +82,13 @@ function matchRoute(method: string, rest: string[]): Route | 404 | 405 {
   }
 }
 
-/** The scheme the request authenticated with — what a challenge of ours is written in. */
-function schemeOf(exchange: PoppyExchange): string {
-  const header = exchange.headers.authorization ?? '';
-  return /^bearer\s/i.test(header) ? 'Bearer' : 'DPoP';
-}
-
 /** `wait` in ms, capped; absent → 0. */
 function waitMs(exchange: PoppyExchange, maxSeconds: number): number {
   const raw = exchange.query.wait;
   if (raw === undefined || raw === '') return 0;
   const seconds = Number(raw);
-  if (!Number.isFinite(seconds) || seconds < 0) {
-    throw new PoppyError('invalid_request', 'wait must be a non-negative number of seconds');
+  if (!Number.isInteger(seconds) || seconds < 0) {
+    throw new PoppyError('invalid_request', 'wait must be a whole number of seconds, 0 or more');
   }
   return Math.min(seconds, maxSeconds) * 1000;
 }
@@ -105,7 +99,7 @@ function cursorOf(exchange: PoppyExchange, header = false): string | undefined {
 }
 
 /**
- * The Poppy conversation endpoint (§7) — `POST {endpoint}`, `POST {endpoint}/{id}/messages`,
+ * The Poppy conversation endpoint (§8) — `POST {endpoint}`, `POST {endpoint}/{id}/messages`,
  * `GET {endpoint}/{id}/events` (JSON, long-poll with `wait`, or SSE), `POST …/handoff` and
  * `POST …/close`. Returns a handler that answers everything under `/{path}` and reports `false`
  * for anything else, so it can sit in front of the router.
@@ -114,7 +108,7 @@ function cursorOf(exchange: PoppyExchange, header = false): string | undefined {
  * `Symbol.for('@adonis-agora/poppy:authenticate')` (`@adonis-agora/authkit-server`) or the one
  * given. Without either the endpoint answers `501`.
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.1 (https://personalagentprotocol.org/docs/spec),
+ * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
  * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
  * ways, outside semver majors while it is a draft.
  */
@@ -129,7 +123,7 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
     if (!resolver) {
       throw new PoppyError(
         'not_implemented',
-        'Poppy conversations are not enabled: no Session Token resolver is installed',
+        'Poppy conversations are not enabled: no Session resolver is installed',
       );
     }
     // No options: a turn's scopes are decided per tool, and the `resource` a token must carry is
@@ -140,18 +134,21 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
       headers: exchange.rawHeaders,
     });
     if (result.ok) return result.principal;
+    const headers: Record<string, string> = {
+      ...(result.headers ?? {}),
+      ...(result.wwwAuthenticate ? { 'WWW-Authenticate': result.wwwAuthenticate } : {}),
+      'Cache-Control': 'no-store',
+    };
+    // Token errors are in `WWW-Authenticate`, as in OAuth; `invalid_session` is a JSON body (§8).
     exchange.json(
       result.status,
-      {
-        error: result.error,
-        ...(result.description !== undefined ? { error_description: result.description } : {}),
-        ...(result.scope !== undefined ? { scope: result.scope } : {}),
-      },
-      {
-        ...(result.headers ?? {}),
-        'WWW-Authenticate': result.wwwAuthenticate,
-        'Cache-Control': 'no-store',
-      },
+      result.error === 'invalid_session'
+        ? {
+            error: result.error,
+            ...(result.description !== undefined ? { error_description: result.description } : {}),
+          }
+        : {},
+      headers,
     );
     return null;
   }
@@ -263,7 +260,7 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
 
   /**
    * A message POST's answer: its status and body — or, with `wait`, a read of the events from
-   * `cursor` (the start without one), still under the POST's status (§7.3).
+   * `cursor` (the start without one), still under the POST's status (§8.3).
    */
   async function answerPost(
     exchange: PoppyExchange,
@@ -309,15 +306,23 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
             : null;
       if (poppy === null) options.onError?.(error);
       const answer = poppy ?? new PoppyError('server_error', 'Internal error');
-      exchange.json(
-        answer.status,
-        answer.toJSON(),
-        answer.code === 'sign_in_required'
-          ? { 'WWW-Authenticate': `${schemeOf(exchange)} error="sign_in_required"` }
-          : answer.code === 'method_not_allowed'
+      if (answer.code === 'account_required') {
+        const scope =
+          typeof answer.extra.scope === 'string' ? ` scope="${answer.extra.scope}"` : '';
+        exchange.json(
+          401,
+          {},
+          { 'WWW-Authenticate': `Bearer${scope}`, 'Cache-Control': 'no-store' },
+        );
+      } else {
+        exchange.json(
+          answer.status,
+          answer.toJSON(),
+          answer.code === 'method_not_allowed'
             ? { Allow: matched === 405 ? allowFor(decoded) : '' }
             : {},
-      );
+        );
+      }
     }
     return true;
   };

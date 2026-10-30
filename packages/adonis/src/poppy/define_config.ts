@@ -12,7 +12,7 @@ import type { PoppyStore } from './store.js';
 
 /**
  * Shape of `config/poppy.ts`. Exposes an agent as the Company Agent of Personal Agent Protocol
- * ("Poppy", Draft 0.1) conversations — https://personalagentprotocol.org, §7:
+ * ("Poppy", Draft 0.3) conversations — https://personalagentprotocol.org, §8:
  *
  * ```ts
  * import { definePoppyConfig } from '@adonis-agora/agent/poppy'
@@ -23,11 +23,11 @@ import type { PoppyStore } from './store.js';
  * })
  * ```
  *
- * Session Tokens are verified by the resolver `@adonis-agora/authkit-server` installs in
+ * Session headers and access tokens are verified by the resolver `@adonis-agora/authkit-server` installs in
  * `Symbol.for('@adonis-agora/poppy:authenticate')`, or by `authenticate`. Advertise the endpoint
  * in `poppy.json` as `agent.protocols: [{ type: 'poppy', endpoint: 'https://…/poppy/conversations' }]`.
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.1 (https://personalagentprotocol.org/docs/spec),
+ * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
  * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
  * ways, outside semver majors while it is a draft.
  */
@@ -43,7 +43,7 @@ export interface PoppyConfig {
   baseUrl?: string;
   /** The registered agent that answers. Default: the agent provider's default agent. */
   agent?: string;
-  /** Verifies Session Tokens; overrides the global resolver. Neither → the endpoint answers 501. */
+  /** Verifies Session headers and access tokens; overrides the global resolver. Neither → the endpoint answers 501. */
   authenticate?: PoppyAuthenticate;
   /**
    * The actor of a principal the resolver gave none (`principal.actor`). Gets the default: the
@@ -62,9 +62,9 @@ export interface PoppyConfig {
   autoCreateTables?: boolean;
   /** What happens to `action` calls that park for approval. Default `'approve-delegated'`. */
   actions?: A2aActionPolicy;
-  /** Bring a person in (§7.9). Without it, a handoff is declined by the Company Agent. */
+  /** Bring a person in (§8.9). Without it, a handoff is declined by the Company Agent. */
   handoff?: PoppyHandoffHooks;
-  /** Notified when a Direct Conversation opens or closes (§7.10). */
+  /** Notified when a Direct Conversation opens or closes (§8.10). */
   direct?: PoppyDirectHooks;
   /** What the Company Agent says on its own. */
   texts?: Partial<PoppyTexts>;
@@ -97,7 +97,7 @@ export interface PoppyConfig {
 /**
  * Identity helper giving `config/poppy.ts` full type-checking.
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.1 (https://personalagentprotocol.org/docs/spec),
+ * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
  * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
  * ways, outside semver majors while it is a draft.
  */
