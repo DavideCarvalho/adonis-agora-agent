@@ -423,7 +423,9 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
         estimatedCostUsd: 0,
         unpricedRows: 0,
       };
-      const cost = row.costUsd !== undefined || reprice ? this.rowCost(row) : 0;
+      // A recorded cost always counts; an unpriced row is priced from its tokens only when repricing.
+      const priced = row.costUsd !== undefined || reprice;
+      const cost = priced ? this.rowCost(row) : 0;
       if (row.costUsd === undefined) bucket.unpricedRows += 1;
       bucket.requests += row.requests ?? 1;
       bucket.inputTokens += row.inputTokens;

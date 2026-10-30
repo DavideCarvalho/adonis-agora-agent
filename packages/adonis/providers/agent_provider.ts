@@ -1893,6 +1893,11 @@ export default class AgentProvider {
         // `since` / `until` (ISO instants, `until` exclusive) replace the day range when both are given.
         const since = ctx.request.input('since');
         const until = ctx.request.input('until');
+        if ((since === undefined) !== (until === undefined)) {
+          return ctx.response
+            .status(400)
+            .json({ message: 'since and until go together: pass both, or neither (from/to days)' });
+        }
         const window =
           since !== undefined && until !== undefined
             ? { from: String(since), to: String(until) }
