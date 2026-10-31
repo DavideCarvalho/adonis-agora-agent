@@ -481,7 +481,7 @@
     "@json-render/core": "0.21.3",
     "@json-render/react": "0.21.3",
     "@mui/material": "7.3.11",
-    "@opencode/client": "2.1.4",
+    "@opencode/client": "2.2.0",
     "@qdrant/js-client-rest": "1.20.0",
     "@resvg/resvg-js": "2.6.2",
     "@streamdown/code": "1.1.1",
