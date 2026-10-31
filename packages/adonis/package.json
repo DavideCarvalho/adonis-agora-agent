@@ -464,7 +464,7 @@
   "devDependencies": {
     "@a2ui/react": "0.12.0",
     "@a2ui/web_core": "0.12.0",
-    "@adonis-agora/authz": "0.19.1",
+    "@adonis-agora/authz": "0.20.1",
     "@adonis-agora/diagnostics": "0.3.1",
     "@adonis-agora/durable": "0.49.1",
     "@adonis-agora/telescope": "0.23.0",
