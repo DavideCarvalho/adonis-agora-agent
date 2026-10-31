@@ -467,7 +467,7 @@
     "@adonis-agora/authz": "0.20.1",
     "@adonis-agora/diagnostics": "0.3.2",
     "@adonis-agora/durable": "0.49.1",
-    "@adonis-agora/telescope": "0.23.0",
+    "@adonis-agora/telescope": "0.26.2",
     "@adonisjs/assembler": "8.6.0",
     "@adonisjs/core": "7.6.0",
     "@adonisjs/lucid": "22.4.2",
