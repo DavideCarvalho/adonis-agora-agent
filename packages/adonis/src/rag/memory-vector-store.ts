@@ -30,8 +30,13 @@ export class MemoryVectorStore implements VectorStore {
 
   async replaceDocument(documentId: string, records: VectorRecord[]): Promise<void> {
     await this.replacing.run(documentId, async () => {
-      await this.remove(documentId);
       await this.upsert(records);
+      const current = new Set(records.map((record) => record.id));
+      for (const id of this.records.keys()) {
+        if (documentIdOf(id) === documentId && !current.has(id)) {
+          this.records.delete(id);
+        }
+      }
     });
   }
 

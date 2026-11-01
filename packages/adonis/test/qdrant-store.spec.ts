@@ -71,6 +71,48 @@ class RecordingQdrantClient implements QdrantClientLike {
   }
 }
 
+describe('QdrantStore.replaceDocument', () => {
+  const record = (id: string) => ({ id, text: id, embedding: [1, 0] });
+  const methods = (client: RecordingQdrantClient) => client.calls.map((call) => call.method);
+
+  it('writes the new chunks, then drops only the rest of the document', async () => {
+    const client = new RecordingQdrantClient();
+    await new QdrantStore(client).replaceDocument('d', [record('d#0'), record('d#1')]);
+    expect(methods(client)).toEqual(['upsert', 'delete']);
+    expect(client.calls[1]?.args[1]).toEqual({
+      filter: {
+        must: [{ key: 'documentId', match: { value: 'd' } }],
+        must_not: [{ key: 'id', match: { any: ['d#0', 'd#1'] } }],
+      },
+      wait: true,
+    });
+  });
+
+  it('drops the whole document, waiting, when there are no chunks', async () => {
+    const client = new RecordingQdrantClient();
+    await new QdrantStore(client).replaceDocument('d', []);
+    expect(methods(client)).toEqual(['delete']);
+    expect(client.calls[0]?.args[1]).toEqual({
+      filter: { must: [{ key: 'documentId', match: { value: 'd' } }] },
+      wait: true,
+    });
+  });
+
+  it('keeps the old chunks when the write fails, and a later call still runs', async () => {
+    const client = new RecordingQdrantClient();
+    const store = new QdrantStore(client);
+    const upsert = client.upsert.bind(client);
+    client.upsert = async () => {
+      throw new Error('qdrant down');
+    };
+    await expect(store.replaceDocument('d', [record('d#0')])).rejects.toThrow('qdrant down');
+    expect(methods(client)).not.toContain('delete');
+    client.upsert = upsert;
+    await store.replaceDocument('d', [record('d#0')]);
+    expect(methods(client)).toEqual(['upsert', 'delete']);
+  });
+});
+
 describe('chunkIdToPointId', () => {
   it('é um UUID determinístico (mesmo id → mesmo UUID)', () => {
     const a = chunkIdToPointId('doc-1#3');
