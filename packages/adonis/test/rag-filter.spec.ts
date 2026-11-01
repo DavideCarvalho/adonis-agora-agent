@@ -95,6 +95,8 @@ describe('an undefined filter value denies', () => {
   it('matchesFilter', () => {
     expect(matchesFilter({}, { tenant: undefined })).toBe(false);
     expect(matchesFilter({ tenant: 'A' }, { tenant: undefined })).toBe(false);
+    expect(matchesFilter({ tenant: 'A' }, { tenant: ['A', undefined] })).toBe(false);
+    expect(matchesFilter({}, { tenant: ['A', undefined] })).toBe(false);
   });
 
   it('the Postgres clause is false, not an empty containment', () => {

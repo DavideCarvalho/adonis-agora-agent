@@ -185,7 +185,9 @@ export function buildQdrantFilter(
   const must: QdrantCondition[] = Object.entries(filter).map(([key, value]) => {
     const k = `metadata.${key}`;
     // A scope whose value is missing denies, the same `any: []` an empty array builds.
-    if (value === undefined) return { key: k, match: { any: [] } };
+    if (value === undefined || (Array.isArray(value) && value.includes(undefined))) {
+      return { key: k, match: { any: [] } };
+    }
     return Array.isArray(value) ? { key: k, match: { any: value } } : { key: k, match: { value } };
   });
   return { must };

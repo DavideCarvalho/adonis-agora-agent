@@ -180,7 +180,9 @@ export function assertRemovalFilter(filter: Record<string, unknown>): void {
     );
   }
   const missing = Object.entries(filter)
-    .filter(([, value]) => value === undefined)
+    .filter(
+      ([, value]) => value === undefined || (Array.isArray(value) && value.includes(undefined)),
+    )
     .map(([key]) => `"${key}"`);
   if (missing.length > 0) {
     throw new UnsafeRemovalError(
@@ -202,7 +204,9 @@ export function assertRemovalFilter(filter: Record<string, unknown>): void {
  */
 export function filterDeniesAll(filter: Record<string, unknown>): boolean {
   return Object.values(filter).some(
-    (value) => value === undefined || (Array.isArray(value) && value.length === 0),
+    (value) =>
+      value === undefined ||
+      (Array.isArray(value) && (value.length === 0 || value.includes(undefined))),
   );
 }
 
