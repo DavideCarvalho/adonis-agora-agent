@@ -58,3 +58,11 @@ export {
   type VectorSearchOptions,
   type VectorStore,
 } from './vector-store.js';
+export {
+  type RagModelStatics,
+  type RagRow,
+  RagScopeRequiredError,
+  type RagSearchOptions,
+  type WithRagOptions,
+  withRag,
+} from './with-rag.js';
