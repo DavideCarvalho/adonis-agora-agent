@@ -12,10 +12,10 @@ import type { VectorRecord, VectorStore } from './vector-store.js';
 
 type MaybePromise<T> = T | Promise<T>;
 
-/** A required scope key was missing from {@link RagSearchOptions.scope}. The search did not run. */
+/** A required scope key was missing, from the search or from the row. Nothing ran. */
 export class RagScopeRequiredError extends Error {
-  constructor(model: string, key: string) {
-    super(`${model}.ragSearch needs scope.${key}: this model's chunks are isolated by it`);
+  constructor(model: string, key: string, operation: 'ragSearch' | 'ragIndex' = 'ragSearch') {
+    super(`${model}.${operation} needs scope.${key}: this model's chunks are isolated by it`);
     this.name = 'RagScopeRequiredError';
   }
 }
@@ -81,8 +81,8 @@ export interface RagModelStatics {
  * await ProjectDocument.ragSearch('question', { scope: { projectId } })
  * ```
  *
- * Deleting a row through the model removes its chunks; a database `ON DELETE CASCADE` fires no hook, so
- * clean those up yourself. Saving does NOT index: embedding is a slow, paid call that has no place in a
+ * `row.delete()` removes its chunks. Nothing else does: a database `ON DELETE CASCADE`, a bulk
+ * `Model.query().delete()` and `deleteQuietly()` fire no hook, so call `ragRemove` or clean up yourself. Saving does NOT index: embedding is a slow, paid call that has no place in a
  * `save()`, so call `ragIndex` from a job or wherever the text is known to have changed.
  */
 // biome-ignore lint/suspicious/noExplicitAny: a model's attributes are only known to the caller
@@ -116,6 +116,7 @@ export function withRag<Row = any>(options: WithRagOptions<Row>) {
        */
       async ragIndex(text?: string | null): Promise<number> {
         const row = this as unknown as Row;
+        const model = this.constructor as unknown as typeof BaseModel;
         const full = (text === undefined ? options.text?.(row) : text)?.trim();
         const store = await options.store();
         if (!full) {
@@ -124,17 +125,29 @@ export function withRag<Row = any>(options: WithRagOptions<Row>) {
         }
 
         const source = options.source?.(row) ?? undefined;
-        const base = { ...options.metadata?.(row), ...scopeValues(this, scopeKeys) };
+        const scope = scopeValues(this, scopeKeys);
+        for (const key of scopeKeys) {
+          // Without it the chunks would be written where no search could ever reach them.
+          if (scope[key] === undefined || scope[key] === null) {
+            throw new RagScopeRequiredError(model.name, key, 'ragIndex');
+          }
+        }
+        const base = options.metadata?.(row);
         const chunks = chunkText(full, options.chunk)
           .slice(0, options.maxChunks)
           .map((chunk, index) => ({
             id: `${this.ragDocumentId}#${index}`,
             text: chunk,
             ...(source !== undefined ? { source } : {}),
-            metadata: { ...base, ...options.chunkMetadata?.(chunk, full, row) },
+            // Scope last: nothing can retag a chunk to another tenant.
+            metadata: { ...base, ...options.chunkMetadata?.(chunk, full, row), ...scope },
           }));
 
         const documentId = this.ragDocumentId;
+        if (chunks.length === 0) {
+          await store.remove(documentId);
+          return 0;
+        }
         return ingestChunks(chunks, {
           embedder: await options.embedder(),
           ...(options.onUsage ? { onUsage: options.onUsage } : {}),

@@ -62,7 +62,8 @@ export interface PgVectorStoreOptions {
   /**
    * The pgvector column type. `halfvec` stores each dimension in 2 bytes instead of 4 (half the table and
    * index, for a negligible recall loss on normalized embeddings) and needs pgvector ≥ 0.7. Only for a
-   * single width: a mixed-dimension table stays `vector`. Default `vector`.
+   * single width: a mixed-dimension table stays `vector`. Default `vector`. Only changes the DDL for a
+   * table that does not exist yet: `ensureSchema` will not convert an existing `vector` column.
    */
   vectorType?: 'vector' | 'halfvec';
   /**

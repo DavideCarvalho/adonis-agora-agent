@@ -121,4 +121,35 @@ describe('withRag', () => {
     const [hit] = await Doc.ragSearch('palavra', { scope: { projectId: 'p1' } });
     expect(hit.metadata.size).toBeGreaterThan(0);
   });
+
+  it('refuses to index a row without its scope, instead of orphaning the chunks', async () => {
+    const { Doc, store } = setup();
+
+    await expect(new Doc({ id: '1', body: 'gatos' }).ragIndex()).rejects.toBeInstanceOf(
+      RagScopeRequiredError,
+    );
+
+    expect(await store.listDocumentIds()).toEqual([]);
+  });
+
+  it('chunkMetadata and metadata cannot retag a chunk to another scope', async () => {
+    const { Doc } = setup({
+      metadata: () => ({ projectId: 'p2' }),
+      chunkMetadata: () => ({ projectId: 'p2' }),
+    });
+    await new Doc({ id: '1', body: 'gatos', projectId: 'p1' }).ragIndex();
+
+    expect(await Doc.ragSearch('gatos', { scope: { projectId: 'p2' } })).toEqual([]);
+    expect(await Doc.ragSearch('gatos', { scope: { projectId: 'p1' } })).toHaveLength(1);
+  });
+
+  it('no chunks left after the cut still removes the old ones', async () => {
+    const { Doc, store } = setup({ maxChunks: 0 });
+    const row = new Doc({ id: '1', body: 'gatos', projectId: 'p1' });
+    await store.upsert([{ id: 'documents:1#0', text: 'velho', embedding: [1] }]);
+
+    expect(await row.ragIndex()).toBe(0);
+
+    expect(await store.listDocumentIds()).toEqual([]);
+  });
 });
