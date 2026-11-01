@@ -174,7 +174,7 @@ export interface FacetHit {
  * Translates a metadata filter (`Record<string, unknown>`) into a {@link QdrantFilter}, preserving
  * token-ACL semantics: a scalar is an exact match; an array is match-any (set membership — it mirrors
  * pgvector's `jsonb_exists_any`, since Qdrant's `any` tests intersection against a scalar OR an array
- * field); an empty array denies everything (`any: []` never matches). Keys target `metadata.<k>` (the
+ * field); an empty array, `undefined` or an array holding it denies everything (`any: []` never matches). Keys target `metadata.<k>` (the
  * payload nests metadata under `metadata`). Multiple keys are ANDed into `must`. Empty or absent →
  * undefined.
  */

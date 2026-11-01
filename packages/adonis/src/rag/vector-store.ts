@@ -15,7 +15,7 @@ export interface VectorSearchOptions {
   /**
    * Metadata filter, passed through from `RetrieveOptions.filter`. A scalar value is exact-match; an
    * array value is match-any (OR / set membership), with an empty array denying everything — the
-   * capability-token ACL primitive. See {@link import('./filter.js').matchesFilter}.
+   * capability-token ACL primitive. `undefined`, or an array holding it, denies too. See {@link import('./filter.js').matchesFilter}.
    */
   filter?: Record<string, unknown>;
   /**
@@ -128,6 +128,13 @@ export interface VectorStore {
    * Optional so a host-written store still compiles; feature-detect with `store.removeWhere?.(…)`.
    */
   removeWhere?(filter: Record<string, unknown>): Promise<number>;
+  /**
+   * Swap all of a document's chunks atomically, so no search or crash sees it half-replaced.
+   *
+   * Optional so a host-written store still compiles; without it, callers fall back to `remove` plus
+   * `upsert`.
+   */
+  replaceDocument?(documentId: string, records: VectorRecord[]): Promise<void>;
 }
 
 /**
@@ -193,7 +200,8 @@ export function assertRemovalFilter(filter: Record<string, unknown>): void {
 }
 
 /**
- * Does this filter deny everything? True when any key carries an **empty array** — no value is a member
+ * Does this filter deny everything? True when any key carries `undefined`, an array holding it (a scope
+ * whose value was never set), or an **empty array** — no value is a member
  * of the empty set, so nothing can match (see {@link import('./filter.js').matchesFilter}).
  *
  * Every filter builder in this package already encodes that (`matchesFilter` returns false,

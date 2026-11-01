@@ -206,7 +206,8 @@ export function stripNulBytes<T>(value: T): T {
  *   exact-match, byte-for-byte the previous behavior so scalar filters stay backward compatible.
  * - an **array** filter value is a **match-any** (OR / set membership) check: the record matches when
  *   its value for that key — scalar or array — shares an element with the filter array. An empty array
- *   can never match (the `false` deny primitive).
+ *   can never match (the `false` deny primitive), nor can `undefined` or an array holding it: that is
+ *   a scope whose value was never set.
  *
  * Set membership uses `jsonb_exists_any(jsonb, text[])` — the function form of the `?|` operator, chosen
  * because bare `?|` collides with Knex's `?` binding placeholder. The metadata KEY is itself a `?`

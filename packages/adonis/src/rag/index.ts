@@ -59,6 +59,7 @@ export {
   type VectorStore,
 } from './vector-store.js';
 export {
+  RAG_ENTITY_KEY,
   type RagModelStatics,
   type RagRow,
   RagScopeRequiredError,

@@ -171,11 +171,8 @@ export function withRag<Row = any>(options: WithRagOptions<Row>) {
           // `ingestChunks` only upserts, after embedding: that is the moment to drop the old chunks.
           store: {
             upsert: async (records: VectorRecord[]) => {
-              const { replaceDocument } = store as {
-                replaceDocument?: (id: string, records: VectorRecord[]) => Promise<void>;
-              };
-              if (replaceDocument !== undefined) {
-                await replaceDocument.call(store, documentId, records);
+              if (store.replaceDocument !== undefined) {
+                await store.replaceDocument(documentId, records);
                 return;
               }
               await store.remove(documentId);
