@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.97.1
+
+### Patch Changes
+
+- [#529](https://github.com/DavideCarvalho/adonis-agora-agent/pull/529) [`76193fc`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/76193fc3f2903a354e087059ef9635d7414c5a8d) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `PgVectorStore.replaceDocument` takes an advisory lock per document, so replacing one document concurrently no longer leaves a mix of versions or deadlocks.
+
 ## 0.97.0
 
 ### Minor Changes
