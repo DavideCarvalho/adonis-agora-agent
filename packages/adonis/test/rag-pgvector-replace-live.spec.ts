@@ -35,6 +35,28 @@ describe.skipIf(url === undefined)('PgVectorStore.replaceDocument', () => {
     expect(hits.map((hit) => hit.text)).toEqual(['new']);
   });
 
+  it('concurrent swaps leave exactly one version, without deadlocks', async () => {
+    for (let round = 0; round < 10; round++) {
+      await Promise.all(
+        Array.from({ length: 8 }, (_, writer) =>
+          store.replaceDocument(
+            'race',
+            Array.from({ length: 30 - writer * 3 }, (_, chunk) => ({
+              id: `race#${chunk}`,
+              text: `writer-${writer}`,
+              embedding: [0, 1],
+            })),
+          ),
+        ),
+      );
+      const { rows } = await db.rawQuery(
+        `select distinct text from replace_live_${process.pid} where id like 'race#%'`,
+      );
+      expect(rows).toHaveLength(1);
+    }
+    await store.remove('race');
+  });
+
   it('a failed write rolls the removal back', async () => {
     await expect(
       store.replaceDocument('d', [{ id: 'd#0', text: 'bad', embedding: [1] }]),
