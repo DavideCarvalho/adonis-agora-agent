@@ -273,8 +273,8 @@ importers:
         specifier: 7.3.11
         version: 7.3.11(@emotion/react@11.14.0(@types/react@19.3.0)(react@19.3.1)(supports-color@10.2.2))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@19.3.0)(react@19.3.1)(supports-color@10.2.2))(@types/react@19.3.0)(react@19.3.1)(supports-color@10.2.2))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@opencode/client':
-        specifier: 2.2.0
-        version: 2.2.0(effect@4.0.1)
+        specifier: 2.2.1
+        version: 2.2.1(effect@4.0.1)
       '@qdrant/js-client-rest':
         specifier: 1.20.0
         version: 1.20.0(typescript@7.0.2)
@@ -1854,8 +1854,8 @@ packages:
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
 
-  '@opencode/client@2.2.0':
-    resolution: {integrity: sha512-gus2XLaUcGh3ERH+OnOqEO6K379cS9DFNPOgWr8OTM2VM+zn8b4Qe+dgfyysTayv1BpMMlILsRG4eKlDSuyYWQ==}
+  '@opencode/client@2.2.1':
+    resolution: {integrity: sha512-7QWtocDRR9eUsCJpyaj6k+aAEVDWO2CIzn9lwDNBJhiyt2hMf+yOyV/BKeK/9R7qKcXEOZ0tlGDvQC8HEtyjQg==}
     peerDependencies:
       effect: 4.0.1
       solid-js: '>=1.9.0'
@@ -1865,11 +1865,11 @@ packages:
       solid-js:
         optional: true
 
-  '@opencode/protocol@2.2.0':
-    resolution: {integrity: sha512-bvZGwEU0WVgHXzDOsbmUluMWSCQZw6NVKNI+dGjNynxVWRvvpFJ+GA1wDiBkaAwx7dJ6FOH3SO3kNCJlPu2kOA==}
+  '@opencode/protocol@2.2.1':
+    resolution: {integrity: sha512-lqkkRhrckEKmiSJi249rvfX/fXX8JeiMS7adtXonO1Ol3IqnEqY4uSZgvQiQ11SBR5RyDQaRW9KGoOjaTY4PAQ==}
 
-  '@opencode/schema@2.2.0':
-    resolution: {integrity: sha512-oyj1xiSnGA/Gwmqyk3MUVOwleozuT1Lt/x7eErhvNO0lyq2xhONnu7mK+riV98uMbD6+GxGWQV369gmpO9fAkQ==}
+  '@opencode/schema@2.2.1':
+    resolution: {integrity: sha512-TicxPQC1UKqq954X1yUKmBlXfJYl5CRr52FKwLZbYOfTxJd406Hoqt2arM4YI3c+abs17b9sumoq5uqFLhiGFA==}
 
   '@oxc-project/types@0.155.0':
     resolution: {integrity: sha512-SeE8JPwW1xs1tHeNycjUtUBdhorRa8o4jlvjwk49R7/Z291i+4DQa7JJIgOm/TaYQZx+QrPQbVJ/9c8dMIZN8Q==}
@@ -7615,19 +7615,19 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.3
 
-  '@opencode/client@2.2.0(effect@4.0.1)':
+  '@opencode/client@2.2.1(effect@4.0.1)':
     dependencies:
-      '@opencode/protocol': 2.2.0
-      '@opencode/schema': 2.2.0
+      '@opencode/protocol': 2.2.1
+      '@opencode/schema': 2.2.1
     optionalDependencies:
       effect: 4.0.1
 
-  '@opencode/protocol@2.2.0':
+  '@opencode/protocol@2.2.1':
     dependencies:
-      '@opencode/schema': 2.2.0
+      '@opencode/schema': 2.2.1
       effect: 4.0.1
 
-  '@opencode/schema@2.2.0':
+  '@opencode/schema@2.2.1':
     dependencies:
       '@standard-schema/spec': 1.1.0
       effect: 4.0.1
