@@ -44,6 +44,44 @@ describe('withRag', () => {
     expect(hits[0].metadata.projectId).toBe('p1');
   });
 
+  it('two models sharing a store do not see each other, with the same scope', async () => {
+    const { store, embedder } = setup();
+    const mixin = withRag<any>({
+      store: () => store,
+      embedder: () => embedder,
+      text: (row) => row.body,
+      scope: ['projectId'],
+    });
+    class A extends (mixin(FakeBase as never) as any) {
+      static table = 'a';
+    }
+    class B extends (mixin(FakeBase as never) as any) {
+      static table = 'b';
+    }
+    await new (A as any)({ id: '1', body: 'gatos', projectId: 'p' }).ragIndex();
+    await new (B as any)({ id: '1', body: 'gatos', projectId: 'p' }).ragIndex();
+
+    const hits = await (A as any).ragSearch('gatos', { scope: { projectId: 'p' } });
+
+    expect(hits.map((hit: { id: string }) => hit.id)).toEqual(['a:1#0']);
+  });
+
+  it('removes chunks after the commit when the row was deleted inside a transaction', async () => {
+    FakeBase.hooks = [];
+    const { Doc, store } = setup();
+    Doc.boot();
+    const row = new Doc({ id: '1', body: 'gatos', projectId: 'p1' });
+    await row.ragIndex();
+    const handlers: Array<() => Promise<void>> = [];
+    row.$trx = { after: (_event: string, handler: () => Promise<void>) => handlers.push(handler) };
+
+    await Promise.all(FakeBase.hooks.map((hook) => hook(row)));
+    expect(await store.listDocumentIds()).toEqual(['documents:1']);
+
+    await handlers[0]?.();
+    expect(await store.listDocumentIds()).toEqual([]);
+  });
+
   it('never returns another scope, even when the filter asks for it', async () => {
     const { Doc } = setup();
     await new Doc({ id: '1', body: 'gatos dormem', projectId: 'p1' }).ragIndex();

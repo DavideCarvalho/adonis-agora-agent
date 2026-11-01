@@ -6,6 +6,8 @@ import {
   MemoryVectorStore,
   matchesFilter,
 } from '../src/index.js';
+import { buildMetadataWhere } from '../src/rag/pg-vector-store.js';
+import { buildQdrantFilter } from '../src/rag/qdrant-store.js';
 import { FakeEmbeddingProvider } from '../src/testing/index.js';
 
 describe('matchesFilter — array-OR / set-membership', () => {
@@ -81,5 +83,40 @@ describe('MemoryVectorStore capability-token filtering (search)', () => {
     const retriever = new EmbeddingRetriever(embedder, store);
     const passages = await retriever.retrieve('public', { topK: 10, filter: { audience: [] } });
     expect(passages).toEqual([]);
+  });
+});
+
+describe('an undefined filter value denies', () => {
+  const records = [
+    { id: 'a#0', text: 'a', embedding: [1, 0], metadata: { tenant: 'A' } },
+    { id: 'n#0', text: 'n', embedding: [1, 0], metadata: {} },
+  ];
+
+  it('matchesFilter', () => {
+    expect(matchesFilter({}, { tenant: undefined })).toBe(false);
+    expect(matchesFilter({ tenant: 'A' }, { tenant: undefined })).toBe(false);
+  });
+
+  it('the Postgres clause is false, not an empty containment', () => {
+    expect(buildMetadataWhere({ tenant: undefined }, 'metadata')).toEqual({
+      sql: 'WHERE false',
+      bindings: [],
+    });
+  });
+
+  it('the Qdrant condition denies', () => {
+    expect(buildQdrantFilter({ tenant: undefined })).toEqual({
+      must: [{ key: 'metadata.tenant', match: { any: [] } }],
+    });
+  });
+
+  it('search finds nothing and removeWhere refuses', async () => {
+    const store = new MemoryVectorStore();
+    await store.upsert(records);
+    expect(await store.search([1, 0], { topK: 5, filter: { tenant: undefined } })).toEqual([]);
+    await expect(store.removeWhere({ tenant: undefined })).rejects.toMatchObject({
+      reason: 'undefined-value',
+    });
+    expect((await store.listDocumentIds()).length).toBe(2);
   });
 });

@@ -11,6 +11,10 @@ import { ingestChunks } from './ingest.js';
 import type { VectorRecord, VectorStore } from './vector-store.js';
 
 type MaybePromise<T> = T | Promise<T>;
+type AfterCommit = (event: 'commit', handler: () => void | Promise<void>) => unknown;
+
+/** Metadata key separating models that share a store. Reserved: it always wins over yours. */
+export const RAG_ENTITY_KEY = 'ragEntity';
 
 /** A required scope key was missing, from the search or from the row. Nothing ran. */
 export class RagScopeRequiredError extends Error {
@@ -81,7 +85,9 @@ export interface RagModelStatics {
  * await ProjectDocument.ragSearch('question', { scope: { projectId } })
  * ```
  *
- * `row.delete()` removes its chunks. Nothing else does: a database `ON DELETE CASCADE`, a bulk
+ * `row.delete()` removes its chunks, after the commit when inside a transaction. A savepoint's commit
+ * counts as one, so a later rollback of the outer transaction leaves the row without chunks until the
+ * next `ragIndex`. Nothing else removes them: a database `ON DELETE CASCADE`, a bulk
  * `Model.query().delete()` and `deleteQuietly()` fire no hook, so call `ragRemove` or clean up yourself. Saving does NOT index: embedding is a slow, paid call that has no place in a
  * `save()`, so call `ragIndex` from a job or wherever the text is known to have changed.
  */
@@ -100,7 +106,13 @@ export function withRag<Row = any>(options: WithRagOptions<Row>) {
         if (Object.hasOwn(this, 'booted') && (this as { booted?: boolean }).booted) return;
         super.boot();
         this.after('delete', async (row: RagModel) => {
-          await row.ragRemove();
+          // Inside a transaction the row may yet come back, so wait for the commit.
+          const { $trx: trx } = row as unknown as { $trx?: { after: AfterCommit } };
+          if (trx === undefined) {
+            await row.ragRemove();
+            return;
+          }
+          trx.after('commit', () => row.ragRemove());
         });
       }
       // biome-ignore-end lint/complexity/noThisInStatic: see above
@@ -140,7 +152,12 @@ export function withRag<Row = any>(options: WithRagOptions<Row>) {
             text: chunk,
             ...(source !== undefined ? { source } : {}),
             // Scope last: nothing can retag a chunk to another tenant.
-            metadata: { ...base, ...options.chunkMetadata?.(chunk, full, row), ...scope },
+            metadata: {
+              ...base,
+              ...options.chunkMetadata?.(chunk, full, row),
+              ...scope,
+              [RAG_ENTITY_KEY]: model.table,
+            },
           }));
 
         const documentId = this.ragDocumentId;
@@ -154,6 +171,13 @@ export function withRag<Row = any>(options: WithRagOptions<Row>) {
           // `ingestChunks` only upserts, after embedding: that is the moment to drop the old chunks.
           store: {
             upsert: async (records: VectorRecord[]) => {
+              const { replaceDocument } = store as {
+                replaceDocument?: (id: string, records: VectorRecord[]) => Promise<void>;
+              };
+              if (replaceDocument !== undefined) {
+                await replaceDocument.call(store, documentId, records);
+                return;
+              }
               await store.remove(documentId);
               await store.upsert(records);
             },
@@ -181,7 +205,12 @@ export function withRag<Row = any>(options: WithRagOptions<Row>) {
         return store.search(vectors[0] ?? [], {
           topK: search.topK ?? 5,
           // Scope last: a filter can narrow a search, never widen it past the scope.
-          filter: { ...search.filter, ...pick(scope, scopeKeys) },
+          filter: {
+            ...search.filter,
+            ...pick(scope, scopeKeys),
+            // biome-ignore lint/complexity/noThisInStatic: the concrete model's table
+            [RAG_ENTITY_KEY]: this.table,
+          },
           ...(search.minScore !== undefined ? { minScore: search.minScore } : {}),
         });
       }

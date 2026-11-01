@@ -157,7 +157,7 @@ export function isLexicalVectorStore(store: VectorStore): store is LexicalVector
 export class UnsafeRemovalError extends Error {
   constructor(
     /** Why the removal was refused. */
-    readonly reason: 'empty-filter',
+    readonly reason: 'empty-filter' | 'undefined-value',
     message: string,
   ) {
     super(message);
@@ -179,6 +179,15 @@ export function assertRemovalFilter(filter: Record<string, unknown>): void {
         'loop `remove` over `listDocumentIds()`, or drop the table/collection.',
     );
   }
+  const missing = Object.entries(filter)
+    .filter(([, value]) => value === undefined)
+    .map(([key]) => `"${key}"`);
+  if (missing.length > 0) {
+    throw new UnsafeRemovalError(
+      'undefined-value',
+      `removeWhere refused a filter with no value for ${missing.join(', ')}: the scope was probably never set.`,
+    );
+  }
 }
 
 /**
@@ -192,7 +201,9 @@ export function assertRemovalFilter(filter: Record<string, unknown>): void {
  * deny should not depend on a backend's interpretation of an empty set.
  */
 export function filterDeniesAll(filter: Record<string, unknown>): boolean {
-  return Object.values(filter).some((value) => Array.isArray(value) && value.length === 0);
+  return Object.values(filter).some(
+    (value) => value === undefined || (Array.isArray(value) && value.length === 0),
+  );
 }
 
 /**
