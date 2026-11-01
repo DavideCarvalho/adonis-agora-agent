@@ -614,3 +614,26 @@ describe('PgVectorRetriever', () => {
     expect(db.last.bindings[0]).toBe(toVectorLiteral(queryVec!));
   });
 });
+
+describe('PgVectorStore vectorType halfvec', () => {
+  it('uses halfvec in the DDL, the opclass, the upsert and the search', async () => {
+    const db = new RecordingDb();
+    const store = new PgVectorStore(db, { dimension: 512, vectorType: 'halfvec' });
+
+    const ddl = store.schemaStatements().join('\n');
+    expect(ddl).toContain('halfvec(512)');
+    expect(ddl).toContain('halfvec_cosine_ops');
+
+    await store.upsert([{ id: 'a#0', text: 't', embedding: [1] }]);
+    await store.search([1], { topK: 1 });
+    const sql = db.calls.map((call) => call.sql).join('\n');
+    expect(sql).toContain('?::halfvec');
+    expect(sql).not.toContain('::vector');
+  });
+
+  it('rejects halfvec on a mixed-dimension table', () => {
+    expect(
+      () => new PgVectorStore(new RecordingDb(), { dimension: [512, 1536], vectorType: 'halfvec' }),
+    ).toThrow(/single dimension/);
+  });
+});

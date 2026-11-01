@@ -60,6 +60,12 @@ export interface PgVectorStoreOptions {
    */
   dimension?: number | readonly number[];
   /**
+   * The pgvector column type. `halfvec` stores each dimension in 2 bytes instead of 4 (half the table and
+   * index, for a negligible recall loss on normalized embeddings) and needs pgvector ≥ 0.7. Only for a
+   * single width: a mixed-dimension table stays `vector`. Default `vector`.
+   */
+  vectorType?: 'vector' | 'halfvec';
+  /**
    * Allow chunks with no embedding (`embedding: []` on upsert is stored as `NULL`): index text first
    * and embed later, or keep full-text-only chunks. `search` skips them; the lexical leg of
    * {@link PgLexicalVectorStore} still finds them. Default `false` — the column stays `NOT NULL`. Only
@@ -316,6 +322,7 @@ export class PgVectorStore implements VectorStore {
   /** The widths with a partial HNSW index, for a mixed-dimension table. */
   private readonly indexedDimensions: readonly number[];
   private readonly nullableEmbeddings: boolean;
+  private readonly vectorType: 'vector' | 'halfvec';
   private readonly iterativeScan: PgVectorStoreOptions['iterativeScan'];
   private readonly efSearch: number | undefined;
   private readonly upsertBatchSize: number;
@@ -343,6 +350,10 @@ export class PgVectorStore implements VectorStore {
       }
       this.dimension = undefined;
       this.indexedDimensions = [...new Set(dimension)];
+    }
+    this.vectorType = options.vectorType ?? 'vector';
+    if (this.vectorType === 'halfvec' && this.dimension === undefined) {
+      throw new Error('vectorType "halfvec" needs a single dimension, not a mixed-dimension list');
     }
     this.nullableEmbeddings = options.nullableEmbeddings ?? false;
     this.iterativeScan = options.iterativeScan;
@@ -381,7 +392,7 @@ export class PgVectorStore implements VectorStore {
         ${c.text} TEXT NOT NULL,
         ${c.source} TEXT,
         ${c.metadata} JSONB,
-        ${c.embedding} ${mixed ? 'vector' : `vector(${this.dimension})`}${this.nullableEmbeddings ? '' : ' NOT NULL'}
+        ${c.embedding} ${mixed ? 'vector' : `${this.vectorType}(${this.dimension})`}${this.nullableEmbeddings ? '' : ' NOT NULL'}
       )`,
     ];
     if (mixed) {
@@ -395,7 +406,11 @@ export class PgVectorStore implements VectorStore {
     } else {
       statements.push(
         `CREATE INDEX IF NOT EXISTS ${this.table}_${c.embedding}_idx
-        ON ${this.table} USING hnsw (${c.embedding} ${this.metric.opclass})`,
+        ON ${this.table} USING hnsw (${c.embedding} ${
+          this.vectorType === 'halfvec'
+            ? this.metric.opclass.replace(/^vector_/, 'halfvec_')
+            : this.metric.opclass
+        })`,
       );
     }
     return statements;
@@ -439,7 +454,7 @@ export class PgVectorStore implements VectorStore {
       }
       await this.db.rawQuery(
         `INSERT INTO ${this.table} (${c.id}, ${c.text}, ${c.source}, ${c.metadata}, ${c.embedding})
-         VALUES ${batch.map(() => '(?, ?, ?, ?::jsonb, ?::vector)').join(', ')}
+         VALUES ${batch.map(() => `(?, ?, ?, ?::jsonb, ?::${this.vectorType})`).join(', ')}
          ON CONFLICT (${c.id}) DO UPDATE SET
            ${c.text} = EXCLUDED.${c.text},
            ${c.source} = EXCLUDED.${c.source},
@@ -584,7 +599,7 @@ export class PgVectorStore implements VectorStore {
     const vector = toVectorLiteral(embedding);
     // A fixed-width table keeps the exact expression its index was built on (`embedding`); a mixed one
     // casts both sides to the query's width so the planner can match that width's partial index.
-    let vectorType = 'vector';
+    let vectorType: string = this.vectorType;
     const shapeClauses: string[] = [];
     if (this.dimension === undefined) {
       const width = embedding.length;
@@ -595,7 +610,10 @@ export class PgVectorStore implements VectorStore {
     } else if (this.nullableEmbeddings) {
       shapeClauses.push(`${c.embedding} IS NOT NULL`);
     }
-    const column = vectorType === 'vector' ? c.embedding : `(${c.embedding}::${vectorType})`;
+    const column =
+      this.dimension !== undefined || vectorType === 'vector'
+        ? c.embedding
+        : `(${c.embedding}::${vectorType})`;
     const scoreExpr = this.metric.score(column, vectorType);
     const meta = buildMetadataWhere(options.filter, c.metadata);
     // Combine the metadata predicate with an optional minScore relevance floor. Filtering the score
