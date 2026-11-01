@@ -174,7 +174,7 @@ export interface FacetHit {
  * Translates a metadata filter (`Record<string, unknown>`) into a {@link QdrantFilter}, preserving
  * token-ACL semantics: a scalar is an exact match; an array is match-any (set membership — it mirrors
  * pgvector's `jsonb_exists_any`, since Qdrant's `any` tests intersection against a scalar OR an array
- * field); an empty array denies everything (`any: []` never matches). Keys target `metadata.<k>` (the
+ * field); an empty array, `undefined` or an array holding it denies everything (`any: []` never matches). Keys target `metadata.<k>` (the
  * payload nests metadata under `metadata`). Multiple keys are ANDed into `must`. Empty or absent →
  * undefined.
  */
@@ -184,6 +184,10 @@ export function buildQdrantFilter(
   if (filter === undefined || Object.keys(filter).length === 0) return undefined;
   const must: QdrantCondition[] = Object.entries(filter).map(([key, value]) => {
     const k = `metadata.${key}`;
+    // A scope whose value is missing denies, the same `any: []` an empty array builds.
+    if (value === undefined || (Array.isArray(value) && value.includes(undefined))) {
+      return { key: k, match: { any: [] } };
+    }
     return Array.isArray(value) ? { key: k, match: { any: value } } : { key: k, match: { value } };
   });
   return { must };

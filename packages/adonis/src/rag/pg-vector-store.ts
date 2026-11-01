@@ -206,7 +206,8 @@ export function stripNulBytes<T>(value: T): T {
  *   exact-match, byte-for-byte the previous behavior so scalar filters stay backward compatible.
  * - an **array** filter value is a **match-any** (OR / set membership) check: the record matches when
  *   its value for that key — scalar or array — shares an element with the filter array. An empty array
- *   can never match (the `false` deny primitive).
+ *   can never match (the `false` deny primitive), nor can `undefined` or an array holding it: that is
+ *   a scope whose value was never set.
  *
  * Set membership uses `jsonb_exists_any(jsonb, text[])` — the function form of the `?|` operator, chosen
  * because bare `?|` collides with Knex's `?` binding placeholder. The metadata KEY is itself a `?`
@@ -236,6 +237,11 @@ export function buildMetadataWhere(
   const scalarEntries: [string, unknown][] = [];
   for (const [key, value] of Object.entries(filter)) {
     const cleanKey = stripNulBytes(key);
+    // `JSON.stringify` below would drop this key and turn the filter into `@> '{}'`: every row.
+    if (value === undefined || (Array.isArray(value) && value.includes(undefined))) {
+      clauses.push('false');
+      continue;
+    }
     if (Array.isArray(value)) {
       if (value.length === 0) {
         clauses.push('false');
@@ -428,6 +434,25 @@ export class PgVectorStore implements VectorStore {
    * rows each (one round trip per batch instead of per chunk). An empty `embedding` is written as `NULL`.
    */
   async upsert(records: VectorRecord[]): Promise<void> {
+    await this.upsertWith(this.db, records);
+  }
+
+  /**
+   * Swaps a document's chunks in one transaction, so a crash can't lose it and a search sees the old
+   * version or the new one. A runner without `transaction` falls back to two statements.
+   */
+  async replaceDocument(documentId: string, records: VectorRecord[]): Promise<void> {
+    const swap = async (runner: LucidRawRunner) => {
+      await this.removeWith(runner, documentId);
+      await this.upsertWith(runner, records);
+    };
+    const { transaction } = this.db as unknown as {
+      transaction?: (work: (trx: LucidRawRunner) => Promise<void>) => Promise<void>;
+    };
+    await (transaction === undefined ? swap(this.db) : transaction.call(this.db, swap));
+  }
+
+  private async upsertWith(runner: LucidRawRunner, records: VectorRecord[]): Promise<void> {
     // The id is stripped before de-duplication, so two ids differing only by a NUL byte are the one
     // row they would be stored as. One statement can't touch a row twice (`ON CONFLICT DO UPDATE
     // command cannot affect row a second time`), so duplicates collapse to the LAST occurrence — the
@@ -453,7 +478,7 @@ export class PgVectorStore implements VectorStore {
           record.embedding.length > 0 ? toVectorLiteral(record.embedding) : null,
         );
       }
-      await this.db.rawQuery(
+      await runner.rawQuery(
         `INSERT INTO ${this.table} (${c.id}, ${c.text}, ${c.source}, ${c.metadata}, ${c.embedding})
          VALUES ${batch.map(() => `(?, ?, ?, ?::jsonb, ?::${this.vectorType})`).join(', ')}
          ON CONFLICT (${c.id}) DO UPDATE SET
@@ -473,7 +498,11 @@ export class PgVectorStore implements VectorStore {
    * instead of trusting a caller-supplied string to already be clean.
    */
   async remove(documentId: string): Promise<void> {
-    await this.db.rawQuery(`DELETE FROM ${this.table} WHERE ${documentIdExpr(this.col.id)} = ?`, [
+    await this.removeWith(this.db, documentId);
+  }
+
+  private async removeWith(runner: LucidRawRunner, documentId: string): Promise<void> {
+    await runner.rawQuery(`DELETE FROM ${this.table} WHERE ${documentIdExpr(this.col.id)} = ?`, [
       stripNulBytes(documentId),
     ]);
   }
