@@ -440,6 +440,10 @@ export class PgVectorStore implements VectorStore {
   /**
    * Swaps a document's chunks in one transaction, so a crash can't lose it and a search sees the old
    * version or the new one. A runner without `transaction` falls back to two statements.
+   *
+   * Concurrent swaps of one document take turns on an advisory lock. Without it the second `DELETE`
+   * can't see the rows the first just committed, so the first's tail survives next to the second's
+   * chunks, and overlapping writes can deadlock.
    */
   async replaceDocument(documentId: string, records: VectorRecord[]): Promise<void> {
     const swap = async (runner: LucidRawRunner) => {
@@ -449,7 +453,16 @@ export class PgVectorStore implements VectorStore {
     const { transaction } = this.db as unknown as {
       transaction?: (work: (trx: LucidRawRunner) => Promise<void>) => Promise<void>;
     };
-    await (transaction === undefined ? swap(this.db) : transaction.call(this.db, swap));
+    if (transaction === undefined) {
+      await swap(this.db);
+      return;
+    }
+    await transaction.call(this.db, async (trx) => {
+      await trx.rawQuery('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [
+        `${this.table}:${stripNulBytes(documentId)}`,
+      ]);
+      await swap(trx);
+    });
   }
 
   private async upsertWith(runner: LucidRawRunner, records: VectorRecord[]): Promise<void> {
