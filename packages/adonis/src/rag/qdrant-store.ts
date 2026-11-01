@@ -13,6 +13,7 @@ import type {
 import {
   applyMetadataPatch,
   assertRemovalFilter,
+  DocumentReplaceQueue,
   documentIdOf,
   effectivePatchKeys,
   filterDeniesAll,
@@ -223,6 +224,7 @@ export class QdrantStore implements VectorStore {
   private readonly dimension: number;
   private readonly metric: QdrantMetric;
   private readonly upsertBatchSize: number;
+  private readonly replacing = new DocumentReplaceQueue();
 
   constructor(
     private readonly client: QdrantClientLike,
@@ -303,6 +305,28 @@ export class QdrantStore implements VectorStore {
       };
     });
   }
+  /**
+   * Writes the new chunks, then drops the rest of the document, so a crash doesn't lose it. A search can
+   * briefly see both versions. Calls take turns only within this process, because Qdrant has no lock:
+   * processes that replace one document at the same time can still leave a mix behind.
+   */
+  async replaceDocument(documentId: string, records: VectorRecord[]): Promise<void> {
+    await this.replacing.run(documentId, async () => {
+      if (records.length === 0) {
+        await this.remove(documentId);
+        return;
+      }
+      await this.upsert(records);
+      await this.client.delete(this.collection, {
+        filter: {
+          must: [{ key: 'documentId', match: { value: documentId } }],
+          must_not: [{ key: 'id', match: { any: records.map((record) => record.id) } }],
+        },
+        wait: true,
+      });
+    });
+  }
+
   async remove(documentId: string): Promise<void> {
     await this.client.delete(this.collection, {
       filter: { must: [{ key: 'documentId', match: { value: documentId } }] },

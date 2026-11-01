@@ -3,6 +3,7 @@ import { matchesFilter } from './filter.js';
 import {
   applyMetadataPatch,
   assertRemovalFilter,
+  DocumentReplaceQueue,
   documentIdOf,
   effectivePatchKeys,
   filterDeniesAll,
@@ -18,12 +19,20 @@ import {
  * tests and small/embedded corpora; a pgvector/Lucid-backed store for production scale is deferred.
  */
 export class MemoryVectorStore implements VectorStore {
+  private readonly replacing = new DocumentReplaceQueue();
   private readonly records = new Map<string, VectorRecord>();
 
   async upsert(records: VectorRecord[]): Promise<void> {
     for (const record of records) {
       this.records.set(record.id, record);
     }
+  }
+
+  async replaceDocument(documentId: string, records: VectorRecord[]): Promise<void> {
+    await this.replacing.run(documentId, async () => {
+      await this.remove(documentId);
+      await this.upsert(records);
+    });
   }
 
   async remove(documentId: string): Promise<void> {

@@ -287,3 +287,24 @@ export interface IndexedDocument {
 export function documentIdOf(chunkId: string): string {
   return chunkId.replace(/#\d+$/, '');
 }
+
+/**
+ * Runs swaps of one document one at a time, within this process. It's for stores with no lock of their
+ * own: two processes can still overlap.
+ */
+export class DocumentReplaceQueue {
+  private readonly running = new Map<string, Promise<void>>();
+
+  async run(documentId: string, work: () => Promise<void>): Promise<void> {
+    const previous = this.running.get(documentId) ?? Promise.resolve();
+    const run = previous.catch(() => {}).then(work);
+    this.running.set(documentId, run);
+    try {
+      await run;
+    } finally {
+      if (this.running.get(documentId) === run) {
+        this.running.delete(documentId);
+      }
+    }
+  }
+}
