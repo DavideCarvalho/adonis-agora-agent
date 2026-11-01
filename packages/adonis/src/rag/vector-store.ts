@@ -129,7 +129,9 @@ export interface VectorStore {
    */
   removeWhere?(filter: Record<string, unknown>): Promise<number>;
   /**
-   * Swap all of a document's chunks atomically, so no search or crash sees it half-replaced.
+   * Swap all of a document's chunks, as safely as the backend allows. On pgvector it's one transaction,
+   * safe across processes. On Qdrant and in memory, calls take turns within one store instance, and a
+   * search can briefly see both versions.
    *
    * Optional so a host-written store still compiles; without it, callers fall back to `remove` plus
    * `upsert`.
@@ -286,4 +288,25 @@ export interface IndexedDocument {
 /** Collapse a chunk id (`${documentId}#<n>`) back to its source document id. */
 export function documentIdOf(chunkId: string): string {
   return chunkId.replace(/#\d+$/, '');
+}
+
+/**
+ * Runs swaps of one document one at a time, within one store instance. It's for stores with no lock of
+ * their own: other instances and processes can still overlap.
+ */
+export class DocumentReplaceQueue {
+  private readonly running = new Map<string, Promise<void>>();
+
+  async run(documentId: string, work: () => Promise<void>): Promise<void> {
+    const previous = this.running.get(documentId) ?? Promise.resolve();
+    const run = previous.catch(() => {}).then(work);
+    this.running.set(documentId, run);
+    try {
+      await run;
+    } finally {
+      if (this.running.get(documentId) === run) {
+        this.running.delete(documentId);
+      }
+    }
+  }
 }

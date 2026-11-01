@@ -22,6 +22,7 @@ const DIM = 4;
 const A = [1, 0, 0, 0];
 const B = [0, 1, 0, 0];
 const C = [0, 0, 1, 0];
+const D = [0, 0, 0, 1];
 
 describe.skipIf(URL === undefined)('QdrantStore against a live Qdrant', () => {
   let raw: QdrantClient;
@@ -39,6 +40,28 @@ describe.skipIf(URL === undefined)('QdrantStore against a live Qdrant', () => {
     if (raw !== undefined) {
       await raw.deleteCollection(COLLECTION).catch(() => undefined);
     }
+  });
+
+  it('concurrent replaceDocument calls in one process leave exactly one version', async () => {
+    for (let round = 0; round < 5; round++) {
+      await Promise.all(
+        Array.from({ length: 6 }, (_, writer) =>
+          store.replaceDocument(
+            'race',
+            Array.from({ length: 12 - writer }, (_, chunk) => ({
+              id: `race#${chunk}`,
+              text: `writer-${writer}`,
+              embedding: D,
+            })),
+          ),
+        ),
+      );
+      const hits = await store.search(D, { topK: 30 });
+      const race = hits.filter((hit) => hit.text.startsWith('writer-'));
+      expect(new Set(race.map((hit) => hit.text)).size).toBe(1);
+      expect(race).toHaveLength(7);
+    }
+    await store.remove('race');
   });
 
   /** Re-seed a known corpus, waiting for it to be visible. */
