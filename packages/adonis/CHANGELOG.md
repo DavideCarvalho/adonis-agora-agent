@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.96.1
+
+### Patch Changes
+
+- [#526](https://github.com/DavideCarvalho/adonis-agora-agent/pull/526) [`614c623`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/614c623e5deed864440010a9ad89ddf238972cee) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `withRag` no longer loses the Lucid model API under `compose`: the mixin's constructor type was `abstract`, which TypeScript does not combine with the base model's.
+
 ## 0.96.0
 
 ### Minor Changes
