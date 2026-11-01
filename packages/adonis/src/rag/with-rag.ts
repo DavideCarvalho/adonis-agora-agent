@@ -92,7 +92,7 @@ export function withRag<Row = any>(options: WithRagOptions<Row>) {
   return <T extends NormalizeConstructor<typeof BaseModel>>(
     superclass: T,
     // biome-ignore lint/suspicious/noExplicitAny: the shape TypeScript requires of a mixin constructor
-  ): T & RagModelStatics & (abstract new (...args: any[]) => RagRow) => {
+  ): T & RagModelStatics & (new (...args: any[]) => RagRow) => {
     class RagModel extends superclass {
       // `this` is the concrete model here, not this mixin: the hook has to land on the subclass.
       // biome-ignore-start lint/complexity/noThisInStatic: see above
