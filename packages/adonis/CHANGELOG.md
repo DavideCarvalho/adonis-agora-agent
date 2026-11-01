@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.96.0
+
+### Minor Changes
+
+- [#525](https://github.com/DavideCarvalho/adonis-agora-agent/pull/525) [`4069400`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/4069400fdf7bc8a03f085e3f0ab68126110f4e33) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Add `withRag`, a Lucid model mixin that declares RAG on the model: `doc.ragIndex()`, `doc.ragRemove()` and `Model.ragSearch(query, { scope })`. A declared `scope` is mandatory on search and a `filter` cannot override it. Deleting through the model removes the chunks; saving never indexes. `PgVectorStore` gains `vectorType: 'halfvec'`.
+
 ## 0.95.0
 
 ### Minor Changes
