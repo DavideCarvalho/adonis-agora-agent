@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.97.2
+
+### Patch Changes
+
+- [#530](https://github.com/DavideCarvalho/adonis-agora-agent/pull/530) [`0106c53`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/0106c534d46418bfe1854a9efb78250699d035f0) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `QdrantStore` and `MemoryVectorStore` gain `replaceDocument`. Concurrent calls for one document take turns within a process. Qdrant has no lock, so separate processes can still overlap. On Qdrant the new chunks are written before the old ones are dropped, so a crash no longer loses the document.
+
 ## 0.97.1
 
 ### Patch Changes
