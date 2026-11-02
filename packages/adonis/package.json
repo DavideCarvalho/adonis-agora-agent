@@ -315,7 +315,7 @@
     "@tailwindcss/browser": "4.3.3",
     "acorn": "8.19.0",
     "acorn-jsx": "5.3.2",
-    "jose": "6.2.13"
+    "jose": "6.2.14"
   },
   "peerDependencies": {
     "@adonis-agora/authz": ">=0.4.2 <1.0.0",
