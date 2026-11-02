@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { QdrantClientLike } from '../src/rag/qdrant-store.js';
+import type { QdrantClientLike, QdrantPoint } from '../src/rag/qdrant-store.js';
 import {
   buildQdrantFilter,
   chunkIdToPointId,
@@ -75,27 +75,75 @@ describe('QdrantStore.replaceDocument', () => {
   const record = (id: string) => ({ id, text: id, embedding: [1, 0] });
   const methods = (client: RecordingQdrantClient) => client.calls.map((call) => call.method);
 
-  it('writes the new chunks, then drops only the rest of the document', async () => {
+  const ofDocument = { key: 'documentId', match: { value: 'd' } };
+  const writtenGeneration = (client: RecordingQdrantClient) =>
+    (client.last('upsert')[1] as { points: QdrantPoint[] }).points[0]?.payload.generation;
+
+  it('writes the new chunks without overwriting a newer generation, then drops what is older', async () => {
     const client = new RecordingQdrantClient();
     await new QdrantStore(client).replaceDocument('d', [record('d#0'), record('d#1')]);
-    expect(methods(client)).toEqual(['upsert', 'delete']);
-    expect(client.calls[1]?.args[1]).toEqual({
-      filter: {
-        must: [{ key: 'documentId', match: { value: 'd' } }],
-        must_not: [{ key: 'id', match: { any: ['d#0', 'd#1'] } }],
-      },
+    expect(methods(client)).toEqual(['scroll', 'upsert', 'delete', 'scroll']);
+    const write = client.calls[1]?.args[1] as {
+      points: QdrantPoint[];
+      update_filter: unknown;
+      wait: boolean;
+    };
+    const generation = write.points[0]?.payload.generation as number;
+    expect(Number.isSafeInteger(generation)).toBe(true);
+    expect(write.points.map((point) => point.payload.generation)).toEqual([generation, generation]);
+    expect(write.update_filter).toEqual({
+      must_not: [{ key: 'generation', range: { gt: generation } }],
+    });
+    expect(write.wait).toBe(true);
+    expect(client.calls[2]?.args[1]).toEqual({
+      filter: { must: [ofDocument], must_not: [{ key: 'generation', range: { gte: generation } }] },
       wait: true,
     });
+  });
+
+  it('gives way when a newer generation appeared during the call', async () => {
+    const client = new RecordingQdrantClient();
+    let scrolls = 0;
+    client.scrollByOffset = () => {
+      scrolls += 1;
+      return { points: scrolls === 2 ? [{ payload: {} }] : [] };
+    };
+    await new QdrantStore(client).replaceDocument('d', [record('d#0')]);
+    expect(methods(client)).toEqual(['scroll', 'upsert', 'delete', 'scroll', 'delete']);
+    const generation = writtenGeneration(client);
+    expect(client.calls[4]?.args[1]).toEqual({
+      filter: { must: [ofDocument], must_not: [{ key: 'generation', range: { gt: generation } }] },
+      wait: true,
+    });
+  });
+
+  it('starts above a generation already stored, whatever the clock says', async () => {
+    const client = new RecordingQdrantClient();
+    const stored = Date.now() * 1024 + 10_000_000;
+    let scrolls = 0;
+    client.scrollByOffset = () => {
+      scrolls += 1;
+      return { points: scrolls === 1 ? [{ payload: { generation: stored } }] : [] };
+    };
+    await new QdrantStore(client).replaceDocument('d', [record('d#0')]);
+    expect(writtenGeneration(client)).toBe(stored + 1);
   });
 
   it('drops the whole document, waiting, when there are no chunks', async () => {
     const client = new RecordingQdrantClient();
     await new QdrantStore(client).replaceDocument('d', []);
-    expect(methods(client)).toEqual(['delete']);
-    expect(client.calls[0]?.args[1]).toEqual({
-      filter: { must: [{ key: 'documentId', match: { value: 'd' } }] },
-      wait: true,
-    });
+    expect(methods(client)).toEqual(['scroll', 'delete', 'scroll']);
+    const drop = client.calls[1]?.args[1] as { filter: { must: unknown[] }; wait: boolean };
+    expect(drop.filter.must).toEqual([ofDocument]);
+    expect(drop.wait).toBe(true);
+  });
+
+  it('a plain upsert stamps no generation and sets no condition', async () => {
+    const client = new RecordingQdrantClient();
+    await new QdrantStore(client).upsert([record('d#0')]);
+    const write = client.calls[0]?.args[1] as { points: QdrantPoint[] };
+    expect(write).not.toHaveProperty('update_filter');
+    expect(write.points[0]?.payload).not.toHaveProperty('generation');
   });
 
   it('keeps the old chunks when the write fails, and a later call still runs', async () => {
@@ -109,7 +157,7 @@ describe('QdrantStore.replaceDocument', () => {
     expect(methods(client)).not.toContain('delete');
     client.upsert = upsert;
     await store.replaceDocument('d', [record('d#0')]);
-    expect(methods(client)).toEqual(['upsert', 'delete']);
+    expect(methods(client).slice(-3)).toEqual(['upsert', 'delete', 'scroll']);
   });
 });
 

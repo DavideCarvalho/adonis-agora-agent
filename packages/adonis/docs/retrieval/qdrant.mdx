@@ -147,6 +147,22 @@ Qdrant implements the full [corpus lifecycle API](/docs/agent/retrieval/corpus-l
 
 Both refuse rather than degrade if the client lacks `setPayload` or `count`. A silent fallback to `upsert` would rewrite the embeddings `updateMetadata` exists to preserve.
 
+## Replacing a document
+
+`replaceDocument` writes the new chunks, then drops the rest, so a crash doesn't lose the document. Calls in one store instance take turns.
+
+Qdrant has no lock, so across processes the calls converge instead: each stamps a `generation` on its chunks, a write can't overwrite a newer generation, and only the highest one remains, whichever call finishes last. Chunks stored before this have no generation and count as older. There is no index to migrate.
+
+The limits:
+
+- **Use Qdrant 1.16 or newer.** The writes rely on `update_filter`. Qdrant 1.14 and 1.15.0 ignore it without an error, so calls that overlap can leave a document with chunks missing. Calls that don't overlap are safe on any version.
+- **A search can briefly see both versions.** Qdrant can't change several points at once, and a search can't compare each chunk against its document's current generation.
+- **A crashed writer can leave a partial document.** If the highest generation dies partway, the others still give way to it. The next `replaceDocument` repairs it.
+- **`remove` and `removeWhere` don't wait for a replace**, in another process or in this one. Chunks written after them survive.
+- **Replicated collections** need `strong` write ordering for overlapping calls to converge, and the store doesn't set it.
+
+If you need more than this, pgvector's `replaceDocument` is one transaction.
+
 ## Testing against a real Qdrant
 
 The unit tests run against a structural fake, but the live suite is gated behind an environment variable:
