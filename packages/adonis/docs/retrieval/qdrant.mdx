@@ -158,7 +158,7 @@ The limits:
 - **Use Qdrant 1.16 or newer.** The writes rely on `update_filter`. Qdrant 1.14 and 1.15.0 ignore it without an error, so calls that overlap can leave a document with chunks missing. Calls that don't overlap are safe on any version.
 - **A search can briefly see both versions.** Qdrant can't change several points at once, and a search can't compare each chunk against its document's current generation.
 - **A crashed writer can leave a partial document.** If the highest generation dies partway, the others still give way to it. The next `replaceDocument` repairs it.
-- **`remove` and `removeWhere` don't wait for a replace**, in another process or in this one. Chunks written after them survive.
+- **`remove` doesn't wait for a replace in another process**, and `removeWhere` doesn't wait for any replace. Chunks written after them survive. In this process, `remove` takes its turn with `replaceDocument`.
 - **Replicated collections** need `strong` write ordering for overlapping calls to converge, and the store doesn't set it.
 
 If you need more than this, pgvector's `replaceDocument` is one transaction.

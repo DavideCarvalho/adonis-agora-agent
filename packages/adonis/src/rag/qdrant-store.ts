@@ -409,8 +409,10 @@ export class QdrantStore implements VectorStore {
   }
 
   async remove(documentId: string): Promise<void> {
-    await this.client.delete(this.collection, {
-      filter: { must: [{ key: 'documentId', match: { value: documentId } }] },
+    await this.replacing.run(documentId, async () => {
+      await this.client.delete(this.collection, {
+        filter: { must: [{ key: 'documentId', match: { value: documentId } }] },
+      });
     });
   }
 

@@ -101,6 +101,14 @@ describe('QdrantStore.replaceDocument', () => {
     });
   });
 
+  it('a remove called during a replace takes its turn after it', async () => {
+    const client = new RecordingQdrantClient();
+    const store = new QdrantStore(client);
+    await Promise.all([store.replaceDocument('d', [record('d#0')]), store.remove('d')]);
+    expect(methods(client)).toEqual(['scroll', 'upsert', 'delete', 'scroll', 'delete']);
+    expect(client.calls[4]?.args[1]).toEqual({ filter: { must: [ofDocument] } });
+  });
+
   it('gives way when a newer generation appeared during the call', async () => {
     const client = new RecordingQdrantClient();
     let scrolls = 0;
