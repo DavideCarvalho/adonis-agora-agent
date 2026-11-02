@@ -281,6 +281,89 @@ describe.skipIf(URL === undefined)('QdrantStore against a live Qdrant', () => {
     return vector as number[];
   }
 
+  describe('what takes turns with a replaceDocument in this process', () => {
+    const chunk = (id: string, text: string, metadata: Record<string, unknown>) => ({
+      id,
+      text,
+      embedding: B,
+      metadata,
+    });
+    const stored = async (documentId: string) => {
+      const { points } = await raw.scroll(COLLECTION, {
+        filter: { must: [{ key: 'documentId', match: { value: documentId } }] },
+        with_payload: true,
+        limit: 50,
+      });
+      return points.map((point) => point.payload ?? {});
+    };
+    /** A store whose first write stops until `release`, with the replace in progress. */
+    function pausedAtFirstWrite() {
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const reached = vi.fn();
+      const paused: QdrantClientLike = Object.create(client);
+      paused.upsert = async (collection, args) => {
+        reached();
+        await gate;
+        return client.upsert(collection, args);
+      };
+      const store = new QdrantStore(paused, { collection: COLLECTION, dimension: DIM });
+      return { store, release, reached };
+    }
+
+    it('removeWhere waits, so the chunks the replace writes are removed too', async () => {
+      const { store: paused, release, reached } = pausedAtFirstWrite();
+      const replacing = paused.replaceDocument('turns-rw', [
+        chunk('turns-rw#0', 'v2', { tenant: 'turns-rw' }),
+      ]);
+      await vi.waitFor(() => expect(reached).toHaveBeenCalled());
+      const removing = paused.removeWhere({ tenant: 'turns-rw' });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      release();
+      await replacing;
+
+      expect(await removing).toBe(1);
+      expect(await stored('turns-rw')).toEqual([]);
+    });
+
+    it('updateMetadata waits, so it patches the version the replace wrote', async () => {
+      const { store: paused, release, reached } = pausedAtFirstWrite();
+      await store.upsert([
+        chunk('turns-um#0', 'v1', { version: 1 }),
+        chunk('turns-um#1', 'v1', { version: 1 }),
+      ]);
+      const replacing = paused.replaceDocument('turns-um', [
+        chunk('turns-um#0', 'v2', { version: 2 }),
+      ]);
+      await vi.waitFor(() => expect(reached).toHaveBeenCalled());
+      const updating = paused.updateMetadata('turns-um', { reviewed: true });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      release();
+      await replacing;
+
+      expect(await updating).toBe(1);
+      const [only, ...others] = await stored('turns-um');
+      expect(others).toEqual([]);
+      expect(only?.text).toBe('v2');
+      expect(only?.metadata).toEqual({ version: 2, reviewed: true });
+    });
+
+    it('nothing hangs with every operation overlapping on one document', async () => {
+      await Promise.all([
+        store.replaceDocument('turns-all', [chunk('turns-all#0', 'a', { tenant: 'turns-all' })]),
+        store.updateMetadata('turns-all', { a: 1 }),
+        store.removeWhere({ tenant: 'turns-all' }),
+        store.remove('turns-all'),
+        store.updateMetadata('turns-all', { b: 2 }),
+        store.replaceDocument('turns-all', [chunk('turns-all#0', 'b', { tenant: 'turns-all' })]),
+        store.removeWhere({ tenant: 'turns-all' }),
+      ]);
+      await store.remove('turns-all');
+    }, 30_000);
+  });
+
   it('updateMetadata leaves the stored vectors byte-identical (real set_payload)', async () => {
     await seed();
     const before = { a0: await vectorOf('alpha#0'), a1: await vectorOf('alpha#1') };

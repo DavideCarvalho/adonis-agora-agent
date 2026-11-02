@@ -369,6 +369,143 @@ describe('QdrantStore.remove', () => {
   });
 });
 
+describe('QdrantStore: what takes turns with a replaceDocument in this process', () => {
+  /** A client whose first upsert stops until the test lets it go, with the replace in progress. */
+  class PausedQdrantClient extends RecordingQdrantClient {
+    release = () => {};
+    private readonly paused = new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+    failUpsert = false;
+    override async upsert(collection: string, args: unknown) {
+      await this.paused;
+      if (this.failUpsert) throw new Error('upsert failed');
+      return super.upsert(collection, args);
+    }
+    async count(_collection: string, _args: unknown) {
+      this.calls.push({ method: 'count', args: [] });
+      return { count: 1 };
+    }
+    async setPayload(collection: string, args: unknown) {
+      this.calls.push({ method: 'setPayload', args: [collection, args] });
+      return {};
+    }
+  }
+
+  const record = { id: 'doc#0', text: 'v2', embedding: [1, 0, 0], metadata: { tenant: 't1' } };
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+  const called = (client: RecordingQdrantClient, method: string) =>
+    client.calls.filter((call) => call.method === method).length;
+
+  function setup() {
+    const client = new PausedQdrantClient();
+    return { client, store: new QdrantStore(client, { collection: 'rag', dimension: 3 }) };
+  }
+
+  it('removeWhere espera o replace em andamento antes de contar e deletar', async () => {
+    const { client, store } = setup();
+    const replacing = store.replaceDocument('doc', [record]);
+    const removing = store.removeWhere({ tenant: 't1' });
+    await settle();
+    expect(called(client, 'count')).toBe(0);
+    expect(called(client, 'delete')).toBe(0);
+
+    client.release();
+    await replacing;
+    expect(await removing).toBe(1);
+    expect(client.calls.at(-1)?.method).toBe('delete');
+  });
+
+  it('removeWhere segue depois de um replace que falhou', async () => {
+    const { client, store } = setup();
+    client.failUpsert = true;
+    const replacing = store.replaceDocument('doc', [record]);
+    const removing = store.removeWhere({ tenant: 't1' });
+    client.release();
+    await expect(replacing).rejects.toThrow('upsert failed');
+    expect(await removing).toBe(1);
+  });
+
+  it('removeWhere recusa um filtro vazio sem esperar nenhum replace', async () => {
+    const { client, store } = setup();
+    const replacing = store.replaceDocument('doc', [record]);
+    await expect(store.removeWhere({})).rejects.toThrow();
+    await expect(store.removeWhere({ tenant: [] })).resolves.toBe(0);
+    client.release();
+    await replacing;
+  });
+
+  it('updateMetadata lê o documento só depois do replace em andamento', async () => {
+    const { client, store } = setup();
+    client.scrollResult = { points: [{ payload: { id: 'doc#0', metadata: { tenant: 't1' } } }] };
+    const replacing = store.replaceDocument('doc', [record]);
+    await settle();
+    const scrollsBefore = called(client, 'scroll');
+    const updating = store.updateMetadata('doc', { reviewed: true });
+    await settle();
+    expect(called(client, 'scroll')).toBe(scrollsBefore);
+    expect(called(client, 'setPayload')).toBe(0);
+
+    client.release();
+    await replacing;
+    expect(await updating).toBe(1);
+    expect(called(client, 'setPayload')).toBe(1);
+  });
+
+  it('updateMetadata de outro documento não espera', async () => {
+    const { client, store } = setup();
+    const replacing = store.replaceDocument('doc', [record]);
+    await store.updateMetadata('other', { reviewed: true });
+    client.release();
+    await replacing;
+  });
+
+  it('updateMetadata segue depois de uma chamada que falhou, e a própria falha não trava a fila', async () => {
+    const { client, store } = setup();
+    client.failUpsert = true;
+    client.scrollResult = { points: [{ payload: { id: 'doc#0' } }] };
+    const replacing = store.replaceDocument('doc', [record]);
+    const updating = store.updateMetadata('doc', { reviewed: true });
+    client.release();
+    await expect(replacing).rejects.toThrow('upsert failed');
+    expect(await updating).toBe(1);
+
+    client.setPayload = async () => {
+      throw new Error('set_payload failed');
+    };
+    await expect(store.updateMetadata('doc', { reviewed: true })).rejects.toThrow(
+      'set_payload failed',
+    );
+    await expect(store.remove('doc')).resolves.toBeUndefined();
+  });
+
+  it('recusa um client sem setPayload na hora, sem entrar na fila', async () => {
+    const { client, store } = setup();
+    const replacing = store.replaceDocument('doc', [record]);
+    (client as { setPayload?: unknown }).setPayload = undefined;
+    await expect(store.updateMetadata('doc', { reviewed: true })).rejects.toThrow(/setPayload/);
+    client.release();
+    await replacing;
+  });
+
+  it('não trava com todas as operações sobrepostas no mesmo documento', async () => {
+    const { client, store } = setup();
+    client.scrollResult = { points: [{ payload: { id: 'doc#0' } }] };
+    const all = Promise.all([
+      store.replaceDocument('doc', [record]),
+      store.updateMetadata('doc', { a: 1 }),
+      store.removeWhere({ tenant: 't1' }),
+      store.remove('doc'),
+      store.updateMetadata('doc', { b: 2 }),
+      store.removeWhere({ tenant: 't1' }),
+      store.replaceDocument('doc', [record]),
+    ]);
+    client.release();
+    await all;
+    await expect(store.remove('doc')).resolves.toBeUndefined();
+  }, 2_000);
+});
+
 describe('QdrantStore.listDocuments', () => {
   it('faz scroll, dedupa por documentId e traz metadata representativo', async () => {
     const client = new RecordingQdrantClient();

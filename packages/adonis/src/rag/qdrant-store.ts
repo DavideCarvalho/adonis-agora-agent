@@ -352,7 +352,8 @@ export class QdrantStore implements VectorStore {
    * - If the highest generation crashes partway, the older writers still give way to it, leaving a partial
    *   document until the next call repairs it.
    * - A newest call with no chunks leaves nothing for step 3 to find, so an older call still writing wins.
-   * - A `remove` or `removeWhere` doesn't wait, in this process or another: chunks written after it survive.
+   * - A `remove`, `removeWhere` or `updateMetadata` in another process doesn't wait: chunks written after a
+   *   removal survive, and an update can put back metadata the replace changed. In this process they do.
    * - A replicated collection needs the writes to be `strong` ordered for step 3 to hold, and this store
    *   doesn't set that.
    */
@@ -440,6 +441,9 @@ export class QdrantStore implements VectorStore {
    *
    * `wait: true` because the returned count is a claim that the writes landed; Qdrant's default is to
    * acknowledge before applying.
+   *
+   * Takes its turn with {@link QdrantStore.replaceDocument} and {@link QdrantStore.remove} on the document,
+   * or it could write the metadata it read from the old version over the new one.
    */
   async updateMetadata(documentId: string, patch: MetadataPatch): Promise<number> {
     if (effectivePatchKeys(patch).length === 0) {
@@ -453,50 +457,52 @@ export class QdrantStore implements VectorStore {
           'embedding this method exists to preserve.',
       );
     }
-    // Group by the RESULTING metadata so identical outcomes share one write — the normal case.
-    const groups = new Map<string, { metadata: Record<string, unknown>; points: string[] }>();
     let written = 0;
-    let offset: unknown;
-    for (let pageCount = 0; ; pageCount++) {
-      if (pageCount >= MAX_SCROLL_PAGES) {
-        throw new Error(
-          'updateMetadata: scroll exceeded MAX_SCROLL_PAGES (the page offset never terminated)',
-        );
+    await this.replacing.run(documentId, async () => {
+      // Group by the RESULTING metadata so identical outcomes share one write — the normal case.
+      const groups = new Map<string, { metadata: Record<string, unknown>; points: string[] }>();
+      let offset: unknown;
+      for (let pageCount = 0; ; pageCount++) {
+        if (pageCount >= MAX_SCROLL_PAGES) {
+          throw new Error(
+            'updateMetadata: scroll exceeded MAX_SCROLL_PAGES (the page offset never terminated)',
+          );
+        }
+        const page = await this.client.scroll(this.collection, {
+          filter: { must: [{ key: 'documentId', match: { value: documentId } }] },
+          with_payload: ['id', 'metadata'],
+          with_vector: false,
+          limit: 256,
+          ...(offset !== undefined ? { offset } : {}),
+        });
+        for (const point of page.points) {
+          const payload = point.payload ?? {};
+          const chunkId = payload.id;
+          if (chunkId === undefined || chunkId === null) continue;
+          const current = payload.metadata;
+          const next = applyMetadataPatch(
+            current !== undefined && current !== null
+              ? (current as Record<string, unknown>)
+              : undefined,
+            patch,
+          );
+          const key = JSON.stringify(next);
+          const group = groups.get(key) ?? { metadata: next, points: [] };
+          group.points.push(chunkIdToPointId(String(chunkId)));
+          groups.set(key, group);
+          written += 1;
+        }
+        if (page.next_page_offset === undefined || page.next_page_offset === null) break;
+        offset = page.next_page_offset;
       }
-      const page = await this.client.scroll(this.collection, {
-        filter: { must: [{ key: 'documentId', match: { value: documentId } }] },
-        with_payload: ['id', 'metadata'],
-        with_vector: false,
-        limit: 256,
-        ...(offset !== undefined ? { offset } : {}),
-      });
-      for (const point of page.points) {
-        const payload = point.payload ?? {};
-        const chunkId = payload.id;
-        if (chunkId === undefined || chunkId === null) continue;
-        const current = payload.metadata;
-        const next = applyMetadataPatch(
-          current !== undefined && current !== null
-            ? (current as Record<string, unknown>)
-            : undefined,
-          patch,
-        );
-        const key = JSON.stringify(next);
-        const group = groups.get(key) ?? { metadata: next, points: [] };
-        group.points.push(chunkIdToPointId(String(chunkId)));
-        groups.set(key, group);
-        written += 1;
+      for (const group of groups.values()) {
+        await setPayload(this.collection, {
+          payload: { metadata: group.metadata },
+          points: group.points,
+          wait: true,
+        });
       }
-      if (page.next_page_offset === undefined || page.next_page_offset === null) break;
-      offset = page.next_page_offset;
-    }
-    for (const group of groups.values()) {
-      await setPayload(this.collection, {
-        payload: { metadata: group.metadata },
-        points: group.points,
-        wait: true,
-      });
-    }
+    });
     return written;
   }
 
@@ -550,6 +556,9 @@ export class QdrantStore implements VectorStore {
    * concurrent writes it is a very slightly stale count of what matched, where memory and pgvector return
    * an exact count from the deleting statement itself. The delete is filter-scoped either way; only the
    * reported number can drift.
+   *
+   * Which documents match isn't known until the changes already called have finished, so it waits for those
+   * in this store instance. One called after it can still overlap.
    */
   async removeWhere(filter: Record<string, unknown>): Promise<number> {
     assertRemovalFilter(filter);
@@ -568,6 +577,7 @@ export class QdrantStore implements VectorStore {
       // Unreachable: assertRemovalFilter already rejected the only input that yields undefined.
       throw new Error('removeWhere: filtro vazio escapou do assertRemovalFilter');
     }
+    await this.replacing.settled();
     const { count: matched } = await count(this.collection, { filter: qFilter, exact: true });
     await this.client.delete(this.collection, { filter: qFilter, wait: true });
     return matched;
