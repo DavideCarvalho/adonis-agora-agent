@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.97.5
+
+### Patch Changes
+
+- [#534](https://github.com/DavideCarvalho/adonis-agora-agent/pull/534) [`1eff1ed`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/1eff1ed255c03fc5b5c8f565ad91c195e6be0d69) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `QdrantStore.removeWhere` now waits for the changes already called in the same store instance, as `MemoryVectorStore.removeWhere` does, so it no longer misses chunks a replace is still writing. `QdrantStore.updateMetadata` takes its turn with `replaceDocument` and `remove` on the document, so it can't write metadata from the old version over the new one. Across processes neither waits.
+
 ## 0.97.4
 
 ### Patch Changes
