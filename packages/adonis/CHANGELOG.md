@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.97.4
+
+### Patch Changes
+
+- [#533](https://github.com/DavideCarvalho/adonis-agora-agent/pull/533) [`def3e1e`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/def3e1ebd9051001696465e3b78ba7262fc28d8e) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `QdrantStore.replaceDocument` calls in separate processes now converge on one version instead of leaving a mix, on Qdrant 1.16 or newer: chunks carry a `generation`, and no index needs migrating. A search can still briefly see both versions. In `MemoryVectorStore`, `remove` and `removeWhere` take their turn with `replaceDocument`.
+
 ## 0.97.3
 
 ### Patch Changes
