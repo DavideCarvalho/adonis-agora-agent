@@ -1,5 +1,5 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { QdrantClientLike } from '../src/index.js';
 import { chunkIdToPointId, QdrantStore } from '../src/index.js';
 
@@ -62,6 +62,180 @@ describe.skipIf(URL === undefined)('QdrantStore against a live Qdrant', () => {
       expect(race).toHaveLength(7);
     }
     await store.remove('race');
+  });
+
+  describe('replaceDocument across store instances, as separate processes would be', () => {
+    /** A store whose writes stop at the turnstile named by `stops`, in the order the test opens them. */
+    function writer(stops: Record<number, Promise<void>>, reached?: Record<number, () => void>) {
+      let writes = 0;
+      const pausing = async () => {
+        writes += 1;
+        reached?.[writes]?.();
+        await stops[writes];
+      };
+      const paused = {
+        ...Object.fromEntries(
+          ['getCollections', 'createCollection', 'query', 'scroll'].map((name) => [
+            name,
+            (...args: unknown[]) =>
+              (raw as unknown as Record<string, (...a: unknown[]) => unknown>)[name]?.(...args),
+          ]),
+        ),
+        upsert: async (collection: string, args: never) => {
+          await pausing();
+          return raw.upsert(collection, args);
+        },
+        delete: async (collection: string, args: never) => {
+          await pausing();
+          return raw.delete(collection, args);
+        },
+      } as unknown as QdrantClientLike;
+      return new QdrantStore(paused, {
+        collection: COLLECTION,
+        dimension: DIM,
+        upsertBatchSize: 1,
+      });
+    }
+
+    const version = (text: string, length: number) =>
+      Array.from({ length }, (_, chunk) => ({ id: `multi#${chunk}`, text, embedding: D }));
+
+    const stored = async () => {
+      const page = await raw.scroll(COLLECTION, {
+        filter: { must: [{ key: 'documentId', match: { value: 'multi' } }] },
+        with_payload: true,
+        limit: 100,
+      });
+      return page.points.map((point) => String(point.payload?.text));
+    };
+
+    function turnstile() {
+      let open = () => {};
+      let arrive = () => {};
+      const opened = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      const arrived = new Promise<void>((resolve) => {
+        arrive = resolve;
+      });
+      return { open, opened, arrive, arrived };
+    }
+
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+    beforeEach(async () => {
+      await store.remove('multi');
+      await tick();
+    });
+
+    it('an older writer paused before its delete does not cut the newer version', async () => {
+      const gate = turnstile();
+      const older = writer({ 4: gate.opened }, { 4: gate.arrive }).replaceDocument(
+        'multi',
+        version('older', 3),
+      );
+      await gate.arrived;
+      await tick();
+      await writer({}).replaceDocument('multi', version('newer', 5));
+      gate.open();
+      await older;
+      const texts = await stored();
+      expect(new Set(texts)).toEqual(new Set(['newer']));
+      expect(texts).toHaveLength(5);
+    });
+
+    it('an older writer paused between writes leaves no chunk behind the newer version', async () => {
+      const gate = turnstile();
+      const older = writer({ 2: gate.opened }, { 2: gate.arrive }).replaceDocument(
+        'multi',
+        version('older', 5),
+      );
+      await gate.arrived;
+      await tick();
+      await writer({}).replaceDocument('multi', version('newer', 3));
+      gate.open();
+      await older;
+      const texts = await stored();
+      expect(new Set(texts)).toEqual(new Set(['newer']));
+      expect(texts).toHaveLength(3);
+    });
+
+    it('an older writer starting its writes during the newer one cannot overwrite it', async () => {
+      const newerGate = turnstile();
+      const olderGate = turnstile();
+      const older = writer({ 1: olderGate.opened }, { 1: olderGate.arrive }).replaceDocument(
+        'multi',
+        version('older', 4),
+      );
+      await olderGate.arrived;
+      await tick();
+      const newer = writer({ 3: newerGate.opened }, { 3: newerGate.arrive }).replaceDocument(
+        'multi',
+        version('newer', 4),
+      );
+      await newerGate.arrived;
+      olderGate.open();
+      await older;
+      newerGate.open();
+      await newer;
+      const texts = await stored();
+      expect(new Set(texts)).toEqual(new Set(['newer']));
+      expect(texts).toHaveLength(4);
+    });
+
+    it('writers overlapping at random always leave exactly one whole version', async () => {
+      for (let round = 0; round < 15; round++) {
+        const lengths = [3, 7, 5];
+        const jitter = new Proxy(raw, {
+          get(target, key, receiver) {
+            const value = Reflect.get(target, key, receiver);
+            return typeof value !== 'function'
+              ? value
+              : async (...args: unknown[]) => {
+                  await new Promise((resolve) => setTimeout(resolve, Math.random() * 6));
+                  return value.apply(target, args);
+                };
+          },
+        }) as unknown as QdrantClientLike;
+        await Promise.all(
+          lengths.map((length, index) =>
+            new QdrantStore(jitter, {
+              collection: COLLECTION,
+              dimension: DIM,
+              upsertBatchSize: 1,
+            }).replaceDocument('multi', version(`writer-${index}`, length)),
+          ),
+        );
+        const texts = await stored();
+        expect(new Set(texts).size).toBe(1);
+        const winner = Number(texts[0]?.slice('writer-'.length));
+        expect(texts).toHaveLength(lengths[winner] as number);
+      }
+    });
+
+    it('a later call on a host whose clock runs behind still wins', async () => {
+      await store.replaceDocument('multi', version('earlier', 4));
+      const now = Date.now();
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now - 3_600_000);
+      try {
+        await store.replaceDocument('multi', version('later', 2));
+      } finally {
+        clock.mockRestore();
+      }
+      expect(await stored()).toEqual(['later', 'later']);
+    });
+
+    it('replaces chunks stored without a generation', async () => {
+      await store.upsert(version('legacy', 4));
+      await store.replaceDocument('multi', version('current', 2));
+      expect(await stored()).toEqual(['current', 'current']);
+    });
+
+    it('a plain upsert after a replace still overwrites its chunk', async () => {
+      await store.replaceDocument('multi', version('replaced', 1));
+      await store.upsert(version('upserted', 1));
+      expect(await stored()).toEqual(['upserted']);
+    });
   });
 
   /** Re-seed a known corpus, waiting for it to be visible. */

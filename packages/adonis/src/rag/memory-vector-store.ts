@@ -28,6 +28,7 @@ export class MemoryVectorStore implements VectorStore {
     }
   }
 
+  /** A replace and a removal of one document take turns, in the order they were called. */
   async replaceDocument(documentId: string, records: VectorRecord[]): Promise<void> {
     await this.replacing.run(documentId, async () => {
       await this.upsert(records);
@@ -41,11 +42,13 @@ export class MemoryVectorStore implements VectorStore {
   }
 
   async remove(documentId: string): Promise<void> {
-    for (const id of this.records.keys()) {
-      if (documentIdOf(id) === documentId) {
-        this.records.delete(id);
+    await this.replacing.run(documentId, async () => {
+      for (const id of this.records.keys()) {
+        if (documentIdOf(id) === documentId) {
+          this.records.delete(id);
+        }
       }
-    }
+    });
   }
 
   /**
@@ -112,6 +115,8 @@ export class MemoryVectorStore implements VectorStore {
     if (filterDeniesAll(filter)) {
       return 0;
     }
+    // Which documents match isn't known until the replaces already called have finished.
+    await this.replacing.settled();
     let removed = 0;
     for (const [id, record] of [...this.records]) {
       if (!matchesFilter(record.metadata, filter)) {

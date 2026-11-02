@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomInt } from 'node:crypto';
 import type { CursorPage } from '../pagination.js';
 import type { EmbeddingProvider } from '../spi/embedding-provider.js';
 import type { Passage } from '../spi/retriever.js';
@@ -61,7 +61,12 @@ export interface QdrantFieldCondition {
 export interface QdrantIsEmptyCondition {
   is_empty: { key: string };
 }
-export type QdrantCondition = QdrantFieldCondition | QdrantIsEmptyCondition;
+/** Matches a numeric payload field by range. A point without the field doesn't match. */
+export interface QdrantRangeCondition {
+  key: string;
+  range: { gt?: number; gte?: number };
+}
+export type QdrantCondition = QdrantFieldCondition | QdrantIsEmptyCondition | QdrantRangeCondition;
 
 /**
  * A Qdrant filter. `must` is ANDed, `must_not` negates (so `must_not: [{ is_empty: … }]` reads
@@ -86,7 +91,11 @@ export interface QdrantClientLike {
     name: string,
     config: { vectors: { size: number; distance: string } },
   ): Promise<unknown>;
-  upsert(collection: string, args: { points: QdrantPoint[] }): Promise<unknown>;
+  upsert(
+    collection: string,
+    /** `update_filter` skips an existing point that doesn't match. Qdrant 1.16+ honours it. */
+    args: { points: QdrantPoint[]; update_filter?: QdrantFilter; wait?: boolean },
+  ): Promise<unknown>;
   query(
     collection: string,
     args: {
@@ -198,6 +207,11 @@ export function buildQdrantFilter(
  *  `next_page_offset` never becomes null/undefined (pagination that never terminates). */
 const MAX_SCROLL_PAGES = 10_000;
 
+const GENERATION_KEY = 'generation';
+
+/** Room for a random tie-break within one millisecond, staying a safe integer past the year 2200. */
+const GENERATIONS_PER_MS = 1024;
+
 /** The library's fixed UUID namespace for deriving deterministic point ids (RFC 4122 §4.3). */
 const NAMESPACE = 'b9d5a5f2-1c3e-5e7a-9b2d-6f4c8a1e0d3b';
 
@@ -218,6 +232,9 @@ export function chunkIdToPointId(chunkId: string): string {
  * for managed vector databases. It talks to the client through the structural {@link QdrantClientLike}
  * (so `@qdrant/js-client-rest` stays an optional peer). One collection, scoped by payload filter. The
  * chunk id (`${documentId}#<n>`) becomes the point's UUIDv5 and travels back in the payload.
+ *
+ * {@link QdrantStore.replaceDocument} stamps a `generation` on the payload, which only it reads, and
+ * needs Qdrant 1.16 or newer to keep separate processes from mixing versions.
  */
 export class QdrantStore implements VectorStore {
   private readonly collection: string;
@@ -246,6 +263,10 @@ export class QdrantStore implements VectorStore {
   }
 
   async upsert(records: VectorRecord[]): Promise<void> {
+    await this.writePoints(records);
+  }
+
+  private async writePoints(records: VectorRecord[], generation?: number): Promise<void> {
     if (records.length === 0) return;
     const points: QdrantPoint[] = records.map((r) => ({
       id: chunkIdToPointId(r.id),
@@ -256,12 +277,18 @@ export class QdrantStore implements VectorStore {
         text: r.text,
         ...(r.source !== undefined ? { source: r.source } : {}),
         ...(r.metadata !== undefined ? { metadata: r.metadata } : {}),
+        ...(generation !== undefined ? { generation } : {}),
       },
     }));
     // Slice into batches: one huge request stalls against the client's 300s timeout (see upsertBatchSize).
     const step = this.upsertBatchSize > 0 ? this.upsertBatchSize : points.length;
     for (let i = 0; i < points.length; i += step) {
-      await this.client.upsert(this.collection, { points: points.slice(i, i + step) });
+      await this.client.upsert(this.collection, {
+        points: points.slice(i, i + step),
+        ...(generation !== undefined
+          ? { update_filter: { must_not: [newerThan(generation)] }, wait: true }
+          : {}),
+      });
     }
   }
 
@@ -307,27 +334,85 @@ export class QdrantStore implements VectorStore {
   }
   /**
    * Writes the new chunks, then drops the rest of the document, so a crash doesn't lose it. A search can
-   * briefly see both versions. Calls take turns only within this store instance, because Qdrant has no
-   * lock: other instances or processes replacing one document at the same time can leave a mix behind.
+   * briefly see both versions: Qdrant can't change several points at once, and a search can't compare
+   * each chunk against its document's current generation.
+   *
+   * Calls take turns within this store instance. Qdrant has no lock, so across instances and processes
+   * the versions converge instead. Each call has a generation above any it can see on the document:
+   *
+   * 1. A write skips a point of a newer generation, so an older writer can't damage a newer version.
+   * 2. It drops everything older than itself.
+   * 3. If a newer generation has appeared, it drops its own chunks too. A chunk the newer writer's step 2
+   *    missed was written after that step, so this check runs after the newer writer's first write and
+   *    finds it.
+   *
+   * So concurrent calls leave only the highest generation, whichever finishes last. Limits:
+   * - Step 1 needs Qdrant 1.16 or newer. Older servers ignore it silently, and calls that overlap can
+   *   leave a document with chunks missing. Calls that don't overlap are safe on any version.
+   * - If the highest generation crashes partway, the older writers still give way to it, leaving a partial
+   *   document until the next call repairs it.
+   * - A newest call with no chunks leaves nothing for step 3 to find, so an older call still writing wins.
+   * - A `remove` or `removeWhere` doesn't wait, in this process or another: chunks written after it survive.
+   * - A replicated collection needs the writes to be `strong` ordered for step 3 to hold, and this store
+   *   doesn't set that.
    */
   async replaceDocument(documentId: string, records: VectorRecord[]): Promise<void> {
     await this.replacing.run(documentId, async () => {
-      await this.upsert(records);
+      const ofDocument = { key: 'documentId', match: { value: documentId } };
+      const generation = await this.nextGeneration(documentId);
+      await this.writePoints(records, generation);
       await this.client.delete(this.collection, {
         filter: {
-          must: [{ key: 'documentId', match: { value: documentId } }],
-          ...(records.length > 0
-            ? { must_not: [{ key: 'id', match: { any: records.map((record) => record.id) } }] }
-            : {}),
+          must: [ofDocument],
+          must_not: [{ key: GENERATION_KEY, range: { gte: generation } }],
         },
         wait: true,
       });
+      const newer = await this.client.scroll(this.collection, {
+        filter: { must: [ofDocument, newerThan(generation)] },
+        with_payload: false,
+        with_vector: false,
+        limit: 1,
+      });
+      if (newer.points.length > 0) {
+        await this.client.delete(this.collection, {
+          filter: { must: [ofDocument], must_not: [newerThan(generation)] },
+          wait: true,
+        });
+      }
     });
   }
 
+  /**
+   * The clock orders calls that overlap, and the bump past what's stored orders those that don't: a later
+   * call on a host whose clock runs behind must not lose to an earlier one.
+   */
+  private async nextGeneration(documentId: string): Promise<number> {
+    let generation = Date.now() * GENERATIONS_PER_MS + randomInt(GENERATIONS_PER_MS);
+    for (;;) {
+      const page = await this.client.scroll(this.collection, {
+        filter: {
+          must: [
+            { key: 'documentId', match: { value: documentId } },
+            { key: GENERATION_KEY, range: { gte: generation } },
+          ],
+        },
+        with_payload: [GENERATION_KEY],
+        with_vector: false,
+        limit: 256,
+      });
+      const seen = page.points.map((point) => Number(point.payload?.[GENERATION_KEY]));
+      const highest = Math.max(...seen.filter(Number.isFinite));
+      if (seen.length === 0 || !(highest >= generation)) return generation;
+      generation = highest + 1;
+    }
+  }
+
   async remove(documentId: string): Promise<void> {
-    await this.client.delete(this.collection, {
-      filter: { must: [{ key: 'documentId', match: { value: documentId } }] },
+    await this.replacing.run(documentId, async () => {
+      await this.client.delete(this.collection, {
+        filter: { must: [{ key: 'documentId', match: { value: documentId } }] },
+      });
     });
   }
 
@@ -693,6 +778,10 @@ export function decodeScrollCursor(cursor: string): unknown {
     );
   }
   return (parsed as { o: unknown }).o;
+}
+
+function newerThan(generation: number): QdrantRangeCondition {
+  return { key: GENERATION_KEY, range: { gt: generation } };
 }
 
 /** A {@link import('../spi/retriever.js').Retriever} over a {@link QdrantStore}: embeds the query,
