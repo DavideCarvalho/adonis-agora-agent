@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.97.6
+
+### Patch Changes
+
+- fix(deps): update dependency jose to v6.2.15 ([#543](https://github.com/DavideCarvalho/adonis-agora-agent/issues/543))
+
 ## 0.97.5
 
 ### Patch Changes
