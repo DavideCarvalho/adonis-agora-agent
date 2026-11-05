@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 0.97.7
+
+### Patch Changes
+
+- [#546](https://github.com/DavideCarvalho/adonis-agora-agent/pull/546) [`3488558`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/3488558918aab04c4a9df5c50020e36d6d802551) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `AgentChatTransport`: a component pushed mid-step (`ui` frame) now closes only the open text run. It used to close the reasoning run too, stamping the browser's elapsed time on it — so when a tool pushed a component while it ran (a search pushing its result card), the tool's whole execution was counted as thinking, and the backend's `step-finish.reasoningMs` arriving after it was dropped. The reasoning run now closes at the step boundary with the backend's own measurement, the same number a reloaded thread shows.
+
 ## 0.97.6
 
 ### Patch Changes
