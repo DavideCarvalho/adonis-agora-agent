@@ -448,11 +448,14 @@ export class AgentChatTransport implements ChatTransport<UIMessage> {
          * store persists, so a reloaded thread reads the same duration. Without one, the time this
          * client watched the run stream, which is what the reader saw but reads ~0 on a replay.
          */
-        function closeRuns(reasoningMs?: number) {
+        function closeText() {
           if (textId !== null) {
             controller.enqueue({ type: 'text-end', id: textId });
             textId = null;
           }
+        }
+        function closeRuns(reasoningMs?: number) {
+          closeText();
           if (reasoningId !== null) {
             controller.enqueue({
               type: 'reasoning-end',
@@ -644,8 +647,13 @@ export class AgentChatTransport implements ChatTransport<UIMessage> {
             case 'ui':
               ensureStep();
               // Positioned content: close the open prose so text written after the component
-              // renders after it instead of growing the paragraph above it.
-              closeRuns();
+              // renders after it instead of growing the paragraph above it. Only the TEXT run:
+              // the reasoning run stays open until the step boundary, where it is closed with the
+              // backend's own `step-finish.reasoningMs`. Closing it here stamped the browser's
+              // elapsed time instead — which, for a tool that pushes a component while it runs
+              // (a search pushing its result card), counted the tool's whole execution as
+              // "thinking", and the backend's number arriving after it was dropped.
+              closeText();
               controller.enqueue({
                 type: 'data-ui',
                 id: event.id,

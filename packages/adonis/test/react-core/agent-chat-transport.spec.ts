@@ -4,6 +4,7 @@ import {
   AgentChatTransport,
   type AgentStreamMeta,
 } from '../../src/react/core/agent-chat-transport.js';
+import { readReasoningMs } from '../../src/react/core/reasoning/timing.js';
 
 function sseStream(frames: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -104,6 +105,39 @@ describe('AgentChatTransport', () => {
     expect(toolAvailable).toMatchObject({ toolCallId: 't1', toolName: 'executeSql' });
     const toolOutput = chunks.find((chunk) => chunk.type === 'tool-output-available');
     expect(toolOutput).toMatchObject({ toolCallId: 't1', output: { rows: [] } });
+  });
+
+  it('a component pushed mid-step closes the text run but leaves reasoning to the step boundary, timed by the backend', async () => {
+    const transport = new AgentChatTransport({
+      fetch: fakeFetch(
+        sseStream([
+          'event: meta\ndata: {"runId":"run-1","threadId":"thr-1"}\n\n',
+          'data: {"kind":"step-start"}\n\n',
+          'data: {"kind":"reasoning","text":"Let me search."}\n\n',
+          'data: {"kind":"text","text":"Searching…"}\n\n',
+          'data: {"kind":"tool-input-available","id":"t1","name":"search","input":{"q":"x"}}\n\n',
+          // The tool pushes its result card while it runs.
+          'data: {"kind":"ui","id":"u1","component":"Results","props":{"n":3},"toolCallId":"t1"}\n\n',
+          'data: {"kind":"tool-output","id":"t1","output":{"n":3}}\n\n',
+          'data: {"kind":"step-finish","reasoningMs":500}\n\n',
+          'event: done\ndata: {}\n\n',
+        ]),
+      ),
+    });
+
+    const chunks = await collect(await transport.sendMessages(sendArgs()));
+    const types = chunks.map((chunk) => chunk.type);
+
+    // The text run still closes before the component, so later prose renders after it…
+    expect(types.indexOf('text-end')).toBeLessThan(types.indexOf('data-ui'));
+    // …but the reasoning run is closed at the step boundary, not by the component.
+    expect(types.indexOf('reasoning-end')).toBeGreaterThan(types.indexOf('data-ui'));
+    expect(types.indexOf('reasoning-end')).toBeLessThan(types.indexOf('finish-step'));
+
+    // And it carries the backend's measurement, not the browser's elapsed time (which would
+    // have counted the tool's execution as thinking).
+    const reasoningEnd = chunks.find((chunk) => chunk.type === 'reasoning-end');
+    expect(readReasoningMs(reasoningEnd as { providerMetadata?: unknown })).toBe(500);
   });
 
   it('maps a message-metadata frame onto the message metadata chunk', async () => {
