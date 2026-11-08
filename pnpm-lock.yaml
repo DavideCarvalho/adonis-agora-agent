@@ -249,8 +249,8 @@ importers:
         specifier: 1.0.4
         version: 1.0.4(zod@4.6.7)
       '@ag-ui/core':
-        specifier: 1.0.3
-        version: 1.0.3(zod@4.6.7)
+        specifier: 1.0.4
+        version: 1.0.4(zod@4.6.7)
       '@ai-sdk/react':
         specifier: 4.0.167
         version: 4.0.167(react@19.3.1)(zod@4.6.7)
@@ -1024,14 +1024,6 @@ packages:
     resolution: {integrity: sha512-bACZj5CG/B6coQL54/LT0b29RjoyZf7k+XTs1c4+PBpsZbCYCNQ/TVDE5ffvmZvZ4NnH2Zc+JjbIeGdNdYJu8w==}
     peerDependencies:
       zod: ^3.25.18 || ^4.0.0
-
-  '@ag-ui/core@1.0.3':
-    resolution: {integrity: sha512-HdMdZPOqworKlnzLaNktnbNYgIzOPbzt5ow6J4bPhbmHCdpWpCSZQFgkifQkn1zVHgCK1V+pmKc8xtW6FsQZKA==}
-    peerDependencies:
-      zod: ^3.25.18 || ^4.0.0
-    peerDependenciesMeta:
-      zod:
-        optional: true
 
   '@ag-ui/core@1.0.4':
     resolution: {integrity: sha512-Z/G3UXYRyZ/1LcOtCCf6RJiFPTjRqaNublW/kQ7wsfiP4Qw5oIVmvO6NkUQYoqCoMXuXggyD3MMH2Td5OVKECQ==}
@@ -6768,10 +6760,6 @@ snapshots:
       rxjs: 7.8.1
       untruncate-json: 0.0.1
       uuid: 11.1.1
-      zod: 4.6.7
-
-  '@ag-ui/core@1.0.3(zod@4.6.7)':
-    optionalDependencies:
       zod: 4.6.7
 
   '@ag-ui/core@1.0.4(zod@4.6.7)':
