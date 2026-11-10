@@ -273,8 +273,8 @@ importers:
         specifier: 7.3.11
         version: 7.3.11(@emotion/react@11.14.0(@types/react@19.3.0)(react@19.3.1)(supports-color@10.2.2))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@19.3.0)(react@19.3.1)(supports-color@10.2.2))(@types/react@19.3.0)(react@19.3.1)(supports-color@10.2.2))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@opencode/client':
-        specifier: 2.2.5
-        version: 2.2.5(effect@4.0.6)
+        specifier: 2.2.6
+        version: 2.2.6(effect@4.1.0)
       '@qdrant/js-client-rest':
         specifier: 1.20.0
         version: 1.20.0(typescript@7.0.2)
@@ -1866,10 +1866,10 @@ packages:
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
 
-  '@opencode/client@2.2.5':
-    resolution: {integrity: sha512-EjYrFGWHURsIbjtmQdIsGSPmYZGaulxqwEfYxQH5t9838508BCIvDX9f7/ZsgNGHYXM0punA3W8hTt6GjxIEaw==}
+  '@opencode/client@2.2.6':
+    resolution: {integrity: sha512-o90b8Z6tk62U3MiRK1g6r7WmNWLzHzIHme75/MCWa9/XmOREMzY4W1N01wAuHwU3J6UH/PlUDNKvLkeX5qCyeA==}
     peerDependencies:
-      effect: 4.0.6
+      effect: 4.1.0
       solid-js: '>=1.9.0'
     peerDependenciesMeta:
       effect:
@@ -1877,11 +1877,11 @@ packages:
       solid-js:
         optional: true
 
-  '@opencode/protocol@2.2.5':
-    resolution: {integrity: sha512-T3ET0kS1kj8sv7/d+c1T2he7TXoZ4Rki7zTqHuv8b0kWhg3Vk6o0t+T9KsEQdEat7PFksgH5haC2iSSdJOB7/w==}
+  '@opencode/protocol@2.2.6':
+    resolution: {integrity: sha512-XBAgz2qnhFS/EI4P3pgC9A6HJTHnFiaQXkqux3liXwE7hZh5wEzRZ551nQZD95rkrH00EnryUSaKI2y/O2Bt6w==}
 
-  '@opencode/schema@2.2.5':
-    resolution: {integrity: sha512-hlKk6cX28BwvOMOVG3Mtt4tEHxwY68Z6Gz5/cL32N8qfZexykCKsZai49Jms4/2gD8BzvVuBERnnlLDbdLstUA==}
+  '@opencode/schema@2.2.6':
+    resolution: {integrity: sha512-TaLr30ktFFVsuReorFNbqYvybTVxV/4M44qm5XzRjUqq6deR0jH4h4Wt1gB0NTkXDFL0LMH+Ul1oVBnp5w9TRg==}
 
   '@oxc-project/types@0.156.0':
     resolution: {integrity: sha512-1Duyg48TdJNdyhEB8Xn1L36bT9Pv6GUtlKjHxOys8xkaF/rQq3XJE+bAurSK/AgIz5mGFsb77cn9Pb20+WCScw==}
@@ -3766,8 +3766,8 @@ packages:
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
 
-  effect@4.0.6:
-    resolution: {integrity: sha512-Tc3mkzuLR6t6P9dhLt0D2GrxYtmU5td4XEJEiXCmILz53IRIfJyHsKZWjTA3xEjiwpNTtXBgI4iqYPxMztBDrw==}
+  effect@4.1.0:
+    resolution: {integrity: sha512-lGx2MJJyrXA8RZb2UpQ/0Nkb5Utaimby7oD92+18noBxLPE85IFOvptdzau8dvcxAOwfwHo9iqapbKeFzqQM/Q==}
 
   electron-to-chromium@1.5.467:
     resolution: {integrity: sha512-Nw9X371rtZmYcBSnEijnCDONILjs93biCZO34juC7MBOmK8E+GFnyD4T/WvyrlJkppul7oxg6TwvtKst9SODTw==}
@@ -7622,22 +7622,22 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.3
 
-  '@opencode/client@2.2.5(effect@4.0.6)':
+  '@opencode/client@2.2.6(effect@4.1.0)':
     dependencies:
-      '@opencode/protocol': 2.2.5
-      '@opencode/schema': 2.2.5
+      '@opencode/protocol': 2.2.6
+      '@opencode/schema': 2.2.6
     optionalDependencies:
-      effect: 4.0.6
+      effect: 4.1.0
 
-  '@opencode/protocol@2.2.5':
+  '@opencode/protocol@2.2.6':
     dependencies:
-      '@opencode/schema': 2.2.5
-      effect: 4.0.6
+      '@opencode/schema': 2.2.6
+      effect: 4.1.0
 
-  '@opencode/schema@2.2.5':
+  '@opencode/schema@2.2.6':
     dependencies:
       '@standard-schema/spec': 1.1.0
-      effect: 4.0.6
+      effect: 4.1.0
 
   '@oxc-project/types@0.156.0': {}
 
@@ -9297,7 +9297,7 @@ snapshots:
 
   ee-first@1.1.1: {}
 
-  effect@4.0.6: {}
+  effect@4.1.0: {}
 
   electron-to-chromium@1.5.467: {}
 
