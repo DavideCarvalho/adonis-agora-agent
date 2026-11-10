@@ -44,7 +44,7 @@
       "enabled": false
     },
     {
-      "description": "`ai` and `@ai-sdk/*` ship as one release train, and `@ai-sdk/react` depends on an exact `ai`. Updating either side alone leaves two copies of `ai` in the tree, whose types are not the same types — the inferred return of a hook wrapping `useChat` then cannot be named (TS2742) and the build fails on a version bump that is individually fine. Grouping them keeps the tree at one copy.",
+      "description": "`ai` and `@ai-sdk/*` ship as one release train, and `@ai-sdk/react` depends on an exact `ai`. Updating either side alone leaves two copies of `ai` in the tree, whose types are not the same types \u2014 the inferred return of a hook wrapping `useChat` then cannot be named (TS2742) and the build fails on a version bump that is individually fine. Grouping them keeps the tree at one copy.",
       "matchPackageNames": ["ai", "@ai-sdk/**"],
       "groupName": "ai sdk"
     },
@@ -64,6 +64,18 @@
       "description": "Lockfile maintenance refreshes the whole tree at once, so Renovate has no single release to age: its `renovate/stability-days` check stays pending forever and the automerge below never fires. pnpm already enforces the minimum release age itself when it resolves the refreshed lockfile, so the check adds nothing here.",
       "matchUpdateTypes": ["lockFileMaintenance"],
       "minimumReleaseAge": null
+    },
+    {
+      "description": "Build and release stay pinned to Node 24 (CI tests 24 and 26, `engines.node` is `>=24`). A Node major for the pinned toolchain (`.nvmrc`, `node-version` in the workflows, the `node` docker/runtime dep) is a policy decision, not an update.",
+      "matchManagers": ["nvm", "github-actions"],
+      "matchDepNames": ["node"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "`typescript5` is an alias of TypeScript 5 on purpose: the genui kit's docs extractor (src/genui/kit/docs.ts) needs the TypeScript compiler API, which TypeScript 7 removed. Moving the alias to 7 defeats it.",
+      "matchDepNames": ["typescript5"],
+      "enabled": false
     }
   ],
   "lockFileMaintenance": {

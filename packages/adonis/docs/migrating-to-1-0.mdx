@@ -18,7 +18,7 @@ Upgrade the other `@adonis-agora/*` packages you use to their 1.0 release candid
 
 ## Node 24 or later
 
-Both packages require Node 24 or later (`engines.node: ">=24"`), as AdonisJS 7 does.
+Both packages require Node 24 or later (`engines.node: ">=24"`), as AdonisJS 7 does. They are tested on Node 24 and 26.
 
 ## `ChatQueueService`: `personaFor` is removed
 
@@ -48,6 +48,48 @@ export const queue = new ChatQueueService(store, sink, {
 ```
 
 A queued message that already carries a persona still starts under it, and `resolveTarget` is not called for it.
+
+## `streamTransports` is removed
+
+`streamTransports` was a second name for `tokenSinks`. Import `tokenSinks` instead.
+
+Before:
+
+```ts title="config/agent.ts"
+import { defineConfig, streamTransports } from '@adonis-agora/agent'
+
+export default defineConfig({
+  sink: streamTransports.redis({ connection: 'main' }),
+})
+```
+
+After:
+
+```ts title="config/agent.ts"
+import { defineConfig, tokenSinks } from '@adonis-agora/agent'
+
+export default defineConfig({
+  sink: tokenSinks.redis({ connection: 'main' }),
+})
+```
+
+## Dashboard: `window.__AGENT_DASHBOARD_BASE__` is no longer read
+
+The console and `resolveApiBase()` from `@adonis-agora/agent-dashboard/client` read the agent's API base from the JSON data block the provider injects into the page, and otherwise derive it from the page URL. A page that embeds the console itself sets the base with that data block instead of the global.
+
+Before:
+
+```html title="resources/views/console.edge"
+<script>window.__AGENT_DASHBOARD_BASE__ = '/api/agent'</script>
+```
+
+After:
+
+```html title="resources/views/console.edge"
+<script type="application/json" id="agent-dashboard-config">{"apiBase":"/api/agent"}</script>
+```
+
+A data block is never executed, so a Content-Security-Policy with `script-src 'nonce-…'` does not block it. If you build an `AgentClient` yourself, you can also pass `baseUrl`.
 
 ## Sandbox kit: the options from before 0.75 are no longer checked
 
@@ -109,17 +151,17 @@ After:
 
 ## Peer ranges
 
-The optional `@adonis-agora/*` peers now accept 1.x as well as the 0.x releases they accepted before:
+The optional `@adonis-agora/*` peers now accept 1.x, including its release candidates, as well as the 0.x releases they accepted before:
 
 | Peer | Range |
 | --- | --- |
-| `@adonis-agora/authz` | `>=0.4.2 <2.0.0` |
-| `@adonis-agora/diagnostics` | `>=0.1.0 <2.0.0` |
-| `@adonis-agora/durable` | `>=0.43.3 <2.0.0` |
-| `@adonis-agora/media` | `>=0.18.0 <2.0.0` |
-| `@adonis-agora/telescope` | `>=0.4.0 <2.0.0` |
+| `@adonis-agora/authz` | `>=0.4.2 <2.0.0 \|\| >=1.0.0-rc.0 <2.0.0` |
+| `@adonis-agora/diagnostics` | `>=0.1.0 <2.0.0 \|\| >=1.0.0-rc.0 <2.0.0` |
+| `@adonis-agora/durable` | `>=0.43.3 <2.0.0 \|\| >=1.0.0-rc.0 <2.0.0` |
+| `@adonis-agora/media` | `>=0.18.0 <2.0.0 \|\| >=1.0.0-rc.0 <2.0.0` |
+| `@adonis-agora/telescope` | `>=0.4.0 <2.0.0 \|\| >=1.0.0-rc.0 <2.0.0` |
 
-`@adonis-agora/agent-dashboard` accepts `@adonis-agora/agent` `>=0.26.0 <2.0.0`, and the 1.0 release candidates.
+`@adonis-agora/agent-dashboard` accepts `@adonis-agora/agent` `>=0.26.0 <2.0.0 || >=1.0.0-rc.0 <2.0.0`.
 
 `@streamdown/code` 2 is accepted alongside 1 (`^1.1.1 || ^2.0.0`).
 

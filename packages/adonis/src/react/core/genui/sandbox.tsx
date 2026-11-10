@@ -102,7 +102,7 @@ export interface SandboxRendererOptions {
    * How a frame gets the app's styles, the Tailwind runtime and the kit. `'shared'` (default): the
    * page fetches each once and posts it to each frame when the frame asks (`load`), which puts it
    * in inline elements of its own — each `srcdoc` is a few KB instead of every asset inlined into it,
-   * under the same CSP. `'inline'`: every asset in every frame's `srcdoc`, as before 0.78.
+   * under the same CSP. `'inline'`: every asset in every frame's `srcdoc`.
    */
   assets?: 'shared' | 'inline';
   /** What to draw while nothing is drawable yet. Default: a busy box of `initialHeight` with the placeholder lines. */

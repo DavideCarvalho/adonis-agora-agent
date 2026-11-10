@@ -8,7 +8,7 @@ description: >-
   decideDashboardMount refusal reasons (no-governance-gate vs no-governance-queries),
   and the framework-free AgentClient from @adonis-agora/agent-dashboard/client
   (spendByModel/spendByActor/usageTrend/quotaToday/recentThreads/recentToolCalls/
-  pendingApprovals/approveToolCall) with window.__AGENT_DASHBOARD_BASE__ resolution.
+  pendingApprovals/approveToolCall) with injected-config apiBase resolution.
   Use for "dashboard blank or won't mount", "governance console 404", "build a custom
   governance UI", "approve HITL calls from the browser".
 metadata:
@@ -196,7 +196,8 @@ import { resolveApiBase } from '@adonis-agora/agent-dashboard/client'
 const client = new AgentClient({ baseUrl: resolveApiBase() })
 ```
 
-Mechanism: the provider injects the exact mounted base as `window.__AGENT_DASHBOARD_BASE__`
+Mechanism: the provider injects the exact mounted base as a JSON data block
+(`<script type="application/json" id="agent-dashboard-config">{"apiBase":…}</script>`)
 when serving index.html; absent that, `deriveApiBase(location.pathname)` strips the
 trailing `/dashboard` segment — `/api/agent/dashboard` → `/api/agent`.
 Source: `packages/dashboard/src/client/api-base.ts` (`resolveApiBase`, `deriveApiBase`).

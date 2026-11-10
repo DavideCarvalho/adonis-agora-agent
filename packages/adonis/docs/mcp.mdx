@@ -72,7 +72,7 @@ Point an MCP client at `http://localhost:3333/mcp`. It will discover the OAuth f
 | `actor` | `{ id, roles?, tenantRef? }` | — | The fixed identity for open mode. |
 | `authorizer` | `RolesPolicy` | `DefaultToolAuthorizer(defaultRoles)` | The tool gate. Pass the authz Bouncer adapter here to run MCP under abilities. |
 | `defaultRoles` | `string[]` | `['ADMIN']` | Roles a tool requires when it declares none. Only consulted by the default authorizer. |
-| `emptyRoles` | `'allow' \| 'deny'` | `'allow'` | What an empty roles list means to the default authorizer. Since 0.46 it is open; `'deny'` makes `defaultRoles: []` or a tool's `roles: []` reach nobody. |
+| `emptyRoles` | `'allow' \| 'deny'` | `'allow'` | What an empty roles list means to the default authorizer. By default it is open; `'deny'` makes `defaultRoles: []` or a tool's `roles: []` reach nobody. |
 | `allowedTools` | `string[]` | — | Restrict which tools are listed and callable. |
 | `actions` | `'refuse' \| 'execute'` | `'refuse'` | `action` tools over MCP. `'refuse'`: neither listed nor callable (the loop's approval gate cannot be honoured). `'execute'`: they run when called — the MCP client's own confirmation stands in for it. |
 | `stateless` | `boolean` | `false` | No sessions: every `POST` is answered by its own transport; `GET`/`DELETE` are `405`. Use it with more than one instance behind a load balancer. |

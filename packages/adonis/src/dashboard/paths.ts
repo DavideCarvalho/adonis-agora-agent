@@ -87,7 +87,6 @@ export const CONFIG_ELEMENT_ID = 'agent-dashboard-config';
  * `script-src 'self' 'nonce-…'` (`@adonisjs/shield`'s `@nonce`, the recommended setup) silently
  * dropped ours — the SPA then derived a base from its own URL, which is right only for the default
  * mount, and on any other every request from a console that had rendered perfectly answered 404.
- * The global is still read by the SPA as a fallback, but this is no longer how the provider speaks.
  */
 export function injectApiBase(html: string, apiBase: string): string {
   // `<` escaped as `\u003c` inside the JSON: a data block ends at the first `</script`, and a

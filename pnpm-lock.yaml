@@ -200,7 +200,7 @@ importers:
   packages/adonis:
     dependencies:
       '@adonis-agora/media':
-        specifier: '>=0.18.0 <2.0.0'
+        specifier: '>=0.18.0 <2.0.0 || >=1.0.0-rc.0 <2.0.0'
         version: 0.28.1(ecf9655d1b8faf9459c057656d6c4600)
       '@modelcontextprotocol/sdk':
         specifier: 1.32.2

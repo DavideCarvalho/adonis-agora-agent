@@ -198,7 +198,6 @@ export {
   pricingStores,
   retrievers,
   stores,
-  streamTransports,
   tokenSinks,
 } from './define_config.js';
 export * from './delegation.js';
