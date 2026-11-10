@@ -173,6 +173,7 @@ function DefaultPlaceholder({
 export function createSandboxRenderer(
   options: SandboxRendererOptions = {},
 ): GenuiRenderer<SandboxProps> {
+  // biome-ignore lint/correctness/noComponentHookFactories: a renderer factory, called once when the registry is built, not during render.
   function SandboxView(props: SandboxProps) {
     const node = useGenuiNode();
     const provided = useGenuiProvider();

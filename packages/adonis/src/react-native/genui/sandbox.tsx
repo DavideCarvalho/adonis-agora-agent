@@ -248,6 +248,7 @@ export function createNativeSandboxRenderer(
       ? themeOption
       : () => (themeOption === false ? null : themeOption);
 
+  // biome-ignore lint/correctness/noComponentHookFactories: a renderer factory, called once when the registry is built, not during render.
   function NativeSandboxView(props: SandboxProps) {
     const node = useGenuiNode();
     const provided = useGenuiProvider();

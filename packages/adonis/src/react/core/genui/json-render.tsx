@@ -77,6 +77,7 @@ export function JsonRenderTree({ root, registry, initialState }: JsonRenderTreeP
 export function jsonRenderTree(registry: ComponentRegistry): GenuiRenderer<{
   root?: GenerativeUIElement;
 }> {
+  // biome-ignore lint/correctness/noComponentHookFactories: a renderer factory, called once when the registry is built, not during render.
   return function JsonRenderTreeFrame({ root }: { root?: GenerativeUIElement }) {
     return <JsonRenderTree registry={registry} {...(root !== undefined ? { root } : {})} />;
   };
