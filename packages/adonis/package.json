@@ -312,7 +312,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
     "@standard-schema/spec": "1.1.0",
-    "@tailwindcss/browser": "4.3.3",
+    "@tailwindcss/browser": "4.3.5",
     "acorn": "8.19.0",
     "acorn-jsx": "5.3.2",
     "jose": "6.2.15"
@@ -487,7 +487,7 @@
     "@streamdown/code": "1.1.1",
     "@streamdown/math": "1.0.3",
     "@streamdown/mermaid": "1.0.3",
-    "@tailwindcss/vite": "4.3.3",
+    "@tailwindcss/vite": "4.3.5",
     "@tanstack/intent": "0.5.6",
     "@testcontainers/mysql": "12.2.1",
     "@testcontainers/postgresql": "12.2.1",
@@ -526,7 +526,7 @@
     "rxjs": "7.8.2",
     "sass": "1.107.1",
     "streamdown": "2.7.1",
-    "tailwindcss": "4.3.3",
+    "tailwindcss": "4.3.5",
     "testcontainers": "12.2.1",
     "typescript": "7.0.2",
     "typescript5": "npm:typescript@5.9.3",
