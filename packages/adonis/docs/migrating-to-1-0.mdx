@@ -1,0 +1,128 @@
+---
+title: Migrating to 1.0
+description: What changes when you upgrade @adonis-agora/agent and @adonis-agora/agent-dashboard to 1.0 — removed options, peer ranges and the Node requirement.
+icon: ArrowUpCircle
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+1.0 removes the options that 0.x kept only for older code. Your app compiles against 1.0 once each change below is applied. Nothing here touches your database: the agent tables, the published migration and runs already journaled by a durable worker all work as before.
+
+## Install the release candidate
+
+```bash
+pnpm add @adonis-agora/agent@rc @adonis-agora/agent-dashboard@rc
+```
+
+Upgrade the other `@adonis-agora/*` packages you use to their 1.0 release candidates at the same time. The agent accepts both their 0.x and their 1.x releases.
+
+## Node 24 or later
+
+Both packages require Node 24 or later (`engines.node: ">=24"`), as AdonisJS 7 does.
+
+## `ChatQueueService`: `personaFor` is removed
+
+If you build a `ChatQueueService` yourself (the agent provider builds one for you), replace `personaFor` with `resolveTarget`. `resolveTarget` receives the whole queued message and returns the agent and persona it starts as.
+
+Before:
+
+```ts title="app/services/agent_queue.ts"
+import { ChatQueueService } from '@adonis-agora/agent'
+
+export const queue = new ChatQueueService(store, sink, {
+  personaFor: (agentName) => personas.forAgent(agentName),
+})
+```
+
+After:
+
+```ts title="app/services/agent_queue.ts"
+import { ChatQueueService } from '@adonis-agora/agent'
+
+export const queue = new ChatQueueService(store, sink, {
+  resolveTarget: async (message) => ({
+    ...(message.agentName !== undefined ? { agentName: message.agentName } : {}),
+    persona: personas.forAgent(message.agentName)?.id,
+  }),
+})
+```
+
+A queued message that already carries a persona still starts under it, and `resolveTarget` is not called for it.
+
+## Sandbox kit: the options from before 0.75 are no longer checked
+
+`genuiSandboxKit()`, `genuiKitHook()`, `writeSandboxKitDocs()` and `defineSandbox()` used to throw when they received an option that 0.75 replaced. In 1.0 those options are simply not part of the types. TypeScript rejects them, and plain JavaScript ignores them. If your config still passes one, rename it:
+
+| Before | After |
+| --- | --- |
+| `entry: 'kit.ts'` | `components: 'kit.ts'` |
+| `include: 'components/ui/*.tsx'` | `components: 'components/ui/*.tsx'` |
+| `css: 'resources/css/app.css'` | `styles: 'resources/css/app.css'` |
+| `tailwind: true`, `tailwindCss: [...]` | `styles: '<your Tailwind stylesheet>'` (Tailwind is detected from it) |
+
+Before:
+
+```ts title="vite.config.ts"
+genuiSandboxKit({
+  include: 'inertia/components/ui/*.tsx',
+  tailwind: true,
+  tailwindCss: ['inertia/css/app.css'],
+})
+```
+
+After:
+
+```ts title="vite.config.ts"
+genuiSandboxKit({
+  components: 'inertia/components/ui/*.tsx',
+  styles: 'inertia/css/app.css',
+})
+```
+
+For a sandbox in your catalog, drop `tailwind` and keep `kit`:
+
+```ts title="app/agent/catalog.ts"
+// Before
+defineSandbox({ kit: true, tailwind: true })
+
+// After
+defineSandbox({ kit: true })
+```
+
+## React: `ApprovalTarget` has only the `proposal` kind
+
+The `ApprovalTarget` type that `approve` and `reject` accept from `@adonis-agora/agent/react` no longer includes `{ kind: 'legacy', toolCallId }`. Nothing read that kind. To approve a tool call, pass no target. To decide an action proposal, pass `{ kind: 'proposal', proposalId, threadId }`.
+
+Before:
+
+```tsx title="inertia/components/approval_buttons.tsx"
+<button onClick={() => approve(part.toolCallId, undefined, { kind: 'legacy', toolCallId: part.toolCallId })}>
+  Approve
+</button>
+```
+
+After:
+
+```tsx title="inertia/components/approval_buttons.tsx"
+<button onClick={() => approve(part.toolCallId)}>Approve</button>
+```
+
+## Peer ranges
+
+The optional `@adonis-agora/*` peers now accept 1.x as well as the 0.x releases they accepted before:
+
+| Peer | Range |
+| --- | --- |
+| `@adonis-agora/authz` | `>=0.4.2 <2.0.0` |
+| `@adonis-agora/diagnostics` | `>=0.1.0 <2.0.0` |
+| `@adonis-agora/durable` | `>=0.43.3 <2.0.0` |
+| `@adonis-agora/media` | `>=0.18.0 <2.0.0` |
+| `@adonis-agora/telescope` | `>=0.4.0 <2.0.0` |
+
+`@adonis-agora/agent-dashboard` accepts `@adonis-agora/agent` `>=0.26.0 <2.0.0`.
+
+`@streamdown/code` 2 is accepted alongside 1 (`^1.1.1 || ^2.0.0`).
+
+<Callout type="info" title="Nothing to migrate in your data">
+No table, column or stored message changes in 1.0. Durable runs started on a 0.x release finish on 1.0.
+</Callout>

@@ -19,7 +19,6 @@ export {
 } from './discover.js';
 export { type GenerateSandboxKitDocsOptions, generateSandboxKitDocs } from './docs.js';
 export {
-  assertNoLegacyKitOptions,
   DEFAULT_KIT_DIRS,
   globFiles,
   globToRegExp,

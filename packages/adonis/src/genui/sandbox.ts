@@ -704,11 +704,6 @@ const jsxSchema: JsonSchema = {
  * ```
  */
 export function defineSandbox(options: DefineSandboxOptions = {}): SandboxDefinition {
-  if ((options as { tailwind?: unknown }).tailwind !== undefined) {
-    throw new TypeError(
-      'defineSandbox: `tailwind` was removed in 0.75. `kit: true` turns on whatever genuiSandboxKit() produced — Tailwind included, detected from its `styles`. Replace `{ tailwind: true, kit: true }` with `{ kit: true }` (and pass your Tailwind stylesheet as genuiSandboxKit({ styles })).',
-    );
-  }
   const policy = options.policy ?? {};
   assertSandboxPolicy(policy);
   const kitOn = options.kit !== undefined && options.kit !== false;

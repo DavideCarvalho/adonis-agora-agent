@@ -318,11 +318,11 @@
     "jose": "6.2.15"
   },
   "peerDependencies": {
-    "@adonis-agora/authz": ">=0.4.2 <1.0.0",
-    "@adonis-agora/diagnostics": ">=0.1.0 <1.0.0",
-    "@adonis-agora/durable": ">=0.43.3 <1.0.0",
-    "@adonis-agora/media": ">=0.18.0 <1.0.0",
-    "@adonis-agora/telescope": ">=0.4.0 <1.0.0",
+    "@adonis-agora/authz": ">=0.4.2 <2.0.0",
+    "@adonis-agora/diagnostics": ">=0.1.0 <2.0.0",
+    "@adonis-agora/durable": ">=0.43.3 <2.0.0",
+    "@adonis-agora/media": ">=0.18.0 <2.0.0",
+    "@adonis-agora/telescope": ">=0.4.0 <2.0.0",
     "@adonisjs/assembler": "^8.4.0",
     "@adonisjs/core": "^7.3.0",
     "@adonisjs/lucid": "^22.4.0",

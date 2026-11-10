@@ -11,7 +11,6 @@ import {
   discoverStyleEntries,
   resolveStyleImport,
 } from '../src/genui/kit/styles.js';
-import { writeSandboxKitDocs } from '../src/genui/kit/write.js';
 import { defineSandbox } from '../src/genui/sandbox.js';
 import { sandboxJsxRuntime } from '../src/genui/sandbox-kit.js';
 import {
@@ -24,7 +23,6 @@ import {
   vocabularyToModelText,
 } from '../src/genui/sandbox-styles.js';
 import { themeToModelText, themeVarsFromCss } from '../src/genui/sandbox-theme.js';
-import { genuiKitHook } from '../src/hooks/genui_kit.js';
 import { genuiSandboxKit } from '../src/vite/index.js';
 
 const variants = fileURLToPath(new URL('./fixtures/sandbox-kit-variants', import.meta.url));
@@ -432,28 +430,6 @@ describe('zero-config discovery', () => {
       'sandbox-kit-variants/tailwind/styles.css',
       '@fontsource-variable/geist/index.css',
     ]);
-  });
-});
-
-describe('options from before 0.75', () => {
-  it('the plugin, the hook, the docs writer and defineSandbox say what replaced them', async () => {
-    expect(() => genuiSandboxKit({ include: 'components/ui/*.tsx' } as never)).toThrow(
-      /option `include` was removed in 0\.75 — `include: G` is now `components: G`/,
-    );
-    expect(() =>
-      genuiSandboxKit({ entry: 'kit.ts', tailwind: true, tailwindCss: ['a.css'] } as never),
-    ).toThrow(
-      /options `entry`, `tailwind`, `tailwindCss` were removed in 0\.75.*`components: X`.*detected from `styles`.*pass the stylesheet itself as `styles`/,
-    );
-    expect(() => genuiKitHook({ css: 'app.css' } as never)).toThrow(
-      /genuiKitHook: option `css`.*`styles: G`/,
-    );
-    await expect(writeSandboxKitDocs({ output: 'x.json', include: 'a' } as never)).rejects.toThrow(
-      /writeSandboxKitDocs/,
-    );
-    expect(() => defineSandbox({ kit: true, tailwind: true } as never)).toThrow(
-      /defineSandbox: `tailwind` was removed in 0\.75/,
-    );
   });
 });
 
