@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { A2uiSurface, basicCatalog } from '@a2ui/react/v0_9';
+import { A2uiSurface } from '@a2ui/react/v0_9';
 import { A2uiMessageSchema, MessageProcessor } from '@a2ui/web_core/v0_9';
+import { basicCatalog } from '@a2ui/web_core/v0_9/basic_catalog';
 import { act, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import {

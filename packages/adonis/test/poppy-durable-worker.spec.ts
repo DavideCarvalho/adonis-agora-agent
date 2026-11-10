@@ -128,8 +128,14 @@ describe('Poppy over a durable runner', () => {
         });
         expect(await replyOf(conversations, conversationId, 3000)).toBe('Hello from the agent');
         expect(Date.now() - startedAt).toBeLessThan(2000);
-        const turns = await app.engine.listRuns({ workflow: 'agora.agent.run' });
-        expect(turns.map((run) => run.status)).toEqual(['completed']);
+        // The reply is visible as soon as the turn persists it; the run settles right after.
+        await expect
+          .poll(
+            async () =>
+              (await app.engine.listRuns({ workflow: 'agora.agent.run' })).map((run) => run.status),
+            { timeout: 5000 },
+          )
+          .toEqual(['completed']);
       } finally {
         conversations.shutdown();
         await app.stop();

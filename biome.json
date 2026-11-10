@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.12/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.6.6/schema.json",
   "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
   "files": {
     "ignoreUnknown": false,
@@ -10,7 +10,10 @@
       "!**/.turbo",
       "!**/coverage",
       "!**/*.stub",
-      "!**/*-generated.ts"
+      "!**/*-generated.ts",
+      "!**/*.md",
+      "!**/*.yaml",
+      "!**/*.yml"
     ]
   },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 },
@@ -23,6 +26,7 @@
     "rules": {
       "preset": "recommended",
       "complexity": { "noBannedTypes": "off", "noStaticOnlyClass": "off" },
+      "correctness": { "noReactNativeRawText": "off" },
       "style": { "noNonNullAssertion": "off", "useImportType": "off" },
       "suspicious": { "noExplicitAny": "error", "noEmptyInterface": "off" }
     }
@@ -30,7 +34,16 @@
   "overrides": [
     {
       "includes": ["**/test/**", "**/*.spec.ts", "**/*.test.ts"],
-      "linter": { "rules": { "suspicious": { "noExplicitAny": "off" } } }
+      "linter": {
+        "rules": {
+          "suspicious": { "noExplicitAny": "off" },
+          "correctness": { "noComponentHookFactories": "off" }
+        }
+      }
+    },
+    {
+      "includes": ["**/react-native/**"],
+      "linter": { "rules": { "correctness": { "noReactNativeRawText": "error" } } }
     }
   ]
 }
