@@ -267,8 +267,8 @@ importers:
         specifier: 0.22.0
         version: 0.22.0(zod@4.6.7)
       '@json-render/react':
-        specifier: 0.21.4
-        version: 0.21.4(react@19.3.1)(zod@4.6.7)
+        specifier: 0.22.0
+        version: 0.22.0(react@19.3.1)(zod@4.6.7)
       '@mui/material':
         specifier: 9.5.0
         version: 9.5.0(@emotion/react@11.14.0(@types/react@19.3.0)(react@19.3.1)(supports-color@10.2.2))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@19.3.0)(react@19.3.1)(supports-color@10.2.2))(@types/react@19.3.0)(react@19.3.1)(supports-color@10.2.2))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -1729,18 +1729,13 @@ packages:
   '@js-sdsl/ordered-map@4.4.2':
     resolution: {integrity: sha512-iUKgm52T8HOE/makSxjqoWhe95ZJA1/G1sYsGev2JDKUSS14KAgg1LHb+Ba+IPow0xflbnSkOsZcO08C7w1gYw==}
 
-  '@json-render/core@0.21.4':
-    resolution: {integrity: sha512-UqjpdDOmr7a9ISZisgQvgeKuBpiNQesS7PNgcstwTBlutMbgS/5fbNThvpEk4E35eMe2bpBVzwOPuaNY3xthNw==}
-    peerDependencies:
-      zod: ^4.0.0
-
   '@json-render/core@0.22.0':
     resolution: {integrity: sha512-BIfJ2V3bLYETetBu2KWoxxRPU5cSAf77dDTBgqaV54kEAfyHta1psPJgNk0fDcB3FCrnCZ5KO/X41VDkrNSYgw==}
     peerDependencies:
       zod: ^4.0.0
 
-  '@json-render/react@0.21.4':
-    resolution: {integrity: sha512-pCOhhgpBQBZV8NDLx0TTMapeWqGzDGPDgaIcYg9xHm35XglqxkcG2QgzzhE/VUSz3uqkWW0s8mCYO/jGP/hZHQ==}
+  '@json-render/react@0.22.0':
+    resolution: {integrity: sha512-dUBSPn/OZGJGwYiVUVv6qk14AGvfIutKgw7EKJejof14Ft/UPKsoV7/SkF5xIbGIWcM/vk3U4UnNm3NgPnOSSQ==}
     peerDependencies:
       react: ^19.2.3
 
@@ -7409,17 +7404,13 @@ snapshots:
 
   '@js-sdsl/ordered-map@4.4.2': {}
 
-  '@json-render/core@0.21.4(zod@4.6.7)':
-    dependencies:
-      zod: 4.6.7
-
   '@json-render/core@0.22.0(zod@4.6.7)':
     dependencies:
       zod: 4.6.7
 
-  '@json-render/react@0.21.4(react@19.3.1)(zod@4.6.7)':
+  '@json-render/react@0.22.0(react@19.3.1)(zod@4.6.7)':
     dependencies:
-      '@json-render/core': 0.21.4(zod@4.6.7)
+      '@json-render/core': 0.22.0(zod@4.6.7)
       react: 19.3.1
     transitivePeerDependencies:
       - zod
