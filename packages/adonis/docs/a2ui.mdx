@@ -11,7 +11,7 @@ import { Callout } from 'fumadocs-ui/components/callout';
 The same `ui` frames the [native stream](/docs/agent/generative-ui) carries — a tool's `ctx.emitUi`, a `present` hook, a model-composed `ui__render` tree — can be served as A2UI: on a route of their own, or inside the [AG-UI](/docs/agent/ag-ui) stream. It is another way to ship the same UI, to clients that already speak A2UI; the catalog, validation, capabilities and persistence stay what they are.
 
 <Callout type="info" title="Which A2UI">
-This targets **A2UI v0.9**: every message is stamped `"version": "v0.9"`, and surfaces use the v0.9 basic catalog. v0.9.1 is the current production patch of the v0.9 family (same messages); v1.0 is a release candidate and is not targeted yet (checked on 2026-10-11: the spec still reads "a candidate for becoming stable", and a2ui.org lists v0.9.1 as the current production release; it renames the capabilities key to `a2uiRendererCapabilities`, prefixes bindings with `@` and drops `createSurface.theme`, so it will be negotiated alongside v0.9 once it is final); v0.8 is legacy — an inbound v0.8 `userAction` is still accepted. Everything below is tested against the official `@a2ui/web_core` v0.9 schemas and the official React renderer (`@a2ui/react/v0_9`, 0.12.0).
+This targets **A2UI v0.9**: every message is stamped `"version": "v0.9"`, and surfaces use the v0.9 basic catalog. v0.9.1 is the current production patch of the v0.9 family (same messages); v1.0 is a release candidate and is not targeted yet (checked on 2026-10-11: the spec still reads "a candidate for becoming stable", and a2ui.org lists v0.9.1 as the current production release; it renames the capabilities key to `a2uiRendererCapabilities`, prefixes bindings with `@` and drops `createSurface.theme`, so it will be negotiated alongside v0.9 once it is final); v0.8 is legacy — an inbound v0.8 `userAction` is still accepted. Everything below is tested against the official `@a2ui/web_core` v0.9 schemas and the official React renderer (`@a2ui/react/v0_9`, 0.15.0).
 </Callout>
 
 ## The route — `a2uiAdapter()`
@@ -79,7 +79,7 @@ Node ids are positions — `root`, `root.0`, `root.1.2` — and the extra compon
 
 ## Which catalog id
 
-A2UI v0.9's basic catalog has gone by two ids: the current `https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json` (`A2UI_BASIC_CATALOG_ID`, what `@a2ui/react` 0.12 and `@a2ui/web_core` 0.12 register) and the earlier `https://a2ui.org/specification/v0_9/basic_catalog.json` (`A2UI_LEGACY_BASIC_CATALOG_ID`, what AG-UI's A2UI middleware and toolkit, and CopilotKit 1.77's renderer on `@a2ui/web_core` 0.10, register). A renderer refuses a surface whose catalog it does not have, so each request picks the id **its client** uses:
+A2UI v0.9's basic catalog has gone by two ids: the current `https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json` (`A2UI_BASIC_CATALOG_ID`, what `@a2ui/react` and `@a2ui/web_core` 0.12 and later register) and the earlier `https://a2ui.org/specification/v0_9/basic_catalog.json` (`A2UI_LEGACY_BASIC_CATALOG_ID`, what AG-UI's A2UI middleware and toolkit, and CopilotKit 1.77's renderer on `@a2ui/web_core` 0.10, register). A renderer refuses a surface whose catalog it does not have, so each request picks the id **its client** uses:
 
 1. the basic-catalog id among the catalogs the client advertises — `a2uiClientCapabilities` in the body or its `metadata` on the A2UI route (`{ 'v0.9': { supportedCatalogIds } }`, what `MessageProcessor.getRendererCapabilities({ versions: ['v0.9'] })` builds); over AG-UI, `forwardedProps.a2uiClientCapabilities`, or the "A2UI catalog capabilities" context entry CopilotKit's provider sends when it is given an A2UI catalog;
 2. else the configured `basicCatalogId`, or a `catalogId` that is either basic id;
@@ -87,7 +87,7 @@ A2UI v0.9's basic catalog has gone by two ids: the current `https://a2ui.org/spe
 
 An app catalog (`catalogId` that is not a basic id) is kept as configured; text, approval and error surfaces still take the negotiated basic id. `isA2uiBasicCatalogId`, `negotiateA2uiCatalog`, `readA2uiClientCapabilities` and `readAgUiA2uiCatalogIds` are exported for a transport of your own.
 
-```ts title="A client on @a2ui/web_core 0.12 that says what it draws"
+```ts title="A client on @a2ui/web_core 0.15 that says what it draws"
 body: JSON.stringify({
   message,
   a2uiClientCapabilities: processor.getRendererCapabilities({ versions: ['v0.9'] }),
@@ -198,11 +198,12 @@ The same pieces are exported for your own transport: `toA2uiComponents(frame, op
 
 ## Rendering with `@a2ui/react`
 
-The official React renderer draws the surfaces. `MessageProcessor` (from `@a2ui/web_core/v0_9`) holds them; `A2uiSurface` (from `@a2ui/react/v0_9`) draws one; `basicCatalog` implements the basic catalog. Read the route's JSON Lines into the processor, and post its actions back:
+The official React renderer draws the surfaces. `MessageProcessor` (from `@a2ui/web_core/v0_9`) holds them; `A2uiSurface` (from `@a2ui/react/v0_9`) draws one; `basicCatalog` (from `@a2ui/web_core/v0_9/basic_catalog`) implements the basic catalog. Read the route's JSON Lines into the processor, and post its actions back:
 
 ```tsx title="resources/js/pages/a2ui.tsx (frontend)"
-import { A2uiSurface, basicCatalog } from '@a2ui/react/v0_9'
+import { A2uiSurface } from '@a2ui/react/v0_9'
 import { MessageProcessor } from '@a2ui/web_core/v0_9'
+import { basicCatalog } from '@a2ui/web_core/v0_9/basic_catalog'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 function csrfHeaders(): HeadersInit {

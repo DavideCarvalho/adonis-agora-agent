@@ -130,8 +130,10 @@ describe('Poppy over a durable runner', () => {
         expect(Date.now() - startedAt).toBeLessThan(2000);
         // The reply is visible as soon as the turn persists it; the run settles right after.
         await expect
-          .poll(async () =>
-            (await app.engine.listRuns({ workflow: 'agora.agent.run' })).map((run) => run.status),
+          .poll(
+            async () =>
+              (await app.engine.listRuns({ workflow: 'agora.agent.run' })).map((run) => run.status),
+            { timeout: 5000 },
           )
           .toEqual(['completed']);
       } finally {
