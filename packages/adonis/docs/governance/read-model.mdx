@@ -32,33 +32,26 @@ The factory receives the already-resolved `pricingStore`, so the read-model pric
 It **defaults** to the Lucid read-model whenever your main store is Lucid — that is the useful default, since the read-model reads the very tables the store just wrote. Setting it explicitly, as above, is documentation rather than activation.
 
 To actually have no read-model, say so: `governanceQueries: false`. With no Lucid main store there is nothing to default to, and it stays absent either way.
-
-And note that the read-model alone does **not** mount the routes. Mounting requires the read-model **and** a `governanceAuthorize` gate — see below.
 </Callout>
 
 ## Who may read it
 
-These routes serve **cross-actor** data — every actor's spend, usage, threads, runs, and pending approvals — so unlike the chat routes they are not owner-scoped. Mounting them takes **both** halves:
+These routes serve **cross-actor** data — every actor's spend, usage, threads, runs, and pending approvals — so unlike the chat routes they are not owner-scoped. They mount whenever the read-model resolves, and every one of them runs the console's `dashboard.authorize`, the same option that gates the [governance console](/docs/agent/governance/dashboard#access):
 
-```ts
-governance !== undefined && governanceAuthorize !== undefined
+```ts title="config/agent.ts"
+dashboard: {
+  authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false,
+},
 ```
 
-The read-model is what there is to read; the gate is who may read it. Neither alone mounts anything. The read-model is usually already there by default, so in practice the gate is the switch:
+- **Omitted:** open while the app is not in production; in production every `/agent/governance/*` request answers `403`, and one warning is logged at boot.
+- **Set:** `false`/`{ allowed: false }` → `403`, `{ allowed: false, reason: 'unauthenticated' }` → `401`, `{ redirectTo }` → a redirect for a page navigation and `401` JSON otherwise, a throw → `403`. See [Governance route authorization](/docs/agent/governance/authorization#governance-route-authorization).
 
-- **Omit `governanceAuthorize`** and `/agent/governance/*` is **not mounted at all**: every one of these paths answers `404`. Fail-closed by omission — an ungated cross-actor read-model would hand every actor's spend, usage, threads and approvals to any authenticated caller. The provider logs a boot warning naming both ways forward.
-- **Set it** — typically an ADMIN check — and the routes mount **gated**: each resolves the actor through the same resolver as the chat routes (`401` on failure), then runs `governanceAuthorize` (`403` on deny, `401` when it returns `{ allowed: false, reason: 'unauthenticated' }` — the gate is **fail-closed**, so a throw denies too).
-- **Set `governanceAuthorize: () => true`** to deliberately restore the old behaviour of letting ANY authenticated actor read them — the historical default, but now greppable and reviewable rather than implicit.
-
-`GET /agent/approvals/mine` is **unaffected** by all of this: it stays mounted whenever the read-model resolves, gate or no gate, and is always scoped to the calling actor's own pending approvals.
-
-<Callout type="warn" title="The console needs this gate too">
-[`@adonis-agora/agent-dashboard`](/docs/agent/governance/dashboard) is a browser consumer of these very routes, so it also refuses to mount without `governanceAuthorize` — a console whose every panel but Quota `404`s is worse than no console. One gate brings back both. Per-actor chat records are separately protected by [object-level ownership](/docs/agent/governance/authorization#object-level-ownership).
-</Callout>
+`GET /agent/approvals/mine` is not gated by it: it mounts with the read-model and is always scoped to the calling actor's own pending approvals. Per-actor chat records are separately protected by [object-level ownership](/docs/agent/governance/authorization#object-level-ownership).
 
 ## The routes
 
-All read-only (`GET`), all mounted only when a `governanceAuthorize` gate exists, all authenticated **and** gated by it (governance is cross-actor data). `from`/`to` are inclusive UTC days (`YYYY-MM-DD`); `limit` defaults to `50`, clamped to `200`.
+All read-only (`GET`, except the pricing upsert), all gated by `dashboard.authorize` (governance is cross-actor data). `from`/`to` are inclusive UTC days (`YYYY-MM-DD`); `limit` defaults to `50`, clamped to `200`.
 
 | Method & path | Purpose |
 | --- | --- |
@@ -290,7 +283,7 @@ The matching `AgentGovernanceQueries` methods for the read routes are `spendByMo
 
 ## The per-actor approvals inbox
 
-There's one more route mounted alongside the read-model that is **not** behind `governanceAuthorize`:
+There's one more route mounted alongside the read-model that is **not** behind `dashboard.authorize`:
 
 | Method & path | Purpose |
 | --- | --- |

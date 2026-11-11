@@ -1,6 +1,6 @@
 ---
 title: Governance console
-description: The bundled React console — nine sections over the governance read-model, an approvals inbox that decides, a pricing editor, and the gate that decides whether it mounts at all.
+description: The bundled React console — nine sections over the governance read-model, an approvals inbox that decides, a pricing editor, and the one authorize that gates it and the routes it reads.
 icon: LayoutDashboard
 ---
 
@@ -12,79 +12,119 @@ A dependency-light React SPA over the agent's own [governance read-model](/docs/
 
 `node ace add @adonis-agora/agent` registers the dashboard provider along with the agent provider, so there is nothing to install. It mounts at `<agentPath>/dashboard` — `/agent/dashboard` by default — reading `config/agent.ts` for the agent `path` and `actorResolver`.
 
-<Callout type="warn" title="Two gates decide whether it mounts at all">
-The console is a browser client of `/agent/governance/*`, so it refuses to mount when those routes would not exist:
+It always mounts, unless you turn it off with `dashboard: { enabled: false }` or turn its data off with `governanceQueries: false` (the console then has nothing to show, and a boot warning says so). `governanceQueries` left *unset* is fine — it defaults to the Lucid read-model when your main store is Lucid.
 
-- **No `governanceAuthorize`** → not mounted. Every panel but Quota would `404`, which is worse than no console. Set the gate in `config/agent.ts` (typically an ADMIN check) to bring the routes and the console back together, or `governanceAuthorize: () => true` to deliberately restore the old behaviour of letting any authenticated actor read them.
-- **`governanceQueries: false`** → not mounted. You turned the read-model off explicitly; the console has nothing to show.
+## Access
 
-Both log a boot warning naming the responsible knob. (`governanceQueries` left *unset* is fine — it defaults to the Lucid read-model when your main store is Lucid.)
+One option decides who may use the console: `dashboard.authorize`. It gates the console page **and** every `/agent/governance/*` route its panels read, so the page and its data can never disagree.
+
+```ts title="config/agent.ts"
+import { defineConfig } from '@adonis-agora/agent'
+import { authorizeByRoles } from '@adonis-agora/authz'
+
+export default defineConfig({
+  // ...
+  dashboard: {
+    authorize: authorizeByRoles({ roles: ['ADMIN'], loginPath: '/login' }),
+  },
+})
+```
+
+<Callout type="warn" title="Omitted: open outside production, closed in production">
+Without `authorize`, the console and `/agent/governance/*` are open while the app is not in production. In production every one of those requests is refused with `403`, and the app logs once at boot:
+
+```
+[@adonis-agora/agent] console has no `authorize` configured: it is open outside production and denies every request in production. Set `authorize` in config/agent.ts.
+```
 </Callout>
+
+`GET /agent/approvals/mine` is not gated by `authorize`: it always answers the calling actor's own pending approvals, so a non-admin chat can poll its own.
+
+When `authorize` is set, an actor it allows may also act on other actors' runs and threads (approve a tool call from the Approvals inbox, open a thread). Without it, every actor can only touch its own — see [object-level ownership](/docs/agent/governance/authorization#object-level-ownership).
+
+### The authorize contract
+
+`authorize` is the same option every `@adonis-agora/*` console takes, in three forms. Each gets the request's `HttpContext` first and, here, the actor your `actorResolver` resolved as an optional second argument (`undefined` when the request has none):
+
+```ts title="config/agent.ts"
+import { authorizeByToken } from '@adonis-agora/agent'
+import { authorizeByRoles } from '@adonis-agora/authz'
+import env from '#start/env'
+
+dashboard: {
+  // An inline function
+  authorize: (ctx) => ctx.auth.user?.isAdmin === true,
+  authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false,
+
+  // A helper that returns one
+  authorize: authorizeByRoles({ roles: ['ADMIN'], loginPath: '/login' }),
+  authorize: authorizeByToken({ token: env.get('CONSOLE_TOKEN') }),
+
+  // A class, built by the container per request (so @inject() works)
+  authorize: ConsoleAccess,
+
+  // A lazy import of that class, loaded on the first request
+  authorize: () => import('#policies/console_access'),
+}
+```
+
+```ts title="app/policies/console_access.ts"
+import { inject } from '@adonisjs/core'
+import type { HttpContext } from '@adonisjs/core/http'
+import type { Actor, ConsoleAuthorizer } from '@adonis-agora/agent'
+import AuditService from '#services/audit_service'
+
+@inject()
+export default class ConsoleAccess implements ConsoleAuthorizer {
+  constructor(private audit: AuditService) {}
+
+  async authorize(ctx: HttpContext, actor?: Actor) {
+    if (!ctx.auth.user) return { redirectTo: '/login' }
+    await this.audit.record('agent-console', ctx.auth.user.id)
+    return actor?.roles?.includes('ADMIN') ?? false
+  }
+}
+```
+
+A class written for another `@adonis-agora` console (durable, telescope, media, payments) works here unchanged: it receives `ctx`, and can ignore the actor.
+
+`authorizeByToken({ token })` is for machine access — a script reading `/agent/governance/*`. It allows a request carrying `Authorization: Bearer <token>` and answers `401` otherwise; it reads no query string or other header, and throws at boot when the token is empty.
+
+| Return | Page navigation | API call (`/agent/governance/*`, assets) |
+| --- | --- | --- |
+| `true` / `{ allowed: true }` | allowed | allowed |
+| `{ allowed: false, reason: 'unauthenticated' }` | `401` page | `401` `{ "error": "unauthenticated" }` |
+| `{ allowed: false, reason: 'forbidden' }`, `{ allowed: false }`, `false` | `403` page | `403` `{ "error": "forbidden" }` |
+| `{ redirectTo: '/login' }` | `302` to `/login` | `401` `{ "error": "unauthenticated", "redirectTo": "/login" }` |
+| throws | `403` page | `403` `{ "error": "forbidden" }` |
+
+A denying `{ allowed: false }` is a truthy object — the gate normalises it, so it denies; never test a hook's result with `if (!result)` yourself. If the hook answers the request itself (`ctx.response.redirect(...)`), that answer is kept.
 
 ## Configuration
 
 The console's settings live in the same `config/agent.ts` object, under `dashboard`:
 
 ```ts title="config/agent.ts"
-import { defineConfig } from '@adonis-agora/agent'
-
 export default defineConfig({
   // ...
-  governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
-
   dashboard: {
     enabled: true,
     path: '/ops/agent',
-    authorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
-    onUnauthenticated: (ctx) => ctx.response.redirect('/login'),
+    authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false,
   },
 })
 ```
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `true` | `false` keeps the routes off entirely. |
+| `enabled` | `true` | `false` keeps the console off. |
 | `path` | `<agentPath>/dashboard` | Where the SPA mounts. |
-| `authorize` | — | An **extra** gate, run after the actor resolves. Returns an [`AuthorizeResult`](#the-authorize-contract): `false` / `{ allowed: false }` (or throw) → `403`, `{ allowed: false, reason: 'unauthenticated' }` → `401`. |
-| `onUnauthenticated` | — | Runs when the actor resolver itself rejects the caller. |
+| `authorize` | open outside production, `403` in production | Who may use the console and `/agent/governance/*`. See [Access](#access). |
 | `accessDenied` | — | Tweak or replace the [access-denied page](#the-access-denied-page) a refused browser sees. |
-
-`authorize` and `governanceAuthorize` take the same shape deliberately, so one predicate can gate both the JSON routes and the console:
-
-```ts
-const isAdmin = (actor: Actor) => actor.roles?.includes('ADMIN') ?? false
-
-export default defineConfig({
-  governanceAuthorize: isAdmin,
-  dashboard: { authorize: isAdmin },
-})
-```
-
-### The authorize contract
-
-Both hooks return the same `AuthorizeResult` every `@adonis-agora/*` console uses:
-
-```ts
-import type { AuthorizeDecision, AuthorizeResult } from '@adonis-agora/agent/dashboard'
-
-// AuthorizeResult = boolean | { allowed: boolean; reason?: 'unauthenticated' | 'forbidden' }
-```
-
-| Return | Status |
-| --- | --- |
-| `true` / `{ allowed: true }` | allowed |
-| `{ allowed: false, reason: 'unauthenticated' }` | `401` |
-| `{ allowed: false, reason: 'forbidden' }` | `403` |
-| `false` / `{ allowed: false }` | `403` |
-| throws | `403` |
-
-A denying `{ allowed: false }` is a truthy object — the gates normalise it, so it denies; never test a hook's result with `if (!result)` yourself. If the hook answers the request itself (a redirect), that answer is kept. The console answers with the access-denied page; the `/agent/governance/*` routes with JSON.
-
-Note the asymmetry: `governanceAuthorize` gates the data, `dashboard.authorize` gates the page. Omitting the latter means any actor your resolver accepts can *load* the console — but every panel in it still goes through `governanceAuthorize`, so they will see an empty shell of `403`s. Setting both is what produces a coherent experience.
 
 ### The access-denied page
 
-A rejected request gets a `401` (nobody resolved, or `authorize` returned `reason: 'unauthenticated'`) or a `403` (`authorize` said no) — and, since the console's routes are only ever hit by a browser, the body is a real page rather than JSON: a dark card in the console's visual language showing the status, a sentence explaining the refusal and a "Back to app" link. It carries no inline script, so a nonce'd `script-src` CSP cannot break it (its one inline `<style>` picks up `@adonisjs/shield`'s request nonce). Outside production, a thrown resolver/`authorize` message is shown on it as a developer detail.
+A refused page navigation gets a real page rather than JSON: a dark card in the console's visual language showing the status (`401` or `403`), a sentence explaining the refusal and a "Back to app" link. It carries no inline script, so a nonce'd `script-src` CSP cannot break it (its one inline `<style>` picks up `@adonisjs/shield`'s request nonce). Outside production, a thrown `authorize` message is shown on it as a developer detail.
 
 Tweak it with `accessDenied` — every field optional:
 
@@ -117,18 +157,16 @@ dashboard: {
 
 ### Redirecting instead of returning the page
 
-For a console a human opens in a browser, a redirect to your login page is often friendlier than any page. `onUnauthenticated` gets the `HttpContext`, and if it sets a `Location` header the provider stands down and lets the redirect through:
+For a console a human opens in a browser, a redirect to your login page is often friendlier than any page. Return `{ redirectTo }` from `authorize` (what `authorizeByRoles({ loginPath })` does for a signed-out visitor): a page navigation is redirected there, an API call gets `401` JSON carrying the path.
 
 ```ts
 dashboard: {
-  onUnauthenticated: (ctx) => ctx.response.redirect('/login?next=/agent/dashboard'),
+  authorize: (ctx) => (ctx.auth.user ? ctx.auth.user.isAdmin === true : { redirectTo: '/login' }),
 }
 ```
 
-The same applies on the `403` path: an `authorize` that redirects instead of returning `false` sends the caller wherever you point it. The hook is context-only and never receives an actor — it runs precisely when there isn't one, and the resolver's contract is that it never invents an identity.
-
 <Callout type="info" title="Thrown messages are dev-only">
-When the resolver or `authorize` throws, the page shows the error message only outside production. In production it is the generic `unauthorized` / `forbidden` copy.
+When `authorize` throws, the page (or the JSON `detail`) shows the error message only outside production. In production it is the generic refusal.
 </Callout>
 
 ## What is in it

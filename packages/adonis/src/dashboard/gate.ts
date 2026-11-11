@@ -1,94 +1,98 @@
 import type { HttpContext } from '@adonisjs/core/http';
-import { resolveAuthorizeResult } from '../authorize-decision.js';
+import { consoleClosedByDefault, isPageNavigation } from '../console-authorize.js';
+import { evaluateGovernanceGate } from '../governance-gate.js';
 import type { ActorResolver } from '../spi/actor-resolver.js';
+import type { Actor } from '../types.js';
 import { type AccessDeniedInfo, resolveAccessDeniedPage } from './access_denied_page.js';
-import type {
-  AccessDeniedOption,
-  AgentDashboardAuthorize,
-  AgentDashboardUnauthenticatedHook,
-} from './define_config.js';
+import type { AccessDeniedOption, AgentDashboardAuthorize } from './define_config.js';
 
-/** The outcome of the dashboard access gate: proceed, or deny with an HTTP status + message. */
-export type DashboardGateVerdict = { ok: true } | { ok: false; status: 401 | 403; error: string };
+/** The outcome of the console access gate: proceed (with the actor, when one resolved), or deny. */
+export type DashboardGateVerdict =
+  | { ok: true; actor?: Actor }
+  | {
+      ok: false;
+      status: 401 | 403;
+      error: 'forbidden' | 'unauthenticated';
+      /** The thrown error's message, only outside production. */
+      detail?: string;
+      redirectTo?: string;
+    };
+
+/** What {@link evaluateDashboardGate} needs. */
+export interface DashboardGateOptions {
+  /** The agent config's resolver; its actor (if any) is handed to `authorize` as the 2nd argument. */
+  actorResolver?: ActorResolver | undefined;
+  /** The console's `authorize` (`dashboard.authorize` in `config/agent.ts`). */
+  authorize?: AgentDashboardAuthorize | undefined;
+  /** `app.inProduction`: without `authorize`, the console is open outside production, closed in it. */
+  inProduction?: boolean;
+}
+
+/** The request's actor, or `undefined` when there is no resolver or it rejects the request. */
+async function resolveActorQuietly(
+  ctx: HttpContext,
+  actorResolver: ActorResolver | undefined,
+): Promise<Actor | undefined> {
+  if (actorResolver === undefined) return undefined;
+  try {
+    return (await actorResolver.resolve(ctx)) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
- * Decide whether a request may reach the dashboard, WITHOUT touching the response — so it is unit
- * testable free of the AdonisJS router/app: resolve the actor through the agent config's resolver
- * (missing/failed → `401`), then run the optional `authorize` gate over the resolved actor
- * (`true`/`{ allowed: true }` → proceed; `{ allowed: false, reason: 'unauthenticated' }` → `401`;
- * `false`, `{ allowed: false }` or `reason: 'forbidden'` → `403`; threw → `403`).
+ * Decide whether a request may use the agent console — the SPA shell AND the `/agent/governance/*`
+ * routes it reads go through this same check. Touches nothing on the response, so it is unit
+ * testable free of the router:
  *
- * This gates the SPA **shell**, and only the shell. It is NOT what decides whether the console's data
- * is readable, and it is no longer the last line of defence it once had to be:
- *
- * - Whether the console mounts at all is decided earlier, by {@link decideDashboardMount} — the
- *   routes are not registered unless the agent config carries a `governanceAuthorize` gate AND its
- *   `governanceQueries` read-model exists. So this function never runs for a console that could only
- *   404 its own panels.
- * - Whether the DATA is readable is decided by the agent's own `governanceAuthorize` on the
- *   `/agent/governance/*` routes, not here. Omitting `authorize` while a gate is configured leaves
- *   the shell open to any resolved actor but exposes no cross-actor data.
- *
- * Omitting BOTH the resolver and `authorize` would expose the shell to any request; the provider is
- * expected to short-circuit on a missing resolver via the `401` here.
- *
- * `debug` controls whether a THROWN error's `.message` reaches the client, for the two per-request
- * failure paths (the resolver rejecting a caller, `authorize` throwing): the resolver's job is
- * exactly to reject unauthenticated/unauthorized callers, and its message is meant for the developer
- * wiring the config (e.g. `AuthActorResolver`'s "no authenticated user on ctx.auth.user...") — not
- * for whoever is making the request, which in production is an untrusted, possibly anonymous,
- * possibly adversarial caller. Default `false` (generic `'unauthorized'`/`'forbidden'`, matching
- * `@adonis-agora/durable`'s dashboard convention of a uniform message on every credential failure);
- * the provider passes `!app.inProduction` so local/dev boots keep the diagnostic detail. The "no
- * actor resolver configured" branch is unaffected — that is a static config error, not a per-request
- * one, identical for every caller, and useful for the operator to see even in production.
- *
- * `onUnauthenticated`, when set, runs on EITHER failure-to-resolve branch (no resolver configured, or
- * `resolve(ctx)` threw) before this returns its verdict — it never sees a fabricated actor, since
- * there isn't one. The provider (not this function) is what actually decides whether to skip its
- * default JSON write in favour of whatever the hook did to `ctx.response` (redirect, custom render);
- * this function only guarantees the hook runs before the verdict is handed back.
+ * - `authorize` omitted → allowed outside production, `403 forbidden` in production.
+ * - otherwise the actor is resolved (best effort: `undefined` when there is none) and
+ *   `authorize(ctx, actor)` decides: `true`/`{ allowed: true }` allow; `false`/`{ allowed: false }`
+ *   → `403 forbidden`; `reason: 'unauthenticated'` → `401 unauthenticated`; `{ redirectTo }` → `401`
+ *   carrying the path; a throw → `403` (its message as `detail` outside production only).
  */
 export async function evaluateDashboardGate(
   ctx: HttpContext,
-  actorResolver: ActorResolver | undefined,
-  authorize?: AgentDashboardAuthorize,
-  debug = false,
-  onUnauthenticated?: AgentDashboardUnauthenticatedHook,
+  options: DashboardGateOptions,
 ): Promise<DashboardGateVerdict> {
-  if (actorResolver === undefined) {
-    await onUnauthenticated?.(ctx);
-    return { ok: false, status: 401, error: 'no actor resolver configured' };
+  const inProduction = options.inProduction === true;
+  if (consoleClosedByDefault(options.authorize, inProduction)) {
+    return { ok: false, status: 403, error: 'forbidden' };
   }
-  let actor: Awaited<ReturnType<ActorResolver['resolve']>>;
-  try {
-    actor = await actorResolver.resolve(ctx);
-  } catch (error) {
-    await onUnauthenticated?.(ctx);
-    return {
-      ok: false,
-      status: 401,
-      error: debug && error instanceof Error ? error.message : 'unauthorized',
-    };
+  if (options.authorize === undefined) return { ok: true };
+  const actor = await resolveActorQuietly(ctx, options.actorResolver);
+  const verdict = await evaluateGovernanceGate(actor, ctx, options.authorize, !inProduction);
+  if (verdict.ok) return actor === undefined ? { ok: true } : { ok: true, actor };
+  return {
+    ok: false,
+    status: verdict.status === 401 ? 401 : 403,
+    error: verdict.error ?? 'forbidden',
+    ...(verdict.detail !== undefined ? { detail: verdict.detail } : {}),
+    ...(verdict.redirectTo !== undefined ? { redirectTo: verdict.redirectTo } : {}),
+  };
+}
+
+/**
+ * Write a refused {@link DashboardGateVerdict} as JSON — what the `/agent/governance/*` routes (and
+ * any non-page request to the shell) answer: `{ error }`, plus `redirectTo` when `authorize` asked
+ * for one. A page navigation with `redirectTo` is redirected instead. Stands down when the hook
+ * already answered the request itself.
+ */
+export function answerConsoleDenialJson(
+  ctx: HttpContext,
+  verdict: Extract<DashboardGateVerdict, { ok: false }>,
+): void {
+  if (responseAnswered(ctx)) return;
+  if (verdict.redirectTo !== undefined && isPageNavigation(ctx)) {
+    ctx.response.redirect(verdict.redirectTo);
+    return;
   }
-  if (authorize !== undefined) {
-    try {
-      // A denying decision object is truthy — normalise, never truth-test the raw result.
-      const decision = resolveAuthorizeResult(await authorize(actor, ctx));
-      if (!decision.allowed) {
-        return decision.status === 401
-          ? { ok: false, status: 401, error: 'unauthorized' }
-          : { ok: false, status: 403, error: 'forbidden' };
-      }
-    } catch (error) {
-      return {
-        ok: false,
-        status: 403,
-        error: debug && error instanceof Error ? error.message : 'forbidden',
-      };
-    }
-  }
-  return { ok: true };
+  ctx.response.status(verdict.status).json({
+    error: verdict.error,
+    ...(verdict.redirectTo !== undefined ? { redirectTo: verdict.redirectTo } : {}),
+    ...(verdict.detail !== undefined ? { detail: verdict.detail } : {}),
+  });
 }
 
 /** What {@link answerDashboardDenial} needs to serve (or delegate) the access-denied page. */
@@ -100,16 +104,11 @@ export interface DashboardDenialOptions {
 }
 
 /**
- * Write a refused {@link DashboardGateVerdict} to the response — shared by BOTH dashboard providers
- * (embedded and standalone) so they refuse identically. A browser is what hits these routes (the
- * SPA shell and its assets), so the body is the built-in access-denied page (or the host's
- * `accessDenied` customisation of it), not the JSON the governance API answers with.
- *
- * Stands down when the request is already answered: `onUnauthenticated`/`authorize` (or the
- * renderer) writing a redirect keeps it — the `location`-header rule the providers have always
- * honoured. The verdict's `error` is shown on the page as a developer detail only when it is more
- * than the generic word (i.e. the `debug` message outside production, or the static "no actor
- * resolver configured" operator hint).
+ * Write a refused {@link DashboardGateVerdict} for the SPA shell — shared by BOTH dashboard providers
+ * (embedded and standalone) so they refuse identically. A page navigation gets the built-in
+ * access-denied page (or the host's `accessDenied` customisation of it), or a redirect when
+ * `authorize` returned `{ redirectTo }`; anything else gets the JSON {@link answerConsoleDenialJson}
+ * writes. Stands down when `authorize` (or the renderer) already answered the request.
  */
 export async function answerDashboardDenial(
   ctx: HttpContext,
@@ -118,13 +117,20 @@ export async function answerDashboardDenial(
 ): Promise<void> {
   const answered = () => responseAnswered(ctx);
   if (answered()) return;
+  if (!isPageNavigation(ctx)) {
+    answerConsoleDenialJson(ctx, verdict);
+    return;
+  }
+  if (verdict.redirectTo !== undefined) {
+    ctx.response.redirect(verdict.redirectTo);
+    return;
+  }
   const nonce = cspNonce(ctx);
-  const generic = verdict.error === 'unauthorized' || verdict.error === 'forbidden';
   const info: AccessDeniedInfo = {
     status: verdict.status,
     reason: verdict.status === 401 ? 'unauthenticated' : 'forbidden',
     basePath: options.basePath,
-    ...(generic ? {} : { detail: verdict.error }),
+    ...(verdict.detail !== undefined ? { detail: verdict.detail } : {}),
     ...(nonce !== undefined ? { nonce } : {}),
   };
   const html = await resolveAccessDeniedPage(info, options.accessDenied, ctx, answered);

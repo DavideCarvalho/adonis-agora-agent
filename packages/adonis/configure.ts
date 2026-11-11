@@ -8,8 +8,7 @@ import { stubsRoot } from './stubs/main.js';
  * 2. registers the embedded dashboard provider — the governance console SPA, bundled into this
  *    package's own `dist/` (`@adonis-agora/agent-dashboard`'s build output, copied in at build time),
  *    served with no separate install. Toggle/relocate it with the optional `config('agent').dashboard`
- *    block (see `config/agent.ts`); it mounts only once `governanceAuthorize` is configured — see the
- *    provider's own doc comment for why;
+ *    block (see `config/agent.ts`), whose `authorize` gates it and the governance routes;
  * 3. registers the Assembler `init` hook that generates the typed `app/agent_tools` barrel at
  *    build/dev time (the provider imports it instead of scanning at runtime; it falls back to the
  *    runtime scan when the barrel is absent);

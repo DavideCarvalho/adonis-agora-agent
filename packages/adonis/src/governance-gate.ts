@@ -1,86 +1,57 @@
 import type { HttpContext } from '@adonisjs/core/http';
-import { type AuthorizeResult, resolveAuthorizeResult } from './authorize-decision.js';
+import { type AgentConsoleAuthorize, consoleAuthorizeFor } from './console-authorize.js';
 import type { Actor } from './types.js';
-
-/**
- * Authorization gate for the cross-actor `/agent/governance/*` read routes. It runs AFTER the actor
- * is resolved (so the caller is already authenticated), and decides whether THIS actor may read the
- * platform-wide governance read-model (every actor's spend/usage/threads/approvals). Returns an
- * {@link AuthorizeResult}: `true`/`{ allowed: true }` allows; `false`/`{ allowed: false }` denies
- * with `403`; `{ allowed: false, reason: 'unauthenticated' }` denies with `401` and
- * `{ allowed: false, reason: 'forbidden' }` with `403`. Throwing denies with `403`.
- *
- * The gate is what makes those routes exist: omit it and the provider does NOT mount
- * `/agent/governance/*` at all (every route answers `404`). Set it to mount them gated, or set
- * `governanceAuthorize: () => true` to deliberately restore the old behaviour of letting ANY
- * authenticated actor read them. `GET /agent/approvals/mine` is unaffected — it stays mounted and
- * scoped to the calling actor's own pending approvals.
- *
- * Mirrors `@adonis-agora/agent-dashboard`'s `authorize` hook so the JSON routes and the console SPA
- * that reads them can be gated with the SAME predicate (typically "actor is ADMIN").
- */
-export type AgentGovernanceAuthorize = (
-  actor: Actor,
-  ctx: HttpContext,
-) => AuthorizeResult | Promise<AuthorizeResult>;
 
 /** The decision {@link evaluateGovernanceGate} returns: proceed, or reply `status` with `error`. */
 export interface GovernanceGateVerdict {
   ok: boolean;
   /**
    * The HTTP status to reply when `!ok`: `403`, or `401` when `authorize` returned
-   * `{ allowed: false, reason: 'unauthenticated' }`.
+   * `{ allowed: false, reason: 'unauthenticated' }` or `{ redirectTo }`.
    */
   status: number;
-  error?: string;
+  /** The JSON `error` code to reply with: `'forbidden'` (`403`) or `'unauthenticated'` (`401`). */
+  error?: 'forbidden' | 'unauthenticated';
+  /** The thrown error's message, only when `debug` is on (outside production). */
+  detail?: string;
+  /** Where to send a page navigation instead, when the gate returned `{ redirectTo }`. */
+  redirectTo?: string;
 }
 
 /**
- * Decide whether an already-resolved actor holds cross-actor governance privilege — the router-free
- * core of the provider's governance gate, extracted so it can be unit tested without booting an app.
+ * Decide whether a request (and its actor, when one resolved) passes the console's `authorize` — the
+ * router-free core of the `/agent/governance/*` gate (and of the "may act across actors" check on the per-actor
+ * run/thread routes), extracted so it can be unit tested without booting an app.
  *
- * - No `authorize` configured → `{ ok: true }` (see the caveat below — the provider never gets here).
- * - `authorize` returns `true` / `{ allowed: true }` → `{ ok: true }`.
- * - `authorize` returns `false` / `{ allowed: false }` (no reason) / `{ allowed: false, reason:
- *   'forbidden' }` → `{ ok: false, status: 403 }`. A denying decision object is truthy, so it is
- *   normalised via {@link resolveAuthorizeResult}, never truth-tested.
- * - `authorize` returns `{ allowed: false, reason: 'unauthenticated' }` → `{ ok: false, status: 401 }`.
- * - `authorize` throws → `{ ok: false, status: 403 }` (fail-closed). `debug` decides whether the
- *   thrown `.message` reaches the client (`true`, e.g. local dev — the message is meant for whoever
- *   is wiring `governanceAuthorize`, useful to see while testing it) or a generic `'forbidden'`
- *   (`false`, the default — this predicate runs on every request from a caller who is, by
- *   definition, not yet proven trustworthy; matches `@adonis-agora/durable`'s dashboard convention of
- *   a uniform message on every credential failure). The provider passes `!app.inProduction`.
- *
- * The `undefined` branch is a pure-function convenience, NOT a claim that governance is readable
- * without a gate. Neither provider caller can reach it: `#resolveGovernanceActor` backs the
- * `/agent/governance/*` routes, which are NOT mounted at all when no gate is configured (they answer
- * `404`), so it always passes one; and `#assertOwner` — which reuses this predicate as the "may act
- * across actors" seam for the per-actor run/thread routes — short-circuits to "not privileged" when
- * no gate is configured, leaving ownership strict, rather than calling in. To mount the governance
- * routes, set `governanceAuthorize` (typically an ADMIN check); to deliberately restore the old
- * behaviour of letting ANY authenticated actor read them, set `governanceAuthorize: () => true`.
- * Either way `GET /agent/approvals/mine` is unaffected — it stays mounted and scoped to the calling
- * actor's own pending approvals.
+ * - No `authorize` → `{ ok: true }`. The provider handles the omitted case before calling (open
+ *   outside production, `403` in production), and never treats it as cross-actor privilege.
+ * - `true` / `{ allowed: true }` → `{ ok: true }`.
+ * - `false` / `{ allowed: false }` / `reason: 'forbidden'` → `403 forbidden`.
+ * - `{ allowed: false, reason: 'unauthenticated' }` → `401 unauthenticated`.
+ * - `{ redirectTo }` → `401 unauthenticated` carrying `redirectTo`.
+ * - a throw → `403 forbidden`; with `debug` the thrown message rides along as `detail`.
  */
 export async function evaluateGovernanceGate(
-  actor: Actor,
+  actor: Actor | undefined,
   ctx: HttpContext,
-  authorize?: AgentGovernanceAuthorize,
+  authorize?: AgentConsoleAuthorize,
   debug = false,
 ): Promise<GovernanceGateVerdict> {
   if (authorize === undefined) return { ok: true, status: 200 };
-  try {
-    const decision = resolveAuthorizeResult(await authorize(actor, ctx));
-    if (decision.allowed) return { ok: true, status: 200 };
-    return decision.status === 401
-      ? { ok: false, status: 401, error: 'unauthorized' }
-      : { ok: false, status: 403, error: 'forbidden' };
-  } catch (error) {
+  const decision = await consoleAuthorizeFor(authorize)(ctx, actor);
+  if (decision.allowed) return { ok: true, status: 200 };
+  if (decision.error !== undefined) {
     return {
       ok: false,
       status: 403,
-      error: debug && error instanceof Error ? error.message : 'forbidden',
+      error: 'forbidden',
+      ...(debug && decision.error instanceof Error ? { detail: decision.error.message } : {}),
     };
   }
+  if (decision.redirectTo !== undefined) {
+    return { ok: false, status: 401, error: 'unauthenticated', redirectTo: decision.redirectTo };
+  }
+  return decision.status === 401
+    ? { ok: false, status: 401, error: 'unauthenticated' }
+    : { ok: false, status: 403, error: 'forbidden' };
 }

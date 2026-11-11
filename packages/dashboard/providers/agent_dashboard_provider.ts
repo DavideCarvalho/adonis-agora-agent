@@ -14,16 +14,15 @@ import {
   mountPathFor,
   resolveDashboardConfig,
   safeAssetSegments,
+  warnNoConsoleAuthorizeOnce,
 } from '@adonis-agora/agent/dashboard';
 import type { HttpContext } from '@adonisjs/core/http';
 import type { ApplicationService } from '@adonisjs/core/types';
 
 /**
  * Serves the `@adonis-agora/agent-dashboard` governance SPA (a Vite build in `dist/spa`) as static
- * assets under `<agentPath>/dashboard`, behind the SAME actor gating as the agent's governance
- * routes: every request resolves the actor through the agent config's `actorResolver`, replying `401`
- * on failure (an app that never configured a resolver exposes nothing — identical to the
- * `/agent/governance/*` routes). This is a thin, idiomatic AdonisJS static server — no NestJS module,
+ * assets under `<agentPath>/dashboard`, behind the SAME `dashboard.authorize` check as the agent's
+ * `/agent/governance/*` routes (omitted: open outside production, `403` in production). This is a thin, idiomatic AdonisJS static server — no NestJS module,
  * no bundled API. The SPA calls the agent's own real read routes.
  *
  * Routes (mount = `<agentPath>/dashboard`, default `/agent/dashboard`):
@@ -31,9 +30,8 @@ import type { ApplicationService } from '@adonisjs/core/types';
  * - `GET <mount>/`     → the SPA shell (`index.html`, with the resolved API base injected)
  * - `GET <mount>/*`    → a built asset, or the SPA shell as a fallback (client-rendered console)
  *
- * Nothing mounts unless the agent config carries a `governanceAuthorize` gate: without it the
- * `/agent/governance/*` routes the console reads do not exist, so the console would load and fail on
- * every panel but Quota. The provider declines and logs why (see `decideDashboardMount`).
+ * The console mounts unless `dashboard: { enabled: false }`, or `governanceQueries: false` removed the
+ * data it reads (see `decideDashboardMount`).
  *
  * Enable/disable and override the mount via the optional `config('agent').dashboard` block.
  *
@@ -59,14 +57,7 @@ export default class AgentDashboardProvider {
       this.app.config.get<AgentDashboardConfig>('agent.dashboard', {}),
     );
 
-    // Mount only when the console can actually work: every panel but Quota reads the agent's
-    // cross-actor `/agent/governance/*` routes, and those do not exist without a `governanceAuthorize`
-    // gate. Refusing here — loudly — beats serving a shell that 404s its own data with no explanation.
-    const decision = decideDashboardMount(
-      dashboardConfig.enabled,
-      agentConfig.governanceAuthorize,
-      agentConfig.governanceQueries,
-    );
+    const decision = decideDashboardMount(dashboardConfig.enabled, agentConfig.governanceQueries);
     if (!decision.mount) {
       if (decision.reason !== 'disabled') console.warn(decision.warning);
       return;
@@ -84,6 +75,7 @@ export default class AgentDashboardProvider {
     const actorResolver = agentConfig.actorResolver;
 
     const authorize = dashboardConfig.authorize;
+    if (authorize === undefined) warnNoConsoleAuthorizeOnce(this.app, console.warn);
     // What a refused browser sees — the built-in access-denied page unless the host customised it.
     const denial: DashboardDenialOptions = {
       basePath: mount,
@@ -113,13 +105,9 @@ export default class AgentDashboardProvider {
   }
 
   /**
-   * Resolve the actor through the agent config's resolver, mirroring the governance routes, then run
-   * the optional `authorize` gate. Returns `true` to proceed; replies `401` on a missing/failed
-   * resolver (or `authorize` returning `{ allowed: false, reason: 'unauthenticated' }`) and `403`
-   * when `authorize` otherwise denies (`false`, `{ allowed: false }`, `reason: 'forbidden'`, or throws). The decision itself lives in the
-   * router-free {@link evaluateDashboardGate} so it can be unit tested; this only writes the response
-   * — the access-denied PAGE (a browser is what hits these routes), via the shared
-   * {@link answerDashboardDenial}, which also stands down when `authorize` already redirected.
+   * Run the console's `authorize` (see {@link evaluateDashboardGate}) and, on a refusal, answer it via
+   * {@link answerDashboardDenial}: the access-denied page (or a redirect) for a page navigation, JSON
+   * otherwise. Returns `true` to proceed.
    */
   private async gate(
     ctx: HttpContext,
@@ -127,7 +115,11 @@ export default class AgentDashboardProvider {
     authorize: AgentDashboardAuthorize | undefined,
     denial: DashboardDenialOptions,
   ): Promise<boolean> {
-    const verdict = await evaluateDashboardGate(ctx, actorResolver, authorize);
+    const verdict = await evaluateDashboardGate(ctx, {
+      actorResolver,
+      authorize,
+      inProduction: this.app.inProduction,
+    });
     if (!verdict.ok) {
       await answerDashboardDenial(ctx, verdict, denial);
       return false;

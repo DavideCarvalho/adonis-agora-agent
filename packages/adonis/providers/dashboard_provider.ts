@@ -3,9 +3,9 @@ import { resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { HttpContext } from '@adonisjs/core/http';
 import type { ApplicationService } from '@adonisjs/core/types';
+import { warnNoConsoleAuthorizeOnce } from '../src/console-authorize.js';
 import {
   type AgentDashboardAuthorize,
-  type AgentDashboardUnauthenticatedHook,
   answerDashboardDenial,
   apiBaseFor,
   contentTypeFor,
@@ -61,9 +61,10 @@ import type { ActorResolver } from '../src/spi/actor-resolver.js';
  * - `GET <mount>`   → the SPA shell (`index.html`, with the resolved API base + `<base href>` injected)
  * - `GET <mount>/*` → a built asset, or the SPA shell as a fallback (client-rendered console)
  *
- * Nothing mounts unless the agent config carries a `governanceAuthorize` gate: without it the
- * `/agent/governance/*` routes the console reads do not exist, so the console would load and fail on
- * every panel but Quota. The provider declines and logs why (see `decideDashboardMount`).
+ * Access is `dashboard.authorize` — the same check the `/agent/governance/*` routes run. Omitted, the
+ * console is open outside production and refuses every request in production (warned once at boot).
+ * The console mounts unless `dashboard: { enabled: false }`, or `governanceQueries: false` removed the
+ * data it reads (see `decideDashboardMount`).
  *
  * Enable/disable and override the mount via the optional `config('agent').dashboard` block — the SAME
  * block the standalone provider reads.
@@ -89,14 +90,7 @@ export default class DashboardProvider {
     // untyped `config.get('agent.dashboard')` string path, so `config/agent.ts` type-checks the block.
     const dashboardConfig = resolveDashboardConfig(agentConfig.dashboard);
 
-    // Mount only when the console can actually work: every panel but Quota reads the agent's
-    // cross-actor `/agent/governance/*` routes, and those do not exist without a `governanceAuthorize`
-    // gate. Refusing here — loudly — beats serving a shell that 404s its own data with no explanation.
-    const decision = decideDashboardMount(
-      dashboardConfig.enabled,
-      agentConfig.governanceAuthorize,
-      agentConfig.governanceQueries,
-    );
+    const decision = decideDashboardMount(dashboardConfig.enabled, agentConfig.governanceQueries);
     if (!decision.mount) {
       if (decision.reason !== 'disabled') console.warn(decision.warning);
       return;
@@ -113,6 +107,7 @@ export default class DashboardProvider {
     const actorResolver = agentConfig.actorResolver;
 
     const authorize = dashboardConfig.authorize;
+    if (authorize === undefined) warnNoConsoleAuthorizeOnce(this.app, console.warn);
     // What a refused browser sees — the built-in access-denied page unless the host customised it.
     const denial: DashboardDenialOptions = {
       basePath: mount,
@@ -125,32 +120,14 @@ export default class DashboardProvider {
     // `<base href="${mount}/">`, so the SPA's relative `./assets/*` URLs resolve against the mount
     // directory regardless of whether the browser's URL carries a trailing slash.
     router.get(mount, async (ctx) => {
-      if (
-        !(await this.#gate(
-          ctx,
-          actorResolver,
-          authorize,
-          dashboardConfig.onUnauthenticated,
-          denial,
-        ))
-      )
-        return;
+      if (!(await this.#gate(ctx, actorResolver, authorize, denial))) return;
       await this.#sendIndex(ctx, apiBase, mount);
     });
 
     // Built assets (JS/CSS/fonts/...), with an index fallback for any unmatched path so the
     // client-rendered console still boots on a deep link.
     router.get(`${mount}/*`, async (ctx) => {
-      if (
-        !(await this.#gate(
-          ctx,
-          actorResolver,
-          authorize,
-          dashboardConfig.onUnauthenticated,
-          denial,
-        ))
-      )
-        return;
+      if (!(await this.#gate(ctx, actorResolver, authorize, denial))) return;
       const segments = safeAssetSegments(ctx.params['*']);
       if (segments === null) {
         return ctx.response.status(400).json({ message: 'bad asset path' });
@@ -160,31 +137,21 @@ export default class DashboardProvider {
   }
 
   /**
-   * Resolve the actor through the agent config's resolver, mirroring the governance routes, then run
-   * the optional `authorize` gate. Returns `true` to proceed; replies `401` on a missing/failed
-   * resolver (or `authorize` returning `{ allowed: false, reason: 'unauthenticated' }`) and `403`
-   * when `authorize` otherwise denies (`false`, `{ allowed: false }`, `reason: 'forbidden'`, or throws). The decision itself lives in the
-   * router-free {@link evaluateDashboardGate} so it can be unit tested; this only writes the response
-   * — the access-denied PAGE (a browser is what hits these routes), via the shared
-   * {@link answerDashboardDenial} — and, mirroring `@adonis-agora/durable`'s dashboard, ONLY when
-   * neither `onUnauthenticated` nor `authorize` already answered the request themselves: if either
-   * set a `location` header (typically via `ctx.response.redirect(...)`, e.g. to the app's own login
-   * page), that redirect stands and this skips writing its own `401`/`403` page on top of it.
+   * Run the console's `authorize` (see {@link evaluateDashboardGate}) and, on a refusal, answer it via
+   * {@link answerDashboardDenial}: the access-denied page (or a redirect) for a page navigation, JSON
+   * otherwise. Returns `true` to proceed.
    */
   async #gate(
     ctx: HttpContext,
     actorResolver: ActorResolver | undefined,
     authorize: AgentDashboardAuthorize | undefined,
-    onUnauthenticated: AgentDashboardUnauthenticatedHook | undefined,
     denial: DashboardDenialOptions,
   ): Promise<boolean> {
-    const verdict = await evaluateDashboardGate(
-      ctx,
+    const verdict = await evaluateDashboardGate(ctx, {
       actorResolver,
       authorize,
-      !this.app.inProduction,
-      onUnauthenticated,
-    );
+      inProduction: this.app.inProduction,
+    });
     if (!verdict.ok) {
       await answerDashboardDenial(ctx, verdict, denial);
       return false;

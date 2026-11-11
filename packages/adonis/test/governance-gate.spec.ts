@@ -19,7 +19,7 @@ describe('evaluateGovernanceGate', () => {
     const verdict = await evaluateGovernanceGate(
       admin,
       ctx,
-      (a) => a.roles?.includes('ADMIN') ?? false,
+      (_c, a) => a?.roles?.includes('ADMIN') ?? false,
     );
     expect(verdict.ok).toBe(true);
   });
@@ -28,7 +28,7 @@ describe('evaluateGovernanceGate', () => {
     const verdict = await evaluateGovernanceGate(
       member,
       ctx,
-      (a) => a.roles?.includes('ADMIN') ?? false,
+      (_c, a) => a?.roles?.includes('ADMIN') ?? false,
     );
     expect(verdict).toEqual({ ok: false, status: 403, error: 'forbidden' });
   });
@@ -42,7 +42,7 @@ describe('evaluateGovernanceGate', () => {
   it('passes the actor and ctx through to authorize', async () => {
     let seenActor: Actor | undefined;
     let seenCtx: unknown;
-    await evaluateGovernanceGate(admin, ctx, (a, c) => {
+    await evaluateGovernanceGate(admin, ctx, (c, a) => {
       seenActor = a;
       seenCtx = c;
       return true;
@@ -58,7 +58,7 @@ describe('evaluateGovernanceGate', () => {
     expect(verdict).toEqual({ ok: false, status: 403, error: 'forbidden' });
   });
 
-  it('surfaces the thrown message only when debug is true', async () => {
+  it('adds the thrown message as a detail only when debug is true', async () => {
     const verdict = await evaluateGovernanceGate(
       member,
       ctx,
@@ -67,7 +67,7 @@ describe('evaluateGovernanceGate', () => {
       },
       true,
     );
-    expect(verdict).toEqual({ ok: false, status: 403, error: 'boom' });
+    expect(verdict).toEqual({ ok: false, status: 403, error: 'forbidden', detail: 'boom' });
   });
 
   it('fails closed (403) with a generic error when authorize throws a non-Error', async () => {
@@ -102,7 +102,7 @@ describe('evaluateGovernanceGate — AuthorizeResult decision objects', () => {
       allowed: false,
       reason: 'unauthenticated' as const,
     }));
-    expect(verdict).toEqual({ ok: false, status: 401, error: 'unauthorized' });
+    expect(verdict).toEqual({ ok: false, status: 401, error: 'unauthenticated' });
   });
 
   it('denies (403) a malformed result from an untyped hook', async () => {

@@ -4,8 +4,9 @@ description: >-
   Serve and consume the @adonis-agora/agent governance console: the embedded provider
   from node ace configure @adonis-agora/agent vs the standalone @adonis-agora/
   agent-dashboard provider (register only ONE — duplicate-route error), the shared
-  config('agent').dashboard block { enabled, path, authorize, onUnauthenticated },
-  decideDashboardMount refusal reasons (no-governance-gate vs no-governance-queries),
+  config('agent').dashboard block { enabled, path, authorize, accessDenied } where authorize
+  gates the console AND /agent/governance/* (open outside production, 403 in production when
+  omitted), the governanceQueries: false mount refusal,
   and the framework-free AgentClient from @adonis-agora/agent-dashboard/client
   (spendByModel/spendByActor/usageTrend/quotaToday/recentThreads/recentToolCalls/
   pendingApprovals/approveToolCall) with injected-config apiBase resolution.
@@ -34,10 +35,12 @@ for its framework-free browser client.
 ## Setup
 
 Most apps need nothing: `node ace configure @adonis-agora/agent` registers an embedded
-provider that serves the SPA at `<path>/dashboard` once `governanceAuthorize` exists:
+provider that serves the SPA at `<path>/dashboard`. `dashboard.authorize` gates the console
+AND the `/agent/governance/*` routes its panels read; omitted, both are open outside production
+and answer 403 in production:
 
 ```ts
-// config/agent.ts — the gate is what makes the console mount at all.
+// config/agent.ts
 import { defineConfig } from '@adonis-agora/agent'
 
 export default defineConfig({
@@ -45,8 +48,7 @@ export default defineConfig({
   store: 'lucid',
   stores: { lucid: stores.lucid() },
   actorResolver: new AuthActorResolver(),
-  governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
-  // dashboard: { enabled: true, path: '/agent/dashboard', authorize: (actor) => actor.roles?.includes('ADMIN') ?? false },
+  dashboard: { authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false },
 })
 ```
 
@@ -100,44 +102,37 @@ Non-2xx responses throw `AgentApiError` carrying the HTTP status for branching.
 
 Source: `packages/dashboard/src/client/agent-client.ts`, `packages/dashboard/src/client/index.ts`.
 
-### Pattern 2 — redirect to login via `onUnauthenticated`
+### Pattern 2 — redirect to login with `{ redirectTo }`
 
-The one denial `authorize` never sees is a failed actor resolution. Set a response header
-inside the hook (typically a redirect); the gate detects it and skips its default
-`401 { error }` JSON write:
+`authorize` receives `ctx` (and the actor, when one resolves). Return `{ redirectTo }` for a
+signed-out visitor: a page navigation gets a 302, an API call gets
+`401 { error: 'unauthenticated', redirectTo }`. `authorizeByRoles({ loginPath })` from
+`@adonis-agora/authz` does exactly this:
 
 ```ts
 // config/agent.ts
+import { authorizeByRoles } from '@adonis-agora/authz'
+
 export default defineConfig({
   // ...
-  dashboard: {
-    onUnauthenticated: (ctx) => ctx.response.redirect('/login'),
-  },
+  dashboard: { authorize: authorizeByRoles({ roles: ['ADMIN'], loginPath: '/login' }) },
 })
 ```
 
-Return normally without touching the response and the default JSON is written instead —
-the hook is safe to omit or use purely for logging.
+`onUnauthenticated` was removed in 1.0 — this replaces it.
 
-Source: `packages/adonis/src/dashboard/define_config.ts`
-(`AgentDashboardUnauthenticatedHook`).
+Source: `packages/adonis/src/dashboard/gate.ts` (`evaluateDashboardGate`,
+`answerDashboardDenial`).
 
-### Pattern 3 — diagnose a dead console from the boot warning
+### Pattern 3 — diagnose a dead or refusing console
 
-`decideDashboardMount(enabled, governanceAuthorize, governanceQueries)` produces three
-distinct refusals, each logged with wording that names the responsible knob:
+`decideDashboardMount(enabled, governanceQueries)` refuses to mount only when `enabled:
+false` (silent, intentional) or `governanceQueries: false` (boot warning naming it). Every
+other app gets the console. A `403` on every request in production with the boot warning
+"console has no `authorize` configured" means `dashboard.authorize` is missing.
 
-| Condition | Reason | Fix |
-| --- | --- | --- |
-| `enabled: false` | `disabled` | intentional; no warning |
-| no `governanceAuthorize` | `no-governance-gate` | set the gate (or `() => true` deliberately) |
-| `governanceQueries: false` | `no-governance-queries` | remove the `false` / wire a read-model |
-
-The two non-disabled warnings are deliberately DIFFERENT strings so an operator staring
-at a 404 can tell from the log alone which knob is responsible.
-
-Source: `packages/adonis/src/dashboard/define_config.ts` (`decideDashboardMount`,
-warning constants).
+Source: `packages/adonis/src/dashboard/define_config.ts` (`decideDashboardMount`),
+`packages/adonis/src/console-authorize.ts` (`NO_CONSOLE_AUTHORIZE_WARNING`).
 
 ## Common mistakes
 
@@ -164,24 +159,22 @@ route error — the app fails to start rather than double-serving.
 Source: `packages/dashboard/README.md` ("Register only ONE of the two providers"),
 `packages/adonis/README.md`.
 
-### MEDIUM — setting only `dashboard.enabled: true` and expecting panels to load
+### HIGH — shipping to production without `dashboard.authorize`
 
 ```ts
-// Wrong — enabled is necessary but NOT sufficient; every panel but Quota reads gated routes.
+// Wrong — open in dev, then every console page and governance call is 403 in production.
 dashboard: { enabled: true }
 ```
 
 ```ts
-// Correct — the data gate is governanceAuthorize on the AGENT config.
-governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
-dashboard: { enabled: true },
+// Correct — one authorize gates the console and the data it reads.
+dashboard: { authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false },
 ```
 
-Mechanism: without a gate the console refuses to mount entirely (boot warning naming the
-knob) because it would otherwise load and fail on every panel — serving a shell that can
-only 404 its own data is worse than not serving it.
-Source: `packages/adonis/src/dashboard/define_config.ts` (`decideDashboardMount`,
-`NO_GOVERNANCE_GATE_WARNING`).
+Mechanism: omitted `authorize` means open outside production and closed in production; the
+console is not read-only (Approvals decides HITL calls, Pricing writes rates), so decide who
+may use it.
+Source: `packages/adonis/src/dashboard/gate.ts` (`evaluateDashboardGate`).
 
 ### LOW — hard-coding `/agent` as the client base in a custom UI
 
@@ -202,5 +195,5 @@ when serving index.html; absent that, `deriveApiBase(location.pathname)` strips 
 trailing `/dashboard` segment — `/api/agent/dashboard` → `/api/agent`.
 Source: `packages/dashboard/src/client/api-base.ts` (`resolveApiBase`, `deriveApiBase`).
 
-See also: `agent-governance/SKILL.md` — the `governanceAuthorize` gate this console
-consumes through; `agent-setup/SKILL.md` — seeding prices so `upsertPrice` rows matter.
+See also: `agent-governance/SKILL.md` — the `dashboard.authorize` gate this console and
+its data routes share; `agent-setup/SKILL.md` — seeding prices so `upsertPrice` rows matter.

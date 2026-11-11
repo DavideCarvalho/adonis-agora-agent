@@ -112,73 +112,55 @@ The three outcomes are deliberate:
 | someone else's | `false` | `{ ok: false, status: 403 }` | Not the owner, not privileged. |
 | someone else's | `true` | `{ ok: true, status: 200 }` | A cross-actor privileged caller (see below) may act across actors. |
 
-On every owner-scoped route the request is checked before the handler runs: the record's owner is looked up, `privileged` is computed by running the same `governanceAuthorize` gate used for the governance read-model, and `evaluateOwnership` produces the verdict. On a non-`ok` verdict the request is answered with the verdict's status (`404` → `"<kind> not found"`, `403` → `"forbidden"`) and the handler never runs.
+On every owner-scoped route the request is checked before the handler runs: the record's owner is looked up, `privileged` is computed by running the console's `dashboard.authorize` — the same check the governance read-model uses, and `evaluateOwnership` produces the verdict. On a non-`ok` verdict the request is answered with the verdict's status (`404` → `"<kind> not found"`, `403` → `"forbidden"`) and the handler never runs.
 
 <Callout type="info" title="Which routes are owner-scoped">
 `POST /agent/chat` (only when continuing an existing `threadId`), `GET /agent/chat/:runId/stream`, `POST /agent/chat/:runId/cancel`, `POST /agent/tool-call/approve`, `POST /agent/tool-call/reject`, `GET /agent/threads/:id`, `DELETE /agent/threads/:id`, and `POST /agent/threads/:id/fork-from/:messageId` all enforce ownership. A **new** chat (no `threadId`) has no owner to check; the actor-scoped list routes (`GET /agent/threads`, `GET /agent/quota/today`) are already filtered to `actor.id`.
 </Callout>
 
-<Callout type="warn" title="With no governance gate, ownership is strict">
-`privileged` is `true` only when a `governanceAuthorize` gate is configured **and** this actor passes it. With no gate configured, `privileged` is always `false` — so ownership is strict and even an admin can only touch its own runs and threads through these routes. That is intentional: cross-actor access is a governance privilege, and the app opts into it by configuring the gate.
+<Callout type="warn" title="Without authorize, ownership is strict">
+`privileged` is `true` only when `dashboard.authorize` is configured **and** allows this actor. Without it, `privileged` is always `false` — so ownership is strict and even an admin can only touch its own runs and threads through these routes. Any denial (whatever its `reason`) just means "not privileged", and ownership decides.
 </Callout>
 
 ## Governance route authorization
 
-The cross-actor [governance read-model](/docs/agent/governance/read-model) — `/agent/governance/*` — exposes *every* actor's spend, usage, threads, runs, and pending approvals. It is not per-actor data, so ownership doesn't apply; instead it is gated by a single predicate, `governanceAuthorize`:
+The cross-actor [governance read-model](/docs/agent/governance/read-model) — `/agent/governance/*` — exposes *every* actor's spend, usage, threads, runs, and pending approvals. It is not per-actor data, so ownership doesn't apply; instead it runs the console's `authorize`, the one option that also gates the [governance console](/docs/agent/governance/dashboard#access):
 
 ```ts title="config/agent.ts"
 import { defineConfig } from '@adonis-agora/agent'
+import { authorizeByRoles } from '@adonis-agora/authz'
 
 export default defineConfig({
   // ...
-  // Runs AFTER the actor is resolved (the caller is already authenticated).
-  // Return false / { allowed: false } → 403; { allowed: false, reason: 'unauthenticated' } → 401.
-  // Typically an ADMIN check.
-  governanceAuthorize: (actor, _ctx) => actor.roles?.includes('ADMIN') ?? false,
+  dashboard: {
+    authorize: authorizeByRoles({ roles: ['ADMIN'] }),
+    // or: authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false,
+  },
 })
 ```
 
-Its type is `AgentGovernanceAuthorize = (actor, ctx) => AuthorizeResult | Promise<AuthorizeResult>` (`AuthorizeResult = boolean | { allowed: boolean; reason?: 'unauthenticated' | 'forbidden' }`), and it is applied by `evaluateGovernanceGate`, which is **fail-closed**: `false`, `{ allowed: false }` and `reason: 'forbidden'` deny with `403`, `reason: 'unauthenticated'` with `401`, and an `authorize` that *throws* denies with `403` exactly like a `false` return. A redirect the hook wrote itself is kept instead of the JSON body. On owner-scoped routes the same predicate only decides whether the caller is cross-actor *privileged*: any denial (whatever its `reason`) just means "not privileged", and ownership decides.
+- **Omitted:** the routes are open while the app is not in production; in production every `/agent/governance/*` request answers `403 { "error": "forbidden" }`, and the app logs one warning at boot.
+- **Set:** it decides with `ctx` and the resolved actor (optional — `undefined` when the request has none, e.g. a machine caller using `authorizeByToken`). `false`, `{ allowed: false }` and `reason: 'forbidden'` answer `403 { "error": "forbidden" }`; `reason: 'unauthenticated'` answers `401 { "error": "unauthenticated" }`; `{ redirectTo }` redirects a page navigation and answers `401 { "error": "unauthenticated", "redirectTo" }` to an API call; a throw answers `403`. See [the authorize contract](/docs/agent/governance/dashboard#the-authorize-contract) for the three forms (function, class, lazy import).
+- `GET /agent/approvals/mine` is **never** gated by it: it is always scoped to the calling actor's own pending approvals, so a non-admin surface can poll its own approvals even while the cross-actor read-model is ADMIN-only.
 
 <Callout type="warn" title="A thrown message never reaches production clients">
-When `authorize` throws, the `403` body carries the error's message **only outside production**. In
-production it is always the generic `{ "error": "forbidden" }`, because an authorization predicate
-routinely throws with details a caller must not see — a missing tenant, a user id, a policy name. So
-throw freely for your own logs, but don't design a client around reading that message: outside dev it
-will not be there.
+When `authorize` throws, the `403` body carries the error's message as `detail` **only outside production**. In production it is always `{ "error": "forbidden" }`, because an authorization predicate routinely throws with details a caller must not see.
 </Callout>
 
-`evaluateGovernanceGate` is exported for tests and for gating your own routes with the same predicate:
+`evaluateGovernanceGate` is exported for tests and for gating your own routes with the same `authorize`:
 
 ```ts
 import { evaluateGovernanceGate } from '@adonis-agora/agent'
-import type { GovernanceGateVerdict } from '@adonis-agora/agent'
 
-// evaluateGovernanceGate(actor, ctx, authorize?, debug?): Promise<GovernanceGateVerdict>
-const verdict = await evaluateGovernanceGate(actor, ctx, config.governanceAuthorize, !app.inProduction)
+// evaluateGovernanceGate(actor | undefined, ctx, authorize?, debug?): Promise<GovernanceGateVerdict>
+const verdict = await evaluateGovernanceGate(actor, ctx, config.dashboard?.authorize, !app.inProduction)
 
 if (!verdict.ok) {
   return ctx.response.status(verdict.status).json({ error: verdict.error })
 }
 ```
 
-Three branches, and the first is the one to know about:
-
-| `authorize` | Outcome |
-| --- | --- |
-| `undefined` | `{ ok: true, status: 200 }` — **no gate means no denial.** |
-| returns falsy | `{ ok: false, status: 403, error: 'forbidden' }` |
-| throws | `{ ok: false, status: 403, error: debug ? message : 'forbidden' }` |
-
-That first row looks like a fail-open, and it would be if the routes mounted without a gate. They
-don't: with no `governanceAuthorize` the `/agent/governance/*` routes are never registered, so the
-gate is only ever consulted on a route that exists *because* a gate exists. If you call
-`evaluateGovernanceGate` yourself on a route of your own, that guarantee is yours to keep — pass a
-predicate, or check for one before mounting.
-
-- **Omit it** and `/agent/governance/*` is **not mounted at all** — every one of those paths answers `404`, so an ungated cross-actor read-model can never be served by accident. The provider logs a boot warning naming both ways forward: set the gate (typically an ADMIN check) to mount the routes gated, or `governanceAuthorize: () => true` to deliberately restore the old behaviour of letting ANY authenticated actor read them.
-- The gate **does not** cover `GET /agent/approvals/mine`, which is **unaffected** — it stays mounted whenever the read-model resolves, gate or no gate, and is always scoped to the calling actor's own pending approvals, so a non-admin surface can poll its own approvals even while the cross-actor read-model is ADMIN-only.
-- The same predicate also feeds the object-level ownership check above: passing `governanceAuthorize` is what makes a caller `privileged` (may act across actors). It mirrors [`@adonis-agora/agent-dashboard`](/docs/agent/governance/dashboard)'s `authorize` hook, so the JSON routes and the console SPA that reads them can be gated with the *same* predicate — and because the console is a pure consumer of those routes, it **refuses to mount** without this gate too.
+It decides only from the `authorize` you pass: with none it answers `{ ok: true }`, so keep the production default yourself on a route of your own.
 
 ## What governance covers
 
@@ -186,5 +168,5 @@ predicate, or check for one before mounting.
 - Which tools a **persona/agent** exposes — a second allow-list layer. See [Personas & agents](/docs/agent/authoring/personas-and-agents).
 - Which tools need a **human** before they run — the `action` kind and HITL. See [Streaming & HTTP](/docs/agent/streaming-and-http#human-in-the-loop).
 - Which **records** (runs, threads) an actor may address — object-level ownership (this page).
-- Who may read the cross-actor **governance read-model** — the `governanceAuthorize` gate (this page).
+- Who may read the cross-actor **governance read-model** — `dashboard.authorize` (this page).
 - How much an actor may **spend** — the daily quota, checked before the model runs. See [Quota & cost](/docs/agent/governance/quota-and-cost).

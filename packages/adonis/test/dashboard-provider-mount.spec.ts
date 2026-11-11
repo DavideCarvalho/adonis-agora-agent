@@ -4,12 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { IgnitorFactory } from '@adonisjs/core/factories/core/ignitor';
 import type { HttpContext } from '@adonisjs/core/http';
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
-import type {
-  AgentDashboardAuthorize,
-  AgentDashboardConfig,
-  AgentDashboardUnauthenticatedHook,
-} from '../src/dashboard/index.js';
-import type { AgentGovernanceAuthorize } from '../src/governance-gate.js';
+import type { AgentDashboardAuthorize, AgentDashboardConfig } from '../src/dashboard/index.js';
 
 /**
  * Boots a real AdonisJS app with ONLY `providers/dashboard_provider.ts` (this package's OWN embedded
@@ -17,11 +12,8 @@ import type { AgentGovernanceAuthorize } from '../src/governance-gate.js';
  * mirrors `@adonis-agora/agent-dashboard`'s `test/dashboard-mount.spec.ts` byte-for-byte in structure,
  * since both providers share the exact same mount/gate decision logic (`src/dashboard/index.js`).
  *
- * The observable used throughout is the response to an UNAUTHENTICATED request at the mount:
- * - mounted  → the dashboard's own gate runs first and replies `401` (no resolvable actor)
- * - unmounted → the router replies `404`
- *
- * That discriminator needs no built SPA (`dist/assets/spa` only exists after the package's own build
+ * Mounted vs. unmounted is told apart by status: the router answers `404` for an unmounted console,
+ * while a mounted one runs `dashboard.authorize` first. That discriminator needs no built SPA (`dist/assets/spa` only exists after the package's own build
  * copies it in from `@adonis-agora/agent-dashboard`'s `dist/spa`), which is what makes it usable in a
  * plain test run — this suite never reads `index.html`/assets off disk.
  */
@@ -43,12 +35,12 @@ interface BootedApp {
 }
 
 async function bootApp(options: {
-  governanceAuthorize?: AgentGovernanceAuthorize;
+  inProduction?: boolean;
   dashboardAuthorize?: AgentDashboardAuthorize;
-  dashboardOnUnauthenticated?: AgentDashboardUnauthenticatedHook;
   dashboardAccessDenied?: AgentDashboardConfig['accessDenied'];
   dashboardEnabled?: boolean;
   governanceQueries?: false;
+  setup?: (app: { container: { bindValue(key: unknown, value: unknown): void } }) => void;
 }): Promise<BootedApp> {
   const ignitor = new IgnitorFactory()
     .withCoreProviders()
@@ -60,9 +52,6 @@ async function bootApp(options: {
       config: {
         agent: {
           actorResolver: headerActorResolver,
-          ...(options.governanceAuthorize !== undefined
-            ? { governanceAuthorize: options.governanceAuthorize }
-            : {}),
           ...(options.governanceQueries === false ? { governanceQueries: false as const } : {}),
           dashboard: {
             ...(options.dashboardEnabled !== undefined
@@ -70,9 +59,6 @@ async function bootApp(options: {
               : {}),
             ...(options.dashboardAuthorize !== undefined
               ? { authorize: options.dashboardAuthorize }
-              : {}),
-            ...(options.dashboardOnUnauthenticated !== undefined
-              ? { onUnauthenticated: options.dashboardOnUnauthenticated }
               : {}),
             ...(options.dashboardAccessDenied !== undefined
               ? { accessDenied: options.dashboardAccessDenied }
@@ -84,7 +70,11 @@ async function bootApp(options: {
     .create(new URL('../', import.meta.url));
 
   const app = ignitor.createApp('web');
+  if (options.inProduction === true) {
+    Object.defineProperty(app, 'inProduction', { get: () => true });
+  }
   await app.init();
+  options.setup?.(app as never);
   // `app.boot()` only — `app.start()` notifies the parent process (`process.send`), which the vitest
   // forks pool rejects. Routes are registered by the provider's `boot()`, so booting is enough.
   await app.boot();
@@ -103,7 +93,9 @@ async function bootApp(options: {
   };
 }
 
-const adminOnly = (actor: { roles?: string[] }) => actor.roles?.includes('ADMIN') ?? false;
+const isAdmin = (actor?: { roles?: string[] }) => actor?.roles?.includes('ADMIN') ?? false;
+const adminOnly = (_ctx: unknown, actor?: { roles?: string[] }) => isAdmin(actor);
+const PAGE = { accept: 'text/html,application/xhtml+xml' };
 
 let booted: BootedApp | null = null;
 let warn: MockInstance<typeof console.warn>;
@@ -120,112 +112,79 @@ afterEach(async () => {
 
 const warnings = () => warn.mock.calls.map((call) => String(call[0]));
 
-describe('embedded dashboard_provider mount vs. the agent governance gate', () => {
-  it('does not mount the console when the agent has no governanceAuthorize', async () => {
+describe('embedded dashboard_provider — mounting and the default', () => {
+  it('mounts without authorize and is open outside production', async () => {
     booted = await bootApp({});
 
-    for (const path of ['/agent/dashboard', '/agent/dashboard/assets/index.js']) {
-      const response = await fetch(`${booted.url}${path}`);
-      expect(response.status, `GET ${path}`).toBe(404);
-    }
+    // Open: the request reaches the asset handler (no SPA built in tests, so whatever it answers,
+    // it is neither the router's 404-for-unmounted nor the gate's 401/403).
+    const response = await fetch(`${booted.url}/agent/dashboard/assets/index.js`, {
+      headers: PAGE,
+    });
+    expect([401, 403]).not.toContain(response.status);
   });
 
-  it('explains the refusal at boot, naming both migration paths', async () => {
-    booted = await bootApp({});
+  it('denies every request with 403 in production when authorize is omitted, warning once', async () => {
+    booted = await bootApp({ inProduction: true });
 
-    const message = warnings().find((text) => text.includes('agent-dashboard'));
-    expect(message).toBeDefined();
-    expect(message).toContain('governanceAuthorize');
-    expect(message).toContain('governanceAuthorize: () => true');
-    expect(message).toContain('approvals/mine');
+    const page = await fetch(`${booted.url}/agent/dashboard`, {
+      headers: { ...PAGE, 'x-actor-id': 'staff-1', 'x-actor-roles': 'ADMIN' },
+    });
+    expect(page.status).toBe(403);
+    expect(page.headers.get('content-type')).toContain('text/html');
+
+    const api = await fetch(`${booted.url}/agent/dashboard/assets/index.js`, {
+      headers: { accept: 'application/json' },
+    });
+    expect(api.status).toBe(403);
+    expect(await api.json()).toEqual({ error: 'forbidden' });
+
+    const mine = warnings().filter((text) => text.includes('no `authorize` configured'));
+    expect(mine).toEqual([
+      '[@adonis-agora/agent] console has no `authorize` configured: it is open outside production and denies every request in production. Set `authorize` in config/agent.ts.',
+    ]);
   });
 
-  it('mounts the console normally when a governanceAuthorize gate is configured', async () => {
-    booted = await bootApp({ governanceAuthorize: adminOnly });
-
-    // Mounted: the dashboard's own gate answers first, so an unauthenticated caller gets 401 — not
-    // the router's 404. Both the shell route and the asset wildcard are registered. `sendIndex`/
-    // `sendAsset` (which would need the built SPA on disk) never run: the gate short-circuits first.
-    for (const path of ['/agent/dashboard', '/agent/dashboard/assets/index.js']) {
-      const response = await fetch(`${booted.url}${path}`);
-      expect(response.status, `GET ${path}`).toBe(401);
-    }
-    expect(warnings().filter((text) => text.includes('agent-dashboard'))).toEqual([]);
+  it('logs no warning when authorize is set', async () => {
+    booted = await bootApp({ dashboardAuthorize: adminOnly });
+    expect(warnings()).toEqual([]);
   });
 
-  it("keeps the dashboard's own authorize gate in force once mounted", async () => {
-    booted = await bootApp({ governanceAuthorize: adminOnly, dashboardAuthorize: adminOnly });
+  it('applies authorize once mounted', async () => {
+    booted = await bootApp({ dashboardAuthorize: adminOnly });
 
     const denied = await fetch(`${booted.url}/agent/dashboard`, {
-      headers: { 'x-actor-id': 'patient-1', 'x-actor-roles': 'PATIENT' },
+      headers: { ...PAGE, 'x-actor-id': 'patient-1', 'x-actor-roles': 'PATIENT' },
     });
     expect(denied.status).toBe(403);
   });
 
   it('stays off, and silent, when the dashboard is explicitly disabled', async () => {
-    booted = await bootApp({ governanceAuthorize: adminOnly, dashboardEnabled: false });
+    booted = await bootApp({ dashboardAuthorize: adminOnly, dashboardEnabled: false });
 
     const response = await fetch(`${booted.url}/agent/dashboard`);
     expect(response.status).toBe(404);
-    expect(warnings().filter((text) => text.includes('agent-dashboard'))).toEqual([]);
+    expect(warnings()).toEqual([]);
   });
 
-  it('does not mount when governanceQueries is false, even with a gate configured', async () => {
-    booted = await bootApp({ governanceAuthorize: adminOnly, governanceQueries: false });
+  it('does not mount when governanceQueries is false, and says so at boot', async () => {
+    booted = await bootApp({ dashboardAuthorize: adminOnly, governanceQueries: false });
 
     const response = await fetch(`${booted.url}/agent/dashboard`);
     expect(response.status, 'GET /agent/dashboard').toBe(404);
-  });
-
-  it('names governanceQueries — not the gate — as the cause in the boot warning', async () => {
-    booted = await bootApp({ governanceAuthorize: adminOnly, governanceQueries: false });
-
     const mine = warnings().filter((text) => text.includes('agent-dashboard'));
     expect(mine).toHaveLength(1);
     expect(mine[0]).toContain('governanceQueries');
-    expect(mine[0]).not.toContain('no `governanceAuthorize` gate is configured');
   });
 
-  it('redirects instead of the default 401 JSON when onUnauthenticated sets one (no actor resolved)', async () => {
+  it('refuses a denied actor with the 403 page, honouring accessDenied options', async () => {
     booted = await bootApp({
-      governanceAuthorize: adminOnly,
-      dashboardOnUnauthenticated: (ctx) => {
-        ctx.response.redirect().toPath('/login');
-      },
-    });
-
-    // No x-actor-id header → headerActorResolver throws → onUnauthenticated runs.
-    const response = await fetch(`${booted.url}/agent/dashboard`, { redirect: 'manual' });
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe('/login');
-  });
-
-  it('falls back to the default 401 PAGE when onUnauthenticated does not touch the response', async () => {
-    booted = await bootApp({
-      governanceAuthorize: adminOnly,
-      dashboardOnUnauthenticated: () => {
-        /* logging only, no redirect */
-      },
-    });
-
-    const response = await fetch(`${booted.url}/agent/dashboard`, { redirect: 'manual' });
-    expect(response.status).toBe(401);
-    expect(response.headers.get('content-type')).toContain('text/html');
-    const html = await response.text();
-    expect(html).toContain('<!doctype html>');
-    expect(html).toContain('<h1>Sign in required</h1>');
-    expect(html).toContain('Agent');
-  });
-
-  it('refuses a resolved-but-denied actor with the 403 page, honouring accessDenied options', async () => {
-    booted = await bootApp({
-      governanceAuthorize: adminOnly,
       dashboardAuthorize: adminOnly,
       dashboardAccessDenied: { brand: 'Entre Textos', title: 'Sem acesso', homeHref: '/admin' },
     });
 
     const response = await fetch(`${booted.url}/agent/dashboard/assets/index.js`, {
-      headers: { 'x-actor-id': 'patient-1', 'x-actor-roles': 'PATIENT' },
+      headers: { ...PAGE, 'x-actor-id': 'patient-1', 'x-actor-roles': 'PATIENT' },
     });
     expect(response.status).toBe(403);
     expect(response.headers.get('content-type')).toContain('text/html');
@@ -238,7 +197,8 @@ describe('embedded dashboard_provider mount vs. the agent governance gate', () =
 
   it('serves an accessDenied renderer HTML, or stands down when it redirected', async () => {
     booted = await bootApp({
-      governanceAuthorize: adminOnly,
+      dashboardAuthorize: (_ctx, actor) =>
+        actor === undefined ? { allowed: false, reason: 'unauthenticated' } : isAdmin(actor),
       dashboardAccessDenied: (info, ctx) => {
         if (info.status === 401) {
           ctx.response.redirect().toPath('/entrar');
@@ -248,16 +208,18 @@ describe('embedded dashboard_provider mount vs. the agent governance gate', () =
       },
     });
 
-    const anonymous = await fetch(`${booted.url}/agent/dashboard`, { redirect: 'manual' });
+    const anonymous = await fetch(`${booted.url}/agent/dashboard`, {
+      redirect: 'manual',
+      headers: PAGE,
+    });
     expect(anonymous.status).toBe(302);
     expect(anonymous.headers.get('location')).toBe('/entrar');
   });
 
-  it('redirects instead of the default 403 JSON when authorize sets one (actor resolved, denied)', async () => {
+  it('keeps a redirect authorize wrote itself (actor resolved, denied)', async () => {
     booted = await bootApp({
-      governanceAuthorize: adminOnly,
-      dashboardAuthorize: (actor, ctx) => {
-        if (!adminOnly(actor)) {
+      dashboardAuthorize: (ctx, actor) => {
+        if (!isAdmin(actor)) {
           ctx.response.redirect().toPath('/acesso-negado');
           return false;
         }
@@ -273,23 +235,22 @@ describe('embedded dashboard_provider mount vs. the agent governance gate', () =
     expect(response.headers.get('location')).toBe('/acesso-negado');
   });
 
-  it('maps AuthorizeResult decisions to the access-denied page status', async () => {
+  it('maps authorize results to the access-denied page status', async () => {
     booted = await bootApp({
-      governanceAuthorize: adminOnly,
-      dashboardAuthorize: (actor) => {
-        if (actor.id === 'allowed-object') return { allowed: true };
-        if (actor.id === 'anonymous-ish') return { allowed: false, reason: 'unauthenticated' };
-        if (actor.id === 'forbidden') return { allowed: false, reason: 'forbidden' };
-        if (actor.id === 'bare-object') return { allowed: false };
-        if (actor.id === 'throws') throw new Error('policy blew up');
-        if (actor.id === 'true') return true;
+      dashboardAuthorize: (_ctx, actor) => {
+        if (actor?.id === 'allowed-object') return { allowed: true };
+        if (actor?.id === 'anonymous-ish') return { allowed: false, reason: 'unauthenticated' };
+        if (actor?.id === 'forbidden') return { allowed: false, reason: 'forbidden' };
+        if (actor?.id === 'bare-object') return { allowed: false };
+        if (actor?.id === 'throws') throw new Error('policy blew up');
+        if (actor?.id === 'true') return true;
         return false;
       },
     });
     const as = (id: string) =>
       fetch(`${booted?.url}/agent/dashboard/assets/index.js`, {
         redirect: 'manual',
-        headers: { 'x-actor-id': id, 'x-actor-roles': 'PATIENT' },
+        headers: { ...PAGE, 'x-actor-id': id, 'x-actor-roles': 'PATIENT' },
       });
 
     // Allowed: the gate passes and the request reaches the asset handler (no SPA built in tests, so
@@ -309,5 +270,91 @@ describe('embedded dashboard_provider mount vs. the agent governance gate', () =
       expect(response.status, id).toBe(403);
       expect(response.headers.get('content-type'), id).toContain('text/html');
     }
+  });
+});
+
+describe('embedded dashboard_provider — dashboard.authorize forms', () => {
+  class AuditLog {
+    entries: string[] = [];
+  }
+
+  const asAdmin = (url: string, accept = 'text/html') =>
+    fetch(`${url}/agent/dashboard/assets/index.js`, {
+      redirect: 'manual',
+      headers: { 'x-actor-id': 'staff-1', 'x-actor-roles': 'ADMIN', accept },
+    });
+  const asPatient = (url: string, accept = 'text/html') =>
+    fetch(`${url}/agent/dashboard/assets/index.js`, {
+      redirect: 'manual',
+      headers: { 'x-actor-id': 'patient-1', 'x-actor-roles': 'PATIENT', accept },
+    });
+
+  /** A class authorizer, built per request by the app container (its deps come from the container). */
+  class ConsoleAccess {
+    constructor(private audit: AuditLog) {}
+    authorize(_ctx: HttpContext, actor?: { id: string; roles?: string[] }) {
+      this.audit.entries.push(actor?.id ?? '');
+      return isAdmin(actor) ? { allowed: true as const } : { allowed: false as const };
+    }
+  }
+
+  it('accepts a ctx-only function', async () => {
+    booted = await bootApp({
+      dashboardAuthorize: (ctx) => ctx.request.header('x-actor-roles') === 'ADMIN',
+    });
+    expect([401, 403]).not.toContain((await asAdmin(booted.url)).status);
+    expect((await asPatient(booted.url)).status).toBe(403);
+  });
+
+  it('accepts a class, built through the container', async () => {
+    const audit = new AuditLog();
+    booted = await bootApp({
+      dashboardAuthorize: ConsoleAccess,
+      setup: (app) =>
+        app.container.bindValue(ConsoleAccess, {
+          authorize: (ctx: HttpContext, actor?: { id: string; roles?: string[] }) =>
+            new ConsoleAccess(audit).authorize(ctx, actor),
+        }),
+    });
+    expect([401, 403]).not.toContain((await asAdmin(booted.url)).status);
+    const denied = await asPatient(booted.url);
+    expect(denied.status).toBe(403);
+    expect(denied.headers.get('content-type')).toContain('text/html');
+    const api = await asPatient(booted.url, 'application/json');
+    expect(api.status).toBe(403);
+    expect(await api.json()).toEqual({ error: 'forbidden' });
+    expect(audit.entries).toEqual(['staff-1', 'patient-1', 'patient-1']);
+  });
+
+  it('accepts a lazy import, importing it once', async () => {
+    let imports = 0;
+    class Lazy {
+      authorize(_ctx: HttpContext, actor?: { roles?: string[] }) {
+        return isAdmin(actor) || { allowed: false as const, reason: 'unauthenticated' as const };
+      }
+    }
+    booted = await bootApp({
+      dashboardAuthorize: async () => {
+        imports++;
+        return { default: Lazy };
+      },
+    });
+    expect([401, 403]).not.toContain((await asAdmin(booted.url)).status);
+    expect((await asPatient(booted.url)).status).toBe(401);
+    expect((await asPatient(booted.url)).status).toBe(401);
+    expect(imports).toBe(1);
+  });
+
+  it('a { redirectTo } result redirects a page navigation and answers 401 otherwise', async () => {
+    booted = await bootApp({
+      dashboardAuthorize: (_ctx, actor) => isAdmin(actor) || { redirectTo: '/entrar' },
+    });
+    const page = await asPatient(booted.url, 'text/html,application/xhtml+xml');
+    expect(page.status).toBe(302);
+    expect(page.headers.get('location')).toBe('/entrar');
+
+    const api = await asPatient(booted.url, 'application/json');
+    expect(api.status).toBe(401);
+    expect(await api.json()).toEqual({ error: 'unauthenticated', redirectTo: '/entrar' });
   });
 });
