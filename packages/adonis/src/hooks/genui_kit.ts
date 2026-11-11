@@ -16,7 +16,7 @@
  */
 import { relative, resolve } from 'node:path';
 import type { SandboxKitSourceOptions } from '../genui/kit/files.js';
-import { assertNoLegacyKitOptions, resolveSandboxKitFiles } from '../genui/kit/files.js';
+import { resolveSandboxKitFiles } from '../genui/kit/files.js';
 import { sandboxKitDescriptorPath } from '../genui/kit/plugin.js';
 import { resolveStyleEntries, STYLE_EXTENSIONS } from '../genui/kit/styles.js';
 import { writeSandboxKitDocs } from '../genui/kit/write.js';
@@ -41,7 +41,6 @@ interface HooksLike {
 }
 
 export function genuiKitHook(options: GenuiKitHookOptions = {}) {
-  assertNoLegacyKitOptions(options, 'genuiKitHook');
   const output =
     options.output ?? sandboxKitDescriptorPath(ADONIS_SANDBOX_KIT_DESCRIPTOR, options.name);
   const generate = async (root: string) => {

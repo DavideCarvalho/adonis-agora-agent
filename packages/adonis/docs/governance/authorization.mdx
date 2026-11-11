@@ -58,7 +58,7 @@ export default defineConfig({
 
 ### Closing the empty list
 
-Since 0.46 an empty roles list means **open**: `roles: []`, `defaultRoles: []` and `registerFunctionalTool(registry, tool, [])` all let every resolved actor through. Before 0.46 the same list denied everyone, and nothing warns on upgrade. If your app uses an empty list to deny — a `roles` computed from permissions that can come out empty, a multi-tenant MCP server — keep it closed with `emptyRoles: 'deny'`:
+An empty roles list means **open**: `roles: []`, `defaultRoles: []` and `registerFunctionalTool(registry, tool, [])` all let every resolved actor through. If your app uses an empty list to deny — a `roles` computed from permissions that can come out empty, a multi-tenant MCP server — keep it closed with `emptyRoles: 'deny'`:
 
 ```ts title="config/agent.ts"
 export default defineConfig({

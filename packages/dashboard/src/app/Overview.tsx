@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { isUnsupported } from '../client/agent-client.js';
+import { isUnavailable } from '../client/agent-client.js';
 import { formatCount, formatModelLabel, formatUsd } from '../client/format.js';
 import {
   donutSegments,
@@ -119,7 +119,7 @@ export function Overview({ range }: { range: GovernanceRange }) {
       </Panel>
 
       {/* spend by feature: agent turns and usage recorded outside them, side by side */}
-      {isUnsupported(features.error) ? null : (
+      {isUnavailable(features.error) ? null : (
         <Panel>
           <SectionTitle
             title="Spend by feature"

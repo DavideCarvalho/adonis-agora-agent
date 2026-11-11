@@ -29,10 +29,6 @@ A budget of your own — an AI-gateway spend cap, a plan's allowance — is a `Q
 
 Spend is what the usage rows recorded: the provider-reported cost of a gateway, **plus the loop's estimate** for a provider that reports none (Bedrock, or OpenAI and Anthropic called directly, priced off the [pricing table](#the-pricing-table)). So a `usd` ceiling binds on those too. Estimates are counted by default because otherwise a USD ceiling on a provider that reports no cost would read $0 and never block: the budget would exist but never enforce. To budget on provider-reported cost only, set `quota: { limits, countEstimatedCost: false }`. The month window needs a store with `usageBetween` (Lucid and in-memory have it). See [Estimated cost is persisted](#estimated-cost-is-persisted-and-the-quota-counts-it).
 
-<Callout type="info" title="Migrating from quotas.ledger / quotas.memory">
-The `quotas.*` factories, `LedgerQuotaStore` and `GET /agent/quota/today` are gone (0.46). `quota: quotas.ledger({ limitTokens: N })` becomes `quota: { limits: { day: { tokens: N } } }`. The check moved from inside the turn to the send: a request over budget is refused with `429` instead of a run that fails with `quota_exceeded`. Drain in-flight durable runs started under the old option before upgrading — their journals hold the loop's quota checkpoints.
-</Callout>
-
 ## The usage ledger
 
 Every model turn is recorded to the `agent_token_usage` table via `store.recordUsage(...)`, independently of whether a quota is enforced — and so is the AI spend your app records itself, outside any agent turn ([below](#recording-usage-outside-agent-turns)). Each row carries:
@@ -134,10 +130,6 @@ There are two ways a turn gets a dollar figure:
    ```
 
    OpenRouter reached through `@ai-sdk/openai` with a custom `baseURL` reports **no** cost — that SDK drops the field. If an OpenRouter model returns no cost the adapter warns once per model, and the turn falls back to the pricing table.
-
-<Callout type="info" title="Before 0.68: OpenRouter cost was never read">
-Up to 0.67 the adapter read `total_cost`, a key the OpenRouter provider does not emit, so every OpenRouter turn recorded `cost_usd = NULL` even with usage accounting on. Rows recorded then stay NULL in the ledger; the read-model still estimates them from the pricing table, which boot now seeds (below).
-</Callout>
 
 2. **Estimated from the pricing table.** A direct provider (Anthropic / OpenAI / Bedrock) reports only tokens. When you configure a `pricingStore` (`pricingStores.lucid()`), cost is estimated from the `agent_model_pricing` table (the current price rows are fetched once per run and folded into `usage.costUsd`):
 

@@ -42,6 +42,16 @@ export function isUnsupported(error: unknown): boolean {
   return error instanceof AgentApiError && error.status === 501;
 }
 
+/**
+ * `true` when the server does not offer a read at all: {@link isUnsupported} (`501`), or a `404`
+ * from an older agent server that has no such route (`/governance/spend/feature` before 0.93,
+ * `/governance/pricing` without a pricing store before 1.0). Only for collection reads whose route
+ * takes no id, where a `404` cannot mean "that record does not exist".
+ */
+export function isUnavailable(error: unknown): boolean {
+  return isUnsupported(error) || (error instanceof AgentApiError && error.status === 404);
+}
+
 type FetchLike = typeof fetch;
 
 export interface AgentClientOptions {
@@ -113,7 +123,8 @@ export class AgentClient {
 
   /**
    * `GET /agent/governance/spend/feature` — spend per feature, agent turns and recorded usage side by
-   * side. Rejects with a `501` {@link AgentApiError} (see {@link isUnsupported}) on an older server.
+   * side. Rejects with a `501` or `404` {@link AgentApiError} (see {@link isUnavailable}) on an older
+   * server.
    */
   spendByFeature(range: GovernanceRange): Promise<FeatureSpendRow[]> {
     return this.get<FeatureSpendRow[]>('/governance/spend/feature', {
@@ -225,7 +236,7 @@ export class AgentClient {
     });
   }
 
-  // ── Model pricing — mounted only when the server binds a pricing store alongside governance. ──
+  // ── Model pricing — `501` (an older server: `404`) when the server binds no pricing store. ──
 
   /** `GET /agent/governance/pricing` — every model's current per-1M rates. */
   pricing(): Promise<CurrentModelPrice[]> {

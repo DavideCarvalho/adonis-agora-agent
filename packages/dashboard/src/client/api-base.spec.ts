@@ -24,23 +24,13 @@ describe('resolveApiBase', () => {
   const noDoc = { getElementById: () => null } as unknown as Document;
 
   it('prefers the JSON data block the provider injects', () => {
-    const win = {
-      location: { pathname: '/agent/dashboard' },
-      __AGENT_DASHBOARD_BASE__: '/stale',
-    } as unknown as Window;
+    const win = { location: { pathname: '/agent/dashboard' } } as unknown as Window;
     expect(resolveApiBase(win, docWith('{"apiBase":"/custom/agent/"}'))).toBe('/custom/agent');
   });
   it('ignores a block that is not JSON, or carries no base', () => {
     const win = { location: { pathname: '/agent/dashboard' } } as unknown as Window;
     expect(resolveApiBase(win, docWith('{nope'))).toBe('/agent');
     expect(resolveApiBase(win, docWith('{"apiBase":""}'))).toBe('/agent');
-  });
-  it('prefers the injected base', () => {
-    const win = {
-      location: { pathname: '/agent/dashboard' },
-      __AGENT_DASHBOARD_BASE__: '/custom/agent/',
-    } as unknown as Window;
-    expect(resolveApiBase(win, noDoc)).toBe('/custom/agent');
   });
   it('falls back to the location-derived base', () => {
     const win = { location: { pathname: '/agent/dashboard' } } as unknown as Window;

@@ -15,7 +15,7 @@ import {
 import type { QuotaProvider } from './spi/quota-provider.js';
 import type { TokenStreamSink } from './spi/token-stream-sink.js';
 import type { AgentStreamEvent } from './stream-events.js';
-import type { Actor, AgentRunInput, MessageAttachment, Persona } from './types.js';
+import type { Actor, AgentRunInput, MessageAttachment } from './types.js';
 
 /** How the run that held a thread ended. */
 export type QueueSettleOutcome = 'completed' | 'failed' | 'cancelled';
@@ -55,11 +55,6 @@ export interface ChatQueueServiceOptions {
    * message starts as it was queued.
    */
   resolveTarget?: (message: QueuedMessage) => Promise<{ agentName?: string; persona?: string }>;
-  /**
-   * @deprecated Use {@link resolveTarget}. The persona a turn of `agentName` runs with, consulted
-   * only for a message that carries none when `resolveTarget` is not given.
-   */
-  personaFor?: (agentName: string | undefined) => Persona | undefined;
 }
 
 /** How many times a drain retries when the head it picked is removed under it. */
@@ -454,8 +449,7 @@ export class ChatQueueService {
         return queued;
       }
     }
-    const legacy = this.options.personaFor?.(message.agentName)?.id;
-    return { ...queued, ...(legacy !== undefined ? { persona: legacy } : {}) };
+    return queued;
   }
 
   private async freshAttachments(

@@ -2057,18 +2057,20 @@ export default class AgentProvider {
         return ctx.response.json(await gov.runReliability(optionalRange(ctx)));
       });
 
-      // ── Model pricing CRUD — OPTIONAL within the already-optional governance block: mounted only
-      // when a pricing store is ALSO bound (`pricingStore: false` disables it). The store already
-      // exists and is wired into the loop's cost fold (`#resolvePricing`); these two routes are the
-      // only thing missing for the console's Pricing panel to read/write it, gated the same as every
-      // other cross-actor governance surface.
-      if (pricingStore !== undefined) {
+      // ── Model pricing CRUD — the console's Pricing panel reads and writes the same store the loop's
+      // cost fold prices against (`#resolvePricing`), gated like every other cross-actor governance
+      // surface. Always mounted: with no pricing store bound (`pricingStore: false`) both routes
+      // answer `501`, so a client can tell "not configured" apart from a missing route.
+      {
         const pricing = pricingStore;
+        const noPricing = (ctx: HttpContext) =>
+          ctx.response.status(501).json({ message: 'no pricing store is configured' });
 
         // GET /agent/governance/pricing — every model's current per-1M rates.
         router.get(g('pricing'), async (ctx: HttpContext) => {
           const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
           if (actor === null) return;
+          if (pricing === undefined) return noPricing(ctx);
           return ctx.response.json(await pricing.listCurrentPrices());
         });
 
@@ -2078,6 +2080,7 @@ export default class AgentProvider {
         router.post(g('pricing'), async (ctx: HttpContext) => {
           const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
           if (actor === null) return;
+          if (pricing === undefined) return noPricing(ctx);
           const body = (ctx.request.body() ?? {}) as {
             modelId?: unknown;
             inputPricePer1m?: unknown;

@@ -27,7 +27,6 @@ import { themeVarsFromCss } from '../sandbox-theme.js';
 import { buildSandboxKitBundle, kitDocsFromBundle, type SandboxKitBundle } from './bundle.js';
 import { generateSandboxKitDocs } from './docs.js';
 import {
-  assertNoLegacyKitOptions,
   resolveSandboxKitFiles,
   type SandboxKitFiles,
   type SandboxKitSourceOptions,
@@ -205,7 +204,6 @@ export function createGenuiSandboxKitPlugin(
   options: GenuiSandboxKitOptions,
   defaults: GenuiSandboxKitDefaults,
 ): GenuiSandboxKitPlugin {
-  assertNoLegacyKitOptions(options, 'genuiSandboxKit');
   // Read once: the kit's identity (its urls, files, manifest keys) does not change while it runs.
   const kitName = options.name;
   assertSandboxKitName(kitName);

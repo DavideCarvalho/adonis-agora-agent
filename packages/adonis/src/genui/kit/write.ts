@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path';
 import type { SandboxKitDescriptor } from '../sandbox-kit.js';
 import { kitDocsFromBundle } from './bundle.js';
 import { type GenerateSandboxKitDocsOptions, generateSandboxKitDocs } from './docs.js';
-import { assertNoLegacyKitOptions, resolveSandboxKitFiles } from './files.js';
+import { resolveSandboxKitFiles } from './files.js';
 import {
   buildSandboxKitStyles,
   discoverStyleEntries,
@@ -47,7 +47,6 @@ async function viteAvailable(): Promise<boolean> {
 export async function writeSandboxKitDocs(
   options: WriteSandboxKitDocsOptions,
 ): Promise<SandboxKitDescriptor | null> {
-  assertNoLegacyKitOptions(options, 'writeSandboxKitDocs');
   const root = options.root ?? process.cwd();
   const files = options.files ?? resolveSandboxKitFiles(root, options);
   const entries =

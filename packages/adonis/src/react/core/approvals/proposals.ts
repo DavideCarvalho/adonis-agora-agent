@@ -3,9 +3,7 @@ import type { ActionProposal } from '../../../index.js';
 import type { StoredMessage } from '../client-wire.js';
 import { storedMessageToUiMessage } from '../stored-message-to-ui-message.js';
 
-export type ApprovalTarget =
-  | { kind: 'legacy'; toolCallId: string }
-  | { kind: 'proposal'; proposalId: string; threadId?: string };
+export type ApprovalTarget = { kind: 'proposal'; proposalId: string; threadId?: string };
 
 export function proposalNeedsPolling(proposal: ActionProposal): boolean {
   return (

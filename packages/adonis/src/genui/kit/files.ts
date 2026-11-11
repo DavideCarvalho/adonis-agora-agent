@@ -18,28 +18,6 @@ export interface SandboxKitSourceOptions {
   wrapper?: string;
 }
 
-/** The options `genuiSandboxKit()` / `genuiKitHook()` took before 0.75, and what replaced each. */
-const LEGACY_OPTIONS: Record<string, string> = {
-  entry: '`entry: X` is now `components: X` (a module whose exports are the kit)',
-  include: '`include: G` is now `components: G` (globs, files, directories or packages)',
-  tailwind:
-    '`tailwind` is gone: Tailwind is detected from `styles` (pass your Tailwind stylesheet there)',
-  tailwindCss:
-    '`tailwindCss: [...]` is gone: pass the stylesheet itself as `styles` — its @theme, @custom-variant and @utility (and those of the files it @imports) reach the frame on their own',
-  css: "`css: G` is now `styles: G` (the app's style entry files)",
-};
-
-/** Throws a migration message when options from before 0.75 are passed. */
-export function assertNoLegacyKitOptions(options: object, where: string): void {
-  const found = Object.keys(LEGACY_OPTIONS).filter(
-    (key) => (options as Record<string, unknown>)[key] !== undefined,
-  );
-  if (found.length === 0) return;
-  throw new TypeError(
-    `${where}: option${found.length > 1 ? 's' : ''} ${found.map((key) => `\`${key}\``).join(', ')} ${found.length > 1 ? 'were' : 'was'} removed in 0.75 — ${found.map((key) => LEGACY_OPTIONS[key]).join('; ')}. See "Migration from 0.74" in the sandbox kit docs.`,
-  );
-}
-
 /** Where a shadcn `components.json` puts `ui` by default, per framework layout. */
 export const DEFAULT_KIT_DIRS = [
   'inertia/components/ui',

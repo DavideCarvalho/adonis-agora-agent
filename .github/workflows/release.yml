@@ -254,8 +254,12 @@ jobs:
 
       # Stamp every pending-changeset package (and any out-of-range dependent) to
       # `0.0.0-beta-<datetime>` in the runner only, never committed.
+      # Changesets refuses a snapshot in pre mode, so leave it first (in the runner only, like the
+      # rest of this job).
       - name: Version as beta snapshot
-        run: pnpm changeset version --snapshot beta && node scripts/sync-version.mjs
+        run: |
+          if [ -f .changeset/pre.json ]; then pnpm changeset pre exit; fi
+          pnpm changeset version --snapshot beta && node scripts/sync-version.mjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # changelog-github, as in the release job
 

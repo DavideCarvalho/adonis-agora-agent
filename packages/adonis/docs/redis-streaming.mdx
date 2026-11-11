@@ -19,7 +19,7 @@ export default defineConfig({
 })
 ```
 
-`tokenSinks.redis` (aliased `streamTransports.redis`) fans a run's tokens across replicas over Redis pub/sub plus a replayable list, so a late or cross-instance subscriber replays the buffered chunks first and then follows live. Requires `@adonisjs/redis` installed and configured (`config/redis.ts`).
+`tokenSinks.redis` fans a run's tokens across replicas over Redis pub/sub plus a replayable list, so a late or cross-instance subscriber replays the buffered chunks first and then follows live. Requires `@adonisjs/redis` installed and configured (`config/redis.ts`).
 
 <Callout type="info" title="The default stays single-replica">
 Omit `sink` entirely to keep the in-process sink (`tokenSinks.memory()` selects it explicitly). Nothing about the SSE contract, the routes, or the client changes when you switch — only where the buffer lives. The `@adonisjs/redis` peer is imported only inside the `redis` thunk, so it stays fully optional.

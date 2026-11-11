@@ -72,10 +72,6 @@ The persona catalog route is registered *before* `threads/:id` so it isn't captu
 
 `POST /agent/chat` and `GET /agent/chat/:runId/stream` reply with `Content-Type: text/event-stream`, written in the chat stream protocol compatible with Aviary: one `AgentStreamEvent` JSON object per `data:` frame. Agora's local React transport, `useAgentChat`, transcript model and `@adonis-agora/agent/client` read it unchanged.
 
-<Callout type="warn" title="The legacy delta envelope is gone">
-Before 0.48 the default was a `'legacy'` envelope — `data: {"delta":"…"}` per text chunk plus named `event: component` / `event: elicitation` / `event: approval` frames — selected by a `streamProtocol` option. Both the envelope and the option are removed: every server speaks the protocol below. A hand-written reader of `{"delta"}` reads `{"kind":"text","text":…}` instead (and `ui` / `elicitation` / `approval-requested` events in place of the named frames), or moves to one of the clients above.
-</Callout>
-
 ```text
 event: meta
 data: {"runId":"<uuid>","threadId":"<uuid>"}

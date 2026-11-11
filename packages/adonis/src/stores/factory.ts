@@ -678,8 +678,7 @@ export interface LucidTokenSinkConfig {
 }
 
 /**
- * The token-sink factory namespace used in `config/agent.ts`, mirroring {@link stores}. Also exported as
- * `streamTransports` (an alias — pick whichever name reads better):
+ * The token-sink factory namespace used in `config/agent.ts`, mirroring {@link stores}:
  *
  * ```ts
  * import { defineConfig, tokenSinks } from '@adonis-agora/agent'
@@ -746,9 +745,6 @@ export const tokenSinks = {
     };
   },
 };
-
-/** Alias of {@link tokenSinks}. */
-export const streamTransports = tokenSinks;
 
 /** The minimal `ioredis`-shaped surface the `@adonisjs/redis` adapter drives. Duck-typed (peer is optional). */
 interface IoRedisLike {

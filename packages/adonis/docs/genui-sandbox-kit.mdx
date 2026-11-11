@@ -635,7 +635,7 @@ Every frame needs the kit's styles, the Tailwind runtime and the kit bundle. Eac
 The renderer fetches each asset once per page. A frame's `srcdoc` carries only the bridge, the theme, the model's CSS and markup, and placeholders for the assets it needs. Once it has loaded, the frame asks its host for them (`agora:sandbox:load`). The host answers with their text (`agora:sandbox:assets`), and the frame puts them in inline `<style>` and `<script>` elements, in the order an inlined document has them. Its body stays hidden until then, so nothing draws unstyled. It then says `ready`, and the host posts the JSX as before.
 
 ```tsx
-createSandboxRenderer({ assets: 'inline' }) // every asset in every srcdoc, as before 0.78
+createSandboxRenderer({ assets: 'inline' }) // every asset in every srcdoc
 ```
 
 **Isolation is unchanged.** The frame is still `sandbox="allow-scripts"` without `allow-same-origin`, and its CSP is exactly the inlined document's: inline code only, no network, no `blob:`. The assets arrive by `postMessage`, which the frame accepts only from its parent window and with its own token, the same check as the other host messages. They are the same public files of your origin that the inlined document carried. A frame cannot ask for anything else: it gets the assets the page already has, or nothing.
@@ -644,7 +644,7 @@ createSandboxRenderer({ assets: 'inline' }) // every asset in every srcdoc, as b
 
 **Measured** on a page with 5 kit sandboxes (Lastro's kit: 461 KB of CSS, a 282 KB Tailwind runtime and a 279 KB React kit), in headless Chromium 1248:
 
-| | Inlined (0.77) | Shared | Shared + purged CSS |
+| | Inlined | Shared | Shared + purged CSS |
 | --- | --- | --- | --- |
 | HTML parsed (5 `srcdoc`s) | 5.36 MB | 0.25 MB | 0.25 MB |
 | CSS + JS parsed by the frames | (in the HTML) | 5.11 MB | 4.07 MB |

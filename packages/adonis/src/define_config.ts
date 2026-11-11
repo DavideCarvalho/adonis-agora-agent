@@ -60,7 +60,6 @@ import {
   pricingStores,
   retrievers,
   stores,
-  streamTransports,
   tokenSinks,
 } from './stores/factory.js';
 import type { QuotaLimits } from './stores/ledger-quota-provider.js';
@@ -155,7 +154,7 @@ export interface AgentConfig {
   stores?: Record<string, StoreFactory>;
   /**
    * Live token transport ("data plane"), or a lazy factory. Defaults to the in-process sink (single
-   * replica). Use `tokenSinks.redis({...})` (a.k.a. `streamTransports.redis`) for the multi-replica
+   * replica). Use `tokenSinks.redis({...})` for the multi-replica
    * Redis sink so any pod can serve any run's SSE stream — the SSE envelope is unchanged either way.
    * With several replicas and no Redis, `tokenSinks.lucid()` keeps the frames in the app's SQL
    * database instead (polled; see `LucidTokenStreamSink`).
@@ -490,6 +489,5 @@ export {
   pricingStores,
   retrievers,
   stores,
-  streamTransports,
   tokenSinks,
 };
