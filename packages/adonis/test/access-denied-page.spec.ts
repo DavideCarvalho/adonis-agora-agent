@@ -18,11 +18,6 @@ const unauthenticated: AccessDeniedInfo = {
   basePath: '/agent/dashboard',
   loginHref: '/agent/dashboard/login',
 };
-const sessionRequired: AccessDeniedInfo = {
-  status: 401,
-  reason: 'session-required',
-  basePath: '/agent/dashboard',
-};
 
 describe('renderAccessDeniedPage', () => {
   it('is a full HTML document with the status, the console brand and NO inline script', () => {
@@ -54,10 +49,6 @@ describe('renderAccessDeniedPage', () => {
     expect(signIn).toContain('<span class="status">401</span>');
     expect(signIn).toContain('class="btn primary" href="/agent/dashboard/login"');
     expect(signIn).toContain('Sign in</a>');
-
-    const fromApp = renderAccessDeniedPage(sessionRequired);
-    expect(fromApp).toContain('<h1>Open this console from your app</h1>');
-    expect(fromApp).not.toContain('/login');
   });
 
   it('offers "sign in as someone else" on a 403 when a login page exists', () => {

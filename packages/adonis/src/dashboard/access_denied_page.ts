@@ -27,9 +27,7 @@ export type AccessDeniedReason =
   /** Nobody is signed in (a `401`): offer the login page when one exists. */
   | 'unauthenticated'
   /** Somebody is signed in but `authorize` said no (a `403`). */
-  | 'forbidden'
-  /** `dashboardAuth` runs in Mode A only and there is no session — the host app must mint one. */
-  | 'session-required';
+  | 'forbidden';
 
 /** What the provider knows about the refusal — handed to a custom renderer and to the default page. */
 export interface AccessDeniedInfo {
@@ -38,7 +36,7 @@ export interface AccessDeniedInfo {
   reason: AccessDeniedReason;
   /** The console's mount path (`/agent/dashboard`; `''` when mounted at the root). */
   basePath: string;
-  /** The built-in login page, present only when `dashboardAuth.login` is configured. */
+  /** The app's login page, when the console knows one (`accessDenied.loginHref`). */
   loginHref?: string;
   /** A developer-facing detail (e.g. a thrown hook's message). Providers set it OUTSIDE production only. */
   detail?: string;
@@ -104,11 +102,6 @@ const DEFAULT_COPY: Record<AccessDeniedReason, { title: string; message: string 
     title: 'Access denied',
     message:
       'Your account is not allowed to open this console. If that looks wrong, ask an administrator to grant you access.',
-  },
-  'session-required': {
-    title: 'Open this console from your app',
-    message:
-      'This console only accepts a session minted by your application. Go back to the app and open the console from there.',
   },
 };
 
