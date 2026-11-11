@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from 'react';
-import { AgentApiError } from '../client/agent-client.js';
+import { isUnavailable } from '../client/agent-client.js';
 import { formatTimestamp, formatUsd } from '../client/format.js';
 import { Empty, ErrorNote, Panel, SectionTitle, Skeleton } from './ui.js';
 import { useAgentClient, usePricing } from './use-governance.js';
@@ -15,8 +15,8 @@ const emptyForm = {
 /**
  * Model pricing from `GET /agent/governance/pricing`, plus an inline upsert form
  * (`POST /agent/governance/pricing`) — the same rates the loop's cost fold and every other governance
- * rollup price usage against. `501` means the app has no pricing store bound at all (`pricingStore:
- * false`); that is a distinct, expected state from a network/auth error, so it gets its own panel
+ * rollup price usage against. `501` (`404` from an older server) means the app has no pricing store
+ * bound at all (`pricingStore: false`); that is a distinct, expected state from a network/auth error, so it gets its own panel
  * rather than the generic error note.
  */
 export function PricingSection() {
@@ -26,7 +26,7 @@ export function PricingSection() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const unavailable = prices.error instanceof AgentApiError && prices.error.status === 501;
+  const unavailable = isUnavailable(prices.error);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();

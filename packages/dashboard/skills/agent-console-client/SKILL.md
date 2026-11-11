@@ -14,7 +14,7 @@ description: >-
 metadata:
   type: core
   library: "@adonis-agora/agent-dashboard"
-  library_version: "0.7.1"
+  library_version: "1.0.0-rc.0"
   framework: adonisjs
 sources:
   - "DavideCarvalho/adonis-agent:packages/dashboard/README.md"

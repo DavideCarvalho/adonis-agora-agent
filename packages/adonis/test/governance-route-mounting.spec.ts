@@ -20,6 +20,7 @@ import type {
 } from '../src/index.js';
 import { FakeModelProvider } from '../src/testing/fake-model-provider.js';
 import { InMemoryGovernanceQueries } from '../src/testing/in-memory-governance-queries.js';
+import { InMemoryPricingStore } from '../src/testing/in-memory-pricing.js';
 import { InMemoryAgentStore } from '../src/testing/in-memory-store.js';
 import type { Actor } from '../src/types.js';
 
@@ -121,6 +122,7 @@ interface BootedApp {
 async function bootApp(
   governanceAuthorize?: AgentGovernanceAuthorize,
   governanceQueries?: AgentGovernanceQueries,
+  extraConfig: Record<string, unknown> = {},
 ): Promise<BootedApp> {
   const governance = new StubGovernanceQueries();
   const ignitor = new IgnitorFactory()
@@ -136,6 +138,7 @@ async function bootApp(
           actorResolver: headerActorResolver,
           governanceQueries: governanceQueries ?? governance,
           ...(governanceAuthorize !== undefined ? { governanceAuthorize } : {}),
+          ...extraConfig,
         },
       },
     })
@@ -407,5 +410,24 @@ describe('governance route mounting', () => {
     await booted.close();
     booted = await bootApp((actor) => actor.roles?.includes('ADMIN') ?? false);
     expect((await fetch(`${booted.url}/agent/governance/genui`, asActor('p1'))).status).toBe(403);
+  });
+
+  it('answers 501 on the pricing routes when no pricing store is bound', async () => {
+    const gate = (actor: Actor) => actor.roles?.includes('ADMIN') ?? false;
+    booted = await bootApp(gate, undefined, { pricingStore: false });
+    const admin = asActor('staff-1', 'ADMIN');
+    const list = await fetch(`${booted.url}/agent/governance/pricing`, admin);
+    expect(list.status).toBe(501);
+    const upsert = await fetch(`${booted.url}/agent/governance/pricing`, {
+      method: 'POST',
+      headers: { ...admin.headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ modelId: 'm', inputPricePer1m: 1, outputPricePer1m: 1 }),
+    });
+    expect(upsert.status).toBe(501);
+    // Still behind the gate.
+    expect((await fetch(`${booted.url}/agent/governance/pricing`, asActor('p1'))).status).toBe(403);
+    await booted.close();
+    booted = await bootApp(gate, undefined, { pricingStore: new InMemoryPricingStore() });
+    expect((await fetch(`${booted.url}/agent/governance/pricing`, admin)).status).toBe(200);
   });
 });

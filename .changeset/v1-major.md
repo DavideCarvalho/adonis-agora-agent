@@ -14,5 +14,7 @@
 
 Also:
 
+- The governance pricing routes are always mounted: with no pricing store bound they answer `501` instead of `404`. The console treats `404` from an older server the same way, and hides the spend-by-feature panel on servers without that route. `isUnavailable` is exported from `@adonis-agora/agent-dashboard/client`.
+- The `react-dom` peer is `^18.0.0 || ^19.0.0`, matching `react`.
 - The optional `@adonis-agora/*` peers (authz, diagnostics, durable, media, telescope) accept `<2.0.0`, release candidates included (`|| >=1.0.0-rc.0 <2.0.0`); `@adonis-agora/agent-dashboard` accepts `@adonis-agora/agent` the same way.
 - `@streamdown/code` 2 is accepted as a peer alongside 1.

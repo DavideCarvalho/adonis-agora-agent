@@ -408,6 +408,16 @@ describe('Overview', () => {
     expect(screen.queryByText('Spend by feature')).toBeNull();
   });
 
+  it('leaves the feature panel out on a server without the route (404)', async () => {
+    const client = fakeClient({
+      spendByFeature: vi.fn().mockRejectedValue(new AgentApiError('GET failed (404)', 404)),
+    } as Partial<AgentClient>);
+    renderWith(client, <Overview range={RANGE} />);
+    await waitFor(() => expect(screen.getAllByText('gpt-4o').length).toBeGreaterThan(0));
+    expect(screen.queryByText('Spend by feature')).toBeNull();
+    expect(screen.queryByText(/GET failed/)).toBeNull();
+  });
+
   it('shows an empty state when there is no usage', async () => {
     const client = fakeClient({
       spendByModel: vi.fn().mockResolvedValue([]),
@@ -769,6 +779,14 @@ describe('PricingSection', () => {
   it('shows a distinct panel when no pricing store is bound (501)', async () => {
     const client = fakeClient({
       pricing: vi.fn().mockRejectedValue(new AgentApiError('nope', 501)),
+    } as Partial<AgentClient>);
+    renderWith(client, <PricingSection />);
+    await waitFor(() => expect(screen.getByText(/No pricing store is bound/)).toBeTruthy());
+  });
+
+  it('shows the same panel when an older server has no pricing route (404)', async () => {
+    const client = fakeClient({
+      pricing: vi.fn().mockRejectedValue(new AgentApiError('nope', 404)),
     } as Partial<AgentClient>);
     renderWith(client, <PricingSection />);
     await waitFor(() => expect(screen.getByText(/No pricing store is bound/)).toBeTruthy());

@@ -13,7 +13,7 @@ description: >-
 metadata:
   type: core
   library: "@adonis-agora/agent"
-  library_version: "0.25.2"
+  library_version: "1.0.0-rc.0"
   framework: adonisjs
 sources:
   - "DavideCarvalho/adonis-agent:packages/adonis/docs/governance/authorization.mdx"
