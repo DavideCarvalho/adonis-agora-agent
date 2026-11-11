@@ -212,7 +212,7 @@ describe('governance route mounting', () => {
   });
 
   it('mounts the cross-actor routes behind the gate when one is configured (403 on deny)', async () => {
-    booted = await bootApp((actor) => actor.roles?.includes('ADMIN') ?? false);
+    booted = await bootApp((_ctx, actor) => actor.roles?.includes('ADMIN') ?? false);
 
     const denied = await fetch(`${booted.url}/agent/governance/spend/model`, asActor('patient-1'));
     expect(denied.status).toBe(403);
@@ -226,7 +226,7 @@ describe('governance route mounting', () => {
   });
 
   it('maps AuthorizeResult decisions to 401/403 JSON on the governance routes', async () => {
-    booted = await bootApp((actor) => {
+    booted = await bootApp((_ctx, actor) => {
       if (actor.id === 'allowed-object') return { allowed: true };
       if (actor.id === 'anonymous-ish') return { allowed: false, reason: 'unauthenticated' };
       if (actor.id === 'forbidden') return { allowed: false, reason: 'forbidden' };
@@ -253,7 +253,7 @@ describe('governance route mounting', () => {
   });
 
   it('keeps a redirect the governance gate wrote itself instead of the default JSON', async () => {
-    booted = await bootApp((_actor, ctx) => {
+    booted = await bootApp((ctx) => {
       ctx.response.redirect().toPath('/entrar');
       return { allowed: false, reason: 'unauthenticated' };
     });
@@ -264,6 +264,51 @@ describe('governance route mounting', () => {
     });
     expect(response.status).toBe(302);
     expect(response.headers.get('location')).toBe('/entrar');
+  });
+
+  it('a { redirectTo } gate result redirects a page navigation and answers 401 JSON to an API call', async () => {
+    booted = await bootApp((_ctx, actor) =>
+      actor.roles?.includes('ADMIN') ? true : { redirectTo: '/entrar' },
+    );
+    const page = await fetch(`${booted.url}/agent/governance/spend/model`, {
+      redirect: 'manual',
+      headers: { ...asActor('patient-1').headers, accept: 'text/html' },
+    });
+    expect(page.status).toBe(302);
+    expect(page.headers.get('location')).toBe('/entrar');
+
+    const api = await fetch(`${booted.url}/agent/governance/spend/model`, asActor('patient-1'));
+    expect(api.status).toBe(401);
+    expect(api.headers.get('content-type')).toContain('application/json');
+  });
+
+  it('accepts a class and a lazy import as the gate', async () => {
+    class AdminOnly {
+      authorize(_ctx: unknown, actor: Actor) {
+        return actor.roles?.includes('ADMIN') ?? false;
+      }
+    }
+    booted = await bootApp(AdminOnly);
+    expect((await fetch(`${booted.url}/agent/governance/spend/model`, asActor('p1'))).status).toBe(
+      403,
+    );
+    expect(
+      (await fetch(`${booted.url}/agent/governance/spend/model`, asActor('s1', 'ADMIN'))).status,
+    ).toBe(200);
+    await booted.close();
+
+    let imports = 0;
+    booted = await bootApp(async () => {
+      imports++;
+      return { default: AdminOnly };
+    });
+    expect((await fetch(`${booted.url}/agent/governance/spend/model`, asActor('p1'))).status).toBe(
+      403,
+    );
+    expect(
+      (await fetch(`${booted.url}/agent/governance/spend/model`, asActor('s1', 'ADMIN'))).status,
+    ).toBe(200);
+    expect(imports).toBe(1);
   });
 
   it('serves GET governance/reliability with turn latency, failures by code and tool percentiles', async () => {
@@ -408,12 +453,12 @@ describe('governance route mounting', () => {
     booted = await bootApp();
     expect((await fetch(`${booted.url}/agent/governance/genui`, asActor('p1'))).status).toBe(404);
     await booted.close();
-    booted = await bootApp((actor) => actor.roles?.includes('ADMIN') ?? false);
+    booted = await bootApp((_ctx, actor) => actor.roles?.includes('ADMIN') ?? false);
     expect((await fetch(`${booted.url}/agent/governance/genui`, asActor('p1'))).status).toBe(403);
   });
 
   it('answers 501 on the pricing routes when no pricing store is bound', async () => {
-    const gate = (actor: Actor) => actor.roles?.includes('ADMIN') ?? false;
+    const gate = (_ctx: unknown, actor: Actor) => actor.roles?.includes('ADMIN') ?? false;
     booted = await bootApp(gate, undefined, { pricingStore: false });
     const admin = asActor('staff-1', 'ADMIN');
     const list = await fetch(`${booted.url}/agent/governance/pricing`, admin);

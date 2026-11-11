@@ -134,6 +134,22 @@ export {
   withConfirmFields,
 } from './confirmed-tool.js';
 export {
+  type AgentConsoleAuthorize,
+  type AgentConsoleAuthorizeResult,
+  type AgentConsoleAuthorizer,
+  type AgentConsoleAuthorizerClass,
+  type ConsoleAuthorize,
+  type ConsoleAuthorizeDecision,
+  type ConsoleAuthorizeResult,
+  type ConsoleAuthorizer,
+  type ConsoleAuthorizerClass,
+  consoleAuthorizeFor,
+  isPageNavigation,
+  normalizeConsoleAuthorizeResult,
+  type ResolvedConsoleAuthorize,
+  resolveConsoleAuthorize,
+} from './console-authorize.js';
+export {
   danglingToolCallIds,
   RUN_ENDED_BEFORE_TOOL_CALL,
   settleDanglingToolCalls,

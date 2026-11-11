@@ -51,6 +51,7 @@ import {
   HumanReplyMismatchError,
   InlineAgentRunner,
   InProcessTokenStreamSink,
+  isPageNavigation,
   isQuotaProvider,
   LedgerQuotaProvider,
   lucidStoreConnection,
@@ -2166,7 +2167,11 @@ export default class AgentProvider {
     if (!verdict.ok) {
       // The hook may have answered the request itself (a redirect, a custom body) — keep that answer.
       if (!governanceResponseAnswered(ctx)) {
-        ctx.response.status(verdict.status).json({ message: verdict.error });
+        if (verdict.redirectTo !== undefined && isPageNavigation(ctx)) {
+          ctx.response.redirect(verdict.redirectTo);
+        } else {
+          ctx.response.status(verdict.status).json({ message: verdict.error });
+        }
       }
       return null;
     }

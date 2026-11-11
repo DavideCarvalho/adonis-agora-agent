@@ -149,6 +149,45 @@ After:
 <button onClick={() => approve(part.toolCallId)}>Approve</button>
 ```
 
+## `governanceAuthorize` and `dashboard.authorize` take `ctx` first
+
+Both now take the `authorize` every `@adonis-agora` console takes: a function, an authorizer class, or a lazy import of one. A function receives the `HttpContext` first and the resolved actor second, so swap the arguments of the function you pass. TypeScript flags every function that still reads the actor first.
+
+Before:
+
+```ts title="config/agent.ts"
+const isAdmin = (actor: Actor) => actor.roles?.includes('ADMIN') ?? false
+
+export default defineConfig({
+  governanceAuthorize: isAdmin,
+  dashboard: { authorize: isAdmin },
+})
+```
+
+After:
+
+```ts title="config/agent.ts"
+const isAdmin = (ctx: HttpContext, actor: Actor) => actor.roles?.includes('ADMIN') ?? false
+
+export default defineConfig({
+  governanceAuthorize: isAdmin,
+  dashboard: { authorize: isAdmin },
+})
+```
+
+A hook that only reads `ctx` now takes it as its only argument, and `authorizeByRoles` from `@adonis-agora/authz` works as is:
+
+```ts title="config/agent.ts"
+import { authorizeByRoles } from '@adonis-agora/authz'
+
+export default defineConfig({
+  governanceAuthorize: authorizeByRoles({ roles: ['ADMIN'] }),
+  dashboard: { authorize: authorizeByRoles({ roles: ['ADMIN'], loginPath: '/login' }) },
+})
+```
+
+A hook can also return `{ redirectTo: '/login' }`. See [the authorize contract](/docs/agent/governance/dashboard#the-authorize-contract). When to mount the console and the governance routes is unchanged: both still need `governanceAuthorize`.
+
 ## Peer ranges
 
 The optional `@adonis-agora/*` peers now accept 1.x, including its release candidates, as well as the 0.x releases they accepted before:

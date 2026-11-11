@@ -279,8 +279,8 @@ on every panel:
 // config/agent.ts
 export default defineConfig({
   // ...
-  governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
-  // dashboard: { enabled: true, path: '/agent/dashboard', authorize: (actor) => actor.roles?.includes('ADMIN') ?? false },
+  governanceAuthorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false,
+  // dashboard: { enabled: true, path: '/agent/dashboard', authorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false },
 })
 ```
 

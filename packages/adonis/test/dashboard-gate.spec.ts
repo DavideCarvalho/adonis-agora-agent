@@ -61,7 +61,7 @@ describe('evaluateDashboardGate', () => {
     const verdict = await evaluateDashboardGate(
       ctx,
       resolverFor(admin),
-      (actor) => actor.roles?.includes('ADMIN') ?? false,
+      (_ctx, actor) => actor.roles?.includes('ADMIN') ?? false,
     );
     expect(verdict).toEqual({ ok: true });
   });
@@ -70,7 +70,7 @@ describe('evaluateDashboardGate', () => {
     const verdict = await evaluateDashboardGate(
       ctx,
       resolverFor(coordinator),
-      (actor) => actor.roles?.includes('ADMIN') ?? false,
+      (_ctx, actor) => actor.roles?.includes('ADMIN') ?? false,
     );
     expect(verdict).toEqual({ ok: false, status: 403, error: 'forbidden' });
   });
@@ -96,7 +96,7 @@ describe('evaluateDashboardGate', () => {
 
   it('passes the RESOLVED actor to authorize (not the raw request)', async () => {
     let seen: unknown;
-    await evaluateDashboardGate(ctx, resolverFor(admin), (actor) => {
+    await evaluateDashboardGate(ctx, resolverFor(admin), (_ctx, actor) => {
       seen = actor;
       return true;
     });

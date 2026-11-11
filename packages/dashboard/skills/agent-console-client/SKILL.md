@@ -45,8 +45,8 @@ export default defineConfig({
   store: 'lucid',
   stores: { lucid: stores.lucid() },
   actorResolver: new AuthActorResolver(),
-  governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
-  // dashboard: { enabled: true, path: '/agent/dashboard', authorize: (actor) => actor.roles?.includes('ADMIN') ?? false },
+  governanceAuthorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false,
+  // dashboard: { enabled: true, path: '/agent/dashboard', authorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false },
 })
 ```
 
@@ -173,7 +173,7 @@ dashboard: { enabled: true }
 
 ```ts
 // Correct — the data gate is governanceAuthorize on the AGENT config.
-governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
+governanceAuthorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false,
 dashboard: { enabled: true },
 ```
 

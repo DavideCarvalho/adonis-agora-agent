@@ -110,7 +110,7 @@ every actor's spend/threads/approvals can never be served by accident:
 // config/agent.ts — typically an ADMIN check; runs AFTER the actor resolves.
 export default defineConfig({
   // ...
-  governanceAuthorize: (actor, _ctx) => actor.roles?.includes('ADMIN') ?? false,
+  governanceAuthorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false,
 })
 ```
 
@@ -176,7 +176,7 @@ export default defineConfig({ store: 'lucid', stores: { lucid: stores.lucid() } 
 // Correct — set the gate to mount them (gated); or explicitly opt into open reads.
 export default defineConfig({
   ...,
-  governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
+  governanceAuthorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false,
   // governanceAuthorize: () => true, // deliberate legacy behaviour: ANY authenticated actor reads
 })
 ```
@@ -192,13 +192,13 @@ Source: `packages/adonis/src/define_config.ts` (`AgentConfig.governanceAuthorize
 
 ```ts
 // Wrong — authorize gates only the SPA shell; panels still 403/404 without governanceAuthorize.
-dashboard: { enabled: true, authorize: (actor) => actor.roles?.includes('ADMIN') ?? false }
+dashboard: { enabled: true, authorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false }
 ```
 
 ```ts
 // Correct — one predicate shape on BOTH knobs: shell gate + data gate.
-governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
-dashboard: { enabled: true, authorize: (actor) => actor.roles?.includes('ADMIN') ?? false },
+governanceAuthorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false,
+dashboard: { enabled: true, authorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false },
 ```
 
 Mechanism: the console is a pure consumer of `/agent/governance/*`; `authorize` decides
@@ -208,24 +208,26 @@ refuses to mount rather than serve eight dead panels.
 Source: `packages/adonis/src/dashboard/define_config.ts` (`decideDashboardMount`,
 `NO_GOVERNANCE_GATE_WARNING`).
 
-### HIGH — truth-testing an `AuthorizeResult` yourself
+### HIGH — calling the hook and truth-testing its result yourself
 
 ```ts
-// Wrong — { allowed: false } is a truthy object, so this lets a denied actor through.
-if (await config.governanceAuthorize(actor, ctx)) serveAdminData()
+// Wrong — { allowed: false } and { redirectTo } are truthy objects, so this lets a denied actor
+// through; and the hook may be a class or a lazy import, not a plain function.
+if (await (config.governanceAuthorize as any)(ctx, actor)) serveAdminData()
 ```
 
 ```ts
-// Correct — let the gate normalise it (true/{allowed:true} allow; reason 'unauthenticated' → 401;
-// false/{allowed:false}/reason 'forbidden'/throw → 403).
+// Correct — let the gate resolve and normalise it (true/{allowed:true} allow; reason
+// 'unauthenticated' or { redirectTo } → 401; false/{allowed:false}/reason 'forbidden'/throw → 403).
 const verdict = await evaluateGovernanceGate(actor, ctx, config.governanceAuthorize)
 if (!verdict.ok) return ctx.response.status(verdict.status).json({ message: verdict.error })
 ```
 
-Mechanism: `governanceAuthorize` and `dashboard.authorize` return
-`AuthorizeResult = boolean | { allowed: boolean; reason?: 'unauthenticated' | 'forbidden' }` —
-the dashboard-gate contract shared by every `@adonis-agora/*` console.
-Source: `packages/adonis/src/authorize-decision.ts`, `packages/adonis/src/governance-gate.ts`.
+Mechanism: `governanceAuthorize` and `dashboard.authorize` take the console `authorize` shared
+by every `@adonis-agora/*` console — a function `(ctx, actor)`, an authorizer class, or a lazy
+import — and return `boolean | { allowed: boolean; reason?: 'unauthenticated' | 'forbidden' } |
+{ redirectTo: string }`.
+Source: `packages/adonis/src/console-authorize.ts`, `packages/adonis/src/governance-gate.ts`.
 
 ### MEDIUM — giving a per-agent resolver a different identity than the global one
 

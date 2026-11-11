@@ -230,10 +230,13 @@ export interface AgentConfig {
   /**
    * Authorization gate for the cross-actor `/agent/governance/*` read routes. It runs after the actor
    * is resolved (the caller is authenticated) and decides whether THIS actor may read the platform-wide
-   * governance read-model — every actor's spend, usage, threads, and pending HITL approvals. Returns
-   * an `AuthorizeResult`: `true`/`{ allowed: true }` allows; `false`/`{ allowed: false }` (or
-   * `reason: 'forbidden'`) denies with `403`; `{ allowed: false, reason: 'unauthenticated' }` denies
-   * with `401`; throwing denies with `403`. A `location` header or body the hook wrote itself is kept.
+   * governance read-model — every actor's spend, usage, threads, and pending HITL approvals. Takes the
+   * shared console `authorize` — a function `(ctx, actor) => result`, an authorizer class (built by
+   * the container, `@inject()` works), or a lazy import of one. `true`/`{ allowed: true }` allows;
+   * `false`/`{ allowed: false }` (or `reason: 'forbidden'`) denies with `403`; `{ allowed: false,
+   * reason: 'unauthenticated' }` denies with `401`; `{ redirectTo }` redirects a page navigation and
+   * answers `401` otherwise; throwing denies with `403`. A `location` header or body the hook wrote
+   * itself is kept.
    *
    * **The routes mount only when this gate exists.** Omit it and `/agent/governance/*` is NOT mounted
    * at all (every route answers `404`), because an ungated cross-actor read-model exposes every
@@ -248,8 +251,8 @@ export interface AgentConfig {
    * approvals even while the cross-actor governance read-model is ADMIN-only.
    *
    * `@adonis-agora/agent-dashboard`'s console reads these routes from the browser, so it mounts only
-   * when this gate exists too; its `dashboard.authorize` hook takes the same shape, so the JSON routes
-   * and the console SPA can be gated with the same predicate.
+   * when this gate exists too; its `dashboard.authorize` takes the same type, so the JSON routes and
+   * the console SPA can be gated with the same authorizer.
    */
   governanceAuthorize?: AgentGovernanceAuthorize;
   /**

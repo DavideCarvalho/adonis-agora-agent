@@ -30,12 +30,12 @@ import { defineConfig } from '@adonis-agora/agent'
 
 export default defineConfig({
   // ...
-  governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
+  governanceAuthorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false,
 
   dashboard: {
     enabled: true,
     path: '/ops/agent',
-    authorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
+    authorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false,
     onUnauthenticated: (ctx) => ctx.response.redirect('/login'),
   },
 })
@@ -45,40 +45,72 @@ export default defineConfig({
 | --- | --- | --- |
 | `enabled` | `true` | `false` keeps the routes off entirely. |
 | `path` | `<agentPath>/dashboard` | Where the SPA mounts. |
-| `authorize` | — | An **extra** gate, run after the actor resolves. Returns an [`AuthorizeResult`](#the-authorize-contract): `false` / `{ allowed: false }` (or throw) → `403`, `{ allowed: false, reason: 'unauthenticated' }` → `401`. |
+| `authorize` | — | An **extra** gate, run after the actor resolves: a function, an authorizer class, or a lazy import of one. See [the authorize contract](#the-authorize-contract). Omitted, any actor your resolver accepts loads the console. |
 | `onUnauthenticated` | — | Runs when the actor resolver itself rejects the caller. |
 | `accessDenied` | — | Tweak or replace the [access-denied page](#the-access-denied-page) a refused browser sees. |
 
-`authorize` and `governanceAuthorize` take the same shape deliberately, so one predicate can gate both the JSON routes and the console:
+`authorize` and `governanceAuthorize` take the same value deliberately, so one authorizer can gate both the JSON routes and the console:
 
-```ts
-const isAdmin = (actor: Actor) => actor.roles?.includes('ADMIN') ?? false
+```ts title="config/agent.ts"
+import ConsoleAccess from '#policies/console_access'
 
 export default defineConfig({
-  governanceAuthorize: isAdmin,
-  dashboard: { authorize: isAdmin },
+  governanceAuthorize: ConsoleAccess,
+  dashboard: { authorize: ConsoleAccess },
 })
 ```
 
 ### The authorize contract
 
-Both hooks return the same `AuthorizeResult` every `@adonis-agora/*` console uses:
+`authorize` (and `governanceAuthorize`) is the same `authorize` every `@adonis-agora/*` console takes, in three forms. Each gets the request's `HttpContext` first and, here, the actor your `actorResolver` resolved second:
 
-```ts
-import type { AuthorizeDecision, AuthorizeResult } from '@adonis-agora/agent/dashboard'
+```ts title="config/agent.ts"
+import { authorizeByRoles } from '@adonis-agora/authz'
 
-// AuthorizeResult = boolean | { allowed: boolean; reason?: 'unauthenticated' | 'forbidden' }
+dashboard: {
+  // An inline function
+  authorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false,
+
+  // A helper that returns one
+  authorize: authorizeByRoles({ roles: ['ADMIN'], loginPath: '/login' }),
+
+  // A class, built by the container per request (so @inject() works)
+  authorize: ConsoleAccess,
+
+  // A lazy import of that class, loaded on the first request
+  authorize: () => import('#policies/console_access'),
+}
 ```
 
-| Return | Status |
-| --- | --- |
-| `true` / `{ allowed: true }` | allowed |
-| `{ allowed: false, reason: 'unauthenticated' }` | `401` |
-| `{ allowed: false, reason: 'forbidden' }` | `403` |
-| `false` / `{ allowed: false }` | `403` |
-| throws | `403` |
+```ts title="app/policies/console_access.ts"
+import { inject } from '@adonisjs/core'
+import type { HttpContext } from '@adonisjs/core/http'
+import type { Actor, ConsoleAuthorizer } from '@adonis-agora/agent'
+import AuditService from '#services/audit_service'
 
-A denying `{ allowed: false }` is a truthy object — the gates normalise it, so it denies; never test a hook's result with `if (!result)` yourself. If the hook answers the request itself (a redirect), that answer is kept. The console answers with the access-denied page; the `/agent/governance/*` routes with JSON.
+@inject()
+export default class ConsoleAccess implements ConsoleAuthorizer {
+  constructor(private audit: AuditService) {}
+
+  async authorize(ctx: HttpContext, actor?: Actor) {
+    if (!ctx.auth.user) return { redirectTo: '/login' }
+    await this.audit.record('agent-console', ctx.auth.user.id)
+    return actor?.roles?.includes('ADMIN') ?? false
+  }
+}
+```
+
+A class written for another `@adonis-agora` console (durable, telescope, media, payments) works here unchanged: it receives `ctx`, and can ignore the actor.
+
+| Return | Console | `/agent/governance/*` |
+| --- | --- | --- |
+| `true` / `{ allowed: true }` | allowed | allowed |
+| `{ allowed: false, reason: 'unauthenticated' }` | `401` page | `401` JSON |
+| `{ allowed: false, reason: 'forbidden' }`, `{ allowed: false }`, `false` | `403` page | `403` JSON |
+| `{ redirectTo: '/login' }` | redirect to `/login` | redirect for a page navigation, `401` JSON for an API call |
+| throws | `403` page | `403` JSON |
+
+A denying `{ allowed: false }` is a truthy object — the gates normalise it, so it denies; never test a hook's result with `if (!result)` yourself. If the hook answers the request itself (`ctx.response.redirect(...)`), that answer is kept.
 
 Note the asymmetry: `governanceAuthorize` gates the data, `dashboard.authorize` gates the page. Omitting the latter means any actor your resolver accepts can *load* the console — but every panel in it still goes through `governanceAuthorize`, so they will see an empty shell of `403`s. Setting both is what produces a coherent experience.
 

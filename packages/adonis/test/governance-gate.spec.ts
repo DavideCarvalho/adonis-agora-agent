@@ -19,7 +19,7 @@ describe('evaluateGovernanceGate', () => {
     const verdict = await evaluateGovernanceGate(
       admin,
       ctx,
-      (a) => a.roles?.includes('ADMIN') ?? false,
+      (_c, a) => a.roles?.includes('ADMIN') ?? false,
     );
     expect(verdict.ok).toBe(true);
   });
@@ -28,7 +28,7 @@ describe('evaluateGovernanceGate', () => {
     const verdict = await evaluateGovernanceGate(
       member,
       ctx,
-      (a) => a.roles?.includes('ADMIN') ?? false,
+      (_c, a) => a.roles?.includes('ADMIN') ?? false,
     );
     expect(verdict).toEqual({ ok: false, status: 403, error: 'forbidden' });
   });
@@ -42,7 +42,7 @@ describe('evaluateGovernanceGate', () => {
   it('passes the actor and ctx through to authorize', async () => {
     let seenActor: Actor | undefined;
     let seenCtx: unknown;
-    await evaluateGovernanceGate(admin, ctx, (a, c) => {
+    await evaluateGovernanceGate(admin, ctx, (c, a) => {
       seenActor = a;
       seenCtx = c;
       return true;

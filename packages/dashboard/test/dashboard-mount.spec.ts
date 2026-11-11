@@ -91,7 +91,8 @@ async function bootApp(options: {
   };
 }
 
-const adminOnly = (actor: { roles?: string[] }) => actor.roles?.includes('ADMIN') ?? false;
+const isAdmin = (actor: { roles?: string[] }) => actor.roles?.includes('ADMIN') ?? false;
+const adminOnly = (_ctx: unknown, actor: { roles?: string[] }) => isAdmin(actor);
 
 let booted: BootedApp | null = null;
 let warn: MockInstance<typeof console.warn>;

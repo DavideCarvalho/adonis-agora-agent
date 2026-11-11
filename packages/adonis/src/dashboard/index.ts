@@ -16,6 +16,16 @@
  */
 // The dashboard-gate return contract (identical across every `@adonis-agora/*` console).
 export type { AuthorizeDecision, AuthorizeResult } from '../authorize-decision.js';
+// The shared console `authorize` contract (function, class, lazy import) — identical across consoles.
+export type {
+  AgentConsoleAuthorize,
+  AgentConsoleAuthorizeResult,
+  AgentConsoleAuthorizer,
+  ConsoleAuthorize,
+  ConsoleAuthorizeResult,
+  ConsoleAuthorizer,
+  ConsoleAuthorizerClass,
+} from '../console-authorize.js';
 export type {
   AccessDeniedInfo,
   AccessDeniedPageOptions,

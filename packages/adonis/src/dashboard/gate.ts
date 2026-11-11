@@ -1,5 +1,5 @@
 import type { HttpContext } from '@adonisjs/core/http';
-import { resolveAuthorizeResult } from '../authorize-decision.js';
+import { consoleAuthorizeFor, isPageNavigation } from '../console-authorize.js';
 import type { ActorResolver } from '../spi/actor-resolver.js';
 import { type AccessDeniedInfo, resolveAccessDeniedPage } from './access_denied_page.js';
 import type {
@@ -9,14 +9,18 @@ import type {
 } from './define_config.js';
 
 /** The outcome of the dashboard access gate: proceed, or deny with an HTTP status + message. */
-export type DashboardGateVerdict = { ok: true } | { ok: false; status: 401 | 403; error: string };
+export type DashboardGateVerdict =
+  | { ok: true }
+  | { ok: false; status: 401 | 403; error: string; redirectTo?: string };
 
 /**
  * Decide whether a request may reach the dashboard, WITHOUT touching the response — so it is unit
  * testable free of the AdonisJS router/app: resolve the actor through the agent config's resolver
  * (missing/failed → `401`), then run the optional `authorize` gate over the resolved actor
  * (`true`/`{ allowed: true }` → proceed; `{ allowed: false, reason: 'unauthenticated' }` → `401`;
- * `false`, `{ allowed: false }` or `reason: 'forbidden'` → `403`; threw → `403`).
+ * `false`, `{ allowed: false }` or `reason: 'forbidden'` → `403`; `{ redirectTo }` → `401` carrying
+ * the path, which {@link answerDashboardDenial} turns into a redirect for a page navigation; threw →
+ * `403`). `authorize` may be any of the three console forms (function, class, lazy import).
  *
  * This gates the SPA **shell**, and only the shell. It is NOT what decides whether the console's data
  * is readable, and it is no longer the last line of defence it once had to be:
@@ -72,20 +76,21 @@ export async function evaluateDashboardGate(
     };
   }
   if (authorize !== undefined) {
-    try {
-      // A denying decision object is truthy — normalise, never truth-test the raw result.
-      const decision = resolveAuthorizeResult(await authorize(actor, ctx));
-      if (!decision.allowed) {
-        return decision.status === 401
-          ? { ok: false, status: 401, error: 'unauthorized' }
-          : { ok: false, status: 403, error: 'forbidden' };
+    const decision = await consoleAuthorizeFor(authorize)(ctx, actor);
+    if (!decision.allowed) {
+      if (decision.error !== undefined) {
+        return {
+          ok: false,
+          status: 403,
+          error: debug && decision.error instanceof Error ? decision.error.message : 'forbidden',
+        };
       }
-    } catch (error) {
-      return {
-        ok: false,
-        status: 403,
-        error: debug && error instanceof Error ? error.message : 'forbidden',
-      };
+      if (decision.redirectTo !== undefined) {
+        return { ok: false, status: 401, error: 'unauthorized', redirectTo: decision.redirectTo };
+      }
+      return decision.status === 401
+        ? { ok: false, status: 401, error: 'unauthorized' }
+        : { ok: false, status: 403, error: 'forbidden' };
     }
   }
   return { ok: true };
@@ -118,6 +123,10 @@ export async function answerDashboardDenial(
 ): Promise<void> {
   const answered = () => responseAnswered(ctx);
   if (answered()) return;
+  if (verdict.redirectTo !== undefined && isPageNavigation(ctx)) {
+    ctx.response.redirect(verdict.redirectTo);
+    return;
+  }
   const nonce = cspNonce(ctx);
   const generic = verdict.error === 'unauthorized' || verdict.error === 'forbidden';
   const info: AccessDeniedInfo = {

@@ -1,5 +1,5 @@
 import type { HttpContext } from '@adonisjs/core/http';
-import type { AuthorizeResult } from '../authorize-decision.js';
+import type { AgentConsoleAuthorize } from '../console-authorize.js';
 import type { AgentGovernanceAuthorize } from '../governance-gate.js';
 import type { Actor } from '../types.js';
 import type {
@@ -21,22 +21,19 @@ export type AccessDeniedOption = GenericAccessDeniedOption<HttpContext>;
 
 /**
  * An extra authorization gate for the dashboard, run AFTER the agent config's `actorResolver` has
- * resolved the caller. Returns an {@link AuthorizeResult}:
+ * resolved the caller. The shared console `authorize` contract, in any of its three forms:
  *
- * - `true` / `{ allowed: true }` → the console is served.
- * - `{ allowed: false, reason: 'unauthenticated' }` → `401` (the access-denied page's "sign in" variant).
- * - `{ allowed: false, reason: 'forbidden' }`, `{ allowed: false }`, or `false` → `403`.
- * - throwing → `403`.
+ * - an inline function `(ctx, actor) => result` — `(ctx) => ...` works too, as does
+ *   `authorizeByRoles({ roles: ['ADMIN'] })` from `@adonis-agora/authz`;
+ * - an authorizer class with `authorize(ctx, actor)`, built through the container (`@inject()` works);
+ * - a lazy import, `() => import('#policies/console_access')`, whose default export is that class.
  *
- * If the hook answers the request itself (e.g. `ctx.response.redirect('/login')`), that answer is
- * kept. The governance read-model the SPA serves spans EVERY actor's spend/usage, so most apps
- * restrict the console beyond mere authentication, e.g.
- * `(actor) => actor.roles?.includes('ADMIN') ?? false`.
+ * Results: `true` / `{ allowed: true }` → the console is served; `{ allowed: false, reason:
+ * 'unauthenticated' }` → `401`; `false`, `{ allowed: false }` or `reason: 'forbidden'` → `403`;
+ * `{ redirectTo }` → a redirect there; throwing → `403`. If the hook answers the request itself (e.g.
+ * `ctx.response.redirect('/login')`), that answer is kept.
  */
-export type AgentDashboardAuthorize = (
-  actor: Actor,
-  ctx: HttpContext,
-) => AuthorizeResult | Promise<AuthorizeResult>;
+export type AgentDashboardAuthorize = AgentConsoleAuthorize;
 
 /**
  * Runs when the agent config's `actorResolver` itself rejects the caller — no resolver configured, or
@@ -73,9 +70,8 @@ export interface AgentDashboardConfig {
   /** Override the mount path. Default `<agentPath>/dashboard`. */
   path?: string;
   /**
-   * Extra authorization run after the actor resolves. Return `false` / `{ allowed: false }` to deny
-   * (`403`), or `{ allowed: false, reason: 'unauthenticated' }` for `401` — see
-   * {@link AgentDashboardAuthorize}. Omit to allow
+   * Extra authorization run after the actor resolves: an inline function, an authorizer class, or a
+   * lazy import of one — see {@link AgentDashboardAuthorize}. Omit to allow
    * any resolved actor (the default) — note this is only an EXTRA gate on the SPA shell; whether the
    * console mounts at all, and whether its data is readable, is decided by the agent config's
    * `governanceAuthorize`.
