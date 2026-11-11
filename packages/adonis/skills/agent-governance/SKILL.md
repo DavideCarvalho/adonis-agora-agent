@@ -218,7 +218,8 @@ if (await (config.governanceAuthorize as any)(ctx, actor)) serveAdminData()
 
 ```ts
 // Correct — let the gate resolve and normalise it (true/{allowed:true} allow; reason
-// 'unauthenticated' or { redirectTo } → 401; false/{allowed:false}/reason 'forbidden'/throw → 403).
+// 'unauthenticated' → 401; { redirectTo } → redirect for a page navigation, 401 for an API
+// call; false/{allowed:false}/reason 'forbidden'/throw → 403).
 const verdict = await evaluateGovernanceGate(actor, ctx, config.governanceAuthorize)
 if (!verdict.ok) return ctx.response.status(verdict.status).json({ message: verdict.error })
 ```
