@@ -270,26 +270,23 @@ const { text } = await runAgentLoop(
 `node ace configure @adonis-agora/agent` also registers an embedded governance console — the
 `@adonis-agora/agent-dashboard` React SPA, bundled straight into `@adonis-agora/agent`'s own `dist/`
 at build time. **No separate install, no separate provider registration.** It mounts at
-`<path>/dashboard` (default `/agent/dashboard`) once `governanceAuthorize` is configured — every panel
-but Quota reads the cross-actor `/agent/governance/*` routes, and those don't exist without that gate
-either, so the console refuses to mount (with a boot warning explaining why) rather than load and 404
-on every panel:
+`<path>/dashboard` (default `/agent/dashboard`). One option, `dashboard.authorize`, gates the console
+AND the cross-actor `/agent/governance/*` routes it reads:
 
 ```ts
 // config/agent.ts
+import { authorizeByRoles } from '@adonis-agora/authz'
+
 export default defineConfig({
   // ...
-  governanceAuthorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false,
-  // dashboard: { enabled: true, path: '/agent/dashboard', authorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false },
+  dashboard: { authorize: authorizeByRoles({ roles: ['ADMIN'] }) },
 })
 ```
 
-Both `governanceAuthorize` and `dashboard.authorize` return an `AuthorizeResult` —
-`boolean | { allowed: boolean; reason?: 'unauthenticated' | 'forbidden' }` (types exported from
-`@adonis-agora/agent` and `@adonis-agora/agent/dashboard`). `true`/`{ allowed: true }` allows;
-`{ allowed: false, reason: 'unauthenticated' }` answers `401`; `false`, `{ allowed: false }`,
-`reason: 'forbidden'` or a throw answer `403`. The console answers with its access-denied page, the
-governance routes with JSON; a redirect the hook wrote itself is kept.
+Omitted, both are open outside production and answer `403` in production (with one boot warning).
+`authorize` takes `(ctx)` (the resolved actor comes as an optional second argument), an authorizer
+class, or a lazy import; `authorizeByToken({ token })` covers machine access. `GET
+<path>/approvals/mine` is never gated by it.
 
 See [Governance dashboard](./docs/governance/dashboard.mdx) for the full config shape.
 

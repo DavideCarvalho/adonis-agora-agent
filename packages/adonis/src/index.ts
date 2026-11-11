@@ -138,6 +138,8 @@ export {
   type AgentConsoleAuthorizeResult,
   type AgentConsoleAuthorizer,
   type AgentConsoleAuthorizerClass,
+  type AuthorizeByTokenOptions,
+  authorizeByToken,
   type ConsoleAuthorize,
   type ConsoleAuthorizeDecision,
   type ConsoleAuthorizeResult,
@@ -287,7 +289,7 @@ export {
   scrubGenuiError,
   summarizeGenuiCalls,
 } from './genui-telemetry.js';
-export type { AgentGovernanceAuthorize, GovernanceGateVerdict } from './governance-gate.js';
+export type { GovernanceGateVerdict } from './governance-gate.js';
 export { evaluateGovernanceGate } from './governance-gate.js';
 export * from './history-window.js';
 export { InProcessTokenStreamSink } from './in-process-sink.js';

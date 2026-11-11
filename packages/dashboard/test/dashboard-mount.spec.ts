@@ -1,7 +1,6 @@
 // @vitest-environment node
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { AgentGovernanceAuthorize } from '@adonis-agora/agent';
 import type { AgentDashboardAuthorize } from '@adonis-agora/agent/dashboard';
 import { IgnitorFactory } from '@adonisjs/core/factories/core/ignitor';
 import type { HttpContext } from '@adonisjs/core/http';
@@ -14,11 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } fr
  * directly and never touches the agent provider at runtime, so leaving it out keeps this spec off the
  * agent package's build output.
  *
- * The observable used throughout is the response to an UNAUTHENTICATED request at the mount:
- * - mounted  → the dashboard's own gate runs first and replies `401` (no resolvable actor)
- * - unmounted → the router replies `404`
- *
- * That discriminator needs no built SPA (`dist/spa` only exists after `vite build`), which is what
+ * Mounted vs. unmounted is told apart by status: the router answers `404` for an unmounted console,
+ * while a mounted one runs `dashboard.authorize` first. That discriminator needs no built SPA (`dist/spa` only exists after `vite build`), which is what
  * makes it usable in a plain test run.
  */
 
@@ -39,7 +35,7 @@ interface BootedApp {
 }
 
 async function bootApp(options: {
-  governanceAuthorize?: AgentGovernanceAuthorize;
+  inProduction?: boolean;
   dashboardAuthorize?: AgentDashboardAuthorize;
   dashboardEnabled?: boolean;
   governanceQueries?: false;
@@ -54,9 +50,6 @@ async function bootApp(options: {
       config: {
         agent: {
           actorResolver: headerActorResolver,
-          ...(options.governanceAuthorize !== undefined
-            ? { governanceAuthorize: options.governanceAuthorize }
-            : {}),
           ...(options.governanceQueries === false ? { governanceQueries: false as const } : {}),
           dashboard: {
             ...(options.dashboardEnabled !== undefined
@@ -72,6 +65,9 @@ async function bootApp(options: {
     .create(new URL('../', import.meta.url));
 
   const app = ignitor.createApp('web');
+  if (options.inProduction === true) {
+    Object.defineProperty(app, 'inProduction', { get: () => true });
+  }
   await app.init();
   // `app.boot()` only — `app.start()` notifies the parent process (`process.send`), which the vitest
   // forks pool rejects. Routes are registered by the provider's `boot()`, so booting is enough.
@@ -91,8 +87,9 @@ async function bootApp(options: {
   };
 }
 
-const isAdmin = (actor: { roles?: string[] }) => actor.roles?.includes('ADMIN') ?? false;
-const adminOnly = (_ctx: unknown, actor: { roles?: string[] }) => isAdmin(actor);
+const adminOnly = (_ctx: unknown, actor?: { roles?: string[] }) =>
+  actor?.roles?.includes('ADMIN') ?? false;
+const PAGE = { accept: 'text/html' };
 
 let booted: BootedApp | null = null;
 let warn: MockInstance<typeof console.warn>;
@@ -109,77 +106,59 @@ afterEach(async () => {
 
 const warnings = () => warn.mock.calls.map((call) => String(call[0]));
 
-describe('dashboard mount vs. the agent governance gate', () => {
-  it('does not mount the console when the agent has no governanceAuthorize', async () => {
+describe('standalone dashboard provider — mounting and access', () => {
+  it('mounts without authorize and is open outside production', async () => {
     booted = await bootApp({});
 
-    // Every panel of this console reads `/agent/governance/*`, which is not mounted without a gate.
-    for (const path of ['/agent/dashboard', '/agent/dashboard/assets/index.js']) {
-      const response = await fetch(`${booted.url}${path}`);
-      expect(response.status, `GET ${path}`).toBe(404);
-    }
+    // Open: the request reaches the asset handler (no SPA built in tests, so whatever it answers,
+    // it is neither the router's 404-for-unmounted nor the gate's 401/403).
+    const response = await fetch(`${booted.url}/agent/dashboard/assets/index.js`, {
+      headers: PAGE,
+    });
+    expect([401, 403]).not.toContain(response.status);
   });
 
-  it('explains the refusal at boot, naming both migration paths', async () => {
-    booted = await bootApp({});
+  it('denies every request with 403 in production when authorize is omitted, warning once', async () => {
+    booted = await bootApp({ inProduction: true });
 
-    const message = warnings().find((text) => text.includes('agent-dashboard'));
-    expect(message).toBeDefined();
-    expect(message).toContain('governanceAuthorize');
-    expect(message).toContain('governanceAuthorize: () => true');
-    expect(message).toContain('approvals/mine');
+    const page = await fetch(`${booted.url}/agent/dashboard`, { headers: PAGE });
+    expect(page.status).toBe(403);
+    expect(page.headers.get('content-type')).toContain('text/html');
+    const api = await fetch(`${booted.url}/agent/dashboard/assets/index.js`, {
+      headers: { accept: 'application/json' },
+    });
+    expect(api.status).toBe(403);
+    expect(await api.json()).toEqual({ error: 'forbidden' });
+    expect(warnings().filter((text) => text.includes('no `authorize` configured'))).toHaveLength(1);
   });
 
-  it('mounts the console normally when a governanceAuthorize gate is configured', async () => {
-    booted = await bootApp({ governanceAuthorize: adminOnly });
-
-    // Mounted: the dashboard's own gate answers first, so an unauthenticated caller gets 401 — not
-    // the router's 404. Both the shell route and the asset wildcard are registered.
-    for (const path of ['/agent/dashboard', '/agent/dashboard/assets/index.js']) {
-      const response = await fetch(`${booted.url}${path}`);
-      expect(response.status, `GET ${path}`).toBe(401);
-    }
-    expect(warnings().filter((text) => text.includes('agent-dashboard'))).toEqual([]);
-  });
-
-  it("keeps the dashboard's own authorize gate in force once mounted", async () => {
-    booted = await bootApp({ governanceAuthorize: adminOnly, dashboardAuthorize: adminOnly });
+  it('applies authorize once mounted', async () => {
+    booted = await bootApp({ dashboardAuthorize: adminOnly });
 
     const denied = await fetch(`${booted.url}/agent/dashboard`, {
-      headers: { 'x-actor-id': 'patient-1', 'x-actor-roles': 'PATIENT' },
+      headers: { ...PAGE, 'x-actor-id': 'patient-1', 'x-actor-roles': 'PATIENT' },
     });
     expect(denied.status).toBe(403);
+    expect(warnings()).toEqual([]);
   });
 
   it('stays off, and silent, when the dashboard is explicitly disabled', async () => {
-    booted = await bootApp({ governanceAuthorize: adminOnly, dashboardEnabled: false });
+    booted = await bootApp({ dashboardAuthorize: adminOnly, dashboardEnabled: false });
 
     const response = await fetch(`${booted.url}/agent/dashboard`);
     expect(response.status).toBe(404);
-    expect(warnings().filter((text) => text.includes('agent-dashboard'))).toEqual([]);
+    expect(warnings()).toEqual([]);
   });
 
-  // The second door to the same broken console: a gate IS configured, so the previous check passes,
-  // but `governanceQueries: false` means the read-model was never built — so the cross-actor routes
-  // do not exist and every panel but Quota would 404 anyway. Note `governanceQueries: undefined` is
-  // NOT this case: the agent provider defaults it to the Lucid read-model when the main store is
-  // Lucid (`agent_provider.ts` `#resolveGovernance`), so only an explicit `false` is decidable from
-  // config alone.
-  it('does not mount when governanceQueries is false, even with a gate configured', async () => {
-    booted = await bootApp({ governanceAuthorize: adminOnly, governanceQueries: false });
+  // `governanceQueries: undefined` is NOT this case: the agent provider defaults it to the Lucid
+  // read-model when the main store is Lucid, so only an explicit `false` is decidable from config.
+  it('does not mount when governanceQueries is false, and names it in the boot warning', async () => {
+    booted = await bootApp({ dashboardAuthorize: adminOnly, governanceQueries: false });
 
     const response = await fetch(`${booted.url}/agent/dashboard`);
     expect(response.status, 'GET /agent/dashboard').toBe(404);
-  });
-
-  // The operator must be able to tell the two causes apart from the log alone — a generic
-  // "governance is not configured" would recreate the diagnosability problem this check exists for.
-  it('names governanceQueries — not the gate — as the cause in the boot warning', async () => {
-    booted = await bootApp({ governanceAuthorize: adminOnly, governanceQueries: false });
-
     const mine = warnings().filter((text) => text.includes('agent-dashboard'));
     expect(mine).toHaveLength(1);
     expect(mine[0]).toContain('governanceQueries');
-    expect(mine[0]).not.toContain('no `governanceAuthorize` gate is configured');
   });
 });

@@ -45,11 +45,9 @@ export default defineConfig({
   // maxSteps: 8,              // cap on model↔tool iterations per turn
 
   // Governance console — served automatically at <path>/dashboard (default /agent/dashboard), no
-  // separate install. It only mounts once \`governanceAuthorize\` is set (every panel but Quota reads
-  // the cross-actor governance routes, which need that gate too — see the docs). Toggle it off,
-  // relocate it, or add an extra gate on top of governanceAuthorize:
-  // dashboard: { enabled: true, path: '/agent/dashboard', authorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false },
-  // governanceAuthorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false,
+  // separate install. \`authorize\` gates it AND the /agent/governance/* routes it reads; without it
+  // they are open outside production and answer 403 in production:
+  // dashboard: { authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false },
 
   // Chat attachments — where uploads live (bring your own store, or @adonis-agora/media on any Drive
   // disk). Mounts POST /agent/attachments; a send names uploads as { mediaId }, resolved server-side.

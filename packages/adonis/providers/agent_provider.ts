@@ -13,6 +13,8 @@ import {
   DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES,
   DEFAULT_MAX_ATTACHMENT_BYTES,
 } from '../src/attachment-limits.js';
+import { warnNoConsoleAuthorizeOnce } from '../src/console-authorize.js';
+import { answerConsoleDenialJson, evaluateDashboardGate } from '../src/dashboard/gate.js';
 import { type AgentEngine, assertRunnable, engineOnlyModel } from '../src/engine.js';
 import type { Catalog } from '../src/genui/index.js';
 import type { SandboxClientConfig } from '../src/genui/sandbox-kit.js';
@@ -24,9 +26,9 @@ import {
   type ActorResolver,
   type AgentClientConfig,
   type AgentConfig,
+  type AgentConsoleAuthorize,
   AgentDepsFactory,
   AgentGenui,
-  type AgentGovernanceAuthorize,
   type AgentGovernanceQueries,
   type AgentPricingStore,
   AgentRegistry,
@@ -51,7 +53,6 @@ import {
   HumanReplyMismatchError,
   InlineAgentRunner,
   InProcessTokenStreamSink,
-  isPageNavigation,
   isQuotaProvider,
   LedgerQuotaProvider,
   lucidStoreConnection,
@@ -248,16 +249,15 @@ function attachmentRefs(claimed: unknown): { mediaId: string }[] | string {
  *   tools for `delegatesTo` edges, builds the runtime graph (store/sink/quota/authorizer/actor-resolver
  *   → deps factory → the inline runner → the `AgentService` facade), and mounts the `/agent` routes
  *   under `config.path` — plus optional routes (`POST /agent/attachments` when `attachments` is
- *   configured; `/agent/approvals/mine` when `governanceQueries` is configured; the cross-actor
- *   `/agent/governance/*` read-model when `governanceQueries` is configured AND a `governanceAuthorize`
- *   gate exists).
+ *   configured; `/agent/approvals/mine` and the cross-actor `/agent/governance/*` read-model when
+ *   `governanceQueries` is configured).
  *
  * Every route resolves the acting actor (401 if it can't). Run/thread routes (stream re-attach,
  * cancel, tool-call approve/reject, `threads/:id` read/delete/fork) are additionally owner-scoped:
- * a caller may act only on runs/threads it owns, unless it is governance-privileged (`governanceAuthorize`).
- * The cross-actor `/agent/governance/*` read-model fails closed by omission: without a
- * `governanceAuthorize` gate it is not mounted at all (404). `approvals/mine` is always scoped to the
- * caller's own pending approvals and mounts regardless of the gate.
+ * a caller may act only on runs/threads it owns, unless the console's `authorize`
+ * (`dashboard.authorize`) allows it. The cross-actor `/agent/governance/*` read-model runs that same
+ * `authorize` (omitted: open outside production, `403` in production). `approvals/mine` is always
+ * scoped to the caller's own pending approvals and is never gated by it.
  *
  * The selected store (`lucid`/`memory`) is built lazily from the config so its peer (`@adonisjs/lucid`)
  * loads only when chosen. Agent lifecycle events are emitted structurally by core onto the
@@ -591,7 +591,7 @@ export default class AgentProvider {
       agents,
       attachmentStaging,
       governance,
-      config.governanceAuthorize,
+      config.dashboard?.authorize,
       pricingStore,
       actorDirectory,
     );
@@ -893,7 +893,7 @@ export default class AgentProvider {
     agents: AgentRegistry,
     attachmentStaging: AttachmentStagingStore | undefined,
     governance: AgentGovernanceQueries | undefined,
-    governanceAuthorize: AgentGovernanceAuthorize | undefined,
+    consoleAuthorize: AgentConsoleAuthorize | undefined,
     pricingStore: AgentPricingStore | undefined,
     /** Read-side ref→label lookup; `null` when unbound, in which case rows keep their raw refs. */
     actorDirectory: ActorDirectory | null,
@@ -929,7 +929,7 @@ export default class AgentProvider {
       if (actor === null) return;
       if (body.threadId !== undefined) {
         const owner = await service.threadOwner(body.threadId);
-        if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
+        if (!(await this.#assertOwner(ctx, actor, owner, 'thread', consoleAuthorize))) return;
       }
       const regenerate = body.regenerate === true;
       if (regenerate && body.threadId === undefined) {
@@ -1022,7 +1022,7 @@ export default class AgentProvider {
       if (actor === null) return;
       const runId = String(ctx.params.runId);
       const owner = await service.runOwner(runId);
-      if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
+      if (!(await this.#assertOwner(ctx, actor, owner, 'run', consoleAuthorize))) return;
       // Nothing buffered under the run — it ended while the client was away, or its buffer went with
       // a restarted process. A 404 reads as "nothing to resume"; subscribing would wait forever.
       if (!(await service.hasStream(runId))) {
@@ -1044,7 +1044,7 @@ export default class AgentProvider {
       if (actor === null) return;
       const runId = String(ctx.params.runId);
       const owner = await service.runOwner(runId);
-      if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
+      if (!(await this.#assertOwner(ctx, actor, owner, 'run', consoleAuthorize))) return;
       await service.cancel(runId);
       return ctx.response.json({ aborted: true });
     });
@@ -1069,9 +1069,9 @@ export default class AgentProvider {
               : resolveActorResolver(actorResolver, agents.get(agentName)),
           ),
         assertOwner: (ctx, actor, ownerRef, kind) =>
-          this.#assertOwner(ctx, actor, ownerRef, kind, governanceAuthorize),
+          this.#assertOwner(ctx, actor, ownerRef, kind, consoleAuthorize),
         mayDecide: (ctx, actor, runId, toolCallId) =>
-          this.#mayDecide(ctx, service, actor, runId, toolCallId, governanceAuthorize),
+          this.#mayDecide(ctx, service, actor, runId, toolCallId, consoleAuthorize),
         refuseSend: (ctx, error) => this.#refuseSend(ctx, error),
         conflictOnMismatch: (ctx, error) => this.#conflictOnMismatch(ctx, error),
         ...(attachmentStaging !== undefined
@@ -1108,9 +1108,7 @@ export default class AgentProvider {
       }
       const runId = await this.#runOfToolCall(ctx, service, body);
       if (runId === null) return;
-      if (
-        !(await this.#mayDecide(ctx, service, actor, runId, body.toolCallId, governanceAuthorize))
-      )
+      if (!(await this.#mayDecide(ctx, service, actor, runId, body.toolCallId, consoleAuthorize)))
         return;
       try {
         await service.approve(runId, body.toolCallId, { executedByRef: actor.id, remember, via });
@@ -1138,9 +1136,7 @@ export default class AgentProvider {
       }
       const runId = await this.#runOfToolCall(ctx, service, body);
       if (runId === null) return;
-      if (
-        !(await this.#mayDecide(ctx, service, actor, runId, body.toolCallId, governanceAuthorize))
-      )
+      if (!(await this.#mayDecide(ctx, service, actor, runId, body.toolCallId, consoleAuthorize)))
         return;
       try {
         await service.reject(runId, body.toolCallId, body.reason, { executedByRef: actor.id, via });
@@ -1171,7 +1167,7 @@ export default class AgentProvider {
       const runId = await this.#runOfToolCall(ctx, service, body);
       if (runId === null) return;
       const owner = await service.runOwner(runId);
-      if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
+      if (!(await this.#assertOwner(ctx, actor, owner, 'run', consoleAuthorize))) return;
       // A value a question's rules refuse, or a `required` question left empty, is refused HERE so
       // the person who typed it hears why — rather than signalled and quietly dropped by the loop.
       const problem = await service.answerProblem(body.toolCallId, body.answers ?? {}, runId);
@@ -1211,7 +1207,7 @@ export default class AgentProvider {
       const runId = await this.#runOfToolCall(ctx, service, body);
       if (runId === null) return;
       const owner = await service.runOwner(runId);
-      if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return;
+      if (!(await this.#assertOwner(ctx, actor, owner, 'run', consoleAuthorize))) return;
       try {
         await service.skip({
           runId,
@@ -1370,7 +1366,7 @@ export default class AgentProvider {
       if (actor === null) return;
       const threadId = String(ctx.params.id);
       const owner = await service.threadOwner(threadId);
-      if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
+      if (!(await this.#assertOwner(ctx, actor, owner, 'thread', consoleAuthorize))) return;
       return ctx.response.json(await service.getThread(threadId, actor));
     });
 
@@ -1382,7 +1378,7 @@ export default class AgentProvider {
       if (actor === null) return;
       const threadId = String(ctx.params.id);
       const owner = await service.threadOwner(threadId);
-      if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
+      if (!(await this.#assertOwner(ctx, actor, owner, 'thread', consoleAuthorize))) return;
       const body = (ctx.request.body() ?? {}) as {
         title?: unknown;
         model?: unknown;
@@ -1445,17 +1441,17 @@ export default class AgentProvider {
     // it. Owner-scoped like the thread routes; each answers the queue (`{ items, paused }`) and
     // publishes it into the stream of the run holding the thread. `501` on a store without a queue.
     router.get(p('threads/:id/queue'), async (ctx: HttpContext) => {
-      const threadId = await this.#ownedThread(ctx, service, actorResolver, governanceAuthorize);
+      const threadId = await this.#ownedThread(ctx, service, actorResolver, consoleAuthorize);
       if (threadId === null) return;
       return this.#queueAnswer(ctx, () => service.getQueue(threadId));
     });
     router.delete(p('threads/:id/queue'), async (ctx: HttpContext) => {
-      const threadId = await this.#ownedThread(ctx, service, actorResolver, governanceAuthorize);
+      const threadId = await this.#ownedThread(ctx, service, actorResolver, consoleAuthorize);
       if (threadId === null) return;
       return this.#queueAnswer(ctx, () => service.clearQueue(threadId));
     });
     router.post(p('threads/:id/queue/resume'), async (ctx: HttpContext) => {
-      const threadId = await this.#ownedThread(ctx, service, actorResolver, governanceAuthorize);
+      const threadId = await this.#ownedThread(ctx, service, actorResolver, consoleAuthorize);
       if (threadId === null) return;
       return this.#queueAnswer(ctx, () => service.resumeQueue(threadId));
     });
@@ -1463,7 +1459,7 @@ export default class AgentProvider {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
       const messageId = String(ctx.params.messageId);
-      if (!(await this.#ownsQueuedMessage(ctx, service, actor, messageId, governanceAuthorize)))
+      if (!(await this.#ownsQueuedMessage(ctx, service, actor, messageId, consoleAuthorize)))
         return;
       const body = (ctx.request.body() ?? {}) as {
         message?: unknown;
@@ -1497,7 +1493,7 @@ export default class AgentProvider {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
       const messageId = String(ctx.params.messageId);
-      if (!(await this.#ownsQueuedMessage(ctx, service, actor, messageId, governanceAuthorize)))
+      if (!(await this.#ownsQueuedMessage(ctx, service, actor, messageId, consoleAuthorize)))
         return;
       return this.#queueAnswer(ctx, () => service.interruptQueuedMessage(messageId));
     });
@@ -1505,7 +1501,7 @@ export default class AgentProvider {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
       const messageId = String(ctx.params.messageId);
-      if (!(await this.#ownsQueuedMessage(ctx, service, actor, messageId, governanceAuthorize)))
+      if (!(await this.#ownsQueuedMessage(ctx, service, actor, messageId, consoleAuthorize)))
         return;
       return this.#queueAnswer(ctx, () => service.removeQueuedMessage(messageId));
     });
@@ -1516,7 +1512,7 @@ export default class AgentProvider {
       if (actor === null) return;
       const threadId = String(ctx.params.id);
       const owner = await service.threadOwner(threadId);
-      if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
+      if (!(await this.#assertOwner(ctx, actor, owner, 'thread', consoleAuthorize))) return;
       await service.deleteThread(threadId);
       return ctx.response.json({ ok: true });
     });
@@ -1527,13 +1523,13 @@ export default class AgentProvider {
       if (actor === null) return;
       const threadId = String(ctx.params.id);
       const owner = await service.threadOwner(threadId);
-      if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
+      if (!(await this.#assertOwner(ctx, actor, owner, 'thread', consoleAuthorize))) return;
       return ctx.response.json(await service.forkThread(threadId, String(ctx.params.messageId)));
     });
 
     // 10b. POST /agent/threads/:id/promote — keep a transient thread (it joins `GET threads`).
     router.post(p('threads/:id/promote'), async (ctx: HttpContext) => {
-      const threadId = await this.#ownedThread(ctx, service, actorResolver, governanceAuthorize);
+      const threadId = await this.#ownedThread(ctx, service, actorResolver, consoleAuthorize);
       if (threadId === null) return;
       if (!(await service.promoteThread(threadId))) {
         return ctx.response.status(501).json({
@@ -1546,7 +1542,7 @@ export default class AgentProvider {
     // 10c. DELETE /agent/threads/:id/from/:messageId — drop a message and everything after it, the
     // "edit and resend" primitive.
     router.delete(p('threads/:id/from/:messageId'), async (ctx: HttpContext) => {
-      const threadId = await this.#ownedThread(ctx, service, actorResolver, governanceAuthorize);
+      const threadId = await this.#ownedThread(ctx, service, actorResolver, consoleAuthorize);
       if (threadId === null) return;
       await service.truncateThreadFrom(threadId, String(ctx.params.messageId));
       return ctx.response.json({ ok: true });
@@ -1773,19 +1769,14 @@ export default class AgentProvider {
       );
     }
 
-    // The governance read-model resolved (often by default, when the main store is Lucid) but no
-    // authorization gate was configured. The cross-actor `/agent/governance/*` routes are therefore
-    // NOT mounted at all (they 404) — fail closed by omission, because an ungated cross-actor
-    // read-model exposes every actor's spend/usage/threads/approvals to any authenticated caller,
-    // and a boot warning is not a control. `/agent/approvals/mine` is unaffected (see below).
-    if (governance !== undefined && governanceAuthorize === undefined) {
-      console.warn(
-        '[@adonis-agora/agent] `/agent/governance/*` was NOT mounted: the cross-actor spend/usage/threads/approvals read-model requires a `governanceAuthorize` gate, and none is configured. Set `governanceAuthorize` in config/agent.ts (e.g. an ADMIN check) to mount the routes gated, or `governanceAuthorize: () => true` to deliberately restore the old behaviour of letting ANY authenticated actor read them. `GET /agent/approvals/mine` is unaffected — it stays mounted and scoped to the calling actor.',
-      );
+    // The console's `authorize` (`dashboard.authorize`) gates the cross-actor `/agent/governance/*`
+    // routes below. Omitted: open outside production, `403` in production — said once at boot.
+    if (governance !== undefined && consoleAuthorize === undefined) {
+      warnNoConsoleAuthorizeOnce(this.app, console.warn);
     }
 
     // ── Per-actor approvals inbox. Mounted with the governance read-model (it reads the same store),
-    // but NOT behind `governanceAuthorize`: it is ALWAYS scoped to the calling actor's OWN pending
+    // but NOT behind the console's `authorize`: it is ALWAYS scoped to the calling actor's OWN pending
     // approvals (`pendingApprovals({ actor })` filters by the owning run's `actor_ref`). This is the
     // route a non-admin surface (e.g. a coordinator's chat) polls to discover its own suspended
     // tool calls, even when the cross-actor governance read-model below is ADMIN-only.
@@ -1809,16 +1800,13 @@ export default class AgentProvider {
       });
     }
 
-    // ── OPTIONAL cross-actor governance read routes. Mounted only when `governanceQueries` is
-    // configured AND a `governanceAuthorize` gate exists — no gate means the routes do not exist at
-    // all (404), because every one of them reads PLATFORM-WIDE data (no route below is scoped to the
-    // caller). Fail closed by omission: an app that wants the historical open behaviour asks for it
-    // explicitly with `governanceAuthorize: () => true`. All read-only (GET). Each route resolves the
-    // actor (401 on failure) and then runs the gate (403 on deny) via `#resolveGovernanceActor` —
-    // restricting this read-model (e.g. ADMIN-only) never locks the per-actor `approvals/mine` route
-    // above. `from`/`to` are inclusive UTC days (`YYYY-MM-DD`), defaulting to today; `limit` defaults
-    // to 50, clamped to 200 (mirroring the dashboard's own clamp).
-    if (governance !== undefined && governanceAuthorize !== undefined) {
+    // ── OPTIONAL cross-actor governance read routes, mounted whenever `governanceQueries` resolves.
+    // Every one reads PLATFORM-WIDE data, so each runs the console's `authorize` first
+    // (`#consoleGate`): omitted, they are open outside production and `403` in production. Restricting
+    // them (e.g. ADMIN-only) never locks the per-actor `approvals/mine` route above. All read-only
+    // except the pricing writes. `from`/`to` are inclusive UTC days (`YYYY-MM-DD`), defaulting to
+    // today; `limit` defaults to 50, clamped to 200 (mirroring the dashboard's own clamp).
+    if (governance !== undefined) {
       const gov = governance;
       const g = (suffix: string) => p(`governance/${suffix}`);
       const range = (ctx: HttpContext) => {
@@ -1842,15 +1830,13 @@ export default class AgentProvider {
 
       // GET /agent/governance/spend/model — per-model token + cost rollup over the range.
       router.get(g('spend/model'), async (ctx: HttpContext) => {
-        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-        if (actor === null) return;
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
         return ctx.response.json(await gov.spendByModel(range(ctx)));
       });
 
       // GET /agent/governance/spend/actor — per-actor token + cost rollup over the range.
       router.get(g('spend/actor'), async (ctx: HttpContext) => {
-        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-        if (actor === null) return;
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
         return ctx.response.json(
           await withActorLabels(await gov.spendByActor(range(ctx)), actorDirectory),
         );
@@ -1858,8 +1844,7 @@ export default class AgentProvider {
 
       // GET /agent/governance/usage/trend — the daily token + cost trend over the range.
       router.get(g('usage/trend'), async (ctx: HttpContext) => {
-        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-        if (actor === null) return;
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
         return ctx.response.json(await gov.usageTrend(range(ctx)));
       });
 
@@ -1867,8 +1852,7 @@ export default class AgentProvider {
       // usage recorded outside them (`AgentService.recordUsage`) side by side. `501` when the bound
       // governance adapter predates features (an optional SPI method).
       router.get(g('spend/feature'), async (ctx: HttpContext) => {
-        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-        if (actor === null) return;
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
         if (gov.spendByFeature === undefined) {
           return ctx.response
             .status(501)
@@ -1882,8 +1866,7 @@ export default class AgentProvider {
       // (ISO instants), actor?, feature?, reprice? (`false` → recorded cost only). `501`
       // when the bound adapter predates it.
       router.get(g('usage/breakdown'), async (ctx: HttpContext) => {
-        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-        if (actor === null) return;
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
         if (gov.usageBreakdown === undefined) {
           return ctx.response
             .status(501)
@@ -1924,15 +1907,13 @@ export default class AgentProvider {
 
       // GET /agent/governance/tool-calls/recent — newest-first recent tool-call activity feed.
       router.get(g('tool-calls/recent'), async (ctx: HttpContext) => {
-        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-        if (actor === null) return;
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
         return ctx.response.json(await gov.recentToolCalls(limitOf(ctx)));
       });
 
       // GET /agent/governance/threads/recent — newest-first recent thread activity feed.
       router.get(g('threads/recent'), async (ctx: HttpContext) => {
-        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-        if (actor === null) return;
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
         return ctx.response.json(
           await withActorLabels(await gov.recentThreads(limitOf(ctx)), actorDirectory),
         );
@@ -1942,8 +1923,7 @@ export default class AgentProvider {
       // usage rollup + recent runs/messages), or `null` when unknown. `501` when the bound governance
       // adapter predates `threadDetail` (an optional SPI method — a third-party adapter may omit it).
       router.get(g('threads/:id'), async (ctx: HttpContext) => {
-        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-        if (actor === null) return;
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
         if (gov.threadDetail === undefined) {
           return ctx.response
             .status(501)
@@ -1964,8 +1944,7 @@ export default class AgentProvider {
       // tool and model, common errors, UI cost per turn/day, time to first/complete frame). `501`
       // when the bound governance adapter does not record genui telemetry (optional SPI method).
       router.get(g('genui'), async (ctx: HttpContext) => {
-        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-        if (actor === null) return;
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
         if (gov.genuiStats === undefined) {
           return ctx.response
             .status(501)
@@ -1991,8 +1970,7 @@ export default class AgentProvider {
       // `@adonis-agora/filter`'s `CursorParams`); the body is a `CursorPage` — `items`, `nextCursor`,
       // and the constant `prevCursor: null` / `hasPrev: false`.
       router.get(g('runs'), async (ctx: HttpContext) => {
-        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-        if (actor === null) return;
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
         const filterActor = ctx.request.input('actor');
         const agent = ctx.request.input('agent');
         const status = ctx.request.input('status');
@@ -2016,8 +1994,7 @@ export default class AgentProvider {
       // GET /agent/governance/runs/:id — one run's full trace (run + messages + tool calls +
       // approvals + usage), or null.
       router.get(g('runs/:id'), async (ctx: HttpContext) => {
-        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-        if (actor === null) return;
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
         const detail = await gov.runDetail(String(ctx.params.id));
         if (detail === null) return ctx.response.json(null);
         return ctx.response.json({
@@ -2030,8 +2007,7 @@ export default class AgentProvider {
       // is the platform-wide inbox (every actor's pending calls); it is governance-gated. A caller that
       // only needs its OWN pending approvals uses `GET /agent/approvals/mine` instead.
       router.get(g('approvals/pending'), async (ctx: HttpContext) => {
-        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-        if (actor === null) return;
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
         const filterActor = ctx.request.input('actor');
         return ctx.response.json(
           await withActorLabels(
@@ -2046,15 +2022,13 @@ export default class AgentProvider {
 
       // GET /agent/governance/tools/stats — per-tool call/failure/rejection/latency rollup.
       router.get(g('tools/stats'), async (ctx: HttpContext) => {
-        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-        if (actor === null) return;
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
         return ctx.response.json(await gov.perToolStats(optionalRange(ctx)));
       });
 
       // GET /agent/governance/reliability — success/failure/cancel rates + mean settled duration.
       router.get(g('reliability'), async (ctx: HttpContext) => {
-        const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-        if (actor === null) return;
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
         return ctx.response.json(await gov.runReliability(optionalRange(ctx)));
       });
 
@@ -2069,8 +2043,7 @@ export default class AgentProvider {
 
         // GET /agent/governance/pricing — every model's current per-1M rates.
         router.get(g('pricing'), async (ctx: HttpContext) => {
-          const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-          if (actor === null) return;
+          if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
           if (pricing === undefined) return noPricing(ctx);
           return ctx.response.json(await pricing.listCurrentPrices());
         });
@@ -2079,8 +2052,7 @@ export default class AgentProvider {
         // `AgentPricingStore.upsertModelPrice`). Body: `{modelId, inputPricePer1m, outputPricePer1m,
         // cacheWritePricePer1m?, cacheReadPricePer1m?}`.
         router.post(g('pricing'), async (ctx: HttpContext) => {
-          const actor = await this.#resolveGovernanceActor(ctx, actorResolver, governanceAuthorize);
-          if (actor === null) return;
+          if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
           if (pricing === undefined) return noPricing(ctx);
           const body = (ctx.request.body() ?? {}) as {
             modelId?: unknown;
@@ -2145,44 +2117,33 @@ export default class AgentProvider {
   }
 
   /**
-   * Resolve the actor for a cross-actor governance route, then apply the optional `governanceAuthorize`
-   * gate. Replies `401` (unresolved actor, or the gate returned `reason: 'unauthenticated'`) or `403`
-   * (gate denied/threw) — unless the gate already answered the request itself — and returns `null` so the
-   * handler short-circuits; otherwise returns the resolved actor. The gate decision itself lives in the
-   * router-free {@link evaluateGovernanceGate} so it can be unit tested.
+   * The console's access check on a cross-actor governance route: `authorize` (when set) runs with
+   * `ctx` and the actor, if one resolves; omitted, the route is open outside production and `403` in
+   * production. A refusal answers JSON `{ error }` (or redirects a page navigation that got
+   * `{ redirectTo }`), unless the hook already answered. Returns `true` to proceed.
    */
-  async #resolveGovernanceActor(
+  async #consoleGate(
     ctx: HttpContext,
     actorResolver: ActorResolver,
-    governanceAuthorize: AgentGovernanceAuthorize | undefined,
-  ) {
-    const actor = await this.#resolveActor(ctx, actorResolver);
-    if (actor === null) return null;
-    const verdict = await evaluateGovernanceGate(
-      actor,
-      ctx,
-      governanceAuthorize,
-      !this.app.inProduction,
-    );
+    consoleAuthorize: AgentConsoleAuthorize | undefined,
+  ): Promise<boolean> {
+    const verdict = await evaluateDashboardGate(ctx, {
+      actorResolver,
+      authorize: consoleAuthorize,
+      inProduction: this.app.inProduction,
+    });
     if (!verdict.ok) {
-      // The hook may have answered the request itself (a redirect, a custom body) — keep that answer.
-      if (!governanceResponseAnswered(ctx)) {
-        if (verdict.redirectTo !== undefined && isPageNavigation(ctx)) {
-          ctx.response.redirect(verdict.redirectTo);
-        } else {
-          ctx.response.status(verdict.status).json({ message: verdict.error });
-        }
-      }
-      return null;
+      answerConsoleDenialJson(ctx, verdict);
+      return false;
     }
-    return actor;
+    return true;
   }
 
   /**
    * Object-level authorization: assert the already-resolved `actor` may act on a per-actor resource
    * (a run or thread) whose owning ref is `ownerRef`. A caller may act on a resource it OWNS; a
-   * cross-actor caller is allowed only when it is governance-privileged (passes `governanceAuthorize`,
-   * the app's "may act across actors" seam — so with no gate configured, ownership is strict). Replies
+   * cross-actor caller is allowed only when it passes the console's `authorize` (the app's "may act
+   * across actors" seam — so with no `authorize` configured, ownership is strict). Replies
    * `404` (unknown resource — never confirms an id the caller doesn't own) or `403` (not owner, not
    * privileged) and returns `false`; returns `true` to proceed. Decision core is the router-free
    * {@link evaluateOwnership}.
@@ -2192,12 +2153,12 @@ export default class AgentProvider {
     actor: Actor,
     ownerRef: string | null,
     kind: 'run' | 'thread',
-    governanceAuthorize: AgentGovernanceAuthorize | undefined,
+    consoleAuthorize: AgentConsoleAuthorize | undefined,
   ): Promise<boolean> {
     let privileged = false;
-    if (governanceAuthorize !== undefined) {
+    if (consoleAuthorize !== undefined) {
       privileged = (
-        await evaluateGovernanceGate(actor, ctx, governanceAuthorize, !this.app.inProduction)
+        await evaluateGovernanceGate(actor, ctx, consoleAuthorize, !this.app.inProduction)
       ).ok;
     }
     const verdict = evaluateOwnership(actor.id, ownerRef, privileged);
@@ -2250,13 +2211,13 @@ export default class AgentProvider {
     actor: Actor,
     runId: string,
     toolCallId: string,
-    governanceAuthorize: AgentGovernanceAuthorize | undefined,
+    consoleAuthorize: AgentConsoleAuthorize | undefined,
   ): Promise<boolean> {
     const approval = await service.toolCallApproval(toolCallId, runId);
     const approver = approval?.approver ?? REQUESTER_APPROVER;
     const owner = await service.runOwner(runId);
     if (approver === REQUESTER_APPROVER) {
-      if (!(await this.#assertOwner(ctx, actor, owner, 'run', governanceAuthorize))) return false;
+      if (!(await this.#assertOwner(ctx, actor, owner, 'run', consoleAuthorize))) return false;
     } else {
       if (owner === null) {
         ctx.response.notFound({ message: 'Unknown run.' });
@@ -2310,13 +2271,13 @@ export default class AgentProvider {
     ctx: HttpContext,
     service: AgentService,
     actorResolver: ActorResolver,
-    governanceAuthorize: AgentGovernanceAuthorize | undefined,
+    consoleAuthorize: AgentConsoleAuthorize | undefined,
   ): Promise<string | null> {
     const actor = await this.#resolveActor(ctx, actorResolver);
     if (actor === null) return null;
     const threadId = String(ctx.params.id);
     const owner = await service.threadOwner(threadId);
-    return (await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))
+    return (await this.#assertOwner(ctx, actor, owner, 'thread', consoleAuthorize))
       ? threadId
       : null;
   }
@@ -2330,7 +2291,7 @@ export default class AgentProvider {
     service: AgentService,
     actor: Actor,
     messageId: string,
-    governanceAuthorize: AgentGovernanceAuthorize | undefined,
+    consoleAuthorize: AgentConsoleAuthorize | undefined,
   ): Promise<boolean> {
     let threadId: string | null;
     try {
@@ -2347,7 +2308,7 @@ export default class AgentProvider {
       return false;
     }
     const owner = await service.threadOwner(threadId);
-    return this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize);
+    return this.#assertOwner(ctx, actor, owner, 'thread', consoleAuthorize);
   }
 
   /** The default `onPresentationError`: a warning on the app's logger (none bound → `undefined`). */
@@ -2485,15 +2446,4 @@ function resumableStaging(
     return undefined;
   }
   return candidate as ResumableAttachmentStaging;
-}
-
-/**
- * Whether a `governanceAuthorize` hook already answered this request — a redirect (`location` header)
- * or a body queued on the response — so the governance gate must not overwrite it. Mirrors the
- * dashboard gate's `answerDashboardDenial` rule; reads `hasLazyBody`/`headersSent` structurally.
- */
-function governanceResponseAnswered(ctx: HttpContext): boolean {
-  if (ctx.response.getHeader('location')) return true;
-  const response = ctx.response as unknown as { hasLazyBody?: unknown; headersSent?: unknown };
-  return response.hasLazyBody === true || response.headersSent === true;
 }

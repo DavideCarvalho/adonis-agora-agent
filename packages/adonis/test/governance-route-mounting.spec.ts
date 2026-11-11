@@ -2,10 +2,10 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { IgnitorFactory } from '@adonisjs/core/factories/core/ignitor';
 import type { HttpContext } from '@adonisjs/core/http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   ActorSpendRow,
-  AgentGovernanceAuthorize,
+  AgentConsoleAuthorize,
   AgentGovernanceQueries,
   ListRunsResult,
   ModelSpendRow,
@@ -18,6 +18,7 @@ import type {
   ToolCallActivityRow,
   UsageTrendPoint,
 } from '../src/index.js';
+import { authorizeByToken } from '../src/index.js';
 import { FakeModelProvider } from '../src/testing/fake-model-provider.js';
 import { InMemoryGovernanceQueries } from '../src/testing/in-memory-governance-queries.js';
 import { InMemoryPricingStore } from '../src/testing/in-memory-pricing.js';
@@ -120,9 +121,10 @@ interface BootedApp {
 }
 
 async function bootApp(
-  governanceAuthorize?: AgentGovernanceAuthorize,
+  authorize?: AgentConsoleAuthorize,
   governanceQueries?: AgentGovernanceQueries,
   extraConfig: Record<string, unknown> = {},
+  inProduction = false,
 ): Promise<BootedApp> {
   const governance = new StubGovernanceQueries();
   const ignitor = new IgnitorFactory()
@@ -137,7 +139,7 @@ async function bootApp(
           model: new FakeModelProvider(() => ({ text: 'hi' })),
           actorResolver: headerActorResolver,
           governanceQueries: governanceQueries ?? governance,
-          ...(governanceAuthorize !== undefined ? { governanceAuthorize } : {}),
+          ...(authorize !== undefined ? { dashboard: { authorize } } : {}),
           ...extraConfig,
         },
       },
@@ -145,6 +147,7 @@ async function bootApp(
     .create(new URL('../', import.meta.url));
 
   const app = ignitor.createApp('web');
+  if (inProduction) Object.defineProperty(app, 'inProduction', { get: () => true });
   await app.init();
   // `app.boot()` only — `app.start()` notifies the parent process (`process.send`), which the vitest
   // forks pool rejects. Routes are registered by the provider's `boot()`, so booting is enough.
@@ -177,30 +180,60 @@ const asActor = (id: string, roles = 'PATIENT') => ({
 });
 
 describe('governance route mounting', () => {
-  it('does not mount the cross-actor governance routes when no gate is configured', async () => {
+  const crossActorRoutes = [
+    'governance/spend/model',
+    'governance/spend/actor',
+    'governance/usage/trend',
+    'governance/tool-calls/recent',
+    'governance/threads/recent',
+    'governance/runs',
+    'governance/approvals/pending',
+    'governance/tools/stats',
+  ];
+
+  it('mounts the cross-actor routes without authorize, open outside production', async () => {
     booted = await bootApp();
 
-    // A representative sample across the cross-actor block: rollups, activity feeds, the run
-    // read-model and the platform-wide approvals inbox.
-    for (const route of [
-      'governance/spend/model',
-      'governance/spend/actor',
-      'governance/usage/trend',
-      'governance/tool-calls/recent',
-      'governance/threads/recent',
-      'governance/runs',
-      'governance/runs/r1',
-      'governance/approvals/pending',
-      'governance/tools/stats',
-      'governance/reliability',
-    ]) {
+    for (const route of crossActorRoutes) {
       const response = await fetch(`${booted.url}/agent/${route}`, asActor('patient-1'));
-      expect(response.status, `GET /agent/${route}`).toBe(404);
+      expect(response.status, `GET /agent/${route}`).toBe(200);
     }
   });
 
-  it('still mounts /agent/approvals/mine when no gate is configured, scoped to the caller', async () => {
-    booted = await bootApp();
+  it('denies every cross-actor route with 403 in production when authorize is omitted', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      booted = await bootApp(undefined, undefined, {}, true);
+
+      for (const route of crossActorRoutes) {
+        const response = await fetch(`${booted.url}/agent/${route}`, asActor('staff-1', 'ADMIN'));
+        expect(response.status, `GET /agent/${route}`).toBe(403);
+        expect(await response.json()).toEqual({ error: 'forbidden' });
+      }
+      expect(
+        warn.mock.calls.filter((call) => String(call[0]).includes('no `authorize` configured')),
+      ).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('lets authorizeByToken reach the governance routes without an actor', async () => {
+    booted = await bootApp(authorizeByToken({ token: 'machine' }), undefined, {}, true);
+
+    const ok = await fetch(`${booted.url}/agent/governance/spend/model`, {
+      headers: { authorization: 'Bearer machine' },
+    });
+    expect(ok.status).toBe(200);
+    const denied = await fetch(`${booted.url}/agent/governance/spend/model`, {
+      headers: { authorization: 'Bearer wrong' },
+    });
+    expect(denied.status).toBe(401);
+    expect(await denied.json()).toEqual({ error: 'unauthenticated' });
+  });
+
+  it('keeps /agent/approvals/mine per-actor and outside authorize, even in production', async () => {
+    booted = await bootApp(() => false, undefined, {}, true);
 
     const response = await fetch(`${booted.url}/agent/approvals/mine`, asActor('patient-1'));
     expect(response.status).toBe(200);
@@ -212,7 +245,7 @@ describe('governance route mounting', () => {
   });
 
   it('mounts the cross-actor routes behind the gate when one is configured (403 on deny)', async () => {
-    booted = await bootApp((_ctx, actor) => actor.roles?.includes('ADMIN') ?? false);
+    booted = await bootApp((_ctx, actor) => actor?.roles?.includes('ADMIN') ?? false);
 
     const denied = await fetch(`${booted.url}/agent/governance/spend/model`, asActor('patient-1'));
     expect(denied.status).toBe(403);
@@ -227,12 +260,12 @@ describe('governance route mounting', () => {
 
   it('maps AuthorizeResult decisions to 401/403 JSON on the governance routes', async () => {
     booted = await bootApp((_ctx, actor) => {
-      if (actor.id === 'allowed-object') return { allowed: true };
-      if (actor.id === 'anonymous-ish') return { allowed: false, reason: 'unauthenticated' };
-      if (actor.id === 'forbidden') return { allowed: false, reason: 'forbidden' };
-      if (actor.id === 'bare-object') return { allowed: false };
-      if (actor.id === 'throws') throw new Error('policy blew up');
-      if (actor.id === 'true') return true;
+      if (actor?.id === 'allowed-object') return { allowed: true };
+      if (actor?.id === 'anonymous-ish') return { allowed: false, reason: 'unauthenticated' };
+      if (actor?.id === 'forbidden') return { allowed: false, reason: 'forbidden' };
+      if (actor?.id === 'bare-object') return { allowed: false };
+      if (actor?.id === 'throws') throw new Error('policy blew up');
+      if (actor?.id === 'true') return true;
       return false;
     });
     const as = (id: string) => fetch(`${booted?.url}/agent/governance/spend/model`, asActor(id));
@@ -243,12 +276,12 @@ describe('governance route mounting', () => {
 
     const unauthenticated = await as('anonymous-ish');
     expect(unauthenticated.status).toBe(401);
-    expect(unauthenticated.headers.get('content-type')).toContain('application/json');
+    expect(await unauthenticated.json()).toEqual({ error: 'unauthenticated' });
 
     for (const id of ['forbidden', 'bare-object', 'bare-false', 'throws']) {
       const response = await as(id);
       expect(response.status, id).toBe(403);
-      expect(response.headers.get('content-type'), id).toContain('application/json');
+      expect(await response.json(), id).toMatchObject({ error: 'forbidden' });
     }
   });
 
@@ -268,7 +301,7 @@ describe('governance route mounting', () => {
 
   it('a { redirectTo } gate result redirects a page navigation and answers 401 JSON to an API call', async () => {
     booted = await bootApp((_ctx, actor) =>
-      actor.roles?.includes('ADMIN') ? true : { redirectTo: '/entrar' },
+      actor?.roles?.includes('ADMIN') ? true : { redirectTo: '/entrar' },
     );
     const page = await fetch(`${booted.url}/agent/governance/spend/model`, {
       redirect: 'manual',
@@ -279,13 +312,13 @@ describe('governance route mounting', () => {
 
     const api = await fetch(`${booted.url}/agent/governance/spend/model`, asActor('patient-1'));
     expect(api.status).toBe(401);
-    expect(api.headers.get('content-type')).toContain('application/json');
+    expect(await api.json()).toEqual({ error: 'unauthenticated', redirectTo: '/entrar' });
   });
 
   it('accepts a class and a lazy import as the gate', async () => {
     class AdminOnly {
-      authorize(_ctx: unknown, actor: Actor) {
-        return actor.roles?.includes('ADMIN') ?? false;
+      authorize(_ctx: unknown, actor?: Actor) {
+        return actor?.roles?.includes('ADMIN') ?? false;
       }
     }
     booted = await bootApp(AdminOnly);
@@ -449,16 +482,13 @@ describe('governance route mounting', () => {
     expect(await response.json()).toEqual({ message: expect.stringContaining('generative UI') });
   });
 
-  it('gates GET governance/genui like every governance route (404 unmounted, 403 denied)', async () => {
-    booted = await bootApp();
-    expect((await fetch(`${booted.url}/agent/governance/genui`, asActor('p1'))).status).toBe(404);
-    await booted.close();
-    booted = await bootApp((_ctx, actor) => actor.roles?.includes('ADMIN') ?? false);
+  it('gates GET governance/genui like every governance route (403 denied)', async () => {
+    booted = await bootApp((_ctx, actor) => actor?.roles?.includes('ADMIN') ?? false);
     expect((await fetch(`${booted.url}/agent/governance/genui`, asActor('p1'))).status).toBe(403);
   });
 
   it('answers 501 on the pricing routes when no pricing store is bound', async () => {
-    const gate = (_ctx: unknown, actor: Actor) => actor.roles?.includes('ADMIN') ?? false;
+    const gate = (_ctx: unknown, actor?: Actor) => actor?.roles?.includes('ADMIN') ?? false;
     booted = await bootApp(gate, undefined, { pricingStore: false });
     const admin = asActor('staff-1', 'ADMIN');
     const list = await fetch(`${booted.url}/agent/governance/pricing`, admin);

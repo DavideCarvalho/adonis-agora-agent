@@ -1,6 +1,5 @@
 import type { HttpContext } from '@adonisjs/core/http';
 import type { AgentConsoleAuthorize } from '../console-authorize.js';
-import type { AgentGovernanceAuthorize } from '../governance-gate.js';
 import type { Actor } from '../types.js';
 import type {
   AccessDeniedOption as GenericAccessDeniedOption,
@@ -20,40 +19,26 @@ export type AccessDeniedRenderer = GenericAccessDeniedRenderer<HttpContext>;
 export type AccessDeniedOption = GenericAccessDeniedOption<HttpContext>;
 
 /**
- * An extra authorization gate for the dashboard, run AFTER the agent config's `actorResolver` has
- * resolved the caller. The shared console `authorize` contract, in any of its three forms:
+ * Who may use the agent console — the SPA shell and the cross-actor `/agent/governance/*` routes it
+ * reads. The shared console `authorize` contract, in any of its three forms:
  *
- * - an inline function `(ctx, actor) => result` — `(ctx) => ...` works too, as does
- *   `authorizeByRoles({ roles: ['ADMIN'] })` from `@adonis-agora/authz`;
- * - an authorizer class with `authorize(ctx, actor)`, built through the container (`@inject()` works);
+ * - an inline function `(ctx) => result` — the resolved {@link Actor} comes as an optional second
+ *   argument, `(ctx, actor) => ...`; `authorizeByRoles({ roles: ['ADMIN'] })` from
+ *   `@adonis-agora/authz` and `authorizeByToken({ token })` work as they are;
+ * - an authorizer class with `authorize(ctx, actor?)`, built through the container (`@inject()` works);
  * - a lazy import, `() => import('#policies/console_access')`, whose default export is that class.
  *
- * Results: `true` / `{ allowed: true }` → the console is served; `{ allowed: false, reason:
- * 'unauthenticated' }` → `401`; `false`, `{ allowed: false }` or `reason: 'forbidden'` → `403`;
- * `{ redirectTo }` → a redirect there; throwing → `403`. If the hook answers the request itself (e.g.
- * `ctx.response.redirect('/login')`), that answer is kept.
+ * Results: `true` / `{ allowed: true }` → allowed; `false`, `{ allowed: false }` or `reason:
+ * 'forbidden'` → `403`; `{ allowed: false, reason: 'unauthenticated' }` → `401`; `{ redirectTo }` → a
+ * redirect for a page, `401` for an API call; throwing → `403`. If the hook answers the request
+ * itself (e.g. `ctx.response.redirect('/login')`), that answer is kept.
  */
 export type AgentDashboardAuthorize = AgentConsoleAuthorize;
 
 /**
- * Runs when the agent config's `actorResolver` itself rejects the caller — no resolver configured, or
- * `resolve(ctx)` threw (e.g. `AuthActorResolver` over an anonymous `ctx.auth`) — so there is no
- * resolved {@link Actor} to hand to {@link AgentDashboardAuthorize}. Deliberately ctx-only, never a
- * fabricated actor: the resolver's whole contract is "never invent an identity", and this hook must
- * not undermine that.
- *
- * Called BEFORE the gate writes its default `401 { error }` JSON. To show something other than that
- * JSON — a redirect to the app's own login page, most commonly — set a response header inside this
- * hook (typically via `ctx.response.redirect(...)`); the gate detects the `location` header and skips
- * its own write. Anything else (return normally without touching the response) falls through to the
- * default JSON, so this is safe to omit or to use only for side effects (e.g. logging).
- */
-export type AgentDashboardUnauthenticatedHook = (ctx: HttpContext) => void | Promise<void>;
-
-/**
  * Optional `config('agent').dashboard` block. The dashboard reuses the agent config's `path` and
- * `actorResolver` (so it sits behind the SAME actor gating as the governance routes); this block
- * toggles it on/off, optionally overrides the mount path, and optionally adds an `authorize` gate.
+ * `actorResolver`; this block toggles it on/off, optionally overrides the mount path, and sets the
+ * `authorize` that gates both the console and the `/agent/governance/*` routes it reads.
  *
  * Shared by BOTH the embedded dashboard provider (`@adonis-agora/agent/dashboard_provider`, wired
  * automatically when you `node ace configure @adonis-agora/agent`) and the standalone
@@ -62,36 +47,27 @@ export type AgentDashboardUnauthenticatedHook = (ctx: HttpContext) => void | Pro
  */
 export interface AgentDashboardConfig {
   /**
-   * Mount the SPA. Default `true` — set `false` to keep the routes off entirely. Note `true` is
-   * necessary but not sufficient: the console also needs the agent's `governanceAuthorize` gate, see
-   * {@link decideDashboardMount}.
+   * Mount the SPA. Default `true` — set `false` to keep it off. (It also stays off when
+   * `governanceQueries: false` removes the data it reads, see {@link decideDashboardMount}.)
    */
   enabled?: boolean;
   /** Override the mount path. Default `<agentPath>/dashboard`. */
   path?: string;
   /**
-   * Extra authorization run after the actor resolves: an inline function, an authorizer class, or a
-   * lazy import of one — see {@link AgentDashboardAuthorize}. Omit to allow
-   * any resolved actor (the default) — note this is only an EXTRA gate on the SPA shell; whether the
-   * console mounts at all, and whether its data is readable, is decided by the agent config's
-   * `governanceAuthorize`.
+   * Who may use the console: gates the SPA shell AND the `/agent/governance/*` routes it reads, and,
+   * when set, also lets the actors it allows act on other actors' runs and threads. An inline
+   * function, an authorizer class, or a lazy import of one — see {@link AgentDashboardAuthorize}.
+   *
+   * Omitted: open outside production; in production every console request is refused with `403`,
+   * and a warning is logged at boot. `GET <path>/approvals/mine` is never gated by it.
    */
   authorize?: AgentDashboardAuthorize;
   /**
-   * Runs when the actor resolver itself rejects the caller (no resolver, or `resolve(ctx)` threw) —
-   * the one denial `authorize` never sees, since there is no resolved actor to hand it. Set a
-   * response header inside (e.g. `ctx.response.redirect('/login')`) to replace the default
-   * `401 { error }` JSON with a custom page/redirect. See {@link AgentDashboardUnauthenticatedHook}.
-   */
-  onUnauthenticated?: AgentDashboardUnauthenticatedHook;
-  /**
-   * What a BROWSER sees when the gate refuses — the SPA shell or its assets (the console has no
-   * JSON routes of its own; its data comes from the agent's `/agent/governance/*` routes, which are
-   * unaffected). Omit it for the built-in page — a dark card in the console's own visual language
-   * with the status, a sentence explaining the refusal and a "Back to app" link. Pass an object to
+   * What a BROWSER sees when the gate refuses a page navigation to the SPA (API calls get JSON).
+   * Omit it for the built-in page — a dark card in the console's own visual language with the status, a sentence explaining the refusal and a "Back to app" link. Pass an object to
    * tweak that page (`brand`, `title`, `message`, `homeHref`, `accent`, …), or a function to
-   * render/answer it yourself — see {@link AccessDeniedRenderer}. A redirect written by
-   * `onUnauthenticated` or `authorize` still wins: the provider never overwrites a `location` header.
+   * render/answer it yourself — see {@link AccessDeniedRenderer}. A redirect `authorize` wrote or
+   * asked for (`{ redirectTo }`) still wins.
    */
   accessDenied?: AccessDeniedOption;
 }
@@ -100,7 +76,6 @@ export interface ResolvedAgentDashboardConfig {
   enabled: boolean;
   path?: string;
   authorize?: AgentDashboardAuthorize;
-  onUnauthenticated?: AgentDashboardUnauthenticatedHook;
   accessDenied?: AccessDeniedOption;
 }
 
@@ -111,8 +86,6 @@ export function resolveDashboardConfig(
   const resolved: ResolvedAgentDashboardConfig = { enabled: config?.enabled ?? true };
   if (config?.path !== undefined) resolved.path = config.path;
   if (config?.authorize !== undefined) resolved.authorize = config.authorize;
-  if (config?.onUnauthenticated !== undefined)
-    resolved.onUnauthenticated = config.onUnauthenticated;
   if (config?.accessDenied !== undefined) resolved.accessDenied = config.accessDenied;
   return resolved;
 }
@@ -121,53 +94,26 @@ export function resolveDashboardConfig(
 export type DashboardMountDecision =
   | { mount: true }
   | { mount: false; reason: 'disabled' }
-  | { mount: false; reason: 'no-governance-gate'; warning: string }
   | { mount: false; reason: 'no-governance-queries'; warning: string };
 
-/**
- * The exact wording the provider logs when it declines to mount. Mirrors the agent provider's own
- * governance boot warning — same three facts, same vocabulary — so a reader who sees one recognises
- * the other.
- */
-const NO_GOVERNANCE_GATE_WARNING =
-  '[@adonis-agora/agent-dashboard] the governance console was NOT mounted: every panel but Quota reads the cross-actor `/agent/governance/*` routes, and those are themselves not mounted because no `governanceAuthorize` gate is configured — so the console would load and then fail on every panel. Set `governanceAuthorize` in config/agent.ts (e.g. an ADMIN check) to mount the routes and this console gated, or `governanceAuthorize: () => true` to deliberately restore the old behaviour of letting ANY authenticated actor read them. `GET /agent/approvals/mine` is unaffected — it stays mounted and scoped to the calling actor. To keep the console off on purpose and silence this, set `dashboard: { enabled: false }`.';
-
-/**
- * The wording logged when the read-model itself was turned off. Deliberately distinct from
- * {@link NO_GOVERNANCE_GATE_WARNING}: both produce the same dead console, and an operator staring at
- * a 404 must be able to tell from the log ALONE which of the two knobs is responsible. A shared
- * "governance is not configured" message would recreate exactly the diagnosability problem this
- * check exists to remove.
- */
+/** The wording logged when the read-model the console reads was turned off. */
 const NO_GOVERNANCE_QUERIES_WARNING =
-  '[@adonis-agora/agent-dashboard] the governance console was NOT mounted: `governanceQueries` is set to `false` in config/agent.ts, so the cross-actor read-model was never built and the `/agent/governance/*` routes it serves do not exist — the console would load and then fail on every panel but Quota. A `governanceAuthorize` gate is NOT the missing piece here; it is already configured. Remove `governanceQueries: false` (omit it to get the Lucid read-model when the main store is Lucid, or pass a store/factory explicitly) to mount the read-model and this console. To keep the console off on purpose and silence this, set `dashboard: { enabled: false }`.';
+  '[@adonis-agora/agent-dashboard] the governance console was NOT mounted: `governanceQueries` is set to `false` in config/agent.ts, so the cross-actor read-model was never built and the `/agent/governance/*` routes it serves do not exist — the console would load and then fail on every panel but Quota. Remove `governanceQueries: false` (omit it to get the Lucid read-model when the main store is Lucid, or pass a store/factory explicitly) to mount the read-model and this console. To keep the console off on purpose and silence this, set `dashboard: { enabled: false }`.';
 
 /**
  * Decide whether to register the console's routes at all — the router-free core of the provider's
- * mount check, extracted so it can be unit tested without booting an app.
- *
- * The console is a pure consumer of the agent's cross-actor `/agent/governance/*` read routes, and
- * those routes are not mounted unless the agent config carries a `governanceAuthorize` gate. Serving
- * a shell that can only 404 its own data is worse than not serving it: the failure shows up as seven
- * dead panels at click time with nothing anywhere explaining why. So the console follows the same
- * fail-closed-by-omission rule one layer down — no gate, no routes — and says so at boot.
- *
- * This costs nothing that still works: every app affected is an app whose console is ALREADY dead in
- * every view but Quota. `dashboard.authorize` is deliberately NOT the trigger; it gates the shell,
- * not the data, and an app can set it and still have a console with nothing to render.
+ * mount check. The console mounts unless `dashboard: { enabled: false }`, or unless
+ * `governanceQueries: false` removed the `/agent/governance/*` routes every panel but Quota reads
+ * (a shell that can only 404 its own data is worse than none, so that case says so at boot).
+ * Access is `dashboard.authorize`'s job, not this one.
  */
 export function decideDashboardMount(
   enabled: boolean,
-  governanceAuthorize: AgentGovernanceAuthorize | undefined,
   governanceQueries?: unknown,
 ): DashboardMountDecision {
   if (!enabled) return { mount: false, reason: 'disabled' };
-  if (governanceAuthorize === undefined) {
-    return { mount: false, reason: 'no-governance-gate', warning: NO_GOVERNANCE_GATE_WARNING };
-  }
   // ONLY an explicit `false` is decidable here. `undefined` does NOT mean "no read-model": the agent
-  // provider's `#resolveGovernance` defaults it to the Lucid read-model whenever the main store is
-  // Lucid, and reproducing that resolution would duplicate provider logic in the dashboard.
+  // provider defaults it to the Lucid read-model whenever the main store is Lucid.
   if (governanceQueries === false) {
     return {
       mount: false,

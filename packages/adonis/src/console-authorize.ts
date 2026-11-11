@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { HttpContext } from '@adonisjs/core/http';
 import { type AuthorizeResult, resolveAuthorizeResult } from './authorize-decision.js';
 import type { Actor } from './types.js';
@@ -44,14 +45,14 @@ export type ConsoleAuthorize =
 export type AgentConsoleAuthorizeResult = ConsoleAuthorizeResult | AuthorizeResult;
 
 /**
- * The class form of the agent's console hooks. Like {@link ConsoleAuthorizer}, plus the agent's
- * resolved {@link Actor} as a second argument — so a class written for any other console works here
- * unchanged.
+ * The class form of the agent console's `authorize`. Like {@link ConsoleAuthorizer}, plus the
+ * agent's resolved {@link Actor} as an optional second argument (`undefined` when the request has
+ * none) — so a class written for any other console works here unchanged.
  */
 export interface AgentConsoleAuthorizer {
   authorize(
     ctx: HttpContext,
-    actor: Actor,
+    actor?: Actor,
   ): AgentConsoleAuthorizeResult | Promise<AgentConsoleAuthorizeResult>;
 }
 
@@ -59,12 +60,12 @@ export interface AgentConsoleAuthorizer {
 export type AgentConsoleAuthorizerClass = new (...args: any[]) => AgentConsoleAuthorizer;
 
 /**
- * The agent's `dashboard.authorize` and `governanceAuthorize`: the shared {@link ConsoleAuthorize}
- * (every value of it is accepted), with the resolved {@link Actor} handed over as a second argument.
+ * The agent console's `dashboard.authorize`: the shared {@link ConsoleAuthorize} (every value of it is
+ * accepted), with the resolved {@link Actor} handed over as an optional second argument.
  *
  * ```ts
  * authorize: (ctx) => ctx.auth.user?.isAdmin === true,
- * authorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false,
+ * authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false,
  * authorize: authorizeByRoles({ roles: ['ADMIN'] }),
  * authorize: ConsoleAccess,
  * authorize: () => import('#policies/console_access'),
@@ -73,7 +74,7 @@ export type AgentConsoleAuthorizerClass = new (...args: any[]) => AgentConsoleAu
 export type AgentConsoleAuthorize =
   | ((
       ctx: HttpContext,
-      actor: Actor,
+      actor?: Actor,
     ) => AgentConsoleAuthorizeResult | Promise<AgentConsoleAuthorizeResult>)
   | AgentConsoleAuthorizerClass
   | (() => Promise<{ default: AgentConsoleAuthorizerClass }>);
@@ -125,7 +126,7 @@ async function instantiate(
 /** A resolved console authorize: run it for a request, get a normalised decision. */
 export type ResolvedConsoleAuthorize = (
   ctx: HttpContext,
-  actor: Actor,
+  actor?: Actor,
 ) => Promise<ConsoleAuthorizeDecision>;
 
 /**
@@ -151,7 +152,7 @@ export function resolveConsoleAuthorize(
         );
       }
       const result: unknown = await (
-        authorize as (ctx: HttpContext, actor: Actor) => unknown | Promise<unknown>
+        authorize as (ctx: HttpContext, actor?: Actor) => unknown | Promise<unknown>
       )(ctx, actor);
       const imported = lazyAuthorizerClass(result);
       if (imported !== undefined) {
@@ -192,4 +193,65 @@ export function isPageNavigation(ctx: HttpContext): boolean {
   if (typeof header !== 'function') return false;
   const accept = header.call(ctx.request, 'accept') ?? '';
   return accept.includes('text/html');
+}
+
+/** Options for {@link authorizeByToken}. */
+export interface AuthorizeByTokenOptions {
+  /** The shared secret callers send as `Authorization: Bearer <token>`. */
+  token: string | undefined;
+}
+
+function digest(value: string): Buffer {
+  return createHash('sha256').update(value).digest();
+}
+
+/**
+ * An `authorize` check for machine access: allows a request whose `Authorization` header is
+ * `Bearer <token>`, and answers `{ allowed: false, reason: 'unauthenticated' }` (`401`) otherwise.
+ *
+ * ```ts
+ * dashboard: { authorize: authorizeByToken({ token: env.get('CONSOLE_TOKEN') }) },
+ * ```
+ *
+ * Throws at config time when `token` is empty or undefined.
+ */
+export function authorizeByToken(options: AuthorizeByTokenOptions): ConsoleAuthorize {
+  const token = options?.token;
+  if (typeof token !== 'string' || token === '') {
+    throw new Error('authorizeByToken: `token` must be a non-empty string');
+  }
+  const expected = digest(token);
+  return (ctx: HttpContext): ConsoleAuthorizeResult => {
+    const header = ctx.request.header('authorization');
+    const match = typeof header === 'string' ? /^Bearer\s+(.+)$/i.exec(header.trim()) : null;
+    if (match?.[1] && timingSafeEqual(digest(match[1]), expected)) return { allowed: true };
+    return { allowed: false, reason: 'unauthenticated' };
+  };
+}
+
+/** The boot warning logged once when the console has no `authorize`. Same wording in every console. */
+export const NO_CONSOLE_AUTHORIZE_WARNING =
+  '[@adonis-agora/agent] console has no `authorize` configured: it is open outside production and denies every request in production. Set `authorize` in config/agent.ts.';
+
+const warnedApps = new WeakSet<object>();
+
+/**
+ * Log {@link NO_CONSOLE_AUTHORIZE_WARNING} once per application, however many providers (the agent's
+ * governance routes, the console shell) find `authorize` missing.
+ */
+export function warnNoConsoleAuthorizeOnce(app: object, warn: (message: string) => void): void {
+  if (warnedApps.has(app)) return;
+  warnedApps.add(app);
+  warn(NO_CONSOLE_AUTHORIZE_WARNING);
+}
+
+/**
+ * Whether the console refuses the request before anything else runs: `authorize` is omitted and the
+ * app is in production. (Omitted outside production, the console is open.)
+ */
+export function consoleClosedByDefault(
+  authorize: AgentConsoleAuthorize | undefined,
+  inProduction: boolean,
+): boolean {
+  return authorize === undefined && inProduction;
 }

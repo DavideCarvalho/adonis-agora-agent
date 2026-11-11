@@ -4,7 +4,6 @@ import type { BrandedFunctionalTool } from './ai-tool-ref.js';
 import type { AgentDashboardConfig } from './dashboard/define_config.js';
 import type { AgentEngine, AgentEngineFactory } from './engine.js';
 import type { GenuiFactory } from './genui/factory.js';
-import type { AgentGovernanceAuthorize } from './governance-gate.js';
 import type { McpServerConfig } from './mcp-client/options.js';
 import type { MemoryConfig } from './memory.js';
 import type { MessageTimestampsConfig } from './message-timestamps.js';
@@ -228,34 +227,6 @@ export interface AgentConfig {
    */
   governanceQueries?: AgentGovernanceQueries | GovernanceQueriesFactory | false;
   /**
-   * Authorization gate for the cross-actor `/agent/governance/*` read routes. It runs after the actor
-   * is resolved (the caller is authenticated) and decides whether THIS actor may read the platform-wide
-   * governance read-model — every actor's spend, usage, threads, and pending HITL approvals. Takes the
-   * shared console `authorize` — a function `(ctx, actor) => result`, an authorizer class (built by
-   * the container, `@inject()` works), or a lazy import of one. `true`/`{ allowed: true }` allows;
-   * `false`/`{ allowed: false }` (or `reason: 'forbidden'`) denies with `403`; `{ allowed: false,
-   * reason: 'unauthenticated' }` denies with `401`; `{ redirectTo }` redirects a page navigation and
-   * answers `401` otherwise; throwing denies with `403`. A `location` header or body the hook wrote
-   * itself is kept.
-   *
-   * **The routes mount only when this gate exists.** Omit it and `/agent/governance/*` is NOT mounted
-   * at all (every route answers `404`), because an ungated cross-actor read-model exposes every
-   * actor's spend/usage/threads/approvals to any authenticated caller. Set it — typically an ADMIN
-   * check — to mount the routes gated, or set `governanceAuthorize: () => true` to deliberately
-   * restore the old behaviour of letting ANY authenticated actor read them. The provider logs a boot
-   * warning naming both paths when the read-model resolved but no gate is configured.
-   *
-   * This does NOT gate the per-actor `GET /agent/approvals/mine` route, which is unaffected: it stays
-   * mounted whenever the governance read-model resolves, and is always scoped to the calling actor's
-   * OWN pending approvals — so a non-admin surface (e.g. a coordinator's chat) can poll its own
-   * approvals even while the cross-actor governance read-model is ADMIN-only.
-   *
-   * `@adonis-agora/agent-dashboard`'s console reads these routes from the browser, so it mounts only
-   * when this gate exists too; its `dashboard.authorize` takes the same type, so the JSON routes and
-   * the console SPA can be gated with the same authorizer.
-   */
-  governanceAuthorize?: AgentGovernanceAuthorize;
-  /**
    * Enables always-on ("inject") RAG: before each turn the loop retrieves passages for the user message
    * and folds them into the system prompt (replay-safe under durable). Pass a {@link Retriever} directly
    * or a lazy factory — `retrievers.pgvector({ embedder, table, dimension })` for the production pgvector
@@ -448,10 +419,11 @@ export interface AgentConfig {
    * `agent.dashboard`, so it belongs in this same `config/agent.ts` object rather than a file of its
    * own. Defaults to `{ enabled: true }`, mounting the SPA at `<path>/dashboard`.
    *
-   * The console is NOT mounted unless {@link AgentConfig.governanceAuthorize} is set — it reads the
-   * same cross-actor governance data those routes serve — and it refuses to mount when
-   * `governanceQueries: false` explicitly turns the read-model off. Both refusals log a warning
-   * naming the responsible knob.
+   * Its `authorize` decides who may use the console: the SPA shell AND the cross-actor
+   * `/agent/governance/*` routes it reads (and, when set, who may act on another actor's runs and
+   * threads). Omitted, the console is open outside production and refuses every request in
+   * production. The console refuses to mount only when `enabled: false`, or when
+   * `governanceQueries: false` turns its read-model off.
    */
   dashboard?: AgentDashboardConfig;
 }

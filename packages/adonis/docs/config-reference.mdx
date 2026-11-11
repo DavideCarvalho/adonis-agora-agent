@@ -26,8 +26,7 @@ export default defineConfig({
   maxSteps: 8,
   path: 'agent',
 
-  governanceAuthorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false,
-  dashboard: { authorize: (ctx, actor) => actor.roles?.includes('ADMIN') ?? false },
+  dashboard: { authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false },
 
   defaultAgent: {
     systemPrompt: 'You are a helpful assistant.',
@@ -71,11 +70,7 @@ Required unless an [`engine`](#engine) runs the turns.
 
 ### `governanceQueries`
 
-`AgentGovernanceQueries | GovernanceQueriesFactory | false`. The read-model the optional `/agent/governance/*` routes serve from — cost/usage rollups, run lifecycle, tool stats, reliability, and the approvals inbox. **Omitting it does not disable it**: it defaults to mirroring a `stores.lucid()` `store` on the same connection. Pass a lazy `governanceQueries.lucid()` to point it elsewhere, or `false` to actually turn it off. Mounting the routes needs this **and** `governanceAuthorize` — a read-model with no gate mounts nothing. See [Governance read-model](/docs/agent/governance/read-model).
-
-### `governanceAuthorize`
-
-`AgentGovernanceAuthorize` — the shared console `authorize`: a function `(ctx, actor) => result`, an authorizer class (built by the container, `@inject()` works), or a lazy import `() => import('#policies/...')`; see [the authorize contract](/docs/agent/governance/dashboard#the-authorize-contract). The result is `boolean | { allowed: boolean; reason?: 'unauthenticated' | 'forbidden' } | { redirectTo: string }`. The authorization gate for the **cross-actor** `/agent/governance/*` read routes. It runs *after* the actor is resolved (the caller is authenticated) and decides whether this actor may read the platform-wide governance read-model — every actor's spend, usage, threads, and pending approvals. Return `false` or `{ allowed: false }` (or throw — it's **fail-closed**) → the route replies `403`; `{ allowed: false, reason: 'unauthenticated' }` → `401`, `reason: 'forbidden'` → `403`. **Omit → the routes are not mounted at all** — every `/agent/governance/*` path answers `404`, and the provider logs a boot warning. Typically you set it to an ADMIN check to mount them gated; set `governanceAuthorize: () => true` to deliberately restore the old behaviour of letting ANY authenticated actor read them. The [dashboard](/docs/agent/governance/dashboard) console is a pure consumer of these routes, so it refuses to mount without the gate too. It does **not** gate the per-actor `GET /agent/approvals/mine` route, which is **unaffected** — it stays mounted whenever the read-model resolves — and the same predicate feeds the [object-level ownership](/docs/agent/governance/authorization#object-level-ownership) check (passing it makes a caller cross-actor **privileged**). Mirrors the [dashboard](/docs/agent/governance/dashboard)'s `authorize` hook. See [Governance route authorization](/docs/agent/governance/authorization#governance-route-authorization).
+`AgentGovernanceQueries | GovernanceQueriesFactory | false`. The read-model the optional `/agent/governance/*` routes serve from — cost/usage rollups, run lifecycle, tool stats, reliability, and the approvals inbox. **Omitting it does not disable it**: it defaults to mirroring a `stores.lucid()` `store` on the same connection. Pass a lazy `governanceQueries.lucid()` to point it elsewhere, or `false` to actually turn it off. The routes are gated by [`dashboard.authorize`](#dashboard). See [Governance read-model](/docs/agent/governance/read-model).
 
 ### `retriever` / `retrievalTopK` / `retrievalFilter`
 
@@ -225,12 +220,12 @@ A public deployment should set a `quota`: model spend is otherwise unbounded (pe
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `enabled` | `boolean` | `true` | `false` keeps the console's routes off entirely. |
+| `enabled` | `boolean` | `true` | `false` keeps the console off. |
 | `path` | `string` | `<path>/dashboard` | Where the SPA mounts. |
-| `authorize` | `AgentDashboardAuthorize` — function `(ctx, actor)`, class, or lazy import | — | An extra gate run after the actor resolves. `true`/`{ allowed: true }` allows; `false`, `{ allowed: false }`, `reason: 'forbidden'` or throwing → `403`; `{ allowed: false, reason: 'unauthenticated' }` → `401`; `{ redirectTo }` → redirect. Same type as `governanceAuthorize`, so one authorizer can gate both. See [the authorize contract](/docs/agent/governance/dashboard#the-authorize-contract). |
-| `onUnauthenticated` | `(ctx) => void \| Promise<void>` | — | Runs when the actor resolver itself rejects the caller. Set a `Location` header here (`ctx.response.redirect('/login')`) and the provider stands down so the redirect goes through, instead of writing its `401` JSON. |
+| `authorize` | `AgentDashboardAuthorize` — function `(ctx, actor?)`, class, or lazy import | open outside production, `403` in production | Who may use the console **and** the `/agent/governance/*` routes (and, when set, who may act on other actors' runs and threads). `true`/`{ allowed: true }` allows; `false`, `{ allowed: false }`, `reason: 'forbidden'` or throwing → `403`; `{ allowed: false, reason: 'unauthenticated' }` → `401`; `{ redirectTo }` → redirect for a page, `401` JSON otherwise. See [the authorize contract](/docs/agent/governance/dashboard#the-authorize-contract). |
+| `accessDenied` | object or `(info, ctx) => string \| void` | — | Tweak or replace the access-denied page. |
 
-The console is **not mounted** without `governanceAuthorize`, and refuses to mount when `governanceQueries: false` — it is a browser client of routes that would not exist. Both refusals log a boot warning naming the responsible knob.
+The console refuses to mount only when `governanceQueries: false` — it is a browser client of routes that would not exist — and logs a boot warning saying so.
 
 <Callout type="warn">
 The console is not read-only: its Approvals section decides pending HITL calls and its Pricing section writes model rates. `authorize` is the switch that decides who can do that.

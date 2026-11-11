@@ -3,12 +3,16 @@ import type { HttpContext } from '@adonisjs/core/http';
 import { describe, expect, it, vi } from 'vitest';
 import {
   type AgentConsoleAuthorize,
+  authorizeByToken,
   type ConsoleAuthorize,
   type ConsoleAuthorizer,
   consoleAuthorizeFor,
+  consoleClosedByDefault,
   isPageNavigation,
+  NO_CONSOLE_AUTHORIZE_WARNING,
   normalizeConsoleAuthorizeResult,
   resolveConsoleAuthorize,
+  warnNoConsoleAuthorizeOnce,
 } from '../src/console-authorize.js';
 import type { Actor } from '../src/types.js';
 
@@ -55,7 +59,7 @@ describe('normalizeConsoleAuthorizeResult', () => {
 describe('resolveConsoleAuthorize — inline function', () => {
   it('passes ctx first and the resolved actor second', async () => {
     const ctx = makeCtx();
-    const hook = vi.fn((_ctx: HttpContext, _actor: Actor) => true);
+    const hook = vi.fn((_ctx: HttpContext, _actor?: Actor) => true);
     expect(await resolveConsoleAuthorize(hook)(ctx, actor)).toEqual({ allowed: true });
     expect(hook).toHaveBeenCalledWith(ctx, actor);
   });
@@ -225,5 +229,68 @@ describe('isPageNavigation', () => {
     expect(isPageNavigation(makeCtx('text/html,application/xhtml+xml'))).toBe(true);
     expect(isPageNavigation(makeCtx('application/json'))).toBe(false);
     expect(isPageNavigation(makeCtx())).toBe(false);
+  });
+});
+
+describe('authorizeByToken', () => {
+  const withAuthorization = (value?: string) =>
+    ({
+      request: { header: (name: string) => (name === 'authorization' ? value : undefined) },
+    }) as unknown as HttpContext;
+
+  it('allows a matching Bearer token', async () => {
+    const authorize = authorizeByToken({ token: 's3cret' });
+    expect(await resolveConsoleAuthorize(authorize)(withAuthorization('Bearer s3cret'))).toEqual({
+      allowed: true,
+    });
+  });
+
+  it.each([
+    ['no header', undefined],
+    ['a wrong token', 'Bearer nope'],
+    ['another scheme', 'Basic s3cret'],
+    ['a bare token', 's3cret'],
+  ])('answers 401 for %s', async (_label, header) => {
+    const authorize = authorizeByToken({ token: 's3cret' });
+    expect(await resolveConsoleAuthorize(authorize)(withAuthorization(header))).toEqual({
+      allowed: false,
+      status: 401,
+    });
+  });
+
+  it('ignores the query string and custom headers', async () => {
+    const authorize = authorizeByToken({ token: 's3cret' }) as (ctx: HttpContext) => unknown;
+    const ctx = {
+      request: {
+        header: (name: string) => (name === 'x-console-token' ? 's3cret' : undefined),
+        input: () => 's3cret',
+        qs: () => ({ token: 's3cret' }),
+      },
+    } as unknown as HttpContext;
+    expect(await authorize(ctx)).toEqual({ allowed: false, reason: 'unauthenticated' });
+  });
+
+  it.each([[undefined], ['']])('throws at config time for token %j', (token) => {
+    expect(() => authorizeByToken({ token })).toThrow(/non-empty/);
+  });
+});
+
+describe('the default when authorize is omitted', () => {
+  it('is open outside production and closed in production', () => {
+    expect(consoleClosedByDefault(undefined, false)).toBe(false);
+    expect(consoleClosedByDefault(undefined, true)).toBe(true);
+    expect(consoleClosedByDefault(() => true, true)).toBe(false);
+  });
+
+  it('warns once per app, with the shared wording', () => {
+    const app = {};
+    const warn = vi.fn();
+    warnNoConsoleAuthorizeOnce(app, warn);
+    warnNoConsoleAuthorizeOnce(app, warn);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      '[@adonis-agora/agent] console has no `authorize` configured: it is open outside production and denies every request in production. Set `authorize` in config/agent.ts.',
+    );
+    expect(NO_CONSOLE_AUTHORIZE_WARNING).toBe(warn.mock.calls[0]?.[0]);
   });
 });

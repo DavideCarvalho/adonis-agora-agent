@@ -28,7 +28,7 @@ Core package — `packages/adonis/skills/`:
    the governed `dataTool`.
 3. `agent-governance` — actor resolvers, `DefaultToolAuthorizer`, the offered+invoke
    double check, object-level ownership (`evaluateOwnership`),
-   `governanceAuthorize` route mounting semantics, dashboard mount decisions.
+   the one `dashboard.authorize` gating the console and `/agent/governance/*`, mount decisions.
 4. `agent-personas-agents` — personas & `PromptBuilder`s, named agents, `delegatesTo`
    synthesized `ask_<target>` tools and their authorization, HITL approve/reject flow.
 5. `agent-testing` — `FakeModelProvider`/`echoScript`, the in-memory doubles,
@@ -47,9 +47,9 @@ Dashboard package — `packages/dashboard/skills/`:
 - **Fail-closed roles**: a tool without `roles` is ADMIN-only by default; under the authz
   adapter a tool without `ability` is *always* denied. A forbidden tool is never even
   offered to the model — "the model didn't call my tool" is usually this.
-- **Governance surfaces mount only when configured**: `/agent/governance/*` answers 404
-  without `governanceAuthorize`; the console refuses to mount without it (or with
-  `governanceQueries: false`, logged with a distinct reason).
+- **One `dashboard.authorize` gates the console and `/agent/governance/*`**: omitted, both
+  are open outside production and answer 403 in production (one boot warning); the console
+  refuses to mount only with `dashboard: { enabled: false }` or `governanceQueries: false`.
 - **Quota off = fail-open**; `quotas.ledger.bump` must stay a no-op or you double-count;
   unpriced turns are `null` cost but $0.00 in rollups until `seedModelPrices` runs.
 - **Delegation is authorized like any tool**: bare-string `delegatesTo` edges are

@@ -21,10 +21,16 @@ export type {
   AgentConsoleAuthorize,
   AgentConsoleAuthorizeResult,
   AgentConsoleAuthorizer,
+  AuthorizeByTokenOptions,
   ConsoleAuthorize,
   ConsoleAuthorizeResult,
   ConsoleAuthorizer,
   ConsoleAuthorizerClass,
+} from '../console-authorize.js';
+export {
+  authorizeByToken,
+  NO_CONSOLE_AUTHORIZE_WARNING,
+  warnNoConsoleAuthorizeOnce,
 } from '../console-authorize.js';
 export type {
   AccessDeniedInfo,
@@ -43,15 +49,16 @@ export {
   type AccessDeniedRenderer,
   type AgentDashboardAuthorize,
   type AgentDashboardConfig,
-  type AgentDashboardUnauthenticatedHook,
   type DashboardMountDecision,
   decideDashboardMount,
   type ResolvedAgentDashboardConfig,
   resolveDashboardConfig,
 } from './define_config.js';
 export {
+  answerConsoleDenialJson,
   answerDashboardDenial,
   type DashboardDenialOptions,
+  type DashboardGateOptions,
   type DashboardGateVerdict,
   evaluateDashboardGate,
 } from './gate.js';

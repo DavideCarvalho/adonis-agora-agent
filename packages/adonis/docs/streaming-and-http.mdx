@@ -13,8 +13,8 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 | Surface | Mounts when |
 | --- | --- |
 | `POST /agent/attachments` | `attachments` is set — see [Attachments](/docs/agent/authoring/attachments). |
-| `GET /agent/approvals/mine` | a governance read-model resolves. Not behind `governanceAuthorize`; always scoped to the caller. |
-| `/agent/governance/*` (11 routes) | a read-model resolves **and** a `governanceAuthorize` gate is configured. Without the gate they are **not mounted at all** and answer `404` — see [Governance read-model](/docs/agent/governance/read-model). |
+| `GET /agent/approvals/mine` | a governance read-model resolves. Not behind `dashboard.authorize`; always scoped to the caller. |
+| `/agent/governance/*` (11 routes) | a read-model resolves. Gated by `dashboard.authorize` (omitted: open outside production, `403` in production) — see [Governance read-model](/docs/agent/governance/read-model). |
 | `GET\|POST /agent/governance/pricing` | the above, **plus** a `pricingStore`. |
 | `POST\|GET\|DELETE /mcp` | the [MCP provider](/docs/agent/mcp) is registered in `adonisrc.ts`. A separate mount point, with its own identity path. |
 
@@ -50,7 +50,7 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 | 10d | `GET /agent/skills?threadId=` | The skills this caller can invoke right now, scope-resolved — the same list the model is offered: `{ name, description, scope, shadows? }[]`. An empty list when no skills are configured. |
 | 11b | `GET /agent/quota` | `{ windows: [{ period, usedTokens?, limitTokens?, usedUsd, limitUsd?, resetsAt?, warnAt? }], blocked?, warning?: { period, ratio, reason? } }` — see [Budget windows](/docs/agent/governance/quota-and-cost#budgets). `usedTokens` is omitted for a USD-only budget; `warning` names the fullest window past its `warnAt` (never while `blocked`). A send while one is exhausted answers `429` `{ code: 'quota_exceeded', period, message }`. |
 | 11 | `GET /agent/config` | Server facts a client would otherwise repeat: `{ attachments: { enabled, upload, maxBytes, allowedContentTypes, maxPerMessage }, models: { enabled }, quota: { enforced }, identity: { anonymous } }` (what the React `useAgentConfig` reads). |
-| 12 | `GET /agent/approvals/mine` <span data-opt>optional</span> | The **calling actor's own** pending HITL approvals, oldest first. Query: `limit?` (default `50`, clamped to `200`). Mounts with `governanceQueries` but is **not** behind `governanceAuthorize` — it is always scoped to `actor.id`, so a non-admin surface (e.g. a coordinator's chat) can poll its own suspended tool calls even when the cross-actor read-model is ADMIN-only. |
+| 12 | `GET /agent/approvals/mine` <span data-opt>optional</span> | The **calling actor's own** pending HITL approvals, oldest first. Query: `limit?` (default `50`, clamped to `200`). Mounts with `governanceQueries` but is **not** behind `dashboard.authorize` — it is always scoped to `actor.id`, so a non-admin surface (e.g. a coordinator's chat) can poll its own suspended tool calls even when the cross-actor read-model is ADMIN-only. |
 
 <Callout type="info" title="Refusals answer { message, code? }">
 Every refused request answers its HTTP status with a JSON body `{ message, code? }` — `message` in words a person can read, `code` a machine-readable reason where there is one (`unauthorized`, `model_not_allowed`, `thread_required`, `quota_exceeded`, …). `@adonis-agora/agent/client` throws it as `AgentChatHttpError` (`status`, `code`, `body`, and the server's `message` as its own); `@adonis-agora/agent/react` reads the same body.

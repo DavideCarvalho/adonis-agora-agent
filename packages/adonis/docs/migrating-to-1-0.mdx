@@ -149,9 +149,11 @@ After:
 <button onClick={() => approve(part.toolCallId)}>Approve</button>
 ```
 
-## `governanceAuthorize` and `dashboard.authorize` take `ctx` first
+## `governanceAuthorize` is removed: one `dashboard.authorize` gates the console and its routes
 
-Both now take the `authorize` every `@adonis-agora` console takes: a function, an authorizer class, or a lazy import of one. A function receives the `HttpContext` first and the resolved actor second, so swap the arguments of the function you pass. TypeScript flags every function that still reads the actor first.
+The agent had two access options: `governanceAuthorize` (the `/agent/governance/*` routes; the console did not mount without it) and `dashboard.authorize` (the console page). There is now one, `dashboard.authorize`, and it gates both. `governanceAuthorize` is gone, with no alias. The console always mounts unless `dashboard: { enabled: false }` (or `governanceQueries: false`).
+
+The function takes the `HttpContext` first, like every `@adonis-agora` console; the resolved actor is an optional second argument (`undefined` when the request has none). It also accepts an authorizer class or a lazy import of one, and can return `{ redirectTo: '/login' }`.
 
 Before:
 
@@ -167,26 +169,32 @@ export default defineConfig({
 After:
 
 ```ts title="config/agent.ts"
-const isAdmin = (ctx: HttpContext, actor: Actor) => actor.roles?.includes('ADMIN') ?? false
+const isAdmin = (ctx: HttpContext, actor?: Actor) => actor?.roles?.includes('ADMIN') ?? false
 
 export default defineConfig({
-  governanceAuthorize: isAdmin,
   dashboard: { authorize: isAdmin },
 })
 ```
 
-A hook that only reads `ctx` now takes it as its only argument, and `authorizeByRoles` from `@adonis-agora/authz` works as is:
+Or with `@adonis-agora/authz`:
 
 ```ts title="config/agent.ts"
 import { authorizeByRoles } from '@adonis-agora/authz'
 
 export default defineConfig({
-  governanceAuthorize: authorizeByRoles({ roles: ['ADMIN'] }),
   dashboard: { authorize: authorizeByRoles({ roles: ['ADMIN'], loginPath: '/login' }) },
 })
 ```
 
-A hook can also return `{ redirectTo: '/login' }`. See [the authorize contract](/docs/agent/governance/dashboard#the-authorize-contract). When to mount the console and the governance routes is unchanged: both still need `governanceAuthorize`.
+What else changes:
+
+- **No `authorize` = open outside production, `403` in production.** Before, omitting `governanceAuthorize` left the console and `/agent/governance/*` unmounted (`404`). Now both are served; outside production they are open, in production every request answers `403` and one warning is logged at boot. Set `authorize` before you deploy.
+- **The actor resolver no longer gates the console by itself.** `authorize` decides, with the actor when one resolves. A hook that read `actor.roles` must read `actor?.roles`.
+- **`dashboard.onUnauthenticated` is removed.** Return `{ redirectTo: '/login' }` from `authorize` instead (what `authorizeByRoles({ loginPath })` does for a signed-out visitor).
+- **Denials answer `{ error }`.** `/agent/governance/*` answers `403 { "error": "forbidden" }` or `401 { "error": "unauthenticated" }` (plus `redirectTo` when `authorize` returned one) instead of `{ "message": ... }`. A non-page request to the console gets the same JSON; a page navigation still gets the access-denied page.
+- **Machine access:** `authorizeByToken({ token: env.get('CONSOLE_TOKEN') })` from `@adonis-agora/agent` allows `Authorization: Bearer <token>`.
+- **Cross-actor privilege** on run and thread routes (approving someone else's tool call, opening their thread) now comes from `dashboard.authorize`, as it did from `governanceAuthorize`. Without it, every actor touches only its own.
+- `AgentGovernanceAuthorize` is removed; use `AgentDashboardAuthorize` (or `AgentConsoleAuthorize`). `GET /agent/approvals/mine` is unchanged.
 
 ## Peer ranges
 
