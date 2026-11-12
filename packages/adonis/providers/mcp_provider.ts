@@ -8,10 +8,11 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { personalAgentGate } from '../src/a2a/gate.js';
 import { DefaultToolAuthorizer } from '../src/authorizer.js';
+import { resolveConsoleAuthorize } from '../src/console-authorize.js';
 import type { DevToolsHub } from '../src/dev-tools/contract.js';
 import { csrfBlocksPath, csrfWarning } from '../src/dev-tools/csrf.js';
 import { DevToolsEndpoint, type DevToolsLogger } from '../src/dev-tools/endpoint.js';
-import { DevToolsHubImpl } from '../src/dev-tools/hub.js';
+import { DevToolsHubImpl, endpointAuthorizeWarning } from '../src/dev-tools/hub.js';
 import { actorFromAuthInfo } from '../src/mcp/actor.js';
 import type { McpAuth, McpAuthInfo } from '../src/mcp/auth.js';
 import {
@@ -210,6 +211,10 @@ export default class McpProvider {
       actions: devTools.actions ?? 'refuse',
       authkit,
       version: config.version ?? '1.0.0',
+      ...(devTools.authorize !== undefined
+        ? { endpointAuthorize: resolveConsoleAuthorize(devTools.authorize) }
+        : {}),
+      inProduction: this.app.inProduction,
       logger: async () => {
         if (logger === undefined) {
           try {
@@ -255,6 +260,12 @@ export default class McpProvider {
     console.info(
       `[@adonis-agora/agent] dev tools at /${endpoint.path}: ${libs.length > 0 ? libs.join(', ') : 'no lib registered tools'}`,
     );
+    const config = this.app.config.get<McpConfig>('mcp', {} as McpConfig);
+    const warning = endpointAuthorizeWarning(
+      hub.endpointGatedLibs().map((lib) => lib.lib),
+      config.devTools === false ? undefined : config.devTools?.authorize,
+    );
+    if (warning !== undefined) console.warn(warning);
   }
 
   async shutdown() {

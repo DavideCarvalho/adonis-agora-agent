@@ -15,6 +15,7 @@ export type {
   DevToolInputSchema,
   DevToolsCaller,
   DevToolsDecision,
+  DevToolsFeature,
   DevToolsHub,
   DevToolsLib,
 } from './contract.js';
@@ -48,6 +49,8 @@ export interface DevToolsAppLike {
  *   if (!app.container.hasBinding('agora.devTools')) return false
  *   const hub = (await app.container.make('agora.devTools')) as Partial<DevToolsHub> | undefined
  *   if (hub?.version !== 1 || typeof hub.register !== 'function') return false
+ *   // A lib with no console registers without `authorize`: only on a hub that gates it itself.
+ *   if (lib.authorize === undefined && hub.supports?.('endpoint-authorize') !== true) return false
  *   hub.register(lib)
  *   return true
  * }
@@ -57,6 +60,7 @@ export async function registerDevTools(app: DevToolsAppLike, lib: DevToolsLib): 
   if (!app.container.hasBinding('agora.devTools')) return false;
   const hub = (await app.container.make('agora.devTools')) as Partial<DevToolsHub> | undefined;
   if (hub?.version !== 1 || typeof hub.register !== 'function') return false;
+  if (lib.authorize === undefined && hub.supports?.('endpoint-authorize') !== true) return false;
   hub.register(lib);
   return true;
 }

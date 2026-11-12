@@ -1,3 +1,4 @@
+import type { ConsoleAuthorize } from '../console-authorize.js';
 import type { RolesPolicy } from '../spi/roles-policy.js';
 import type { EmptyRoles, ToolRegistry } from '../tool-registry.js';
 import type { McpAuth, McpAuthContext, McpAuthFactory } from './auth.js';
@@ -127,6 +128,12 @@ export interface McpDevToolsConfig {
   actions?: 'refuse' | 'execute' | string[];
   /** Route middleware for the dev endpoint, e.g. a rate limiter. The product `middleware` is not used. */
   middleware?: McpRouteMiddleware[];
+  /**
+   * Who may use the tools of libs that have no console (resilience, authz, diagnostics, filter).
+   * Same contract as every console's `authorize`. Omitted: open outside production, refused in
+   * production. Libs with a console keep their own gate; this never widens them.
+   */
+  authorize?: ConsoleAuthorize;
 }
 
 /** An extra MCP server — see {@link McpConfig.endpoints}. */

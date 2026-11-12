@@ -1,4 +1,4 @@
-import type { DevTool, DevToolsHub, DevToolsLib } from './contract.js';
+import type { DevTool, DevToolsFeature, DevToolsHub, DevToolsLib } from './contract.js';
 import { schemaProblem } from './schema.js';
 
 const LIB_ID = /^[a-z][a-z0-9]*$/;
@@ -8,7 +8,12 @@ const TOOL_NAME = /^[a-z][a-z0-9]*(_[a-z0-9]+)+$/;
 export interface RegisteredDevToolsLib extends DevToolsLib {
   /** How many tools it registered before `exclude` (for the boot log). */
   registered: number;
+  /** `'endpoint'`: registered without `authorize` (no console), gated by `devTools.authorize`. */
+  gate: 'own' | 'endpoint';
 }
+
+/** The optional features this hub supports (see {@link DevToolsHub.supports}). */
+const FEATURES: ReadonlySet<string> = new Set(['endpoint-authorize']);
 
 /**
  * The hub `mcp_provider` binds at `'agora.devTools'`. It only stores descriptors: tools resolve their
@@ -35,8 +40,8 @@ export class DevToolsHubImpl implements DevToolsHub {
     if (this.#libs.has(lib.lib)) {
       throw new Error(`${where}: the lib "${lib.lib}" is already registered`);
     }
-    if (typeof lib.authorize !== 'function') {
-      throw new Error(`${where}: the lib "${lib.lib}" has no authorize(ctx)`);
+    if (lib.authorize !== undefined && typeof lib.authorize !== 'function') {
+      throw new Error(`${where}: the lib "${lib.lib}" has an authorize that is not a function`);
     }
     if (!Array.isArray(lib.tools)) throw new Error(`${where}: "${lib.lib}".tools must be an array`);
     const names = new Set<string>();
@@ -53,11 +58,16 @@ export class DevToolsHubImpl implements DevToolsHub {
     this.#libs.set(lib.lib, {
       lib: lib.lib,
       title: typeof lib.title === 'string' && lib.title !== '' ? lib.title : lib.lib,
-      authorize: lib.authorize,
+      ...(lib.authorize !== undefined ? { authorize: lib.authorize } : {}),
       tools,
       registered: lib.tools.length,
+      gate: lib.authorize !== undefined ? 'own' : 'endpoint',
     });
     for (const tool of tools) this.#owners.set(tool.name, lib.lib);
+  }
+
+  supports(feature: DevToolsFeature): boolean {
+    return FEATURES.has(feature);
   }
 
   /** Every registered lib, in registration order. A lib excluded whole is kept, with no tools. */
@@ -68,6 +78,11 @@ export class DevToolsHubImpl implements DevToolsHub {
   /** The libs that still have tools after `exclude`. */
   servedLibs(): RegisteredDevToolsLib[] {
     return this.libs().filter((lib) => lib.tools.length > 0);
+  }
+
+  /** Served libs registered without `authorize` (no console): gated by `devTools.authorize`. */
+  endpointGatedLibs(): RegisteredDevToolsLib[] {
+    return this.servedLibs().filter((lib) => lib.gate === 'endpoint');
   }
 
   /** The lib that owns `toolName`, or `undefined` for a name nobody registered (or one excluded). */
@@ -97,4 +112,16 @@ function toolProblem(lib: string, tool: DevTool): string | null {
   const problem = schemaProblem(tool.input);
   if (problem !== null) return `tool "${name}": ${problem}`;
   return null;
+}
+
+/**
+ * The one boot warning when libs without a console registered tools and `devTools.authorize` is not
+ * set. `undefined` when there is nothing to say.
+ */
+export function endpointAuthorizeWarning(
+  libs: readonly string[],
+  authorize: unknown,
+): string | undefined {
+  if (libs.length === 0 || authorize !== undefined) return undefined;
+  return `[@adonis-agora/agent] dev tools for ${libs.join(', ')} have no authorize: open outside production, denied in production. Set devTools.authorize in config/mcp.ts.`;
 }

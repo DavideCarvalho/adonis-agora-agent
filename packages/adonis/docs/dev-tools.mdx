@@ -89,6 +89,30 @@ export default defineConfig({
 })
 ```
 
+### Libs without a console
+
+Resilience, authz, diagnostics and filter have no console, so they have no `authorize` of their own.
+Their tools are gated by `devTools.authorize`, which takes the same forms as any console's
+`authorize`:
+
+```ts title="config/mcp.ts"
+import env from '#start/env'
+import { authorizeByToken } from '@adonis-agora/agent'
+import { defineMcpConfig } from '@adonis-agora/agent/mcp'
+
+export default defineMcpConfig({
+  name: 'Acme',
+  version: '1.0.0',
+  devTools: {
+    authorize: authorizeByToken({ token: env.get('CONSOLE_TOKEN') }),
+  },
+})
+```
+
+Left out, those tools are open outside production and refused in production, and the app says so
+once at boot. `devTools.authorize` never applies to a lib that has a console: durable, telescope,
+payments, media, the agent and authkit keep their own.
+
 A personal agent signed in through Poppy reaches the dev tools only when its user granted the
 `agora:dev` scope.
 
@@ -112,6 +136,7 @@ export default defineMcpConfig({
 ```
 
 - `devTools: false` turns the endpoint off.
+- `authorize`: who may use the tools of libs without a console (see above).
 - `actions`: tools that change data (retry, cancel, refund…) are hidden by default. Your product
   endpoint's `actions: 'execute'` does not apply here.
 - None of the product endpoint's settings (`auth`, `allowedTools`, `authorizer`, `middleware`,
@@ -193,6 +218,8 @@ The rules:
 - `available()` hides a tool this deployment cannot run (say, refunds on a gateway without them). It
   is not access control: `authorize` is.
 - Return what the console returns. Register nothing when the console is disabled.
+- A lib with no console leaves `authorize` out, and registers only on a hub that gates it:
+  `if (!lib.authorize && hub.supports?.('endpoint-authorize') !== true) return false`.
 - `run` receives `{ ctx, caller, limits }`: `caller.id` (`token:…`, `user:…` or `dev-open`) is what to
   write in an audit trail.
 

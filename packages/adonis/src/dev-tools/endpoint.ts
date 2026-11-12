@@ -6,7 +6,10 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { personalAgentGate, scopeRole } from '../a2a/gate.js';
 import { PERSONAL_AGENT_ROLE } from '../a2a/permission-tool.js';
-import { normalizeConsoleAuthorizeResult } from '../console-authorize.js';
+import {
+  type ConsoleAuthorizeDecision,
+  normalizeConsoleAuthorizeResult,
+} from '../console-authorize.js';
 import { publishAgent } from '../diagnostics.js';
 import { type McpAuth, McpAuthError } from '../mcp/auth.js';
 import {
@@ -52,6 +55,13 @@ export interface DevToolsEndpointOptions {
   authkit?: McpAuth | undefined;
   logger: () => Promise<DevToolsLogger | undefined>;
   version: string;
+  /**
+   * The resolved `devTools.authorize`: gates the libs registered without an `authorize` of their own
+   * (libs that have no console). `undefined` → open outside production, `403` in production.
+   */
+  endpointAuthorize?: ((ctx: HttpContext) => Promise<ConsoleAuthorizeDecision>) | undefined;
+  /** `app.inProduction`, read for the endpoint gate's default. */
+  inProduction?: boolean;
 }
 
 type Refusal = { status: 401 | 403; error: string; challenge: string };
@@ -257,8 +267,15 @@ export class DevToolsEndpoint {
     actor ??= { id: caller.id };
 
     // One after the other: an `authorize` may touch the shared `ctx` (auth caching, `authenticate()`).
+    // The endpoint gate (libs without a console) runs at most once per request.
+    let endpointDecision: DevToolsDecision | undefined;
+    const decide = async (lib: RegisteredDevToolsLib): Promise<DevToolsDecision> => {
+      if (lib.authorize !== undefined) return safeAuthorize(lib.authorize, ctx);
+      endpointDecision ??= await this.#endpointGate(ctx);
+      return endpointDecision;
+    };
     const decisions: Array<{ lib: RegisteredDevToolsLib; decision: DevToolsDecision }> = [];
-    for (const lib of needed) decisions.push({ lib, decision: await safeAuthorize(lib, ctx) });
+    for (const lib of needed) decisions.push({ lib, decision: await decide(lib) });
     const allowed = decisions.filter(({ decision }) => decision.allowed).map(({ lib }) => lib);
     if (needed.length > 0 && allowed.length === 0) {
       // A signed-in account is never sent back to the login: what is left is a 403.
@@ -281,6 +298,31 @@ export class DevToolsEndpoint {
       );
     }
     return { caller, actor, allowed };
+  }
+
+  /**
+   * `devTools.authorize` for the libs without a console: the same rules as every console (omitted →
+   * open outside production, `403` in production).
+   */
+  async #endpointGate(ctx: HttpContext): Promise<DevToolsDecision> {
+    const authorize = this.#options.endpointAuthorize;
+    if (authorize === undefined) {
+      return this.#options.inProduction === true
+        ? { allowed: false, reason: 'forbidden' }
+        : { allowed: true };
+    }
+    let decision: ConsoleAuthorizeDecision;
+    try {
+      decision = await authorize(ctx);
+    } catch (error) {
+      return { allowed: false, reason: 'forbidden', error };
+    }
+    if (decision.allowed) return { allowed: true };
+    return {
+      allowed: false,
+      reason: decision.status === 401 ? 'unauthenticated' : 'forbidden',
+      ...(decision.redirectTo !== undefined ? { redirectTo: decision.redirectTo } : {}),
+    };
   }
 
   /** `Bearer realm="agora-dev"`, plus the error and, with authkit, where to sign in. */
@@ -415,11 +457,11 @@ function instructionsFor(libs: RegisteredDevToolsLib[], actions: DevToolsActions
  * A throw is `forbidden`.
  */
 async function safeAuthorize(
-  lib: RegisteredDevToolsLib,
+  authorize: (ctx: HttpContext) => Promise<unknown>,
   ctx: HttpContext,
 ): Promise<DevToolsDecision> {
   try {
-    const verdict: unknown = await lib.authorize(ctx);
+    const verdict: unknown = await authorize(ctx);
     const reason =
       typeof verdict === 'object' && verdict !== null
         ? (verdict as { reason?: unknown }).reason

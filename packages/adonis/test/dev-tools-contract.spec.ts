@@ -8,7 +8,7 @@ import { agentDevTools } from '../src/dev-tools/agent-tools.js';
 import type { DevTool, DevToolsLib } from '../src/dev-tools/contract.js';
 import { csrfBlocksPath } from '../src/dev-tools/csrf.js';
 import { actionAllowed } from '../src/dev-tools/endpoint.js';
-import { DevToolsHubImpl } from '../src/dev-tools/hub.js';
+import { DevToolsHubImpl, endpointAuthorizeWarning } from '../src/dev-tools/hub.js';
 import { registerDevTools } from '../src/dev-tools/index.js';
 import {
   capDevToolResult,
@@ -103,6 +103,47 @@ describe('dev tools hub: the registration contract', () => {
     const withHub = { container: { hasBinding: () => true, make: async () => hub } };
     expect(await registerDevTools(withHub, lib('durable', [tool('durable_list_runs')]))).toBe(true);
     expect(hub.servedLibs()).toHaveLength(1);
+  });
+
+  it('accepts a lib without authorize on a hub that supports endpoint-authorize', async () => {
+    const hub = new DevToolsHubImpl();
+    expect(hub.supports('endpoint-authorize')).toBe(true);
+    expect(hub.supports('something-else')).toBe(false);
+    const withHub = { container: { hasBinding: () => true, make: async () => hub } };
+    const consoleless: DevToolsLib = {
+      lib: 'resilience',
+      title: 'Resilience',
+      tools: [tool('resilience_list_policies')],
+    };
+    expect(await registerDevTools(withHub, consoleless)).toBe(true);
+    expect(hub.endpointGatedLibs().map((l) => l.lib)).toEqual(['resilience']);
+    expect(() => hub.register({ ...lib('authz', []), authorize: 'nope' as never })).toThrow(
+      /not a function/,
+    );
+
+    // an older hub (no supports()) never receives a lib without authorize
+    let got = 0;
+    const oldHub = {
+      container: {
+        hasBinding: () => true,
+        make: async () => ({
+          version: 1,
+          register() {
+            got += 1;
+          },
+        }),
+      },
+    };
+    expect(await registerDevTools(oldHub, consoleless)).toBe(false);
+    expect(got).toBe(0);
+  });
+
+  it('warns once about console-less libs only when devTools.authorize is not set', () => {
+    expect(endpointAuthorizeWarning([], undefined)).toBeUndefined();
+    expect(endpointAuthorizeWarning(['resilience'], () => true)).toBeUndefined();
+    expect(endpointAuthorizeWarning(['resilience', 'authz'], undefined)).toBe(
+      '[@adonis-agora/agent] dev tools for resilience, authz have no authorize: open outside production, denied in production. Set devTools.authorize in config/mcp.ts.',
+    );
   });
 });
 

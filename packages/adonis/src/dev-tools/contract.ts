@@ -24,7 +24,16 @@ export interface DevToolsHub {
   readonly version: 1;
   /** Throws on a duplicate lib id, a bad lib id, a tool name not prefixed by the lib, or a schema outside the subset. */
   register(lib: DevToolsLib): void;
+  /**
+   * Whether this hub supports an optional feature. Absent on hubs that support none.
+   * - `'endpoint-authorize'`: a lib may register WITHOUT `authorize` (a lib that has no console); the
+   *   endpoint's `devTools.authorize` gates it.
+   */
+  supports?(feature: DevToolsFeature): boolean;
 }
+
+/** Optional hub features a lib can probe with {@link DevToolsHub.supports}. */
+export type DevToolsFeature = 'endpoint-authorize' | (string & {});
 
 /** One lib's tools and the gate that decides who may use them. */
 export interface DevToolsLib {
@@ -36,8 +45,11 @@ export interface DevToolsLib {
    * The lib's RESOLVED console gate: the same function its console routes call, run once per MCP
    * request. Never throws (a throw is treated as `forbidden`). A console-shaped verdict (`true`,
    * `false`, `{ redirectTo }`) is read the way the console reads it.
+   *
+   * Omit it only for a lib that has no console (check `hub.supports?.('endpoint-authorize')` first):
+   * the endpoint's own `devTools.authorize` then gates the lib.
    */
-  authorize(ctx: HttpContext): Promise<DevToolsDecision>;
+  authorize?(ctx: HttpContext): Promise<DevToolsDecision>;
   tools: DevTool[];
 }
 

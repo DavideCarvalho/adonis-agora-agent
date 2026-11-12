@@ -40,7 +40,9 @@ const byToken =
       ? { allowed: true }
       : { allowed: false, reason: 'unauthenticated' };
 
-const counted = (lib: string, authorize: DevToolsLib['authorize']): DevToolsLib['authorize'] => {
+type LibAuthorize = NonNullable<DevToolsLib['authorize']>;
+
+const counted = (lib: string, authorize: LibAuthorize): LibAuthorize => {
   return async (ctx) => {
     calls[lib] = (calls[lib] ?? 0) + 1;
     return authorize(ctx);
@@ -360,7 +362,7 @@ describe('dev tools endpoint: per-lib authorize', () => {
     const libOf = (id: string, verdict: unknown): DevToolsLib => ({
       lib: id,
       title: id,
-      authorize: (async () => verdict) as unknown as DevToolsLib['authorize'],
+      authorize: (async () => verdict) as unknown as LibAuthorize,
       tools: [read(`${id}_list_things`)],
     });
     booted = await bootApp(
@@ -767,5 +769,92 @@ describe('bridgeIdentity', () => {
     await bridgeIdentity(app, ctx, identity);
     expect((ctx as unknown as { authkit: unknown }).authkit).toEqual({ fromClient: true });
     expect(resolved).toBe(identity);
+  });
+});
+
+describe('dev tools endpoint: libs without a console (devTools.authorize)', () => {
+  const consoleless = (lib: string): DevToolsLib => ({
+    lib,
+    title: lib,
+    tools: [read(`${lib}_list_policies`)],
+  });
+
+  it('serves a lib registered without authorize, gated by devTools.authorize once per request', async () => {
+    let endpointCalls = 0;
+    booted = await bootApp(
+      {
+        devTools: {
+          authorize: (ctx) => {
+            endpointCalls += 1;
+            return ctx.request.header('authorization') === 'Bearer dev'
+              ? true
+              : { allowed: false, reason: 'unauthenticated' };
+          },
+        },
+      },
+      { libs: [...defaultLibs(), consoleless('resilience'), consoleless('authz')] },
+    );
+    expect(registered).toBe(true);
+    expect(await toolNames(booted.url)).toEqual(['telescope_list_entries']);
+    expect(endpointCalls).toBe(1);
+    expect(await toolNames(booted.url, 'dev')).toEqual([
+      'authz_list_policies',
+      'resilience_list_policies',
+      'telescope_list_entries',
+    ]);
+    expect(endpointCalls).toBe(2);
+
+    const denied = await rpc(`${booted.url}/mcp/agora`, callTool('resilience_list_policies'));
+    expect(denied.status).toBe(401);
+    const allowed = await rpc(
+      `${booted.url}/mcp/agora`,
+      callTool('resilience_list_policies'),
+      'dev',
+    );
+    expect(allowed.status).toBe(200);
+  });
+
+  it('never widens a lib with its own console', async () => {
+    booted = await bootApp(
+      { devTools: { authorize: () => true } },
+      { libs: [...defaultLibs(), consoleless('resilience')] },
+    );
+    const names = await toolNames(booted.url);
+    expect(names).toContain('resilience_list_policies');
+    expect(names).not.toContain('durable_list_runs');
+    expect(names).not.toContain('payments_list_payments');
+  });
+
+  it('omitted: open outside production', async () => {
+    booted = await bootApp({}, { libs: [consoleless('diagnostics')] });
+    expect(await toolNames(booted.url)).toEqual(['diagnostics_list_policies']);
+  });
+
+  it('omitted: refused in production', async () => {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      booted = await bootApp({}, { libs: [consoleless('diagnostics')] });
+      expect(booted.app.inProduction).toBe(true);
+      const response = await rpc(`${booted.url}/mcp/agora`, listTools);
+      expect(response.status).toBe(403);
+    } finally {
+      process.env.NODE_ENV = previous;
+    }
+  });
+
+  it('a throwing devTools.authorize refuses', async () => {
+    booted = await bootApp(
+      {
+        devTools: {
+          authorize: () => {
+            throw new Error('boom');
+          },
+        },
+      },
+      { libs: [consoleless('filter')] },
+    );
+    const response = await rpc(`${booted.url}/mcp/agora`, listTools);
+    expect(response.status).toBe(403);
   });
 });
