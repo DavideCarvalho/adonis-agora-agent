@@ -66,7 +66,22 @@ interface AccessorSlot {
 
 interface TenancySlot {
   version?: number;
+  tenancy?: AccessorSlot['tenancy'];
+  tenantFilter?: AccessorSlot['tenantFilter'];
   tenantLabels?: (ids: string[], kind?: string) => Promise<Record<string, string>>;
+}
+
+/**
+ * The tenancy reader: context's versioned `:tenancy` slot (v1) when present, else the `:accessor`
+ * slot's tenancy members (an earlier context), else nothing.
+ */
+function reader(): AccessorSlot | undefined {
+  const tenancy = slot<TenancySlot>(TENANCY);
+  if (tenancy?.version === 1 && typeof tenancy.tenantFilter === 'function') {
+    return tenancy as AccessorSlot;
+  }
+  const accessor = slot<AccessorSlot>(ACCESSOR);
+  return typeof accessor?.tenantFilter === 'function' ? accessor : undefined;
 }
 
 function slot<T>(key: symbol): T | undefined {
@@ -76,10 +91,10 @@ function slot<T>(key: symbol): T | undefined {
 
 /** Resolve the agent's `tenancy` option. With no (or an old) context, tenancy is off. */
 export function resolveAgentTenancy(option: AgentTenancyOption | undefined): ResolvedAgentTenancy {
-  const accessor = slot<AccessorSlot>(ACCESSOR);
+  const accessor = reader();
   const off: ResolvedAgentTenancy = { enabled: false, nullRows: 'tenantless' };
   if (option === false) return off;
-  if (typeof accessor?.tenantFilter !== 'function') return off;
+  if (accessor === undefined) return off;
   const own = typeof option === 'object' ? option : {};
   let context: { enabled?: boolean; kinds?: string[] } | undefined;
   try {
@@ -105,7 +120,7 @@ export function resolveAgentTenancy(option: AgentTenancyOption | undefined): Res
  */
 export function currentTenantFilter(tenancy: ResolvedAgentTenancy): TenantFilter {
   if (!tenancy.enabled) return { mode: 'system' };
-  const accessor = slot<AccessorSlot>(ACCESSOR);
+  const accessor = reader();
   // A `required: true` context throws here when there is no tenant: the caller refuses.
   {
     const filter = accessor?.tenantFilter?.(

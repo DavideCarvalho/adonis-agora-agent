@@ -39,6 +39,8 @@ function fakeContext(state: { enabled: boolean; kinds?: string[]; filter: Tenant
   };
   slots[TENANCY] = {
     version: 1,
+    tenancy: () => ({ enabled: state.enabled, ...(state.kinds ? { kinds: state.kinds } : {}) }),
+    tenantFilter: () => state.filter,
     tenantLabels: async (ids: string[]) =>
       Object.fromEntries(ids.map((id) => [id, `Org ${id.toUpperCase()}`])),
   };
@@ -60,8 +62,15 @@ afterEach(() => {
 });
 
 describe('tenancy reader', () => {
+  it('reads the accessor slot of an earlier context when there is no :tenancy slot', () => {
+    delete slots[TENANCY];
+    slots[ACCESSOR] = { tenancy: () => ({ enabled: true }), tenantFilter: () => orgA };
+    expect(currentTenantFilter(resolveAgentTenancy('inherit'))).toEqual(orgA);
+  });
+
   it('is off without context, with `false`, or when context has it off', () => {
     delete slots[ACCESSOR];
+    delete slots[TENANCY];
     expect(resolveAgentTenancy('inherit').enabled).toBe(false);
     fakeContext({ enabled: true, filter: orgA });
     expect(resolveAgentTenancy(false).enabled).toBe(false);
