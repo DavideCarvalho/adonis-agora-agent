@@ -26,6 +26,7 @@ export type {
   ConsoleAuthorizeResult,
   ConsoleAuthorizer,
   ConsoleAuthorizerClass,
+  ConsoleTenants,
 } from '../console-authorize.js';
 export {
   anyAuthorize,

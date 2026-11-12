@@ -16,6 +16,7 @@ import {
   type RecordRunStartInput,
   type RecordToolCallInput,
   type RecordUsageInput,
+  type StoreTenantScope,
   type ThreadTurnPage,
   type ThreadTurnQuery,
   type ThreadTurnReader,
@@ -67,6 +68,7 @@ import {
 } from './lucid-schema.js';
 import { portableSql } from './sql-dialect.js';
 import { withStoreTransaction } from './sqlite-transactions.js';
+import { tenantPredicate } from './tenant-sql.js';
 
 // ── Structural Lucid typing (copied from telescope) ──────────────────────────
 // The store touches only this slice of an AdonisJS Lucid `Database`, typed structurally so
@@ -551,6 +553,50 @@ export class LucidAgentStore
       .first();
     if (row === null || row === undefined) return null;
     return String(row.actor_ref);
+  }
+
+  async listThreadsInScope(
+    actorRef: string,
+    scope: StoreTenantScope,
+    limit = 50,
+  ): Promise<ThreadSummary[]> {
+    await this.init();
+    const tenant = tenantPredicate(scope);
+    const rows = rowsOf(
+      await this.db.rawQuery(
+        portableSql(
+          this.db,
+          `SELECT * FROM "${AGENT_TABLES.threads}" WHERE "actor_ref" = ? AND "transient" = 0 ` +
+            `AND "deleted_at" IS NULL AND ${tenant.sql} ORDER BY "updated_at" DESC LIMIT ${Math.max(1, Math.trunc(limit))}`,
+        ),
+        [actorRef, ...tenant.bindings],
+      ),
+    );
+    return rows.map((row) => threadRowToSummary(row));
+  }
+
+  async getThreadTenantRef(threadId: string): Promise<{ tenantRef: string | null } | null> {
+    await this.init();
+    const row = await this.db
+      .from(AGENT_TABLES.threads)
+      .where('id', threadId)
+      .whereNull('deleted_at')
+      .first();
+    if (row === null || row === undefined) return null;
+    return {
+      tenantRef:
+        row.tenant_ref === null || row.tenant_ref === undefined ? null : String(row.tenant_ref),
+    };
+  }
+
+  async getRunTenantRef(runId: string): Promise<{ tenantRef: string | null } | null> {
+    await this.init();
+    const row = await this.db.from(AGENT_TABLES.runs).where('id', runId).first();
+    if (row === null || row === undefined) return null;
+    return {
+      tenantRef:
+        row.tenant_ref === null || row.tenant_ref === undefined ? null : String(row.tenant_ref),
+    };
   }
 
   async listThreads(actorRef: string, limit = 50): Promise<ThreadSummary[]> {
@@ -1454,6 +1500,37 @@ export class LucidAgentStore
             `FROM "${AGENT_TABLES.tokenUsage}" WHERE "actor_ref" = ? AND "created_at" >= ? AND "created_at" <= ?${this.quotaPredicate()}`,
         ),
         [actorRef, Date.parse(`${fromDay}T00:00:00.000Z`), Date.parse(`${toDay}T23:59:59.999Z`)],
+      ),
+    );
+    return {
+      usedTokens: toInt(row?.used_tokens),
+      costUsd: Number(row?.cost_usd ?? 0),
+      estimatedCostUsd: Number(row?.estimated_cost_usd ?? 0),
+    };
+  }
+
+  async usageBetweenForTenant(
+    tenantRef: string,
+    fromDay: string,
+    toDay: string,
+    actorRef?: string,
+  ): Promise<UsageTotals> {
+    await this.init();
+    const bindings: unknown[] = [tenantRef];
+    if (actorRef !== undefined) bindings.push(actorRef);
+    bindings.push(Date.parse(`${fromDay}T00:00:00.000Z`), Date.parse(`${toDay}T23:59:59.999Z`));
+    const [row] = rowsOf(
+      await this.db.rawQuery(
+        portableSql(
+          this.db,
+          `SELECT COALESCE(SUM("input_tokens" + "output_tokens"), 0) AS used_tokens, ` +
+            `COALESCE(SUM("cost_usd"), 0) AS cost_usd, ` +
+            `COALESCE(SUM(CASE WHEN "cost_source" = 'estimate' THEN "cost_usd" ELSE 0 END), 0) AS estimated_cost_usd ` +
+            `FROM "${AGENT_TABLES.tokenUsage}" WHERE "tenant_ref" = ?` +
+            (actorRef !== undefined ? ` AND "actor_ref" = ?` : '') +
+            ` AND "created_at" >= ? AND "created_at" <= ?${this.quotaPredicate()}`,
+        ),
+        bindings,
       ),
     );
     return {

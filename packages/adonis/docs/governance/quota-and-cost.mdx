@@ -25,6 +25,17 @@ Without `quota`, `GET /agent/quota` still reports the day and month windows off 
 
 **Soft limit.** `quota: { limits, warnAt: 0.8 }` stamps `warnAt` on every ledger window that has a ceiling; past that share of it the report carries `warning: { period, ratio }` — the fullest such window, never while one is `blocked` — so a client can say "80% of today's budget used" before the send that gets refused. `quotaWarning(windows)` derives the same value from any report.
 
+**One budget per organization.** With [organizations](/docs/agent/governance/authorization#organizations) on, `per` picks whose usage a window sums:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  // …
+  quota: { limits: { month: { usd: 200 } }, per: 'tenant' },
+})
+```
+
+`'actor'` (the default) is the caller's own usage; `'tenant'` is everyone's in the active organization, so a team shares one budget; `'actor-in-tenant'` is the caller's usage inside that organization only. A caller with no organization is counted on its own usage.
+
 A budget of your own — an AI-gateway spend cap, a plan's allowance — is a `QuotaProvider` (`report({ actor, now? })`) passed as `quota`; its `blocked` gates sends the same way. A USD-only budget leaves `usedTokens` (and `limitTokens`) out of its windows rather than sending `0`; `exhaustedWindow` reads a missing `usedTokens` as `0`.
 
 Spend is what the usage rows recorded: the provider-reported cost of a gateway, **plus the loop's estimate** for a provider that reports none (Bedrock, or OpenAI and Anthropic called directly, priced off the [pricing table](#the-pricing-table)). So a `usd` ceiling binds on those too. Estimates are counted by default because otherwise a USD ceiling on a provider that reports no cost would read $0 and never block: the budget would exist but never enforce. To budget on provider-reported cost only, set `quota: { limits, countEstimatedCost: false }`. The month window needs a store with `usageBetween` (Lucid and in-memory have it). See [Estimated cost is persisted](#estimated-cost-is-persisted-and-the-quota-counts-it).

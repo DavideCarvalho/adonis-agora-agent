@@ -729,3 +729,35 @@ a.switcher-item:focus {
   color: var(--muted);
   font-size: 11px;
 }
+
+/* ── organization (tenant) control ── */
+.org-picker,
+.org-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.org-chip {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: var(--panel);
+}
+.org-label {
+  font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+}
+.org-empty {
+  color: var(--muted);
+}
+.org-search {
+  width: 120px;
+}
+.org-notice {
+  margin-bottom: 16px;
+  color: var(--muted);
+}

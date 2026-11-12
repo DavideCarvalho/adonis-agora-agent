@@ -30,7 +30,12 @@ import type {
   ActionProposalOutcomeLease,
   ActionProposalOutcomeStore,
 } from '../spi/action-proposal-outcome-store.js';
-import { type ForkThreadOptions, sumUsage, type UsageTotals } from '../spi/agent-store.js';
+import {
+  type ForkThreadOptions,
+  type StoreTenantScope,
+  sumUsage,
+  type UsageTotals,
+} from '../spi/agent-store.js';
 import { type ToolCallApprovalState, toolCallApprovalFromRow } from '../spi/approval-policy.js';
 import type {
   ChatQueueStore,
@@ -273,6 +278,30 @@ export class InMemoryAgentStore
 
   async getThreadActorRef(threadId: string): Promise<string | null> {
     return this.threads.get(threadId)?.actorRef ?? null;
+  }
+
+  async listThreadsInScope(
+    actorRef: string,
+    scope: StoreTenantScope,
+    limit = 50,
+  ): Promise<ThreadSummary[]> {
+    const visible = (ref: string | null) =>
+      ref === null ? scope.includeNull : scope.tenants.includes(ref);
+    return [...this.threads.values()]
+      .filter((row) => row.actorRef === actorRef && !row.transient && visible(row.tenantRef))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, limit)
+      .map((row) => this.toSummary(row));
+  }
+
+  async getThreadTenantRef(threadId: string): Promise<{ tenantRef: string | null } | null> {
+    const row = this.threads.get(threadId);
+    return row === undefined ? null : { tenantRef: row.tenantRef ?? null };
+  }
+
+  async getRunTenantRef(runId: string): Promise<{ tenantRef: string | null } | null> {
+    const row = this.runs.get(runId);
+    return row === undefined ? null : { tenantRef: row.tenantRef ?? null };
   }
 
   async listThreads(actorRef: string, limit = 50): Promise<ThreadSummary[]> {
@@ -953,6 +982,24 @@ export class InMemoryAgentStore
       this.usage.filter(
         (row) =>
           row.actorRef === actorRef &&
+          row.day >= fromDay &&
+          row.day <= toDay &&
+          row.countsTowardsQuota !== false,
+      ),
+    );
+  }
+
+  async usageBetweenForTenant(
+    tenantRef: string,
+    fromDay: string,
+    toDay: string,
+    actorRef?: string,
+  ): Promise<UsageTotals> {
+    return sumUsage(
+      this.usage.filter(
+        (row) =>
+          row.tenantRef === tenantRef &&
+          (actorRef === undefined || row.actorRef === actorRef) &&
           row.day >= fromDay &&
           row.day <= toDay &&
           row.countsTowardsQuota !== false,

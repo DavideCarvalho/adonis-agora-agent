@@ -1,5 +1,6 @@
 import type { ActionApprovalMode } from './action-proposal-receipt.js';
 import type { TextActionProposalConfig } from './action-proposal-text.js';
+import type { AgentTenancyOption } from './agora/tenancy.js';
 import type { BrandedFunctionalTool } from './ai-tool-ref.js';
 import type { AgentDashboardConfig } from './dashboard/define_config.js';
 import type { AgentEngine, AgentEngineFactory } from './engine.js';
@@ -61,7 +62,7 @@ import {
   stores,
   tokenSinks,
 } from './stores/factory.js';
-import type { QuotaLimits } from './stores/ledger-quota-provider.js';
+import type { QuotaLimits, QuotaScope } from './stores/ledger-quota-provider.js';
 import type { EmptyRoles } from './tool-registry.js';
 import type { ToolTransientRetrySetting } from './tool-retry.js';
 import type { Actor, AgentDefinition } from './types.js';
@@ -173,7 +174,24 @@ export interface AgentConfig {
    * reported cost only. The default (`true`) is there because otherwise a USD ceiling on Bedrock /
    * OpenAI / Anthropic direct would read $0 and never block.
    */
-  quota?: { limits: QuotaLimits; warnAt?: number; countEstimatedCost?: boolean } | QuotaProvider;
+  quota?:
+    | {
+        limits: QuotaLimits;
+        warnAt?: number;
+        countEstimatedCost?: boolean;
+        /**
+         * Whose usage counts: `'actor'` (default), `'tenant'` (the whole active organization shares
+         * one budget), or `'actor-in-tenant'` (the caller inside that organization).
+         */
+        per?: QuotaScope;
+      }
+    | QuotaProvider;
+  /**
+   * Scope threads, runs and usage by the active tenant (e.g. the organization) that
+   * `@adonis-agora/context` publishes. `'inherit'` (default) follows `tenancy.enabled` in
+   * `config/context.ts`; `false` opts the agent out. An actor resolver that sets `tenantRef` wins.
+   */
+  tenancy?: AgentTenancyOption;
   /**
    * Prices each turn's tokens into the assistant message's `usage.costUsd`. A provider-reported cost
    * (a gateway) always wins; otherwise the loop estimates from this store's current price rows (fetched

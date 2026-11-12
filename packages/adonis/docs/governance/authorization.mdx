@@ -162,6 +162,29 @@ if (!verdict.ok) {
 
 It decides only from the `authorize` you pass: with none it answers `{ ok: true }`, so keep the production default yourself on a route of your own.
 
+## Organizations
+
+When `config/context.ts` turns tenancy on, the agent scopes everything by the active organization
+(with authkit organizations, the one picked in the account menu). Nothing to write in the agent:
+
+```ts title="config/context.ts"
+export default defineConfig({
+  tenancy: { enabled: true, kinds: ['organization'] },
+})
+```
+
+- Every actor carries the organization as `tenantRef`, so new threads, runs and usage rows are
+  stamped with it. An `actorResolver` that sets `tenantRef` itself wins.
+- A thread or run of another organization answers `404` on every route (chat, stream, cancel,
+  approve, delete, fork), and `GET /agent/threads` lists only the organization's threads. A caller
+  with no organization sees only threads that have none.
+- `AgentService.recordUsage(...)` stamps the organization when you name no `tenantRef`.
+- [`quota: { per: 'tenant' }`](/docs/agent/governance/quota-and-cost#budgets) gives the organization one budget.
+
+To keep the agent unscoped while other libraries follow the organization, set `tenancy: false` in
+`config/agent.ts`. `tenancy: { nullRows: 'shared' }` also shows threads with no organization inside
+every organization.
+
 ## What governance covers
 
 - Which tools an actor's **role** may reach (this page).

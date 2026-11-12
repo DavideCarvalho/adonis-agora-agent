@@ -381,6 +381,23 @@ export interface AgentStore {
    */
   getThreadActorRef(threadId: string): Promise<string | null>;
   listThreads(actorRef: string, limit?: number): Promise<ThreadSummary[]>;
+  /**
+   * OPTIONAL (tenancy): {@link listThreads}, keeping only threads whose `tenant_ref` is one of
+   * `scope.tenants`, or NULL when `scope.includeNull`. Absent with tenancy on → the list is empty.
+   */
+  listThreadsInScope?(
+    actorRef: string,
+    scope: StoreTenantScope,
+    limit?: number,
+  ): Promise<ThreadSummary[]>;
+  /**
+   * OPTIONAL (tenancy): the `tenant_ref` a thread was created under (`{ tenantRef: null }` for none),
+   * or `null` when the thread is unknown. Absent with tenancy on → tenant-scoped requests cannot see
+   * any thread.
+   */
+  getThreadTenantRef?(threadId: string): Promise<{ tenantRef: string | null } | null>;
+  /** OPTIONAL (tenancy): the `tenant_ref` of a run (turn), or `null` when unknown. */
+  getRunTenantRef?(runId: string): Promise<{ tenantRef: string | null } | null>;
   softDeleteThread(threadId: string): Promise<void>;
   forkThread(
     threadId: string,
@@ -533,6 +550,17 @@ export interface AgentStore {
    * out and spend reads `0`.
    */
   usageBetween?(actorRef: string, fromDay: string, toDay: string): Promise<UsageTotals>;
+  /**
+   * OPTIONAL: a tenant's usage over the UTC days `fromDay`..`toDay` — every row stamped with
+   * `tenantRef`, or only `actorRef`'s when given. Feeds `quota: { per: 'tenant' | 'actor-in-tenant' }`;
+   * absent → those quotas fall back to the actor's own usage.
+   */
+  usageBetweenForTenant?(
+    tenantRef: string,
+    fromDay: string,
+    toDay: string,
+    actorRef?: string,
+  ): Promise<UsageTotals>;
 
   /** Open a run (turn) row at start. Replay-safe: the loop calls it under a durable step. */
   recordRunStart(input: RecordRunStartInput): Promise<void>;
@@ -571,4 +599,10 @@ export async function clearActiveRun(
     return;
   }
   await store.setActiveStream(threadId, null);
+}
+
+/** A tenant set a tenant-aware read is scoped to: these ids, plus rows with no tenant when `includeNull`. */
+export interface StoreTenantScope {
+  tenants: readonly string[];
+  includeNull: boolean;
 }

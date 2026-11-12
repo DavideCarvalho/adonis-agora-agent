@@ -497,4 +497,12 @@ export interface AgentGovernanceQueries {
    * "Generative UI" page). Absent → `GET <governance>/genui` answers `501`.
    */
   genuiStats?(range: GovernanceRange): Promise<GenuiStats>;
+  /**
+   * OPTIONAL (tenancy): a view of this read-model scoped to `scope` — only rows whose `tenant_ref`
+   * is one of `scope.tenants`, or NULL when `scope.includeNull`. What the console reads when
+   * tenancy is on. Absent → a tenant-scoped console answers `501`.
+   */
+  forTenants?(scope: { tenants: readonly string[]; includeNull: boolean }): AgentGovernanceQueries;
+  /** OPTIONAL (tenancy): the tenant ids that own threads or runs, for the console's organization picker. */
+  listTenants?(limit?: number): Promise<string[]>;
 }

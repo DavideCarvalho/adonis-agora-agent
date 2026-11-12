@@ -1,5 +1,9 @@
 import type { HttpContext } from '@adonisjs/core/http';
-import { type AgentConsoleAuthorize, consoleAuthorizeFor } from './console-authorize.js';
+import {
+  type AgentConsoleAuthorize,
+  type ConsoleTenants,
+  consoleAuthorizeFor,
+} from './console-authorize.js';
 import type { Actor } from './types.js';
 
 /** The decision {@link evaluateGovernanceGate} returns: proceed, or reply `status` with `error`. */
@@ -16,6 +20,8 @@ export interface GovernanceGateVerdict {
   detail?: string;
   /** Where to send a page navigation instead, when the gate returned `{ redirectTo }`. */
   redirectTo?: string;
+  /** When allowed: the tenants `authorize` granted (`'*'` or ids); absent = the viewer's own. */
+  tenants?: ConsoleTenants;
 }
 
 /**
@@ -39,7 +45,11 @@ export async function evaluateGovernanceGate(
 ): Promise<GovernanceGateVerdict> {
   if (authorize === undefined) return { ok: true, status: 200 };
   const decision = await consoleAuthorizeFor(authorize)(ctx, actor);
-  if (decision.allowed) return { ok: true, status: 200 };
+  if (decision.allowed) {
+    return decision.tenants === undefined
+      ? { ok: true, status: 200 }
+      : { ok: true, status: 200, tenants: decision.tenants };
+  }
   if (decision.error !== undefined) {
     return {
       ok: false,

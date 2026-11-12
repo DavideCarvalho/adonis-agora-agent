@@ -113,6 +113,11 @@ export default defineConfig({
 })
 ```
 
+With organizations on, `per` picks whose usage a window sums (`'actor'` default;
+`'tenant'` shares one budget across the active organization, `'actor-in-tenant'` counts the
+caller's rows inside it). Source: `packages/adonis/src/stores/ledger-quota-provider.ts`
+(`QuotaScope`, `per`).
+
 Spend (`usd`) is what the ledger recorded: provider-reported cost plus the loop's estimate for a provider that reports none (marked `cost_source = 'estimate'`); `quota: { limits, countEstimatedCost: false }` budgets on provider-reported cost only. A budget of your own is a
 `QuotaProvider` (`report({ actor })`) passed as `quota`. `quotas.ledger` / `quotas.memory`,
 `LedgerQuotaStore` and `GET /agent/quota/today` were removed in 0.46.
@@ -415,7 +420,8 @@ export default defineConfig({ model })
 ```
 
 ```ts
-// Correct — limits apply per actor, i.e. per browser in anonymous mode.
+// Correct — by default limits apply per actor, i.e. per browser in anonymous mode
+// (`per: 'tenant'` shares one budget across the active organization instead).
 export default defineConfig({ model, quota: { limits: { day: { tokens: 50_000 } } } })
 ```
 

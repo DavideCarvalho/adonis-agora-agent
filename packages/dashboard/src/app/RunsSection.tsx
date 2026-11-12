@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { pageTenant } from '../client/agent-client.js';
 import { formatCount, formatDuration, formatTimestamp, formatUsd } from '../client/format.js';
 import type { ListRunsFilter, RunStatus } from '../client/types.js';
 import { RunDetailView } from './RunDetailView.js';
@@ -28,6 +29,9 @@ export function RunsSection({ initialRunId = null }: { initialRunId?: string | n
   );
 
   const { runs, nextCursor, loading, error, loadMore } = useRuns(filter);
+
+  // Across several organizations (tenancy, no single one picked), say whose each run is.
+  const showTenant = pageTenant() === null && runs.some((run) => run.tenantRef != null);
 
   if (selected) return <RunDetailView runId={selected} onBack={() => setSelected(null)} />;
 
@@ -79,6 +83,7 @@ export function RunsSection({ initialRunId = null }: { initialRunId?: string | n
                   <th>Run</th>
                   <th>Agent</th>
                   <th>Actor</th>
+                  {showTenant && <th>Organization</th>}
                   <th>Status</th>
                   <th className="num">Steps</th>
                   <th className="num">Tokens</th>
@@ -107,6 +112,7 @@ export function RunsSection({ initialRunId = null }: { initialRunId?: string | n
                     <td className="mono muted" title={run.actorRef}>
                       {run.actorRef}
                     </td>
+                    {showTenant && <td className="mono muted">{run.tenantRef ?? '—'}</td>}
                     <td>
                       <StatusPill status={run.status} />
                     </td>

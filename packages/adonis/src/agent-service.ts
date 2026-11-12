@@ -9,6 +9,14 @@ import {
 import { utcDay } from './agent-deps.js';
 import type { AgentDepsFactory } from './agent-deps-factory.js';
 import {
+  currentTenantFilter,
+  currentTenantRef,
+  inScope,
+  type ResolvedAgentTenancy,
+  scopeOfFilter,
+  withTenantRef,
+} from './agora/tenancy.js';
+import {
   type AttachmentLimits,
   DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES,
   DEFAULT_MAX_ATTACHMENT_BYTES,
@@ -26,6 +34,7 @@ import {
   type ForkThreadOptions,
   PLATFORM_ACTOR_REF,
   type RecordUsageInput,
+  type StoreTenantScope,
 } from './spi/agent-store.js';
 import {
   type ApprovalDecisionRef,
@@ -233,6 +242,11 @@ export interface AgentServiceOptions {
   queue?: ChatQueueService;
   actionProposals?: ActionProposalService;
   backgroundActorResolver?: BackgroundActorResolver;
+  /**
+   * The agent's resolved `tenancy`. On → an actor with no `tenantRef` takes the active tenant's id
+   * (from `@adonis-agora/context`), and `recordUsage` stamps it when the caller names none.
+   */
+  tenancy?: ResolvedAgentTenancy;
 }
 
 /** A send's attachments were refused — `status` is what the chat route answers (`403`, `501`). */
@@ -515,6 +529,7 @@ export class AgentService {
 
   /** The actor's budget across windows (`GET <path>/quota`). */
   async quotaReport(actor: Actor): Promise<QuotaReport> {
+    actor = this.withTenant(actor);
     if (this.options.quota !== undefined) {
       return this.options.quota.provider.report({ actor });
     }
@@ -530,6 +545,7 @@ export class AgentService {
     if (this.options.quota?.gated !== true) {
       return;
     }
+    actor = this.withTenant(actor);
     const { blocked } = await this.options.quota.provider.report({ actor });
     if (blocked !== undefined) {
       throw new QuotaBlockedError(
@@ -561,7 +577,16 @@ export class AgentService {
    * (its thread already has a turn running) is refused with a `409 run_active`
    * {@link ChatQueueError} instead; {@link send} is the form that queues it.
    */
+  /**
+   * `actor` with its `tenantRef` filled from the active tenant when tenancy is on and the actor has
+   * none. A resolver that set `tenantRef` (even to `null`) wins.
+   */
+  withTenant(actor: Actor): Actor {
+    return withTenantRef(actor, this.options.tenancy);
+  }
+
   async chat(params: ChatParams): Promise<{ runId: string; threadId: string }> {
+    params = { ...params, actor: this.withTenant(params.actor) };
     const result = await this.sendTurn(withValidCapabilities({ ...params, mode: 'auto' }));
     if (result.queued !== true) {
       return result;
@@ -588,7 +613,7 @@ export class AgentService {
    * to run after it (see {@link ChatSendMode}). What `POST <path>/chat` calls.
    */
   async send(params: ChatParams, options: ChatSendOptions = {}): Promise<ChatSendResult> {
-    params = withValidCapabilities(params);
+    params = withValidCapabilities({ ...params, actor: this.withTenant(params.actor) });
     if (
       options.textDecisions !== false &&
       params.threadId !== undefined &&
@@ -1015,12 +1040,36 @@ export class AgentService {
   async runOwner(runId: string): Promise<string | null> {
     const recorded = await this.store.getRunActorRef(runId);
     if (recorded !== null) {
-      return recorded;
+      return (await this.runVisible(runId)) ? recorded : null;
     }
     const threadId = await this.store.threadHeldByRun?.(runId);
-    return threadId === undefined || threadId === null
-      ? null
-      : this.store.getThreadActorRef(threadId);
+    return threadId === undefined || threadId === null ? null : this.threadOwner(threadId);
+  }
+
+  /**
+   * The tenant scope of the current request, or `undefined` when nothing is filtered (tenancy off,
+   * no request context, `Context.allTenants()`).
+   */
+  tenantScope(): StoreTenantScope | undefined {
+    const tenancy = this.options.tenancy;
+    if (tenancy === undefined || !tenancy.enabled) return undefined;
+    return scopeOfFilter(currentTenantFilter(tenancy), tenancy.nullRows);
+  }
+
+  /** Whether the current request may see this run under tenancy (not found otherwise). */
+  private async runVisible(runId: string): Promise<boolean> {
+    const scope = this.tenantScope();
+    if (scope === undefined) return true;
+    const row = await this.store.getRunTenantRef?.(runId);
+    return row !== undefined && row !== null && inScope(scope, row.tenantRef);
+  }
+
+  /** Whether the current request may see this thread under tenancy (not found otherwise). */
+  private async threadVisible(threadId: string): Promise<boolean> {
+    const scope = this.tenantScope();
+    if (scope === undefined) return true;
+    const row = await this.store.getThreadTenantRef?.(threadId);
+    return row !== undefined && row !== null && inScope(scope, row.tenantRef);
   }
 
   /** The owning actor ref of a thread, or `null` if unknown — for per-actor route ownership checks. */
@@ -1029,8 +1078,14 @@ export class AgentService {
     return (await this.store.getToolCallRunId?.(toolCallId)) ?? null;
   }
 
-  threadOwner(threadId: string): Promise<string | null> {
-    return this.store.getThreadActorRef(threadId);
+  /**
+   * The owning actor ref of a thread, or `null` when unknown — or, with tenancy on, when the thread
+   * belongs to another tenant than the request's (answered as not found).
+   */
+  async threadOwner(threadId: string): Promise<string | null> {
+    const owner = await this.store.getThreadActorRef(threadId);
+    if (owner === null) return null;
+    return (await this.threadVisible(threadId)) ? owner : null;
   }
 
   /**
@@ -1330,7 +1385,12 @@ export class AgentService {
   }
 
   async listThreads(actorRef: string): Promise<ThreadSummary[]> {
-    return (await this.store.listThreads(actorRef)).map((thread) => this.withPinnedPersona(thread));
+    const scope = this.tenantScope();
+    const threads =
+      scope === undefined
+        ? await this.store.listThreads(actorRef)
+        : ((await this.store.listThreadsInScope?.(actorRef, scope)) ?? []);
+    return threads.map((thread) => this.withPinnedPersona(thread));
   }
 
   /**
@@ -1620,6 +1680,11 @@ export class AgentService {
    */
   async recordUsage(input: AiUsageInput, options: AiUsageOptions = {}): Promise<AiUsageResult> {
     try {
+      const tenancy = this.options.tenancy;
+      if (input.tenantRef === undefined && tenancy?.enabled === true) {
+        const tenantRef = currentTenantRef(tenancy);
+        if (tenantRef !== null) input = { ...input, tenantRef };
+      }
       const row = usageRow(input);
       await recordUsageRow(this.store, row);
       const tokens = row.usage.inputTokens + row.usage.outputTokens;

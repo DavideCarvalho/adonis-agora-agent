@@ -103,9 +103,12 @@ authorization"), `packages/adonis/src/authorizer.ts`,
 ### Pattern 2 — gate the console and `/agent/governance/*` with `dashboard.authorize`
 
 One option gates both the console page and the cross-actor `/agent/governance/*` read routes
-(and, when set, grants cross-actor privilege on run/thread routes). `governanceAuthorize` no
+(and, when set, grants cross-actor privilege on run/thread routes — still only inside the
+request's organization when tenancy is on, where another organization's thread or run answers
+404). `governanceAuthorize` no
 longer exists. Omitted: open outside production, `403` on every request in production, with
-one boot warning.
+one boot warning. With tenancy on, the console reads only the viewer's organization unless
+`authorize` returns `{ allowed: true, tenants: '*' | string[] }`.
 
 ```ts
 // config/agent.ts — ctx first; the resolved actor is an optional 2nd argument.
@@ -146,7 +149,8 @@ if (!verdict.ok) return ctx.response.status(verdict.status).json({ error: verdic
 ```
 
 Unknown ids deliberately reply 404, never 403, so a response never confirms to a caller
-that an id they don't own exists.
+that an id they don't own exists. With tenancy on, a thread or run of another organization
+answers 404 the same way, and `GET /agent/threads` lists only the request's organization.
 
 Source: `packages/adonis/docs/governance/authorization.mdx` ("Object-level ownership"),
 `packages/adonis/src/ownership.ts`.
@@ -180,7 +184,8 @@ export default defineConfig({ store: 'lucid', stores: { lucid: stores.lucid() } 
 ```
 
 ```ts
-// Correct — decide who may read every actor's spend/threads/approvals.
+// Correct — decide who may read spend/threads/approvals (with tenancy on, only the
+// viewer's organization unless `tenants: '*' | ids` widens it).
 export default defineConfig({
   ...,
   dashboard: { authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false },
@@ -228,7 +233,8 @@ if (!verdict.ok) return ctx.response.status(verdict.status).json({ error: verdic
 
 Mechanism: `dashboard.authorize` takes the console `authorize` shared by every
 `@adonis-agora/*` console — a function `(ctx, actor?)`, an authorizer class, or a lazy import — and return `boolean | { allowed: boolean; reason?: 'unauthenticated' | 'forbidden' } |
-{ redirectTo: string }`.
+{ allowed: true; tenants?: '*' | string[] } | { redirectTo: string }` (with tenancy on,
+omitted `tenants` means the viewer's own organization).
 Source: `packages/adonis/src/console-authorize.ts`, `packages/adonis/src/governance-gate.ts`.
 
 ### MEDIUM — giving a per-agent resolver a different identity than the global one

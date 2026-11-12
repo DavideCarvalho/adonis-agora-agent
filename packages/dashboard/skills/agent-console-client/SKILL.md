@@ -28,7 +28,9 @@ sources:
 
 `@adonis-agora/agent-dashboard` is a read-only React SPA over `@adonis-agora/agent`'s
 cross-actor `/agent/governance/*` read routes — spend by model/actor, usage trend,
-threads, tool calls, quota, and the HITL approvals inbox. Since agent@0.21.0 the same SPA
+threads, tool calls, quota, and the HITL approvals inbox. With tenancy on, those reads are
+scoped to the viewer's organization (the header Organization picker keeps the choice in
+`?tenant=`; `tenants` on the `authorize` result widens it). Since agent@0.21.0 the same SPA
 ships EMBEDDED in `@adonis-agora/agent`; this package remains for standalone installs and
 for its framework-free browser client.
 
@@ -98,7 +100,9 @@ await client.rejectToolCall(runId, toolCallId, 'not this account')
 await client.upsertPrice({ modelId: 'gpt-4o-mini', inputPricePer1m: 0.15, outputPricePer1m: 0.6 })
 ```
 
-Non-2xx responses throw `AgentApiError` carrying the HTTP status for branching.
+Non-2xx responses throw `AgentApiError` carrying the HTTP status for branching. With
+tenancy on, governance reads send the page's `?tenant=` automatically (`tenant` option;
+`client.tenants()` reads `GET /governance/tenants` for the picker).
 
 Source: `packages/dashboard/src/client/agent-client.ts`, `packages/dashboard/src/client/index.ts`.
 
