@@ -124,10 +124,28 @@ export function poppyConnectionTableStatements(): string[] {
   ];
 }
 
+/**
+ * The connection table's primary key on MySQL. `("owner", "issuer")` is 255 + 1024 utf8mb4
+ * characters — 5116 bytes, past InnoDB's 3072-byte key limit, so the table could not be created
+ * there. MySQL keys on a stored SHA-256 of the issuer instead, computed by the database itself
+ * (`issuer_hash`, a generated column the store never writes): 32 bytes, and unique exactly when the
+ * issuer's bytes are, as on Postgres and SQLite. Reads still filter on `issuer`. A prefix index would
+ * have fit but made two issuers sharing their first characters collide.
+ *
+ * No install needs repairing: the old statement always failed on MySQL, so no table of that shape
+ * was ever created there by this library.
+ */
+function withMySqlConnectionKey(statement: string): string {
+  return statement.replace(
+    'PRIMARY KEY ("owner", "issuer")',
+    '"issuer_hash" BINARY(32) AS (UNHEX(SHA2("issuer", 256))) STORED,\n      PRIMARY KEY ("owner", "issuer_hash")',
+  );
+}
+
 export async function ensurePoppyConnectionTables(db: LucidRawRunner): Promise<void> {
   const mysql = isMySql(db);
   for (const statement of poppyConnectionTableStatements()) {
-    await db.rawQuery(forDialect(statement, mysql));
+    await db.rawQuery(forDialect(mysql ? withMySqlConnectionKey(statement) : statement, mysql));
   }
 }
 

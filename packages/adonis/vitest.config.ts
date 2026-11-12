@@ -27,6 +27,7 @@ const LUCID_STORE_SPECS = [
   'test/lucid-confirm-token-store.spec.ts',
   'test/lucid-store.spec.ts',
   'test/message-fields.spec.ts',
+  'test/poppy-connections/stores.spec.ts',
   'test/pricing.spec.ts',
   'test/run-fields.spec.ts',
   'test/run-tracing-spans.spec.ts',
