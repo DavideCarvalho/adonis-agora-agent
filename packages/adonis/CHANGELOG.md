@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.11
+
+### Patch Changes
+
+- [#587](https://github.com/DavideCarvalho/adonis-agora-agent/pull/587) [`9a13bdc`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/9a13bdc06e61cde6c4a741b92d752ee9628eac39) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `agora:doctor` no longer reports the dev tools as off when `config/mcp.ts` is missing. With `mcp_provider` registered, the provider mounts `/mcp/agora` on an empty config. The doctor now resolves the config the same way through shared code (`resolveDevTools` / `readMcpConfig`), so `agent.mcp-csrf` and `agent.dev-tools-gate` check that endpoint. The MCP checks skip only when nothing serves MCP or `devTools: false` is set.
+
 ## 1.0.0-rc.10
 
 ### Minor Changes
