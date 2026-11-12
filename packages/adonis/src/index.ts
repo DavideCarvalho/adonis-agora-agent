@@ -14,6 +14,7 @@ export const VERSION = '1.0.0-rc.4';
 // AdonisJS imports the package MAIN and reads `configure` off the module namespace —
 // the `./configure` subpath alone is never consulted.
 export { configure } from '../configure.js';
+export type { AgentAccountConsoleOptions } from './account-console/extension.js';
 export * from './action-proposal-discovery.js';
 export { prepareActionProposal } from './action-proposal-preparation.js';
 export * from './action-proposal-transitions.js';

@@ -1,0 +1,60 @@
+---
+title: Account console pages
+description: Your users see their AI usage, their conversations, their connected agents and the actions waiting for their approval in the authkit account console — no code.
+icon: UserCog
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+When `@adonis-agora/authkit-server` runs in the same app, the agent adds four pages to the account
+console (`/account/*`), the page every signed-in user already has:
+
+| Page | URL | What the user sees and does |
+| --- | --- | --- |
+| AI usage | `/account/ai` | A meter per budget window (today, this month), in tokens and in spend when a USD ceiling is set, and a notice when the budget is running out or used up. |
+| Conversations | `/account/conversations` | Their conversations, newest first, paged. **Delete** asks for confirmation. |
+| Connected agents | `/account/connected-agents` | The companies their assistant is connected to through [Poppy connections](/docs/agent/poppy-connections), with **Disconnect** (asks for a recent sign-in). Only when `poppy_connections_provider` is registered. |
+| Approvals | `/account/approvals` | The actions their assistant is waiting to run, with what it would run them with. **Approve** and **Reject** (with an optional reason). Only with a governance read-model. |
+
+Each page only ever shows the signed-in account's own data, and an action on anything else answers
+"not found". Approving here follows the same rules as in your app: the call must still be waiting
+and not expired, and a call whose approver is a role is decided only by someone who holds it. The
+decision is recorded with `via: 'account-console'`.
+
+## Configure it
+
+Nothing is required. To tune it, `config/agent.ts`:
+
+```ts title="config/agent.ts"
+import { defineConfig } from '@adonis-agora/agent'
+import User from '#models/user'
+
+export default defineConfig({
+  // …
+  accountConsole: {
+    // Link each conversation (and each approval) to your chat page.
+    threadUrl: (threadId) => `/chat/${threadId}`,
+    // The agent actor of an account. Default: the app user authkit maps the account to, else the
+    // account id, with the account's roles.
+    actor: async (account) => {
+      const user = await User.findByOrFail('accountId', account.id)
+      return { id: String(user.id), roles: user.roles }
+    },
+    pages: { approvals: false },
+  },
+})
+```
+
+`accountConsole: false` adds no page. Rename or reorder the pages from `config/authkit.ts`
+(`account.extensions.agent`).
+
+## Organizations
+
+With [organizations](/docs/agent/governance/authorization#organizations) on, the pages follow the
+organization picked in the account menu: usage is that organization's budget (with
+`quota: { per: 'tenant' }`), and conversations and approvals are the ones started in it.
+
+<Callout title="IdP in another app">
+When authkit-server runs in another app and yours only signs in through it, the same pages are
+served by your app to the IdP; there is nothing to configure in the agent.
+</Callout>

@@ -1056,6 +1056,16 @@ export class AgentService {
     return scopeOfFilter(currentTenantFilter(tenancy), tenancy.nullRows);
   }
 
+  /** The tenant a thread was created under (`null` → none), or `null` when the thread is unknown. */
+  async threadTenantRef(threadId: string): Promise<{ tenantRef: string | null } | null> {
+    return (await this.store.getThreadTenantRef?.(threadId)) ?? null;
+  }
+
+  /** The tenant a run belongs to (`null` → none), or `null` when the run is unknown. */
+  async runTenantRef(runId: string): Promise<{ tenantRef: string | null } | null> {
+    return (await this.store.getRunTenantRef?.(runId)) ?? null;
+  }
+
   /** Whether the current request may see this run under tenancy (not found otherwise). */
   private async runVisible(runId: string): Promise<boolean> {
     const scope = this.tenantScope();
@@ -1384,12 +1394,24 @@ export class AgentService {
     return [...this.deps.forAgent(agentName).personas.values()].map(personaCatalogEntry);
   }
 
-  async listThreads(actorRef: string): Promise<ThreadSummary[]> {
-    const scope = this.tenantScope();
+  async listThreads(
+    actorRef: string,
+    options: {
+      /** Most threads to return (the store's default when omitted). */
+      limit?: number;
+      /**
+       * The tenant scope to list in, overriding the request's: `null` lists every tenant's. Omitted →
+       * the request's own (see {@link tenantScope}).
+       */
+      tenantScope?: StoreTenantScope | null;
+    } = {},
+  ): Promise<ThreadSummary[]> {
+    const scope =
+      options.tenantScope === undefined ? this.tenantScope() : (options.tenantScope ?? undefined);
     const threads =
       scope === undefined
-        ? await this.store.listThreads(actorRef)
-        : ((await this.store.listThreadsInScope?.(actorRef, scope)) ?? []);
+        ? await this.store.listThreads(actorRef, options.limit)
+        : ((await this.store.listThreadsInScope?.(actorRef, scope, options.limit)) ?? []);
     return threads.map((thread) => this.withPinnedPersona(thread));
   }
 

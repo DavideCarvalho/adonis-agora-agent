@@ -1,3 +1,4 @@
+import type { AgentAccountConsoleOptions } from './account-console/extension.js';
 import type { ActionApprovalMode } from './action-proposal-receipt.js';
 import type { TextActionProposalConfig } from './action-proposal-text.js';
 import type { AgentTenancyOption } from './agora/tenancy.js';
@@ -192,6 +193,13 @@ export interface AgentConfig {
    * `config/context.ts`; `false` opts the agent out. An actor resolver that sets `tenantRef` wins.
    */
   tenancy?: AgentTenancyOption;
+  /**
+   * The agent's pages in the authkit account console (`/account/ai`, conversations, connected
+   * agents, approvals), registered automatically when `@adonis-agora/authkit-server` runs in the
+   * app. `false` registers nothing; the object maps an account to the agent actor, links
+   * conversations to your chat, and turns single pages off.
+   */
+  accountConsole?: false | AgentAccountConsoleOptions;
   /**
    * Prices each turn's tokens into the assistant message's `usage.costUsd`. A provider-reported cost
    * (a gateway) always wins; otherwise the loop estimates from this store's current price rows (fetched
