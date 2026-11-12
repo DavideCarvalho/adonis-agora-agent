@@ -2,6 +2,7 @@ import type { ApplicationService } from '@adonisjs/core/types';
 import { resolveAgentTenancy } from '../agora/tenancy.js';
 import { resolveDashboardConfig } from '../dashboard/define_config.js';
 import { csrfBlocksPath } from '../dev-tools/csrf.js';
+import { DEV_TOOLS_BINDING, resolveDevTools } from '../dev-tools/resolve.js';
 import { normalizeMcpPath } from '../mcp/discovery.js';
 import { schemaExists } from '../stores/db-schema.js';
 import type { LucidDatabaseLike } from '../stores/lucid.js';
@@ -17,8 +18,18 @@ function agentConfig(app: ApplicationService): AnyConfig | undefined {
   return app.config.get<AnyConfig | undefined>('agent', undefined);
 }
 
-function mcpConfig(app: ApplicationService): AnyConfig | undefined {
-  return app.config.get<AnyConfig | undefined>('mcp', undefined);
+/** What the checks say when nothing serves MCP. */
+const MCP_OFF = 'MCP is not mounted (no config/mcp.ts and mcp_provider is not registered).';
+
+/**
+ * The MCP config `mcp_provider` runs with, or `undefined` when nothing serves MCP. A missing
+ * `config/mcp.ts` is NOT "off": with the provider registered (its dev tools hub is bound) it runs
+ * on an empty config, i.e. every default — `/mcp` and the dev tools at `/mcp/agora`.
+ */
+export function mcpConfig(app: ApplicationService): AnyConfig | undefined {
+  const config = app.config.get<AnyConfig | undefined>('mcp', undefined);
+  if (config !== undefined) return config;
+  return app.container.hasBinding(DEV_TOOLS_BINDING as never) ? {} : undefined;
 }
 
 /** `agent.console-gate`: the governance console has an `authorize`. */
@@ -66,7 +77,7 @@ export function checkActorResolver(
 
 /** `agent.mcp-open`: the product MCP endpoint runs with a fixed `actor` (no auth) in production. */
 export function checkMcpOpen(mcp: AnyConfig | undefined, inProduction: boolean): AgoraDoctorResult {
-  if (mcp === undefined) return { status: 'skip', message: 'config/mcp.ts is missing.' };
+  if (mcp === undefined) return { status: 'skip', message: MCP_OFF };
   const open: string[] = [];
   if (mcp.auth === undefined && mcp.actor !== undefined)
     open.push(`/${normalizeMcpPath(mcp.path as string | undefined)}`);
@@ -88,7 +99,7 @@ export function checkMcpOpen(mcp: AnyConfig | undefined, inProduction: boolean):
 
 /** `agent.mcp-execute`: action tools served over MCP without an authorizer. */
 export function checkMcpExecute(mcp: AnyConfig | undefined): AgoraDoctorResult {
-  if (mcp === undefined) return { status: 'skip', message: 'config/mcp.ts is missing.' };
+  if (mcp === undefined) return { status: 'skip', message: MCP_OFF };
   const executes =
     mcp.actions === 'execute' ||
     ((mcp.endpoints as AnyConfig[] | undefined) ?? []).some((e) => e.actions === 'execute');
@@ -107,15 +118,13 @@ export function checkMcpExecute(mcp: AnyConfig | undefined): AgoraDoctorResult {
 
 /** `agent.mcp-csrf`: every MCP path is exempt from shield's CSRF check. */
 export function checkMcpCsrf(mcp: AnyConfig | undefined, shield: unknown): AgoraDoctorResult {
-  if (mcp === undefined) return { status: 'skip', message: 'config/mcp.ts is missing.' };
+  if (mcp === undefined) return { status: 'skip', message: MCP_OFF };
   const paths = [normalizeMcpPath(mcp.path as string | undefined)];
   for (const endpoint of (mcp.endpoints as AnyConfig[] | undefined) ?? []) {
     paths.push(normalizeMcpPath(endpoint.path as string | undefined));
   }
-  if (mcp.devTools !== false) {
-    const devTools = (mcp.devTools as AnyConfig | undefined) ?? {};
-    paths.push(normalizeMcpPath((devTools.path as string | undefined) ?? 'mcp/agora'));
-  }
+  const devTools = resolveDevTools(mcp as never);
+  if (devTools !== null) paths.push(devTools.path);
   const blocked = paths.filter((path) => csrfBlocksPath(shield, path)).map((path) => `/${path}`);
   if (blocked.length === 0) return { status: 'ok', message: 'No MCP path is blocked by CSRF.' };
   return {
@@ -132,13 +141,15 @@ export function checkDevToolsGate(
   consoleless: readonly string[],
   inProduction: boolean,
 ): AgoraDoctorResult {
-  if (mcp === undefined || mcp.devTools === false) {
-    return { status: 'skip', message: 'The dev tools endpoint is off.' };
+  if (mcp === undefined) return { status: 'skip', message: MCP_OFF };
+  const devTools = resolveDevTools(mcp as never);
+  if (devTools === null) {
+    return { status: 'skip', message: 'The dev tools endpoint is off (`devTools: false`).' };
   }
   if (consoleless.length === 0) {
     return { status: 'skip', message: 'No lib without a console serves dev tools.' };
   }
-  if ((mcp.devTools as AnyConfig | undefined)?.authorize !== undefined) {
+  if (devTools.authorize !== undefined) {
     return { status: 'ok', message: 'devTools.authorize gates the libs without a console.' };
   }
   return {

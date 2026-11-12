@@ -33,5 +33,9 @@ NODE_ENV=production node ace agora:doctor --json --strict
 | `agent.tenancy-store` | With organizations on, the agent store can scope threads and runs. | Error. |
 | `agent.db-schema` | Only with a [`schema`](/docs/agent/stores/lucid#database-schema), under `--deep`: the schema exists, every agent table is in it, and the connection can write there. | Error. |
 
+The MCP checks read `config/mcp.ts` the way `mcp_provider` does. Without that file, a registered
+provider still mounts `/mcp` and the dev tools at `/mcp/agora` with every default, so the checks
+cover them. They skip only when the provider is not registered, or for `devTools: false`.
+
 Every lib also reports `agent.peers` (peer dependencies in range) and `agent.agora-siblings`
 (Agora libs of one release line).
