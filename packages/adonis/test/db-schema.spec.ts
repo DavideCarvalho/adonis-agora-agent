@@ -309,33 +309,29 @@ for (const backend of REAL) {
       );
     });
 
-    if (backend === 'postgres') {
-      // Postgres only: on MySQL the connection table's primary key (owner + a 1024-char issuer) is
-      // past InnoDB's 3072-byte key limit with or without a schema — a separate, existing issue.
-      it('the Poppy-connections store keeps its tables in the schema', async () => {
-        const { db } = await open();
-        const schema = schemaFor();
-        const now = Date.now();
-        const connections = new LucidPoppyConnectionStore(db as never, { schema });
-        await connections.saveConnection({
-          owner: 'o1',
-          issuer: 'https://company.example',
-          domain: 'company.example',
-          organization: 'Company',
-          scope: 'read',
-          status: 'active',
-          state: 'sealed',
-          createdAt: now,
-          updatedAt: now,
-        });
-        expect((await connections.listConnections('o1')).map((c) => c.domain)).toEqual([
-          'company.example',
-        ]);
-        expect(await tablesOf(backend, db, schema)).toEqual(
-          ['agent_poppy_connect', 'agent_poppy_connection'].sort(),
-        );
+    it('the Poppy-connections store keeps its tables in the schema', async () => {
+      const { db } = await open();
+      const schema = schemaFor();
+      const now = Date.now();
+      const connections = new LucidPoppyConnectionStore(db as never, { schema });
+      await connections.saveConnection({
+        owner: 'o1',
+        issuer: 'https://company.example',
+        domain: 'company.example',
+        organization: 'Company',
+        scope: 'read',
+        status: 'active',
+        state: 'sealed',
+        createdAt: now,
+        updatedAt: now,
       });
-    }
+      expect((await connections.listConnections('o1')).map((c) => c.domain)).toEqual([
+        'company.example',
+      ]);
+      expect(await tablesOf(backend, db, schema)).toEqual(
+        ['agent_poppy_connect', 'agent_poppy_connection'].sort(),
+      );
+    });
 
     it('agora:doctor: the schema, its tables and the write probe', async () => {
       const { db } = await open();
