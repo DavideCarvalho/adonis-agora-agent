@@ -266,6 +266,41 @@ describe('the agent account extension', () => {
     const view = await approvals.load(finance);
     const items = (view.blocks[0] as unknown as { items: Array<{ title: string }> }).items;
     expect(items.map((item) => item.title)).toEqual(['pay_invoice']);
+    // carol holding finance AND owning a call: one inbox, oldest first
+    const { deps: both } = fakeDeps({
+      governance: {
+        pendingApprovals: async (filter: { actor?: string; approvers?: string[] }) =>
+          filter.approvers
+            ? [
+                {
+                  toolCallId: 'tcRole',
+                  toolName: 'old',
+                  input: {},
+                  threadId: 't2',
+                  runId: 'r2',
+                  actorRef: 'bob',
+                  requestedAt: '2026-11-01T00:00:00.000Z',
+                },
+              ]
+            : [
+                {
+                  toolCallId: 'tcMine',
+                  toolName: 'new',
+                  input: {},
+                  threadId: 't9',
+                  runId: 'r9',
+                  actorRef: 'carol',
+                  requestedAt: '2026-11-11T00:00:00.000Z',
+                },
+              ],
+      } as never,
+    });
+    const merged = await page(agentAccountExtension(both), 'agent.approvals').load(finance);
+    expect(
+      (merged.blocks[0] as unknown as { items: Array<{ title: string }> }).items.map(
+        (i) => i.title,
+      ),
+    ).toEqual(['old', 'new']);
     // alice holds no role: only her own runs' calls
     const own = await approvals.load(ctxFor('alice'));
     expect(

@@ -374,6 +374,9 @@ export function agentAccountExtension(deps: AgentAccountDeps): AccountExtension 
             }
           }
         }
+        // One inbox, oldest first, capped like the in-app one.
+        rows.sort((left, right) => left.requestedAt.localeCompare(right.requestedAt));
+        rows.splice(50);
         const items: ListItem[] = rows.map((row) => {
           const href = options.threadUrl?.(row.threadId);
           return {
