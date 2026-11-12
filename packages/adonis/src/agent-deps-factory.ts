@@ -17,6 +17,7 @@ import type { SkillsConfig } from './skills.js';
 import type { AgentStore } from './spi/agent-store.js';
 import type { ApprovalPolicy } from './spi/approval-policy.js';
 import type { HistoryWindow } from './spi/history-window.js';
+import { type ConfiguredModel, type ModelCatalog, resolveTurnModel } from './spi/model-catalog.js';
 import type { ModelProvider } from './spi/model-provider.js';
 import type { AgentPricingStore } from './spi/pricing-store.js';
 import type { InputProcessor, OutputProcessor } from './spi/processors.js';
@@ -165,6 +166,11 @@ export interface AgentDepsFactoryConfig {
   /** Where a tool's failed `present` is reported. Undefined → a console warning. */
   onPresentationError?: PresentationErrorHandler;
   model: ModelProvider;
+  /**
+   * The model catalog — what a delegated run's model (the target agent's own `model`, or a lock) is
+   * checked against. Omit → none: a configured model goes to the provider as written.
+   */
+  models?: ModelCatalog;
   store: AgentStore;
   sink: TokenStreamSink;
   rolesPolicy: RolesPolicy;
@@ -277,6 +283,23 @@ export class AgentDepsFactory {
       : { agentName: alias.agent, persona: alias.persona };
   }
 
+  /**
+   * The model configured for a turn of `agentName` under `persona`: the persona's own `model`, else
+   * the agent's. A name a persona took over ({@link Persona.aliases}) reads that persona. Undefined →
+   * neither sets one (the catalog's default applies).
+   */
+  configuredModel(agentName: string, persona?: string): ConfiguredModel | undefined {
+    const target = this.resolveAgent(agentName);
+    const definition = this.config.agents.get(target.agentName);
+    const own = findPersona(definition, persona ?? target.persona);
+    if (own?.model !== undefined) {
+      return { model: own.model, agent: target.agentName, persona: own.id };
+    }
+    return definition?.model !== undefined
+      ? { model: definition.model, agent: target.agentName }
+      : undefined;
+  }
+
   /** `agentName`'s personas as a picker reads them. Empty when it declares none. */
   personaCatalog(agentName: string): PersonaCatalogEntry[] {
     return (this.config.agents.get(agentName)?.personas ?? []).map(personaCatalogEntry);
@@ -357,7 +380,18 @@ export class AgentDepsFactory {
       maxSteps: definition?.maxSteps ?? 8,
       personas,
       defaultPersona: definition?.defaultPersona ?? 'default',
-      ...(definition?.modelId !== undefined ? { modelId: definition.modelId } : {}),
+      // A delegation from this agent runs the target on the TARGET's model — its own `model` (or
+      // its alias persona's), checked against the catalog for this actor, or the catalog's lock —
+      // never on this turn's pick or its thread's pin.
+      resolveDelegateModel: (actor, target) => {
+        const configured = this.configuredModel(target);
+        return resolveTurnModel({
+          catalog: this.config.models,
+          actor,
+          agent: this.resolveAgent(target).agentName,
+          ...(configured !== undefined ? { configured } : {}),
+        });
+      },
       ...(this.config.quota !== undefined ? { quota: this.config.quota } : {}),
       ...(this.config.approvalPolicy !== undefined
         ? { approvalPolicy: this.config.approvalPolicy }

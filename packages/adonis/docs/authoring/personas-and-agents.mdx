@@ -10,7 +10,7 @@ The default setup is a single agent. Two features let you go further: **personas
 
 ## Personas
 
-A persona is a named variant of ONE agent: its own system prompt and, optionally, a narrower tool allow-list. Everything else — the agent's model, its access rules, its handoffs, its history — stays the agent's. A variant that needs any of those to differ is its own agent, not a persona. Personas retain a wire contract compatible with Aviary (`POST /agent/chat { persona }`, `forwardedProps.persona`, `persona` on messages and threads). Agora's local React client supports these fields.
+A persona is a named variant of ONE agent: its own system prompt and, optionally, a narrower tool allow-list and its own model. Everything else — the agent's access rules, its handoffs, its history — stays the agent's. A variant that needs any of those to differ is its own agent, not a persona. Personas retain a wire contract compatible with Aviary (`POST /agent/chat { persona }`, `forwardedProps.persona`, `persona` on messages and threads). Agora's local React client supports these fields.
 
 ```ts title="config/agent.ts"
 export default defineConfig({
@@ -44,6 +44,7 @@ export default defineConfig({
 What a persona controls:
 
 - **The prompt.** A flat `systemPrompt` stands in for the agent's base prompt. A `PromptBuilder` — `(ctx) => string | Promise<string>` — is handed the base as `ctx.basePrompt`, so it can wrap it instead. No `systemPrompt` keeps the base prompt, which can itself read `ctx.persona`.
+- **The model.** `model` is an id of the model catalog (`'anthropic/claude-opus-5-5'`), and turns under the persona run on it instead of the agent's `model`. A send's `model` and a thread's pinned model still win over it. See [A model per agent and per persona](/docs/agent/streaming-and-http#a-model-per-agent-and-per-persona).
 - **The tools.** With `allowedTools`, only those names are offered — after the agent's own allow-list, `enabled`, the roles policy and `canUse`. It narrows, never widens. And it is enforced, not only offered: a call the model names anyway is refused by `ToolRegistry.invoke` (`ToolForbiddenError`), and a handoff (`ask_<agent>` / `start_<agent>`) that is not on the list is refused before the delegate starts.
 
 Tools see the persona as `ctx.persona`, and every message the turn writes — the user's, the assistant's, the intake's — records its id (`StoredMessage.persona`).
@@ -96,7 +97,7 @@ interface PromptContext {
 
 ## Named agents
 
-Register additional agents alongside the default one with `agents`. Each is an `AgentDefinition` with its own prompt, tool allow-list, personas, and step budget:
+Register additional agents alongside the default one with `agents`. Each is an `AgentDefinition` with its own prompt, tool allow-list, personas, model, and step budget:
 
 ```ts title="config/agent.ts"
 export default defineConfig({
@@ -115,6 +116,7 @@ export default defineConfig({
       name: 'researcher',
       systemPrompt: 'You research questions using read tools.',
       tools: ['searchDocs', 'getOrder'],
+      model: 'openai/gpt-4o', // an id of the model catalog
     },
     {
       name: 'billing',
@@ -125,7 +127,7 @@ export default defineConfig({
 })
 ```
 
-A request targets an agent by name via the `agent` field on `POST /agent/chat`. Omit it and the turn runs as the **thread's** default agent — `PATCH /agent/threads/:id { defaultAgent: 'billing' }` sets it, `null` clears it (a name no agent is registered under is a `400`) — else as the configured default. Model, store, sink, and governance are shared across all agents; each definition overrides only its own prompt, tools, personas, `defaultPersona`, `modelId`, `maxSteps`, `maxDelegationDepth`, `maxAgentAppearances`, and `actorResolver`.
+A request targets an agent by name via the `agent` field on `POST /agent/chat`. Omit it and the turn runs as the **thread's** default agent — `PATCH /agent/threads/:id { defaultAgent: 'billing' }` sets it, `null` clears it (a name no agent is registered under is a `400`) — else as the configured default. The model provider and its catalog, the store, sink, and governance are shared across all agents; each definition sets only its own prompt, tools, personas, `defaultPersona`, `model` (an id of the catalog — see [A model per agent and per persona](/docs/agent/streaming-and-http#a-model-per-agent-and-per-persona)), `maxSteps`, `maxDelegationDepth`, `maxAgentAppearances`, and `actorResolver`.
 
 ### Per-agent identity
 
@@ -161,6 +163,8 @@ caller — otherwise that caller starts a run it then cannot stream, cancel, or 
 ## Multi-agent delegation
 
 `delegatesTo` declares which other agents an agent may hand work to. For each edge, the provider **synthesizes an `agent`-kind delegate tool** named `ask_<target>` (non-alphanumeric characters become underscores). The orchestrator calls it like any tool — `ask_researcher({ task: '...' })` — and the loop runs the target agent and feeds its answer back. You never write the delegate handler; the loop handles delegation itself.
+
+The target runs on **its own** model: its `model`, else the catalog's default (or the catalog's lock for it). The model the caller's send picked, or its thread pinned, does not carry over. When the catalog does not offer the target's model to the caller, the delegation is refused and the calling agent reads why.
 
 <Callout type="info" title="How a delegate tool is named and described">
 `delegatesTo: ['researcher']` produces `ask_researcher` (non-alphanumeric characters become

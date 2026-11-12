@@ -296,7 +296,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
       patched: (id) => ctx.patched(id),
       // Delegation: a fresh transient subthread (checkpointed so its id is replay-stable), then a
       // tracked child run that streams into this run's own top-level sink.
-      runAgent: async (agentName, task) => {
+      runAgent: async (agentName, task, options) => {
         const subThreadId = await step(`subthread:${agentName}`, async () => {
           const thread = await store.createThread({
             actor: input.actor,
@@ -315,6 +315,9 @@ export class AgentRunWorkflow extends BaseWorkflow {
           delegationPath: chainBelow,
           parentRunId: ctx.runId,
           sinkRunId,
+          // The delegate's own model, resolved in the delegation's checkpoint (absent on a call
+          // journaled before it was, so that child's input is the one it was started with).
+          ...(options?.model !== undefined ? { model: options.model } : {}),
         });
       },
       // The same delegation, not awaited: `ctx.startChild` records `spawn:<childRunId>` at this
@@ -332,7 +335,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
       //     this turn is not a Stop on the work it handed off. So the run is started on its own from
       //     a `detach:<toolCallId>` step (see `startDetached`), behind `ctx.patched` — a run that
       //     journaled the `spawn:` before this release gets `false` at that position and replays it.
-      startAgent: async ({ agentName, task, toolCallId }) => {
+      startAgent: async ({ agentName, task, toolCallId, model }) => {
         const subThreadId = await step(`subthread:${agentName}`, async () => {
           const thread = await store.createThread({
             actor: input.actor,
@@ -351,6 +354,7 @@ export class AgentRunWorkflow extends BaseWorkflow {
           delegationPath: chainBelow,
           parentRunId: ctx.runId,
           deliverTo: { threadId: input.threadId, toolCallId },
+          ...(model !== undefined ? { model } : {}),
         } satisfies DurableAgentRunInput;
         if (!(await ctx.patched('agent:detached-unlinked'))) {
           return { runId: await ctx.startChild(AgentRunWorkflow, childInput) };

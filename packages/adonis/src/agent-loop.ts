@@ -198,10 +198,19 @@ export interface AgentLoopDeps<TOutput = unknown> {
    */
   pricingStore?: AgentPricingStore;
   /**
-   * Fallback accounting label when the provider's turn result doesn't report a `modelId`.
-   * Optional — a provider that reports its own model makes this unnecessary.
+   * Fallback accounting label when the provider's turn result doesn't report a `modelId`. The loop
+   * sets it to the turn's model (`AgentRunInput.model`) when the run has one. Optional — a provider
+   * that reports its own model makes this unnecessary.
    */
   modelId?: string;
+  /**
+   * The model a delegation to `target` runs on — the target agent's own model resolution (its
+   * configured `model`, or its catalog lock), never this turn's. Resolved inside the delegation's
+   * `persist:toolcall` checkpoint, so a replay starts the child on the model the first attempt
+   * chose. Throwing refuses the delegation (the model reads the error as the tool result).
+   * Undefined, or answering `undefined` → the child runs on the provider's default.
+   */
+  resolveDelegateModel?: (actor: Actor, target: string) => Promise<string | undefined>;
   /** Pre-computed (YYYY-MM-DD) so the loop body stays deterministic under durable replay. */
   day: string;
   /** The agent's base prompt. A flat string, or a {@link PromptBuilder} resolved per turn. */
@@ -494,7 +503,11 @@ export interface AgentLoopHooks {
    * Run another named agent and return its answer. Provided only when the host wired multi-agent
    * support (durable → child workflow, inline → nested loop). Exposed to tools as `ctx.runAgent`.
    */
-  runAgent?(agentName: string, task: string): Promise<{ text: string }>;
+  runAgent?(
+    agentName: string,
+    task: string,
+    options?: { model?: string },
+  ): Promise<{ text: string }>;
   /**
    * Start another named agent and return its run id WITHOUT waiting for it, so the calling turn can
    * finish while the delegate is still working. The durable runner maps this to `ctx.startChild` (a
@@ -514,6 +527,8 @@ export interface AgentLoopHooks {
     agentName: string;
     task: string;
     toolCallId: string;
+    /** The model the delegate runs on (its own resolution). Absent → the provider's default. */
+    model?: string;
   }): Promise<{ runId: string }>;
   /**
    * Checkpoint wrapper. Inline = call fn directly; durable = ctx.step(name, fn).
@@ -752,8 +767,14 @@ function extractTask(input: unknown): string {
 
 /** Either the delegation target and its task, or why the gates refused the call. */
 type DelegationOutcome =
-  | { targetAgent: string; task: string; detached?: true; error?: undefined }
-  | { targetAgent?: undefined; task?: undefined; detached?: undefined; error: string };
+  | { targetAgent: string; task: string; detached?: true; model?: string; error?: undefined }
+  | {
+      targetAgent?: undefined;
+      task?: undefined;
+      detached?: undefined;
+      model?: undefined;
+      error: string;
+    };
 
 /**
  * What the `persist:toolcall:<callId>` checkpoint returns: the kind this call was resolved to, plus
@@ -914,10 +935,15 @@ async function resolveDelegation(
     // back instead of asking a registry that may have changed while the run was parked. Absent unless
     // declared: a deployment with no detached edge writes the bytes this checkpoint always held, and
     // a call journaled before the flag existed replays as the awaited delegation it was.
+    // The delegate's model is its OWN (configured model or catalog lock), resolved here for the same
+    // reason: a replay starts the child on the model the first attempt chose. A model the catalog
+    // does not offer this actor refuses the delegation.
+    const model = await deps.resolveDelegateModel?.(input.actor, targetAgent);
     return {
       targetAgent,
       task: extractTask(validation.value),
       ...(spec.detached === true ? { detached: true as const } : {}),
+      ...(model !== undefined ? { model } : {}),
     };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
@@ -2221,7 +2247,7 @@ async function delegateToolCall(
   if (delegation.error !== undefined) {
     return { id: call.id, name: call.name, output: null, error: delegation.error };
   }
-  const { targetAgent, task } = delegation;
+  const { targetAgent, task, model } = delegation;
   // The journal decides (see `resolveDelegation`); the runner only says whether it CAN detach.
   const start = delegation.detached === true ? hooks.startAgent : undefined;
   publishAgentDelegated({
@@ -2236,10 +2262,18 @@ async function delegateToolCall(
   // workflow's own and a replay asks for it in the same place.
   let sub: { text: string } | DetachedDelegationReceipt;
   if (start !== undefined) {
-    const started = await start({ agentName: targetAgent, task, toolCallId: call.id });
+    const started = await start({
+      agentName: targetAgent,
+      task,
+      toolCallId: call.id,
+      ...(model !== undefined ? { model } : {}),
+    });
     sub = detachedStarted({ agent: targetAgent, runId: started.runId });
   } else if (hooks.runAgent) {
-    sub = await hooks.runAgent(targetAgent, task);
+    sub =
+      model !== undefined
+        ? await hooks.runAgent(targetAgent, task, { model })
+        : await hooks.runAgent(targetAgent, task);
   } else {
     sub = { text: `(no multi-agent support wired; cannot reach "${targetAgent}")` };
   }

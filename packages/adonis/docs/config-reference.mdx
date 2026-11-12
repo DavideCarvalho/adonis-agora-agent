@@ -150,7 +150,7 @@ A public deployment should set a `quota`: model spend is otherwise unbounded (pe
 
 ### `models`
 
-`ModelCatalog | ModelCatalogView`. Which models a caller may pick — served by `GET /agent/models`, checked on a send's `model` and on `PATCH /agent/threads/:id { model }`. A literal view for a fixed list, a `ModelCatalog` (`list({ actor, agent })`) to decide per caller. **Omit → the catalog the model provider carries** (`aiSdkModels({ … })`), else an empty one — and a request naming a model is refused with `400`. See [Models](/docs/agent/streaming-and-http#models).
+`ModelCatalog | ModelCatalogView`. Which models a caller may pick — served by `GET /agent/models`, checked on a send's `model`, on `PATCH /agent/threads/:id { model }`, and on each agent's and persona's `model`. A literal view for a fixed list, a `ModelCatalog` (`list({ actor, agent, persona? })`) to decide per caller. **Omit → the catalog the model provider carries** (`aiSdkModels({ … })`), else an empty one — and a request naming a model is refused with `400`. See [Models](/docs/agent/streaming-and-http#models).
 
 ### `approvalPolicy`
 
@@ -208,7 +208,7 @@ A public deployment should set a `quota`: model spend is otherwise unbounded (pe
 
 ### `defaultAgent`
 
-`Omit<AgentDefinition, 'name'> & { name?: string }`. The implicit single agent's config — its base `systemPrompt`, `personas`, `defaultPersona`, tool allow-list (`tools`), `delegatesTo`, `modelId`, `maxSteps`, and the question surfaces `ask` (offer the model the built-in `ask` tool) and `intake` (an authored question set asked before the work — see [Asking the user](/docs/agent/authoring/elicitation)). **Omit for a bare assistant** (`'You are a helpful assistant.'`). Its `name` defaults to `'default'`.
+`Omit<AgentDefinition, 'name'> & { name?: string }`. The implicit single agent's config — its base `systemPrompt`, `personas`, `defaultPersona`, tool allow-list (`tools`), `delegatesTo`, `model` (an id of the model catalog — see [A model per agent and per persona](/docs/agent/streaming-and-http#a-model-per-agent-and-per-persona)), `maxSteps`, and the question surfaces `ask` (offer the model the built-in `ask` tool) and `intake` (an authored question set asked before the work — see [Asking the user](/docs/agent/authoring/elicitation)). **Omit for a bare assistant** (`'You are a helpful assistant.'`). Its `name` defaults to `'default'`.
 
 ### `tools`
 

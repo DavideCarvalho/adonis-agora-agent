@@ -325,10 +325,10 @@ export interface PromptContext {
 export type PromptBuilder = (ctx: PromptContext) => string | Promise<string>;
 
 /**
- * A named variant of ONE agent: its own prompt and, optionally, a narrower tool allow-list. The
- * caller picks one per send (`POST <path>/chat { persona }`); everything else — the agent's model,
- * its access rules, its handoffs, its history — stays the agent's. A variant that needs any of those
- * to differ is a different agent, not a persona. The same shape as `@dudousxd/nestjs-agent`'s.
+ * A named variant of ONE agent: its own prompt and, optionally, a narrower tool allow-list and its
+ * own model. The caller picks one per send (`POST <path>/chat { persona }`); everything else — the
+ * agent's access rules, its handoffs, its history — stays the agent's. A variant that needs any of
+ * those to differ is a different agent, not a persona.
  */
 export interface Persona {
   /** Unique within its agent — what a send names and what a message records. */
@@ -350,6 +350,15 @@ export interface Persona {
    */
   allowedTools?: string[];
   /**
+   * The catalog model turns under this persona run on (an id of the configured model catalog, e.g.
+   * `'anthropic/claude-haiku-5-5'`), over the agent's own {@link AgentDefinition.model}. A send's
+   * `model` and a thread's pinned model still win over it, and a catalog `locked` model wins over
+   * everything. Checked against the catalog at boot (a static catalog) and on every turn: a model
+   * the catalog does not offer to the caller refuses the send (`400 model_not_allowed`). Omit → the
+   * agent's model.
+   */
+  model?: string;
+  /**
    * Agent names this persona answers for: a send, a queued message, a thread's `defaultAgent` or an
    * in-flight run that names one of them runs as THIS agent under THIS persona. For an app that folds
    * separate agents into personas of one — what recorded the old agent name keeps resolving, with no
@@ -368,6 +377,8 @@ export interface TurnPersona {
   allowedTools?: string[];
   /** The persona's prompt, resolved (with the base prompt it wraps). Absent → the base prompt. */
   prompt?: string;
+  /** The persona's own {@link Persona.model}, when it declares one. */
+  model?: string;
 }
 
 /** One persona as `GET <path>/agents` lists it — what a persona picker renders. */
@@ -458,8 +469,11 @@ export interface AgentRunInput {
   delegationPath?: readonly string[];
   /**
    * The model this turn runs on — a catalog id the service already checked (a per-send pick, else
-   * the thread's pinned model). Handed to the provider as `ModelTurnArgs.model`, and the usage label
-   * when the provider reports none. Omitted → the provider's default.
+   * the thread's pinned model, else the persona's or the agent's configured `model`; for a
+   * delegated run, the target's own). Recorded here so a replayed or resumed run keeps it. Handed
+   * to the provider as `ModelTurnArgs.model`, and the usage label when the provider reports none.
+   * Omitted → the persona's or agent's configured `model` when the run has one, else the provider's
+   * default.
    */
   model?: string;
   /**
@@ -558,7 +572,16 @@ export interface AgentDefinition {
    * whose id is `'default'`, when the agent declares one; else none.
    */
   defaultPersona?: string;
-  modelId?: string;
+  /**
+   * The catalog model this agent's turns run on (an id of the configured model catalog, e.g.
+   * `'anthropic/claude-haiku-5-5'`). Per turn the model is the send's `model`, else the thread's
+   * pinned model, else the persona's {@link Persona.model}, else this, else the catalog's default —
+   * and a catalog `locked` model wins over all of them. Checked against the catalog at boot (a
+   * static catalog) and on every turn: a model the catalog does not offer to the caller refuses the
+   * send (`400 model_not_allowed`) rather than falling back. A delegation (`ask_<name>`) to this
+   * agent runs on this model too, never on the caller's. Omit → the catalog's default.
+   */
+  model?: string;
   maxSteps?: number;
   /**
    * How many agent→agent delegations deep a chain starting at this agent may go.

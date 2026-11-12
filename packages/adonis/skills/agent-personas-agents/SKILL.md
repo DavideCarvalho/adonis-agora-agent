@@ -2,10 +2,10 @@
 name: agent-personas-agents
 description: >-
   Shape @adonis-agora/agent behavior per request: personas (Persona { id, label,
-  systemPrompt, allowedTools, aliases }, defaultPersona, send → thread pin → default,
+  systemPrompt, allowedTools, model, aliases }, defaultPersona, send → thread pin → default,
   PATCH threads/:id { persona }, 400 persona_not_found, GET /agent/agents, the
   persona:resolve durable checkpoint), named agents (agents: AgentDefinition[] with
-  tools/maxSteps/actorResolver overrides), delegatesTo multi-agent delegation via
+  tools/model/maxSteps/actorResolver overrides), per-agent/persona model, delegatesTo multi-agent delegation via
   synthesized ask_<target> agent-kind tools and DelegateEdge { agent, roles, ability, detached }
   (detached → start_<target>, a background run that posts its answer back into the thread),
   HITL approval flow over POST /agent/tool-call/approve|reject with pending_approval
@@ -73,6 +73,15 @@ can wrap it; no `systemPrompt` keeps the base. `allowedTools` narrows the offer 
 the thread's pin (if this agent declares it) → `defaultPersona` → none. Unknown id → `400`
 `code: 'persona_not_found'`. `PATCH /agent/threads/:id { persona }` pins (`null` clears).
 Render a picker from `GET /agent/agents` (`personas`, `defaultPersona` per agent).
+
+Model per agent / persona: `model` on an `AgentDefinition` or a `Persona` is an id of the model
+catalog (`aiSdkModels({ 'anthropic/claude-haiku-5-5': … })` or `models`). A turn runs on: the
+send's `model` → the thread's pinned model → the persona's `model` → the agent's `model` → the
+catalog `default`; a catalog `locked` model beats all of them. An id the (fixed) catalog does not
+list fails boot; one the catalog does not offer the caller refuses the send (`400
+model_not_allowed`) instead of falling back. `GET /agent/models?agent=&persona=` answers that
+agent/persona model as `default`. A delegate (`ask_<target>`) runs on the target's own model, never
+the caller's pick or pin. `AgentDefinition.modelId` was removed in 1.0 — use `model`.
 
 Durable: the service resolves the persona to an id; the loop freezes the definition (prompt,
 allow-list) in a `persona:resolve` checkpoint, so a parked run resumes on the persona it
