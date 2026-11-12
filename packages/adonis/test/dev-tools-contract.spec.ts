@@ -302,7 +302,7 @@ describe('dev tools CSRF probe', () => {
   });
 
   it('an empty methods list checks no method; a throwing exceptRoutes is unknown, not exempt', () => {
-    expect(csrfBlocksPath({ csrf: { enabled: true, methods: [] } }, 'mcp/agora')).toBe(false);
+    expect(csrfBlocksPath({ csrf: { enabled: true, methods: [] } }, 'mcp/agora')).toBe(true); // shield: empty methods = every method
     const throws = () => {
       throw new Error('needs a real ctx');
     };

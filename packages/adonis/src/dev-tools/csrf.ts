@@ -15,9 +15,10 @@ interface ShieldCsrfLike {
 export function csrfBlocksPath(shield: unknown, path: string): boolean | 'unknown' {
   const csrf = (shield as { csrf?: ShieldCsrfLike } | undefined)?.csrf;
   if (csrf === undefined || csrf.enabled !== true) return false;
-  // An explicit method list that leaves out POST (an empty list checks no method) never blocks it.
+  // An explicit method list that leaves out POST (an empty list is shield's default: every method is checked) never blocks it.
   if (
     Array.isArray(csrf.methods) &&
+    csrf.methods.length > 0 &&
     !csrf.methods.some((method) => method.toUpperCase() === 'POST')
   ) {
     return false;
