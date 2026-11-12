@@ -15,6 +15,8 @@
 export interface AuthorizeDecision {
   allowed: boolean;
   reason?: 'unauthenticated' | 'forbidden';
+  /** With tenancy on: the tenants an allowed viewer may see (`'*'` = all). Omitted = their own. */
+  tenants?: '*' | string[];
 }
 
 /** What an authorize hook returns: a bare boolean, or an {@link AuthorizeDecision}. */

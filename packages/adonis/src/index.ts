@@ -68,6 +68,7 @@ export {
   RegenerateNeedsThreadError,
   UnknownAgentError,
 } from './agent-service.js';
+export type { AgentTenancyOption } from './agora/tenancy.js';
 export type {
   AiToolMeta,
   AiToolOptions,
@@ -146,6 +147,7 @@ export {
   type ConsoleAuthorizeResult,
   type ConsoleAuthorizer,
   type ConsoleAuthorizerClass,
+  type ConsoleTenants,
   consoleAuthorizeFor,
   isPageNavigation,
   normalizeConsoleAuthorizeResult,
@@ -511,6 +513,7 @@ export {
   type LedgerQuotaOptions,
   LedgerQuotaProvider,
   type QuotaLimits,
+  type QuotaScope,
   type QuotaWindowLimits,
 } from './stores/ledger-quota-provider.js';
 export type {

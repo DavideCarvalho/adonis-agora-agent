@@ -37,7 +37,18 @@ export interface LedgerQuotaOptions {
    * is a budget that does not enforce. Set `false` to budget on provider-reported (gateway) cost only.
    */
   countEstimatedCost?: boolean;
+  /**
+   * Whose usage a window sums: `'actor'` (default) the caller's own; `'tenant'` every row of the
+   * caller's tenant (`actor.tenantRef`, e.g. the active organization), so a team shares one budget;
+   * `'actor-in-tenant'` the caller's rows inside that tenant only. An actor with no tenant is
+   * counted on its own usage. Needs a store with `usageBetweenForTenant` (the Lucid and in-memory
+   * stores have it); without it the actor's own usage is used.
+   */
+  per?: QuotaScope;
 }
+
+/** Whose usage a quota window sums — see {@link LedgerQuotaOptions.per}. */
+export type QuotaScope = 'actor' | 'tenant' | 'actor-in-tenant';
 
 /**
  * A {@link QuotaProvider} over the usage ledger: a day window (tokens from `quotaToday`, spend from
@@ -59,11 +70,41 @@ export class LedgerQuotaProvider implements QuotaProvider {
   async report(query: QuotaQuery): Promise<QuotaReport> {
     const now = query.now ?? new Date();
     const actorRef = query.actor.id;
+    const tenantRef = this.tenantOf(query);
+    if (tenantRef !== undefined) return this.tenantReport(tenantRef, actorRef, now);
     const windows: QuotaWindow[] = [await this.dayWindow(actorRef, now)];
     if (this.store.usageBetween !== undefined) {
       const range = quotaPeriodRange('month', now);
       const used = await this.store.usageBetween(actorRef, range.fromDay, range.toDay);
       windows.push(this.window('month', used.usedTokens, this.usd(used), range.resetsAt));
+    }
+    const blocked = exhaustedWindow(windows);
+    const warning = quotaWarning(windows);
+    return {
+      windows,
+      ...(blocked !== undefined ? { blocked } : {}),
+      ...(warning !== undefined ? { warning } : {}),
+    };
+  }
+
+  /** The tenant a window sums by, or `undefined` to sum the actor's own usage. */
+  private tenantOf(query: QuotaQuery): string | undefined {
+    const per = this.options.per ?? 'actor';
+    if (per === 'actor' || this.store.usageBetweenForTenant === undefined) return undefined;
+    const tenantRef = query.actor.tenantRef;
+    return typeof tenantRef === 'string' && tenantRef !== '' ? tenantRef : undefined;
+  }
+
+  private async tenantReport(tenantRef: string, actorRef: string, now: Date): Promise<QuotaReport> {
+    const sum = this.store.usageBetweenForTenant?.bind(this.store) as NonNullable<
+      AgentStore['usageBetweenForTenant']
+    >;
+    const actor = this.options.per === 'actor-in-tenant' ? actorRef : undefined;
+    const windows: QuotaWindow[] = [];
+    for (const period of ['day', 'month'] as const) {
+      const range = quotaPeriodRange(period, now);
+      const used = await sum(tenantRef, range.fromDay, range.toDay, actor);
+      windows.push(this.window(period, used.usedTokens, this.usd(used), range.resetsAt));
     }
     const blocked = exhaustedWindow(windows);
     const warning = quotaWarning(windows);

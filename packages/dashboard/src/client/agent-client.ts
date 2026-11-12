@@ -61,6 +61,18 @@ export interface AgentClientOptions {
   fetch?: FetchLike;
   /** Cap for the `recent*` feeds; the server clamps to 200. Defaults to 50. */
   limit?: number;
+  /**
+   * The organization every governance read is scoped to (`?tenant=`), with tenancy on. Defaults to
+   * the page's own `?tenant=`; `null` = every organization the viewer may see.
+   */
+  tenant?: () => string | null;
+}
+
+/** The `?tenant=` of the page, or `null`. */
+export function pageTenant(): string | null {
+  if (typeof window === 'undefined') return null;
+  const value = new URLSearchParams(window.location.search).get('tenant');
+  return value === null || value === '' ? null : value;
 }
 
 /**
@@ -73,15 +85,18 @@ export class AgentClient {
   private readonly base: string;
   private readonly doFetch: FetchLike;
   private readonly limit: number;
+  private readonly tenant: () => string | null;
 
   constructor(options: AgentClientOptions = {}) {
     this.base = (options.baseUrl ?? resolveApiBase()).replace(/\/+$/, '');
     this.doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.limit = options.limit ?? 50;
+    this.tenant = options.tenant ?? pageTenant;
   }
 
   private async get<T>(path: string, query: Record<string, string> = {}): Promise<T> {
-    const search = new URLSearchParams(query).toString();
+    const tenant = path.startsWith('/governance/') ? this.tenant() : null;
+    const search = new URLSearchParams(tenant !== null ? { ...query, tenant } : query).toString();
     const url = `${this.base}${path}${search ? `?${search}` : ''}`;
     const response = await this.doFetch(url, {
       method: 'GET',
@@ -95,7 +110,9 @@ export class AgentClient {
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
-    const response = await this.doFetch(`${this.base}${path}`, {
+    const tenant = path.startsWith('/governance/') ? this.tenant() : null;
+    const url = `${this.base}${path}${tenant !== null ? `?${new URLSearchParams({ tenant })}` : ''}`;
+    const response = await this.doFetch(url, {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
       credentials: 'same-origin',
@@ -105,6 +122,11 @@ export class AgentClient {
       throw new AgentApiError(`POST ${path} failed (${response.status})`, response.status);
     }
     return (await response.json()) as T;
+  }
+
+  /** The organizations this viewer may pick (tenancy), from `GET /governance/tenants`. */
+  tenants(): Promise<ConsoleTenantsView> {
+    return this.get<ConsoleTenantsView>('/governance/tenants');
   }
 
   spendByModel(range: GovernanceRange): Promise<ModelSpendRow[]> {
@@ -247,4 +269,17 @@ export class AgentClient {
   upsertPrice(input: ModelPriceInput): Promise<{ ok: boolean }> {
     return this.post<{ ok: boolean }>('/governance/pricing', input);
   }
+}
+
+/** What `GET /governance/tenants` answers. */
+export interface ConsoleTenantsView {
+  /** Tenancy is on for the agent. Off → no organization control. */
+  enabled: boolean;
+  /** The viewer may see every organization (and data with none). */
+  all: boolean;
+  /** The viewer's own active organization, when they have one. */
+  own?: string | null;
+  tenants: Array<{ id: string; label: string }>;
+  /** The organization the page is scoped to (`?tenant=`), when valid. */
+  selected: string | null;
 }

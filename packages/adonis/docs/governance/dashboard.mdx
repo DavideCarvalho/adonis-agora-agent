@@ -195,6 +195,34 @@ The **run trace** (a row in Runs) is where most investigations end up: the run's
 
 **Pricing** shows its own panel rather than a generic error when the API answers `501`; that means no `pricingStore` is bound, so there is nothing to edit. See [Quota & cost](/docs/agent/governance/quota-and-cost).
 
+## Organizations
+
+With [organizations](/docs/agent/governance/authorization#organizations) on, the console shows the
+data of the viewer's own organization. `authorize` can widen it with `tenants`:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  dashboard: {
+    authorize: async (ctx) => {
+      const user = ctx.auth.user
+      if (user?.isStaff) return { allowed: true, tenants: '*' }  // every organization
+      if (user) return { allowed: true, tenants: await user.adminOf() } // these ids
+      return { redirectTo: '/login' }
+    },
+  },
+})
+```
+
+The header gets an **Organization** control: a fixed chip for one organization, a picker for
+several (with **All organizations** first). The choice is kept in the page URL as `?tenant=<id>`.
+Picking an organization the viewer was not granted shows nothing, and the attempt is logged. A
+viewer with no organization and no `tenants` sees an empty console that asks them to choose one.
+Run lists show an Organization column when several are shown at once.
+
+`GET /agent/governance/tenants` answers what the picker shows:
+`{ enabled, all, own, tenants: [{ id, label }], selected }`. Labels come from the `tenancy.label`
+resolver in `config/context.ts`, else the id.
+
 ## Switching between consoles
 
 When the app runs other Agora consoles (durable workflows, Telescope, payments, media, the authkit

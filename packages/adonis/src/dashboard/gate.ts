@@ -1,5 +1,9 @@
 import type { HttpContext } from '@adonisjs/core/http';
-import { consoleClosedByDefault, isPageNavigation } from '../console-authorize.js';
+import {
+  type ConsoleTenants,
+  consoleClosedByDefault,
+  isPageNavigation,
+} from '../console-authorize.js';
 import { evaluateGovernanceGate } from '../governance-gate.js';
 import type { ActorResolver } from '../spi/actor-resolver.js';
 import type { Actor } from '../types.js';
@@ -8,7 +12,7 @@ import type { AccessDeniedOption, AgentDashboardAuthorize } from './define_confi
 
 /** The outcome of the console access gate: proceed (with the actor, when one resolved), or deny. */
 export type DashboardGateVerdict =
-  | { ok: true; actor?: Actor }
+  | { ok: true; actor?: Actor; tenants?: ConsoleTenants }
   | {
       ok: false;
       status: 401 | 403;
@@ -63,7 +67,13 @@ export async function evaluateDashboardGate(
   if (options.authorize === undefined) return { ok: true };
   const actor = await resolveActorQuietly(ctx, options.actorResolver);
   const verdict = await evaluateGovernanceGate(actor, ctx, options.authorize, !inProduction);
-  if (verdict.ok) return actor === undefined ? { ok: true } : { ok: true, actor };
+  if (verdict.ok) {
+    return {
+      ok: true,
+      ...(actor !== undefined ? { actor } : {}),
+      ...(verdict.tenants !== undefined ? { tenants: verdict.tenants } : {}),
+    };
+  }
   return {
     ok: false,
     status: verdict.status === 401 ? 401 : 403,

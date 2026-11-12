@@ -10,14 +10,23 @@ import {
 } from '../src/action-proposal-service.js';
 import { validateActionProposalListQuery } from '../src/action-proposal-transitions.js';
 import {
+  currentTenantFilter,
+  type ResolvedAgentTenancy,
+  resolveAgentTenancy,
+  tenantFillingResolver,
+  tenantLabels,
+} from '../src/agora/tenancy.js';
+import {
   DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES,
   DEFAULT_MAX_ATTACHMENT_BYTES,
 } from '../src/attachment-limits.js';
+import type { ConsoleTenants } from '../src/console-authorize.js';
 import { warnNoConsoleAuthorizeOnce } from '../src/console-authorize.js';
 import { listVisibleConsoles, readAgoraConsoles, searchConsoles } from '../src/console-switcher.js';
 import { resolveDashboardConfig } from '../src/dashboard/define_config.js';
 import { answerConsoleDenialJson, evaluateDashboardGate } from '../src/dashboard/gate.js';
 import { AGENT_CONSOLE_ID } from '../src/dashboard/switcher.js';
+import { resolveConsoleTenantScope } from '../src/dashboard/tenant-scope.js';
 import { agentDevTools } from '../src/dev-tools/agent-tools.js';
 import { registerDevTools } from '../src/dev-tools/index.js';
 import { type AgentEngine, assertRunnable, engineOnlyModel } from '../src/engine.js';
@@ -270,6 +279,8 @@ function attachmentRefs(claimed: unknown): { mediaId: string }[] | string {
  */
 export default class AgentProvider {
   #store: AgentStore | null = null;
+  /** The agent's resolved `tenancy` (off unless `config/context.ts` turns it on). */
+  #tenancy: ResolvedAgentTenancy = { enabled: false, nullRows: 'tenantless' };
   #actionProposalWorker: ActionProposalWorker | null = null;
   #sink: TokenStreamSink | null = null;
   #actorDirectory: ActorDirectory | null = null;
@@ -406,6 +417,7 @@ export default class AgentProvider {
               ...(config.quota.countEstimatedCost !== undefined
                 ? { countEstimatedCost: config.quota.countEstimatedCost }
                 : {}),
+              ...(config.quota.per !== undefined ? { per: config.quota.per } : {}),
             });
     const pricingStore = await this.#resolvePricing(config);
     // Governance read-model is resolved after pricing so the Lucid read-model prices its rollups
@@ -427,7 +439,14 @@ export default class AgentProvider {
           'To require login, set `actorResolver: new AuthActorResolver()` in config/agent.ts.',
       );
     }
-    const actorResolver = config.actorResolver ?? new AnonymousActorResolver();
+    // With tenancy on (`config/context.ts`), every actor carries the active tenant unless the resolver
+    // already named one.
+    const tenancy = resolveAgentTenancy(config.tenancy);
+    this.#tenancy = tenancy;
+    const actorResolver = tenantFillingResolver(
+      config.actorResolver ?? new AnonymousActorResolver(),
+      tenancy,
+    );
     // Read-side identity lookup for governance/dashboard surfaces (optional; renders raw refs if unset).
     const actorDirectory = await this.#resolveActorDirectory(config);
     this.#store = store;
@@ -563,6 +582,7 @@ export default class AgentProvider {
           : new InlineAgentRunner(factory, store, queue);
     const service: AgentService = new AgentService(runner, store, factory, {
       queue,
+      tenancy,
       ...(config.backgroundActorResolver !== undefined
         ? { backgroundActorResolver: config.backgroundActorResolver }
         : {}),
@@ -1820,9 +1840,13 @@ export default class AgentProvider {
       router.get(p('approvals/mine'), async (ctx: HttpContext) => {
         const actor = await this.#resolveActor(ctx, actorResolver);
         if (actor === null) return;
+        // With tenancy on, only the calls of the request's own tenant.
+        const scope = service.tenantScope();
+        const inbox = scope === undefined ? gov : gov.forTenants?.(scope);
+        if (inbox === undefined) return ctx.response.json([]);
         return ctx.response.json(
           await withActorLabels(
-            await gov.pendingApprovals({ limit: limitFor(ctx), actor: actor.id }),
+            await inbox.pendingApprovals({ limit: limitFor(ctx), actor: actor.id }),
             actorDirectory,
           ),
         );
@@ -1836,7 +1860,7 @@ export default class AgentProvider {
     // except the pricing writes. `from`/`to` are inclusive UTC days (`YYYY-MM-DD`), defaulting to
     // today; `limit` defaults to 50, clamped to 200 (mirroring the dashboard's own clamp).
     if (governance !== undefined) {
-      const gov = governance;
+      const governanceAll = governance;
       const g = (suffix: string) => p(`governance/${suffix}`);
       const range = (ctx: HttpContext) => {
         const today = new Date().toISOString().slice(0, 10);
@@ -1856,6 +1880,30 @@ export default class AgentProvider {
        *  (the ecosystem interface mirroring `@adonis-agora/filter`'s `CursorParams`). Same default
        *  (50) and ceiling (200) as `?limit=`. */
       const firstOf = (ctx: HttpContext) => positiveIntInput(ctx, 'first');
+
+      // GET /agent/governance/tenants — the organizations this viewer may pick (the console picker).
+      router.get(g('tenants'), async (ctx: HttpContext) => {
+        const verdict = await this.#consoleVerdict(ctx, actorResolver, consoleAuthorize);
+        if (verdict === null) return;
+        ctx.response.header('cache-control', 'private, no-store');
+        if (!this.#tenancy.enabled) {
+          return ctx.response.json({ enabled: false, all: false, tenants: [], selected: null });
+        }
+        const resolved = this.#consoleTenants(ctx, verdict.tenants);
+        const ids =
+          resolved.allowed === '*'
+            ? ((await governanceAll.listTenants?.()) ?? [])
+            : [...resolved.allowed];
+        const labels = await tenantLabels(ids);
+        const own = currentTenantFilter(this.#tenancy);
+        return ctx.response.json({
+          enabled: true,
+          all: resolved.allowed === '*',
+          own: own.mode === 'tenant' ? own.tenant.id : null,
+          tenants: ids.map((id) => ({ id, label: labels[id] ?? id })),
+          selected: resolved.selected,
+        });
+      });
 
       // GET /agent/governance/consoles — the other Agora consoles this viewer may open (switcher).
       router.get(g('consoles'), async (ctx: HttpContext) => {
@@ -1883,13 +1931,15 @@ export default class AgentProvider {
 
       // GET /agent/governance/spend/model — per-model token + cost rollup over the range.
       router.get(g('spend/model'), async (ctx: HttpContext) => {
-        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
+        if (gov === null) return;
         return ctx.response.json(await gov.spendByModel(range(ctx)));
       });
 
       // GET /agent/governance/spend/actor — per-actor token + cost rollup over the range.
       router.get(g('spend/actor'), async (ctx: HttpContext) => {
-        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
+        if (gov === null) return;
         return ctx.response.json(
           await withActorLabels(await gov.spendByActor(range(ctx)), actorDirectory),
         );
@@ -1897,7 +1947,8 @@ export default class AgentProvider {
 
       // GET /agent/governance/usage/trend — the daily token + cost trend over the range.
       router.get(g('usage/trend'), async (ctx: HttpContext) => {
-        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
+        if (gov === null) return;
         return ctx.response.json(await gov.usageTrend(range(ctx)));
       });
 
@@ -1905,7 +1956,8 @@ export default class AgentProvider {
       // usage recorded outside them (`AgentService.recordUsage`) side by side. `501` when the bound
       // governance adapter predates features (an optional SPI method).
       router.get(g('spend/feature'), async (ctx: HttpContext) => {
-        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
+        if (gov === null) return;
         if (gov.spendByFeature === undefined) {
           return ctx.response
             .status(501)
@@ -1919,7 +1971,8 @@ export default class AgentProvider {
       // (ISO instants), actor?, feature?, reprice? (`false` → recorded cost only). `501`
       // when the bound adapter predates it.
       router.get(g('usage/breakdown'), async (ctx: HttpContext) => {
-        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
+        if (gov === null) return;
         if (gov.usageBreakdown === undefined) {
           return ctx.response
             .status(501)
@@ -1960,13 +2013,15 @@ export default class AgentProvider {
 
       // GET /agent/governance/tool-calls/recent — newest-first recent tool-call activity feed.
       router.get(g('tool-calls/recent'), async (ctx: HttpContext) => {
-        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
+        if (gov === null) return;
         return ctx.response.json(await gov.recentToolCalls(limitOf(ctx)));
       });
 
       // GET /agent/governance/threads/recent — newest-first recent thread activity feed.
       router.get(g('threads/recent'), async (ctx: HttpContext) => {
-        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
+        if (gov === null) return;
         return ctx.response.json(
           await withActorLabels(await gov.recentThreads(limitOf(ctx)), actorDirectory),
         );
@@ -1976,7 +2031,8 @@ export default class AgentProvider {
       // usage rollup + recent runs/messages), or `null` when unknown. `501` when the bound governance
       // adapter predates `threadDetail` (an optional SPI method — a third-party adapter may omit it).
       router.get(g('threads/:id'), async (ctx: HttpContext) => {
-        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
+        if (gov === null) return;
         if (gov.threadDetail === undefined) {
           return ctx.response
             .status(501)
@@ -1997,7 +2053,8 @@ export default class AgentProvider {
       // tool and model, common errors, UI cost per turn/day, time to first/complete frame). `501`
       // when the bound governance adapter does not record genui telemetry (optional SPI method).
       router.get(g('genui'), async (ctx: HttpContext) => {
-        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
+        if (gov === null) return;
         if (gov.genuiStats === undefined) {
           return ctx.response
             .status(501)
@@ -2023,7 +2080,8 @@ export default class AgentProvider {
       // `@adonis-agora/filter`'s `CursorParams`); the body is a `CursorPage` — `items`, `nextCursor`,
       // and the constant `prevCursor: null` / `hasPrev: false`.
       router.get(g('runs'), async (ctx: HttpContext) => {
-        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
+        if (gov === null) return;
         const filterActor = ctx.request.input('actor');
         const agent = ctx.request.input('agent');
         const status = ctx.request.input('status');
@@ -2047,7 +2105,8 @@ export default class AgentProvider {
       // GET /agent/governance/runs/:id — one run's full trace (run + messages + tool calls +
       // approvals + usage), or null.
       router.get(g('runs/:id'), async (ctx: HttpContext) => {
-        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
+        if (gov === null) return;
         const detail = await gov.runDetail(String(ctx.params.id));
         if (detail === null) return ctx.response.json(null);
         return ctx.response.json({
@@ -2060,7 +2119,8 @@ export default class AgentProvider {
       // is the platform-wide inbox (every actor's pending calls); it is governance-gated. A caller that
       // only needs its OWN pending approvals uses `GET /agent/approvals/mine` instead.
       router.get(g('approvals/pending'), async (ctx: HttpContext) => {
-        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
+        if (gov === null) return;
         const filterActor = ctx.request.input('actor');
         return ctx.response.json(
           await withActorLabels(
@@ -2075,13 +2135,15 @@ export default class AgentProvider {
 
       // GET /agent/governance/tools/stats — per-tool call/failure/rejection/latency rollup.
       router.get(g('tools/stats'), async (ctx: HttpContext) => {
-        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
+        if (gov === null) return;
         return ctx.response.json(await gov.perToolStats(optionalRange(ctx)));
       });
 
       // GET /agent/governance/reliability — success/failure/cancel rates + mean settled duration.
       router.get(g('reliability'), async (ctx: HttpContext) => {
-        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
+        if (gov === null) return;
         return ctx.response.json(await gov.runReliability(optionalRange(ctx)));
       });
 
@@ -2175,6 +2237,70 @@ export default class AgentProvider {
    * production. A refusal answers JSON `{ error }` (or redirects a page navigation that got
    * `{ redirectTo }`), unless the hook already answered. Returns `true` to proceed.
    */
+  /** The console gate's allowing verdict, or `null` after answering the refusal. */
+  async #consoleVerdict(
+    ctx: HttpContext,
+    actorResolver: ActorResolver,
+    consoleAuthorize: AgentConsoleAuthorize | undefined,
+  ): Promise<{ tenants?: ConsoleTenants } | null> {
+    const verdict = await evaluateDashboardGate(ctx, {
+      actorResolver,
+      authorize: consoleAuthorize,
+      inProduction: this.app.inProduction,
+    });
+    if (!verdict.ok) {
+      answerConsoleDenialJson(ctx, verdict);
+      return null;
+    }
+    return verdict.tenants !== undefined ? { tenants: verdict.tenants } : {};
+  }
+
+  /** What the console viewer may see under tenancy (`?tenant=` narrows it; a forged one is logged). */
+  #consoleTenants(ctx: HttpContext, granted: ConsoleTenants | undefined) {
+    const raw = ctx.request.input('tenant');
+    const resolved = resolveConsoleTenantScope({
+      granted,
+      own: currentTenantFilter(this.#tenancy),
+      selected: typeof raw === 'string' ? raw : undefined,
+      nullRows: this.#tenancy.nullRows,
+    });
+    if (resolved.forged) {
+      console.warn(
+        `[@adonis-agora/agent] console: ?tenant=${JSON.stringify(String(raw)).slice(0, 80)} is outside the organizations this viewer may see; answered empty.`,
+      );
+    }
+    return resolved;
+  }
+
+  /**
+   * Run the console gate and return the governance read-model the viewer may read: the whole of it
+   * with tenancy off, else a view scoped to the organizations `authorize` granted (or the viewer's
+   * own), narrowed by `?tenant=`. `null` after answering a refusal (or a `501` when the read-model
+   * cannot be scoped).
+   */
+  async #consoleView(
+    ctx: HttpContext,
+    actorResolver: ActorResolver,
+    consoleAuthorize: AgentConsoleAuthorize | undefined,
+    governance: AgentGovernanceQueries,
+  ): Promise<AgentGovernanceQueries | null> {
+    const verdict = await this.#consoleVerdict(ctx, actorResolver, consoleAuthorize);
+    if (verdict === null) return null;
+    if (!this.#tenancy.enabled) return governance;
+    const { scope } = this.#consoleTenants(ctx, verdict.tenants);
+    if (scope === undefined) return governance;
+    const view = governance.forTenants?.(scope);
+    if (view === undefined) {
+      ctx.response.status(501).json({
+        error: 'not_implemented',
+        message:
+          'The bound governance read-model cannot be scoped by organization (no forTenants); tenancy is on.',
+      });
+      return null;
+    }
+    return view;
+  }
+
   async #consoleGate(
     ctx: HttpContext,
     actorResolver: ActorResolver,

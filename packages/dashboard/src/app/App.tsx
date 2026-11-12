@@ -5,6 +5,7 @@ import { ApprovalsSection } from './ApprovalsSection.js';
 import { ConsoleSearch } from './ConsoleSearch.js';
 import { ConsoleSwitcher } from './ConsoleSwitcher.js';
 import { GenuiSection } from './GenuiSection.js';
+import { OrgNotice, OrgPicker } from './OrgPicker.js';
 import { Overview } from './Overview.js';
 import { PricingSection } from './PricingSection.js';
 import { QuotaSection } from './QuotaSection.js';
@@ -68,6 +69,8 @@ export function App() {
     detailFromHash(typeof window !== 'undefined' ? window.location.hash : ''),
   );
   const [range, setRange] = useState<GovernanceRange>(() => defaultRange());
+  // Bumped when the organization changes, so every section reads again under the new `?tenant=`.
+  const [tenantKey, setTenantKey] = useState(0);
   const [theme, setTheme] = useState<'light' | 'dark' | null>(null);
 
   useEffect(() => {
@@ -113,6 +116,7 @@ export function App() {
             }
           />
           <div className="controls">
+            <OrgPicker onChange={() => setTenantKey((key) => key + 1)} />
             <ConsoleSearch />
             {RANGED.has(section) && (
               <>
@@ -160,7 +164,8 @@ export function App() {
           ))}
         </nav>
 
-        <main>
+        <main key={tenantKey}>
+          <OrgNotice />
           {section === 'overview' && <Overview range={range} />}
           {section === 'runs' && <RunsSection key={detail ?? ''} initialRunId={detail} />}
           {section === 'threads' && <ThreadsSection key={detail ?? ''} initialThreadId={detail} />}

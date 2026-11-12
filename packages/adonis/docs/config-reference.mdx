@@ -58,7 +58,7 @@ Required unless an [`engine`](#engine) runs the turns.
 
 ### `quota`
 
-`{ limits: { day?: { tokens?, usd? }, month?: { tokens?, usd? } }, warnAt?: number, countEstimatedCost?: boolean } | QuotaProvider`. The caller's budget. The `usd` windows count provider-reported cost and the loop's persisted estimate for a provider that reports none; `countEstimatedCost: false` counts reported cost only; `warnAt` (`0..1`) is the soft limit past which `GET /agent/quota` carries a `warning` — reported by `GET /agent/quota` and gating a send (`429 quota_exceeded`) once a window is exhausted. **Omit → reported off the ledger, never enforced.** See [Budgets](/docs/agent/governance/quota-and-cost#budgets).
+`{ limits: { day?: { tokens?, usd? }, month?: { tokens?, usd? } }, warnAt?: number, countEstimatedCost?: boolean, per?: 'actor' | 'tenant' | 'actor-in-tenant' } | QuotaProvider`. `per: 'tenant'` makes the whole organization share one budget. The caller's budget. The `usd` windows count provider-reported cost and the loop's persisted estimate for a provider that reports none; `countEstimatedCost: false` counts reported cost only; `warnAt` (`0..1`) is the soft limit past which `GET /agent/quota` carries a `warning` — reported by `GET /agent/quota` and gating a send (`429 quota_exceeded`) once a window is exhausted. **Omit → reported off the ledger, never enforced.** See [Budgets](/docs/agent/governance/quota-and-cost#budgets).
 
 ### `pricingStore`
 
@@ -131,6 +131,10 @@ Tell the model what the label means in your system prompt ("the label is when th
 ### `emptyRoles`
 
 `'allow' | 'deny'`. What an empty roles list means to the default authorizer. **Default `'allow'`** — no restriction. `'deny'` makes it reach nobody: a tool needs `roles` (or a non-empty `defaultRoles`) to be offered or invoked. Since 0.46 an empty list is open; set `'deny'` if your app relied on it denying. Ignored when `authorizer` / `rolesPolicy` is set. See [Authorization](/docs/agent/governance/authorization#closing-the-empty-list).
+
+### `tenancy`
+
+`'inherit' | false | { enabled?: 'inherit' | boolean, kinds?: string[], nullRows?: 'tenantless' | 'shared' }`. Scopes threads, runs, usage, the quota and the console by the active organization (the tenant `@adonis-agora/context` publishes). **Default `'inherit'`: on only when `tenancy.enabled` is set in `config/context.ts`.** `false` keeps the agent unscoped. See [Organizations](/docs/agent/governance/authorization#organizations).
 
 ### `actorResolver`
 

@@ -265,6 +265,7 @@ export function createTableStatements(): string[] {
     `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_thread_idx" ON "${t.tokenUsage}" ("thread_id")`,
     `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_created_idx" ON "${t.tokenUsage}" ("created_at")`,
     `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_feature_created_idx" ON "${t.tokenUsage}" ("feature", "created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_tenant_created_idx" ON "${t.tokenUsage}" ("tenant_ref", "created_at")`,
     `CREATE TABLE IF NOT EXISTS "${t.modelPricing}" (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "model_id" VARCHAR(255) NOT NULL,

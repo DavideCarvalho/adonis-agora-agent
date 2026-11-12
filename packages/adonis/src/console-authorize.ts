@@ -15,9 +15,19 @@ import type { Actor } from './types.js';
  */
 export type ConsoleAuthorizeResult =
   | boolean
-  | { allowed: true }
+  | {
+      allowed: true;
+      /**
+       * With tenancy on: which tenants (organizations) the viewer may see. `'*'` = every tenant plus
+       * rows with none. Omitted = the viewer's own active tenant.
+       */
+      tenants?: ConsoleTenants;
+    }
   | { allowed: false; reason?: 'unauthenticated' | 'forbidden' }
   | { redirectTo: string };
+
+/** The tenants a console viewer may see: every one (`'*'`), or these ids. */
+export type ConsoleTenants = '*' | string[];
 
 /** A class form, for an authorizer in its own file (`@inject()` works). */
 export interface ConsoleAuthorizer {
@@ -84,7 +94,7 @@ export type AgentConsoleAuthorize =
  * when the hook asked for one, and the thrown error when the hook threw.
  */
 export type ConsoleAuthorizeDecision =
-  | { allowed: true }
+  | { allowed: true; tenants?: ConsoleTenants }
   | { allowed: false; status: 401 | 403; redirectTo?: string; error?: unknown };
 
 /** Normalise any value an authorize hook returned. Anything unrecognised denies (`403`). */
@@ -95,7 +105,23 @@ export function normalizeConsoleAuthorizeResult(result: unknown): ConsoleAuthori
       return { allowed: false, status: 401, redirectTo };
     }
   }
-  return resolveAuthorizeResult(result);
+  const resolved = resolveAuthorizeResult(result);
+  if (resolved.allowed) {
+    const tenants = consoleTenantsOf(result);
+    return tenants === undefined ? resolved : { allowed: true, tenants };
+  }
+  return resolved;
+}
+
+/** The `tenants` an allowing result carried (`'*'` or a list of non-empty ids), when valid. */
+function consoleTenantsOf(result: unknown): ConsoleTenants | undefined {
+  if (typeof result !== 'object' || result === null) return undefined;
+  const tenants = (result as { tenants?: unknown }).tenants;
+  if (tenants === '*') return '*';
+  if (Array.isArray(tenants)) {
+    return tenants.filter((id): id is string => typeof id === 'string' && id !== '');
+  }
+  return undefined;
 }
 
 function isAuthorizerClass(value: unknown): value is AgentConsoleAuthorizerClass {
