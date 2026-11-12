@@ -1,3 +1,4 @@
+import { ensureDatabaseSchema, validateSchema } from '../../stores/db-schema.js';
 import type { LucidRawRunner } from '../../stores/lucid.js';
 import { buildMetadataWhere, normalizeRows, stripNulBytes } from '../pg-vector-store.js';
 import { type DocumentTreeHeader, type DocumentTreeStore, headerOf } from './store.js';
@@ -8,6 +9,12 @@ export interface PgDocumentTreeStoreOptions {
   table?: string;
   /** Units (page/section text) table. Default `${table}_units`, i.e. `agent_rag_trees_units`. */
   unitsTable?: string;
+  /**
+   * The Postgres schema both tables live in: every statement names it (`"rag".agent_rag_trees`),
+   * never `SET search_path`. Default: none — the connection's current schema. {@link
+   * PgDocumentTreeStore.ensureSchema} creates it when missing.
+   */
+  schema?: string;
   /** Unit rows per multi-row `INSERT`. Default 200. */
   insertBatchSize?: number;
 }
@@ -58,16 +65,27 @@ function metadataConditions(filter: Record<string, unknown> | undefined): {
  * {@link schemaStatements}. Needs no extension. Writes run in one transaction when the runner has one.
  */
 export class PgDocumentTreeStore implements DocumentTreeStore {
+  /** The trees table as every statement names it: `"schema".table`, or the bare name. */
   protected readonly table: string;
+  /** The units table, named the same way. */
   protected readonly unitsTable: string;
+  /** The bare trees table name (the prefix of its index name). */
+  private readonly tableName: string;
+  private readonly schema: string | undefined;
   private readonly insertBatchSize: number;
 
   constructor(
     protected readonly db: LucidRawRunner,
     options: PgDocumentTreeStoreOptions = {},
   ) {
-    this.table = assertIdentifier(options.table ?? 'agent_rag_trees');
-    this.unitsTable = assertIdentifier(options.unitsTable ?? `${this.table}_units`);
+    const table = assertIdentifier(options.table ?? 'agent_rag_trees');
+    const unitsTable = assertIdentifier(options.unitsTable ?? `${table}_units`);
+    this.schema = validateSchema(db, options.schema, 'PgDocumentTreeStore');
+    // Tables stay unquoted, as they always were (validated identifiers); only the schema is quoted.
+    const ref = (name: string) => (this.schema === undefined ? name : `"${this.schema}".${name}`);
+    this.tableName = table;
+    this.table = ref(table);
+    this.unitsTable = ref(unitsTable);
     this.insertBatchSize = Math.max(1, Math.floor(options.insertBatchSize ?? 200));
   }
 
@@ -86,7 +104,7 @@ export class PgDocumentTreeStore implements DocumentTreeStore {
         tree JSONB NOT NULL,
         built_at TIMESTAMPTZ NOT NULL
       )`,
-      `CREATE INDEX IF NOT EXISTS ${this.table}_metadata_idx ON ${this.table} USING gin (metadata)`,
+      `CREATE INDEX IF NOT EXISTS ${this.tableName}_metadata_idx ON ${this.table} USING gin (metadata)`,
       `CREATE TABLE IF NOT EXISTS ${this.unitsTable} (
         document_id TEXT NOT NULL,
         idx INTEGER NOT NULL,
@@ -98,6 +116,7 @@ export class PgDocumentTreeStore implements DocumentTreeStore {
   }
 
   async ensureSchema(): Promise<void> {
+    if (this.schema !== undefined) await ensureDatabaseSchema(this.db, this.schema);
     for (const statement of this.schemaStatements()) {
       await this.db.rawQuery(statement);
     }

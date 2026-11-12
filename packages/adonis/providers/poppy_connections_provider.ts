@@ -158,6 +158,8 @@ export default class PoppyConnectionsProvider {
       ...(config.autoCreateTables !== undefined
         ? { autoCreateTables: config.autoCreateTables }
         : {}),
+      // The store's own schema, else config/agent.ts's top-level one.
+      schema: config.schema ?? this.app.config.get<string | undefined>('agent.schema', undefined),
     });
   }
 

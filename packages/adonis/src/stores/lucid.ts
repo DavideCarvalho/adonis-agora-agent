@@ -57,7 +57,7 @@ import type {
 import type { UiCapabilities } from '../ui-capabilities.js';
 import { LucidActionProposalStore } from './lucid-action-proposal-store.js';
 import {
-  AGENT_TABLES,
+  type AgentSchemaOptions,
   ensureAgentTables,
   hasLedgerColumns,
   hasQuotaFlagColumn,
@@ -153,7 +153,7 @@ export function inAppendOrder<Q extends LucidQueryBuilderLike>(
   return query.orderBy('seq', direction).orderBy('created_at', direction).orderBy('id', direction);
 }
 
-export interface LucidAgentStoreOptions extends ActionProposalStoreOptions {
+export interface LucidAgentStoreOptions extends ActionProposalStoreOptions, AgentSchemaOptions {
   /**
    * Provision the agent tables (via {@link ensureAgentTables}) — as the app starts when the agent
    * provider built the store, else on first use — so the lib manages its own schema, the ecosystem
@@ -386,9 +386,16 @@ export class LucidAgentStore
     return this.db;
   }
 
+  /** The database schema this store's tables live in, or `undefined` (the connection's current one). */
+  get databaseSchema(): string | undefined {
+    return this.schema;
+  }
+
   private init(): Promise<void> {
     if (this.ready === null) {
-      const ready = this.autoCreateTables ? ensureAgentTables(this.db) : this.checkToolCallSchema();
+      const ready = this.autoCreateTables
+        ? ensureAgentTables(this.db, { schema: this.schema })
+        : this.checkToolCallSchema();
       // A failed provisioning is not remembered: the next call tries again.
       ready.catch(() => {
         if (this.ready === ready) this.ready = null;
@@ -405,7 +412,7 @@ export class LucidAgentStore
    * and says so once, at startup.
    */
   private async checkToolCallSchema(): Promise<void> {
-    this.sentAtColumns = await hasSentAtColumns(this.db);
+    this.sentAtColumns = await hasSentAtColumns(this.db, this.schema);
     if (!this.sentAtColumns) {
       console.warn(
         '[@adonis-agora/agent] agent_message has no sent_at column. With autoCreateTables off the ' +
@@ -413,8 +420,8 @@ export class LucidAgentStore
           '(sentAt) are not stored, and messageTimestamps labels messages with their created_at.',
       );
     }
-    this.ledgerColumns = await hasLedgerColumns(this.db);
-    this.quotaFlagColumn = await hasQuotaFlagColumn(this.db);
+    this.ledgerColumns = await hasLedgerColumns(this.db, this.schema);
+    this.quotaFlagColumn = await hasQuotaFlagColumn(this.db, this.schema);
     if (!this.quotaFlagColumn) {
       console.warn(
         '[@adonis-agora/agent] agent_token_usage has no counts_towards_quota column. With autoCreateTables ' +
@@ -422,7 +429,7 @@ export class LucidAgentStore
           'usage row counts towards the quota, countsTowardsQuota: false included.',
       );
     }
-    this.runTimingColumns = await hasRunTimingColumns(this.db);
+    this.runTimingColumns = await hasRunTimingColumns(this.db, this.schema);
     if (!this.ledgerColumns || !this.runTimingColumns) {
       console.warn(
         '[@adonis-agora/agent] agent_token_usage / agent_run lack the usage-ledger and run-timing ' +
@@ -431,7 +438,7 @@ export class LucidAgentStore
           'usage without a thread is refused, and run timings are not stored.',
       );
     }
-    this.toolCallsScoped = await hasToolCallIdColumn(this.db);
+    this.toolCallsScoped = await hasToolCallIdColumn(this.db, this.schema);
     if (!this.toolCallsScoped) {
       console.warn(
         '[@adonis-agora/agent] agent_tool_call has no call_id column. With autoCreateTables off the ' +
@@ -455,7 +462,7 @@ export class LucidAgentStore
     await this.init();
     const id = input.id ?? crypto.randomUUID();
     const now = Date.now();
-    await this.db.table(AGENT_TABLES.threads).insert({
+    await this.db.table(this.tables.threads).insert({
       id,
       actor_ref: input.actor.id,
       tenant_ref: input.actor.tenantRef ?? null,
@@ -484,13 +491,13 @@ export class LucidAgentStore
   async getThread(threadId: string): Promise<ThreadDetail | null> {
     await this.init();
     const row = await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('id', threadId)
       .whereNull('deleted_at')
       .first();
     if (row === null || row === undefined) return null;
     const messageRows = await inAppendOrder(
-      this.db.from(AGENT_TABLES.messages).where('thread_id', threadId),
+      this.db.from(this.tables.messages).where('thread_id', threadId),
       'asc',
     ).select('*');
     const messages = await this.withApprovals(messageRows.map(rowToMessage));
@@ -504,13 +511,13 @@ export class LucidAgentStore
   async loadThreadForTurn(query: ThreadTurnQuery): Promise<ThreadTurnPage | null> {
     await this.init();
     const row = await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('id', query.threadId)
       .whereNull('deleted_at')
       .first();
     if (row === null || row === undefined) return null;
     const answered = await this.db
-      .from(AGENT_TABLES.messages)
+      .from(this.tables.messages)
       .where('thread_id', query.threadId)
       .where('role', 'assistant')
       .limit(1)
@@ -533,7 +540,7 @@ export class LucidAgentStore
   ): Promise<StoredMessage[]> {
     if (limit !== undefined && limit <= 0) return [];
     const query = inAppendOrder(
-      this.db.from(AGENT_TABLES.messages).where('thread_id', threadId),
+      this.db.from(this.tables.messages).where('thread_id', threadId),
       'desc',
     );
     if (limit !== undefined) query.limit(limit);
@@ -547,7 +554,7 @@ export class LucidAgentStore
   async getThreadActorRef(threadId: string): Promise<string | null> {
     await this.init();
     const row = await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('id', threadId)
       .whereNull('deleted_at')
       .first();
@@ -566,7 +573,7 @@ export class LucidAgentStore
       await this.db.rawQuery(
         portableSql(
           this.db,
-          `SELECT * FROM "${AGENT_TABLES.threads}" WHERE "actor_ref" = ? AND "transient" = 0 ` +
+          `SELECT * FROM ${this.tablesSql.threads} WHERE "actor_ref" = ? AND "transient" = 0 ` +
             `AND "deleted_at" IS NULL AND ${tenant.sql} ORDER BY "updated_at" DESC LIMIT ${Math.max(1, Math.trunc(limit))}`,
         ),
         [actorRef, ...tenant.bindings],
@@ -578,7 +585,7 @@ export class LucidAgentStore
   async getThreadTenantRef(threadId: string): Promise<{ tenantRef: string | null } | null> {
     await this.init();
     const row = await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('id', threadId)
       .whereNull('deleted_at')
       .first();
@@ -591,7 +598,7 @@ export class LucidAgentStore
 
   async getRunTenantRef(runId: string): Promise<{ tenantRef: string | null } | null> {
     await this.init();
-    const row = await this.db.from(AGENT_TABLES.runs).where('id', runId).first();
+    const row = await this.db.from(this.tables.runs).where('id', runId).first();
     if (row === null || row === undefined) return null;
     return {
       tenantRef:
@@ -602,7 +609,7 @@ export class LucidAgentStore
   async listThreads(actorRef: string, limit = 50): Promise<ThreadSummary[]> {
     await this.init();
     const rows = await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('actor_ref', actorRef)
       .where('transient', 0)
       .whereNull('deleted_at')
@@ -615,7 +622,7 @@ export class LucidAgentStore
   async promoteThread(threadId: string): Promise<void> {
     await this.init();
     await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('id', threadId)
       .where('transient', 1)
       .update({ transient: 0, updated_at: Date.now() });
@@ -624,7 +631,7 @@ export class LucidAgentStore
   async softDeleteThread(threadId: string): Promise<void> {
     await this.init();
     await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('id', threadId)
       .update({ deleted_at: Date.now() });
   }
@@ -636,12 +643,12 @@ export class LucidAgentStore
   ): Promise<ThreadSummary> {
     await this.init();
     return withStoreTransaction(this.db, async (trx) => {
-      const source = await trx.from(AGENT_TABLES.threads).where('id', threadId).first();
+      const source = await trx.from(this.tables.threads).where('id', threadId).first();
       if (source === null || source === undefined) {
         throw new Error(`thread ${threadId} not found`);
       }
       const messageRows = await inAppendOrder(
-        trx.from(AGENT_TABLES.messages).where('thread_id', threadId),
+        trx.from(this.tables.messages).where('thread_id', threadId),
         'asc',
       ).select('*');
       const cutoff = messageRows.findIndex((m) => String(m.id) === fromMessageId);
@@ -651,7 +658,7 @@ export class LucidAgentStore
       const now = Date.now();
       const title = String(source.title);
       const persona = pinnedPersona(source.persona);
-      await trx.table(AGENT_TABLES.threads).insert({
+      await trx.table(this.tables.threads).insert({
         id,
         actor_ref: options.actorRef ?? source.actor_ref,
         tenant_ref:
@@ -673,7 +680,7 @@ export class LucidAgentStore
       // Written in batches (one statement per run of same-shaped rows) inside the same transaction.
       await insertRows(
         trx,
-        AGENT_TABLES.messages,
+        this.tables.messages,
         kept.map((m, index) => ({
           id: crypto.randomUUID(),
           // Numbered afresh in the order just read, so the copy reads back in the original's order.
@@ -710,7 +717,7 @@ export class LucidAgentStore
   async setTitle(threadId: string, title: string): Promise<void> {
     await this.init();
     await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('id', threadId)
       .update({ title, updated_at: Date.now() });
   }
@@ -722,31 +729,31 @@ export class LucidAgentStore
     if (patch.model !== undefined) update.model = patch.model;
     if (patch.defaultAgent !== undefined) update.default_agent = patch.defaultAgent;
     if (patch.persona !== undefined) update.persona = patch.persona ?? '';
-    await this.db.from(AGENT_TABLES.threads).where('id', threadId).update(update);
+    await this.db.from(this.tables.threads).where('id', threadId).update(update);
   }
 
   async defaultAgentForThread(threadId: string): Promise<string | null> {
     await this.init();
-    const row = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
+    const row = await this.db.from(this.tables.threads).where('id', threadId).first();
     return typeof row?.default_agent === 'string' ? row.default_agent : null;
   }
 
   async modelForThread(threadId: string): Promise<string | null> {
     await this.init();
-    const row = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
+    const row = await this.db.from(this.tables.threads).where('id', threadId).first();
     return typeof row?.model === 'string' ? row.model : null;
   }
 
   async personaForThread(threadId: string): Promise<string | null> {
     await this.init();
-    const row = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
+    const row = await this.db.from(this.tables.threads).where('id', threadId).first();
     return pinnedPersona(row?.persona);
   }
 
   async clearActiveStream(threadId: string, runId: string): Promise<void> {
     await this.init();
     await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('id', threadId)
       .where('active_stream_id', runId)
       .update({ active_stream_id: null });
@@ -755,7 +762,7 @@ export class LucidAgentStore
   async setActiveStream(threadId: string, runId: string | null): Promise<void> {
     await this.init();
     await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('id', threadId)
       .update({ active_stream_id: runId });
   }
@@ -764,14 +771,14 @@ export class LucidAgentStore
 
   async activeRunForThread(threadId: string): Promise<string | null> {
     await this.init();
-    const row = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
+    const row = await this.db.from(this.tables.threads).where('id', threadId).first();
     return typeof row?.active_stream_id === 'string' ? row.active_stream_id : null;
   }
 
   async threadHeldByRun(runId: string): Promise<string | null> {
     await this.init();
     const row = await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('active_stream_id', runId)
       .whereNull('deleted_at')
       .first();
@@ -791,7 +798,7 @@ export class LucidAgentStore
   ): Promise<boolean> {
     await this.init();
     const free = await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('id', threadId)
       .whereNull('active_stream_id')
       .update({ active_stream_id: runId });
@@ -800,7 +807,7 @@ export class LucidAgentStore
     }
     const holders = options.replacing !== undefined ? [runId, options.replacing] : [runId];
     const handed = await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('id', threadId)
       .whereIn('active_stream_id', holders)
       .update({ active_stream_id: runId });
@@ -809,14 +816,14 @@ export class LucidAgentStore
     }
     // Zero can still be a win: a MySQL connection without FOUND_ROWS reports CHANGED rows, and
     // re-claiming a thread this run already holds changes nothing. The row says who holds it now.
-    const held = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
+    const held = await this.db.from(this.tables.threads).where('id', threadId).first();
     return held !== null && held !== undefined && held.active_stream_id === runId;
   }
 
   async releaseActiveStream(threadId: string, runId: string): Promise<boolean> {
     await this.init();
     const released = await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('id', threadId)
       .where('active_stream_id', runId)
       .update({ active_stream_id: null });
@@ -829,7 +836,7 @@ export class LucidAgentStore
     const now = Date.now();
     await withStoreTransaction(this.db, async (trx) => {
       const rows = await trx
-        .from(AGENT_TABLES.queuedMessages)
+        .from(this.tables.queuedMessages)
         .where('thread_id', input.threadId)
         .select('position');
       const positions = rows.map((row) => toInt(row.position));
@@ -840,7 +847,7 @@ export class LucidAgentStore
           : input.at === 'head'
             ? Math.min(...positions) - 1
             : Math.max(...positions) + 1;
-      await trx.table(AGENT_TABLES.queuedMessages).insert({
+      await trx.table(this.tables.queuedMessages).insert({
         id,
         thread_id: input.threadId,
         actor: safeJson(input.actor) ?? '{}',
@@ -872,7 +879,7 @@ export class LucidAgentStore
   async listQueue(threadId: string): Promise<QueuedMessage[]> {
     await this.init();
     const rows = await this.db
-      .from(AGENT_TABLES.queuedMessages)
+      .from(this.tables.queuedMessages)
       .where('thread_id', threadId)
       .orderBy('position', 'asc')
       .select('*');
@@ -881,7 +888,7 @@ export class LucidAgentStore
 
   async getQueuedMessage(id: string): Promise<QueuedMessage | null> {
     await this.init();
-    const row = await this.db.from(AGENT_TABLES.queuedMessages).where('id', id).first();
+    const row = await this.db.from(this.tables.queuedMessages).where('id', id).first();
     return row === null || row === undefined ? null : queuedMessageFromRow(row);
   }
 
@@ -896,19 +903,19 @@ export class LucidAgentStore
           : safeJson(patch.attachments);
     }
     if (patch.interrupt !== undefined) update.interrupt = patch.interrupt ? 1 : 0;
-    const updated = await this.db.from(AGENT_TABLES.queuedMessages).where('id', id).update(update);
+    const updated = await this.db.from(this.tables.queuedMessages).where('id', id).update(update);
     return affectedRows(updated) > 0 ? this.getQueuedMessage(id) : null;
   }
 
   async moveQueuedMessage(id: string, index: number): Promise<boolean> {
     await this.init();
     return withStoreTransaction(this.db, async (trx) => {
-      const target = await trx.from(AGENT_TABLES.queuedMessages).where('id', id).first();
+      const target = await trx.from(this.tables.queuedMessages).where('id', id).first();
       if (target === null || target === undefined) {
         return false;
       }
       const rows = await trx
-        .from(AGENT_TABLES.queuedMessages)
+        .from(this.tables.queuedMessages)
         .where('thread_id', String(target.thread_id))
         .orderBy('position', 'asc')
         .select('id');
@@ -916,7 +923,7 @@ export class LucidAgentStore
       order.splice(Math.max(0, Math.min(order.length, Math.trunc(index))), 0, id);
       // A move rewrites the whole run order as `0..n-1`.
       for (const [position, rowId] of order.entries()) {
-        await trx.from(AGENT_TABLES.queuedMessages).where('id', rowId).update({ position });
+        await trx.from(this.tables.queuedMessages).where('id', rowId).update({ position });
       }
       return true;
     });
@@ -925,14 +932,14 @@ export class LucidAgentStore
   /** A conditional delete: `false` when the row was already gone (a drain lost its head). */
   async removeQueuedMessage(id: string): Promise<boolean> {
     await this.init();
-    const removed = await this.db.from(AGENT_TABLES.queuedMessages).where('id', id).delete();
+    const removed = await this.db.from(this.tables.queuedMessages).where('id', id).delete();
     return affectedRows(removed) > 0;
   }
 
   async clearQueue(threadId: string): Promise<number> {
     await this.init();
     const removed = await this.db
-      .from(AGENT_TABLES.queuedMessages)
+      .from(this.tables.queuedMessages)
       .where('thread_id', threadId)
       .delete();
     return affectedRows(removed);
@@ -940,14 +947,14 @@ export class LucidAgentStore
 
   async queuePause(threadId: string): Promise<QueuePause | null> {
     await this.init();
-    const row = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
+    const row = await this.db.from(this.tables.threads).where('id', threadId).first();
     return parseJson<QueuePause>(row?.queue_pause) ?? null;
   }
 
   async setQueuePause(threadId: string, pause: QueuePause | null): Promise<void> {
     await this.init();
     await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('id', threadId)
       .update({ queue_pause: pause === null ? null : safeJson(pause) });
   }
@@ -957,7 +964,7 @@ export class LucidAgentStore
     const id = crypto.randomUUID();
     const now = Date.now();
     const seq = await this.nextMessageSeq(input.threadId);
-    await this.db.table(AGENT_TABLES.messages).insert({
+    await this.db.table(this.tables.messages).insert({
       id,
       seq,
       thread_id: input.threadId,
@@ -984,10 +991,7 @@ export class LucidAgentStore
       created_at: now,
     });
     // Keep the thread's `updated_at` in step so list ordering reflects the latest activity.
-    await this.db
-      .from(AGENT_TABLES.threads)
-      .where('id', input.threadId)
-      .update({ updated_at: now });
+    await this.db.from(this.tables.threads).where('id', input.threadId).update({ updated_at: now });
     return {
       id,
       role: input.role,
@@ -1027,7 +1031,7 @@ export class LucidAgentStore
    */
   private async nextMessageSeq(threadId: string): Promise<number> {
     const [last] = await this.db
-      .from(AGENT_TABLES.messages)
+      .from(this.tables.messages)
       .where('thread_id', threadId)
       .orderBy('seq', 'desc')
       .limit(1)
@@ -1038,7 +1042,7 @@ export class LucidAgentStore
   async setMessageUi(messageId: string, ui: AgentUiComponent[]): Promise<void> {
     await this.init();
     await this.db
-      .from(AGENT_TABLES.messages)
+      .from(this.tables.messages)
       .where('id', messageId)
       .update({ ui: safeJson(ui) });
   }
@@ -1046,7 +1050,7 @@ export class LucidAgentStore
   async setMessageToolResults(messageId: string, results: ToolResult[]): Promise<void> {
     await this.init();
     await this.db
-      .from(AGENT_TABLES.messages)
+      .from(this.tables.messages)
       .where('id', messageId)
       .update({ tool_results: safeJson(results) });
   }
@@ -1055,7 +1059,7 @@ export class LucidAgentStore
     await this.init();
     await withStoreTransaction(this.db, async (trx) => {
       const rows = await inAppendOrder(
-        trx.from(AGENT_TABLES.messages).where('thread_id', threadId),
+        trx.from(this.tables.messages).where('thread_id', threadId),
         'asc',
       ).select('id');
       const cutoff = rows.findIndex((m) => String(m.id) === messageId);
@@ -1065,10 +1069,10 @@ export class LucidAgentStore
       // of ids per statement rather than two statements per message: same rows gone, same
       // transaction, a bounded number of round trips however long the dropped tail is.
       for (const ids of inChunks(doomed)) {
-        await trx.from(AGENT_TABLES.toolCalls).whereIn('message_id', ids).delete();
+        await trx.from(this.tables.toolCalls).whereIn('message_id', ids).delete();
       }
       for (const ids of inChunks(doomed)) {
-        await trx.from(AGENT_TABLES.messages).whereIn('id', ids).delete();
+        await trx.from(this.tables.messages).whereIn('id', ids).delete();
       }
     });
   }
@@ -1090,14 +1094,14 @@ export class LucidAgentStore
     }
     await this.init();
     const threads = await this.db
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('actor_ref', actorRef)
       .select('id');
     if (threads.length === 0) {
       return [];
     }
     const rows = await this.db
-      .from(AGENT_TABLES.messages)
+      .from(this.tables.messages)
       .whereIn(
         'thread_id',
         threads.map((thread) => String(thread.id)),
@@ -1106,7 +1110,7 @@ export class LucidAgentStore
       .select('attachments');
     // A message waiting in a thread's queue has been sent and not yet run: what it carries is in use.
     const queued = await this.db
-      .from(AGENT_TABLES.queuedMessages)
+      .from(this.tables.queuedMessages)
       .whereIn(
         'thread_id',
         threads.map((thread) => String(thread.id)),
@@ -1127,7 +1131,7 @@ export class LucidAgentStore
 
   async recordToolCall(input: RecordToolCallInput): Promise<void> {
     await this.init();
-    await this.db.table(AGENT_TABLES.toolCalls).insert({
+    await this.db.table(this.tables.toolCalls).insert({
       ...(this.toolCallsScoped
         ? { id: toolCallRowId(input.toolCallId, input.messageId), call_id: input.toolCallId }
         : { id: input.toolCallId }),
@@ -1165,7 +1169,7 @@ export class LucidAgentStore
     // Only the row's key is read: the update never needs the call's input/output payloads.
     const row = await this.findToolCall(input.toolCallId, input.runId, ['id']);
     if (row === null) return;
-    await this.db.from(AGENT_TABLES.toolCalls).where('id', String(row.id)).update(patch);
+    await this.db.from(this.tables.toolCalls).where('id', String(row.id)).update(patch);
   }
 
   /**
@@ -1179,7 +1183,7 @@ export class LucidAgentStore
     runId?: string,
     columns: readonly string[] = ['*'],
   ): Promise<Record<string, unknown> | null> {
-    const table = AGENT_TABLES.toolCalls;
+    const table = this.tables.toolCalls;
     if (this.toolCallsScoped) {
       const query = this.db.from(table).where('call_id', toolCallId);
       if (runId !== undefined) query.where('run_id', runId);
@@ -1203,7 +1207,7 @@ export class LucidAgentStore
     // record, see `toolCallApprovalFromRow`), so the rest are left in the database rather than read
     // — input and output payloads included — on every thread open.
     const rows = await this.db
-      .from(AGENT_TABLES.toolCalls)
+      .from(this.tables.toolCalls)
       .whereIn(
         'message_id',
         messages.map((message) => message.id),
@@ -1238,8 +1242,8 @@ export class LucidAgentStore
       await this.db.rawQuery(
         portableSql(
           this.db,
-          `SELECT c."tool_name" AS tool_name FROM "${AGENT_TABLES.toolCalls}" c ` +
-            `INNER JOIN "${AGENT_TABLES.messages}" m ON m."id" = c."message_id" ` +
+          `SELECT c."tool_name" AS tool_name FROM ${this.tablesSql.toolCalls} c ` +
+            `INNER JOIN ${this.tablesSql.messages} m ON m."id" = c."message_id" ` +
             `WHERE m."thread_id" = ? AND c."remember" = 1`,
         ),
         [threadId],
@@ -1268,14 +1272,14 @@ export class LucidAgentStore
 
   async threadOfMessage(messageId: string): Promise<string | null> {
     await this.init();
-    const row = await this.db.from(AGENT_TABLES.messages).where('id', messageId).first();
+    const row = await this.db.from(this.tables.messages).where('id', messageId).first();
     return row === null || row === undefined ? null : String(row.thread_id);
   }
 
   async setMessageFeedback(messageId: string, feedback: MessageFeedback | null): Promise<void> {
     await this.init();
     await this.db
-      .from(AGENT_TABLES.messages)
+      .from(this.tables.messages)
       .where('id', messageId)
       .update({ feedback: safeJson(feedback) });
   }
@@ -1297,7 +1301,7 @@ export class LucidAgentStore
   async toolCallOutcomes(toolCallIds: string[]): Promise<ToolCallOutcome[]> {
     if (toolCallIds.length === 0) return [];
     await this.init();
-    const table = AGENT_TABLES.toolCalls;
+    const table = this.tables.toolCalls;
     const columns = ['id', 'status', 'output', 'error', 'created_at'];
     const rows = this.toolCallsScoped
       ? [
@@ -1335,7 +1339,7 @@ export class LucidAgentStore
   async failUnsettledToolCalls(runId: string, error: string): Promise<number> {
     await this.init();
     const updated = await this.db
-      .from(AGENT_TABLES.toolCalls)
+      .from(this.tables.toolCalls)
       .where('run_id', runId)
       .where('status', 'pending_approval')
       .update({ status: 'failed', error });
@@ -1345,7 +1349,7 @@ export class LucidAgentStore
 
   async recordUsage(input: RecordUsageInput): Promise<void> {
     await this.init();
-    await this.db.table(AGENT_TABLES.tokenUsage).insert({
+    await this.db.table(this.tables.tokenUsage).insert({
       id: crypto.randomUUID(),
       thread_id: input.threadId ?? null,
       actor_ref: input.actorRef,
@@ -1383,10 +1387,10 @@ export class LucidAgentStore
     await withStoreTransaction(this.db, async (trx) => {
       const ids = rows.map((row) => row.toolCallId);
       // A call recorded again (a replayed step) replaces its row.
-      await trx.from(AGENT_TABLES.genuiCalls).whereIn('id', ids).delete();
+      await trx.from(this.tables.genuiCalls).whereIn('id', ids).delete();
       await insertRows(
         trx,
-        AGENT_TABLES.genuiCalls,
+        this.tables.genuiCalls,
         rows.map((row) => ({
           id: row.toolCallId,
           run_id: row.runId,
@@ -1419,7 +1423,7 @@ export class LucidAgentStore
 
   async recordRunStart(input: RecordRunStartInput): Promise<void> {
     await this.init();
-    await this.db.table(AGENT_TABLES.runs).insert({
+    await this.db.table(this.tables.runs).insert({
       id: input.runId,
       thread_id: input.threadId,
       agent_name: input.agentName ?? null,
@@ -1443,7 +1447,7 @@ export class LucidAgentStore
 
   async getRunActorRef(runId: string): Promise<string | null> {
     await this.init();
-    const row = await this.db.from(AGENT_TABLES.runs).where('id', runId).first();
+    const row = await this.db.from(this.tables.runs).where('id', runId).first();
     if (row === null || row === undefined) return null;
     return String(row.actor_ref);
   }
@@ -1472,7 +1476,7 @@ export class LucidAgentStore
     // First terminal wins: only settle a run still `running`, so a late `completed` from the loop can
     // never overwrite a `failed`/`cancelled` the runner already recorded (idempotent under replay too).
     await this.db
-      .from(AGENT_TABLES.runs)
+      .from(this.tables.runs)
       .where('id', input.runId)
       .where('status', 'running')
       .update(patch);
@@ -1497,7 +1501,7 @@ export class LucidAgentStore
           `SELECT COALESCE(SUM("input_tokens" + "output_tokens"), 0) AS used_tokens, ` +
             `COALESCE(SUM("cost_usd"), 0) AS cost_usd, ` +
             `COALESCE(SUM(CASE WHEN "cost_source" = 'estimate' THEN "cost_usd" ELSE 0 END), 0) AS estimated_cost_usd ` +
-            `FROM "${AGENT_TABLES.tokenUsage}" WHERE "actor_ref" = ? AND "created_at" >= ? AND "created_at" <= ?${this.quotaPredicate()}`,
+            `FROM ${this.tablesSql.tokenUsage} WHERE "actor_ref" = ? AND "created_at" >= ? AND "created_at" <= ?${this.quotaPredicate()}`,
         ),
         [actorRef, Date.parse(`${fromDay}T00:00:00.000Z`), Date.parse(`${toDay}T23:59:59.999Z`)],
       ),
@@ -1526,7 +1530,7 @@ export class LucidAgentStore
           `SELECT COALESCE(SUM("input_tokens" + "output_tokens"), 0) AS used_tokens, ` +
             `COALESCE(SUM("cost_usd"), 0) AS cost_usd, ` +
             `COALESCE(SUM(CASE WHEN "cost_source" = 'estimate' THEN "cost_usd" ELSE 0 END), 0) AS estimated_cost_usd ` +
-            `FROM "${AGENT_TABLES.tokenUsage}" WHERE "tenant_ref" = ?` +
+            `FROM ${this.tablesSql.tokenUsage} WHERE "tenant_ref" = ?` +
             (actorRef !== undefined ? ` AND "actor_ref" = ?` : '') +
             ` AND "created_at" >= ? AND "created_at" <= ?${this.quotaPredicate()}`,
         ),
@@ -1549,7 +1553,7 @@ export class LucidAgentStore
         portableSql(
           this.db,
           `SELECT COALESCE(SUM("input_tokens" + "output_tokens"), 0) AS used_tokens ` +
-            `FROM "${AGENT_TABLES.tokenUsage}" WHERE "actor_ref" = ? AND "created_at" >= ? AND "created_at" <= ?${this.quotaPredicate()}`,
+            `FROM ${this.tablesSql.tokenUsage} WHERE "actor_ref" = ? AND "created_at" >= ? AND "created_at" <= ?${this.quotaPredicate()}`,
         ),
         [actorRef, Date.parse(`${day}T00:00:00.000Z`), Date.parse(`${day}T23:59:59.999Z`)],
       ),

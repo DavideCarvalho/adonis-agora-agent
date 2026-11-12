@@ -1,5 +1,6 @@
 import type { EmbeddingProvider } from '../spi/embedding-provider.js';
 import type { Passage } from '../spi/retriever.js';
+import { ensureDatabaseSchema, validateSchema } from '../stores/db-schema.js';
 import type { LucidRawRunner } from '../stores/lucid.js';
 import { EmbeddingRetriever } from './embedding-retriever.js';
 import {
@@ -47,6 +48,15 @@ export interface PgVectorColumns {
 export interface PgVectorStoreOptions {
   /** Table name. Default `agent_rag_chunks`. Validated against the identifier regex. */
   table?: string;
+  /**
+   * The Postgres schema the table lives in: every statement names it (`"rag".agent_rag_chunks`),
+   * never `SET search_path`. Default: none — the connection's current schema. {@link
+   * PgVectorStore.ensureSchema} creates it when missing. The `vector` extension is NOT moved there: it
+   * is database-wide and stays where it is installed (created, when missing, in the connection's
+   * default schema), and the `vector` type and operators resolve through the connection's search
+   * path as they always did.
+   */
+  schema?: string;
   /**
    * Embedding width — must match your model (e.g. 1536 for text-embedding-3-small). Default 1536.
    *
@@ -323,7 +333,12 @@ function documentIdExpr(col: string): string {
  * `vector` extension, the chunk table, and the metric's index.
  */
 export class PgVectorStore implements VectorStore {
+  /** The bare table name (also the prefix of its index names). */
   protected readonly table: string;
+  /** The database schema the table lives in, or `undefined` (the connection's current one). */
+  protected readonly schema: string | undefined;
+  /** The table as every statement names it: `"schema".table`, or the bare name without a schema. */
+  protected readonly tableRef: string;
   /** The single width (fixed-dimension table), or `undefined` for a mixed-dimension table. */
   private readonly dimension: number | undefined;
   /** The widths with a partial HNSW index, for a mixed-dimension table. */
@@ -343,6 +358,9 @@ export class PgVectorStore implements VectorStore {
     options: PgVectorStoreOptions = {},
   ) {
     this.table = assertIdentifier(options.table ?? 'agent_rag_chunks', 'table');
+    this.schema = validateSchema(db, options.schema, 'PgVectorStore');
+    // The table stays unquoted, as it always was (a validated identifier); only the schema is quoted.
+    this.tableRef = this.schema === undefined ? this.table : `"${this.schema}".${this.table}`;
     const dimension = options.dimension ?? 1536;
     if (typeof dimension === 'number') {
       this.dimension = dimension;
@@ -383,9 +401,34 @@ export class PgVectorStore implements VectorStore {
    * and scripts; an AdonisJS app should prefer the bundled migration so the schema is versioned.
    */
   async ensureSchema(): Promise<void> {
+    if (this.schema !== undefined) await ensureDatabaseSchema(this.db, this.schema);
     for (const statement of this.schemaStatements()) {
       await this.db.rawQuery(statement);
     }
+    if (this.schema !== undefined) await this.assertVectorTypeVisible();
+  }
+
+  /**
+   * Under a `schema`, the `vector` type and its operators still resolve through the connection's
+   * search path (the extension is not moved). Say so at boot when they do not, rather than fail on the
+   * first search.
+   */
+  private async assertVectorTypeVisible(): Promise<void> {
+    const [row] = normalizeRows(
+      await this.db.rawQuery(
+        `SELECT to_regtype('vector') IS NOT NULL AS visible, ` +
+          `(SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace ` +
+          `WHERE e.extname = 'vector') AS extension_schema`,
+      ),
+    );
+    if (row === undefined || row.visible === true || row.visible === 't') return;
+    throw new Error(
+      `[@adonis-agora/agent] PgVectorStore: the pgvector extension is installed in schema ` +
+        `"${String(row.extension_schema)}", which is not on this connection's search path, so the ` +
+        '`vector` type cannot be resolved. Install the extension in a schema on the path ' +
+        "(usually public), or add its schema to the role's default search_path " +
+        '(ALTER ROLE … SET search_path) — not with Lucid `searchPath`.',
+    );
   }
 
   /** The `CREATE EXTENSION` / `CREATE TABLE` / `CREATE INDEX` statements {@link ensureSchema} issues. */
@@ -394,7 +437,7 @@ export class PgVectorStore implements VectorStore {
     const mixed = this.dimension === undefined;
     const statements = [
       'CREATE EXTENSION IF NOT EXISTS vector',
-      `CREATE TABLE IF NOT EXISTS ${this.table} (
+      `CREATE TABLE IF NOT EXISTS ${this.tableRef} (
         ${c.id} TEXT PRIMARY KEY,
         ${c.text} TEXT NOT NULL,
         ${c.source} TEXT,
@@ -406,14 +449,14 @@ export class PgVectorStore implements VectorStore {
       for (const width of this.indexedDimensions) {
         statements.push(
           `CREATE INDEX IF NOT EXISTS ${this.table}_${c.embedding}_${width}_idx
-        ON ${this.table} USING hnsw ((${c.embedding}::vector(${width})) ${this.metric.opclass})
+        ON ${this.tableRef} USING hnsw ((${c.embedding}::vector(${width})) ${this.metric.opclass})
         WHERE vector_dims(${c.embedding}) = ${width}`,
         );
       }
     } else {
       statements.push(
         `CREATE INDEX IF NOT EXISTS ${this.table}_${c.embedding}_idx
-        ON ${this.table} USING hnsw (${c.embedding} ${
+        ON ${this.tableRef} USING hnsw (${c.embedding} ${
           this.vectorType === 'halfvec'
             ? this.metric.opclass.replace(/^vector_/, 'halfvec_')
             : this.metric.opclass
@@ -459,7 +502,8 @@ export class PgVectorStore implements VectorStore {
     }
     await transaction.call(this.db, async (trx) => {
       await trx.rawQuery('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [
-        `${this.table}:${stripNulBytes(documentId)}`,
+        // Schema-qualified, so the same table name in two schemas never shares a lock.
+        `${this.schema === undefined ? '' : `${this.schema}.`}${this.table}:${stripNulBytes(documentId)}`,
       ]);
       await swap(trx);
     });
@@ -492,7 +536,7 @@ export class PgVectorStore implements VectorStore {
         );
       }
       await runner.rawQuery(
-        `INSERT INTO ${this.table} (${c.id}, ${c.text}, ${c.source}, ${c.metadata}, ${c.embedding})
+        `INSERT INTO ${this.tableRef} (${c.id}, ${c.text}, ${c.source}, ${c.metadata}, ${c.embedding})
          VALUES ${batch.map(() => `(?, ?, ?, ?::jsonb, ?::${this.vectorType})`).join(', ')}
          ON CONFLICT (${c.id}) DO UPDATE SET
            ${c.text} = EXCLUDED.${c.text},
@@ -515,7 +559,7 @@ export class PgVectorStore implements VectorStore {
   }
 
   private async removeWith(runner: LucidRawRunner, documentId: string): Promise<void> {
-    await runner.rawQuery(`DELETE FROM ${this.table} WHERE ${documentIdExpr(this.col.id)} = ?`, [
+    await runner.rawQuery(`DELETE FROM ${this.tableRef} WHERE ${documentIdExpr(this.col.id)} = ?`, [
       stripNulBytes(documentId),
     ]);
   }
@@ -560,7 +604,7 @@ export class PgVectorStore implements VectorStore {
     const set = Object.fromEntries(setEntries);
     const c = this.col;
     const raw = await this.db.rawQuery(
-      `UPDATE ${this.table}
+      `UPDATE ${this.tableRef}
           SET ${c.metadata} = (COALESCE(${c.metadata}, '{}'::jsonb) || ?::jsonb) - ?::text[]
         WHERE ${documentIdExpr(c.id)} = ?
         RETURNING ${c.id} AS id`,
@@ -575,7 +619,7 @@ export class PgVectorStore implements VectorStore {
     const where = buildMetadataWhere(filter, c.metadata);
     const raw = await this.db.rawQuery(
       `SELECT DISTINCT ON (${docExpr}) ${docExpr} AS doc_id, ${c.metadata} AS metadata
-       FROM ${this.table}
+       FROM ${this.tableRef}
        ${where.sql}
        ORDER BY ${docExpr}`,
       where.bindings,
@@ -600,7 +644,7 @@ export class PgVectorStore implements VectorStore {
     const where = buildMetadataWhere(filter, this.col.metadata);
     const raw = await this.db.rawQuery(
       `SELECT DISTINCT ${docExpr} AS doc_id
-         FROM ${this.table}
+         FROM ${this.tableRef}
          ${where.sql}
         ORDER BY doc_id`,
       where.bindings,
@@ -623,7 +667,7 @@ export class PgVectorStore implements VectorStore {
     }
     const where = buildMetadataWhere(filter, this.col.metadata);
     const raw = await this.db.rawQuery(
-      `DELETE FROM ${this.table} ${where.sql} RETURNING ${this.col.id} AS id`,
+      `DELETE FROM ${this.tableRef} ${where.sql} RETURNING ${this.col.id} AS id`,
       where.bindings,
     );
     return normalizeRows(raw).length;
@@ -683,7 +727,7 @@ export class PgVectorStore implements VectorStore {
     const bindings: unknown[] = [vector, ...whereBindings, vector, options.topK];
     const sql = `SELECT ${c.id} AS id, ${c.text} AS text, ${c.source} AS source, ${c.metadata} AS metadata,
               ${scoreExpr} AS score
-       FROM ${this.table}
+       FROM ${this.tableRef}
        ${whereSql}
        ORDER BY ${column} ${this.metric.operator} ?::${vectorType}
        LIMIT ?`;
@@ -812,7 +856,7 @@ export class PgLexicalVectorStore extends PgVectorStore implements LexicalVector
     if (this.tsColumn === undefined) {
       statements.push(
         `CREATE INDEX IF NOT EXISTS ${this.table}_${this.col.text}_tsv_idx
-        ON ${this.table} USING gin (${this.tsvector()})`,
+        ON ${this.tableRef} USING gin (${this.tsvector()})`,
       );
     }
     return statements;
@@ -848,7 +892,7 @@ export class PgLexicalVectorStore extends PgVectorStore implements LexicalVector
     const raw = await this.db.rawQuery(
       `SELECT ${c.id} AS id, ${c.text} AS text, ${c.source} AS source, ${c.metadata} AS metadata,
               ts_rank_cd(${this.tsvector()}, __tsq.q) AS score
-       FROM ${this.table}, websearch_to_tsquery('${this.tsConfig}', ?) AS __tsq(q)
+       FROM ${this.tableRef}, websearch_to_tsquery('${this.tsConfig}', ?) AS __tsq(q)
        WHERE ${clauses.join(' AND ')}
        ORDER BY score DESC, ${c.id}
        LIMIT ?`,
@@ -883,7 +927,7 @@ export class PgLexicalVectorStore extends PgVectorStore implements LexicalVector
          ), __cand AS MATERIALIZED (
            SELECT ${c.id} AS id, ${c.text} AS text, ${c.source} AS source, ${c.metadata} AS metadata,
                   ${this.tsvector()} AS __tsv, __any.q AS __q
-           FROM ${this.table}, to_tsquery('${cfg}', ?) AS __any(q)
+           FROM ${this.tableRef}, to_tsquery('${cfg}', ?) AS __any(q)
            WHERE ${clauses.join(' AND ')}
          ), __hits AS MATERIALIZED (
            SELECT __cand.id AS __id, __terms.q FROM __cand JOIN __terms ON __cand.__tsv @@ __terms.q

@@ -3,8 +3,9 @@ import type {
   CurrentModelPrice,
   ModelPriceInput,
 } from '../spi/pricing-store.js';
+import { validateSchema } from './db-schema.js';
 import type { LucidDatabaseLike } from './lucid.js';
-import { AGENT_TABLES, ensureAgentTables } from './lucid-schema.js';
+import { type AgentTableKey, agentTables, ensureAgentTables } from './lucid-schema.js';
 
 /** Options for {@link LucidPricingStore}. */
 export interface LucidPricingStoreOptions {
@@ -14,6 +15,11 @@ export interface LucidPricingStoreOptions {
    * here is what lets a pricing seed run before the first agent run. Set `false` to run the migration.
    */
   autoCreateTables?: boolean;
+  /**
+   * The database schema (a Postgres schema, a MySQL database) the agent tables live in — the same
+   * one the agent store writes to. Default: none (the connection's current schema). Refused on SQLite.
+   */
+  schema?: string | undefined;
 }
 
 function toNum(value: unknown): number {
@@ -36,17 +42,24 @@ function toNum(value: unknown): number {
  */
 export class LucidPricingStore implements AgentPricingStore {
   private readonly autoCreateTables: boolean;
+  private readonly schema: string | undefined;
+  /** The agent tables as the query builder names them (`schema.table` under a schema). */
+  private readonly tables: Record<AgentTableKey, string>;
 
   constructor(
     private readonly db: LucidDatabaseLike,
     options: LucidPricingStoreOptions = {},
   ) {
     this.autoCreateTables = options.autoCreateTables ?? true;
+    this.schema = validateSchema(db, options.schema, 'pricingStores.lucid()');
+    this.tables = agentTables(this.schema);
   }
 
   /** Provision the shared schema on first use (no-op when disabled), memoized across the stores. */
   private ready(): Promise<void> {
-    return this.autoCreateTables ? ensureAgentTables(this.db) : Promise.resolve();
+    return this.autoCreateTables
+      ? ensureAgentTables(this.db, { schema: this.schema })
+      : Promise.resolve();
   }
 
   /** Provision the shared schema now (what the agent provider calls at app start). Idempotent. */
@@ -59,11 +72,11 @@ export class LucidPricingStore implements AgentPricingStore {
     // Atomic supersede in a transaction: retire the model's current row, then insert the new one.
     await this.db.transaction(async (trx) => {
       await trx
-        .from(AGENT_TABLES.modelPricing)
+        .from(this.tables.modelPricing)
         .where('model_id', input.modelId)
         .where('is_current', 1)
         .update({ is_current: 0 });
-      await trx.table(AGENT_TABLES.modelPricing).insert({
+      await trx.table(this.tables.modelPricing).insert({
         id: crypto.randomUUID(),
         model_id: input.modelId,
         input_price_per_1m: input.inputPricePer1m,
@@ -78,7 +91,7 @@ export class LucidPricingStore implements AgentPricingStore {
 
   async listCurrentPrices(): Promise<CurrentModelPrice[]> {
     await this.ready();
-    const rows = await this.db.from(AGENT_TABLES.modelPricing).where('is_current', 1).select('*');
+    const rows = await this.db.from(this.tables.modelPricing).where('is_current', 1).select('*');
     return rows.map((row) => {
       const cacheWrite = row.cache_write_price_per_1m;
       const cacheRead = row.cache_read_price_per_1m;

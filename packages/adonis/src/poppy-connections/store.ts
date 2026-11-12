@@ -1,3 +1,9 @@
+import {
+  ensureDatabaseSchema,
+  qualifiedName,
+  qualifiedSql,
+  validateSchema,
+} from '../stores/db-schema.js';
 import type { LucidClientLike, LucidRawRunner } from '../stores/lucid.js';
 import { forDialect } from '../stores/lucid-schema.js';
 import { isMySql } from '../stores/sql-dialect.js';
@@ -90,10 +96,10 @@ export const POPPY_CONNECTION_TABLES = {
   pending: 'agent_poppy_connect',
 } as const;
 
-export function poppyConnectionTableStatements(): string[] {
+export function poppyConnectionTableStatements(schema?: string): string[] {
   const t = POPPY_CONNECTION_TABLES;
   return [
-    `CREATE TABLE IF NOT EXISTS "${t.connections}" (
+    `CREATE TABLE IF NOT EXISTS ${qualifiedSql(t.connections, schema)} (
       "owner" VARCHAR(255) NOT NULL,
       "issuer" VARCHAR(1024) NOT NULL,
       "domain" VARCHAR(255) NOT NULL,
@@ -105,7 +111,7 @@ export function poppyConnectionTableStatements(): string[] {
       "updated_at" BIGINT NOT NULL,
       PRIMARY KEY ("owner", "issuer")
     )`,
-    `CREATE TABLE IF NOT EXISTS "${t.pending}" (
+    `CREATE TABLE IF NOT EXISTS ${qualifiedSql(t.pending, schema)} (
       "id" VARCHAR(64) PRIMARY KEY NOT NULL,
       "owner" VARCHAR(255) NOT NULL,
       "domain" VARCHAR(255) NOT NULL,
@@ -142,9 +148,18 @@ function withMySqlConnectionKey(statement: string): string {
   );
 }
 
-export async function ensurePoppyConnectionTables(db: LucidRawRunner): Promise<void> {
+/**
+ * Create the connection tables if missing. Idempotent. `schema` puts them in that database schema
+ * (created when missing); refused on SQLite.
+ */
+export async function ensurePoppyConnectionTables(
+  db: LucidRawRunner,
+  options: { schema?: string | undefined } = {},
+): Promise<void> {
+  const schema = validateSchema(db, options.schema, 'config/poppy_connections.ts');
   const mysql = isMySql(db);
-  for (const statement of poppyConnectionTableStatements()) {
+  if (schema !== undefined) await ensureDatabaseSchema(db, schema);
+  for (const statement of poppyConnectionTableStatements(schema)) {
     await db.rawQuery(forDialect(mysql ? withMySqlConnectionKey(statement) : statement, mysql));
   }
 }
@@ -156,18 +171,26 @@ const str = (v: unknown) => (v == null ? null : String(v));
 export class LucidPoppyConnectionStore implements PoppyConnectionStore {
   #ready: Promise<void> | null = null;
   readonly #autoCreate: boolean;
+  readonly #schema: string | undefined;
+  /** The tables as the query builder names them (`schema.table` under a `schema`). */
+  readonly #tables: Record<keyof typeof POPPY_CONNECTION_TABLES, string>;
 
   constructor(
     private readonly db: LucidClientLike & LucidRawRunner,
-    options: { autoCreateTables?: boolean } = {},
+    options: { autoCreateTables?: boolean; schema?: string | undefined } = {},
   ) {
     this.#autoCreate = options.autoCreateTables ?? true;
+    this.#schema = validateSchema(db, options.schema, 'config/poppy_connections.ts');
+    this.#tables = {
+      connections: qualifiedName(POPPY_CONNECTION_TABLES.connections, this.#schema),
+      pending: qualifiedName(POPPY_CONNECTION_TABLES.pending, this.#schema),
+    };
   }
 
   ready(): Promise<void> {
     if (!this.#autoCreate) return Promise.resolve();
     if (this.#ready === null) {
-      this.#ready = ensurePoppyConnectionTables(this.db);
+      this.#ready = ensurePoppyConnectionTables(this.db, { schema: this.#schema });
       this.#ready.catch(() => {
         this.#ready = null;
       });
@@ -192,7 +215,7 @@ export class LucidPoppyConnectionStore implements PoppyConnectionStore {
   async listConnections(owner: string) {
     await this.ready();
     const rows = await this.db
-      .from(POPPY_CONNECTION_TABLES.connections)
+      .from(this.#tables.connections)
       .where('owner', owner)
       .orderBy('domain', 'asc')
       .select('*');
@@ -202,7 +225,7 @@ export class LucidPoppyConnectionStore implements PoppyConnectionStore {
   async getConnection(owner: string, issuer: string) {
     await this.ready();
     const row = await this.db
-      .from(POPPY_CONNECTION_TABLES.connections)
+      .from(this.#tables.connections)
       .where('owner', owner)
       .where('issuer', issuer)
       .first();
@@ -220,19 +243,19 @@ export class LucidPoppyConnectionStore implements PoppyConnectionStore {
       updated_at: record.updatedAt,
     };
     const existing = await this.db
-      .from(POPPY_CONNECTION_TABLES.connections)
+      .from(this.#tables.connections)
       .where('owner', record.owner)
       .where('issuer', record.issuer)
       .first();
     if (existing) {
       await this.db
-        .from(POPPY_CONNECTION_TABLES.connections)
+        .from(this.#tables.connections)
         .where('owner', record.owner)
         .where('issuer', record.issuer)
         .update(columns);
       return;
     }
-    await this.db.table(POPPY_CONNECTION_TABLES.connections).insert({
+    await this.db.table(this.#tables.connections).insert({
       owner: record.owner,
       issuer: record.issuer,
       created_at: record.createdAt,
@@ -243,7 +266,7 @@ export class LucidPoppyConnectionStore implements PoppyConnectionStore {
   async deleteConnection(owner: string, issuer: string) {
     await this.ready();
     await this.db
-      .from(POPPY_CONNECTION_TABLES.connections)
+      .from(this.#tables.connections)
       .where('owner', owner)
       .where('issuer', issuer)
       .delete();
@@ -252,7 +275,7 @@ export class LucidPoppyConnectionStore implements PoppyConnectionStore {
   async createPending(record: PoppyPendingConnect) {
     await this.ready();
     if (await this.getPending(record.id)) return;
-    await this.db.table(POPPY_CONNECTION_TABLES.pending).insert({
+    await this.db.table(this.#tables.pending).insert({
       id: record.id,
       owner: record.owner,
       domain: record.domain,
@@ -272,7 +295,7 @@ export class LucidPoppyConnectionStore implements PoppyConnectionStore {
 
   async getPending(id: string) {
     await this.ready();
-    const row = await this.db.from(POPPY_CONNECTION_TABLES.pending).where('id', id).first();
+    const row = await this.db.from(this.#tables.pending).where('id', id).first();
     if (!row) return null;
     return {
       id: String(row.id),
@@ -299,7 +322,7 @@ export class LucidPoppyConnectionStore implements PoppyConnectionStore {
     if (patch.flow !== undefined) row.flow = patch.flow;
     if (patch.status !== undefined) row.status = patch.status;
     if (Object.keys(row).length === 0) return;
-    await this.db.from(POPPY_CONNECTION_TABLES.pending).where('id', id).update(row);
+    await this.db.from(this.#tables.pending).where('id', id).update(row);
   }
 }
 

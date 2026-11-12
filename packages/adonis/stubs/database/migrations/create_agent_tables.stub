@@ -1,6 +1,7 @@
 {{{
   exports({ to: app.migrationsPath(`${new Date().getTime()}_create_agent_tables.ts`) })
 }}}
+import app from '@adonisjs/core/services/app'
 import { BaseSchema } from '@adonisjs/lucid/schema'
 import db from '@adonisjs/lucid/services/db'
 import { createAgentTables, dropAgentTables } from '@adonis-agora/agent'
@@ -29,6 +30,14 @@ import { createAgentTables, dropAgentTables } from '@adonis-agora/agent'
  * transaction (see \`disableTransactions\` below). \`this.db\` still supplies the connection NAME, so
  * \`node ace migration:run --connection=x\` provisions the tables on connection \`x\` and not on the default.
  */
+/**
+ * The database schema the tables live in: the top-level \`schema\` of \`config/agent.ts\` (\`undefined\`
+ * → the connection's current schema). \`createAgentTables\` creates it first when it is missing. If you
+ * set \`schema\` on \`stores.lucid({ ... })\` instead, put that value here.
+ */
+const configured = app.config.get('agent.schema')
+const SCHEMA = typeof configured === 'string' ? configured : undefined
+
 export default class extends BaseSchema {
   /**
    * REQUIRED, not a preference. The DDL below runs on a connection the \`Database\` manager checks out
@@ -41,10 +50,10 @@ export default class extends BaseSchema {
   static disableTransactions = true
 
   async up() {
-    await createAgentTables(db.connection(this.db.connectionName))
+    await createAgentTables(db.connection(this.db.connectionName), { schema: SCHEMA })
   }
 
   async down() {
-    await dropAgentTables(db.connection(this.db.connectionName))
+    await dropAgentTables(db.connection(this.db.connectionName), { schema: SCHEMA })
   }
 }

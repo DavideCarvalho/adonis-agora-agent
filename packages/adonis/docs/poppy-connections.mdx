@@ -54,7 +54,7 @@ the JSON in an env var. Several keys rotate: the first signs, all are published.
 | `identity` | — | `name`, `logoUri` (default: a served `{path}/logo.svg` with the name's initial), `keys`. |
 | `companies` | none | A list, a map to `{ label, scopes, readScopes }`, or a predicate. |
 | `owner` | `actor.tenantRef ?? actor.id` | Whose connection a turn uses. |
-| `store` | `'lucid'` | `'memory'`, `redisPoppyConnectionStore(redis)`, or your own; `connection`, `autoCreateTables`. |
+| `store` | `'lucid'` | `'memory'`, `redisPoppyConnectionStore(redis)`, or your own; `connection`, `autoCreateTables`, `schema` (default: `config/agent.ts`'s `schema`). |
 | `secret` | app key | Seals connections at rest (AES-256-GCM). |
 | `insecureDev` | `false` | **Development only, not spec-compliant**: http companies and identity. Refused in production. |
 | `tools` | `{ prefix: 'poppy_' }` | `prefix`, `roles`, `ability`, `connect` (`'action'` card that resumes, or `'link'`), `writes` (`false` = build your own confirmed writes), `register` (`false` = you call `registerPoppyConnectionTools` on your own registry), `twoStep` (see below). |

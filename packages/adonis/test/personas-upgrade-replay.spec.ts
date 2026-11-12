@@ -58,7 +58,12 @@ async function eventually<T>(read: () => Promise<T | undefined>, label: string):
 const pgUrl = process.env.AGENT_TEST_PG_URL;
 const PG_SCHEMA = 'agent_personas_upgrade';
 
-function makePgDb(): Database {
+/**
+ * A Postgres `Database` over the test server: on {@link PG_SCHEMA} through `searchPath` (the
+ * default — what the old release needs), or a plain connection (`false`) for this release's
+ * `schema` option.
+ */
+function makePgDb(searchPath = true): Database {
   const target = new URL(pgUrl as string);
   return new Database(
     {
@@ -74,7 +79,7 @@ function makePgDb(): Database {
             database: target.pathname.slice(1),
           },
           // Its own schema: other specs drop and create the agent tables in `public` concurrently.
-          searchPath: [PG_SCHEMA],
+          ...(searchPath ? { searchPath: [PG_SCHEMA] } : {}),
           pool: { min: 0, max: 8 },
         },
       },
@@ -124,6 +129,8 @@ interface Phase {
   store: InstanceType<Module['LucidAgentStore']>;
   engine: WorkflowEngine;
   db: Database;
+  /** The agent tables' database schema, when this deployment names it (`schema` option). */
+  schema?: string;
 }
 
 /**
@@ -136,10 +143,13 @@ async function deploy(
   stateStore: LucidStateStore,
   phase: string,
   agents: Record<string, unknown>[],
+  /** This release only: the tables' database schema, named in every statement (no searchPath). */
+  schema?: string,
 ): Promise<Phase> {
   const { agent, durable, testing } = code;
-  await agent.createAgentTables(db as never);
-  const store = new agent.LucidAgentStore(db as never);
+  const where = schema === undefined ? {} : { schema };
+  await agent.createAgentTables(db as never, where);
+  const store = new agent.LucidAgentStore(db as never, where);
   const registry = new agent.ToolRegistry();
   for (const name of ['record_a', 'record_b', 'drop_tables']) {
     registry.register(
@@ -178,13 +188,13 @@ async function deploy(
     store,
     factory,
   );
-  return { service, store, engine, db };
+  return { service, store, engine, db, ...where };
 }
 
 async function parked(phase: Phase, runId: string, toolName: string): Promise<string> {
   const callId = await eventually(async () => {
     const row = await phase.db
-      .from(after.AGENT_TABLES.toolCalls)
+      .from(after.agentTables(phase.schema).toolCalls)
       .where('run_id', runId)
       .where('tool_name', toolName)
       .where('status', 'pending_approval')
@@ -451,3 +461,78 @@ describe.each(dialects)('personas — a parked run across deployments (%s)', (di
     ]);
   });
 });
+
+/**
+ * Every deployment on this release's `schema` option over a plain connection — no `searchPath` —
+ * the agent tables in {@link PG_SCHEMA} named by every statement. The durable state stays on the
+ * search-path connection (its own lib, its own option).
+ */
+describe.skipIf(pgUrl === undefined)(
+  'personas — a parked run across deployments, `schema` (pg)',
+  () => {
+    let db: Database | undefined;
+    let plain: Database | undefined;
+    afterEach(async () => {
+      await Promise.all(
+        engines.splice(0).map((engine) => engine.drain(5_000).catch(() => undefined)),
+      );
+      afterDurable.setDurableAgentContext(undefined);
+      for (const key of Object.keys(executions)) delete executions[key];
+      calls.splice(0);
+      await db?.rawQuery(`DROP SCHEMA IF EXISTS "${PG_SCHEMA}" CASCADE`).catch(() => undefined);
+      await db?.manager.closeAll();
+      await plain?.manager.closeAll();
+      db = undefined;
+      plain = undefined;
+    });
+
+    it('resumes between signals on the persona it started with', async () => {
+      db = await freshDb('pg');
+      plain = makePgDb(false);
+      const stateStore = new LucidStateStore(db);
+      await stateStore.ensureSchema();
+      const RO = {
+        id: 'ro',
+        label: 'Recorder',
+        systemPrompt: (ctx: { basePrompt: string }) => `${ctx.basePrompt} | recorder v1`,
+        allowedTools: ['record_a', 'record_b'],
+      };
+      const ops = (personas: unknown[]) => ({ name: 'ops', systemPrompt: 'ops base', personas });
+
+      const first = await deploy(AFTER, plain, stateStore, 'v1', [ops([RO])], PG_SCHEMA);
+      const { runId, threadId } = await first.service.chat({
+        actor,
+        message: 'record both',
+        agentName: 'ops',
+        personaId: 'ro',
+      });
+      const callA = await parked(first, runId, 'record_a');
+      await retire(first);
+
+      const second = await deploy(
+        AFTER,
+        plain,
+        stateStore,
+        'v2',
+        [ops([{ ...RO, systemPrompt: 'recorder v2', allowedTools: ['record_a', 'drop_tables'] }])],
+        PG_SCHEMA,
+      );
+      await second.service.approve(runId, callA);
+      const callB = await parked(second, runId, 'record_b');
+      await retire(second);
+
+      const third = await deploy(AFTER, plain, stateStore, 'v3', [ops([])], PG_SCHEMA);
+      await third.service.approve(runId, callB);
+      expect(await settled(third, runId)).toEqual({ status: 'completed' });
+      expect(calls.map((call) => call.system)).toEqual([
+        'ops base | recorder v1',
+        'ops base | recorder v1',
+        'ops base | recorder v1',
+      ]);
+      expect(executions).toEqual({ 'record_a:a': 1, 'record_b:b': 1 });
+      const detail = await third.store.getThread(threadId);
+      expect(new Set(detail?.messages.map((message) => message.persona))).toEqual(new Set(['ro']));
+      // Several deployments over a real server: past the 5s default on a loaded host.
+    }, 30_000);
+  },
+);

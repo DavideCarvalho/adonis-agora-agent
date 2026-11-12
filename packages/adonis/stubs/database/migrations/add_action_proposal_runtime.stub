@@ -1,16 +1,21 @@
 {{{
   exports({ to: app.migrationsPath(`${new Date().getTime() + 2}_add_action_proposal_runtime.ts`) })
 }}}
+import app from '@adonisjs/core/services/app'
 import { BaseSchema } from '@adonisjs/lucid/schema'
 import db from '@adonisjs/lucid/services/db'
 import { createAgentTables } from '@adonis-agora/agent'
+
+/** The top-level \`schema\` of \`config/agent.ts\` (or your \`stores.lucid({ schema })\`), if any. */
+const configured = app.config.get('agent.schema')
+const SCHEMA = typeof configured === 'string' ? configured : undefined
 
 /** Quiesce old writers before provisioning atomic outcome delivery and capability persistence. */
 export default class extends BaseSchema {
   static disableTransactions = true
 
   async up() {
-    await createAgentTables(db.connection(this.db.connectionName))
+    await createAgentTables(db.connection(this.db.connectionName), { schema: SCHEMA })
   }
 
   async down() {

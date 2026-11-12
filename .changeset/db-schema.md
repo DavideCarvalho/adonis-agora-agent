@@ -1,0 +1,5 @@
+---
+"@adonis-agora/agent": minor
+---
+
+A `schema` option puts the agent's tables in a database schema of their own (a Postgres schema, a MySQL database) — `"agent"."agent_thread"` while the app stays in `public` — without `searchPath`: every statement names the schema (query builder, raw SQL, DDL and repairs, catalog lookups, the pgvector advisory-lock key). Set it once at the top of `config/agent.ts` and the Lucid store, pricing, governance, the Lucid token sink, the pgvector retriever, the channel state and the A2A / Poppy / Poppy-connections stores inherit it; each also takes its own `schema`. The schema is created at boot when tables are auto-created (a clear error names the grant when the role cannot), and `createAgentTables` / `dropAgentTables` / the published migrations take `{ schema }`. SQLite with `schema` fails at boot. `PgVectorStore` and `PgDocumentTreeStore` take `schema` (the `vector` extension stays where it is installed). `agora:doctor --deep` gains `agent.db-schema` when a schema is set. Without `schema` nothing changes.

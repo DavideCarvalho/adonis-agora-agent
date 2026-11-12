@@ -58,6 +58,12 @@ export interface PoppyConfig {
   store?: 'lucid' | 'memory' | PoppyStore;
   /** Lucid connection for the `'lucid'` store. Default: the primary. */
   connection?: string;
+  /**
+   * The database schema (a Postgres schema, a MySQL database) the `'lucid'` store's tables live in —
+   * every statement names it, never `SET search_path`. Default: the top-level `schema` of
+   * `config/agent.ts`, else none (the connection's current schema). Refused on SQLite.
+   */
+  schema?: string;
   /** Create the `'lucid'` store's tables on first use. Default `true`. */
   autoCreateTables?: boolean;
   /** What happens to `action` calls that park for approval. Default `'approve-delegated'`. */

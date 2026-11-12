@@ -1,3 +1,4 @@
+import { ensureDatabaseSchema, qualifiedName, qualifiedSql, validateSchema } from './db-schema.js';
 import type { LucidRawRunner } from './lucid.js';
 import { dialectOf, isMySql, portableSql } from './sql-dialect.js';
 
@@ -32,6 +33,39 @@ export const AGENT_TABLES = {
   genuiCalls: 'agent_genui_call',
 } as const;
 
+/** Where the agent tables live: `schema` names a database schema (Postgres) or database (MySQL). */
+export interface AgentSchemaOptions {
+  /**
+   * The database schema (a Postgres schema, a MySQL database) the tables live in. Default: none —
+   * unqualified names, the connection's current schema. Refused on SQLite.
+   */
+  schema?: string | undefined;
+}
+
+/** One of the agent tables, by its {@link AGENT_TABLES} key. */
+export type AgentTableKey = keyof typeof AGENT_TABLES;
+
+/**
+ * The agent tables as Lucid's query builder takes them under `schema`: `schema.agent_thread` (knex
+ * quotes each part), or the bare names without a schema — then exactly {@link AGENT_TABLES}.
+ */
+export function agentTables(schema?: string): Record<AgentTableKey, string> {
+  if (schema === undefined) return AGENT_TABLES;
+  return Object.fromEntries(
+    Object.entries(AGENT_TABLES).map(([key, table]) => [key, qualifiedName(table, schema)]),
+  ) as Record<AgentTableKey, string>;
+}
+
+/**
+ * The agent tables as raw SQL names them under `schema`: `"schema"."agent_thread"`, or
+ * `"agent_thread"` without a schema. Double-quoted like every identifier of these statements.
+ */
+export function agentTablesSql(schema?: string): Record<AgentTableKey, string> {
+  return Object.fromEntries(
+    Object.entries(AGENT_TABLES).map(([key, table]) => [key, qualifiedSql(table, schema)]),
+  ) as Record<AgentTableKey, string>;
+}
+
 /**
  * One statement of this module, as `db`'s dialect has to read it. The statements are written once,
  * Postgres/SQLite-style; MySQL needs four things changed, and every one of them used to fail or
@@ -63,8 +97,11 @@ export function forDialect(statement: string, mysql: boolean): string {
  * `frame` is `NULL` is the end marker. `created_at` is what the sink's TTL purge reads. No foreign
  * key: a sink is usable with any store, and a delegated run writes under its ANCESTOR's run id.
  */
-export function streamFrameTableStatement(table: string = AGENT_TABLES.streamFrames): string {
-  return `CREATE TABLE IF NOT EXISTS "${table}" (
+export function streamFrameTableStatement(
+  table: string = AGENT_TABLES.streamFrames,
+  schema?: string,
+): string {
+  return `CREATE TABLE IF NOT EXISTS ${qualifiedSql(table, schema)} (
       "run_id" VARCHAR(255) NOT NULL,
       "seq" BIGINT NOT NULL,
       "frame" TEXT NULL,
@@ -78,8 +115,11 @@ export function streamFrameTableStatement(table: string = AGENT_TABLES.streamFra
  * runs with rows past their window without scanning every row. `run_id` rides along so that lookup
  * never touches the table itself.
  */
-export function streamFrameIndexStatement(table: string = AGENT_TABLES.streamFrames): string {
-  return `CREATE INDEX IF NOT EXISTS "${table}_created_idx" ON "${table}" ("created_at", "run_id")`;
+export function streamFrameIndexStatement(
+  table: string = AGENT_TABLES.streamFrames,
+  schema?: string,
+): string {
+  return `CREATE INDEX IF NOT EXISTS "${table}_created_idx" ON ${qualifiedSql(table, schema)} ("created_at", "run_id")`;
 }
 
 /**
@@ -87,15 +127,19 @@ export function streamFrameIndexStatement(table: string = AGENT_TABLES.streamFra
  * primary key IS the dedupe lock: two deliveries of one message race on the insert and one loses.
  * No foreign key: the rows name provider ids, not agent rows.
  */
-export function channelStateTableStatements(table: string = AGENT_TABLES.channelState): string[] {
+export function channelStateTableStatements(
+  table: string = AGENT_TABLES.channelState,
+  schema?: string,
+): string[] {
+  const ref = qualifiedSql(table, schema);
   return [
-    `CREATE TABLE IF NOT EXISTS "${table}" (
+    `CREATE TABLE IF NOT EXISTS ${ref} (
       "key" VARCHAR(255) PRIMARY KEY NOT NULL,
       "value" TEXT NULL,
       "expires_at" BIGINT NOT NULL,
       "created_at" BIGINT NOT NULL
     )`,
-    `CREATE INDEX IF NOT EXISTS "${table}_expires_idx" ON "${table}" ("expires_at")`,
+    `CREATE INDEX IF NOT EXISTS "${table}_expires_idx" ON ${ref} ("expires_at")`,
   ];
 }
 
@@ -110,8 +154,11 @@ export function channelStateTableStatements(table: string = AGENT_TABLES.channel
  * Its own function so the SQLite rebuild that makes an old ledger's `thread_id` nullable (see
  * {@link createAgentTables}) creates exactly this shape under a scratch name.
  */
-export function tokenUsageTableStatement(table: string = AGENT_TABLES.tokenUsage): string {
-  return `CREATE TABLE IF NOT EXISTS "${table}" (
+export function tokenUsageTableStatement(
+  table: string = AGENT_TABLES.tokenUsage,
+  schema?: string,
+): string {
+  return `CREATE TABLE IF NOT EXISTS ${qualifiedSql(table, schema)} (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "thread_id" VARCHAR(255) NULL,
       "actor_ref" VARCHAR(255) NOT NULL,
@@ -134,7 +181,7 @@ export function tokenUsageTableStatement(table: string = AGENT_TABLES.tokenUsage
       "requests" INTEGER NULL,
       "metadata" TEXT NULL,
       "counts_towards_quota" INTEGER NOT NULL DEFAULT 1,
-      FOREIGN KEY ("thread_id") REFERENCES "${AGENT_TABLES.threads}" ("id") ON DELETE CASCADE
+      FOREIGN KEY ("thread_id") REFERENCES ${qualifiedSql(AGENT_TABLES.threads, schema)} ("id") ON DELETE CASCADE
     )`;
 }
 
@@ -157,10 +204,11 @@ export function tokenUsageTableStatement(table: string = AGENT_TABLES.tokenUsage
  * migration can `ALTER TABLE ADD COLUMN` portably and a row recorded before run tracking shipped can
  * keep a `null` run_id).
  */
-export function createTableStatements(): string[] {
+export function createTableStatements(schema?: string): string[] {
   const t = AGENT_TABLES;
+  const q = agentTablesSql(schema);
   return [
-    `CREATE TABLE IF NOT EXISTS "${t.actionProposals}" (
+    `CREATE TABLE IF NOT EXISTS ${q.actionProposals} (
       "id" VARCHAR(64) PRIMARY KEY NOT NULL,
       "scope_key" VARCHAR(64) NOT NULL,
       "logical_sort" VARCHAR(1020) NOT NULL,
@@ -179,14 +227,14 @@ export function createTableStatements(): string[] {
       "created_at" BIGINT NOT NULL,
       "updated_at" BIGINT NOT NULL
     )`,
-    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_work_idx" ON "${t.actionProposals}" ("discovery_index_version", "decision", "execution_status", "lease_expires_at", "created_at")`,
-    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_expiry_idx" ON "${t.actionProposals}" ("discovery_index_version", "decision", "proposal_expires_at", "created_at")`,
-    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_backfill_idx" ON "${t.actionProposals}" ("discovery_index_version", "created_at")`,
-    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_replacement_idx" ON "${t.actionProposals}" ("scope_key", "replacement_group_key", "decision")`,
-    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_delivery_idx" ON "${t.actionProposals}" ("delivery_status", "delivery_lease_expires_at", "created_at")`,
-    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_outcome_idx" ON "${t.actionProposals}" ("outcome_key")`,
-    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_scope_idx" ON "${t.actionProposals}" ("scope_key", "created_at")`,
-    `CREATE TABLE IF NOT EXISTS "${t.threads}" (
+    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_work_idx" ON ${q.actionProposals} ("discovery_index_version", "decision", "execution_status", "lease_expires_at", "created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_expiry_idx" ON ${q.actionProposals} ("discovery_index_version", "decision", "proposal_expires_at", "created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_backfill_idx" ON ${q.actionProposals} ("discovery_index_version", "created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_replacement_idx" ON ${q.actionProposals} ("scope_key", "replacement_group_key", "decision")`,
+    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_delivery_idx" ON ${q.actionProposals} ("delivery_status", "delivery_lease_expires_at", "created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_outcome_idx" ON ${q.actionProposals} ("outcome_key")`,
+    `CREATE INDEX IF NOT EXISTS "${t.actionProposals}_scope_idx" ON ${q.actionProposals} ("scope_key", "created_at")`,
+    `CREATE TABLE IF NOT EXISTS ${q.threads} (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "actor_ref" VARCHAR(255) NOT NULL,
       "tenant_ref" VARCHAR(255) NULL,
@@ -204,8 +252,8 @@ export function createTableStatements(): string[] {
       "updated_at" BIGINT NOT NULL,
       "deleted_at" BIGINT NULL
     )`,
-    `CREATE INDEX IF NOT EXISTS "${t.threads}_actor_updated_idx" ON "${t.threads}" ("actor_ref", "updated_at")`,
-    `CREATE TABLE IF NOT EXISTS "${t.messages}" (
+    `CREATE INDEX IF NOT EXISTS "${t.threads}_actor_updated_idx" ON ${q.threads} ("actor_ref", "updated_at")`,
+    `CREATE TABLE IF NOT EXISTS ${q.messages} (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "thread_id" VARCHAR(255) NOT NULL,
       "role" VARCHAR(255) NOT NULL,
@@ -226,13 +274,13 @@ export function createTableStatements(): string[] {
       "seq" BIGINT NOT NULL DEFAULT 0,
       "sent_at" BIGINT NULL,
       "created_at" BIGINT NOT NULL,
-      FOREIGN KEY ("thread_id") REFERENCES "${t.threads}" ("id") ON DELETE CASCADE
+      FOREIGN KEY ("thread_id") REFERENCES ${q.threads} ("id") ON DELETE CASCADE
     )`,
-    `CREATE INDEX IF NOT EXISTS "${t.messages}_thread_created_idx" ON "${t.messages}" ("thread_id", "created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.messages}_thread_created_idx" ON ${q.messages} ("thread_id", "created_at")`,
     // A transcript is read in append order (`seq`), which the index above cannot serve.
-    `CREATE INDEX IF NOT EXISTS "${t.messages}_thread_seq_idx" ON "${t.messages}" ("thread_id", "seq")`,
-    `CREATE INDEX IF NOT EXISTS "${t.messages}_run_idx" ON "${t.messages}" ("run_id")`,
-    `CREATE TABLE IF NOT EXISTS "${t.toolCalls}" (
+    `CREATE INDEX IF NOT EXISTS "${t.messages}_thread_seq_idx" ON ${q.messages} ("thread_id", "seq")`,
+    `CREATE INDEX IF NOT EXISTS "${t.messages}_run_idx" ON ${q.messages} ("run_id")`,
+    `CREATE TABLE IF NOT EXISTS ${q.toolCalls} (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "message_id" VARCHAR(255) NOT NULL,
       "tool_name" VARCHAR(255) NOT NULL,
@@ -253,20 +301,20 @@ export function createTableStatements(): string[] {
       "remember" INTEGER NULL,
       "decided_via" VARCHAR(64) NULL,
       "call_id" VARCHAR(255) NULL,
-      FOREIGN KEY ("message_id") REFERENCES "${t.messages}" ("id") ON DELETE CASCADE
+      FOREIGN KEY ("message_id") REFERENCES ${q.messages} ("id") ON DELETE CASCADE
     )`,
-    `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_run_idx" ON "${t.toolCalls}" ("run_id")`,
-    `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_call_idx" ON "${t.toolCalls}" ("call_id", "run_id")`,
-    `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_status_created_idx" ON "${t.toolCalls}" ("status", "created_at")`,
-    `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_message_idx" ON "${t.toolCalls}" ("message_id")`,
-    tokenUsageTableStatement(),
-    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_actor_created_idx" ON "${t.tokenUsage}" ("actor_ref", "created_at")`,
-    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_run_idx" ON "${t.tokenUsage}" ("run_id")`,
-    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_thread_idx" ON "${t.tokenUsage}" ("thread_id")`,
-    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_created_idx" ON "${t.tokenUsage}" ("created_at")`,
-    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_feature_created_idx" ON "${t.tokenUsage}" ("feature", "created_at")`,
-    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_tenant_created_idx" ON "${t.tokenUsage}" ("tenant_ref", "created_at")`,
-    `CREATE TABLE IF NOT EXISTS "${t.modelPricing}" (
+    `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_run_idx" ON ${q.toolCalls} ("run_id")`,
+    `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_call_idx" ON ${q.toolCalls} ("call_id", "run_id")`,
+    `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_status_created_idx" ON ${q.toolCalls} ("status", "created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_message_idx" ON ${q.toolCalls} ("message_id")`,
+    tokenUsageTableStatement(t.tokenUsage, schema),
+    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_actor_created_idx" ON ${q.tokenUsage} ("actor_ref", "created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_run_idx" ON ${q.tokenUsage} ("run_id")`,
+    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_thread_idx" ON ${q.tokenUsage} ("thread_id")`,
+    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_created_idx" ON ${q.tokenUsage} ("created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_feature_created_idx" ON ${q.tokenUsage} ("feature", "created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.tokenUsage}_tenant_created_idx" ON ${q.tokenUsage} ("tenant_ref", "created_at")`,
+    `CREATE TABLE IF NOT EXISTS ${q.modelPricing} (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "model_id" VARCHAR(255) NOT NULL,
       "input_price_per_1m" DOUBLE PRECISION NOT NULL,
@@ -276,7 +324,7 @@ export function createTableStatements(): string[] {
       "effective_from" BIGINT NOT NULL,
       "is_current" INTEGER NOT NULL
     )`,
-    `CREATE TABLE IF NOT EXISTS "${t.runs}" (
+    `CREATE TABLE IF NOT EXISTS ${q.runs} (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "thread_id" VARCHAR(255) NOT NULL,
       "agent_name" VARCHAR(255) NULL,
@@ -301,13 +349,13 @@ export function createTableStatements(): string[] {
       "model_calls" INTEGER NULL,
       "tool_calls" INTEGER NULL,
       "timings" TEXT NULL,
-      FOREIGN KEY ("thread_id") REFERENCES "${t.threads}" ("id") ON DELETE CASCADE
+      FOREIGN KEY ("thread_id") REFERENCES ${q.threads} ("id") ON DELETE CASCADE
     )`,
-    `CREATE INDEX IF NOT EXISTS "${t.runs}_started_idx" ON "${t.runs}" ("started_at")`,
-    `CREATE INDEX IF NOT EXISTS "${t.runs}_actor_started_idx" ON "${t.runs}" ("actor_ref", "started_at")`,
-    `CREATE INDEX IF NOT EXISTS "${t.runs}_status_started_idx" ON "${t.runs}" ("status", "started_at")`,
-    `CREATE INDEX IF NOT EXISTS "${t.runs}_thread_started_idx" ON "${t.runs}" ("thread_id", "started_at")`,
-    `CREATE TABLE IF NOT EXISTS "${t.queuedMessages}" (
+    `CREATE INDEX IF NOT EXISTS "${t.runs}_started_idx" ON ${q.runs} ("started_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.runs}_actor_started_idx" ON ${q.runs} ("actor_ref", "started_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.runs}_status_started_idx" ON ${q.runs} ("status", "started_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.runs}_thread_started_idx" ON ${q.runs} ("thread_id", "started_at")`,
+    `CREATE TABLE IF NOT EXISTS ${q.queuedMessages} (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "thread_id" VARCHAR(255) NOT NULL,
       "actor" TEXT NOT NULL,
@@ -324,22 +372,22 @@ export function createTableStatements(): string[] {
       "position" INTEGER NOT NULL,
       "created_at" BIGINT NOT NULL,
       "updated_at" BIGINT NOT NULL,
-      FOREIGN KEY ("thread_id") REFERENCES "${t.threads}" ("id") ON DELETE CASCADE
+      FOREIGN KEY ("thread_id") REFERENCES ${q.threads} ("id") ON DELETE CASCADE
     )`,
-    `CREATE INDEX IF NOT EXISTS "${t.queuedMessages}_thread_position_idx" ON "${t.queuedMessages}" ("thread_id", "position")`,
+    `CREATE INDEX IF NOT EXISTS "${t.queuedMessages}_thread_position_idx" ON ${q.queuedMessages} ("thread_id", "position")`,
     // The primary key IS the lock: two confirmations of one token race on the insert and one loses.
-    `CREATE TABLE IF NOT EXISTS "${t.confirmTokens}" (
+    `CREATE TABLE IF NOT EXISTS ${q.confirmTokens} (
       "hash" VARCHAR(64) PRIMARY KEY NOT NULL,
       "actor_ref" VARCHAR(255) NOT NULL,
       "tool" VARCHAR(255) NOT NULL,
       "expires_at" BIGINT NOT NULL,
       "created_at" BIGINT NOT NULL
     )`,
-    `CREATE INDEX IF NOT EXISTS "${t.confirmTokens}_expires_idx" ON "${t.confirmTokens}" ("expires_at")`,
-    streamFrameTableStatement(t.streamFrames),
-    streamFrameIndexStatement(t.streamFrames),
-    ...channelStateTableStatements(t.channelState),
-    `CREATE TABLE IF NOT EXISTS "${t.genuiCalls}" (
+    `CREATE INDEX IF NOT EXISTS "${t.confirmTokens}_expires_idx" ON ${q.confirmTokens} ("expires_at")`,
+    streamFrameTableStatement(t.streamFrames, schema),
+    streamFrameIndexStatement(t.streamFrames, schema),
+    ...channelStateTableStatements(t.channelState, schema),
+    `CREATE TABLE IF NOT EXISTS ${q.genuiCalls} (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "run_id" VARCHAR(255) NOT NULL,
       "thread_id" VARCHAR(255) NOT NULL,
@@ -364,10 +412,10 @@ export function createTableStatements(): string[] {
       "payload_bytes" INTEGER NOT NULL,
       "payload" TEXT NULL,
       "created_at" BIGINT NOT NULL,
-      FOREIGN KEY ("thread_id") REFERENCES "${t.threads}" ("id") ON DELETE CASCADE
+      FOREIGN KEY ("thread_id") REFERENCES ${q.threads} ("id") ON DELETE CASCADE
     )`,
-    `CREATE INDEX IF NOT EXISTS "${t.genuiCalls}_created_idx" ON "${t.genuiCalls}" ("created_at")`,
-    `CREATE INDEX IF NOT EXISTS "${t.genuiCalls}_run_idx" ON "${t.genuiCalls}" ("run_id")`,
+    `CREATE INDEX IF NOT EXISTS "${t.genuiCalls}_created_idx" ON ${q.genuiCalls} ("created_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.genuiCalls}_run_idx" ON ${q.genuiCalls} ("run_id")`,
   ];
 }
 
@@ -485,13 +533,18 @@ const NULLABLE_COLUMNS: readonly { table: string; column: string; type: string }
  * say (an unknown dialect is left alone rather than rebuilt on a guess). Postgres and MySQL through
  * `information_schema.columns`, SQLite through `PRAGMA table_info`. A read: no lock is taken.
  */
-async function isNullable(db: LucidRawRunner, table: string, column: string): Promise<boolean> {
+async function isNullable(
+  db: LucidRawRunner,
+  table: string,
+  column: string,
+  schema?: string,
+): Promise<boolean> {
   if (isMySql(db)) {
     const rows = rowsOf(
       await db.rawQuery(
         'SELECT is_nullable AS nullable FROM information_schema.columns ' +
-          'WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
-        [table, column],
+          'WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ? AND column_name = ?',
+        [schema ?? null, table, column],
       ),
     );
     const value = rows[0]?.nullable ?? rows[0]?.NULLABLE;
@@ -501,8 +554,10 @@ async function isNullable(db: LucidRawRunner, table: string, column: string): Pr
     const rows = rowsOf(
       await db.rawQuery(
         'SELECT is_nullable AS nullable FROM information_schema.columns ' +
-          'WHERE table_schema = ANY (current_schemas(false)) AND table_name = ? AND column_name = ?',
-        [table, column],
+          // The configured schema, else every schema on the path (where an unqualified name resolves).
+          `WHERE ${schema === undefined ? 'table_schema = ANY (current_schemas(false))' : 'table_schema = ?'} ` +
+          'AND table_name = ? AND column_name = ?',
+        schema === undefined ? [table, column] : [schema, table, column],
       ),
     );
     const value = rows[0]?.nullable;
@@ -536,14 +591,16 @@ async function makeNullable(
   table: string,
   column: string,
   type: string,
+  schema?: string,
 ): Promise<void> {
   const mysql = isMySql(db);
+  const ref = qualifiedSql(table, schema);
   if (mysql) {
-    await db.rawQuery(forDialect(`ALTER TABLE "${table}" MODIFY "${column}" ${type}`, true));
+    await db.rawQuery(forDialect(`ALTER TABLE ${ref} MODIFY "${column}" ${type}`, true));
     return;
   }
   if (!isSqlite(db)) {
-    await db.rawQuery(`ALTER TABLE "${table}" ALTER COLUMN "${column}" DROP NOT NULL`);
+    await db.rawQuery(`ALTER TABLE ${ref} ALTER COLUMN "${column}" DROP NOT NULL`);
     return;
   }
   if (table !== AGENT_TABLES.tokenUsage) {
@@ -578,9 +635,16 @@ async function makeNullable(
  * failure, a lock timeout, and a typo, leaving a schema that is still wrong and a migration that
  * reported success.
  */
-async function hasColumn(db: LucidRawRunner, table: string, column: string): Promise<boolean> {
+async function hasColumn(
+  db: LucidRawRunner,
+  table: string,
+  column: string,
+  schema?: string,
+): Promise<boolean> {
   try {
-    await db.rawQuery(portableSql(db, `SELECT "${column}" FROM "${table}" WHERE 1 = 0`));
+    await db.rawQuery(
+      portableSql(db, `SELECT "${column}" FROM ${qualifiedSql(table, schema)} WHERE 1 = 0`),
+    );
     return true;
   } catch {
     return false;
@@ -592,8 +656,8 @@ async function hasColumn(db: LucidRawRunner, table: string, column: string): Pro
  * app owns the schema (`autoCreateTables: false`) and so may boot a new version before its migration
  * has added the column. Probed on {@link schemaRunner}'s client, outside any global transaction.
  */
-export function hasToolCallIdColumn(db: LucidRawRunner): Promise<boolean> {
-  return hasColumn(schemaRunner(db), AGENT_TABLES.toolCalls, 'call_id');
+export function hasToolCallIdColumn(db: LucidRawRunner, schema?: string): Promise<boolean> {
+  return hasColumn(schemaRunner(db), AGENT_TABLES.toolCalls, 'call_id', schema);
 }
 
 /**
@@ -601,11 +665,11 @@ export function hasToolCallIdColumn(db: LucidRawRunner): Promise<boolean> {
  * `LucidAgentStore` checks under `autoCreateTables: false`, where the app may boot this version before
  * its migration has added them. Probed like {@link hasToolCallIdColumn}.
  */
-export async function hasSentAtColumns(db: LucidRawRunner): Promise<boolean> {
+export async function hasSentAtColumns(db: LucidRawRunner, schema?: string): Promise<boolean> {
   const runner = schemaRunner(db);
   return (
-    (await hasColumn(runner, AGENT_TABLES.messages, 'sent_at')) &&
-    (await hasColumn(runner, AGENT_TABLES.queuedMessages, 'sent_at'))
+    (await hasColumn(runner, AGENT_TABLES.messages, 'sent_at', schema)) &&
+    (await hasColumn(runner, AGENT_TABLES.queuedMessages, 'sent_at', schema))
   );
 }
 
@@ -614,25 +678,25 @@ export async function hasSentAtColumns(db: LucidRawRunner): Promise<boolean> {
  * `thread_id` — what `LucidAgentStore` checks under `autoCreateTables: false`. Probed like
  * {@link hasToolCallIdColumn}.
  */
-export async function hasLedgerColumns(db: LucidRawRunner): Promise<boolean> {
+export async function hasLedgerColumns(db: LucidRawRunner, schema?: string): Promise<boolean> {
   const runner = schemaRunner(db);
   return (
-    (await hasColumn(runner, AGENT_TABLES.tokenUsage, 'feature')) &&
-    (await hasColumn(runner, AGENT_TABLES.tokenUsage, 'metadata'))
+    (await hasColumn(runner, AGENT_TABLES.tokenUsage, 'feature', schema)) &&
+    (await hasColumn(runner, AGENT_TABLES.tokenUsage, 'metadata', schema))
   );
 }
 
 /** Whether `agent_token_usage` has `counts_towards_quota`. Probed like {@link hasLedgerColumns}. */
-export function hasQuotaFlagColumn(db: LucidRawRunner): Promise<boolean> {
-  return hasColumn(schemaRunner(db), AGENT_TABLES.tokenUsage, 'counts_towards_quota');
+export function hasQuotaFlagColumn(db: LucidRawRunner, schema?: string): Promise<boolean> {
+  return hasColumn(schemaRunner(db), AGENT_TABLES.tokenUsage, 'counts_towards_quota', schema);
 }
 
 /** Whether `agent_run` has its timing columns. Probed like {@link hasLedgerColumns}. */
-export async function hasRunTimingColumns(db: LucidRawRunner): Promise<boolean> {
+export async function hasRunTimingColumns(db: LucidRawRunner, schema?: string): Promise<boolean> {
   const runner = schemaRunner(db);
   return (
-    (await hasColumn(runner, AGENT_TABLES.runs, 'queue_ms')) &&
-    (await hasColumn(runner, AGENT_TABLES.runs, 'timings'))
+    (await hasColumn(runner, AGENT_TABLES.runs, 'queue_ms', schema)) &&
+    (await hasColumn(runner, AGENT_TABLES.runs, 'timings', schema))
   );
 }
 
@@ -660,23 +724,33 @@ export function rowsOf(result: unknown): Record<string, unknown>[] {
  * Postgres first: it is the one dialect where a failed statement poisons an ambient transaction, and
  * there the first probe succeeds.
  */
-async function existingIndexes(db: LucidRawRunner): Promise<Set<string> | null> {
+async function existingIndexes(db: LucidRawRunner, schema?: string): Promise<Set<string> | null> {
   // MySQL first there: it has no `pg_indexes`, and its own catalog is the only probe that answers.
-  const mysqlProbe =
-    'SELECT index_name AS name FROM information_schema.statistics WHERE table_schema = DATABASE()';
   if (isMySql(db)) {
-    const rows = rowsOf(await db.rawQuery(mysqlProbe));
+    const rows = rowsOf(
+      await db.rawQuery(
+        'SELECT index_name AS name FROM information_schema.statistics ' +
+          'WHERE table_schema = COALESCE(?, DATABASE())',
+        [schema ?? null],
+      ),
+    );
     return new Set(rows.map((row) => String(row.name ?? row.NAME)));
   }
-  const probes = [
-    // Every schema on the search path, not only the first: an unqualified `CREATE INDEX … ON "t"`
-    // finds `t` wherever the path does, so that is where its index has to be looked for.
-    'SELECT indexname AS name FROM pg_indexes WHERE schemaname = ANY (current_schemas(false))',
-    `SELECT name FROM sqlite_master WHERE type = 'index'`,
+  const probes: [string, unknown[]][] = [
+    // The configured schema — an index lives in its table's schema. Without one, every schema on
+    // the search path, not only the first: an unqualified `CREATE INDEX … ON "t"` finds `t`
+    // wherever the path does, so that is where its index has to be looked for.
+    schema === undefined
+      ? [
+          'SELECT indexname AS name FROM pg_indexes WHERE schemaname = ANY (current_schemas(false))',
+          [],
+        ]
+      : ['SELECT indexname AS name FROM pg_indexes WHERE schemaname = ?', [schema]],
+    [`SELECT name FROM sqlite_master WHERE type = 'index'`, []],
   ];
-  for (const probe of probes) {
+  for (const [probe, bindings] of probes) {
     try {
-      const rows = rowsOf(await db.rawQuery(probe));
+      const rows = rowsOf(await db.rawQuery(probe, bindings));
       return new Set(rows.map((row) => String(row.name)));
     } catch {
       // Not this dialect — try the next catalog.
@@ -686,9 +760,9 @@ async function existingIndexes(db: LucidRawRunner): Promise<Set<string> | null> 
 }
 
 /** Does `table` exist? Same zero-row probe as {@link hasColumn}. */
-async function hasTable(db: LucidRawRunner, table: string): Promise<boolean> {
+async function hasTable(db: LucidRawRunner, table: string, schema?: string): Promise<boolean> {
   try {
-    await db.rawQuery(portableSql(db, `SELECT 1 FROM "${table}" WHERE 1 = 0`));
+    await db.rawQuery(portableSql(db, `SELECT 1 FROM ${qualifiedSql(table, schema)} WHERE 1 = 0`));
     return true;
   } catch {
     return false;
@@ -765,10 +839,19 @@ function isTransientLockFailure(error: unknown): boolean {
  * Lucid dialect. For an AdonisJS app prefer the published migration
  * (`node ace configure @adonis-agora/agent`); this helper is what that migration calls, and what the
  * stores call themselves when `autoCreateTables` is on.
+ *
+ * `schema` puts the tables in that database schema (a Postgres schema, a MySQL database): it is
+ * created first when missing, and every statement — DDL, catalog reads, probes — names it. Refused on
+ * SQLite, which has no schemas.
  */
-export async function createAgentTables(db: LucidRawRunner): Promise<string[]> {
-  const statements = createTableStatements();
+export async function createAgentTables(
+  db: LucidRawRunner,
+  options: AgentSchemaOptions = {},
+): Promise<string[]> {
+  const schema = validateSchema(db, options.schema, 'createAgentTables');
+  const statements = createTableStatements(schema);
   const mysql = isMySql(db);
+  if (schema !== undefined) await ensureDatabaseSchema(db, schema);
 
   // Order matters, in three phases rather than one pass. Tables first, then the `run_id` repair, then
   // indexes — because `createTableStatements` includes `CREATE INDEX ... ON "agent_message" ("run_id")`,
@@ -777,17 +860,20 @@ export async function createAgentTables(db: LucidRawRunner): Promise<string[]> {
   // not on the column, so the statement still fails to parse with "no such column: run_id".
   for (const stmt of statements) {
     if (!stmt.startsWith('CREATE TABLE')) continue;
-    const table = /^CREATE TABLE IF NOT EXISTS "([^"]+)"/.exec(stmt)?.[1] as string;
-    await issue(db, forDialect(stmt, mysql), () => hasTable(db, table));
+    const table = /^CREATE TABLE IF NOT EXISTS (?:"[^"]+"\.)?"([^"]+)"/.exec(stmt)?.[1] as string;
+    await issue(db, forDialect(stmt, mysql), () => hasTable(db, table, schema));
   }
 
   const repairs: string[] = [];
   const addColumn = async (table: string, column: string, type: string) => {
-    if (await hasColumn(db, table, column)) return;
+    if (await hasColumn(db, table, column, schema)) return;
     await issue(
       db,
-      forDialect(`ALTER TABLE "${table}" ADD COLUMN "${column}" ${type}`, mysql),
-      () => hasColumn(db, table, column),
+      forDialect(
+        `ALTER TABLE ${qualifiedSql(table, schema)} ADD COLUMN "${column}" ${type}`,
+        mysql,
+      ),
+      () => hasColumn(db, table, column, schema),
     );
     repairs.push(`${table}.${column}`);
   };
@@ -800,18 +886,18 @@ export async function createAgentTables(db: LucidRawRunner): Promise<string[]> {
   // After the added columns (a SQLite rebuild copies every column the table has by then) and before
   // the indexes (the rebuild drops the old table's, and the index phase puts them back).
   for (const { table, column, type } of NULLABLE_COLUMNS) {
-    if (await isNullable(db, table, column)) continue;
+    if (await isNullable(db, table, column, schema)) continue;
     // Several statements on SQLite, so `issue` is handed the change rather than one statement.
     await issue(
       db,
       `${table}.${column} NULL`,
-      () => isNullable(db, table, column),
-      () => makeNullable(db, table, column, type),
+      () => isNullable(db, table, column, schema),
+      () => makeNullable(db, table, column, type, schema),
     );
     repairs.push(`${table}.${column}`);
   }
 
-  const indexes = await existingIndexes(db);
+  const indexes = await existingIndexes(db, schema);
   for (const stmt of statements) {
     if (!stmt.startsWith('CREATE INDEX')) continue;
     const index = /^CREATE INDEX IF NOT EXISTS "([^"]+)"/.exec(stmt)?.[1] as string;
@@ -819,7 +905,7 @@ export async function createAgentTables(db: LucidRawRunner): Promise<string[]> {
     await issue(
       db,
       forDialect(stmt, mysql),
-      async () => (await existingIndexes(db))?.has(index) ?? false,
+      async () => (await existingIndexes(db, schema))?.has(index) ?? false,
     );
   }
 
@@ -831,7 +917,7 @@ export async function createAgentTables(db: LucidRawRunner): Promise<string[]> {
  * enforces the `REFERENCES` clauses never refuses a drop for a child that still exists. The mirror of
  * {@link createAgentTables}, and what the published migration's `down()` calls.
  */
-export function dropTableStatements(): string[] {
+export function dropTableStatements(schema?: string): string[] {
   const t = AGENT_TABLES;
   return [
     t.genuiCalls,
@@ -846,12 +932,19 @@ export function dropTableStatements(): string[] {
     t.messages,
     t.modelPricing,
     t.threads,
-  ].map((table) => `DROP TABLE IF EXISTS "${table}"`);
+  ].map((table) => `DROP TABLE IF EXISTS ${qualifiedSql(table, schema)}`);
 }
 
-/** Drop the twelve agent tables. Destructive and irreversible — this erases every thread and every ledger row. */
-export async function dropAgentTables(db: LucidRawRunner): Promise<void> {
-  for (const stmt of dropTableStatements()) {
+/**
+ * Drop the twelve agent tables (in `schema` when given; the schema itself is left in place).
+ * Destructive and irreversible — this erases every thread and every ledger row.
+ */
+export async function dropAgentTables(
+  db: LucidRawRunner,
+  options: AgentSchemaOptions = {},
+): Promise<void> {
+  const schema = validateSchema(db, options.schema, 'dropAgentTables');
+  for (const stmt of dropTableStatements(schema)) {
     await db.rawQuery(portableSql(db, stmt));
   }
 }
@@ -919,7 +1012,7 @@ export function schemaRunner(db: LucidRawRunner): LucidRawRunner {
  * Correctness never depends on the memo — the DDL is idempotent — it only avoids redundant round
  * trips. A failed provisioning is evicted so the next call retries rather than caching the rejection.
  */
-const provisioned = new WeakMap<object, Promise<void>>();
+const provisioned = new WeakMap<object, Map<string, Promise<void>>>();
 
 /**
  * Idempotently ensure the twelve agent tables exist, memoized per db client. This is what the stores
@@ -929,17 +1022,27 @@ const provisioned = new WeakMap<object, Promise<void>>();
  * first provisions the shared schema, so pricing seeds and governance reads work even before the
  * first agent run. The DDL runs on {@link schemaRunner}'s client, never inside a global transaction.
  */
-export function ensureAgentTables(db: LucidRawRunner): Promise<void> {
-  const key = db as unknown as object;
-  let ready = provisioned.get(key);
+export function ensureAgentTables(
+  db: LucidRawRunner,
+  options: AgentSchemaOptions = {},
+): Promise<void> {
+  // Per client AND schema: two schemas on one connection are two sets of tables.
+  let bySchema = provisioned.get(db as unknown as object);
+  if (bySchema === undefined) {
+    bySchema = new Map();
+    provisioned.set(db as unknown as object, bySchema);
+  }
+  const key = options.schema ?? '';
+  const memo = bySchema;
+  let ready = memo.get(key);
   if (ready === undefined) {
-    ready = createAgentTables(schemaRunner(db))
+    ready = createAgentTables(schemaRunner(db), options)
       .then(() => undefined)
       .catch((error) => {
-        provisioned.delete(key);
+        memo.delete(key);
         throw error;
       });
-    provisioned.set(key, ready);
+    memo.set(key, ready);
   }
   return ready;
 }
@@ -954,20 +1057,23 @@ export function ensureAgentTables(db: LucidRawRunner): Promise<void> {
 export async function ensureStreamFrameTable(
   db: LucidRawRunner,
   table: string = AGENT_TABLES.streamFrames,
+  options: AgentSchemaOptions = {},
 ): Promise<void> {
   const runner = schemaRunner(db);
+  const schema = validateSchema(runner, options.schema, 'tokenSinks.lucid()');
   const mysql = isMySql(runner);
-  if (!(await hasTable(runner, table))) {
-    await issue(runner, forDialect(streamFrameTableStatement(table), mysql), () =>
-      hasTable(runner, table),
+  if (schema !== undefined) await ensureDatabaseSchema(runner, schema);
+  if (!(await hasTable(runner, table, schema))) {
+    await issue(runner, forDialect(streamFrameTableStatement(table, schema), mysql), () =>
+      hasTable(runner, table, schema),
     );
   }
   const name = `${table}_created_idx`;
-  if ((await existingIndexes(runner))?.has(name)) return;
+  if ((await existingIndexes(runner, schema))?.has(name)) return;
   await issue(
     runner,
-    forDialect(streamFrameIndexStatement(table), mysql),
-    async () => (await existingIndexes(runner))?.has(name) ?? false,
+    forDialect(streamFrameIndexStatement(table, schema), mysql),
+    async () => (await existingIndexes(runner, schema))?.has(name) ?? false,
   );
 }
 
@@ -980,18 +1086,21 @@ export async function ensureStreamFrameTable(
 export async function ensureChannelStateTable(
   db: LucidRawRunner,
   table: string = AGENT_TABLES.channelState,
+  options: AgentSchemaOptions = {},
 ): Promise<void> {
   const runner = schemaRunner(db);
+  const schema = validateSchema(runner, options.schema, 'lucidChannelStore()');
   const mysql = isMySql(runner);
-  const [create, index] = channelStateTableStatements(table) as [string, string];
-  if (!(await hasTable(runner, table))) {
-    await issue(runner, forDialect(create, mysql), () => hasTable(runner, table));
+  if (schema !== undefined) await ensureDatabaseSchema(runner, schema);
+  const [create, index] = channelStateTableStatements(table, schema) as [string, string];
+  if (!(await hasTable(runner, table, schema))) {
+    await issue(runner, forDialect(create, mysql), () => hasTable(runner, table, schema));
   }
   const name = `${table}_expires_idx`;
-  if ((await existingIndexes(runner))?.has(name)) return;
+  if ((await existingIndexes(runner, schema))?.has(name)) return;
   await issue(
     runner,
     forDialect(index, mysql),
-    async () => (await existingIndexes(runner))?.has(name) ?? false,
+    async () => (await existingIndexes(runner, schema))?.has(name) ?? false,
   );
 }

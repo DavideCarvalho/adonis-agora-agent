@@ -1,6 +1,7 @@
 import { CoalescedWrites } from './coalesced-writes.js';
 import { interruptible, sleepUnlessAborted } from './interruptible.js';
 import type { SinkWriter, StreamFrame, TokenStreamSink } from './spi/token-stream-sink.js';
+import { qualifiedName, qualifiedSql, validateSchema } from './stores/db-schema.js';
 import type { LucidDatabaseLike } from './stores/lucid.js';
 import { AGENT_TABLES, ensureStreamFrameTable, rowsOf } from './stores/lucid-schema.js';
 import { portableSql } from './stores/sql-dialect.js';
@@ -35,6 +36,11 @@ const APPEND_ATTEMPTS = 8;
 export interface LucidTokenStreamSinkOptions {
   /** The frame table. Defaults to `agent_stream_frame` (`AGENT_TABLES.streamFrames`). */
   tableName?: string;
+  /**
+   * The database schema (a Postgres schema, a MySQL database) the frame table lives in. Default:
+   * none — the connection's current schema. Refused on SQLite.
+   */
+  schema?: string | undefined;
   /**
    * Gap (ms) between two reads of a run a subscriber is following — the most a frame waits in the
    * table before a browser sees it. Defaults to 250.
@@ -135,6 +141,12 @@ function isUniqueViolation(error: unknown): boolean {
  */
 export class LucidTokenStreamSink implements TokenStreamSink {
   private readonly table: string;
+  /** The database schema the frame table lives in (`undefined`: the connection's current one). */
+  private readonly schema: string | undefined;
+  /** The frame table as the query builder names it (`schema.table` under a schema). */
+  private readonly tableRef: string;
+  /** The frame table as raw SQL names it (`"schema"."table"` under a schema). */
+  private readonly tableSql: string;
   private readonly pollIntervalMs: number;
   private readonly idlePollIntervalMs: number;
   private readonly flushMs: number;
@@ -155,6 +167,9 @@ export class LucidTokenStreamSink implements TokenStreamSink {
       throw new Error(`LucidTokenStreamSink: "${table}" is not a valid table name`);
     }
     this.table = table;
+    this.schema = validateSchema(db, options.schema, 'tokenSinks.lucid()');
+    this.tableRef = qualifiedName(table, this.schema);
+    this.tableSql = qualifiedSql(table, this.schema);
     this.pollIntervalMs = Math.max(1, options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS);
     this.idlePollIntervalMs = Math.max(
       this.pollIntervalMs,
@@ -176,7 +191,9 @@ export class LucidTokenStreamSink implements TokenStreamSink {
   ensureSchema(): Promise<void> {
     if (!this.autoCreateTables) return Promise.resolve();
     if (this.provisioned === undefined) {
-      this.provisioned = ensureStreamFrameTable(this.db, this.table).catch((error) => {
+      this.provisioned = ensureStreamFrameTable(this.db, this.table, {
+        schema: this.schema,
+      }).catch((error) => {
         this.provisioned = undefined;
         throw error;
       });
@@ -194,8 +211,8 @@ export class LucidTokenStreamSink implements TokenStreamSink {
         await this.db.rawQuery(
           portableSql(
             this.db,
-            `INSERT INTO "${this.table}" ("run_id", "seq", "frame", "created_at") ` +
-              `SELECT ?, COALESCE(MAX("seq"), 0) + 1, ?, ? FROM "${this.table}" WHERE "run_id" = ?`,
+            `INSERT INTO ${this.tableSql} ("run_id", "seq", "frame", "created_at") ` +
+              `SELECT ?, COALESCE(MAX("seq"), 0) + 1, ?, ? FROM ${this.tableSql} WHERE "run_id" = ?`,
           ),
           [runId, frame, Date.now(), runId],
         );
@@ -236,7 +253,7 @@ export class LucidTokenStreamSink implements TokenStreamSink {
     let quietSince = Date.now();
     while (!signal.aborted) {
       const rows = await this.db
-        .from(this.table)
+        .from(this.tableRef)
         .where('run_id', runId)
         .where('seq', '>=', cursor)
         .orderBy('seq', 'asc')
@@ -284,13 +301,13 @@ export class LucidTokenStreamSink implements TokenStreamSink {
 
   async has(runId: string): Promise<boolean> {
     await this.ensureSchema();
-    return (await this.db.from(this.table).where('run_id', runId).first()) !== null;
+    return (await this.db.from(this.tableRef).where('run_id', runId).first()) !== null;
   }
 
   async close(runId: string): Promise<void> {
     await this.writes.discard(runId);
     await this.ensureSchema();
-    await this.db.from(this.table).where('run_id', runId).delete();
+    await this.db.from(this.tableRef).where('run_id', runId).delete();
   }
 
   /**
@@ -315,7 +332,7 @@ export class LucidTokenStreamSink implements TokenStreamSink {
       await this.db.rawQuery(
         portableSql(
           this.db,
-          `SELECT DISTINCT "run_id" AS run_id FROM "${this.table}" WHERE "created_at" < ?`,
+          `SELECT DISTINCT "run_id" AS run_id FROM ${this.tableSql} WHERE "created_at" < ?`,
         ),
         [cutoff],
       ),
@@ -328,7 +345,7 @@ export class LucidTokenStreamSink implements TokenStreamSink {
           await this.db.rawQuery(
             portableSql(
               this.db,
-              `SELECT DISTINCT "run_id" AS run_id FROM "${this.table}" ` +
+              `SELECT DISTINCT "run_id" AS run_id FROM ${this.tableSql} ` +
                 `WHERE "run_id" IN (${chunk.map(() => '?').join(', ')}) AND "created_at" >= ?`,
             ),
             [...chunk, cutoff],
@@ -337,7 +354,7 @@ export class LucidTokenStreamSink implements TokenStreamSink {
       );
       const gone = chunk.filter((run) => !live.has(run));
       if (gone.length === 0) continue;
-      await this.db.from(this.table).whereIn('run_id', gone).delete();
+      await this.db.from(this.tableRef).whereIn('run_id', gone).delete();
       lapsed.push(...gone);
     }
     return lapsed.length;

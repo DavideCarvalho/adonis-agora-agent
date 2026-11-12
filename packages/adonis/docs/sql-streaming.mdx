@@ -40,6 +40,7 @@ SSE event ids are counted from the stored frames, and every replica reads the sa
 | --- | --- | --- |
 | `connection` | default connection | Lucid connection name. |
 | `tableName` | `agent_stream_frame` | The frame table. |
+| `schema` | the top-level `schema` of `config/agent.ts` | Database schema of the frame table (see [Database schema](/docs/agent/stores/lucid#database-schema)). |
 | `pollIntervalMs` | `250` | Gap between two reads of a run being followed — the most a frame waits before a browser sees it. |
 | `idlePollIntervalMs` | `1000` | Gap once the run has written nothing for five seconds (parked on a human, a slow tool). The next frame puts the subscriber back on `pollIntervalMs`. |
 | `flushMs` | `50` | Window consecutive deltas (text, reasoning, one tool call's arguments) are gathered over, counted from the first one. `0` writes every frame as its own row. |

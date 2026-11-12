@@ -147,7 +147,7 @@ use (`store: 'lucid'`, the default). `store: 'memory'` keeps them in-process; an
 | `baseUrl` | request origin | Public origin for the cards' interface URLs. Set it in production. |
 | `path` | `'a2a'` | Mount prefix. |
 | `rootCard` | — | Also serve this agent's card at `/.well-known/agent-card.json`. |
-| `store` | `'lucid'` | `'lucid'`, `'memory'`, or an `A2aStore`. `connection` picks the Lucid connection. |
+| `store` | `'lucid'` | `'lucid'`, `'memory'`, or an `A2aStore`. `connection` picks the Lucid connection; `schema` its database schema (default: `config/agent.ts`'s `schema`). |
 | `actions` | `'approve-delegated'` | Or `'reject'`. |
 | `timeoutMs` | `120000` | A turn that runs longer is cancelled (`INTERNAL`). |
 | `maxBodyBytes` | 1 MiB | |

@@ -64,7 +64,12 @@ async function eventually<T>(read: () => Promise<T | undefined>, label: string):
 const pgUrl = process.env.AGENT_TEST_PG_URL;
 const PG_SCHEMA = 'agent_detached_upgrade';
 
-function makePgDb(): Database {
+/**
+ * A Postgres `Database` over the test server. `searchPath` (the default) is how the old releases
+ * reach their tables in {@link PG_SCHEMA} — they have no `schema` option. `false` is a plain
+ * connection, the one a deployment uses once it moves to this release's `schema` option.
+ */
+function makePgDb(searchPath = true): Database {
   const target = new URL(pgUrl as string);
   return new Database(
     {
@@ -80,7 +85,7 @@ function makePgDb(): Database {
             database: target.pathname.slice(1),
           },
           // Its own schema: other specs drop and create the agent tables in `public` concurrently.
-          searchPath: [PG_SCHEMA],
+          ...(searchPath ? { searchPath: [PG_SCHEMA] } : {}),
           pool: { min: 0, max: 8 },
         },
       },
@@ -127,10 +132,13 @@ async function deploy(
   stateStore: LucidStateStore,
   script: Script,
   edge: { detached: boolean },
+  /** This release only: the tables' database schema, named in every statement (no searchPath). */
+  schema?: string,
 ): Promise<Phase> {
   const { agent, durable, testing } = code;
-  await agent.createAgentTables(db as never);
-  const store = new agent.LucidAgentStore(db as never);
+  const where = schema === undefined ? {} : { schema };
+  await agent.createAgentTables(db as never, where);
+  const store = new agent.LucidAgentStore(db as never, where);
   const registry = new agent.ToolRegistry();
   for (const name of ['record_measure', 'purge_cache']) {
     registry.register(
@@ -498,5 +506,60 @@ describe.each(dialects)(
       expect(told).toHaveLength(1);
       expect(executions).toEqual({});
     });
+  },
+);
+
+/**
+ * The same upgrade, for an app that also moves off `searchPath` as it upgrades: the old release
+ * reached its tables in {@link PG_SCHEMA} through the connection's search path (it had no other
+ * way), and this release reaches the SAME tables through the `schema` option on a plain connection
+ * — every statement names the schema, nothing relies on the path. The durable state stays where it
+ * was (its own lib, its own option).
+ */
+describe.skipIf(pgUrl === undefined)(
+  'a run parked on 0.56.0 over searchPath, replayed on this release with `schema` (pg)',
+  () => {
+    let db: Database | undefined;
+    let plain: Database | undefined;
+    afterEach(async () => {
+      await Promise.all(
+        engines.splice(0).map((engine) => engine.drain(5_000).catch(() => undefined)),
+      );
+      afterDurable.setDurableAgentContext(undefined);
+      BEFORE.durable.setDurableAgentContext(undefined);
+      for (const key of Object.keys(executions)) delete executions[key];
+      await db?.rawQuery(`DROP SCHEMA IF EXISTS "${PG_SCHEMA}" CASCADE`).catch(() => undefined);
+      await db?.manager.closeAll();
+      await plain?.manager.closeAll();
+      db = undefined;
+      plain = undefined;
+    });
+
+    it('finishes on the new code, reaching the same tables through the schema option', async () => {
+      db = await freshDb('pg');
+      const stateStore = new LucidStateStore(db);
+      await stateStore.ensureSchema();
+      const script = (_args: unknown, turnIndex: number) =>
+        turnIndex === 0
+          ? { text: 'recording', toolCall: { name: 'record_measure', input: { value: 'a' } } }
+          : { text: 'recorded' };
+
+      const old = await deploy(BEFORE, db, stateStore, script, { detached: false });
+      const { runId } = await old.service.chat({ actor, message: 'record it' });
+      const callId = await parked(old, runId, 'record_measure');
+      const journalBefore = await checkpointNames(old, runId);
+
+      plain = makePgDb(false);
+      const repairs = await after.createAgentTables(plain as never, { schema: PG_SCHEMA });
+      expect(repairs).toContain(`${after.AGENT_TABLES.messages}.agent_name`);
+      const next = await deploy(AFTER, plain, stateStore, script, { detached: true }, PG_SCHEMA);
+      await next.service.approve(runId, callId);
+
+      expect(await settled(next, runId)).toEqual({ status: 'completed' });
+      expect(executions).toEqual({ 'record_measure:a': 1 });
+      const journalAfter = await checkpointNames(next, runId);
+      expect(journalAfter.slice(0, journalBefore.length)).toEqual(journalBefore);
+      // Several deployments over a real server: past the 5s default on a loaded host.
+    }, 30_000);
   },
 );
