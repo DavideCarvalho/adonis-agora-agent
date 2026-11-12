@@ -12,8 +12,8 @@ const STATUSES: RunStatus[] = ['running', 'completed', 'failed', 'cancelled'];
  * newest-first table, forward-paginated with the server's opaque `nextCursor`. Clicking a row opens
  * the full {@link RunDetailView} trace; the "Back to runs" control returns to the filtered list.
  */
-export function RunsSection() {
-  const [selected, setSelected] = useState<string | null>(null);
+export function RunsSection({ initialRunId = null }: { initialRunId?: string | null } = {}) {
+  const [selected, setSelected] = useState<string | null>(initialRunId);
   const [actor, setActor] = useState('');
   const [agent, setAgent] = useState('');
   const [status, setStatus] = useState<'' | RunStatus>('');

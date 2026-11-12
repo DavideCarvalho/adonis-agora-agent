@@ -12,8 +12,10 @@ import {
   injectApiBase,
   injectBaseHref,
   mountPathFor,
+  registerAgentConsole,
   resolveDashboardConfig,
   safeAssetSegments,
+  switcherShellConfig,
   warnNoConsoleAuthorizeOnce,
 } from '@adonis-agora/agent/dashboard';
 import type { HttpContext } from '@adonisjs/core/http';
@@ -102,6 +104,9 @@ export default class AgentDashboardProvider {
       }
       await this.sendAsset(ctx, segments, apiBase, mount);
     });
+
+    // List this console in every Agora console's switcher and global search.
+    await registerAgentConsole(this.app, { mount, actorResolver, authorize });
   }
 
   /**
@@ -135,7 +140,8 @@ export default class AgentDashboardProvider {
     const html = await readFile(new URL('index.html', this.spaDirUrl), 'utf8');
     ctx.response.header('content-type', 'text/html; charset=utf-8');
     ctx.response.header('cache-control', 'no-store, must-revalidate');
-    ctx.response.send(injectApiBase(injectBaseHref(html, mount), apiBase));
+    const shell = await switcherShellConfig(this.app, apiBase);
+    ctx.response.send(injectApiBase(injectBaseHref(html, mount), apiBase, shell));
   }
 
   /** Send the requested built asset, or fall back to the SPA shell when it does not exist. */

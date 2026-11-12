@@ -66,6 +66,8 @@ All read-only (`GET`, except the pricing upsert), all gated by `dashboard.author
 | `GET /agent/governance/runs/:id` | One run's full trace — run + messages + tool calls + approvals + usage — or `null`. |
 | `GET /agent/governance/approvals/pending` | Cross-thread HITL approvals inbox, oldest first. Query: `actor?`, `limit?`. |
 | `GET /agent/governance/tools/stats` | Per-tool call/failure/rejection/latency rollup. Query: `from?`, `to?`. |
+| `GET /agent/governance/consoles` | The other Agora consoles the caller may open: `{ version: 1, current: 'agent', consoles: [{ id, title, package?, icon, href }] }`. |
+| `GET /agent/governance/consoles/search` | Search across every console the caller may open. Query: `q`. Answers `{ version: 1, query, groups: [{ id, title, icon, hits: [{ title, subtitle?, href }] }] }`. |
 | `GET /agent/governance/reliability` | Success/failure/cancel rates, mean settled duration, turn latency (TTFT and duration p50/p95) and failures by code. Query: `from?`, `to?`. |
 
 Two more mount **only when a `pricingStore` is also bound** — the store already exists for the loop's cost fold, and these expose it:

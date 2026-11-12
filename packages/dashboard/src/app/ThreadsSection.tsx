@@ -11,8 +11,14 @@ const PAGE_STEP = 25;
  * Clicking a row opens the {@link ThreadDetailView} drill-down; "Load more" simply re-requests the
  * feed with a larger `limit` (the endpoint has no cursor, unlike the runs list).
  */
-export function ThreadsSection({ limit: initialLimit = 25 }: { limit?: number }) {
-  const [selected, setSelected] = useState<string | null>(null);
+export function ThreadsSection({
+  limit: initialLimit = 25,
+  initialThreadId = null,
+}: {
+  limit?: number;
+  initialThreadId?: string | null;
+}) {
+  const [selected, setSelected] = useState<string | null>(initialThreadId);
   const [limit, setLimit] = useState(initialLimit);
   const threads = useRecentThreads(limit);
 

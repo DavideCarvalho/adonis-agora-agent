@@ -195,6 +195,44 @@ The **run trace** (a row in Runs) is where most investigations end up: the run's
 
 **Pricing** shows its own panel rather than a generic error when the API answers `501`; that means no `pricingStore` is bound, so there is nothing to edit. See [Quota & cost](/docs/agent/governance/quota-and-cost).
 
+## Switching between consoles
+
+When the app runs other Agora consoles (durable workflows, Telescope, payments, media, the authkit
+admin), the console's brand becomes a menu that lists the ones you may open, and a **Search** button
+(`Ctrl`/`⌘`-`K`) searches all of them at once. Here, search finds a run or a thread by id, and the
+latest runs of an actor ref or an agent name; links land on `#runs/<id>` and `#threads/<id>`.
+
+Nothing to configure. A console appears only when its own `authorize` lets you in, so the switcher
+calls the other consoles' `authorize` while this page loads. During that call `ctx.agoraProbe` is
+`true`: an authorizer that writes an audit entry per call can skip it.
+
+An app that mounts its own console can join the menu from a provider's `boot()`:
+
+```ts title="providers/reports_console_provider.ts"
+import type { ApplicationService } from '@adonisjs/core/types'
+
+export default class ReportsConsoleProvider {
+  constructor(protected app: ApplicationService) {}
+
+  async boot() {
+    const key = 'agora.consoles'
+    if (!this.app.container.hasBinding(key)) {
+      this.app.container.bindValue(key, { version: 1, entries: [] })
+    }
+    const registry = (await this.app.container.make(key)) as { version: number; entries: unknown[] }
+    if (registry.version !== 1) return
+    registry.entries.push({
+      id: 'reports',
+      title: 'Reports',
+      icon: 'generic',
+      path: '/reports',
+      order: 100,
+      authorize: async (ctx) => ({ allowed: ctx.auth.user?.isAdmin === true }),
+    })
+  }
+}
+```
+
 ## Reading the routes yourself
 
 The console's fetch client is exported, so your own admin UI can read the same data without reimplementing the endpoints:

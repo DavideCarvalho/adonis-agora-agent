@@ -15,8 +15,10 @@ import {
   injectApiBase,
   injectBaseHref,
   mountPathFor,
+  registerAgentConsole,
   resolveDashboardConfig,
   safeAssetSegments,
+  switcherShellConfig,
 } from '../src/dashboard/index.js';
 import type { AgentConfig } from '../src/define_config.js';
 import type { ActorResolver } from '../src/spi/actor-resolver.js';
@@ -134,6 +136,9 @@ export default class DashboardProvider {
       }
       await this.#sendAsset(ctx, segments, apiBase, mount);
     });
+
+    // List this console in every Agora console's switcher and global search.
+    await registerAgentConsole(this.app, { mount, actorResolver, authorize });
   }
 
   /**
@@ -167,7 +172,8 @@ export default class DashboardProvider {
     const html = await readFile(resolvePath(this.#spaDirectory(), 'index.html'), 'utf8');
     ctx.response.header('content-type', 'text/html; charset=utf-8');
     ctx.response.header('cache-control', 'no-store, must-revalidate');
-    ctx.response.send(injectApiBase(injectBaseHref(html, mount), apiBase));
+    const shell = await switcherShellConfig(this.app, apiBase);
+    ctx.response.send(injectApiBase(injectBaseHref(html, mount), apiBase, shell));
   }
 
   /** Send the requested built asset, or fall back to the SPA shell when it does not exist. */

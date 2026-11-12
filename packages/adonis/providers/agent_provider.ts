@@ -14,8 +14,10 @@ import {
   DEFAULT_MAX_ATTACHMENT_BYTES,
 } from '../src/attachment-limits.js';
 import { warnNoConsoleAuthorizeOnce } from '../src/console-authorize.js';
+import { listVisibleConsoles, readAgoraConsoles, searchConsoles } from '../src/console-switcher.js';
 import { resolveDashboardConfig } from '../src/dashboard/define_config.js';
 import { answerConsoleDenialJson, evaluateDashboardGate } from '../src/dashboard/gate.js';
+import { AGENT_CONSOLE_ID } from '../src/dashboard/switcher.js';
 import { agentDevTools } from '../src/dev-tools/agent-tools.js';
 import { registerDevTools } from '../src/dev-tools/index.js';
 import { type AgentEngine, assertRunnable, engineOnlyModel } from '../src/engine.js';
@@ -1854,6 +1856,30 @@ export default class AgentProvider {
        *  (the ecosystem interface mirroring `@adonis-agora/filter`'s `CursorParams`). Same default
        *  (50) and ceiling (200) as `?limit=`. */
       const firstOf = (ctx: HttpContext) => positiveIntInput(ctx, 'first');
+
+      // GET /agent/governance/consoles — the other Agora consoles this viewer may open (switcher).
+      router.get(g('consoles'), async (ctx: HttpContext) => {
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        ctx.response.header('cache-control', 'private, no-store');
+        return ctx.response.json(
+          await listVisibleConsoles(await readAgoraConsoles(this.app), AGENT_CONSOLE_ID, ctx),
+        );
+      });
+
+      // GET /agent/governance/consoles/search?q= — global search across the consoles this viewer may open.
+      router.get(g('consoles/search'), async (ctx: HttpContext) => {
+        if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+        ctx.response.header('cache-control', 'private, no-store');
+        const q = ctx.request.input('q', '');
+        return ctx.response.json(
+          await searchConsoles(
+            await readAgoraConsoles(this.app),
+            AGENT_CONSOLE_ID,
+            ctx,
+            typeof q === 'string' ? q : '',
+          ),
+        );
+      });
 
       // GET /agent/governance/spend/model — per-model token + cost rollup over the range.
       router.get(g('spend/model'), async (ctx: HttpContext) => {
