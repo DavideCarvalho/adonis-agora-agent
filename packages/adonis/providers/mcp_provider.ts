@@ -247,7 +247,8 @@ export default class McpProvider {
     }
 
     const shield = this.app.config.get<unknown>('shield', undefined);
-    if (csrfBlocksPath(shield, path)) console.warn(csrfWarning(path));
+    const blocked = csrfBlocksPath(shield, path);
+    if (blocked !== false) console.warn(csrfWarning(path, blocked));
   }
 
   /** Say once, when the app is up, which libs serve dev tools (every lib has booted by now). */

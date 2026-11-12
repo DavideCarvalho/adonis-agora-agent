@@ -6,7 +6,7 @@ import {
 } from '../src/console-authorize.js';
 import { agentDevTools } from '../src/dev-tools/agent-tools.js';
 import type { DevTool, DevToolsLib } from '../src/dev-tools/contract.js';
-import { csrfBlocksPath } from '../src/dev-tools/csrf.js';
+import { csrfBlocksPath, csrfWarning } from '../src/dev-tools/csrf.js';
 import { actionAllowed } from '../src/dev-tools/endpoint.js';
 import { DevToolsHubImpl, endpointAuthorizeWarning } from '../src/dev-tools/hub.js';
 import { registerDevTools } from '../src/dev-tools/index.js';
@@ -301,6 +301,18 @@ describe('dev tools CSRF probe', () => {
     expect(csrfBlocksPath({ csrf: { enabled: true, methods: ['PUT'] } }, 'mcp/agora')).toBe(false);
   });
 
+  it('an empty methods list checks no method; a throwing exceptRoutes is unknown, not exempt', () => {
+    expect(csrfBlocksPath({ csrf: { enabled: true, methods: [] } }, 'mcp/agora')).toBe(false);
+    const throws = () => {
+      throw new Error('needs a real ctx');
+    };
+    expect(csrfBlocksPath({ csrf: { enabled: true, exceptRoutes: throws } }, 'mcp/agora')).toBe(
+      'unknown',
+    );
+    expect(csrfWarning('mcp/agora', 'unknown')).toContain('may be blocked');
+    expect(csrfWarning('mcp/agora')).toContain('are blocked');
+  });
+
   it('probes a function exceptRoutes with the request url', () => {
     // meuprontoo's shape: a function over `ctx.request.url()`.
     const apiOnly = (ctx: { request: { url(): string } }) => ctx.request.url().startsWith('/api/');
@@ -310,12 +322,6 @@ describe('dev tools CSRF probe', () => {
     const covers = (ctx: { request: { url(): string } }) =>
       ctx.request.url() === '/mcp/agora' || ctx.request.url().startsWith('/api/');
     expect(csrfBlocksPath({ csrf: { enabled: true, exceptRoutes: covers } }, 'mcp/agora')).toBe(
-      false,
-    );
-    const throws = () => {
-      throw new Error('needs a real ctx');
-    };
-    expect(csrfBlocksPath({ csrf: { enabled: true, exceptRoutes: throws } }, 'mcp/agora')).toBe(
       false,
     );
   });
