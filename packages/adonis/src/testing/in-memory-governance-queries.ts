@@ -446,7 +446,17 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
   }
 
   async pendingApprovals(filter: PendingApprovalsFilter = {}): Promise<PendingApprovalRow[]> {
-    return this.pendingFor(filter.actor).slice(0, clampLimit(filter.limit));
+    let rows = this.pendingFor(filter.actor);
+    if (filter.approvers !== undefined) {
+      const wanted = new Set(filter.approvers);
+      const kept: PendingApprovalRow[] = [];
+      for (const row of rows) {
+        const approval = await this.store.toolCallApproval?.(row.toolCallId);
+        if (approval?.approver != null && wanted.has(approval.approver)) kept.push(row);
+      }
+      rows = kept;
+    }
+    return rows.slice(0, clampLimit(filter.limit));
   }
 
   async countPendingApprovals(filter: Pick<PendingApprovalsFilter, 'actor'> = {}): Promise<number> {

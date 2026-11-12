@@ -308,6 +308,11 @@ export interface PendingApprovalsFilter {
   actor?: string;
   /** Cap the inbox; defaults to 50, clamped to 200 by the adapter. */
   limit?: number;
+  /**
+   * Only calls put to one of these approvers (role names a policy routed the call to, never the
+   * requester). OPTIONAL to honour: an adapter that ignores it returns the unfiltered inbox.
+   */
+  approvers?: readonly string[];
 }
 
 /** One tool call awaiting a HITL decision, for the cross-thread approvals inbox (oldest first). */

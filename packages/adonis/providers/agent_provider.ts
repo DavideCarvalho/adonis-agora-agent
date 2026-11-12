@@ -2,6 +2,11 @@ import { pathToFileURL } from 'node:url';
 import type { HttpContext } from '@adonisjs/core/http';
 import type { ApplicationService } from '@adonisjs/core/types';
 import { personalAgentGate, personalAgentScopes } from '../src/a2a/gate.js';
+import {
+  ACCOUNT_EXTENSIONS_BINDING,
+  type AccountExtensionRegistry,
+} from '../src/account-console/contract.js';
+import { agentAccountExtension } from '../src/account-console/extension.js';
 import { notifyActionProposalAdmitted } from '../src/action-proposal-listeners.js';
 import { assertIndependentActionRuntime } from '../src/action-proposal-runtime.js';
 import {
@@ -633,6 +638,11 @@ export default class AgentProvider {
       });
     }
 
+    // The agent's pages in the authkit account console (AI usage, conversations, connected agents,
+    // approvals), when authkit's registry is in the app. No import of authkit: a binding name and an
+    // object literal.
+    await this.#registerAccountPages(config, service, governance);
+
     await this.#registerRoutes(
       config,
       service,
@@ -643,6 +653,35 @@ export default class AgentProvider {
       config.dashboard?.authorize,
       pricingStore,
       actorDirectory,
+    );
+  }
+
+  async #registerAccountPages(
+    config: AgentConfig,
+    service: AgentService,
+    governance: AgentGovernanceQueries | undefined,
+  ): Promise<void> {
+    if (config.accountConsole === false) return;
+    if (!this.app.container.hasBinding(ACCOUNT_EXTENSIONS_BINDING as never)) return;
+    const registry = (await this.app.container.make(ACCOUNT_EXTENSIONS_BINDING as never)) as
+      | Partial<AccountExtensionRegistry>
+      | undefined;
+    if (typeof registry?.register !== 'function' || (registry.contract ?? 0) < 1) return;
+    const app = this.app;
+    registry.register(
+      agentAccountExtension({
+        service,
+        governance,
+        tenancy: this.#tenancy,
+        options: config.accountConsole ?? {},
+        // Loaded on use: the Poppy client stays out of apps that never open the page.
+        connections: async () => {
+          const { PoppyConnections } = await import('../src/poppy-connections/service.js');
+          return app.container.hasBinding(PoppyConnections)
+            ? await app.container.make(PoppyConnections)
+            : undefined;
+        },
+      }),
     );
   }
 
