@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.6
+
+### Minor Changes
+
+- [#578](https://github.com/DavideCarvalho/adonis-agora-agent/pull/578) [`0689ac5`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/0689ac5071f826c04110ff33d96a64363f4c14fe) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Account console pages. When `@adonis-agora/authkit-server` is in the app, the agent registers itself into authkit's `authkit.accountExtensions` registry, with no import of authkit. Signed-in users get AI usage meters (`/account/ai`), their conversations (delete), the companies their assistant is connected to (disconnect, with sudo), and pending approvals they can approve or reject under the same rules as in the app (recorded `via: 'account-console'`). New `accountConsole` option in `config/agent.ts`: `false`, or `{ actor, threadUrl, pages }`. With organizations on, the pages follow the account's active organization. `AgentService.listThreads(actorRef, { limit, tenantScope })`, `threadTenantRef` and `runTenantRef` are new.
+
 ## 1.0.0-rc.5
 
 ### Minor Changes
