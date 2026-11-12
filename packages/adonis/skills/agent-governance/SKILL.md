@@ -103,7 +103,9 @@ authorization"), `packages/adonis/src/authorizer.ts`,
 ### Pattern 2 — gate the console and `/agent/governance/*` with `dashboard.authorize`
 
 One option gates both the console page and the cross-actor `/agent/governance/*` read routes
-(and, when set, grants cross-actor privilege on run/thread routes). `governanceAuthorize` no
+(and, when set, grants cross-actor privilege on run/thread routes — still only inside the
+request's organization when tenancy is on, where another organization's thread or run answers
+404). `governanceAuthorize` no
 longer exists. Omitted: open outside production, `403` on every request in production, with
 one boot warning. With tenancy on, the console reads only the viewer's organization unless
 `authorize` returns `{ allowed: true, tenants: '*' | string[] }`.
