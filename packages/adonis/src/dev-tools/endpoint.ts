@@ -184,6 +184,10 @@ export class DevToolsEndpoint {
   async #admit(ctx: HttpContext, needed: RegisteredDevToolsLib[]): Promise<Admission | null> {
     const header = ctx.request.header('authorization');
     const bearer = /^Bearer\s+\S/i.test(header ?? '') ? header?.slice(7).trim() : undefined;
+    const tokenId =
+      bearer !== undefined
+        ? `token:${createHash('sha256').update(bearer).digest('hex').slice(0, 12)}`
+        : undefined;
 
     let caller: DevToolsCaller | undefined;
     let actor: Actor | undefined;
@@ -197,7 +201,7 @@ export class DevToolsEndpoint {
         const verified = info.extra.actor;
         const personalAgent = (verified.roles ?? []).includes(PERSONAL_AGENT_ROLE);
         if (personalAgent && !info.scopes.includes(AGORA_DEV_SCOPE)) {
-          return this.#refuse(ctx, needed, 'token', {
+          return this.#refuse(ctx, needed, tokenId ?? 'token', {
             status: 403,
             error: `insufficient_scope: the dev tools need the scope "${AGORA_DEV_SCOPE}"`,
             challenge: this.#challenge(ctx, {
@@ -213,7 +217,7 @@ export class DevToolsEndpoint {
           ...(info.expiresAt !== undefined ? { expiresAt: info.expiresAt } : {}),
         });
         if (identity === null) {
-          return this.#refuse(ctx, needed, 'token', {
+          return this.#refuse(ctx, needed, tokenId ?? 'token', {
             status: 401,
             error: 'invalid_token: the account no longer exists',
             challenge: this.#challenge(ctx, { error: 'invalid_token' }),
@@ -225,7 +229,7 @@ export class DevToolsEndpoint {
         actor = verified;
       } catch (error) {
         if (error instanceof McpAuthError) {
-          return this.#refuse(ctx, needed, 'token', {
+          return this.#refuse(ctx, needed, tokenId ?? 'token', {
             status: error.status,
             error: error.message,
             challenge: this.#challenge(ctx, {
@@ -240,7 +244,7 @@ export class DevToolsEndpoint {
       caller =
         bearer !== undefined
           ? {
-              id: `token:${createHash('sha256').update(bearer).digest('hex').slice(0, 12)}`,
+              id: tokenId ?? 'token',
               via: 'token',
             }
           : sessionCaller(ctx);

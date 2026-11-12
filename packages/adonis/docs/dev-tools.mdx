@@ -1,0 +1,200 @@
+---
+title: Dev tools over MCP
+description: One MCP endpoint where every Agora lib with a console exposes read tools — durable runs, telescope entries, agent spend — to Claude Code, Cursor or Claude Desktop, behind each console's own authorize.
+icon: Wrench
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+With `@adonis-agora/agent/mcp_provider` in `adonisrc.ts`, your app serves `/mcp/agora`: an MCP
+endpoint where every installed Agora lib that has a console registers its developer tools. You
+configure nothing and list nothing. Ask your coding agent "why did run 42 fail?" or "what did the
+agent spend today?" and it reads the same data your consoles show.
+
+## Connect a client
+
+```sh
+claude mcp add --transport http agora http://localhost:3333/mcp/agora
+```
+
+Cursor, Claude Desktop and any other MCP client take the same URL (Streamable HTTP).
+
+How the client gets in depends on how your consoles are protected:
+
+- **Consoles with no `authorize`** (the default outside production): the tools are open locally, like
+  the consoles.
+- **`authorizeByToken`**: send the console token as a header.
+
+  ```sh
+  claude mcp add --transport http agora http://localhost:3333/mcp/agora \
+    --header "Authorization: Bearer $CONSOLE_TOKEN"
+  ```
+
+- **`@adonis-agora/authkit-server` in the app**: the client opens the login in your browser (standard
+  MCP OAuth), and the account you sign in with reaches each console's `authorize` exactly like your
+  browser session does. `authkitDashboardAuthorize()`, `authorizeByRoles({ roles: ['ADMIN'] })` or
+  `(ctx) => ctx.auth.user?.isAdmin` work over MCP unchanged.
+
+<Callout title="authkit needs MCP sign-in turned on">
+The OAuth login uses authkit's MCP support: `mcp: true` in `config/authkit.ts`. The dev endpoint
+registers itself as a protected resource of its own, so a token issued for your product MCP endpoint
+is refused here, and the other way round.
+</Callout>
+
+## What you see
+
+`tools/list` holds the tools of the libs whose console lets you in, and nothing else. If durable and
+telescope allow you but payments does not, you see durable and telescope tools only.
+
+Tool names start with their lib: `durable_list_runs`, `telescope_get_entry`, `agent_get_spend`. List
+tools take `limit` (default 20, at most 100) and return `{ items, next }`; pass `next` back to page.
+Results are capped at 48 KB, long blobs are cut with `…(truncated, N bytes)`, and values under keys
+that name a secret (`token`, `password`, `secret`, `cookie`, `authorization`, `api_key`) are
+replaced with `[redacted]`.
+
+The agent registers its governance console, read-only:
+
+| Tool | What it returns |
+| --- | --- |
+| `agent_list_runs` | Runs, newest first. Filters: `agent`, `status`, `actor`, `from`/`to`, `cursor`. |
+| `agent_get_run` | One run's trace. Messages only with `includeMessages: true`, 2 KB each. |
+| `agent_get_spend` | Tokens and cost over a range of days, `by` model, actor or feature. |
+| `agent_get_tool_stats` | Calls, failures, rejections and latency per tool. |
+| `agent_get_reliability` | Success, failure and cancel rates. |
+| `agent_list_pending_approvals` | Tool calls waiting for a human approval. |
+| `agent_list_recent_tool_calls` | The latest tool calls of every agent. |
+
+Each lib's docs list its own tools.
+
+## Who gets in
+
+Every request is checked again, per lib, with the `authorize` of that lib's console — the same
+function its console routes run. A call to a tool of a lib that refuses you answers like that
+console would: `401 { "error": "unauthenticated" }` or `403 { "error": "forbidden" }`.
+
+A console that wants a browser session (`{ redirectTo: '/login' }`) refuses an MCP client that has
+none. Install authkit for the sign-in above, or accept a token as well with `anyAuthorize`:
+
+```ts title="config/agent.ts"
+import env from '#start/env'
+import { anyAuthorize, authorizeByToken, defineConfig } from '@adonis-agora/agent'
+
+export default defineConfig({
+  dashboard: {
+    authorize: anyAuthorize(
+      authorizeByToken({ token: env.get('CONSOLE_TOKEN') }),
+      (ctx) => ctx.auth.user?.isAdmin === true,
+    ),
+  },
+})
+```
+
+A personal agent signed in through Poppy reaches the dev tools only when its user granted the
+`agora:dev` scope.
+
+## Opt-outs
+
+All optional, in `config/mcp.ts`:
+
+```ts title="config/mcp.ts"
+export default defineMcpConfig({
+  name: 'Acme',
+  version: '1.0.0',
+  // …your product endpoint…
+
+  devTools: {
+    path: 'mcp/agora', // the default
+    exclude: ['payments', 'durable_get_run'], // lib ids or tool names
+    actions: ['durable'], // 'refuse' (default) | 'execute' | lib ids or tool names
+    middleware: [() => import('#middleware/throttle_dev_tools')],
+  },
+})
+```
+
+- `devTools: false` turns the endpoint off.
+- `actions`: tools that change data (retry, cancel, refund…) are hidden by default. Your product
+  endpoint's `actions: 'execute'` does not apply here.
+- None of the product endpoint's settings (`auth`, `allowedTools`, `authorizer`, `middleware`,
+  `publicUrl`) apply to the dev endpoint.
+
+## CSRF
+
+Shield's CSRF check rejects the client's `POST` unless the path is exempt. When it is not, the app
+says so at boot. Add it to `config/shield.ts`:
+
+```ts title="config/shield.ts"
+csrf: {
+  enabled: true,
+  exceptRoutes: (ctx) => ctx.request.url().startsWith('/api/') || ctx.request.url() === '/mcp/agora',
+},
+```
+
+## Registering a lib's tools
+
+A lib (or your own app) registers tools from a provider's `boot()`. It needs no import from
+`@adonis-agora/agent`: the contract is structural, so copy the types from
+`@adonis-agora/agent/dev-tools` and this helper.
+
+```ts title="providers/reports_provider.ts"
+import type { ApplicationService } from '@adonisjs/core/types'
+import ReportService from '#services/report_service'
+
+async function registerDevTools(app: ApplicationService, lib: DevToolsLib) {
+  if (!app.container.hasBinding('agora.devTools')) return false
+  const hub = (await app.container.make('agora.devTools')) as Partial<DevToolsHub> | undefined
+  if (hub?.version !== 1 || typeof hub.register !== 'function') return false
+  hub.register(lib)
+  return true
+}
+
+export default class ReportsProvider {
+  constructor(protected app: ApplicationService) {}
+
+  async boot() {
+    await registerDevTools(this.app, {
+      lib: 'reports',
+      title: 'Reports',
+      // The console's own resolved gate. Never throws.
+      authorize: async (ctx) =>
+        ctx.auth.user?.isAdmin ? { allowed: true } : { allowed: false, reason: 'forbidden' },
+      tools: [
+        {
+          name: 'reports_list_failed',
+          kind: 'read',
+          description: 'Reports that failed to render, newest first. Returns { items, next }.',
+          input: {
+            type: 'object',
+            properties: {
+              limit: { type: 'integer', minimum: 1, maximum: 100 },
+              page: { type: 'integer', minimum: 1 },
+            },
+          },
+          async run(input, { ctx }) {
+            const service = await ctx.containerResolver.make(ReportService)
+            const page = Number(input.page ?? 1)
+            const items = await service.failed({ page, limit: Number(input.limit ?? 20) })
+            return { items, next: items.length > 0 ? page + 1 : null }
+          },
+        },
+      ],
+    })
+  }
+}
+```
+
+The rules:
+
+- `lib` matches `/^[a-z][a-z0-9]*$/`, and each tool name is `<lib>_<verb>_<noun>` in snake_case.
+  Reads use `list`, `get`, `count`, `search` or `explain`; actions use the console's own verb and set
+  `kind: 'action'` (plus `destructive: true` for cancel, refund, revoke, delete).
+- `input` is a JSON Schema subset: an object of `string` (with `enum`), `number`, `integer` (with
+  `minimum`/`maximum`), `boolean` and arrays of strings. Unknown properties are rejected before
+  `run` is called.
+- `available()` hides a tool this deployment cannot run (say, refunds on a gateway without them). It
+  is not access control: `authorize` is.
+- Return what the console returns. Register nothing when the console is disabled.
+- `run` receives `{ ctx, caller, limits }`: `caller.id` (`token:…`, `user:…` or `dev-open`) is what to
+  write in an audit trail.
+
+Every call is logged (`info` for actions, `debug` for reads) with the tool, the caller and the
+redacted arguments, and published as the `agent:devtools.call` diagnostics event.
