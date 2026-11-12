@@ -104,7 +104,12 @@ export class LedgerQuotaProvider implements QuotaProvider {
     for (const period of ['day', 'month'] as const) {
       const range = quotaPeriodRange(period, now);
       const used = await sum(tenantRef, range.fromDay, range.toDay, actor);
-      windows.push(this.window(period, used.usedTokens, this.usd(used), range.resetsAt));
+      const window = this.window(period, used.usedTokens, this.usd(used), range.resetsAt);
+      // Same fallback as the actor's day window: a QuotaStore lends its token ceiling.
+      if (period === 'day' && this.quota !== undefined && window.limitTokens === undefined) {
+        window.limitTokens = (await this.quota.check(actorRef, range.fromDay)).limitTokens;
+      }
+      windows.push(window);
     }
     const blocked = exhaustedWindow(windows);
     const warning = quotaWarning(windows);

@@ -159,6 +159,10 @@ describe('console tenant scope', () => {
       tenants: ['z'],
       includeNull: false,
     });
+    expect(
+      resolveConsoleTenantScope({ granted: ['a'], own: orgA, selected: 'a', nullRows: 'shared' })
+        .scope,
+    ).toEqual({ tenants: ['a'], includeNull: true });
   });
 
   it('keeps `tenants` from an allowing authorize result', () => {
@@ -277,6 +281,7 @@ describe('governance read-model scoped by tenant (Lucid)', () => {
     expect((await nothing.listRuns()).items).toEqual([]);
     expect((await governance.listRuns()).items).toHaveLength(3);
     expect(await governance.listTenants()).toEqual(['a', 'b']);
+    expect(await onlyA.listTenants()).toEqual(['a']);
 
     expect(await store.getThreadTenantRef('nope')).toBeNull();
     const threads = await store.listThreadsInScope('alice', { tenants: ['b'], includeNull: true });
@@ -432,5 +437,28 @@ describe('console under tenancy (HTTP)', () => {
     expect((await (await fetch(`${booted.url}/agent/governance/tenants`)).json()).enabled).toBe(
       false,
     );
+  });
+});
+
+describe('quota per tenant with a QuotaStore', () => {
+  it("the day window takes the QuotaStore's token ceiling when limits set none", async () => {
+    const { InMemoryQuotaStore } = await import('../src/testing/index.js');
+    const store = new InMemoryAgentStore();
+    await store.recordUsage({
+      actorRef: 'alice',
+      tenantRef: 'a',
+      modelId: 'm',
+      purpose: 'chat',
+      usage: { inputTokens: 10, outputTokens: 0 },
+    });
+    const provider = new LedgerQuotaProvider(
+      store,
+      new InMemoryQuotaStore(5),
+      {},
+      { per: 'tenant' },
+    );
+    const report = await provider.report({ actor: { id: 'alice', tenantRef: 'a' } });
+    expect(report.windows[0]).toMatchObject({ usedTokens: 10, limitTokens: 5 });
+    expect(report.blocked?.period).toBe('day');
   });
 });

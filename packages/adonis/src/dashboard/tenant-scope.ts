@@ -40,7 +40,12 @@ export function resolveConsoleTenantScope(input: {
   if (selected !== null) {
     const ok = allowed === '*' || allowed.includes(selected);
     return ok
-      ? { allowed, scope: { tenants: [selected], includeNull: false }, selected, forged: false }
+      ? {
+          allowed,
+          scope: { tenants: [selected], includeNull: nullRows === 'shared' },
+          selected,
+          forged: false,
+        }
       : { allowed, scope: { tenants: [], includeNull: false }, selected: null, forged: true };
   }
   if (allowed === '*') return { allowed, scope: undefined, selected: null, forged: false };

@@ -350,7 +350,12 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       );
       for (const row of rows) ids.add(String(row.tenant_ref));
     }
-    return [...ids].sort().slice(0, cap);
+    // A scoped view only names the tenants it may read.
+    const scope = this.tenantScope;
+    return [...ids]
+      .filter((id) => scope === undefined || scope.tenants.includes(id))
+      .sort()
+      .slice(0, cap);
   }
 
   /** The tenant predicate over `column`, or `null` when the view is unscoped. */
