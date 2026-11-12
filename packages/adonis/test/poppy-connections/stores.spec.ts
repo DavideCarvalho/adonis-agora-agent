@@ -60,6 +60,38 @@ const kinds: [string, () => Promise<PoppyConnectionStore>][] = [
 ];
 
 describe.each(kinds)('poppy connection store (%s)', (_name, make) => {
+  it('keeps two long issuers apart that differ only in their last character', async () => {
+    // On MySQL the key is a hash of the issuer (the full one is past InnoDB's key limit): exact,
+    // where a prefix index would have folded these two into one row.
+    const store = await make();
+    const prefix = `https://shop.example/${'p'.repeat(1000)}`;
+    const record = {
+      owner: 'acct-1',
+      domain: 'shop.example',
+      organization: 'Shop',
+      scope: '',
+      status: 'active' as const,
+      state: 'sealed',
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    await store.saveConnection({ ...record, issuer: `${prefix}a` });
+    await store.saveConnection({ ...record, issuer: `${prefix}b`, organization: 'Other' });
+    await store.saveConnection({ ...record, issuer: `${prefix}a`, scope: 'orders:read' });
+    expect((await store.listConnections('acct-1')).map((c) => c.issuer).sort()).toEqual([
+      `${prefix}a`,
+      `${prefix}b`,
+    ]);
+    expect(await store.getConnection('acct-1', `${prefix}a`)).toMatchObject({
+      scope: 'orders:read',
+    });
+    expect(await store.getConnection('acct-1', `${prefix}b`)).toMatchObject({
+      organization: 'Other',
+    });
+    await store.deleteConnection('acct-1', `${prefix}a`);
+    expect((await store.listConnections('acct-1')).map((c) => c.issuer)).toEqual([`${prefix}b`]);
+  });
+
   it('upserts connections per owner and keeps pending connects', async () => {
     const store = await make();
     const base = {
