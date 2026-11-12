@@ -307,7 +307,7 @@ export class OpenCodeMcpEndpoint {
         actorRef: actor.id,
         ...(turn.ctx.agentName !== undefined ? { agentName: turn.ctx.agentName } : {}),
         channel: turnChannel(turn.input.pageContext),
-        modelId: turn.input.model ?? deps.modelId ?? 'opencode',
+        modelId: turn.input.model ?? 'opencode',
         call: { id: `mcp:${turn.runId}:${requestId}`, name, input: args ?? {} },
       },
       invoke,

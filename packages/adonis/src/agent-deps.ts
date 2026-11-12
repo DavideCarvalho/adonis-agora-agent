@@ -37,8 +37,12 @@ export interface AgentDeps {
   /** Prices each turn's tokens into `usage.costUsd`. Omit → cost is always `null`. */
   pricingStore?: AgentPricingStore;
   sink: TokenStreamSink;
-  /** Fallback accounting label; the provider's turn result overrides it when set. */
-  modelId?: string;
+  /**
+   * The model a delegation to `target` runs on — the target's own configured model, or its catalog
+   * lock — checked against the catalog for `actor`. Undefined → the provider's default. Throws
+   * `ModelNotAllowedError` when the catalog does not offer it, which refuses the delegation.
+   */
+  resolveDelegateModel?: (actor: Actor, target: string) => Promise<string | undefined>;
   systemPrompt: string | PromptBuilder;
   maxSteps: number;
   personas: Map<string, Persona>;

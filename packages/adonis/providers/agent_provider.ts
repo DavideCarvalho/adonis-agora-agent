@@ -118,6 +118,7 @@ import {
 } from '../src/negotiated-tool-ui.js';
 import { ensureModelPricing } from '../src/pricing/boot-pricing.js';
 import type { ListActionProposals } from '../src/spi/action-proposal-store.js';
+import { catalogModelIds, staticCatalogView } from '../src/spi/model-catalog.js';
 import type { DescribedModel } from '../src/spi/model-provider.js';
 import type { PresentationErrorHandler } from '../src/spi/tool.js';
 import { setTelescopeGovernanceQueries } from '../src/telescope/governance-registry.js';
@@ -183,6 +184,40 @@ function describedModels(model: ModelProvider): DescribedModel[] {
 }
 
 /** The catalog a model provider carries (`aiSdkModels(…).catalog`), if it carries one. */
+/**
+ * Fail boot on an agent or persona `model` the configured catalog does not list — when the catalog
+ * is a fixed one (`aiSdkModels({ … })`, or a `models` view in config/agent.ts). A catalog that
+ * decides per caller is checked on every turn instead, and without a catalog a configured model goes
+ * to the provider as written.
+ */
+function assertConfiguredModels(agents: AgentRegistry, catalog: ModelCatalog | undefined): void {
+  const view = staticCatalogView(catalog);
+  // A locked catalog runs every turn on its lock: a configured model never applies, so it is not
+  // checked.
+  if (view === undefined || view.locked !== undefined) return;
+  const ids = catalogModelIds(view);
+  const offered = new Set(ids);
+  const problems: string[] = [];
+  for (const definition of agents.list()) {
+    if (definition.model !== undefined && !offered.has(definition.model)) {
+      problems.push(`agent "${definition.name}" sets model "${definition.model}"`);
+    }
+    for (const persona of definition.personas ?? []) {
+      if (persona.model !== undefined && !offered.has(persona.model)) {
+        problems.push(
+          `persona "${persona.id}" of agent "${definition.name}" sets model "${persona.model}"`,
+        );
+      }
+    }
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      `[@adonis-agora/agent] ${problems.join('; ')} — not in the model catalog (${ids.map((id) => `"${id}"`).join(', ') || 'empty'}). ` +
+        'Use one of the catalog ids, or add the model to the catalog (aiSdkModels({ … }) or `models` in config/agent.ts).',
+    );
+  }
+}
+
 function catalogOf(model: unknown): ModelCatalog | undefined {
   const catalog = (model as { catalog?: unknown } | null)?.catalog;
   return typeof catalog === 'object' &&
@@ -461,11 +496,16 @@ export default class AgentProvider {
     this.#actorDirectory = actorDirectory;
     this.#schemaOwners = [store, pricingStore, governance, sink];
     this.#pricingCheck = { models: describedModels(model), pricingStore, config };
+    // No `models` → the catalog the model provider carries (`aiSdkModels`), else none.
+    const catalog: ModelCatalog | undefined =
+      config.models !== undefined ? toModelCatalog(config.models) : catalogOf(model);
+    assertConfiguredModels(agents, catalog);
     const onPresentationError = config.onPresentationError ?? (await this.#logPresentationErrors());
 
     const factory = new AgentDepsFactory({
       ...(onPresentationError !== undefined ? { onPresentationError } : {}),
       model,
+      ...(catalog !== undefined ? { models: catalog } : {}),
       store,
       sink,
       rolesPolicy: authorizer,
@@ -602,12 +642,7 @@ export default class AgentProvider {
             ),
           }
         : {}),
-      // No `models` → the catalog the model provider carries (`aiSdkModels`), else none.
-      ...(config.models !== undefined
-        ? { models: toModelCatalog(config.models) }
-        : catalogOf(model) !== undefined
-          ? { models: catalogOf(model) as ModelCatalog }
-          : {}),
+      ...(catalog !== undefined ? { models: catalog } : {}),
       ...(attachmentStaging !== undefined ? { attachments: attachmentStaging } : {}),
       quota:
         quotaProvider !== undefined
@@ -1362,14 +1397,17 @@ export default class AgentProvider {
       return ctx.response.json({ feedback: result.feedback });
     });
 
-    // 6c. GET /agent/models?agent= — the models the caller may pick, grouped by provider, with
-    // availability; an empty catalog when none is configured. GET /agent/agents — the registered
-    // agents for a picker, the default flagged.
+    // 6c. GET /agent/models?agent=&persona= — the models the caller may pick, grouped by provider,
+    // with availability, `default` being what that agent (and persona) runs on when nobody picks;
+    // an empty catalog when none is configured. GET /agent/agents — the registered agents for a
+    // picker, the default flagged.
     router.get(p('models'), async (ctx: HttpContext) => {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
-      const agent = ctx.request.qs().agent as string | undefined;
-      return ctx.response.json(await service.listModels(actor, agent));
+      const qs = ctx.request.qs();
+      const agent = typeof qs.agent === 'string' && qs.agent !== '' ? qs.agent : undefined;
+      const persona = typeof qs.persona === 'string' && qs.persona !== '' ? qs.persona : undefined;
+      return ctx.response.json(await service.listModels(actor, agent, persona));
     });
     router.get(p('agents'), async (ctx: HttpContext) => {
       const actor = await this.#resolveActor(ctx, actorResolver);

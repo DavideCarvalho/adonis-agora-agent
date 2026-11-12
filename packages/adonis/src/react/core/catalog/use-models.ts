@@ -13,6 +13,8 @@ export interface UseModelsOptions {
   backend?: AgentBackend;
   /** The agent to list models for; omitted → the default agent. */
   agent?: string;
+  /** The persona the chat runs under — its `model` is the default shown. Omitted → the agent's default persona. */
+  persona?: string;
   /** `false` holds the request. Default `true`. */
   enabled?: boolean;
 }
@@ -28,7 +30,10 @@ export interface ModelsState {
   providers: ModelCatalogView['providers'];
   /** Every model, flattened in provider order. */
   models: ModelOption[];
-  /** The model a turn runs on when none is picked, or `null` when the provider decides. */
+  /**
+   * The model a turn runs on when none is picked — the persona's or the agent's configured `model`,
+   * else the catalog's default — or `null` when the provider decides.
+   */
   defaultModel: string | null;
   /**
    * The agent always runs on one model (`{ model, reason? }`), or `null`. A picker shows it
@@ -49,11 +54,14 @@ export interface ModelsState {
  * pin it on the thread with `chat.models.pinToThread(id)`.
  */
 export function useModels(options: UseModelsOptions = {}): ModelsState {
-  const { agent, enabled = true } = options;
+  const { agent, persona, enabled = true } = options;
   const backend = useAgentBackend(options.backend);
   const { data, isLoading, error, refresh } = useResource<ModelCatalogView>(
-    () => requireBackendMethod(backend, 'listModels')(agent),
-    `${agent ?? ''}`,
+    () =>
+      persona === undefined
+        ? requireBackendMethod(backend, 'listModels')(agent)
+        : requireBackendMethod(backend, 'listModels')(agent, persona),
+    `${agent ?? ''}\u0000${persona ?? ''}`,
     enabled,
   );
   return useMemo(() => {

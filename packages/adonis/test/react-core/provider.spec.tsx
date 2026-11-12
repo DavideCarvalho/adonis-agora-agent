@@ -97,6 +97,32 @@ describe('AgentProvider', () => {
     expect(backend.listTools).toHaveBeenCalled();
   });
 
+  it('shows the agent’s and the persona’s model as the chat’s default', async () => {
+    const backend = fakeBackend();
+    backend.listModels = vi.fn(async (agent?: string, persona?: string) => ({
+      default: persona === 'expert' ? 'opus' : agent === 'support' ? 'haiku' : 'fast',
+      providers: [],
+    }));
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <AgentProvider backend={backend}>{children}</AgentProvider>
+    );
+    const { result, rerender } = renderHook(
+      ({ persona }: { persona?: string }) => {
+        const chat = useAgentChat({
+          agent: 'support',
+          ...(persona !== undefined ? { persona } : {}),
+        });
+        return { defaultModel: chat.models.defaultModel, selected: chat.models.selected };
+      },
+      { wrapper, initialProps: {} as { persona?: string } },
+    );
+    await waitFor(() => expect(result.current.defaultModel).toBe('haiku'));
+    expect(result.current.selected).toBe('haiku');
+    rerender({ persona: 'expert' });
+    await waitFor(() => expect(result.current.selected).toBe('opus'));
+    expect(backend.listModels).toHaveBeenLastCalledWith('support', 'expert');
+  });
+
   it('an explicit backend on a hook wins over the context', async () => {
     const context = fakeBackend();
     const own = fakeBackend();

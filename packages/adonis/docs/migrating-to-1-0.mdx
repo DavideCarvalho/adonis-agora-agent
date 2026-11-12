@@ -196,6 +196,30 @@ What else changes:
 - **Cross-actor privilege** on run and thread routes (approving someone else's tool call, opening their thread) now comes from `dashboard.authorize`, as it did from `governanceAuthorize`. Without it, every actor touches only its own.
 - `AgentGovernanceAuthorize` is removed; use `AgentDashboardAuthorize` (or `AgentConsoleAuthorize`). `GET /agent/approvals/mine` is unchanged.
 
+## `AgentDefinition.modelId` is removed: use `model`
+
+`modelId` on an agent only labelled its usage rows. It is gone, with no alias. An agent (and now a persona) names the model it **runs on** with `model`, an id of the model catalog, and usage is labelled with the model the turn actually ran on.
+
+Before:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  model: () => aiSdkModel(openai('gpt-4o-mini')),
+  defaultAgent: { modelId: 'gpt-4o-mini' },
+})
+```
+
+After:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  model: () => aiSdkModels({ 'openai/gpt-4o-mini': openai('gpt-4o-mini') }),
+  defaultAgent: { model: 'openai/gpt-4o-mini' },
+})
+```
+
+With a single model you can also just drop `modelId`: the AI SDK adapters report the model each call used. An agent `model` that the catalog does not list fails boot. See [A model per agent and per persona](/docs/agent/streaming-and-http#a-model-per-agent-and-per-persona).
+
 ## Peer ranges
 
 The optional `@adonis-agora/*` peers now accept 1.x, including its release candidates, as well as the 0.x releases they accepted before:

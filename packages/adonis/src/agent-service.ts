@@ -50,10 +50,11 @@ import type {
 import type { BackgroundActorResolver } from './spi/background-actor-resolver.js';
 import type { ChatQueueState } from './spi/chat-queue.js';
 import {
-  findCatalogModel,
+  assertCatalogModel,
   type ModelCatalog,
   type ModelCatalogView,
   ModelNotAllowedError,
+  resolveTurnModel,
 } from './spi/model-catalog.js';
 import { QuotaBlockedError, type QuotaProvider, type QuotaReport } from './spi/quota-provider.js';
 import type { StreamFrame } from './spi/token-stream-sink.js';
@@ -310,11 +311,30 @@ export class AgentService {
     return this.options.models !== undefined;
   }
 
-  async listModels(actor: Actor, agent?: string): Promise<ModelCatalogView> {
+  /**
+   * `default` is the model a turn of `agent` (under `persona`, else its default persona) runs on when
+   * nobody picks one: the persona's `model`, else the agent's, else the catalog's own default.
+   */
+  async listModels(actor: Actor, agent?: string, persona?: string): Promise<ModelCatalogView> {
     if (this.options.models === undefined) {
       return { providers: [], default: null };
     }
-    return this.options.models.list({ actor, ...(agent !== undefined ? { agent } : {}) });
+    const target = this.deps.resolveAgent(agent ?? this.deps.defaultAgentName());
+    // A persona the agent does not declare is not an error on a read: its default applies.
+    const known =
+      persona !== undefined && this.deps.hasPersona(target.agentName, persona)
+        ? persona
+        : undefined;
+    const effective = known ?? target.persona ?? this.deps.defaultPersona(target.agentName);
+    const view = await this.options.models.list({
+      actor,
+      agent: target.agentName,
+      ...(effective !== undefined ? { persona: effective } : {}),
+    });
+    const configured = this.deps.configuredModel(target.agentName, effective);
+    return configured === undefined || view.locked !== undefined
+      ? view
+      : { ...view, default: configured.model };
   }
 
   /**
@@ -328,47 +348,33 @@ export class AgentService {
         `model "${model}" cannot be selected: no model catalog is configured (models in config/agent.ts)`,
       );
     }
-    const entry = findCatalogModel(await this.options.models.list({ actor, agent }), model);
-    if (entry === undefined) {
-      throw new ModelNotAllowedError(`model "${model}" is not offered`);
-    }
-    if (!entry.available) {
-      throw new ModelNotAllowedError(
-        `model "${model}" is not available${entry.unavailableReason ? `: ${entry.unavailableReason}` : ''}`,
-      );
-    }
-    return entry.id;
+    return assertCatalogModel(await this.options.models.list({ actor, agent }), model);
   }
 
   /**
    * The model a turn runs on: the send's own (that turn only — never stored on the thread), else the
-   * thread's pinned one, else none. An agent the catalog locks to one model runs on it whatever was
-   * sent or pinned, and a send naming another model is refused.
+   * thread's pinned one, else the persona's configured `model`, else the agent's, else none (the
+   * catalog's default). An agent the catalog locks to one model runs on it whatever was sent or
+   * pinned, and a send naming another model is refused. A configured model the catalog does not offer
+   * this actor refuses the send too — see {@link resolveTurnModel}.
    */
   private async resolveModel(
     actor: Actor,
     agent: string,
+    persona: string | undefined,
     requested: string | undefined,
     threadId: string | undefined,
   ): Promise<string | undefined> {
-    const locked =
-      this.options.models !== undefined
-        ? (await this.options.models.list({ actor, agent })).locked
-        : undefined;
-    if (locked !== undefined) {
-      if (requested !== undefined && requested !== locked.model) {
-        throw new ModelNotAllowedError(
-          `model "${requested}" cannot be selected: ${locked.reason ?? `this agent always uses "${locked.model}"`}`,
-        );
-      }
-      return locked.model;
-    }
-    const pinned =
-      requested === undefined && threadId !== undefined ? await this.pinnedModel(threadId) : null;
-    const model = requested ?? pinned;
-    return model === null || model === undefined
-      ? undefined
-      : this.assertModelAllowed(actor, agent, model);
+    const configured = this.deps.configuredModel(agent, persona);
+    return resolveTurnModel({
+      catalog: this.options.models,
+      actor,
+      agent,
+      ...(persona !== undefined ? { persona } : {}),
+      ...(requested !== undefined ? { requested } : {}),
+      ...(threadId !== undefined ? { pinned: () => this.pinnedModel(threadId) } : {}),
+      ...(configured !== undefined ? { configured } : {}),
+    });
   }
 
   /** The model pinned on the thread: one column when the store projects it, else the full read. */
@@ -652,7 +658,15 @@ export class AgentService {
       params.personaId ?? target.persona,
       params.threadId,
     );
-    const model = await this.resolveModel(params.actor, agentName, params.model, params.threadId);
+    // Resolved HERE and carried on the run's input — a pick, a pin, the persona's or the agent's own
+    // model — so a durable replay, a resumed run or a queued message runs on the model this send chose.
+    const model = await this.resolveModel(
+      params.actor,
+      agentName,
+      persona,
+      params.model,
+      params.threadId,
+    );
     const attachments = await this.resolveAttachments(params.actor, params.attachments ?? []);
     let threadId = params.threadId;
     if (threadId === undefined) {
