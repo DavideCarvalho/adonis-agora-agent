@@ -5,6 +5,8 @@ import {
   validateSchema,
 } from '../stores/db-schema.js';
 import type { LucidClientLike, LucidRawRunner } from '../stores/lucid.js';
+import { forDialect } from '../stores/lucid-schema.js';
+import { isMySql } from '../stores/sql-dialect.js';
 
 /**
  * A2A conversation state the agent tables do not carry: who a `contextId` belongs to, and the reply
@@ -128,9 +130,11 @@ export async function ensureA2aTables(
   options: { schema?: string | undefined } = {},
 ): Promise<void> {
   const schema = validateSchema(db, options.schema, 'config/a2a.ts');
+  const mysql = isMySql(db);
   if (schema !== undefined) await ensureDatabaseSchema(db, schema);
   for (const statement of a2aTableStatements(schema)) {
-    await db.rawQuery(statement);
+    // MySQL reads `"quoted"` names as strings: backticks there, like the other stores' DDL.
+    await db.rawQuery(forDialect(statement, mysql));
   }
 }
 

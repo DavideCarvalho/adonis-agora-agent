@@ -363,32 +363,47 @@ for (const backend of REAL) {
       ).toBeNull();
     });
 
+    it('the A2A store keeps its tables in the schema', async () => {
+      const { db } = await open();
+      const schema = schemaFor();
+      const connection = db.connection();
+      await ensureA2aTables(connection as never, { schema });
+      const a2a = new LucidA2aStore(connection as never, { schema });
+      await a2a.createContext({
+        id: 'ctx-1',
+        brand: 'support',
+        agentIssuer: 'https://pa.example',
+        agentSub: 'sub',
+        accountRef: null,
+      });
+      expect(await a2a.bindAccount('ctx-1', 'acc-1')).toBe(true);
+      expect(await a2a.claimMessage('ctx-1', 'm1')).toEqual({ status: 'claimed' });
+      await a2a.completeMessage('ctx-1', 'm1', { ok: true });
+      expect(await a2a.claimMessage('ctx-1', 'm1')).toEqual({
+        status: 'done',
+        reply: { ok: true },
+      });
+    });
+
     if (backend === 'postgres') {
-      it('the A2A store keeps its tables in the schema', async () => {
+      it('document trees live in the schema', async () => {
         const { db } = await open();
         const schema = schemaFor();
-        const connection = db.connection();
-        await ensureA2aTables(connection as never, { schema });
-        const a2a = new LucidA2aStore(connection as never, { schema });
-        await a2a.createContext({
-          id: 'ctx-1',
-          brand: 'support',
-          agentIssuer: 'https://pa.example',
-          agentSub: 'sub',
-          accountRef: null,
-        });
-        expect(await a2a.bindAccount('ctx-1', 'acc-1')).toBe(true);
-        expect(await a2a.claimMessage('ctx-1', 'm1')).toEqual({ status: 'claimed' });
-        await a2a.completeMessage('ctx-1', 'm1', { ok: true });
-        expect(await a2a.claimMessage('ctx-1', 'm1')).toEqual({
-          status: 'done',
-          reply: { ok: true },
-        });
+        const trees = new PgDocumentTreeStore(asDb(db), { schema });
+        await trees.ensureSchema();
+        expect(await tablesOf(backend, db, schema)).toEqual(
+          ['agent_rag_trees', 'agent_rag_trees_units'].sort(),
+        );
       });
 
-      it('pgvector chunks and document trees live in the schema; the extension stays put', async () => {
+      it('pgvector chunks live in the schema; the extension stays put', async (ctx) => {
         const { db } = await open();
         const schema = schemaFor();
+        const available = (await db.rawQuery(
+          "SELECT 1 FROM pg_available_extensions WHERE name = 'vector'",
+        )) as { rows: unknown[] };
+        // The CI Postgres service has no pgvector; the testcontainers image (`pnpm test:db`) does.
+        if (available.rows.length === 0) ctx.skip();
         const chunks = new PgVectorStore(asDb(db), { schema, dimension: 3 });
         await chunks.ensureSchema();
         await chunks.upsert([
@@ -401,12 +416,7 @@ for (const backend of REAL) {
         ]);
         const hits = await chunks.search([0, 0, 1], { topK: 5 });
         expect(hits.map((hit) => hit.text)).toEqual(['gamma']);
-
-        const trees = new PgDocumentTreeStore(asDb(db), { schema });
-        await trees.ensureSchema();
-        expect(await tablesOf(backend, db, schema)).toEqual(
-          ['agent_rag_chunks', 'agent_rag_trees', 'agent_rag_trees_units'].sort(),
-        );
+        expect(await tablesOf(backend, db, schema)).toEqual(['agent_rag_chunks']);
         // `vector` was not created in (or moved to) the configured schema.
         const ext = (await db.rawQuery(
           `SELECT n.nspname AS schema FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'vector'`,
