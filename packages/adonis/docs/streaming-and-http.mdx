@@ -208,7 +208,7 @@ With this config:
 
 - a send to `support` runs on Haiku; under the `escalation` persona, on Opus;
 - a send that names `model`, or a thread with a pinned model, runs on that one instead;
-- `ask_researcher` runs the researcher on Sonnet, its own model — never on the model the caller picked or pinned;
+- `ask_researcher` runs the researcher on Sonnet, its own model (its default persona's `model` when that persona sets one) — never on the model the caller picked or pinned;
 - `GET /agent/models?agent=support` answers `default: 'anthropic/claude-haiku-5-5'`, and `?agent=support&persona=escalation` answers Opus, so a picker shows the model the next turn runs on.
 
 An agent or persona `model` must be an id of the catalog: boot fails, naming each one that is not, when the catalog is a fixed list (`aiSdkModels({ … })` or a `models` view). A `ModelCatalog` that decides per caller is checked on each turn instead. Without any catalog, the id goes to your provider as written.

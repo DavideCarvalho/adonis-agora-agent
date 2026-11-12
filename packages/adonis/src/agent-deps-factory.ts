@@ -383,12 +383,17 @@ export class AgentDepsFactory {
       // A delegation from this agent runs the target on the TARGET's model — its own `model` (or
       // its alias persona's), checked against the catalog for this actor, or the catalog's lock —
       // never on this turn's pick or its thread's pin.
+      // The target's persona is its alias persona, else its default persona — the same model a
+      // send to the target that names no persona runs on, and what `GET <path>/models` shows.
       resolveDelegateModel: (actor, target) => {
-        const configured = this.configuredModel(target);
+        const resolved = this.resolveAgent(target);
+        const persona = resolved.persona ?? this.defaultPersona(resolved.agentName);
+        const configured = this.configuredModel(resolved.agentName, persona);
         return resolveTurnModel({
           catalog: this.config.models,
           actor,
-          agent: this.resolveAgent(target).agentName,
+          agent: resolved.agentName,
+          ...(persona !== undefined ? { persona } : {}),
           ...(configured !== undefined ? { configured } : {}),
         });
       },

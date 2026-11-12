@@ -164,7 +164,7 @@ caller — otherwise that caller starts a run it then cannot stream, cancel, or 
 
 `delegatesTo` declares which other agents an agent may hand work to. For each edge, the provider **synthesizes an `agent`-kind delegate tool** named `ask_<target>` (non-alphanumeric characters become underscores). The orchestrator calls it like any tool — `ask_researcher({ task: '...' })` — and the loop runs the target agent and feeds its answer back. You never write the delegate handler; the loop handles delegation itself.
 
-The target runs on **its own** model: its `model`, else the catalog's default (or the catalog's lock for it). The model the caller's send picked, or its thread pinned, does not carry over. When the catalog does not offer the target's model to the caller, the delegation is refused and the calling agent reads why.
+The target runs on **its own** model — the one a send to it naming no persona would run on: its default persona's `model`, else its `model`, else the catalog's default (or the catalog's lock for it). The model the caller's send picked, or its thread pinned, does not carry over. When the catalog does not offer the target's model to the caller, the delegation is refused and the calling agent reads why.
 
 <Callout type="info" title="How a delegate tool is named and described">
 `delegatesTo: ['researcher']` produces `ask_researcher` (non-alphanumeric characters become

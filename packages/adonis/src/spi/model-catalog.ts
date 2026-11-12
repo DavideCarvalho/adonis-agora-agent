@@ -152,6 +152,8 @@ export interface TurnModelArgs {
   actor: Actor;
   /** The agent the turn runs as (a persona alias already resolved to its agent). */
   agent: string;
+  /** The persona the turn runs under — passed to the catalog, so it answers what the picker showed. */
+  persona?: string;
   /** The send's own `model`, for this turn only. */
   requested?: string;
   /** The thread's pinned model — read only when the send names none. */
@@ -173,8 +175,11 @@ export interface TurnModelArgs {
  * check it against).
  */
 export async function resolveTurnModel(args: TurnModelArgs): Promise<string | undefined> {
-  const { catalog, actor, agent, requested, configured } = args;
-  const view = catalog === undefined ? undefined : await catalog.list({ actor, agent });
+  const { catalog, actor, agent, persona, requested, configured } = args;
+  const view =
+    catalog === undefined
+      ? undefined
+      : await catalog.list({ actor, agent, ...(persona !== undefined ? { persona } : {}) });
   const locked = view?.locked;
   if (locked !== undefined) {
     if (requested !== undefined && requested !== locked.model) {

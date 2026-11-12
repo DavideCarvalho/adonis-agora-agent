@@ -265,6 +265,57 @@ describe('model per agent and per persona', () => {
   });
 });
 
+describe('model per agent — catalog queries, delegation default persona, locked boot', () => {
+  it('asks the catalog with the persona the turn runs under, as the picker did', async () => {
+    const queries: { agent?: string; persona?: string }[] = [];
+    const perPersona: ModelCatalog = {
+      list: ({ agent, persona }) => {
+        queries.push({
+          ...(agent !== undefined ? { agent } : {}),
+          ...(persona !== undefined ? { persona } : {}),
+        });
+        return catalog;
+      },
+    };
+    booted = await bootAgentApp({ model: recordingModel([]), models: perPersona, agents });
+    await readSse(await send(booted.url, { message: 'hi', agent: 'support', persona: 'expert' }));
+    await fetch(`${booted.url}/agent/models?persona=expert`, { headers });
+    expect(queries).toContainEqual({ agent: 'support', persona: 'expert' });
+    // No agent on the query: the catalog still hears which agent (and its default persona).
+    expect(queries.at(-1)).toEqual({ agent: 'default' });
+  });
+
+  it('runs a delegate on its default persona’s model, as a direct send to it would', async () => {
+    const seen: Seen[] = [];
+    booted = await bootAgentApp({
+      model: recordingModel(seen),
+      models: catalog,
+      agents: [
+        agents[2] as AgentDefinition,
+        {
+          name: 'researcher',
+          systemPrompt: 'agent:researcher',
+          tools: [],
+          model: 'anthropic/haiku',
+          defaultPersona: 'deep',
+          personas: [{ id: 'deep', label: 'Deep', model: 'anthropic/opus' }],
+        },
+      ],
+    });
+    await readSse(await send(booted.url, { message: 'hi', agent: 'orchestrator' }));
+    expect(seen.find((turn) => turn.agent === 'researcher')?.model).toBe('anthropic/opus');
+  });
+
+  it('does not check configured models against a locked fixed catalog', async () => {
+    booted = await bootAgentApp({
+      model: recordingModel([]),
+      models: { ...catalog, locked: { model: 'anthropic/sonnet' } },
+      agents: [{ name: 'support', model: 'openai/not-listed' }],
+    });
+    expect(booted.url).toMatch(/^http/);
+  });
+});
+
 describe('model per agent — recorded on the run', () => {
   it('carries the agent’s model on the run input, so a replay or a queued start keeps it', async () => {
     const store = new InMemoryAgentStore();

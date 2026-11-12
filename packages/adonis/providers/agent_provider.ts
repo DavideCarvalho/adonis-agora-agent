@@ -192,7 +192,9 @@ function describedModels(model: ModelProvider): DescribedModel[] {
  */
 function assertConfiguredModels(agents: AgentRegistry, catalog: ModelCatalog | undefined): void {
   const view = staticCatalogView(catalog);
-  if (view === undefined) return;
+  // A locked catalog runs every turn on its lock: a configured model never applies, so it is not
+  // checked.
+  if (view === undefined || view.locked !== undefined) return;
   const ids = catalogModelIds(view);
   const offered = new Set(ids);
   const problems: string[] = [];

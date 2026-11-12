@@ -320,20 +320,18 @@ export class AgentService {
       return { providers: [], default: null };
     }
     const target = this.deps.resolveAgent(agent ?? this.deps.defaultAgentName());
-    const view = await this.options.models.list({
-      actor,
-      ...(agent !== undefined ? { agent: target.agentName } : {}),
-      ...(persona !== undefined ? { persona } : {}),
-    });
     // A persona the agent does not declare is not an error on a read: its default applies.
     const known =
       persona !== undefined && this.deps.hasPersona(target.agentName, persona)
         ? persona
         : undefined;
-    const configured = this.deps.configuredModel(
-      target.agentName,
-      known ?? target.persona ?? this.deps.defaultPersona(target.agentName),
-    );
+    const effective = known ?? target.persona ?? this.deps.defaultPersona(target.agentName);
+    const view = await this.options.models.list({
+      actor,
+      agent: target.agentName,
+      ...(effective !== undefined ? { persona: effective } : {}),
+    });
+    const configured = this.deps.configuredModel(target.agentName, effective);
     return configured === undefined || view.locked !== undefined
       ? view
       : { ...view, default: configured.model };
@@ -372,6 +370,7 @@ export class AgentService {
       catalog: this.options.models,
       actor,
       agent,
+      ...(persona !== undefined ? { persona } : {}),
       ...(requested !== undefined ? { requested } : {}),
       ...(threadId !== undefined ? { pinned: () => this.pinnedModel(threadId) } : {}),
       ...(configured !== undefined ? { configured } : {}),
