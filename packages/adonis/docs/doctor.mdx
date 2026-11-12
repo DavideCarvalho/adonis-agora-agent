@@ -1,0 +1,36 @@
+---
+title: Health check
+description: node ace agora:doctor checks the agent's configuration (and every other installed Agora lib's) before production finds the problem.
+icon: Stethoscope
+---
+
+```sh
+node ace agora:doctor
+```
+
+One report for every installed `@adonis-agora` lib. `node ace agent:doctor` runs the agent's checks
+only. Flags: `--json` (one object on stdout), `--deep` (checks that touch the database or the
+network), `--strict` (warnings fail too), `--only=<id>`, `--lib=agent,durable`, `--verbose`, and
+`--no-boot` when the app itself does not boot. Exit code `0` when nothing is an error, `1`
+otherwise, `2` when the doctor cannot run.
+
+In CI:
+
+```sh
+NODE_ENV=production node ace agora:doctor --json --strict
+```
+
+## The agent's checks
+
+| Id | What it checks | When it fails |
+| --- | --- | --- |
+| `agent.console-gate` | The governance console has `dashboard.authorize`. | Warns here; in production the console refuses everyone (error). |
+| `agent.actor-resolver` | `actorResolver` identifies callers. | Public endpoints warn; with no `quota` either, an error in production. |
+| `agent.mcp-open` | Every MCP endpoint has `auth` (no fixed `actor`). | Error in production. |
+| `agent.mcp-execute` | `actions: 'execute'` comes with an `authorizer`. | Warns. |
+| `agent.mcp-csrf` | Every MCP path (product endpoints and `/mcp/agora`) is in shield's `csrf.exceptRoutes`. | Warns, naming the paths to add. |
+| `agent.dev-tools-gate` | Libs without a console serving dev tools have `devTools.authorize`. | Warns in production. |
+| `agent.tenancy-store` | With organizations on, the agent store can scope threads and runs. | Error. |
+
+Every lib also reports `agent.peers` (peer dependencies in range) and `agent.agora-siblings`
+(Agora libs of one release line).

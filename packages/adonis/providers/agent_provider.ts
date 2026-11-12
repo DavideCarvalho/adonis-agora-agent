@@ -34,6 +34,8 @@ import { AGENT_CONSOLE_ID } from '../src/dashboard/switcher.js';
 import { resolveConsoleTenantScope } from '../src/dashboard/tenant-scope.js';
 import { agentDevTools } from '../src/dev-tools/agent-tools.js';
 import { registerDevTools } from '../src/dev-tools/index.js';
+import { registerDoctorChecks } from '../src/doctor/agora_doctor.js';
+import { agentDoctorChecks } from '../src/doctor/checks.js';
 import { type AgentEngine, assertRunnable, engineOnlyModel } from '../src/engine.js';
 import type { Catalog } from '../src/genui/index.js';
 import type { SandboxClientConfig } from '../src/genui/sandbox-kit.js';
@@ -642,6 +644,21 @@ export default class AgentProvider {
     // approvals), when authkit's registry is in the app. No import of authkit: a binding name and an
     // object literal.
     await this.#registerAccountPages(config, service, governance);
+
+    // `node ace agora:doctor` reads these after boot.
+    await registerDoctorChecks(
+      this.app.container,
+      agentDoctorChecks({
+        store: () => (this.#store ?? undefined) as unknown as Record<string, unknown> | undefined,
+        consolelessLibs: async () => {
+          if (!this.app.container.hasBinding('agora.devTools' as never)) return [];
+          const hub = (await this.app.container.make('agora.devTools' as never)) as {
+            endpointGatedLibs?: () => Array<{ lib: string }>;
+          };
+          return hub.endpointGatedLibs?.().map((lib) => lib.lib) ?? [];
+        },
+      }),
+    ).catch(() => undefined);
 
     await this.#registerRoutes(
       config,

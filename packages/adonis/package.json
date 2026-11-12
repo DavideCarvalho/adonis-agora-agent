@@ -83,6 +83,16 @@
       "import": "./dist/src/dev-tools/index.js",
       "default": "./dist/src/dev-tools/index.js"
     },
+    "./doctor": {
+      "types": "./dist/src/doctor/index.d.ts",
+      "import": "./dist/src/doctor/index.js",
+      "default": "./dist/src/doctor/index.js"
+    },
+    "./commands": {
+      "types": "./dist/commands/main.d.ts",
+      "import": "./dist/commands/main.js",
+      "default": "./dist/commands/main.js"
+    },
     "./mcp-client": {
       "types": "./dist/src/mcp-client/index.d.ts",
       "import": "./dist/src/mcp-client/index.js",
@@ -312,7 +322,8 @@
     "test": "vitest run --passWithNoTests",
     "test:db": "AGENT_TEST_REAL_DB=1 vitest run --passWithNoTests",
     "test:watch": "vitest",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json",
+    "check:agora-doctor": "node ../../scripts/check-agora-doctor.mjs ."
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

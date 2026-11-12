@@ -26,6 +26,13 @@
       "react-native-webview": ["./types/react-native-webview.d.ts"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "providers/**/*.ts", "configure.ts", "stubs/main.ts"],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "providers/**/*.ts",
+    "commands/**/*.ts",
+    "configure.ts",
+    "stubs/main.ts"
+  ],
   "exclude": ["**/*.spec.ts", "**/*.test.ts", "test/**", "dist/**"]
 }
