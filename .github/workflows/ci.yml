@@ -33,6 +33,10 @@ jobs:
       # publint + Are the Types Wrong on every published package's built output.
       - run: pnpm check:package
 
+      # `agora:doctor` ships in every @adonis-agora lib: its runner and command must stay
+      # byte-identical to the shared reference copy.
+      - run: pnpm --filter @adonis-agora/agent check:agora-doctor
+
   # The suite runs on every Node line we support (the range `engines.node` promises): the lines Node
   # itself still maintains that AdonisJS 7 also accepts (it requires >=24).
   # Lint, typecheck and build stay on the single pinned version above: only the test run is multiplied.

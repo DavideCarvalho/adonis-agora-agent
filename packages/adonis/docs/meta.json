@@ -33,6 +33,7 @@
     "sql-streaming",
     "diagnostics",
     "testing",
+    "doctor",
     "---Reference---",
     "config-reference",
     "programmatic-api"

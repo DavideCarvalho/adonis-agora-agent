@@ -9,6 +9,7 @@ import { stubsRoot } from './stubs/main.js';
  *    package's own `dist/` (`@adonis-agora/agent-dashboard`'s build output, copied in at build time),
  *    served with no separate install. Toggle/relocate it with the optional `config('agent').dashboard`
  *    block (see `config/agent.ts`), whose `authorize` gates it and the governance routes;
+ * 2b. registers the commands barrel (`agora:doctor`, `agent:doctor`);
  * 3. registers the Assembler `init` hook that generates the typed `app/agent_tools` barrel at
  *    build/dev time (the provider imports it instead of scanning at runtime; it falls back to the
  *    runtime scan when the barrel is absent);
@@ -29,6 +30,8 @@ export async function configure(command: Configure) {
   await codemods.updateRcFile((rcFile) => {
     rcFile.addProvider('@adonis-agora/agent/agent_provider');
     rcFile.addProvider('@adonis-agora/agent/dashboard_provider');
+    // `node ace agora:doctor` / `agent:doctor`: the health check.
+    rcFile.addCommand('@adonis-agora/agent/commands');
     // Generate the typed app/agent_tools barrel at build/dev time (replaces the runtime readdir scan).
     rcFile.addAssemblerHook('init', '@adonis-agora/agent/hooks/tools');
     // Write the sandbox kit's docs (components and props, from their types) on serve/build, for an

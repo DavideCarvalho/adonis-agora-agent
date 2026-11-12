@@ -1,0 +1,145 @@
+// @vitest-environment node
+import { IgnitorFactory } from '@adonisjs/core/factories/core/ignitor';
+import { describe, expect, it } from 'vitest';
+import { readDoctorChecks, runAgoraDoctor } from '../src/doctor/agora_doctor.js';
+import {
+  checkActorResolver,
+  checkConsoleGate,
+  checkDevToolsGate,
+  checkMcpCsrf,
+  checkMcpExecute,
+  checkMcpOpen,
+  checkTenancyStore,
+} from '../src/doctor/checks.js';
+import { agoraDoctorChecks } from '../src/doctor/index.js';
+import { FakeModelProvider, InMemoryAgentStore } from '../src/testing/index.js';
+
+describe('agent doctor checks', () => {
+  it('console gate: warn in dev, error in production, ok with authorize, skip when off', () => {
+    expect(checkConsoleGate({}, false).status).toBe('warn');
+    expect(checkConsoleGate({}, true).status).toBe('error');
+    expect(checkConsoleGate({ dashboard: { authorize: () => true } }, true).status).toBe('ok');
+    expect(checkConsoleGate({ dashboard: { enabled: false } }, true).status).toBe('skip');
+    expect(checkConsoleGate({ governanceQueries: false }, true).status).toBe('skip');
+    expect(checkConsoleGate(undefined, true).status).toBe('skip');
+  });
+
+  it('actor resolver: public endpoints without a quota are an error in production', () => {
+    expect(checkActorResolver({ actorResolver: {} }, true).status).toBe('ok');
+    expect(checkActorResolver({}, false).status).toBe('warn');
+    expect(checkActorResolver({}, true).status).toBe('error');
+    expect(checkActorResolver({ quota: { limits: {} } }, true).status).toBe('warn');
+  });
+
+  it('mcp-open: a fixed actor without auth, on the base or an extra endpoint', () => {
+    expect(checkMcpOpen({ auth: {} }, true).status).toBe('ok');
+    const open = checkMcpOpen({ actor: { id: 'dev' }, path: 'api/mcp' }, true);
+    expect(open).toMatchObject({ status: 'error' });
+    expect(open.message).toContain('/api/mcp');
+    expect(
+      checkMcpOpen({ auth: {}, actor: { id: 'x' }, endpoints: [{ path: 'mcp/x' }] }, true).status,
+    ).toBe('ok');
+    expect(checkMcpOpen({ actor: { id: 'x' } }, false).status).toBe('warn');
+    expect(checkMcpOpen(undefined, true).status).toBe('skip');
+  });
+
+  it("mcp-execute: 'execute' without an authorizer warns", () => {
+    expect(checkMcpExecute({}).status).toBe('ok');
+    expect(checkMcpExecute({ actions: 'execute' }).status).toBe('warn');
+    expect(checkMcpExecute({ endpoints: [{ path: 'x', actions: 'execute' }] }).status).toBe('warn');
+    expect(checkMcpExecute({ actions: 'execute', authorizer: {} }).status).toBe('ok');
+  });
+
+  it('mcp-csrf: every MCP path, including the dev tools one', () => {
+    const shield = { csrf: { enabled: true, exceptRoutes: ['/api/mcp'] } };
+    const result = checkMcpCsrf({ path: 'api/mcp', endpoints: [{ path: 'mcp/family' }] }, shield);
+    expect(result.status).toBe('warn');
+    expect(result.message).toContain('/mcp/family');
+    expect(result.message).toContain('/mcp/agora');
+    expect(result.message).not.toContain('/api/mcp,');
+    expect(checkMcpCsrf({ path: 'api/mcp', devTools: false }, shield).status).toBe('ok');
+    expect(
+      checkMcpCsrf(
+        {},
+        {
+          csrf: {
+            enabled: true,
+            exceptRoutes: (ctx: { request: { url(): string } }) =>
+              ctx.request.url().startsWith('/mcp'),
+          },
+        },
+      ).status,
+    ).toBe('ok');
+  });
+
+  it('dev-tools-gate: console-less libs without devTools.authorize warn in production', () => {
+    expect(checkDevToolsGate({}, [], true).status).toBe('skip');
+    expect(checkDevToolsGate({}, ['resilience'], true).status).toBe('warn');
+    expect(checkDevToolsGate({}, ['resilience'], false).status).toBe('ok');
+    expect(checkDevToolsGate({ devTools: { authorize: () => true } }, ['authz'], true).status).toBe(
+      'ok',
+    );
+    expect(checkDevToolsGate({ devTools: false }, ['authz'], true).status).toBe('skip');
+  });
+
+  it('tenancy-store: organizations on with a store that cannot scope is an error', () => {
+    expect(checkTenancyStore({}, false, {}).status).toBe('skip');
+    expect(checkTenancyStore({}, true, {}).status).toBe('error');
+    expect(
+      checkTenancyStore({}, true, new InMemoryAgentStore() as unknown as Record<string, unknown>)
+        .status,
+    ).toBe('ok');
+  });
+
+  it('ids are unique, prefixed agent., and the --no-boot entry exports them', () => {
+    const ids = agoraDoctorChecks.map((check) => check.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.every((id) => id.startsWith('agent.'))).toBe(true);
+    expect(ids).toEqual([
+      'agent.console-gate',
+      'agent.actor-resolver',
+      'agent.mcp-open',
+      'agent.mcp-execute',
+      'agent.mcp-csrf',
+      'agent.dev-tools-gate',
+      'agent.tenancy-store',
+    ]);
+  });
+});
+
+describe('agent_provider registers its checks into agora.doctor', () => {
+  it('runs them through the shared runner after boot', { timeout: 60_000 }, async () => {
+    const ignitor = new IgnitorFactory()
+      .withCoreProviders()
+      .withCoreConfig()
+      .merge({
+        rcFileContents: { providers: [() => import('../providers/agent_provider.js')] },
+        config: {
+          agent: {
+            model: new FakeModelProvider(() => ({ text: 'hi' })),
+            store: new InMemoryAgentStore(),
+            actorResolver: { resolve: () => ({ id: 'u' }) },
+          },
+        },
+      })
+      .create(new URL('../', import.meta.url));
+    const app = ignitor.createApp('web');
+    await app.init();
+    await app.boot();
+    const checks = await readDoctorChecks(app.container);
+    expect(checks.filter((check) => check.lib === 'agent')).toHaveLength(7);
+    const { report } = await runAgoraDoctor(app, checks, { only: 'agent.console-gate' });
+    expect(report.results).toEqual([
+      expect.objectContaining({ id: 'agent.console-gate', status: 'warn' }),
+    ]);
+    await app.terminate();
+  });
+});
+
+describe('the commands barrel', () => {
+  it('lists agora:doctor and agent:doctor', async () => {
+    const barrel = await import('../commands/main.js');
+    const names = (await barrel.getMetaData()).map((command) => command.commandName);
+    expect(names).toEqual(['agora:doctor', 'agent:doctor']);
+  });
+});
