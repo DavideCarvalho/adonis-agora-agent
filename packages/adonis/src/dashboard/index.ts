@@ -73,3 +73,12 @@ export {
   safeAssetSegments,
   trimSlashes,
 } from './paths.js';
+// The console switcher: register the agent console into the shared `'agora.consoles'` registry.
+export {
+  AGENT_CONSOLE_ID,
+  type AgentConsoleRegistration,
+  agentConsoleDecision,
+  registerAgentConsole,
+  searchAgentConsole,
+  switcherShellConfig,
+} from './switcher.js';

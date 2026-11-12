@@ -88,10 +88,14 @@ export const CONFIG_ELEMENT_ID = 'agent-dashboard-config';
  * dropped ours — the SPA then derived a base from its own URL, which is right only for the default
  * mount, and on any other every request from a console that had rendered perfectly answered 404.
  */
-export function injectApiBase(html: string, apiBase: string): string {
+export function injectApiBase(
+  html: string,
+  apiBase: string,
+  extra: Record<string, unknown> = {},
+): string {
   // `<` escaped as `\u003c` inside the JSON: a data block ends at the first `</script`, and a
   // config value must not be able to close it early. Valid JSON either way.
-  const json = JSON.stringify({ apiBase }).replace(/</g, '\\u003c');
+  const json = JSON.stringify({ ...extra, apiBase }).replace(/</g, '\\u003c');
   const tag = `<script type="application/json" id="${CONFIG_ELEMENT_ID}">${json}</script>`;
   if (html.includes('</head>')) return html.replace('</head>', `${tag}</head>`);
   return `${tag}${html}`;

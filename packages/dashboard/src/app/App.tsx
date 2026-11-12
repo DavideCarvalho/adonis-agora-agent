@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { defaultRange, isIsoDay, normalizeRange } from '../client/default-range.js';
 import type { GovernanceRange } from '../client/types.js';
 import { ApprovalsSection } from './ApprovalsSection.js';
+import { ConsoleSearch } from './ConsoleSearch.js';
+import { ConsoleSwitcher } from './ConsoleSwitcher.js';
 import { GenuiSection } from './GenuiSection.js';
 import { Overview } from './Overview.js';
 import { PricingSection } from './PricingSection.js';
@@ -41,8 +43,20 @@ const SECTIONS: { key: SectionKey; label: string }[] = [
 const RANGED: ReadonlySet<SectionKey> = new Set<SectionKey>(['overview', 'genui']);
 
 function sectionFromHash(hash: string): SectionKey {
-  const key = hash.replace(/^#/, '') as SectionKey;
+  const key = hash.replace(/^#/, '').split('/')[0] as SectionKey;
   return SECTIONS.some((s) => s.key === key) ? key : 'overview';
+}
+
+/** The record a deep link opens: `#runs/<id>` or `#threads/<id>` (what global search links to). */
+export function detailFromHash(hash: string): string | null {
+  const [, ...rest] = hash.replace(/^#/, '').split('/');
+  if (rest.length === 0) return null;
+  try {
+    const id = decodeURIComponent(rest.join('/'));
+    return id === '' ? null : id;
+  } catch {
+    return null;
+  }
 }
 
 /** The console shell: brand, section tabs, range picker, theme toggle, and the active section. */
@@ -50,11 +64,17 @@ export function App() {
   const [section, setSection] = useState<SectionKey>(() =>
     sectionFromHash(typeof window !== 'undefined' ? window.location.hash : ''),
   );
+  const [detail, setDetail] = useState<string | null>(() =>
+    detailFromHash(typeof window !== 'undefined' ? window.location.hash : ''),
+  );
   const [range, setRange] = useState<GovernanceRange>(() => defaultRange());
   const [theme, setTheme] = useState<'light' | 'dark' | null>(null);
 
   useEffect(() => {
-    const onHash = () => setSection(sectionFromHash(window.location.hash));
+    const onHash = () => {
+      setSection(sectionFromHash(window.location.hash));
+      setDetail(detailFromHash(window.location.hash));
+    };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
@@ -67,6 +87,7 @@ export function App() {
 
   const go = (key: SectionKey) => {
     setSection(key);
+    setDetail(null);
     if (typeof window !== 'undefined') window.location.hash = key;
   };
 
@@ -80,14 +101,19 @@ export function App() {
       <div className="app-bg" />
       <div className="shell">
         <header className="masthead">
-          <div className="brand">
-            <div className="brand-mark mono">A</div>
-            <div>
-              <h1>Agent · governance console</h1>
-              <p>@adonis-agora/agent — spend, usage &amp; activity</p>
-            </div>
-          </div>
+          <ConsoleSwitcher
+            brand={
+              <>
+                <div className="brand-mark mono">A</div>
+                <div>
+                  <h1>Agent · governance console</h1>
+                  <p>@adonis-agora/agent — spend, usage &amp; activity</p>
+                </div>
+              </>
+            }
+          />
           <div className="controls">
+            <ConsoleSearch />
             {RANGED.has(section) && (
               <>
                 <input
@@ -136,8 +162,8 @@ export function App() {
 
         <main>
           {section === 'overview' && <Overview range={range} />}
-          {section === 'runs' && <RunsSection />}
-          {section === 'threads' && <ThreadsSection />}
+          {section === 'runs' && <RunsSection key={detail ?? ''} initialRunId={detail} />}
+          {section === 'threads' && <ThreadsSection key={detail ?? ''} initialThreadId={detail} />}
           {section === 'tools' && <ToolCallsSection />}
           {section === 'approvals' && <ApprovalsSection />}
           {section === 'toolstats' && <ToolsSection />}
