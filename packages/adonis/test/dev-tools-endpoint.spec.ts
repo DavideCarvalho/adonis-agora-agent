@@ -339,14 +339,37 @@ describe('dev tools endpoint: per-lib authorize', () => {
     expect((await rpc(`${booted.url}/mcp/agora`, listTools)).status).toBe(403);
   });
 
-  it('an unknown tool is a tool error, and no authorize runs', async () => {
+  it('an unknown tool is authorized like any call, then a tool error', async () => {
     booted = await bootApp({});
     const response = await rpc(`${booted.url}/mcp/agora`, callTool('durable_nope'));
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.result.isError).toBe(true);
     expect(body.result.content[0].text).toBe('Tool "durable_nope" is not registered');
-    expect(calls).toEqual({});
+    expect(calls).toEqual({ durable: 1, telescope: 1, payments: 1 });
+  });
+
+  it('an unknown tool from a caller every lib refuses is a 401, like a real one', async () => {
+    booted = await bootApp({}, { libs: [{ ...defaultLibs()[0]! }] });
+    const unknown = await rpc(`${booted.url}/mcp/agora`, callTool('payments_list_payments'));
+    const known = await rpc(`${booted.url}/mcp/agora`, callTool('durable_list_runs'));
+    expect([unknown.status, known.status]).toEqual([401, 401]);
+  });
+
+  it('reads a console-shaped verdict: true, false, { redirectTo }', async () => {
+    const libOf = (id: string, verdict: unknown): DevToolsLib => ({
+      lib: id,
+      title: id,
+      authorize: (async () => verdict) as unknown as DevToolsLib['authorize'],
+      tools: [read(`${id}_list_things`)],
+    });
+    booted = await bootApp(
+      {},
+      { libs: [libOf('yes', true), libOf('no', false), libOf('login', { redirectTo: '/login' })] },
+    );
+    expect(await toolNames(booted.url)).toEqual(['yes_list_things']);
+    expect((await rpc(`${booted.url}/mcp/agora`, callTool('no_list_things'))).status).toBe(403);
+    expect((await rpc(`${booted.url}/mcp/agora`, callTool('login_list_things'))).status).toBe(401);
   });
 
   it('GET and DELETE are 405 once authorized, 401 before', async () => {

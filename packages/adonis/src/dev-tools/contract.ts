@@ -34,7 +34,8 @@ export interface DevToolsLib {
   title: string;
   /**
    * The lib's RESOLVED console gate: the same function its console routes call, run once per MCP
-   * request. Never throws (a throw is treated as `forbidden`).
+   * request. Never throws (a throw is treated as `forbidden`). A console-shaped verdict (`true`,
+   * `false`, `{ redirectTo }`) is read the way the console reads it.
    */
   authorize(ctx: HttpContext): Promise<DevToolsDecision>;
   tools: DevTool[];

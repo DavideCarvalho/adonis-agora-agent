@@ -6,6 +6,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { personalAgentGate, scopeRole } from '../a2a/gate.js';
 import { PERSONAL_AGENT_ROLE } from '../a2a/permission-tool.js';
+import { normalizeConsoleAuthorizeResult } from '../console-authorize.js';
 import { publishAgent } from '../diagnostics.js';
 import { type McpAuth, McpAuthError } from '../mcp/auth.js';
 import {
@@ -163,19 +164,23 @@ export class DevToolsEndpoint {
 
   // ── auth ──────────────────────────────────────────────────────────────────
 
-  /** The libs a JSON-RPC message needs: a call needs its tool's lib, anything else every lib. */
+  /**
+   * The libs a JSON-RPC message needs: a call needs its tool's lib; anything else — a call to a name
+   * no lib registered included — needs every lib, so an unknown name never answers without the same
+   * authorization a real one gets (no way to probe which tools exist).
+   */
   #neededLibs(body: unknown): RegisteredDevToolsLib[] {
     const hub = this.#options.hub;
     const messages = Array.isArray(body) ? body : [body];
     const needed = new Set<RegisteredDevToolsLib>();
     for (const message of messages) {
       const call = message as { method?: unknown; params?: { name?: unknown } } | null;
-      if (call?.method === 'tools/call') {
-        const lib = typeof call.params?.name === 'string' ? hub.libOf(call.params.name) : undefined;
-        if (lib !== undefined) needed.add(lib);
-        continue;
-      }
-      return hub.servedLibs();
+      const lib =
+        call?.method === 'tools/call' && typeof call.params?.name === 'string'
+          ? hub.libOf(call.params.name)
+          : undefined;
+      if (lib === undefined) return hub.servedLibs();
+      needed.add(lib);
     }
     return [...needed];
   }
@@ -251,9 +256,9 @@ export class DevToolsEndpoint {
     }
     actor ??= { id: caller.id };
 
-    const decisions = await Promise.all(
-      needed.map(async (lib) => ({ lib, decision: await safeAuthorize(lib, ctx) })),
-    );
+    // One after the other: an `authorize` may touch the shared `ctx` (auth caching, `authenticate()`).
+    const decisions: Array<{ lib: RegisteredDevToolsLib; decision: DevToolsDecision }> = [];
+    for (const lib of needed) decisions.push({ lib, decision: await safeAuthorize(lib, ctx) });
     const allowed = decisions.filter(({ decision }) => decision.allowed).map(({ lib }) => lib);
     if (needed.length > 0 && allowed.length === 0) {
       // A signed-in account is never sent back to the login: what is left is a 403.
@@ -404,26 +409,29 @@ function instructionsFor(libs: RegisteredDevToolsLib[], actions: DevToolsActions
   return `Developer tools of this app's Agora libraries, as their consoles show them. ${what}${acts} List tools return { items, next }; pass next back to page.`;
 }
 
+/**
+ * Run a lib's `authorize`, read the way console routes read a verdict: `true`, `{ allowed: true }`,
+ * `false`, `{ allowed: false, reason }`, `{ redirectTo }` (→ unauthenticated) and a `status` all work.
+ * A throw is `forbidden`.
+ */
 async function safeAuthorize(
   lib: RegisteredDevToolsLib,
   ctx: HttpContext,
 ): Promise<DevToolsDecision> {
   try {
-    const decision = (await lib.authorize(ctx)) as unknown;
-    if (
-      typeof decision === 'object' &&
-      decision !== null &&
-      (decision as { allowed?: unknown }).allowed === true
-    ) {
-      return { allowed: true };
-    }
-    if (typeof decision === 'object' && decision !== null) {
-      const d = decision as { reason?: unknown; status?: unknown; redirectTo?: unknown };
-      const unauthenticated =
-        d.reason === 'unauthenticated' || d.status === 401 || typeof d.redirectTo === 'string';
-      return { allowed: false, reason: unauthenticated ? 'unauthenticated' : 'forbidden' };
-    }
-    return { allowed: false, reason: 'forbidden' };
+    const verdict: unknown = await lib.authorize(ctx);
+    const reason =
+      typeof verdict === 'object' && verdict !== null
+        ? (verdict as { reason?: unknown }).reason
+        : undefined;
+    const decision = normalizeConsoleAuthorizeResult(verdict);
+    if (decision.allowed) return { allowed: true };
+    const unauthenticated = decision.status === 401 || reason === 'unauthenticated';
+    return {
+      allowed: false,
+      reason: unauthenticated ? 'unauthenticated' : 'forbidden',
+      ...(decision.redirectTo !== undefined ? { redirectTo: decision.redirectTo } : {}),
+    };
   } catch (error) {
     return { allowed: false, reason: 'forbidden', error };
   }

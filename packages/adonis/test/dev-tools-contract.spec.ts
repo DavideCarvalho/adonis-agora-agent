@@ -181,6 +181,40 @@ describe('dev tools limits and redaction', () => {
     });
   });
 
+  it('redacts a numeric secret, keeping only token counts', () => {
+    expect(
+      redactDevToolOutput({
+        otpSecret: 123456,
+        apiKey: '987654',
+        pinToken: 42,
+        tokenCount: 7,
+        cacheReadTokens: '9',
+        hasPassword: true,
+      }),
+    ).toEqual({
+      otpSecret: '[redacted]',
+      apiKey: '[redacted]',
+      pinToken: '[redacted]',
+      tokenCount: 7,
+      cacheReadTokens: '9',
+      hasPassword: true,
+    });
+  });
+
+  it('keeps an oversized detail object valid JSON, cutting its biggest parts', () => {
+    const detail = {
+      run: { id: 'r1', status: 'failed' },
+      messages: Array.from({ length: 60 }, (_, i) => ({ id: i, content: 'x'.repeat(2000) })),
+      output: 'y'.repeat(30_000),
+    };
+    const text = capDevToolResult(detail);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(DEV_TOOLS_MAX_BYTES);
+    const parsed = JSON.parse(text);
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.run).toEqual({ id: 'r1', status: 'failed' });
+    expect(parsed.messages.length).toBeLessThan(60);
+  });
+
   it('caps a list at 48 KB, appending truncated and next', () => {
     const items = Array.from({ length: 500 }, (_, i) => ({ id: i, blob: 'x'.repeat(200) }));
     const text = capDevToolResult({ items, next: 3 });
