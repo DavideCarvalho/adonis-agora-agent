@@ -81,7 +81,7 @@ function fakeDeps(overrides: Partial<AgentAccountDeps> = {}) {
       toolCallRun: async (id) => ({ tc1: 'r1', tc2: 'r2', tcRole: 'r2', tcDone: 'r1' })[id] ?? null,
       toolCallApproval: async (id) =>
         id === 'tcRole'
-          ? { status: 'pending_approval', approver: 'role:finance', expiresAt: null }
+          ? { status: 'pending_approval', approver: 'finance', expiresAt: null }
           : id === 'tcDone'
             ? { status: 'executed', approver: null, expiresAt: null }
             : { status: 'pending_approval', approver: null, expiresAt: null },
@@ -98,8 +98,21 @@ function fakeDeps(overrides: Partial<AgentAccountDeps> = {}) {
       },
     },
     governance: {
-      pendingApprovals: async (filter: { actor?: string }) => {
+      pendingApprovals: async (filter: { actor?: string; approvers?: string[] }) => {
         calls.push(['pendingApprovals', filter]);
+        if (filter.approvers?.includes('finance')) {
+          return [
+            {
+              toolCallId: 'tcRole',
+              toolName: 'pay_invoice',
+              input: {},
+              threadId: 't2',
+              runId: 'r2',
+              actorRef: 'bob',
+              requestedAt: '2026-11-11T10:00:00.000Z',
+            },
+          ];
+        }
         return filter.actor === 'alice'
           ? [
               {
@@ -244,6 +257,22 @@ describe('the agent account extension', () => {
     ]);
   });
 
+  it('approvals also lists calls put to a role the account may decide for', async () => {
+    const { deps } = fakeDeps();
+    const approvals = page(agentAccountExtension(deps), 'agent.approvals');
+    const finance = ctxFor('carol', {
+      account: { id: 'carol', email: null, name: null, roles: ['finance'] },
+    });
+    const view = await approvals.load(finance);
+    const items = (view.blocks[0] as unknown as { items: Array<{ title: string }> }).items;
+    expect(items.map((item) => item.title)).toEqual(['pay_invoice']);
+    // alice holds no role: only her own runs' calls
+    const own = await approvals.load(ctxFor('alice'));
+    expect(
+      (own.blocks[0] as unknown as { items: Array<{ title: string }> }).items.map((i) => i.title),
+    ).toEqual(['refund_payment']);
+  });
+
   it('with tenancy on, the active organization scopes every page and action', async () => {
     const { deps, calls } = fakeDeps({ tenancy: { enabled: true, nullRows: 'tenantless' } });
     const extension = agentAccountExtension(deps);
@@ -366,6 +395,49 @@ describe('registration from agent_provider', () => {
     for (const file of await readdir(root)) {
       const source = await readFile(join(root.pathname, file), 'utf8');
       expect(source).not.toMatch(/from '@adonis-agora\/authkit/);
+    }
+  });
+});
+
+describe('pendingApprovals({ approvers }) on the Lucid read-model', () => {
+  it('keeps only the calls put to those approvers', async () => {
+    const { asStoreDb, makeStoreDb } = await import('./helpers/make-db.js');
+    const { LucidAgentStore, LucidGovernanceQueries } = await import('../src/index.js');
+    const db = await makeStoreDb();
+    try {
+      const store = new LucidAgentStore(asStoreDb(db));
+      const thread = await store.createThread({ actor: { id: 'bob' }, persona: 'default' });
+      await store.recordRunStart({ runId: 'r', threadId: thread.id, actor: { id: 'bob' } });
+      const message = await store.appendMessage({
+        threadId: thread.id,
+        role: 'assistant',
+        content: 'x',
+        runId: 'r',
+      });
+      for (const [id, approver] of [
+        ['tc-own', undefined],
+        ['tc-fin', 'finance'],
+        ['tc-ops', 'ops'],
+      ] as const) {
+        await store.recordToolCall({
+          toolCallId: id,
+          messageId: message.id,
+          toolName: id,
+          toolType: 'action',
+          input: {},
+          status: 'pending_approval',
+          runId: 'r',
+          ...(approver !== undefined ? { approver } : {}),
+        });
+      }
+      const governance = new LucidGovernanceQueries(asStoreDb(db));
+      expect(
+        (await governance.pendingApprovals({ approvers: ['finance'] })).map((r) => r.toolCallId),
+      ).toEqual(['tc-fin']);
+      expect(await governance.pendingApprovals({ approvers: [] })).toEqual([]);
+      expect((await governance.pendingApprovals({ actor: 'bob' })).length).toBe(3);
+    } finally {
+      await db.manager.closeAll();
     }
   });
 });

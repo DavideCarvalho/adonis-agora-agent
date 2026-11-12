@@ -25,7 +25,10 @@ export interface AgentAccountConsoleOptions {
     account: AccountExtensionContext['account'],
     ctx: AccountExtensionContext,
   ) => Actor | Promise<Actor>;
-  /** Link each conversation to your chat UI: `(threadId) => '/chat/' + threadId`. No link when omitted. */
+  /**
+   * Link each conversation (and each approval) to your chat page: an app-local path such as
+   * `(threadId) => '/chat/' + threadId`. No link when omitted.
+   */
   threadUrl?: (threadId: string) => string;
   /** Turn single pages off. All on by default (connections and approvals only when available). */
   pages?: {
@@ -311,7 +314,7 @@ export function agentAccountExtension(deps: AgentAccountDeps): AccountExtension 
         const toolCallId = input.target;
         if (toolCallId === null) return notFound('agent.notFound');
         const actor = await actorOf(ctx);
-        const verdict = await mayDecideHere(deps, ctx, actor, toolCallId, scopeOf(ctx));
+        const verdict = await mayDecideHere(deps, actor, toolCallId, scopeOf(ctx));
         if (!verdict.ok) return verdict.result;
         const opts = { executedByRef: actor.id, via: ACCOUNT_CONSOLE_VIA };
         try {
@@ -345,8 +348,32 @@ export function agentAccountExtension(deps: AgentAccountDeps): AccountExtension 
         const actor = await actorOf(ctx);
         const scope = scopeOf(ctx);
         const view = scope === undefined ? governance : governance.forTenants?.(scope);
-        const rows: PendingApprovalRow[] =
-          view === undefined ? [] : await view.pendingApprovals({ actor: actor.id, limit: 50 });
+        const rows: PendingApprovalRow[] = [];
+        if (view !== undefined) {
+          // Calls of the account's own runs, then calls put to a role the account may decide for.
+          rows.push(...(await view.pendingApprovals({ actor: actor.id, limit: 50 })));
+          const roles = (actor.roles ?? []).filter((role) => role !== REQUESTER_APPROVER);
+          if (roles.length > 0) {
+            for (const row of await view.pendingApprovals({ approvers: roles, limit: 50 })) {
+              if (rows.some((own) => own.toolCallId === row.toolCallId)) continue;
+              const approval = await deps.service.toolCallApproval(
+                row.toolCallId,
+                row.runId ?? undefined,
+              );
+              const approver = approval?.approver;
+              if (approver == null || approver === REQUESTER_APPROVER) continue;
+              if (
+                await deps.service.mayDecide(actor, {
+                  toolCallId: row.toolCallId,
+                  approver,
+                  requesterRef: row.actorRef,
+                })
+              ) {
+                rows.push(row);
+              }
+            }
+          }
+        }
         const items: ListItem[] = rows.map((row) => {
           const href = options.threadUrl?.(row.threadId);
           return {
@@ -379,13 +406,11 @@ export function agentAccountExtension(deps: AgentAccountDeps): AccountExtension 
  */
 async function mayDecideHere(
   deps: AgentAccountDeps,
-  ctx: AccountExtensionContext,
   actor: Actor,
   toolCallId: string,
   scope: TenantScope | undefined,
 ): Promise<{ ok: true; runId: string } | { ok: false; result: AccountActionResult }> {
   const fail = (result: AccountActionResult) => ({ ok: false as const, result });
-  void ctx;
   const runId = await deps.service.toolCallRun(toolCallId);
   if (runId === null) return fail(notFound('agent.notFound'));
   if (scope !== undefined) {
@@ -402,6 +427,9 @@ async function mayDecideHere(
     !(await deps.service.mayDecide(actor, { toolCallId, approver, requesterRef: owner }))
   ) {
     return fail(notFound('agent.notFound'));
+  }
+  if (approval !== null && approval.status === 'expired') {
+    return fail({ ok: false, status: 409, error: { key: 'agent.approvals.expired' } });
   }
   if (approval !== null && approval.status !== 'pending_approval') {
     return fail({ ok: false, status: 409, error: { key: 'agent.approvals.notWaiting' } });

@@ -969,7 +969,10 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
    * rather than looked up per call, so the `actor` filter runs in the database and an inbox costs
    * one statement however long the backlog.
    */
-  private pendingApprovalsFrom(actor: string | undefined): { sql: string; bindings: unknown[] } {
+  private pendingApprovalsFrom(
+    actor: string | undefined,
+    approvers?: readonly string[],
+  ): { sql: string; bindings: unknown[] } {
     const t = AGENT_TABLES;
     const tenant = this.tenantSql(`COALESCE(r."tenant_ref", th."tenant_ref")`);
     return {
@@ -980,8 +983,17 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
         `LEFT JOIN "${t.threads}" th ON th."id" = m."thread_id" ` +
         `WHERE c."status" = 'pending_approval'` +
         (actor !== undefined ? ` AND ${PENDING_ACTOR_SQL} = ?` : '') +
+        (approvers !== undefined
+          ? approvers.length === 0
+            ? ' AND 1 = 0'
+            : ` AND c."approver" IN (${approvers.map(() => '?').join(', ')})`
+          : '') +
         (tenant !== null ? ` AND ${tenant.sql}` : ''),
-      bindings: [...(actor !== undefined ? [actor] : []), ...(tenant?.bindings ?? [])],
+      bindings: [
+        ...(actor !== undefined ? [actor] : []),
+        ...(approvers ?? []),
+        ...(tenant?.bindings ?? []),
+      ],
     };
   }
 
@@ -989,7 +1001,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
   async pendingApprovals(filter: PendingApprovalsFilter = {}): Promise<PendingApprovalRow[]> {
     await this.ready();
     const limit = clampLimit(filter.limit);
-    const from = this.pendingApprovalsFrom(filter.actor);
+    const from = this.pendingApprovalsFrom(filter.actor, filter.approvers);
     const rows = rowsOf(
       await this.db.rawQuery(
         portableSql(
