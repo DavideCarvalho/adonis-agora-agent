@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { IgnitorFactory } from '@adonisjs/core/factories/core/ignitor';
 import { describe, expect, it } from 'vitest';
-import { resolveDevTools } from '../src/dev-tools/resolve.js';
+import { DEV_TOOLS_BINDING, resolveDevTools } from '../src/dev-tools/resolve.js';
 import { readDoctorChecks, runAgoraDoctor } from '../src/doctor/agora_doctor.js';
 import {
   checkActorResolver,
@@ -88,7 +88,7 @@ describe('agent doctor checks', () => {
     const fakeApp = (config: unknown, hubBound: boolean) =>
       ({
         config: { get: (_key: string, fallback: unknown) => config ?? fallback },
-        container: { hasBinding: (key: string) => hubBound && key === 'agora.devTools' },
+        container: { hasBinding: (key: string) => hubBound && key === DEV_TOOLS_BINDING },
       }) as never;
     expect(mcpConfig(fakeApp(undefined, true))).toEqual({});
     expect(mcpConfig(fakeApp(undefined, false))).toBeUndefined();

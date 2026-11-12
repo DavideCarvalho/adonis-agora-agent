@@ -5,8 +5,8 @@ import { normalizeMcpPath } from '../mcp/discovery.js';
 /** The dev tools endpoint's default path. */
 export const DEV_TOOLS_PATH = 'mcp/agora';
 
-/** The container binding of the dev tools hub. Only `mcp_provider` binds it. */
-export const DEV_TOOLS_BINDING = 'agora.devTools';
+/** The container binding of the dev tools hub (only `mcp_provider` binds it). */
+export { DEV_TOOLS_BINDING } from './contract.js';
 
 /**
  * `config/mcp.ts` as `mcp_provider` reads it: a missing file is an empty config (every default),
