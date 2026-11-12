@@ -28,6 +28,7 @@ export type {
   ConsoleAuthorizerClass,
 } from '../console-authorize.js';
 export {
+  anyAuthorize,
   authorizeByToken,
   NO_CONSOLE_AUTHORIZE_WARNING,
   warnNoConsoleAuthorizeOnce,

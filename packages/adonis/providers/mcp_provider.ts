@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { HttpContext } from '@adonisjs/core/http';
+import type { HttpContext, Router } from '@adonisjs/core/http';
 import type { ApplicationService } from '@adonisjs/core/types';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -8,9 +8,19 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { personalAgentGate } from '../src/a2a/gate.js';
 import { DefaultToolAuthorizer } from '../src/authorizer.js';
+import { resolveConsoleAuthorize } from '../src/console-authorize.js';
+import type { DevToolsHub } from '../src/dev-tools/contract.js';
+import { csrfBlocksPath, csrfWarning } from '../src/dev-tools/csrf.js';
+import { DevToolsEndpoint, type DevToolsLogger } from '../src/dev-tools/endpoint.js';
+import { DevToolsHubImpl, endpointAuthorizeWarning } from '../src/dev-tools/hub.js';
 import { actorFromAuthInfo } from '../src/mcp/actor.js';
 import type { McpAuth, McpAuthInfo } from '../src/mcp/auth.js';
-import { McpAuthError, type McpChallengeError, resolveMcpAuth } from '../src/mcp/auth.js';
+import {
+  authKitAuth,
+  McpAuthError,
+  type McpChallengeError,
+  resolveMcpAuth,
+} from '../src/mcp/auth.js';
 import type { McpConfig, McpToolDescriber } from '../src/mcp/define_config.js';
 import {
   mcpResourceUrl,
@@ -25,6 +35,16 @@ import { missingScopes } from '../src/mcp/scope.js';
 import { createMcpServer, isExposable } from '../src/mcp/server.js';
 import type { RolesPolicy } from '../src/spi/roles-policy.js';
 import { ToolRegistry } from '../src/tool-registry.js';
+
+declare module '@adonisjs/core/types' {
+  interface ContainerBindings {
+    /** The dev tools hub every `@adonis-agora` lib registers its developer tools into. */
+    'agora.devTools': DevToolsHub;
+  }
+}
+
+/** The dev endpoint's default path. */
+const DEV_TOOLS_PATH = 'mcp/agora';
 
 /**
  * Wires the agent's {@link ToolRegistry} to the outside world over the Model Context Protocol
@@ -53,7 +73,23 @@ export default class McpProvider {
   /** `config.publicUrl` reduced to its origin; `undefined` → derive it from each request. */
   #publicOrigin: string | undefined;
 
+  /** The dev tools hub, bound in `register()` unless `devTools: false`. */
+  #devToolsHub: DevToolsHubImpl | undefined;
+  #devToolsEndpoint: DevToolsEndpoint | undefined;
+
   constructor(protected app: ApplicationService) {}
+
+  /**
+   * Bind the dev tools hub (`'agora.devTools'`). Every provider's `register()` runs before any
+   * `boot()`, so a lib finds it from its own `boot()` whatever the order in `adonisrc.ts`.
+   */
+  register() {
+    const config = this.app.config.get<McpConfig>('mcp', {} as McpConfig);
+    if (config.devTools === false) return;
+    const hub = new DevToolsHubImpl({ exclude: config.devTools?.exclude ?? [] });
+    this.#devToolsHub = hub;
+    this.app.container.bindValue('agora.devTools', hub);
+  }
 
   async boot() {
     const config = this.app.config.get<McpConfig>('mcp', {} as McpConfig);
@@ -142,6 +178,95 @@ export default class McpProvider {
           .as(endpoint.metadataRouteName);
       }
     }
+
+    await this.#mountDevTools(config, router);
+  }
+
+  /**
+   * Mount the dev tools endpoint: its own route, auth flow and (with authkit) protected resource.
+   * Nothing of the product endpoints is inherited.
+   */
+  async #mountDevTools(config: McpConfig, router: Router): Promise<void> {
+    const hub = this.#devToolsHub;
+    if (hub === undefined || config.devTools === false) return;
+    const devTools = config.devTools ?? {};
+    const path = normalizeMcpPath(devTools.path ?? DEV_TOOLS_PATH);
+    const taken = this.#endpoints.find((endpoint) => endpoint.path === path);
+    if (taken !== undefined) {
+      throw new Error(
+        `[@adonis-agora/agent] devTools.path "${path}" in config/mcp.ts is already an MCP endpoint's path: pick another one (default "${DEV_TOOLS_PATH}").`,
+      );
+    }
+    // With authkit in the app, a person signs in through the standard MCP OAuth flow. The endpoint is
+    // a protected resource of its own: a token for the product endpoint is refused here, and back.
+    const hasAuthkit = this.app.container.hasBinding('authkit.server' as never);
+    const authkit = hasAuthkit
+      ? await resolveMcpAuth(authKitAuth({ resourceName: 'Agora dev tools' }), { app: this.app })
+      : undefined;
+    let logger: DevToolsLogger | undefined;
+    const endpoint = new DevToolsEndpoint({
+      app: this.app,
+      hub,
+      path,
+      actions: devTools.actions ?? 'refuse',
+      authkit,
+      version: config.version ?? '1.0.0',
+      ...(devTools.authorize !== undefined
+        ? { endpointAuthorize: resolveConsoleAuthorize(devTools.authorize) }
+        : {}),
+      inProduction: this.app.inProduction,
+      logger: async () => {
+        if (logger === undefined) {
+          try {
+            logger = (await this.app.container.make('logger')) as unknown as DevToolsLogger;
+          } catch {
+            return undefined;
+          }
+        }
+        return logger;
+      },
+    });
+    this.#devToolsEndpoint = endpoint;
+
+    const route = `/${path}`;
+    const routes = [
+      router.post(route, (c: HttpContext) => endpoint.handlePost(c)),
+      router.get(route, (c: HttpContext) => endpoint.methodNotAllowed(c)),
+      router.delete(route, (c: HttpContext) => endpoint.methodNotAllowed(c)),
+    ];
+    const middleware = devTools.middleware ?? [];
+    if (middleware.length > 0) for (const r of routes) r.use(middleware);
+    if (authkit !== undefined) {
+      // By path: the dev endpoint has no `publicUrl` of its own; the issuer's origin is the app's.
+      registerOAuthResource({ path: route });
+      router
+        .get(`/.well-known/oauth-protected-resource/${path}`, (c: HttpContext) =>
+          endpoint.metadata(c),
+        )
+        .as('mcp.agora_dev_tools.oauth_protected_resource');
+    }
+
+    const shield = this.app.config.get<unknown>('shield', undefined);
+    const blocked = csrfBlocksPath(shield, path);
+    if (blocked !== false) console.warn(csrfWarning(path, blocked));
+  }
+
+  /** Say once, when the app is up, which libs serve dev tools (every lib has booted by now). */
+  async ready() {
+    const hub = this.#devToolsHub;
+    const endpoint = this.#devToolsEndpoint;
+    if (hub === undefined || endpoint === undefined) return;
+    if (this.app.getEnvironment() !== 'web') return;
+    const libs = hub.servedLibs().map((lib) => `${lib.lib} (${lib.tools.length})`);
+    console.info(
+      `[@adonis-agora/agent] dev tools at /${endpoint.path}: ${libs.length > 0 ? libs.join(', ') : 'no lib registered tools'}`,
+    );
+    const config = this.app.config.get<McpConfig>('mcp', {} as McpConfig);
+    const warning = endpointAuthorizeWarning(
+      hub.endpointGatedLibs().map((lib) => lib.lib),
+      config.devTools === false ? undefined : config.devTools?.authorize,
+    );
+    if (warning !== undefined) console.warn(warning);
   }
 
   async shutdown() {

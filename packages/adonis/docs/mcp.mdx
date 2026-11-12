@@ -59,7 +59,7 @@ Point an MCP client at `http://localhost:3333/mcp`. It will discover the OAuth f
 
 ## Configuration
 
-`McpConfig` has sixteen keys — two required, fourteen optional.
+`McpConfig` has seventeen keys — two required, fifteen optional.
 
 | Key | Type | Default | Purpose |
 | --- | --- | --- | --- |
@@ -79,6 +79,7 @@ Point an MCP client at `http://localhost:3333/mcp`. It will discover the OAuth f
 | `describeTool` | `(tool) => { title?, annotations? }` | `readOnlyHint` from the kind | Title and MCP annotations per tool in `tools/list` — clients run a read without asking and confirm a write. |
 | `endpoints` | `McpEndpointConfig[]` | — | More MCP servers in the same app (see [More than one endpoint](#more-than-one-endpoint)). |
 | `middleware` | route middleware | — | Applied to the MCP endpoint (not the metadata route), before the bearer check — e.g. a rate limiter keyed on the `Authorization` header. |
+| `devTools` | `false \| { path?, exclude?, actions?, middleware?, authorize? }` | on, at `mcp/agora` | The developer tools endpoint of the Agora libs. See [Dev tools over MCP](/docs/agent/dev-tools). `authorize` gates the tools of libs without a console. None of the keys above apply to it. |
 
 <Callout type="warn" title="Fail-closed: no auth and no actor means 401">
 With neither `auth` nor `actor` configured, **every** request to `/mcp` is rejected with `401 {"error":"unauthorized: no auth configured and no fallback actor"}`. That is the default an empty `config/mcp.ts` produces, and it is deliberate: an MCP endpoint is a remote tool-execution surface, so it never opens itself.

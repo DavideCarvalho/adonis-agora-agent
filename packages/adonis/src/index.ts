@@ -139,6 +139,7 @@ export {
   type AgentConsoleAuthorizer,
   type AgentConsoleAuthorizerClass,
   type AuthorizeByTokenOptions,
+  anyAuthorize,
   authorizeByToken,
   type ConsoleAuthorize,
   type ConsoleAuthorizeDecision,

@@ -179,12 +179,13 @@ Source: `packages/adonis/docs/authoring/tools.mdx` ("Configuring the generator")
 
 ### Pattern 4 — a write reachable over MCP: `defineConfirmedTool`
 
-An `action` is off the MCP surface by default (`actions: 'refuse'` in `config/mcp.ts` —
+An `action` is off the product MCP endpoint by default (`actions: 'refuse'` in `config/mcp.ts` —
 neither listed nor callable, since there is no approval channel, and Claude.ai/Desktop have no
 elicitation). For a write that must be callable there, put the gate inside the tool: the
 first call previews and returns a signed `confirmToken`; the same arguments plus
-`confirm: true` and the token commit. (`actions: 'execute'` opts out and runs actions when
-called — the MCP client's own confirmation stands in for the loop's approval gate.)
+`confirm: true` and the token commit. (`actions: 'execute'` opts out the product endpoint and runs actions when
+called — the MCP client's own confirmation stands in for the loop's approval gate. It does not
+apply to the `/mcp/agora` dev endpoint, which has its own `devTools.actions`.)
 
 ```ts
 import { defineConfirmedTool, LucidConfirmTokenStore } from '@adonis-agora/agent'

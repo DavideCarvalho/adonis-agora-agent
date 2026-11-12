@@ -1,0 +1,519 @@
+import { createHash } from 'node:crypto';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { HttpContext } from '@adonisjs/core/http';
+import type { ApplicationService } from '@adonisjs/core/types';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { personalAgentGate, scopeRole } from '../a2a/gate.js';
+import { PERSONAL_AGENT_ROLE } from '../a2a/permission-tool.js';
+import {
+  type ConsoleAuthorizeDecision,
+  normalizeConsoleAuthorizeResult,
+} from '../console-authorize.js';
+import { publishAgent } from '../diagnostics.js';
+import { type McpAuth, McpAuthError } from '../mcp/auth.js';
+import {
+  mcpResourceUrl,
+  protectedResourceMetadata,
+  protectedResourceMetadataUrl,
+} from '../mcp/discovery.js';
+import { createMcpServer } from '../mcp/server.js';
+import { ToolRegistry } from '../tool-registry.js';
+import type { Actor } from '../types.js';
+import { bridgeIdentity, identityForToken } from './authkit-bridge.js';
+import type { DevTool, DevToolsCaller, DevToolsDecision } from './contract.js';
+import type { DevToolsHubImpl, RegisteredDevToolsLib } from './hub.js';
+import {
+  capDevToolResult,
+  DEV_TOOLS_MAX_BYTES,
+  DEV_TOOLS_MAX_ROWS,
+  redactDevToolOutput,
+  truncateText,
+} from './limits.js';
+import { devToolStandardSchema } from './schema.js';
+
+/** The scope a Poppy (personal agent) grant must carry to reach the dev tools. */
+export const AGORA_DEV_SCOPE = 'agora:dev';
+
+/** What `actions` in `devTools` may say: none, all, or these lib ids / tool names. */
+export type DevToolsActions = 'refuse' | 'execute' | string[];
+
+/** The logger surface the endpoint writes its audit lines to. */
+export interface DevToolsLogger {
+  info(obj: object, msg: string): void;
+  debug(obj: object, msg: string): void;
+  warn(obj: object, msg: string): void;
+}
+
+export interface DevToolsEndpointOptions {
+  app: ApplicationService;
+  hub: DevToolsHubImpl;
+  /** Normalized route path, no slashes around (`mcp/agora`). */
+  path: string;
+  actions: DevToolsActions;
+  /** `authKitAuth()` resolved, when `@adonis-agora/authkit-server` is in the app. */
+  authkit?: McpAuth | undefined;
+  logger: () => Promise<DevToolsLogger | undefined>;
+  version: string;
+  /**
+   * The resolved `devTools.authorize`: gates the libs registered without an `authorize` of their own
+   * (libs that have no console). `undefined` → open outside production, `403` in production.
+   */
+  endpointAuthorize?: ((ctx: HttpContext) => Promise<ConsoleAuthorizeDecision>) | undefined;
+  /** `app.inProduction`, read for the endpoint gate's default. */
+  inProduction?: boolean;
+}
+
+type Refusal = { status: 401 | 403; error: string; challenge: string };
+
+interface Admission {
+  caller: DevToolsCaller;
+  actor: Actor;
+  allowed: RegisteredDevToolsLib[];
+}
+
+/**
+ * The dev MCP endpoint: stateless, re-authorized on every request, per lib. See the "Dev tools over
+ * MCP" docs page for the behaviour; the order of a request is:
+ *
+ * 1. a bearer token is first offered to authkit (when installed): a token issued for THIS endpoint
+ *    signs the account in and is bridged into the request like a browser session; a Poppy token
+ *    needs the `agora:dev` scope. Any other bearer is left on the request for `authorizeByToken`.
+ * 2. each lib the JSON-RPC message needs runs its own console `authorize(ctx)`, once.
+ * 3. none allowed → `401`/`403`; else a registry of the allowed libs' tools serves the message.
+ */
+export class DevToolsEndpoint {
+  readonly #options: DevToolsEndpointOptions;
+
+  constructor(options: DevToolsEndpointOptions) {
+    this.#options = options;
+  }
+
+  get path(): string {
+    return this.#options.path;
+  }
+
+  /** `GET /.well-known/oauth-protected-resource/<path>` — only mounted with authkit. */
+  async metadata(ctx: HttpContext) {
+    const oauth = this.#options.authkit?.oauth;
+    if (oauth === undefined) return ctx.response.status(404).json({ error: 'not found' });
+    const meta = typeof oauth === 'function' ? await oauth() : oauth;
+    ctx.response.header('access-control-allow-origin', '*');
+    return ctx.response.json(protectedResourceMetadata(meta, origin(ctx), this.#options.path));
+  }
+
+  async handlePost(ctx: HttpContext): Promise<void> {
+    const body: unknown = ctx.request.all();
+    const admission = await this.#admit(ctx, this.#neededLibs(body));
+    if (admission === null) return;
+
+    const req = ctx.request.request as IncomingMessage;
+    const res = ctx.response.response;
+    try {
+      const registry = await this.#registryFor(ctx, admission);
+      const server = createMcpServer({
+        name: 'agora-dev-tools',
+        version: this.#options.version,
+        instructions: instructionsFor(admission.allowed, this.#options.actions),
+        registry,
+        // Access was decided per lib above; a personal agent still needs its `agora:dev` scope role.
+        policy: personalAgentGate({ can: () => true }),
+        actions: 'execute',
+        describeTool: ({ name, kind }) => {
+          const tool = admission.allowed.flatMap((lib) => lib.tools).find((t) => t.name === name);
+          return {
+            annotations: {
+              readOnlyHint: kind === 'read',
+              ...(kind === 'action' ? { destructiveHint: tool?.destructive === true } : {}),
+            },
+          };
+        },
+        actorFromAuth: () => admission.actor,
+        idsFromRequest: (_session, requestId) => ({
+          threadId: `mcp-dev:${admission.caller.id}`,
+          runId: `mcp-dev:${String(requestId ?? 'run')}`,
+          requestId: `mcp-dev:${String(requestId ?? 'req')}`,
+        }),
+      });
+      const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true });
+      res.on('close', () => {
+        void transport.close();
+        void server.close();
+      });
+      await server.connect(transport as Transport);
+      await transport.handleRequest(req, res, body);
+    } catch (error) {
+      if (!res.headersSent) {
+        res.statusCode = 500;
+        res.setHeader('content-type', 'application/json');
+        res.end(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            error: {
+              code: -32603,
+              message: error instanceof Error ? error.message : 'Internal error',
+            },
+            id: null,
+          }),
+        );
+      }
+    }
+    await awaitFinish(res);
+  }
+
+  /** `GET`/`DELETE`: the endpoint is stateless. Authorized first, so a stranger gets the 401. */
+  async methodNotAllowed(ctx: HttpContext) {
+    if ((await this.#admit(ctx, this.#options.hub.servedLibs())) === null) return;
+    ctx.response.header('allow', 'POST');
+    return ctx.response.status(405).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Method not allowed: this MCP server is stateless.' },
+      id: null,
+    });
+  }
+
+  // ── auth ──────────────────────────────────────────────────────────────────
+
+  /**
+   * The libs a JSON-RPC message needs: a call needs its tool's lib; anything else — a call to a name
+   * no lib registered included — needs every lib, so an unknown name never answers without the same
+   * authorization a real one gets (no way to probe which tools exist).
+   */
+  #neededLibs(body: unknown): RegisteredDevToolsLib[] {
+    const hub = this.#options.hub;
+    const messages = Array.isArray(body) ? body : [body];
+    const needed = new Set<RegisteredDevToolsLib>();
+    for (const message of messages) {
+      const call = message as { method?: unknown; params?: { name?: unknown } } | null;
+      const lib =
+        call?.method === 'tools/call' && typeof call.params?.name === 'string'
+          ? hub.libOf(call.params.name)
+          : undefined;
+      if (lib === undefined) return hub.servedLibs();
+      needed.add(lib);
+    }
+    return [...needed];
+  }
+
+  /** Authenticate, run each needed lib's `authorize` once, and refuse when none allows. */
+  async #admit(ctx: HttpContext, needed: RegisteredDevToolsLib[]): Promise<Admission | null> {
+    const header = ctx.request.header('authorization');
+    const bearer = /^Bearer\s+\S/i.test(header ?? '') ? header?.slice(7).trim() : undefined;
+    const tokenId =
+      bearer !== undefined
+        ? `token:${createHash('sha256').update(bearer).digest('hex').slice(0, 12)}`
+        : undefined;
+
+    let caller: DevToolsCaller | undefined;
+    let actor: Actor | undefined;
+    let signedIn = false;
+    const authkit = this.#options.authkit;
+    if (bearer !== undefined && authkit !== undefined) {
+      try {
+        const info = await authkit.verify(bearer, {
+          resource: mcpResourceUrl(origin(ctx), this.#options.path),
+        });
+        const verified = info.extra.actor;
+        const personalAgent = (verified.roles ?? []).includes(PERSONAL_AGENT_ROLE);
+        if (personalAgent && !info.scopes.includes(AGORA_DEV_SCOPE)) {
+          return this.#refuse(ctx, needed, tokenId ?? 'token', {
+            status: 403,
+            error: `insufficient_scope: the dev tools need the scope "${AGORA_DEV_SCOPE}"`,
+            challenge: this.#challenge(ctx, {
+              error: 'insufficient_scope',
+              scope: AGORA_DEV_SCOPE,
+            }),
+          });
+        }
+        const identity = await identityForToken(this.#options.app, {
+          accountId: verified.id,
+          clientId: info.clientId || undefined,
+          scopes: info.scopes,
+          ...(info.expiresAt !== undefined ? { expiresAt: info.expiresAt } : {}),
+        });
+        if (identity === null) {
+          return this.#refuse(ctx, needed, tokenId ?? 'token', {
+            status: 401,
+            error: 'invalid_token: the account no longer exists',
+            challenge: this.#challenge(ctx, { error: 'invalid_token' }),
+          });
+        }
+        await bridgeIdentity(this.#options.app, ctx, identity);
+        signedIn = true;
+        caller = { id: `user:${verified.id}`, via: 'session' };
+        actor = verified;
+      } catch (error) {
+        if (error instanceof McpAuthError) {
+          return this.#refuse(ctx, needed, tokenId ?? 'token', {
+            status: error.status,
+            error: error.message,
+            challenge: this.#challenge(ctx, {
+              error: error.error ?? (error.status === 403 ? 'insufficient_scope' : 'invalid_token'),
+            }),
+          });
+        }
+        // Not an authkit token: left on the request for an `authorizeByToken` console.
+      }
+    }
+    if (caller === undefined) {
+      caller =
+        bearer !== undefined
+          ? {
+              id: tokenId ?? 'token',
+              via: 'token',
+            }
+          : sessionCaller(ctx);
+    }
+    actor ??= { id: caller.id };
+
+    // One after the other: an `authorize` may touch the shared `ctx` (auth caching, `authenticate()`).
+    // The endpoint gate (libs without a console) runs at most once per request.
+    let endpointDecision: DevToolsDecision | undefined;
+    const decide = async (lib: RegisteredDevToolsLib): Promise<DevToolsDecision> => {
+      if (lib.authorize !== undefined) return safeAuthorize(lib.authorize, ctx);
+      endpointDecision ??= await this.#endpointGate(ctx);
+      return endpointDecision;
+    };
+    const decisions: Array<{ lib: RegisteredDevToolsLib; decision: DevToolsDecision }> = [];
+    for (const lib of needed) decisions.push({ lib, decision: await decide(lib) });
+    const allowed = decisions.filter(({ decision }) => decision.allowed).map(({ lib }) => lib);
+    if (needed.length > 0 && allowed.length === 0) {
+      // A signed-in account is never sent back to the login: what is left is a 403.
+      const unauthenticated =
+        !signedIn && decisions.some(({ decision }) => isUnauthenticated(decision));
+      return this.#refuse(
+        ctx,
+        needed,
+        caller.id,
+        unauthenticated
+          ? {
+              status: 401,
+              error: 'unauthenticated',
+              challenge: this.#challenge(
+                ctx,
+                bearer !== undefined ? { error: 'invalid_token' } : {},
+              ),
+            }
+          : { status: 403, error: 'forbidden', challenge: '' },
+      );
+    }
+    return { caller, actor, allowed };
+  }
+
+  /**
+   * `devTools.authorize` for the libs without a console: the same rules as every console (omitted →
+   * open outside production, `403` in production).
+   */
+  async #endpointGate(ctx: HttpContext): Promise<DevToolsDecision> {
+    const authorize = this.#options.endpointAuthorize;
+    if (authorize === undefined) {
+      return this.#options.inProduction === true
+        ? { allowed: false, reason: 'forbidden' }
+        : { allowed: true };
+    }
+    let decision: ConsoleAuthorizeDecision;
+    try {
+      decision = await authorize(ctx);
+    } catch (error) {
+      return { allowed: false, reason: 'forbidden', error };
+    }
+    if (decision.allowed) return { allowed: true };
+    return {
+      allowed: false,
+      reason: decision.status === 401 ? 'unauthenticated' : 'forbidden',
+      ...(decision.redirectTo !== undefined ? { redirectTo: decision.redirectTo } : {}),
+    };
+  }
+
+  /** `Bearer realm="agora-dev"`, plus the error and, with authkit, where to sign in. */
+  #challenge(
+    ctx: HttpContext,
+    options: { error?: 'invalid_token' | 'insufficient_scope'; scope?: string },
+  ): string {
+    const params = ['realm="agora-dev"'];
+    if (options.error !== undefined) params.push(`error="${options.error}"`);
+    if (options.scope !== undefined) params.push(`scope="${options.scope}"`);
+    if (this.#options.authkit?.oauth !== undefined) {
+      params.push(
+        `resource_metadata="${protectedResourceMetadataUrl(origin(ctx), this.#options.path)}"`,
+      );
+    }
+    return `Bearer ${params.join(', ')}`;
+  }
+
+  async #refuse(
+    ctx: HttpContext,
+    needed: RegisteredDevToolsLib[],
+    callerId: string,
+    refusal: Refusal,
+  ): Promise<null> {
+    const logger = await this.#options.logger();
+    logger?.warn(
+      {
+        devTools: true,
+        caller: callerId,
+        libs: needed.map((lib) => lib.lib),
+        status: refusal.status,
+      },
+      'agora dev tools: request refused',
+    );
+    if (refusal.challenge !== '') ctx.response.header('WWW-Authenticate', refusal.challenge);
+    ctx.response.status(refusal.status).json({ error: refusal.error });
+    return null;
+  }
+
+  // ── tools ─────────────────────────────────────────────────────────────────
+
+  /** This request's registry: the allowed libs' tools that are available and not hidden actions. */
+  async #registryFor(ctx: HttpContext, admission: Admission): Promise<ToolRegistry> {
+    const registry = new ToolRegistry();
+    const devRole = scopeRole(AGORA_DEV_SCOPE);
+    for (const lib of admission.allowed) {
+      for (const tool of lib.tools) {
+        if (tool.kind === 'action' && !actionAllowed(this.#options.actions, lib.lib, tool.name)) {
+          continue;
+        }
+        if (!(await isAvailable(tool))) continue;
+        registry.register(
+          {
+            name: tool.name,
+            kind: tool.kind,
+            description: tool.description,
+            inputSchema: devToolStandardSchema(tool.input),
+            roles: [devRole],
+          },
+          { execute: (input) => this.#run(ctx, admission.caller, lib, tool, input) },
+        );
+      }
+    }
+    return registry;
+  }
+
+  async #run(
+    ctx: HttpContext,
+    caller: DevToolsCaller,
+    lib: RegisteredDevToolsLib,
+    tool: DevTool,
+    input: unknown,
+  ): Promise<string> {
+    const started = performance.now();
+    let ok = false;
+    try {
+      const output = await tool.run((input ?? {}) as Record<string, unknown>, {
+        ctx,
+        caller,
+        limits: { maxRows: DEV_TOOLS_MAX_ROWS, maxBytes: DEV_TOOLS_MAX_BYTES },
+      });
+      const text = capDevToolResult(redactDevToolOutput(output), DEV_TOOLS_MAX_BYTES);
+      ok = true;
+      return text;
+    } finally {
+      const ms = Math.round(performance.now() - started);
+      const line = {
+        devTool: tool.name,
+        lib: lib.lib,
+        caller: caller.id,
+        kind: tool.kind,
+        ok,
+        ms,
+        args: truncateText(JSON.stringify(redactDevToolOutput(input ?? {})), 1024),
+      };
+      const logger = await this.#options.logger();
+      if (tool.kind === 'action') logger?.info(line, 'agora dev tool call');
+      else logger?.debug(line, 'agora dev tool call');
+      publishAgent('devtools.call', {
+        devTool: tool.name,
+        lib: lib.lib,
+        caller: caller.id,
+        kind: tool.kind,
+        ok,
+        ms,
+      });
+    }
+  }
+}
+
+/** Whether `actions` lets this action tool be listed and called. */
+export function actionAllowed(actions: DevToolsActions, lib: string, tool: string): boolean {
+  if (actions === 'execute') return true;
+  if (actions === 'refuse') return false;
+  return actions.includes(lib) || actions.includes(tool);
+}
+
+function instructionsFor(libs: RegisteredDevToolsLib[], actions: DevToolsActions): string {
+  const titles = libs.map((lib) => lib.title);
+  const what =
+    titles.length > 0 ? `Tools for: ${titles.join(', ')}.` : 'No tools are available to you.';
+  const acts =
+    actions === 'refuse'
+      ? ' Read-only: nothing here changes data.'
+      : ' Some tools are actions that change data: confirm with the person first.';
+  return `Developer tools of this app's Agora libraries, as their consoles show them. ${what}${acts} List tools return { items, next }; pass next back to page.`;
+}
+
+/**
+ * Run a lib's `authorize`, read the way console routes read a verdict: `true`, `{ allowed: true }`,
+ * `false`, `{ allowed: false, reason }`, `{ redirectTo }` (→ unauthenticated) and a `status` all work.
+ * A throw is `forbidden`.
+ */
+async function safeAuthorize(
+  authorize: (ctx: HttpContext) => Promise<unknown>,
+  ctx: HttpContext,
+): Promise<DevToolsDecision> {
+  try {
+    const verdict: unknown = await authorize(ctx);
+    const reason =
+      typeof verdict === 'object' && verdict !== null
+        ? (verdict as { reason?: unknown }).reason
+        : undefined;
+    const decision = normalizeConsoleAuthorizeResult(verdict);
+    if (decision.allowed) return { allowed: true };
+    const unauthenticated = decision.status === 401 || reason === 'unauthenticated';
+    return {
+      allowed: false,
+      reason: unauthenticated ? 'unauthenticated' : 'forbidden',
+      ...(decision.redirectTo !== undefined ? { redirectTo: decision.redirectTo } : {}),
+    };
+  } catch (error) {
+    return { allowed: false, reason: 'forbidden', error };
+  }
+}
+
+function isUnauthenticated(decision: DevToolsDecision): boolean {
+  return !decision.allowed && decision.reason === 'unauthenticated';
+}
+
+async function isAvailable(tool: DevTool): Promise<boolean> {
+  if (tool.available === undefined) return true;
+  try {
+    return (await tool.available()) === true;
+  } catch {
+    return false;
+  }
+}
+
+/** A browser session a guard already authenticated (never calls `authenticate()` itself), else open. */
+function sessionCaller(ctx: HttpContext): DevToolsCaller {
+  try {
+    const auth = (
+      ctx as unknown as { auth?: { isAuthenticated?: boolean; user?: { id?: unknown } } }
+    ).auth;
+    const id = auth?.isAuthenticated === true ? auth.user?.id : undefined;
+    if (id !== undefined && id !== null) return { id: `user:${String(id)}`, via: 'session' };
+  } catch {
+    // no auth on this app
+  }
+  return { id: 'dev-open', via: 'open' };
+}
+
+function origin(ctx: HttpContext): string {
+  return `${ctx.request.protocol()}://${ctx.request.headers().host ?? 'localhost'}`;
+}
+
+function awaitFinish(res: ServerResponse): Promise<void> {
+  return new Promise((resolve) => {
+    if (res.writableEnded) return resolve();
+    res.on('finish', () => resolve());
+    res.on('close', () => resolve());
+  });
+}

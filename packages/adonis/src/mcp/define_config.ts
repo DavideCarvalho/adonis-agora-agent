@@ -1,3 +1,4 @@
+import type { ConsoleAuthorize } from '../console-authorize.js';
 import type { RolesPolicy } from '../spi/roles-policy.js';
 import type { EmptyRoles, ToolRegistry } from '../tool-registry.js';
 import type { McpAuth, McpAuthContext, McpAuthFactory } from './auth.js';
@@ -105,6 +106,34 @@ export interface McpConfig {
    * above and overrides what it declares; its tokens are bound to ITS URL.
    */
   endpoints?: McpEndpointConfig[];
+  /**
+   * The dev tools endpoint (`/mcp/agora`): the developer tools every installed `@adonis-agora` lib
+   * with a console registers, each gated by that console's own `authorize`. On by default, read
+   * tools only. Nothing above applies to it (it has its own route, auth flow and audience).
+   * `false` mounts nothing and libs register nothing.
+   */
+  devTools?: false | McpDevToolsConfig;
+}
+
+/** Options of the dev tools endpoint — see {@link McpConfig.devTools}. All optional. */
+export interface McpDevToolsConfig {
+  /** Route path. Default `'mcp/agora'`. Must differ from `path` and every `endpoints[].path`. */
+  path?: string;
+  /** Lib ids or full tool names to leave out: `['payments', 'durable_get_run']`. */
+  exclude?: string[];
+  /**
+   * Action tools (retry, cancel, refund…): `'refuse'` (default) neither lists nor runs them;
+   * `'execute'` serves them all; a list serves those of these lib ids or tool names.
+   */
+  actions?: 'refuse' | 'execute' | string[];
+  /** Route middleware for the dev endpoint, e.g. a rate limiter. The product `middleware` is not used. */
+  middleware?: McpRouteMiddleware[];
+  /**
+   * Who may use the tools of libs that have no console (resilience, authz, diagnostics, filter).
+   * Same contract as every console's `authorize`. Omitted: open outside production, refused in
+   * production. Libs with a console keep their own gate; this never widens them.
+   */
+  authorize?: ConsoleAuthorize;
 }
 
 /** An extra MCP server — see {@link McpConfig.endpoints}. */
