@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.7
+
+### Minor Changes
+
+- [#579](https://github.com/DavideCarvalho/adonis-agora-agent/pull/579) [`aebfeb9`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/aebfeb98b583b6788554f6bc8303e4a792eb7c1c) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `node ace agora:doctor` (and `agent:doctor`). The agent now has a commands barrel (`@adonis-agora/agent/commands`, which `node ace configure @adonis-agora/agent` adds to `adonisrc.ts`; existing apps add `commands: [() => import('@adonis-agora/agent/commands')]` by hand). It ships the shared Agora health check and registers its checks into the `'agora.doctor'` registry: `agent.console-gate`, `agent.actor-resolver`, `agent.mcp-open`, `agent.mcp-execute`, `agent.mcp-csrf`, `agent.dev-tools-gate` and `agent.tenancy-store`. The new `@adonis-agora/agent/doctor` entry serves `--no-boot`.
+
 ## 1.0.0-rc.6
 
 ### Minor Changes
