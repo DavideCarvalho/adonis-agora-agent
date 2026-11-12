@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { IgnitorFactory } from '@adonisjs/core/factories/core/ignitor';
 import { describe, expect, it } from 'vitest';
+import { DEV_TOOLS_BINDING, resolveDevTools } from '../src/dev-tools/resolve.js';
 import { readDoctorChecks, runAgoraDoctor } from '../src/doctor/agora_doctor.js';
 import {
   checkActorResolver,
@@ -10,6 +11,7 @@ import {
   checkMcpExecute,
   checkMcpOpen,
   checkTenancyStore,
+  mcpConfig,
 } from '../src/doctor/checks.js';
 import { agoraDoctorChecks } from '../src/doctor/index.js';
 import { FakeModelProvider, InMemoryAgentStore } from '../src/testing/index.js';
@@ -82,6 +84,32 @@ describe('agent doctor checks', () => {
     expect(checkDevToolsGate({ devTools: false }, ['authz'], true).status).toBe('skip');
   });
 
+  it('a missing config/mcp.ts is every default when mcp_provider is registered, not "off"', () => {
+    const fakeApp = (config: unknown, hubBound: boolean) =>
+      ({
+        config: { get: (_key: string, fallback: unknown) => config ?? fallback },
+        container: { hasBinding: (key: string) => hubBound && key === DEV_TOOLS_BINDING },
+      }) as never;
+    expect(mcpConfig(fakeApp(undefined, true))).toEqual({});
+    expect(mcpConfig(fakeApp(undefined, false))).toBeUndefined();
+    expect(mcpConfig(fakeApp({ path: 'api/mcp' }, false))).toEqual({ path: 'api/mcp' });
+
+    // The same resolution the provider mounts with.
+    expect(resolveDevTools({})).toMatchObject({ path: 'mcp/agora', actions: 'refuse' });
+    expect(resolveDevTools(undefined)).toMatchObject({ path: 'mcp/agora' });
+    expect(resolveDevTools({ devTools: { path: '/dev/mcp/' } })?.path).toBe('dev/mcp');
+    expect(resolveDevTools({ devTools: false })).toBeNull();
+
+    const missing = mcpConfig(fakeApp(undefined, true));
+    expect(checkDevToolsGate(missing, ['resilience'], true).status).toBe('warn');
+    const csrf = checkMcpCsrf(missing, { csrf: { enabled: true } });
+    expect(csrf.message).toContain('/mcp/agora');
+    expect(checkDevToolsGate(undefined, ['resilience'], true)).toMatchObject({
+      status: 'skip',
+      message: expect.stringContaining('mcp_provider is not registered'),
+    });
+  });
+
   it('tenancy-store: organizations on with a store that cannot scope is an error', () => {
     expect(checkTenancyStore({}, false, {}).status).toBe('skip');
     expect(checkTenancyStore({}, true, {}).status).toBe('error');
@@ -132,6 +160,50 @@ describe('agent_provider registers its checks into agora.doctor', () => {
     expect(report.results).toEqual([
       expect.objectContaining({ id: 'agent.console-gate', status: 'warn' }),
     ]);
+    await app.terminate();
+  });
+});
+
+describe('mcp_provider without config/mcp.ts', () => {
+  it('mounts /mcp/agora and the doctor reports the dev tools as on', {
+    timeout: 60_000,
+  }, async () => {
+    const ignitor = new IgnitorFactory()
+      .withCoreProviders()
+      .withCoreConfig()
+      .merge({
+        rcFileContents: {
+          providers: [
+            () => import('../providers/agent_provider.js'),
+            () => import('../providers/mcp_provider.js'),
+          ],
+        },
+        config: {
+          agent: {
+            model: new FakeModelProvider(() => ({ text: 'hi' })),
+            store: new InMemoryAgentStore(),
+            actorResolver: { resolve: () => ({ id: 'u' }) },
+          },
+        },
+      })
+      .create(new URL('../', import.meta.url));
+    const app = ignitor.createApp('web');
+    await app.init();
+    await app.boot();
+    const router = await app.container.make('router');
+    router.commit();
+    const patterns = Object.values(router.toJSON())
+      .flat()
+      .map((route) => route.pattern);
+    expect(patterns).toContain('/mcp/agora');
+
+    const checks = await readDoctorChecks(app.container);
+    const { report } = await runAgoraDoctor(app, checks, { only: 'agent.mcp-csrf' });
+    expect(report.results).toEqual([
+      expect.objectContaining({ id: 'agent.mcp-csrf', status: 'ok' }),
+    ]);
+    const gate = await runAgoraDoctor(app, checks, { only: 'agent.dev-tools-gate' });
+    expect(gate.report.results[0]?.message).not.toContain('off');
     await app.terminate();
   });
 });

@@ -13,6 +13,12 @@ import type { DevToolsHub } from '../src/dev-tools/contract.js';
 import { csrfBlocksPath, csrfWarning } from '../src/dev-tools/csrf.js';
 import { DevToolsEndpoint, type DevToolsLogger } from '../src/dev-tools/endpoint.js';
 import { DevToolsHubImpl, endpointAuthorizeWarning } from '../src/dev-tools/hub.js';
+import {
+  DEV_TOOLS_BINDING,
+  DEV_TOOLS_PATH,
+  readMcpConfig,
+  resolveDevTools,
+} from '../src/dev-tools/resolve.js';
 import { actorFromAuthInfo } from '../src/mcp/actor.js';
 import type { McpAuth, McpAuthInfo } from '../src/mcp/auth.js';
 import {
@@ -42,9 +48,6 @@ declare module '@adonisjs/core/types' {
     'agora.devTools': DevToolsHub;
   }
 }
-
-/** The dev endpoint's default path. */
-const DEV_TOOLS_PATH = 'mcp/agora';
 
 /**
  * Wires the agent's {@link ToolRegistry} to the outside world over the Model Context Protocol
@@ -84,15 +87,15 @@ export default class McpProvider {
    * `boot()`, so a lib finds it from its own `boot()` whatever the order in `adonisrc.ts`.
    */
   register() {
-    const config = this.app.config.get<McpConfig>('mcp', {} as McpConfig);
-    if (config.devTools === false) return;
-    const hub = new DevToolsHubImpl({ exclude: config.devTools?.exclude ?? [] });
+    const devTools = resolveDevTools(readMcpConfig(this.app));
+    if (devTools === null) return;
+    const hub = new DevToolsHubImpl({ exclude: devTools.exclude });
     this.#devToolsHub = hub;
-    this.app.container.bindValue('agora.devTools', hub);
+    this.app.container.bindValue(DEV_TOOLS_BINDING, hub);
   }
 
   async boot() {
-    const config = this.app.config.get<McpConfig>('mcp', {} as McpConfig);
+    const config = readMcpConfig(this.app);
     const defaultRoles = config.defaultRoles ?? ['ADMIN'];
     // Personal agents (a Poppy session's token, see `authKitAuth`) reach only the tools of the scopes
     // their user granted — the same gate as the agent loop. A no-op for every other actor.
@@ -188,9 +191,9 @@ export default class McpProvider {
    */
   async #mountDevTools(config: McpConfig, router: Router): Promise<void> {
     const hub = this.#devToolsHub;
-    if (hub === undefined || config.devTools === false) return;
-    const devTools = config.devTools ?? {};
-    const path = normalizeMcpPath(devTools.path ?? DEV_TOOLS_PATH);
+    const devTools = resolveDevTools(config);
+    if (hub === undefined || devTools === null) return;
+    const path = devTools.path;
     const taken = this.#endpoints.find((endpoint) => endpoint.path === path);
     if (taken !== undefined) {
       throw new Error(
@@ -208,7 +211,7 @@ export default class McpProvider {
       app: this.app,
       hub,
       path,
-      actions: devTools.actions ?? 'refuse',
+      actions: devTools.actions,
       authkit,
       version: config.version ?? '1.0.0',
       ...(devTools.authorize !== undefined
@@ -234,7 +237,7 @@ export default class McpProvider {
       router.get(route, (c: HttpContext) => endpoint.methodNotAllowed(c)),
       router.delete(route, (c: HttpContext) => endpoint.methodNotAllowed(c)),
     ];
-    const middleware = devTools.middleware ?? [];
+    const middleware = devTools.middleware;
     if (middleware.length > 0) for (const r of routes) r.use(middleware);
     if (authkit !== undefined) {
       // By path: the dev endpoint has no `publicUrl` of its own; the issuer's origin is the app's.
@@ -261,10 +264,9 @@ export default class McpProvider {
     console.info(
       `[@adonis-agora/agent] dev tools at /${endpoint.path}: ${libs.length > 0 ? libs.join(', ') : 'no lib registered tools'}`,
     );
-    const config = this.app.config.get<McpConfig>('mcp', {} as McpConfig);
     const warning = endpointAuthorizeWarning(
       hub.endpointGatedLibs().map((lib) => lib.lib),
-      config.devTools === false ? undefined : config.devTools?.authorize,
+      resolveDevTools(readMcpConfig(this.app))?.authorize,
     );
     if (warning !== undefined) console.warn(warning);
   }
