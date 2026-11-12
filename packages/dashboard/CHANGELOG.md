@@ -1,5 +1,11 @@
 # @adonis-agora/agent-dashboard
 
+## 1.0.0-rc.3
+
+### Minor Changes
+
+- [#577](https://github.com/DavideCarvalho/adonis-agora-agent/pull/577) [`02b190b`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/02b190be36daa78fef4c13d5f55f8378e21bd0fd) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Organizations (tenancy). With `tenancy.enabled` in `config/context.ts` (new `tenancy` option in `config/agent.ts`, default `'inherit'`, `false` opts out), actors carry the active organization as `tenantRef` (a resolver that sets one wins), `recordUsage` stamps it, threads and runs of another organization answer 404 on every route, and `GET /agent/threads` lists only the organization's threads. `quota: { per: 'tenant' | 'actor-in-tenant' }` budgets per organization (new optional store method `usageBetweenForTenant`, index `(tenant_ref, created_at)` on the token ledger). The console reads only the viewer's organization, or the `tenants` (`'*'` or ids) its `authorize` returns; the header gets an Organization chip/picker kept in `?tenant=`, and `GET /agent/governance/tenants` feeds it. The Lucid governance read-model gains `forTenants(scope)` and `listTenants()`; the Lucid store gains `listThreadsInScope`, `getThreadTenantRef` and `getRunTenantRef`.
+
 ## 1.0.0-rc.2
 
 ### Minor Changes
