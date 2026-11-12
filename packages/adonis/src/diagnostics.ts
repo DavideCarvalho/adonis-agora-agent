@@ -174,6 +174,22 @@ export interface AgentUsageRecorded {
   countsTowardsQuota?: false;
 }
 
+/**
+ * One call of a developer tool on the dev MCP endpoint (`/mcp/agora`). The arguments are not carried:
+ * the audit log line has them, redacted.
+ */
+export interface AgentDevToolCall {
+  /** The tool's full name, e.g. `durable_list_runs`. */
+  devTool: string;
+  /** The lib that registered it. */
+  lib: string;
+  /** `token:<hash>`, `user:<id>` or `dev-open` — never a token value. */
+  caller: string;
+  kind: 'read' | 'action';
+  ok: boolean;
+  ms: number;
+}
+
 /** Maps each event name to its payload type, so {@link publishAgent} is checked at the call site. */
 export interface AgentDiagnosticPayloads {
   'run.started': AgentRunStarted;
@@ -187,6 +203,7 @@ export interface AgentDiagnosticPayloads {
   retrieved: AgentRetrieved;
   'tool.retry': AgentToolRetry;
   'usage.recorded': AgentUsageRecorded;
+  'devtools.call': AgentDevToolCall;
 }
 
 export type AgentDiagnosticEvent = keyof AgentDiagnosticPayloads;

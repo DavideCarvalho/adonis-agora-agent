@@ -18,6 +18,7 @@ export type {
 export { anyOf, apiKeyAuth, authKitAuth, McpAuthError, resolveMcpAuth } from './auth.js';
 export type {
   McpConfig,
+  McpDevToolsConfig,
   McpEndpointConfig,
   McpToolDescriber,
   McpToolDescription,

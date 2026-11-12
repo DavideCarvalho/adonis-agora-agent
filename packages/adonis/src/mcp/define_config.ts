@@ -105,6 +105,28 @@ export interface McpConfig {
    * above and overrides what it declares; its tokens are bound to ITS URL.
    */
   endpoints?: McpEndpointConfig[];
+  /**
+   * The dev tools endpoint (`/mcp/agora`): the developer tools every installed `@adonis-agora` lib
+   * with a console registers, each gated by that console's own `authorize`. On by default, read
+   * tools only. Nothing above applies to it (it has its own route, auth flow and audience).
+   * `false` mounts nothing and libs register nothing.
+   */
+  devTools?: false | McpDevToolsConfig;
+}
+
+/** Options of the dev tools endpoint — see {@link McpConfig.devTools}. All optional. */
+export interface McpDevToolsConfig {
+  /** Route path. Default `'mcp/agora'`. Must differ from `path` and every `endpoints[].path`. */
+  path?: string;
+  /** Lib ids or full tool names to leave out: `['payments', 'durable_get_run']`. */
+  exclude?: string[];
+  /**
+   * Action tools (retry, cancel, refund…): `'refuse'` (default) neither lists nor runs them;
+   * `'execute'` serves them all; a list serves those of these lib ids or tool names.
+   */
+  actions?: 'refuse' | 'execute' | string[];
+  /** Route middleware for the dev endpoint, e.g. a rate limiter. The product `middleware` is not used. */
+  middleware?: McpRouteMiddleware[];
 }
 
 /** An extra MCP server — see {@link McpConfig.endpoints}. */

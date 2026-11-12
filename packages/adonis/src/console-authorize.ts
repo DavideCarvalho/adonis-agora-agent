@@ -229,6 +229,46 @@ export function authorizeByToken(options: AuthorizeByTokenOptions): ConsoleAutho
   };
 }
 
+/**
+ * An `authorize` that allows a request when ANY of `authorizers` allows it, tried in order — e.g. a
+ * machine token for MCP clients OR a signed-in admin for the browser:
+ *
+ * ```ts
+ * dashboard: {
+ *   authorize: anyAuthorize(
+ *     authorizeByToken({ token: env.get('CONSOLE_TOKEN') }),
+ *     (ctx) => ctx.auth.user?.isAdmin === true,
+ *   ),
+ * },
+ * ```
+ *
+ * When none allows: `401` if any of them said "unauthenticated" (redirecting when one asked to),
+ * `403` otherwise. A throwing authorizer counts as a `403` and the next one is still tried.
+ */
+export function anyAuthorize(...authorizers: AgentConsoleAuthorize[]): AgentConsoleAuthorize {
+  if (authorizers.length === 0) {
+    throw new Error('anyAuthorize: pass at least one authorize');
+  }
+  const resolved = authorizers.map((authorize) => resolveConsoleAuthorize(authorize));
+  return async (ctx: HttpContext, actor?: Actor): Promise<ConsoleAuthorizeResult> => {
+    let unauthenticated = false;
+    let redirectTo: string | undefined;
+    for (const authorize of resolved) {
+      const decision = await authorize(ctx, actor);
+      if (decision.allowed) return { allowed: true };
+      if (decision.status !== 401) continue;
+      if (decision.redirectTo !== undefined && redirectTo === undefined) {
+        redirectTo = decision.redirectTo;
+      }
+      unauthenticated = true;
+    }
+    if (redirectTo !== undefined) return { redirectTo };
+    return unauthenticated
+      ? { allowed: false, reason: 'unauthenticated' }
+      : { allowed: false, reason: 'forbidden' };
+  };
+}
+
 /** The boot warning logged once when the console has no `authorize`. Same wording in every console. */
 export const NO_CONSOLE_AUTHORIZE_WARNING =
   '[@adonis-agora/agent] console has no `authorize` configured: it is open outside production and denies every request in production. Set `authorize` in config/agent.ts.';

@@ -14,7 +14,10 @@ import {
   DEFAULT_MAX_ATTACHMENT_BYTES,
 } from '../src/attachment-limits.js';
 import { warnNoConsoleAuthorizeOnce } from '../src/console-authorize.js';
+import { resolveDashboardConfig } from '../src/dashboard/define_config.js';
 import { answerConsoleDenialJson, evaluateDashboardGate } from '../src/dashboard/gate.js';
+import { agentDevTools } from '../src/dev-tools/agent-tools.js';
+import { registerDevTools } from '../src/dev-tools/index.js';
 import { type AgentEngine, assertRunnable, engineOnlyModel } from '../src/engine.js';
 import type { Catalog } from '../src/genui/index.js';
 import type { SandboxClientConfig } from '../src/genui/sandbox-kit.js';
@@ -583,6 +586,30 @@ export default class AgentProvider {
           : { provider: new LedgerQuotaProvider(store), gated: false },
     });
     this.app.container.bindValue(AgentService, service);
+
+    // The governance console's read-model, as read-only dev tools on `/mcp/agora` (when
+    // `mcp_provider` serves them), behind the same `dashboard.authorize` as the console.
+    if (governance !== undefined && resolveDashboardConfig(config.dashboard).enabled) {
+      const authorize = config.dashboard?.authorize;
+      await registerDevTools(this.app, {
+        lib: 'agent',
+        title: 'Agent governance',
+        authorize: async (ctx) => {
+          const verdict = await evaluateDashboardGate(ctx, {
+            actorResolver,
+            authorize,
+            inProduction: this.app.inProduction,
+          });
+          if (verdict.ok) return { allowed: true };
+          return {
+            allowed: false,
+            reason: verdict.error,
+            ...(verdict.redirectTo !== undefined ? { redirectTo: verdict.redirectTo } : {}),
+          };
+        },
+        tools: agentDevTools({ governance, actorDirectory }),
+      });
+    }
 
     await this.#registerRoutes(
       config,
