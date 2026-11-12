@@ -44,6 +44,10 @@ Required unless an [`engine`](#engine) runs the turns.
 
 `ModelProvider | () => ModelProvider | Promise<ModelProvider>`. The LLM. Pass a `ModelProvider` directly, or (recommended) a **lazy thunk** so the provider SDK peer is imported only at boot. Wrap a Vercel AI SDK model with `aiSdkModel(...)`, or implement the tiny `ModelProvider` SPI yourself.
 
+### `schema`
+
+`string`. The database schema (a Postgres schema, a MySQL database) every SQL-backed piece keeps its tables in — the Lucid store, pricing, governance, the Lucid token sink, the pgvector retriever, the channel state, and the A2A / Poppy stores. Each piece's own `schema` option wins over it. Never put it in a connection's `searchPath` instead. Refused on SQLite. **Omit** to use each connection's current schema. See [Database schema](/docs/agent/stores/lucid#database-schema).
+
 ### `store`
 
 `string`. The name of a key in `stores` to use. **Omit for the in-memory store** (single-process). See [State stores](/docs/agent/stores/lucid).

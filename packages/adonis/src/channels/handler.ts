@@ -93,6 +93,7 @@ export interface ChannelTurnService
         | 'attachmentLimits'
         | 'stageAttachment'
         | 'lucidDatabase'
+        | 'lucidSchema'
         | 'drive'
       >
     > {
@@ -831,7 +832,10 @@ export function handleChannel(
       if (options.store) return options.store;
       const agent = options.service ?? service ?? (await containerService().catch(() => undefined));
       const db = agent?.lucidDatabase?.() ?? null;
-      return db === null ? new InMemoryChannelStore() : lucidChannelStore(db);
+      if (db === null) return new InMemoryChannelStore();
+      // Next to the threads: in the agent store's database schema too, when it has one.
+      const schema = agent?.lucidSchema?.();
+      return lucidChannelStore(db, schema !== undefined ? { schema } : {});
     })();
     return resolvedStore;
   };

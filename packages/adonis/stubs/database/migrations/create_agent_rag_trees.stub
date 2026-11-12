@@ -20,6 +20,8 @@ import { PgDocumentTreeStore } from '@adonis-agora/agent'
  */
 const TABLE = 'agent_rag_trees'
 const UNITS_TABLE = 'agent_rag_trees_units'
+/** The \`schema\` you pass the store, if the tables live in a database schema; \`undefined\` for none. */
+const SCHEMA = undefined
 
 export default class extends BaseSchema {
   /** Same reason as the agent tables migration: the DDL runs on the manager's own pooled connection. */
@@ -29,12 +31,14 @@ export default class extends BaseSchema {
     const store = new PgDocumentTreeStore(db.connection(this.db.connectionName), {
       table: TABLE,
       unitsTable: UNITS_TABLE,
+      ...(SCHEMA !== undefined ? { schema: SCHEMA } : {}),
     })
     await store.ensureSchema()
   }
 
   async down() {
-    this.schema.dropTableIfExists(UNITS_TABLE)
-    this.schema.dropTableIfExists(TABLE)
+    const schema = SCHEMA !== undefined ? this.schema.withSchema(SCHEMA) : this.schema
+    schema.dropTableIfExists(UNITS_TABLE)
+    schema.dropTableIfExists(TABLE)
   }
 }

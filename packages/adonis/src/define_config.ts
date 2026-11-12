@@ -149,6 +149,16 @@ export interface AgentConfig {
    * (`openCodeDurable()`). Omit → the loop, on `model`.
    */
   engine?: AgentEngine | AgentEngineFactory;
+  /**
+   * The database schema (a Postgres schema, a MySQL database) every SQL-backed piece of the agent
+   * keeps its tables in — the Lucid store, pricing, governance, the Lucid token sink, the pgvector
+   * retriever, the channel state, and the A2A / Poppy stores — e.g. `'agent'` →
+   * `"agent"."agent_thread"`, while the app's own tables stay in `public`. Each piece takes its own
+   * `schema` to override it. Every statement names the schema; never put it in a Lucid connection's
+   * `searchPath` (behind PgBouncer in transaction mode that setting leaks to other clients). Created
+   * at boot when the tables are. Refused on SQLite. Default: none (each connection's current schema).
+   */
+  schema?: string;
   /** Name of the store (a key of `stores`). Omit for the in-memory store (single-process). */
   store?: string;
   /** Named stores, built with the {@link stores} factory. Provide `lucid` and/or `memory`. */

@@ -34,6 +34,17 @@ import type { LucidDatabaseLike } from './lucid.js';
  */
 export interface StoreContext {
   app: ApplicationService;
+  /**
+   * The top-level `schema` of `config/agent.ts`: the database schema every SQL-backed piece puts its
+   * tables in unless it names its own. Absent → none (each connection's current schema).
+   */
+  schema?: string;
+}
+
+/** The schema a factory uses: its own `schema` option, else the config's top-level one. */
+function schemaOf(own: string | undefined, ctx: StoreContext): { schema?: string } {
+  const schema = own ?? ctx.schema;
+  return schema === undefined ? {} : { schema };
 }
 
 /**
@@ -72,13 +83,29 @@ async function resolveLucidDatabase(app: ApplicationService): Promise<LucidConne
  * app's default connection (no `connection` was passed).
  */
 const LUCID_STORE_CONNECTION = Symbol.for('@adonis-agora/agent:lucid-store-connection');
+/** Marker carrying a `stores.lucid()` factory's own `schema` option, mirrored the same way. */
+const LUCID_STORE_SCHEMA = Symbol.for('@adonis-agora/agent:lucid-store-schema');
 
-function tagLucidStore(factory: StoreFactory, connection: string | undefined): StoreFactory {
+function tagLucidStore(
+  factory: StoreFactory,
+  connection: string | undefined,
+  schema: string | undefined,
+): StoreFactory {
   Object.defineProperty(factory, LUCID_STORE_CONNECTION, {
     value: connection ?? null,
     enumerable: false,
   });
+  Object.defineProperty(factory, LUCID_STORE_SCHEMA, { value: schema, enumerable: false });
   return factory;
+}
+
+/**
+ * If `factory` is a `stores.lucid()` store factory with its own `schema`, that schema; otherwise
+ * `undefined` (the provider then mirrors the config's top-level one, like every factory).
+ */
+export function lucidStoreSchema(factory: unknown): string | undefined {
+  if (typeof factory !== 'function') return undefined;
+  return (factory as unknown as Record<symbol, string | undefined>)[LUCID_STORE_SCHEMA];
 }
 
 /**
@@ -102,6 +129,13 @@ export interface LucidStoreConfig {
    * instead. Governs the pricing store and governance read-model too, which share these tables.
    */
   autoCreateTables?: boolean;
+  /**
+   * The database schema (a Postgres schema, a MySQL database) the tables live in, e.g. `'agent'` →
+   * `"agent"."agent_thread"`. Every statement names it — never `SET search_path`. Default: the
+   * top-level `schema` of `config/agent.ts`, else none (the connection's current schema). Created at
+   * boot when `autoCreateTables` is on. Refused on SQLite.
+   */
+  schema?: string;
 }
 
 /** Options for the in-memory store (single-process, non-durable). */
@@ -146,10 +180,11 @@ export const stores = {
         ...(config.autoCreateTables !== undefined
           ? { autoCreateTables: config.autoCreateTables }
           : {}),
+        ...schemaOf(config.schema, ctx),
       });
     };
-    // Tag with the connection so the provider can mirror it for pricing/governance defaults.
-    return tagLucidStore(factory, config.connection);
+    // Tag with the connection and schema so the provider can mirror them for pricing/governance.
+    return tagLucidStore(factory, config.connection, config.schema);
   },
 };
 
@@ -172,6 +207,13 @@ export interface LucidPricingConfig {
    * is what lets a pricing seed run before the first agent run. Set `false` to run the migration.
    */
   autoCreateTables?: boolean;
+  /**
+   * The database schema (a Postgres schema, a MySQL database) the tables live in, e.g. `'agent'` →
+   * `"agent"."agent_thread"`. Every statement names it — never `SET search_path`. Default: the
+   * top-level `schema` of `config/agent.ts`, else none (the connection's current schema). Created at
+   * boot when `autoCreateTables` is on. Refused on SQLite.
+   */
+  schema?: string;
 }
 
 /**
@@ -206,6 +248,7 @@ export const pricingStores = {
         ...(config.autoCreateTables !== undefined
           ? { autoCreateTables: config.autoCreateTables }
           : {}),
+        ...schemaOf(config.schema, ctx),
       });
     };
   },
@@ -244,6 +287,13 @@ export interface LucidGovernanceConfig {
    * `false` to run the migration.
    */
   autoCreateTables?: boolean;
+  /**
+   * The database schema (a Postgres schema, a MySQL database) the tables live in, e.g. `'agent'` →
+   * `"agent"."agent_thread"`. Every statement names it — never `SET search_path`. Default: the
+   * top-level `schema` of `config/agent.ts`, else none (the connection's current schema). Created at
+   * boot when `autoCreateTables` is on. Refused on SQLite.
+   */
+  schema?: string;
 }
 
 /**
@@ -272,6 +322,7 @@ export const governanceQueries = {
         ...(config.autoCreateTables !== undefined
           ? { autoCreateTables: config.autoCreateTables }
           : {}),
+        ...schemaOf(config.schema, ctx),
       });
     };
   },
@@ -317,6 +368,11 @@ export interface PgVectorRetrieverConfig {
   connection?: string;
   /** Chunk table name. Default `agent_rag_chunks`. Validated against a strict identifier regex. */
   table?: string;
+  /**
+   * The database schema the chunk table lives in (`"rag"."agent_rag_chunks"`). Default: the
+   * top-level `schema` of `config/agent.ts`, else none. Postgres only. `ensureSchema` creates it.
+   */
+  schema?: string;
   /**
    * Embedding width — must match the model (e.g. 1536 for text-embedding-3-small). Default 1536. A list
    * makes a mixed-dimension table (one partial HNSW index per width); see `PgVectorStoreOptions`.
@@ -441,6 +497,7 @@ export const retrievers = {
         })());
       const storeOptions: PgVectorStoreOptions = {
         ...(config.table !== undefined ? { table: config.table } : {}),
+        ...schemaOf(config.schema, ctx),
         ...(config.dimension !== undefined ? { dimension: config.dimension } : {}),
         ...(config.metric !== undefined ? { metric: config.metric } : {}),
         ...(config.columns !== undefined ? { columns: config.columns } : {}),
@@ -641,6 +698,11 @@ export interface LucidTokenSinkConfig {
   /** The frame table. Defaults to `agent_stream_frame`. */
   tableName?: string;
   /**
+   * The database schema the frame table lives in. Default: the top-level `schema` of
+   * `config/agent.ts`, else none (the connection's current schema). Refused on SQLite.
+   */
+  schema?: string;
+  /**
    * Gap (ms) between two reads of a run a subscriber is following — the most a frame waits before a
    * browser sees it. Defaults to 250.
    */
@@ -731,17 +793,17 @@ export const tokenSinks = {
   lucid(config: LucidTokenSinkConfig = {}): TokenSinkFactory {
     return async (ctx) => {
       const { LucidTokenStreamSink } = await import('../lucid-token-stream-sink.js');
-      const { connection, db: ownDb, ...options } = config;
+      const { connection, db: ownDb, schema, ...options } = config;
       const manager = ownDb === undefined ? await resolveLucidDatabase(ctx.app) : undefined;
       const db =
         ownDb ??
         ((connection !== undefined
           ? manager?.connection(connection)
           : manager) as unknown as LucidDatabaseLike);
-      return new LucidTokenStreamSink(
-        db,
-        Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined)),
-      );
+      return new LucidTokenStreamSink(db, {
+        ...Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined)),
+        ...schemaOf(schema, ctx),
+      });
     };
   },
 };

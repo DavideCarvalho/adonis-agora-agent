@@ -43,8 +43,16 @@ import type {
   ActionProposalDiscoveryIndexStore,
   ActionProposalWorkerStore,
 } from '../spi/action-proposal-worker-store.js';
+import { validateSchema } from './db-schema.js';
 import type { LucidDatabaseLike } from './lucid.js';
-import { AGENT_TABLES, forDialect, rowsOf } from './lucid-schema.js';
+import {
+  type AgentSchemaOptions,
+  type AgentTableKey,
+  agentTables,
+  agentTablesSql,
+  forDialect,
+  rowsOf,
+} from './lucid-schema.js';
 import { isMySql } from './sql-dialect.js';
 import { withStoreTransaction } from './sqlite-transactions.js';
 
@@ -108,12 +116,21 @@ export class LucidActionProposalStore
     ActionProposalOutcomeStore
 {
   private readonly proposalClock: () => number;
+  /** The database schema the agent tables live in (`undefined`: the connection's current one). */
+  protected readonly schema: string | undefined;
+  /** The agent tables as the query builder names them (`schema.table` under a schema). */
+  protected readonly tables: Record<AgentTableKey, string>;
+  /** The agent tables as raw SQL names them (`"schema"."table"` under a schema). */
+  protected readonly tablesSql: Record<AgentTableKey, string>;
   constructor(
     private readonly proposalDb: LucidDatabaseLike,
-    options: ActionProposalStoreOptions = {},
+    options: ActionProposalStoreOptions & AgentSchemaOptions = {},
     private readonly ensureProposalSchema: () => Promise<void> = async () => {},
   ) {
     this.proposalClock = options.clock ?? Date.now;
+    this.schema = validateSchema(proposalDb, options.schema, 'stores.lucid()');
+    this.tables = agentTables(this.schema);
+    this.tablesSql = agentTablesSql(this.schema);
   }
 
   async createActionProposal(input: CreateActionProposal): Promise<CreateActionProposalResult> {
@@ -140,7 +157,7 @@ export class LucidActionProposalStore
       'created_at',
       'updated_at',
     ];
-    const insertion = `INSERT INTO "${AGENT_TABLES.actionProposals}" (${columns.map((column) => `"${column}"`).join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`;
+    const insertion = `INSERT INTO ${this.tablesSql.actionProposals} (${columns.map((column) => `"${column}"`).join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`;
     const conflict = mysql
       ? ' ON DUPLICATE KEY UPDATE "id" = "id"'
       : ' ON CONFLICT ("id") DO NOTHING';
@@ -168,7 +185,7 @@ export class LucidActionProposalStore
       proposal.updatedAt,
     ]);
     const row = await this.proposalDb
-      .from(AGENT_TABLES.actionProposals)
+      .from(this.tables.actionProposals)
       .where('id', proposalKey(input.id))
       .first();
     if (!row) throw new Error('Proposal insert did not persist a row');
@@ -192,13 +209,13 @@ export class LucidActionProposalStore
       const tx = client as LucidDatabaseLike;
       await tx.rawQuery(
         forDialect(
-          `UPDATE "${AGENT_TABLES.threads}" SET "updated_at" = "updated_at" WHERE "id" = ?`,
+          `UPDATE ${this.tablesSql.threads} SET "updated_at" = "updated_at" WHERE "id" = ?`,
           isMySql(this.proposalDb),
         ),
         [input.threadId],
       );
       const scope = await tx
-        .from(AGENT_TABLES.threads)
+        .from(this.tables.threads)
         .where('id', input.threadId)
         .whereNull('deleted_at')
         .first();
@@ -213,7 +230,7 @@ export class LucidActionProposalStore
       const created = await adapter.createActionProposal(input);
       if (created.status !== 'created') return created;
       const siblings = await tx
-        .from(AGENT_TABLES.actionProposals)
+        .from(this.tables.actionProposals)
         .where('scope_key', scopeKey(input))
         .where('decision', 'pending')
         .where('replacement_group_key', key([input.toolName, input.replacementKey]))
@@ -251,7 +268,7 @@ export class LucidActionProposalStore
   protected async rememberedActionProposalTools(scope: ActionProposalScope): Promise<string[]> {
     await this.ensureProposalSchema();
     const rows = await this.proposalDb
-      .from(AGENT_TABLES.actionProposals)
+      .from(this.tables.actionProposals)
       .where('scope_key', scopeKey(scope))
       .where('decision', 'approved')
       .whereIn('execution_status', ['succeeded', 'failed'])
@@ -271,7 +288,7 @@ export class LucidActionProposalStore
   async getActionProposal(scope: ActionProposalScope, id: string): Promise<ActionProposal | null> {
     await this.ensureProposalSchema();
     const row = await this.proposalDb
-      .from(AGENT_TABLES.actionProposals)
+      .from(this.tables.actionProposals)
       .where('id', proposalKey(id))
       .where('scope_key', scopeKey(scope))
       .first();
@@ -300,7 +317,7 @@ export class LucidActionProposalStore
     const rows = rowsOf(
       await this.proposalDb.rawQuery(
         forDialect(
-          `SELECT * FROM "${AGENT_TABLES.actionProposals}" WHERE ${filters.join(' AND ')} ORDER BY "created_at" ASC, "logical_sort" ASC LIMIT ?`,
+          `SELECT * FROM ${this.tablesSql.actionProposals} WHERE ${filters.join(' AND ')} ORDER BY "created_at" ASC, "logical_sort" ASC LIMIT ?`,
           isMySql(this.proposalDb),
         ),
         bindings,
@@ -317,7 +334,7 @@ export class LucidActionProposalStore
     await this.ensureProposalSchema();
     for (let attempt = 0; attempt < 32; attempt++) {
       const row = await this.proposalDb
-        .from(AGENT_TABLES.actionProposals)
+        .from(this.tables.actionProposals)
         .where('id', proposalKey(id))
         .where('scope_key', scopeKey(scope))
         .first();
@@ -333,7 +350,7 @@ export class LucidActionProposalStore
       )
         return result;
       const changed = await this.proposalDb
-        .from(AGENT_TABLES.actionProposals)
+        .from(this.tables.actionProposals)
         .where('id', proposalKey(id))
         .where('scope_key', scopeKey(scope))
         .where('version', row.version)
@@ -352,7 +369,7 @@ export class LucidActionProposalStore
   async getThreadActionProposalScope(threadId: string) {
     await this.ensureProposalSchema();
     const row = await this.proposalDb
-      .from(AGENT_TABLES.threads)
+      .from(this.tables.threads)
       .where('id', threadId)
       .whereNull('deleted_at')
       .first();
@@ -372,7 +389,7 @@ export class LucidActionProposalStore
     const rows = rowsOf(
       await this.proposalDb.rawQuery(
         forDialect(
-          `SELECT * FROM "${AGENT_TABLES.actionProposals}" WHERE "delivery_status" = 'pending' AND ("delivery_lease_expires_at" IS NULL OR "delivery_lease_expires_at" <= ?) ORDER BY "created_at" ASC, "logical_sort" ASC LIMIT 32`,
+          `SELECT * FROM ${this.tablesSql.actionProposals} WHERE "delivery_status" = 'pending' AND ("delivery_lease_expires_at" IS NULL OR "delivery_lease_expires_at" <= ?) ORDER BY "created_at" ASC, "logical_sort" ASC LIMIT 32`,
           isMySql(this.proposalDb),
         ),
         [now],
@@ -407,7 +424,7 @@ export class LucidActionProposalStore
     actionProposalOutcomeFenceValid({} as ActionProposal, command, this.proposalClock());
     await this.ensureProposalSchema();
     const observed = await this.proposalDb
-      .from(AGENT_TABLES.actionProposals)
+      .from(this.tables.actionProposals)
       .where('outcome_key', key(command.outcomeId))
       .first();
     if (!observed) return { status: 'not_found' };
@@ -418,11 +435,11 @@ export class LucidActionProposalStore
       // This write starts SQLite's reserved writer lock before reading a transaction snapshot;
       // on PostgreSQL/MySQL the same update locks the real admission row used by user sends.
       await tx.rawQuery(
-        sql(`UPDATE "${AGENT_TABLES.threads}" SET "updated_at" = "updated_at" WHERE "id" = ?`),
+        sql(`UPDATE ${this.tablesSql.threads} SET "updated_at" = "updated_at" WHERE "id" = ?`),
         [observedProposal.threadId],
       );
       const row = await tx
-        .from(AGENT_TABLES.actionProposals)
+        .from(this.tables.actionProposals)
         .where('id', observed.id)
         .where('scope_key', observed.scope_key)
         .first();
@@ -439,7 +456,7 @@ export class LucidActionProposalStore
       if (proposal.outcomeDelivery?.status === 'discarded') return { status: 'discarded' };
       const now = this.proposalClock();
       if (!actionProposalOutcomeFenceValid(proposal, command, now)) return { status: 'conflict' };
-      const thread = await tx.from(AGENT_TABLES.threads).where('id', proposal.threadId).first();
+      const thread = await tx.from(this.tables.threads).where('id', proposal.threadId).first();
       const discarded =
         !thread ||
         thread.id !== proposal.threadId ||
@@ -461,13 +478,13 @@ export class LucidActionProposalStore
         const sequence = rowsOf(
           await tx.rawQuery(
             sql(
-              `SELECT MAX("seq") AS "maximum" FROM "${AGENT_TABLES.messages}" WHERE "thread_id" = ?`,
+              `SELECT MAX("seq") AS "maximum" FROM ${this.tablesSql.messages} WHERE "thread_id" = ?`,
             ),
             [proposal.threadId],
           ),
         )[0];
         // Store JSON metadata in escaped TEXT; native UI columns remain empty on these facts.
-        await tx.table(AGENT_TABLES.messages).insert({
+        await tx.table(this.tables.messages).insert({
           id: messageId,
           thread_id: proposal.threadId,
           seq: Number(sequence?.maximum ?? 0) + 1,
@@ -478,7 +495,7 @@ export class LucidActionProposalStore
         });
       }
       const changed = await tx
-        .from(AGENT_TABLES.actionProposals)
+        .from(this.tables.actionProposals)
         .where('id', row.id)
         .where('scope_key', row.scope_key)
         .where('version', row.version)
@@ -490,7 +507,7 @@ export class LucidActionProposalStore
       if (affected(changed) !== 1) throw new Error('Outcome admission lost its version fence');
       if (!discarded)
         await tx
-          .from(AGENT_TABLES.threads)
+          .from(this.tables.threads)
           .where('id', proposal.threadId)
           .update({ updated_at: now });
       return discarded ? { status: 'discarded' } : { status: 'applied', messageId };
@@ -504,7 +521,7 @@ export class LucidActionProposalStore
     const rows = rowsOf(
       await this.proposalDb.rawQuery(
         forDialect(
-          `SELECT * FROM "${AGENT_TABLES.actionProposals}" WHERE "discovery_index_version" = 1 AND "decision" = 'approved' AND ("execution_status" = 'queued' OR ("execution_status" = 'executing' AND "lease_expires_at" <= ?)) ORDER BY "created_at" ASC, "logical_sort" ASC LIMIT 32`,
+          `SELECT * FROM ${this.tablesSql.actionProposals} WHERE "discovery_index_version" = 1 AND "decision" = 'approved' AND ("execution_status" = 'queued' OR ("execution_status" = 'executing' AND "lease_expires_at" <= ?)) ORDER BY "created_at" ASC, "logical_sort" ASC LIMIT 32`,
           isMySql(this.proposalDb),
         ),
         [now],
@@ -525,7 +542,7 @@ export class LucidActionProposalStore
     const rows = rowsOf(
       await this.proposalDb.rawQuery(
         forDialect(
-          `SELECT * FROM "${AGENT_TABLES.actionProposals}" WHERE "discovery_index_version" = 1 AND "decision" = 'pending' AND "proposal_expires_at" <= ? ORDER BY "created_at" ASC, "logical_sort" ASC LIMIT ?`,
+          `SELECT * FROM ${this.tablesSql.actionProposals} WHERE "discovery_index_version" = 1 AND "decision" = 'pending' AND "proposal_expires_at" <= ? ORDER BY "created_at" ASC, "logical_sort" ASC LIMIT ?`,
           isMySql(this.proposalDb),
         ),
         [now, command.limit],
@@ -548,7 +565,7 @@ export class LucidActionProposalStore
     validateActionProposalDiscoveryIndexBatch(command);
     await this.ensureProposalSchema();
     const rows = await this.proposalDb
-      .from(AGENT_TABLES.actionProposals)
+      .from(this.tables.actionProposals)
       .where('discovery_index_version', 0)
       .orderBy('created_at', 'asc')
       .orderBy('logical_sort', 'asc')
@@ -558,7 +575,7 @@ export class LucidActionProposalStore
     for (const row of rows) {
       const proposal = read(row);
       const result = await this.proposalDb
-        .from(AGENT_TABLES.actionProposals)
+        .from(this.tables.actionProposals)
         .where('id', row.id)
         .where('scope_key', row.scope_key)
         .where('version', row.version)

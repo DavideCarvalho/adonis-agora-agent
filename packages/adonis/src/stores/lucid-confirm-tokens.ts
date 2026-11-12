@@ -1,6 +1,12 @@
 import type { ConfirmTokenClaim, ConfirmTokenStore } from '../spi/confirm-token-store.js';
+import { validateSchema } from './db-schema.js';
 import type { LucidDatabaseLike } from './lucid.js';
-import { AGENT_TABLES, ensureAgentTables } from './lucid-schema.js';
+import {
+  type AgentTableKey,
+  agentTables,
+  agentTablesSql,
+  ensureAgentTables,
+} from './lucid-schema.js';
 import { dialectOf } from './sql-dialect.js';
 
 /** Options for {@link LucidConfirmTokenStore}. */
@@ -10,6 +16,11 @@ export interface LucidConfirmTokenStoreOptions {
    * `false` to run the migration.
    */
   autoCreateTables?: boolean;
+  /**
+   * The database schema (a Postgres schema, a MySQL database) the agent tables live in — the same
+   * one the agent store writes to. Default: none (the connection's current schema). Refused on SQLite.
+   */
+  schema?: string | undefined;
 }
 
 /** How many rows a raw write touched, whatever the driver wraps it in. */
@@ -40,17 +51,27 @@ function insertedRows(result: unknown): number {
  */
 export class LucidConfirmTokenStore implements ConfirmTokenStore {
   private readonly autoCreateTables: boolean;
+  private readonly schema: string | undefined;
+  /** The agent tables as the query builder names them (`schema.table` under a schema). */
+  private readonly tables: Record<AgentTableKey, string>;
+  /** The agent tables as raw SQL names them (`"schema"."table"` under a schema). */
+  private readonly tablesSql: Record<AgentTableKey, string>;
 
   constructor(
     private readonly db: LucidDatabaseLike,
     options: LucidConfirmTokenStoreOptions = {},
   ) {
     this.autoCreateTables = options.autoCreateTables ?? true;
+    this.schema = validateSchema(db, options.schema, 'LucidConfirmTokenStore');
+    this.tables = agentTables(this.schema);
+    this.tablesSql = agentTablesSql(this.schema);
   }
 
   /** Provision the shared schema on first use (no-op when disabled), memoized across the stores. */
   private ready(): Promise<void> {
-    return this.autoCreateTables ? ensureAgentTables(this.db) : Promise.resolve();
+    return this.autoCreateTables
+      ? ensureAgentTables(this.db, { schema: this.schema })
+      : Promise.resolve();
   }
 
   /** Provision the shared schema now. Idempotent. */
@@ -60,27 +81,27 @@ export class LucidConfirmTokenStore implements ConfirmTokenStore {
 
   async claim(input: ConfirmTokenClaim): Promise<boolean> {
     await this.ready();
-    const table = AGENT_TABLES.confirmTokens;
+    const table = this.tablesSql.confirmTokens;
     const bindings = [input.hash, input.actorRef, input.tool, input.expiresAt, Date.now()];
     const sql = /mysql|maria/i.test(dialectOf(this.db))
-      ? `INSERT IGNORE INTO ${table} (hash, actor_ref, tool, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`
-      : `INSERT INTO "${table}" ("hash", "actor_ref", "tool", "expires_at", "created_at") VALUES (?, ?, ?, ?, ?) ON CONFLICT ("hash") DO NOTHING RETURNING "hash"`;
+      ? `INSERT IGNORE INTO ${table.replaceAll('"', '`')} (hash, actor_ref, tool, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`
+      : `INSERT INTO ${table} ("hash", "actor_ref", "tool", "expires_at", "created_at") VALUES (?, ?, ?, ?, ?) ON CONFLICT ("hash") DO NOTHING RETURNING "hash"`;
     return insertedRows(await this.db.rawQuery(sql, bindings)) === 1;
   }
 
   async release(hash: string): Promise<void> {
     await this.ready();
-    await this.db.from(AGENT_TABLES.confirmTokens).where('hash', hash).delete();
+    await this.db.from(this.tables.confirmTokens).where('hash', hash).delete();
   }
 
   async purgeExpired(now: number = Date.now()): Promise<number> {
     await this.ready();
     const expired = await this.db
-      .from(AGENT_TABLES.confirmTokens)
+      .from(this.tables.confirmTokens)
       .where('expires_at', '<', now)
       .select('hash');
     if (expired.length === 0) return 0;
-    await this.db.from(AGENT_TABLES.confirmTokens).where('expires_at', '<', now).delete();
+    await this.db.from(this.tables.confirmTokens).where('expires_at', '<', now).delete();
     return expired.length;
   }
 }

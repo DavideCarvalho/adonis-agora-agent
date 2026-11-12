@@ -544,7 +544,7 @@ channels.handle(adapter, { …, store: redisChannelStore(redis) }) // SET … PX
 channels.handle(adapter, { …, store: lucidChannelStore(db, { connection: 'pg', table: 'wa_state' }) })
 ```
 
-`lucidChannelStore(db, { connection?, table?, autoCreateTables?, purgeEveryMs? })`; anything implementing `ChannelStore` (`claim`, `get`, `set`, `delete`, with TTLs) works. Without a durable engine the turn runs on the replica that took the webhook; with one, on whichever process the engine runs the job. Its frames reach it through whatever [token sink](/docs/agent/redis-streaming) is configured — a shared one (Redis, Lucid) for a job resumed on another process.
+`lucidChannelStore(db, { connection?, table?, schema?, autoCreateTables?, purgeEveryMs? })` (the default store takes the agent store's `schema`); anything implementing `ChannelStore` (`claim`, `get`, `set`, `delete`, with TTLs) works. Without a durable engine the turn runs on the replica that took the webhook; with one, on whichever process the engine runs the job. Its frames reach it through whatever [token sink](/docs/agent/redis-streaming) is configured — a shared one (Redis, Lucid) for a job resumed on another process.
 
 <Callout type="info" title="Background work and deploys">
 Without a durable engine the handler answers `200` before the turn runs, so a process that stops mid-turn loses that answer (the provider will not retry an acknowledged webhook). `await handler.drain()` waits for every message the handler took — call it from a shutdown hook, and in tests. With a durable engine nothing is lost on a restart: the engine resumes the job ([Durable processing](#durable-processing)).

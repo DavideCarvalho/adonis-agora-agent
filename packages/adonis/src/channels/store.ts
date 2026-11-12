@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { qualifiedSql, validateSchema } from '../stores/db-schema.js';
 import type { LucidRawRunner } from '../stores/lucid.js';
 import { AGENT_TABLES, ensureChannelStateTable, rowsOf } from '../stores/lucid-schema.js';
 import { isMySql, portableSql } from '../stores/sql-dialect.js';
@@ -110,6 +111,12 @@ export interface LucidChannelStoreOptions {
   /** Default `agent_channel_state`. */
   table?: string;
   /**
+   * The database schema (a Postgres schema, a MySQL database) the table lives in. Default: none —
+   * the connection's current schema. Refused on SQLite. The channel handler's default store takes the
+   * agent store's.
+   */
+  schema?: string | undefined;
+  /**
    * Create the table (and its index) on first use. Default `true`; `false` when a migration owns it
    * (`createAgentTables` and the published migration create it under the default name).
    */
@@ -156,6 +163,8 @@ export function lucidChannelStore(
       ? database.connection(options.connection)
       : database;
   const table = options.table ?? AGENT_TABLES.channelState;
+  const schema = validateSchema(db, options.schema, 'lucidChannelStore()');
+  const ref = qualifiedSql(table, schema);
   const purgeEveryMs = options.purgeEveryMs ?? 10 * 60 * 1000;
   const mysql = isMySql(db);
   const sql = (statement: string) => portableSql(db, statement);
@@ -163,7 +172,7 @@ export function lucidChannelStore(
   let lastPurge = 0;
   const init = () => {
     if (options.autoCreateTables === false) return Promise.resolve();
-    ready ??= ensureChannelStateTable(db, table).catch((error) => {
+    ready ??= ensureChannelStateTable(db, table, { schema }).catch((error) => {
       ready = undefined;
       throw error;
     });
@@ -172,7 +181,7 @@ export function lucidChannelStore(
   const purge = async (now: number) => {
     if (now - lastPurge < purgeEveryMs) return;
     lastPurge = now;
-    await db.rawQuery(sql(`DELETE FROM "${table}" WHERE "expires_at" <= ?`), [now]);
+    await db.rawQuery(sql(`DELETE FROM ${ref} WHERE "expires_at" <= ?`), [now]);
   };
 
   return {
@@ -182,26 +191,23 @@ export function lucidChannelStore(
       await purge(now);
       const id = storedKey(key);
       // An expired claim is free again.
-      await db.rawQuery(sql(`DELETE FROM "${table}" WHERE "key" = ? AND "expires_at" <= ?`), [
-        id,
-        now,
-      ]);
+      await db.rawQuery(sql(`DELETE FROM ${ref} WHERE "key" = ? AND "expires_at" <= ?`), [id, now]);
       const bindings = [id, now + ttlMs, now];
       const insert = mysql
         ? sql(
-            `INSERT IGNORE INTO "${table}" ("key", "value", "expires_at", "created_at") VALUES (?, NULL, ?, ?)`,
+            `INSERT IGNORE INTO ${ref} ("key", "value", "expires_at", "created_at") VALUES (?, NULL, ?, ?)`,
           )
-        : `INSERT INTO "${table}" ("key", "value", "expires_at", "created_at") VALUES (?, NULL, ?, ?) ON CONFLICT ("key") DO NOTHING RETURNING "key"`;
+        : `INSERT INTO ${ref} ("key", "value", "expires_at", "created_at") VALUES (?, NULL, ?, ?) ON CONFLICT ("key") DO NOTHING RETURNING "key"`;
       return affected(await db.rawQuery(insert, bindings)) === 1;
     },
 
     async get(key) {
       await init();
       const rows = rowsOf(
-        await db.rawQuery(
-          sql(`SELECT "value" FROM "${table}" WHERE "key" = ? AND "expires_at" > ?`),
-          [storedKey(key), Date.now()],
-        ),
+        await db.rawQuery(sql(`SELECT "value" FROM ${ref} WHERE "key" = ? AND "expires_at" > ?`), [
+          storedKey(key),
+          Date.now(),
+        ]),
       );
       const value = rows[0]?.value;
       return typeof value === 'string' ? value : null;
@@ -214,16 +220,16 @@ export function lucidChannelStore(
       await db.rawQuery(
         mysql
           ? sql(
-              `INSERT INTO "${table}" ("key", "value", "expires_at", "created_at") VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE "value" = VALUES("value"), "expires_at" = VALUES("expires_at")`,
+              `INSERT INTO ${ref} ("key", "value", "expires_at", "created_at") VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE "value" = VALUES("value"), "expires_at" = VALUES("expires_at")`,
             )
-          : `INSERT INTO "${table}" ("key", "value", "expires_at", "created_at") VALUES (?, ?, ?, ?) ON CONFLICT ("key") DO UPDATE SET "value" = excluded."value", "expires_at" = excluded."expires_at"`,
+          : `INSERT INTO ${ref} ("key", "value", "expires_at", "created_at") VALUES (?, ?, ?, ?) ON CONFLICT ("key") DO UPDATE SET "value" = excluded."value", "expires_at" = excluded."expires_at"`,
         bindings,
       );
     },
 
     async delete(key) {
       await init();
-      await db.rawQuery(sql(`DELETE FROM "${table}" WHERE "key" = ?`), [storedKey(key)]);
+      await db.rawQuery(sql(`DELETE FROM ${ref} WHERE "key" = ?`), [storedKey(key)]);
     },
   };
 }

@@ -3,6 +3,10 @@ import { resolveAgentTenancy } from '../agora/tenancy.js';
 import { resolveDashboardConfig } from '../dashboard/define_config.js';
 import { csrfBlocksPath } from '../dev-tools/csrf.js';
 import { normalizeMcpPath } from '../mcp/discovery.js';
+import { schemaExists } from '../stores/db-schema.js';
+import type { LucidDatabaseLike } from '../stores/lucid.js';
+import { AGENT_TABLES, agentTables, rowsOf } from '../stores/lucid-schema.js';
+import { isMySql } from '../stores/sql-dialect.js';
 import type { AgoraDoctorCheck, AgoraDoctorResult } from './agora_doctor.js';
 
 const DOCS = 'https://davidecarvalho.github.io/agora/docs/agent';
@@ -169,6 +173,82 @@ export function checkTenancyStore(
   };
 }
 
+/** What {@link checkDbSchema} reads from the Lucid agent store. */
+export interface SchemaStoreLike {
+  database: LucidDatabaseLike;
+  databaseSchema: string | undefined;
+}
+
+/** Thrown inside the write probe's transaction so it always rolls back. */
+class ProbeRollback extends Error {}
+
+/**
+ * `agent.db-schema`: with a `schema` set, it exists, the agent tables are in it, and the connection
+ * can write there (one insert, rolled back). Only registered when a schema is configured.
+ */
+export async function checkDbSchema(
+  store: SchemaStoreLike | undefined,
+): Promise<AgoraDoctorResult> {
+  if (store?.databaseSchema === undefined) {
+    return { status: 'skip', message: 'The agent store has no database schema configured.' };
+  }
+  const { database: db, databaseSchema: schema } = store;
+  const docs = `${DOCS}/stores/lucid#database-schema`;
+  if (!(await schemaExists(db, schema))) {
+    return {
+      status: 'error',
+      message: `The database schema "${schema}" does not exist.`,
+      fix: 'Start the app once with `autoCreateTables` on, or run the agent migration (`createAgentTables`).',
+      docs,
+    };
+  }
+  const present = new Set(
+    rowsOf(
+      await db.rawQuery(
+        'SELECT table_name AS name FROM information_schema.tables WHERE table_schema = ?',
+        [schema],
+      ),
+    ).map((row) => String(row.name ?? row.NAME)),
+  );
+  const missing = Object.values(AGENT_TABLES).filter((table) => !present.has(table));
+  if (missing.length > 0) {
+    return {
+      status: 'error',
+      message: `Schema "${schema}" lacks ${missing.join(', ')}.`,
+      fix: 'Start the app once with `autoCreateTables` on, or run the agent migration (`createAgentTables`).',
+      docs,
+    };
+  }
+  try {
+    await db.transaction(async (trx) => {
+      await trx.table(agentTables(schema).confirmTokens).insert({
+        hash: `doctor-${Date.now()}`,
+        actor_ref: 'agora:doctor',
+        tool: 'agora:doctor',
+        expires_at: 0,
+        created_at: 0,
+      });
+      throw new ProbeRollback();
+    });
+  } catch (error) {
+    if (!(error instanceof ProbeRollback)) {
+      const grant = isMySql(db)
+        ? `GRANT INSERT, UPDATE, DELETE ON \`${schema}\`.* TO <app user>`
+        : `GRANT USAGE ON SCHEMA "${schema}" TO <app role>; GRANT INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "${schema}" TO <app role>`;
+      return {
+        status: 'error',
+        message: `The connection cannot write to schema "${schema}": ${(error as Error).message}`,
+        fix: grant,
+        docs,
+      };
+    }
+  }
+  return {
+    status: 'ok',
+    message: `Schema "${schema}" holds the agent tables and the connection can write there.`,
+  };
+}
+
 /** The checks `@adonis-agora/agent`'s provider registers. */
 export function agentDoctorChecks(
   deps: {
@@ -176,8 +256,25 @@ export function agentDoctorChecks(
     store?: () => Record<string, unknown> | undefined;
     /** Libs registered on the dev tools hub without an `authorize` of their own. */
     consolelessLibs?: () => Promise<string[]>;
+    /**
+     * The Lucid agent store, when it keeps its tables in a database `schema`. Absent → the
+     * `agent.db-schema` check is not registered at all (no schema, nothing new to report).
+     */
+    schemaStore?: () => SchemaStoreLike | undefined;
   } = {},
 ): AgoraDoctorCheck[] {
+  const schemaCheck: AgoraDoctorCheck[] =
+    deps.schemaStore === undefined
+      ? []
+      : [
+          {
+            id: 'agent.db-schema',
+            lib: 'agent',
+            title: 'Database schema',
+            cost: 'deep',
+            run: () => checkDbSchema(deps.schemaStore?.()),
+          },
+        ];
   return [
     {
       id: 'agent.console-gate',
@@ -226,5 +323,6 @@ export function agentDoctorChecks(
         return checkTenancyStore(agent, enabled, deps.store?.());
       },
     },
+    ...schemaCheck,
   ];
 }

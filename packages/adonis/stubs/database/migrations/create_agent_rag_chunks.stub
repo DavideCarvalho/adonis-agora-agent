@@ -22,8 +22,12 @@ import { PgVectorStore } from '@adonis-agora/agent'
  *   - \`DIMENSION\` — your embedding model's width (1536 for text-embedding-3-small).
  *   - \`METRIC\` — 'cosine' (default), 'l2', or 'inner'. Picks the index operator class.
  *   - \`TABLE\` — only if you overrode \`table\` on the retriever.
+ *   - \`SCHEMA\` — only if the chunks live in a database schema (\`schema\` on the retriever or at the
+ *     top of \`config/agent.ts\`). \`ensureSchema\` creates it when missing.
  */
 const TABLE = 'agent_rag_chunks'
+/** The retriever's \`schema\` (or the top-level one of \`config/agent.ts\`); \`undefined\` for none. */
+const SCHEMA = undefined
 const DIMENSION = 1536
 const METRIC = 'cosine'
 
@@ -34,6 +38,7 @@ export default class extends BaseSchema {
   async up() {
     const store = new PgVectorStore(db.connection(this.db.connectionName), {
       table: TABLE,
+      ...(SCHEMA !== undefined ? { schema: SCHEMA } : {}),
       dimension: DIMENSION,
       metric: METRIC,
     })
@@ -41,6 +46,7 @@ export default class extends BaseSchema {
   }
 
   async down() {
-    this.schema.dropTableIfExists(TABLE)
+    const schema = SCHEMA !== undefined ? this.schema.withSchema(SCHEMA) : this.schema
+    schema.dropTableIfExists(TABLE)
   }
 }

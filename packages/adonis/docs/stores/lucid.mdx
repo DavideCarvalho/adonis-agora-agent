@@ -151,6 +151,62 @@ A persisted tool call is addressable by exactly the id the model emitted — the
 - **`modelForThread` reads one column.** A send that names no model reads the model pinned on its thread through this optional `AgentStore` method, as `personaForThread` and `defaultAgentForThread` do for theirs, instead of loading the thread. A custom store without it is read through `getThread`.
 - **`loadThreadForTurn` reads the window a turn sends, not the transcript.** The newest `messageLimit` messages ordered by the database, projected to the columns a model turn reads (`usage`, `follow_ups` and `run_id` stay in the table). `hasAssistantMessage` is a separate one-row existence check over the *whole* thread. The loop probes for this method structurally, so this is an optimization rather than a contract — see [The read a turn makes](/docs/agent/concepts/agent-loop#the-read-a-turn-makes).
 
+## Database schema
+
+Put the agent's tables in a database schema of their own — `"agent"."agent_thread"` — while your
+app's tables stay in `public`. Set `schema` once at the top of `config/agent.ts`:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  model: () => aiSdkModel(openai('gpt-4o-mini')),
+  schema: 'agent',
+  store: 'lucid',
+  stores: { lucid: stores.lucid() },
+})
+```
+
+Every SQL-backed piece takes it: the Lucid store, the pricing store and governance read-model that
+mirror it, the [Lucid token sink](/docs/agent/sql-streaming), the
+[pgvector retriever](/docs/agent/retrieval/pgvector), the [channel state](/docs/agent/channels), and
+the [A2A](/docs/agent/a2a), [Poppy](/docs/agent/poppy) and
+[Poppy connections](/docs/agent/poppy-connections) stores. Each one also takes its own `schema`,
+which wins over the top-level one:
+
+```ts
+stores: { lucid: stores.lucid({ connection: 'pg', schema: 'agent' }) },
+sink: tokenSinks.lucid({ schema: 'agent_stream' }),
+```
+
+The schema is created as the app starts (`CREATE SCHEMA IF NOT EXISTS`) when `autoCreateTables` is
+on. If the database role may not create schemas, boot fails naming the schema and the grant it needs;
+create it once yourself (`CREATE SCHEMA "agent" AUTHORIZATION <app role>`) and the app uses it. With
+`autoCreateTables: false`, the published migration passes the top-level `schema` to
+`createAgentTables`, which creates the schema and the tables in it:
+
+```ts
+await createAgentTables(db.connection(this.db.connectionName), { schema: 'agent' })
+```
+
+The name must be a plain identifier (letters, digits, `_` and `$`, at most 63 characters). It works on
+any connection, including a transaction client you pass in yourself
+(`new LucidAgentStore(trx, { schema: 'agent' })`).
+
+<Callout type="warn" title="Don't use searchPath for this">
+Name the schema with the `schema` option, not with a Lucid connection's `searchPath`. `searchPath`
+sends `SET search_path` on the session, and behind PgBouncer in transaction mode that setting leaks to
+other clients' connections. The `schema` option writes the schema into every statement instead.
+</Callout>
+
+- **MySQL / MariaDB:** `schema` is a database name (`` `agent`.`agent_thread` ``), created with
+  `CREATE DATABASE IF NOT EXISTS` when the tables are auto-created. The connection's user needs
+  rights on it.
+- **SQLite:** it has no schemas, so setting `schema` on a SQLite connection fails at boot.
+- **pgvector:** the `vector` extension is database-wide and stays where it is installed (usually
+  `public`); only the chunk table moves. Its schema has to be on the role's search path, as it is by
+  default.
+- With `schema` set, `node ace agora:doctor --deep` adds `agent.db-schema`: the schema exists, every
+  agent table is in it, and the connection can write there.
+
 ## Auto-created tables, and turning that off
 
 `stores.lucid()` provisions the agent tables itself: no migration of yours is needed, on a fresh

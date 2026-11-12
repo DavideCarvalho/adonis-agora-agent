@@ -23,6 +23,7 @@ const llm = openAiChatTreeLlm({ model: 'gpt-4.1-mini', apiKey: env.get('OPENAI_A
 
 // Next to chunk + embed. Only long documents get a tree (default ≥ 20 pages or ≥ 60k chars);
 // a shorter one is skipped and any stale tree removed.
+// The tables can live in a Postgres schema of their own: new PgDocumentTreeStore(db, { schema: 'rag' }).
 await indexDocumentTree(
   { pages, title: file.name }, // or { sections: [{ title, level, text, page }] }, plus an optional PDF outline
   { store: trees, documentId: file.id, llm, metadata: { tenant }, source: file.name },

@@ -1,4 +1,10 @@
 import { randomBytes } from 'node:crypto';
+import {
+  ensureDatabaseSchema,
+  qualifiedName,
+  qualifiedSql,
+  validateSchema,
+} from '../stores/db-schema.js';
 import type { LucidClientLike, LucidRawRunner } from '../stores/lucid.js';
 import { forDialect } from '../stores/lucid-schema.js';
 import { isMySql } from '../stores/sql-dialect.js';
@@ -261,10 +267,10 @@ export const POPPY_TABLES = {
  * primary key is its position, so two appends racing for one position cannot both win; a message's
  * is its (owner, id), the idempotency lock of §8.3.
  */
-export function poppyTableStatements(): string[] {
+export function poppyTableStatements(schema?: string): string[] {
   const t = POPPY_TABLES;
   return [
-    `CREATE TABLE IF NOT EXISTS "${t.conversations}" (
+    `CREATE TABLE IF NOT EXISTS ${qualifiedSql(t.conversations, schema)} (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "client_id" VARCHAR(2048) NOT NULL,
       "user_id" VARCHAR(255) NOT NULL,
@@ -285,7 +291,7 @@ export function poppyTableStatements(): string[] {
       "created_at" BIGINT NOT NULL,
       "updated_at" BIGINT NOT NULL
     )`,
-    `CREATE TABLE IF NOT EXISTS "${t.events}" (
+    `CREATE TABLE IF NOT EXISTS ${qualifiedSql(t.events, schema)} (
       "conversation_id" VARCHAR(255) NOT NULL,
       "seq" BIGINT NOT NULL,
       "id" VARCHAR(64) NOT NULL,
@@ -295,7 +301,7 @@ export function poppyTableStatements(): string[] {
       "created_at" BIGINT NOT NULL,
       PRIMARY KEY ("conversation_id", "seq")
     )`,
-    `CREATE TABLE IF NOT EXISTS "${t.messages}" (
+    `CREATE TABLE IF NOT EXISTS ${qualifiedSql(t.messages, schema)} (
       "owner" VARCHAR(64) NOT NULL,
       "message_id" VARCHAR(256) NOT NULL,
       "fingerprint" VARCHAR(64) NOT NULL,
@@ -307,10 +313,18 @@ export function poppyTableStatements(): string[] {
   ];
 }
 
-/** Create the Poppy tables if missing. Idempotent. */
-export async function ensurePoppyTables(db: LucidRawRunner): Promise<void> {
+/**
+ * Create the Poppy tables if missing. Idempotent. `schema` puts them in that database schema
+ * (created when missing); refused on SQLite.
+ */
+export async function ensurePoppyTables(
+  db: LucidRawRunner,
+  options: { schema?: string | undefined } = {},
+): Promise<void> {
+  const schema = validateSchema(db, options.schema, 'config/poppy.ts');
   const mysql = isMySql(db);
-  for (const statement of poppyTableStatements()) {
+  if (schema !== undefined) await ensureDatabaseSchema(db, schema);
+  for (const statement of poppyTableStatements(schema)) {
     await db.rawQuery(forDialect(statement, mysql));
   }
 }
@@ -340,25 +354,39 @@ const PATCH_COLUMNS: Record<keyof PoppyConversationPatch, string> = {
 export interface LucidPoppyStoreOptions {
   /** Create the tables on first use (`CREATE TABLE IF NOT EXISTS`). Default `true`. */
   autoCreateTables?: boolean;
+  /**
+   * The database schema (a Postgres schema, a MySQL database) the tables live in. Default: none —
+   * the connection's current schema. Refused on SQLite.
+   */
+  schema?: string | undefined;
 }
 
 /** {@link PoppyStore} over Lucid (any of SQLite / Postgres / MySQL). */
 export class LucidPoppyStore implements PoppyStore {
   #ready: Promise<void> | null = null;
   readonly #autoCreate: boolean;
+  readonly #schema: string | undefined;
+  /** The tables as the query builder names them (`schema.table` under a `schema`). */
+  readonly #tables: Record<keyof typeof POPPY_TABLES, string>;
 
   constructor(
     private readonly db: LucidClientLike & LucidRawRunner,
     options: LucidPoppyStoreOptions = {},
   ) {
     this.#autoCreate = options.autoCreateTables ?? true;
+    this.#schema = validateSchema(db, options.schema, 'config/poppy.ts');
+    this.#tables = {
+      conversations: qualifiedName(POPPY_TABLES.conversations, this.#schema),
+      events: qualifiedName(POPPY_TABLES.events, this.#schema),
+      messages: qualifiedName(POPPY_TABLES.messages, this.#schema),
+    };
   }
 
   /** Provision the tables (once). A failure is retried on the next call. */
   ready(): Promise<void> {
     if (!this.#autoCreate) return Promise.resolve();
     if (this.#ready === null) {
-      this.#ready = ensurePoppyTables(this.db);
+      this.#ready = ensurePoppyTables(this.db, { schema: this.#schema });
       this.#ready.catch(() => {
         this.#ready = null;
       });
@@ -368,7 +396,7 @@ export class LucidPoppyStore implements PoppyStore {
 
   async createConversation(record: PoppyConversationRecord): Promise<void> {
     await this.ready();
-    await this.db.table(POPPY_TABLES.conversations).insert({
+    await this.db.table(this.#tables.conversations).insert({
       id: record.id,
       client_id: record.clientId,
       user_id: record.userId,
@@ -393,7 +421,7 @@ export class LucidPoppyStore implements PoppyStore {
 
   async getConversation(id: string): Promise<PoppyConversationRecord | null> {
     await this.ready();
-    const row = await this.db.from(POPPY_TABLES.conversations).where('id', id).first();
+    const row = await this.db.from(this.#tables.conversations).where('id', id).first();
     if (!row) return null;
     return {
       id: String(row.id),
@@ -425,7 +453,7 @@ export class LucidPoppyStore implements PoppyStore {
       row[column] =
         key === 'context' || (key === 'grant' && value !== null) ? JSON.stringify(value) : value;
     }
-    await this.db.from(POPPY_TABLES.conversations).where('id', id).update(row);
+    await this.db.from(this.#tables.conversations).where('id', id).update(row);
   }
 
   async appendEvent(conversationId: string, body: PoppyEventBody, options: { key?: string } = {}) {
@@ -433,7 +461,7 @@ export class LucidPoppyStore implements PoppyStore {
     for (let attempt = 0; ; attempt++) {
       if (options.key !== undefined) {
         const existing = await this.db
-          .from(POPPY_TABLES.events)
+          .from(this.#tables.events)
           .where('conversation_id', conversationId)
           .where('event_key', options.key)
           .first();
@@ -448,7 +476,7 @@ export class LucidPoppyStore implements PoppyStore {
         }
       }
       const last = await this.db
-        .from(POPPY_TABLES.events)
+        .from(this.#tables.events)
         .where('conversation_id', conversationId)
         .orderBy('seq', 'desc')
         .limit(1)
@@ -460,7 +488,7 @@ export class LucidPoppyStore implements PoppyStore {
       const now = Date.now();
       const stored = toEvent(floor + 1, body, now);
       try {
-        await this.db.table(POPPY_TABLES.events).insert({
+        await this.db.table(this.#tables.events).insert({
           conversation_id: conversationId,
           seq: stored.seq,
           id: stored.event.id,
@@ -480,7 +508,7 @@ export class LucidPoppyStore implements PoppyStore {
   async listEvents(conversationId: string, afterSeq: number, limit: number) {
     await this.ready();
     const rows = await this.db
-      .from(POPPY_TABLES.events)
+      .from(this.#tables.events)
       .where('conversation_id', conversationId)
       .where('seq', '>', afterSeq)
       .orderBy('seq', 'asc')
@@ -495,7 +523,7 @@ export class LucidPoppyStore implements PoppyStore {
   async findEventSeq(conversationId: string, eventId: string): Promise<number | null> {
     await this.ready();
     const row = await this.db
-      .from(POPPY_TABLES.events)
+      .from(this.#tables.events)
       .where('conversation_id', conversationId)
       .where('id', eventId)
       .first();
@@ -505,14 +533,14 @@ export class LucidPoppyStore implements PoppyStore {
   async pruneEvents(conversationId: string, before: number): Promise<void> {
     await this.ready();
     const last = await this.db
-      .from(POPPY_TABLES.events)
+      .from(this.#tables.events)
       .where('conversation_id', conversationId)
       .orderBy('seq', 'desc')
       .limit(1)
       .first();
     if (!last) return;
     const dropped = await this.db
-      .from(POPPY_TABLES.events)
+      .from(this.#tables.events)
       .where('conversation_id', conversationId)
       .where('created_at', '<', before)
       .where('seq', '<', toInt(last.seq))
@@ -522,7 +550,7 @@ export class LucidPoppyStore implements PoppyStore {
     if (!dropped) return;
     const upTo = toInt(dropped.seq);
     await this.db
-      .from(POPPY_TABLES.events)
+      .from(this.#tables.events)
       .where('conversation_id', conversationId)
       .where('seq', '<=', upTo)
       .delete();
@@ -535,7 +563,7 @@ export class LucidPoppyStore implements PoppyStore {
   async claimMessage(owner: string, messageId: string, receipt: PoppyMessageReceipt) {
     await this.ready();
     try {
-      await this.db.table(POPPY_TABLES.messages).insert({
+      await this.db.table(this.#tables.messages).insert({
         owner,
         message_id: messageId,
         fingerprint: receipt.fingerprint,
@@ -546,7 +574,7 @@ export class LucidPoppyStore implements PoppyStore {
       return { status: 'claimed' as const };
     } catch (error) {
       const row = await this.db
-        .from(POPPY_TABLES.messages)
+        .from(this.#tables.messages)
         .where('owner', owner)
         .where('message_id', messageId)
         .first();
@@ -563,7 +591,7 @@ export class LucidPoppyStore implements PoppyStore {
   async releaseMessage(owner: string, messageId: string): Promise<void> {
     await this.ready();
     await this.db
-      .from(POPPY_TABLES.messages)
+      .from(this.#tables.messages)
       .where('owner', owner)
       .where('message_id', messageId)
       .delete();
@@ -572,19 +600,19 @@ export class LucidPoppyStore implements PoppyStore {
   async leaseReader(conversationId: string, holder: string, ttlMs: number): Promise<boolean> {
     await this.ready();
     const now = Date.now();
-    const row = await this.db.from(POPPY_TABLES.conversations).where('id', conversationId).first();
+    const row = await this.db.from(this.#tables.conversations).where('id', conversationId).first();
     if (!row) return false;
     const current = nullable(row.reader_holder);
     if (current !== null && current !== holder && toInt(row.reader_until) > now) return false;
     // Compare-and-set on what was read: of two takers, the second matches nothing.
-    let query = this.db.from(POPPY_TABLES.conversations).where('id', conversationId);
+    let query = this.db.from(this.#tables.conversations).where('id', conversationId);
     query =
       current === null
         ? query.whereNull('reader_holder')
         : query.where('reader_holder', current).where('reader_until', toInt(row.reader_until));
     await query.update({ reader_holder: holder, reader_until: now + ttlMs });
     const after = await this.db
-      .from(POPPY_TABLES.conversations)
+      .from(this.#tables.conversations)
       .where('id', conversationId)
       .first();
     return nullable(after?.reader_holder) === holder;
@@ -593,7 +621,7 @@ export class LucidPoppyStore implements PoppyStore {
   async releaseReader(conversationId: string, holder: string): Promise<void> {
     await this.ready();
     await this.db
-      .from(POPPY_TABLES.conversations)
+      .from(this.#tables.conversations)
       .where('id', conversationId)
       .where('reader_holder', holder)
       .update({ reader_holder: null, reader_until: null });

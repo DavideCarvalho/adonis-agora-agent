@@ -150,7 +150,10 @@ export default class A2aProvider {
       ): ConstructorParameters<typeof LucidA2aStore>[0] & Parameters<typeof ensureA2aTables>[0];
     };
     const connection = db.connection(config.connection);
-    await ensureA2aTables(connection);
-    return new LucidA2aStore(connection);
+    // The store's own schema, else config/agent.ts's top-level one.
+    const schema =
+      config.schema ?? this.app.config.get<string | undefined>('agent.schema', undefined);
+    await ensureA2aTables(connection, { schema });
+    return new LucidA2aStore(connection, { schema });
   }
 }

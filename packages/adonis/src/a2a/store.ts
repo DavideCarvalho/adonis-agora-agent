@@ -1,3 +1,9 @@
+import {
+  ensureDatabaseSchema,
+  qualifiedName,
+  qualifiedSql,
+  validateSchema,
+} from '../stores/db-schema.js';
 import type { LucidClientLike, LucidRawRunner } from '../stores/lucid.js';
 
 /**
@@ -92,10 +98,10 @@ export const A2A_TABLES = {
  * tables (quoted identifiers, epoch-ms `BIGINT`, `TEXT` JSON). The message table's primary key IS the
  * idempotency lock: two deliveries of one `messageId` race on the insert and one loses.
  */
-export function a2aTableStatements(): string[] {
+export function a2aTableStatements(schema?: string): string[] {
   const t = A2A_TABLES;
   return [
-    `CREATE TABLE IF NOT EXISTS "${t.contexts}" (
+    `CREATE TABLE IF NOT EXISTS ${qualifiedSql(t.contexts, schema)} (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
       "brand" VARCHAR(255) NOT NULL,
       "agent_issuer" VARCHAR(2048) NOT NULL,
@@ -103,7 +109,7 @@ export function a2aTableStatements(): string[] {
       "account_ref" VARCHAR(255) NULL,
       "created_at" BIGINT NOT NULL
     )`,
-    `CREATE TABLE IF NOT EXISTS "${t.messages}" (
+    `CREATE TABLE IF NOT EXISTS ${qualifiedSql(t.messages, schema)} (
       "context_id" VARCHAR(255) NOT NULL,
       "message_id" VARCHAR(255) NOT NULL,
       "reply" TEXT NULL,
@@ -113,19 +119,39 @@ export function a2aTableStatements(): string[] {
   ];
 }
 
-/** Create the A2A tables if missing. Idempotent. */
-export async function ensureA2aTables(db: LucidRawRunner): Promise<void> {
-  for (const statement of a2aTableStatements()) {
+/**
+ * Create the A2A tables if missing. Idempotent. `schema` puts them in that database schema (created
+ * when missing); refused on SQLite.
+ */
+export async function ensureA2aTables(
+  db: LucidRawRunner,
+  options: { schema?: string | undefined } = {},
+): Promise<void> {
+  const schema = validateSchema(db, options.schema, 'config/a2a.ts');
+  if (schema !== undefined) await ensureDatabaseSchema(db, schema);
+  for (const statement of a2aTableStatements(schema)) {
     await db.rawQuery(statement);
   }
 }
 
 /** {@link A2aStore} over Lucid (any of SQLite / Postgres / MySQL). */
 export class LucidA2aStore implements A2aStore {
-  constructor(private readonly db: LucidClientLike) {}
+  /** The tables as the query builder names them (`schema.table` under a `schema`). */
+  readonly #tables: { contexts: string; messages: string };
+
+  constructor(
+    private readonly db: LucidClientLike,
+    options: { schema?: string | undefined } = {},
+  ) {
+    const schema = validateSchema(db, options.schema, 'config/a2a.ts');
+    this.#tables = {
+      contexts: qualifiedName(A2A_TABLES.contexts, schema),
+      messages: qualifiedName(A2A_TABLES.messages, schema),
+    };
+  }
 
   async getContext(id: string): Promise<A2aContext | null> {
-    const row = await this.db.from(A2A_TABLES.contexts).where('id', id).first();
+    const row = await this.db.from(this.#tables.contexts).where('id', id).first();
     if (!row) return null;
     return {
       id: String(row.id),
@@ -137,7 +163,7 @@ export class LucidA2aStore implements A2aStore {
   }
 
   async createContext(context: A2aContext): Promise<void> {
-    await this.db.table(A2A_TABLES.contexts).insert({
+    await this.db.table(this.#tables.contexts).insert({
       id: context.id,
       brand: context.brand,
       agent_issuer: context.agentIssuer,
@@ -149,7 +175,7 @@ export class LucidA2aStore implements A2aStore {
 
   async bindAccount(id: string, accountRef: string): Promise<boolean> {
     await this.db
-      .from(A2A_TABLES.contexts)
+      .from(this.#tables.contexts)
       .where('id', id)
       .whereNull('account_ref')
       .update({ account_ref: accountRef });
@@ -160,7 +186,7 @@ export class LucidA2aStore implements A2aStore {
 
   async claimMessage(contextId: string, messageId: string): Promise<MessageClaim> {
     try {
-      await this.db.table(A2A_TABLES.messages).insert({
+      await this.db.table(this.#tables.messages).insert({
         context_id: contextId,
         message_id: messageId,
         reply: null,
@@ -178,7 +204,7 @@ export class LucidA2aStore implements A2aStore {
 
   async completeMessage(contextId: string, messageId: string, reply: unknown): Promise<void> {
     await this.db
-      .from(A2A_TABLES.messages)
+      .from(this.#tables.messages)
       .where('context_id', contextId)
       .where('message_id', messageId)
       .update({ reply: JSON.stringify(reply) });
@@ -186,7 +212,7 @@ export class LucidA2aStore implements A2aStore {
 
   async releaseMessage(contextId: string, messageId: string): Promise<void> {
     await this.db
-      .from(A2A_TABLES.messages)
+      .from(this.#tables.messages)
       .where('context_id', contextId)
       .where('message_id', messageId)
       .whereNull('reply')
@@ -195,7 +221,7 @@ export class LucidA2aStore implements A2aStore {
 
   #message(contextId: string, messageId: string) {
     return this.db
-      .from(A2A_TABLES.messages)
+      .from(this.#tables.messages)
       .where('context_id', contextId)
       .where('message_id', messageId)
       .first();

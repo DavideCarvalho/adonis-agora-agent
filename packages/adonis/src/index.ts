@@ -509,7 +509,7 @@ export * from './spi/token-stream-sink.js';
 export * from './spi/tool.js';
 export { AgentSseEncoder, frameToEvents, parseStreamCursor } from './sse.js';
 export type { QdrantRetrieverConfig } from './stores/factory.js';
-export { lucidStoreConnection } from './stores/factory.js';
+export { lucidStoreConnection, lucidStoreSchema } from './stores/factory.js';
 export {
   type LedgerQuotaOptions,
   LedgerQuotaProvider,
@@ -533,6 +533,10 @@ export { LucidGovernanceQueries } from './stores/lucid-governance-queries.js';
 export { LucidPricingStore } from './stores/lucid-pricing.js';
 export {
   AGENT_TABLES,
+  type AgentSchemaOptions,
+  type AgentTableKey,
+  agentTables,
+  agentTablesSql,
   channelStateTableStatements,
   createAgentTables,
   createTableStatements,

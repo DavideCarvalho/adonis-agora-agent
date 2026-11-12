@@ -49,6 +49,12 @@ export interface A2aConfig {
   store?: 'lucid' | 'memory' | A2aStore;
   /** Lucid connection for the `'lucid'` store. Default: the primary. */
   connection?: string;
+  /**
+   * The database schema (a Postgres schema, a MySQL database) the `'lucid'` store's tables live in —
+   * every statement names it, never `SET search_path`. Default: the top-level `schema` of
+   * `config/agent.ts`, else none (the connection's current schema). Refused on SQLite.
+   */
+  schema?: string;
   /** What happens to `action` calls that park for approval. Default `'approve-delegated'`. */
   actions?: A2aActionPolicy;
   /** Give up on a turn after this many ms (`INTERNAL`). Default 120 000. */

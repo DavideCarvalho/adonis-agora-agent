@@ -227,7 +227,7 @@ gets the complete message only (the spec makes deltas optional).
 | `agent` | default agent | The registered agent that answers. |
 | `authenticate` | global slot | Your own resolver of the Session header and access token. |
 | `actorFor` | `{ id: accountId }` / `poppy:<hash>` | `(principal, defaults) => Actor` when the resolver gave no `actor`. |
-| `store` | `'lucid'` | `'memory'`, or a `PoppyStore` (`redisPoppyStore`). `connection`, `autoCreateTables`. |
+| `store` | `'lucid'` | `'memory'`, or a `PoppyStore` (`redisPoppyStore`). `connection`, `autoCreateTables`, `schema` (default: `config/agent.ts`'s `schema`). |
 | `actions` | `'approve-delegated'` | Or `'reject'`. |
 | `handoff`, `direct` | — | Hooks above. |
 | `texts` | English | `handoffUnavailable`, `failed`, `signIn`, `actionSucceeded`, `actionFailed`, `actionRejected`. |

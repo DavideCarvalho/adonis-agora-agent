@@ -31,6 +31,7 @@ NODE_ENV=production node ace agora:doctor --json --strict
 | `agent.mcp-csrf` | Every MCP path (product endpoints and `/mcp/agora`) is in shield's `csrf.exceptRoutes`. | Warns, naming the paths to add. |
 | `agent.dev-tools-gate` | Libs without a console serving dev tools have `devTools.authorize`. | Warns in production. |
 | `agent.tenancy-store` | With organizations on, the agent store can scope threads and runs. | Error. |
+| `agent.db-schema` | Only with a [`schema`](/docs/agent/stores/lucid#database-schema), under `--deep`: the schema exists, every agent table is in it, and the connection can write there. | Error. |
 
 Every lib also reports `agent.peers` (peer dependencies in range) and `agent.agora-siblings`
 (Agora libs of one release line).

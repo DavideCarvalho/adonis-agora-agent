@@ -32,8 +32,16 @@ import type {
 import { rangeBounds } from '../spi/governance-queries.js';
 import type { AgentPricingStore, CurrentModelPrice } from '../spi/pricing-store.js';
 import { estimateCost, resolveModelPrice } from '../spi/pricing-store.js';
+import { validateSchema } from './db-schema.js';
 import { inAppendOrder, type LucidDatabaseLike, toolCallIdOfRow } from './lucid.js';
-import { AGENT_TABLES, ensureAgentTables, hasLedgerColumns, rowsOf } from './lucid-schema.js';
+import {
+  type AgentTableKey,
+  agentTables,
+  agentTablesSql,
+  ensureAgentTables,
+  hasLedgerColumns,
+  rowsOf,
+} from './lucid-schema.js';
 import { portableSql } from './sql-dialect.js';
 import { tenantPredicate } from './tenant-sql.js';
 
@@ -187,6 +195,11 @@ export interface LucidGovernanceQueriesOptions {
    * routes / dashboard answer on a fresh deploy before the first agent run. Set `false` for the migration.
    */
   autoCreateTables?: boolean;
+  /**
+   * The database schema (a Postgres schema, a MySQL database) the agent tables live in — the same
+   * one the agent store writes to. Default: none (the connection's current schema).
+   */
+  schema?: string;
 }
 
 /** Map a raw `agent_run` Lucid row to the read-model {@link RunSummaryRow}. */
@@ -311,6 +324,11 @@ function toolCallRowToDetail(row: Record<string, unknown>): RunToolCallRow {
  */
 export class LucidGovernanceQueries implements AgentGovernanceQueries {
   private readonly autoCreateTables: boolean;
+  private readonly schema: string | undefined;
+  /** The agent tables as the query builder names them (`schema.table` under a schema). */
+  private readonly tables: Record<AgentTableKey, string>;
+  /** The agent tables as raw SQL names them (`"schema"."table"` under a schema). */
+  private readonly tablesSql: Record<AgentTableKey, string>;
 
   constructor(
     private readonly db: LucidDatabaseLike,
@@ -318,6 +336,9 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     options: LucidGovernanceQueriesOptions = {},
   ) {
     this.autoCreateTables = options.autoCreateTables ?? true;
+    this.schema = validateSchema(db, options.schema, 'governanceQueries.lucid()');
+    this.tables = agentTables(this.schema);
+    this.tablesSql = agentTablesSql(this.schema);
   }
 
   /** The tenant set this view is scoped to; `undefined` → every tenant (the unscoped read-model). */
@@ -338,12 +359,12 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     await this.ready();
     const cap = Math.max(1, Math.min(Math.trunc(limit), 5000));
     const ids = new Set<string>();
-    for (const table of [AGENT_TABLES.threads, AGENT_TABLES.runs]) {
+    for (const table of [this.tablesSql.threads, this.tablesSql.runs]) {
       const rows = rowsOf(
         await this.db.rawQuery(
           portableSql(
             this.db,
-            `SELECT DISTINCT "tenant_ref" AS tenant_ref FROM "${table}" WHERE "tenant_ref" IS NOT NULL LIMIT ${cap}`,
+            `SELECT DISTINCT "tenant_ref" AS tenant_ref FROM ${table} WHERE "tenant_ref" IS NOT NULL LIMIT ${cap}`,
           ),
           [],
         ),
@@ -368,7 +389,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     const tenant = this.tenantSql();
     if (tenant === null) return null;
     return {
-      sql: `${column} IN (SELECT "id" FROM "${AGENT_TABLES.runs}" WHERE ${tenant.sql})`,
+      sql: `${column} IN (SELECT "id" FROM ${this.tablesSql.runs} WHERE ${tenant.sql})`,
       bindings: tenant.bindings,
     };
   }
@@ -379,8 +400,8 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     if (tenant === null) return null;
     return {
       sql:
-        `${column} IN (SELECT "id" FROM "${AGENT_TABLES.messages}" WHERE "thread_id" IN ` +
-        `(SELECT "id" FROM "${AGENT_TABLES.threads}" WHERE ${tenant.sql}))`,
+        `${column} IN (SELECT "id" FROM ${this.tablesSql.messages} WHERE "thread_id" IN ` +
+        `(SELECT "id" FROM ${this.tablesSql.threads} WHERE ${tenant.sql}))`,
       bindings: tenant.bindings,
     };
   }
@@ -394,7 +415,9 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
 
   /** Provision the shared schema on first use (no-op when disabled), memoized across the stores. */
   private ready(): Promise<void> {
-    return this.autoCreateTables ? ensureAgentTables(this.db) : Promise.resolve();
+    return this.autoCreateTables
+      ? ensureAgentTables(this.db, { schema: this.schema })
+      : Promise.resolve();
   }
 
   private ledgerExpressions: Promise<typeof CURRENT_LEDGER | typeof LEGACY_LEDGER> | undefined;
@@ -406,7 +429,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
    */
   private ledger(): Promise<typeof CURRENT_LEDGER | typeof LEGACY_LEDGER> {
     if (this.autoCreateTables) return Promise.resolve(CURRENT_LEDGER);
-    this.ledgerExpressions ??= hasLedgerColumns(this.db).then((present) =>
+    this.ledgerExpressions ??= hasLedgerColumns(this.db, this.schema).then((present) =>
       present ? CURRENT_LEDGER : LEGACY_LEDGER,
     );
     return this.ledgerExpressions;
@@ -477,7 +500,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
             `${unreported('output_tokens')} AS unreported_output, ` +
             `${unreported('cache_write_tokens')} AS unreported_cache_write, ` +
             `${unreported('cache_read_tokens')} AS unreported_cache_read ` +
-            `FROM "${AGENT_TABLES.tokenUsage}"` +
+            `FROM ${this.tablesSql.tokenUsage}` +
             (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
             ` GROUP BY "model_id"${bucket !== undefined ? `, ${bucket}` : ''}`,
         ),
@@ -608,7 +631,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
             `${unreported('output_tokens')} AS unreported_output, ` +
             `${unreported('cache_write_tokens')} AS unreported_cache_write, ` +
             `${unreported('cache_read_tokens')} AS unreported_cache_read ` +
-            `FROM "${AGENT_TABLES.tokenUsage}" WHERE ${where.join(' AND ')} ` +
+            `FROM ${this.tablesSql.tokenUsage} WHERE ${where.join(' AND ')} ` +
             `GROUP BY ${groups.join(', ')}`,
         ),
         bindings,
@@ -719,7 +742,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     );
   }
 
-  /** `thread_id → value` for one aggregate over `table`'s rows of `threadIds`. */
+  /** `thread_id → value` for one aggregate over `table`'s rows of `threadIds` (`table` as raw SQL names it). */
   private async perThread(
     table: string,
     aggregate: string,
@@ -731,7 +754,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
         await this.db.rawQuery(
           portableSql(
             this.db,
-            `SELECT "thread_id" AS thread_id, ${aggregate} AS value FROM "${table}" ` +
+            `SELECT "thread_id" AS thread_id, ${aggregate} AS value FROM ${table} ` +
               `WHERE "thread_id" IN (${placeholders(chunk)}) GROUP BY "thread_id"`,
           ),
           chunk,
@@ -742,11 +765,11 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     return out;
   }
 
-  /** How many of `table`'s rows belong to `threadId`. */
+  /** How many of `table`'s rows belong to `threadId` (`table` as raw SQL names it). */
   private async countForThread(table: string, threadId: string): Promise<number> {
     const [row] = rowsOf(
       await this.db.rawQuery(
-        portableSql(this.db, `SELECT COUNT(*) AS n FROM "${table}" WHERE "thread_id" = ?`),
+        portableSql(this.db, `SELECT COUNT(*) AS n FROM ${table} WHERE "thread_id" = ?`),
         [threadId],
       ),
     );
@@ -763,7 +786,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     const calls =
       inScope === null
         ? await this.db
-            .from(AGENT_TABLES.toolCalls)
+            .from(this.tables.toolCalls)
             .orderBy('created_at', 'desc')
             .limit(limit)
             .select('*')
@@ -771,7 +794,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
             await this.db.rawQuery(
               portableSql(
                 this.db,
-                `SELECT * FROM "${AGENT_TABLES.toolCalls}" WHERE ${inScope.sql} ` +
+                `SELECT * FROM ${this.tablesSql.toolCalls} WHERE ${inScope.sql} ` +
                   `ORDER BY "created_at" DESC LIMIT ${Math.max(1, Math.trunc(limit))}`,
               ),
               inScope.bindings,
@@ -781,7 +804,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     const messageIds = [...new Set(calls.map((call) => String(call.message_id)))];
     for (const chunk of chunked(messageIds)) {
       const messages = await this.db
-        .from(AGENT_TABLES.messages)
+        .from(this.tables.messages)
         .whereIn('id', chunk)
         .select('id', 'thread_id');
       for (const message of messages) threadOf.set(String(message.id), String(message.thread_id));
@@ -806,7 +829,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     const threads =
       threadTenant === null
         ? await this.db
-            .from(AGENT_TABLES.threads)
+            .from(this.tables.threads)
             .whereNull('deleted_at')
             .orderBy('updated_at', 'desc')
             .limit(limit)
@@ -815,16 +838,16 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
             await this.db.rawQuery(
               portableSql(
                 this.db,
-                `SELECT * FROM "${AGENT_TABLES.threads}" WHERE "deleted_at" IS NULL AND ${threadTenant.sql} ` +
+                `SELECT * FROM ${this.tablesSql.threads} WHERE "deleted_at" IS NULL AND ${threadTenant.sql} ` +
                   `ORDER BY "updated_at" DESC LIMIT ${Math.max(1, Math.trunc(limit))}`,
               ),
               threadTenant.bindings,
             ),
           );
     const threadIds = threads.map((thread) => String(thread.id));
-    const messageCounts = await this.perThread(AGENT_TABLES.messages, 'COUNT(*)', threadIds);
+    const messageCounts = await this.perThread(this.tablesSql.messages, 'COUNT(*)', threadIds);
     const tokenTotals = await this.perThread(
-      AGENT_TABLES.tokenUsage,
+      this.tablesSql.tokenUsage,
       'SUM("input_tokens" + "output_tokens")',
       threadIds,
     );
@@ -891,7 +914,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       await this.db.rawQuery(
         portableSql(
           this.db,
-          `SELECT * FROM "${AGENT_TABLES.runs}"` +
+          `SELECT * FROM ${this.tablesSql.runs}` +
             (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
             ` ORDER BY "started_at" DESC, "id" DESC LIMIT ${limit + 1} OFFSET ${offset}`,
         ),
@@ -917,21 +940,21 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
    */
   async runDetail(runId: string): Promise<RunDetail | null> {
     await this.ready();
-    const runRow = await this.db.from(AGENT_TABLES.runs).where('id', runId).first();
+    const runRow = await this.db.from(this.tables.runs).where('id', runId).first();
     if (runRow === null || runRow === undefined || !this.visible(runRow.tenant_ref)) return null;
 
     // Projected to what a trace row shows: a message's tool payloads, reasoning and UI stay put.
     const messageRows = await inAppendOrder(
-      this.db.from(AGENT_TABLES.messages).where('run_id', runId),
+      this.db.from(this.tables.messages).where('run_id', runId),
       'asc',
     ).select(...TRACE_MESSAGE_COLUMNS);
     const toolCallRows = await this.db
-      .from(AGENT_TABLES.toolCalls)
+      .from(this.tables.toolCalls)
       .where('run_id', runId)
       .orderBy('created_at', 'asc')
       .select('*');
     const usageRows = await this.db
-      .from(AGENT_TABLES.tokenUsage)
+      .from(this.tables.tokenUsage)
       .where('run_id', runId)
       .orderBy('created_at', 'asc')
       .select('*');
@@ -973,14 +996,14 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     actor: string | undefined,
     approvers?: readonly string[],
   ): { sql: string; bindings: unknown[] } {
-    const t = AGENT_TABLES;
+    const t = this.tablesSql;
     const tenant = this.tenantSql(`COALESCE(r."tenant_ref", th."tenant_ref")`);
     return {
       sql:
-        `FROM "${t.toolCalls}" c ` +
-        `LEFT JOIN "${t.messages}" m ON m."id" = c."message_id" ` +
-        `LEFT JOIN "${t.runs}" r ON r."id" = COALESCE(c."run_id", m."run_id") ` +
-        `LEFT JOIN "${t.threads}" th ON th."id" = m."thread_id" ` +
+        `FROM ${t.toolCalls} c ` +
+        `LEFT JOIN ${t.messages} m ON m."id" = c."message_id" ` +
+        `LEFT JOIN ${t.runs} r ON r."id" = COALESCE(c."run_id", m."run_id") ` +
+        `LEFT JOIN ${t.threads} th ON th."id" = m."thread_id" ` +
         `WHERE c."status" = 'pending_approval'` +
         (actor !== undefined ? ` AND ${PENDING_ACTOR_SQL} = ?` : '') +
         (approvers !== undefined
@@ -1060,7 +1083,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     const rows =
       inScope === null
         ? await this.db
-            .from(AGENT_TABLES.genuiCalls)
+            .from(this.tables.genuiCalls)
             .where('created_at', '>=', start)
             .where('created_at', '<=', end)
             .select('*')
@@ -1068,7 +1091,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
             await this.db.rawQuery(
               portableSql(
                 this.db,
-                `SELECT * FROM "${AGENT_TABLES.genuiCalls}" WHERE "created_at" >= ? AND "created_at" <= ? AND ${inScope.sql}`,
+                `SELECT * FROM ${this.tablesSql.genuiCalls} WHERE "created_at" >= ? AND "created_at" <= ? AND ${inScope.sql}`,
               ),
               [start, end, ...inScope.bindings],
             ),
@@ -1084,7 +1107,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     const callTenant = this.messageInScopeSql();
     let calls: Record<string, unknown>[];
     if (callTenant === null) {
-      let query = this.db.from(AGENT_TABLES.toolCalls);
+      let query = this.db.from(this.tables.toolCalls);
       if (start !== undefined) query = query.where('created_at', '>=', start);
       if (end !== undefined) query = query.where('created_at', '<=', end);
       calls = await query.select('tool_name', 'tool_type', 'status', 'execution_ms');
@@ -1103,7 +1126,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
         await this.db.rawQuery(
           portableSql(
             this.db,
-            `SELECT "tool_name", "tool_type", "status", "execution_ms" FROM "${AGENT_TABLES.toolCalls}" WHERE ${where.join(' AND ')}`,
+            `SELECT "tool_name", "tool_type", "status", "execution_ms" FROM ${this.tablesSql.toolCalls} WHERE ${where.join(' AND ')}`,
           ),
           bindings,
         ),
@@ -1175,7 +1198,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     const reliabilityTenant = this.tenantSql();
     let runs: Record<string, unknown>[];
     if (reliabilityTenant === null) {
-      let query = this.db.from(AGENT_TABLES.runs);
+      let query = this.db.from(this.tables.runs);
       if (start !== undefined) query = query.where('started_at', '>=', start);
       if (end !== undefined) query = query.where('started_at', '<=', end);
       runs = await query.select('*');
@@ -1192,7 +1215,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       }
       runs = rowsOf(
         await this.db.rawQuery(
-          portableSql(this.db, `SELECT * FROM "${AGENT_TABLES.runs}" WHERE ${where.join(' AND ')}`),
+          portableSql(this.db, `SELECT * FROM ${this.tablesSql.runs} WHERE ${where.join(' AND ')}`),
           bindings,
         ),
       );
@@ -1285,7 +1308,7 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
    */
   async threadDetail(threadId: string): Promise<GovernanceThreadDetail | null> {
     await this.ready();
-    const threadRow = await this.db.from(AGENT_TABLES.threads).where('id', threadId).first();
+    const threadRow = await this.db.from(this.tables.threads).where('id', threadId).first();
     if (threadRow === null || threadRow === undefined || !this.visible(threadRow.tenant_ref)) {
       return null;
     }
@@ -1302,19 +1325,19 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
         : usage.reduce((sum, group) => sum + this.groupCost(group, pricing), 0);
 
     const runRows = await this.db
-      .from(AGENT_TABLES.runs)
+      .from(this.tables.runs)
       .where('thread_id', threadId)
       .orderBy('started_at', 'desc')
       .limit(20)
       .select('*');
     const messageRows = await inAppendOrder(
-      this.db.from(AGENT_TABLES.messages).where('thread_id', threadId),
+      this.db.from(this.tables.messages).where('thread_id', threadId),
       'desc',
     )
       .limit(50)
       .select(...TRACE_MESSAGE_COLUMNS);
-    const runCount = await this.countForThread(AGENT_TABLES.runs, threadId);
-    const messageCount = await this.countForThread(AGENT_TABLES.messages, threadId);
+    const runCount = await this.countForThread(this.tablesSql.runs, threadId);
+    const messageCount = await this.countForThread(this.tablesSql.messages, threadId);
 
     return {
       threadId: String(threadRow.id),

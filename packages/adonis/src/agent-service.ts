@@ -1539,6 +1539,15 @@ export class AgentService {
   }
 
   /**
+   * The database schema the agent's Lucid store keeps its tables in (`stores.lucid({ schema })`), or
+   * `undefined` — no schema, or not a Lucid store. Shared state built on {@link lucidDatabase} goes
+   * there too.
+   */
+  lucidSchema(): string | undefined {
+    return this.store instanceof LucidAgentStore ? this.store.databaseSchema : undefined;
+  }
+
+  /**
    * Turn a send's `{ mediaId }` refs into attachments through the store, for this actor. Refused
    * ({@link AttachmentRefusedError}) when no store is configured or one ref is not the actor's to use.
    */

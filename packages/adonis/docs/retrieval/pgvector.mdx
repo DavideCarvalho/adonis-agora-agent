@@ -51,6 +51,7 @@ export default defineConfig({
 | `db` | resolved lazily | A structural Lucid DB handle (bring-your-own). Omit to resolve `@adonisjs/lucid`'s default `db` service inside the thunk. |
 | `connection` | default connection | Lucid connection name (used only when `db` is omitted). |
 | `table` | `agent_rag_chunks` | Chunk table name. Validated against a strict identifier regex. |
+| `schema` | the top-level `schema` of `config/agent.ts` | Postgres schema of the chunk table, named in every statement. The `vector` extension stays where it is installed. Set `SCHEMA` in the `create_agent_rag_chunks` migration to match. |
 | `dimension` | `1536` | Embedding width — **must match the model** (e.g. 1536 for `text-embedding-3-small`). A list (`[768, 1536]`) makes a mixed-dimension table; see below. |
 | `metric` | `cosine` | Similarity metric / distance operator (`cosine`, `l2`, `inner`). |
 | `columns` | mirror defaults | Override the physical column names (each validated). |

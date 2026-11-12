@@ -76,7 +76,9 @@ import {
   InProcessTokenStreamSink,
   isQuotaProvider,
   LedgerQuotaProvider,
+  LucidAgentStore,
   lucidStoreConnection,
+  lucidStoreSchema,
   type MemoryConfig,
   type ModelCatalog,
   ModelNotAllowedError,
@@ -100,6 +102,7 @@ import {
   registerToolsFromBarrel,
   resolveActorResolver,
   resolvePersonaAlias,
+  type StoreContext,
   type TokenStreamSink,
   ToolRegistry,
   type ToolsBarrel,
@@ -121,6 +124,7 @@ import type { ListActionProposals } from '../src/spi/action-proposal-store.js';
 import { catalogModelIds, staticCatalogView } from '../src/spi/model-catalog.js';
 import type { DescribedModel } from '../src/spi/model-provider.js';
 import type { PresentationErrorHandler } from '../src/spi/tool.js';
+import { assertSchemaName } from '../src/stores/db-schema.js';
 import { setTelescopeGovernanceQueries } from '../src/telescope/governance-registry.js';
 import type { UiCapabilities } from '../src/ui-capabilities.js';
 import { validateUiCapabilities } from '../src/ui-capabilities.js';
@@ -685,6 +689,11 @@ export default class AgentProvider {
       this.app.container,
       agentDoctorChecks({
         store: () => (this.#store ?? undefined) as unknown as Record<string, unknown> | undefined,
+        ...(this.#store instanceof LucidAgentStore && this.#store.databaseSchema !== undefined
+          ? {
+              schemaStore: () => (this.#store instanceof LucidAgentStore ? this.#store : undefined),
+            }
+          : {}),
         consolelessLibs: async () => {
           if (!this.app.container.hasBinding('agora.devTools' as never)) return [];
           const hub = (await this.app.container.make('agora.devTools' as never)) as {
@@ -853,10 +862,26 @@ export default class AgentProvider {
     return model;
   }
 
+  /**
+   * What every configured factory thunk receives: the app, and the top-level `schema` the SQL-backed
+   * ones put their tables in unless they name their own. The name is checked here, once, at boot.
+   */
+  #storeContext(config: AgentConfig): StoreContext {
+    const schema = assertSchemaName(config.schema, 'config/agent.ts');
+    return schema === undefined ? { app: this.app } : { app: this.app, schema };
+  }
+
+  /** The main store's own `schema` when it is a `stores.lucid({ schema })` store, mirrored by defaults. */
+  #mainStoreLucidSchema(config: AgentConfig): { schema?: string } {
+    const name = config.store;
+    const schema = lucidStoreSchema(name ? config.stores?.[name] : undefined);
+    return schema === undefined ? {} : { schema };
+  }
+
   async #resolveStore(config: AgentConfig): Promise<AgentStore> {
     const name = config.store;
     if (name && config.stores?.[name]) {
-      return config.stores[name]({ app: this.app });
+      return config.stores[name](this.#storeContext(config));
     }
     const { InMemoryAgentStore } = await import('../src/testing/in-memory-store.js');
     return new InMemoryAgentStore();
@@ -868,7 +893,7 @@ export default class AgentProvider {
       sink === undefined
         ? new InProcessTokenStreamSink()
         : typeof sink === 'function'
-          ? await sink({ app: this.app })
+          ? await sink(this.#storeContext(config))
           : sink;
     // A broken live stream (Redis out of memory, a dropped connection) must not fail the run: the
     // answer is persisted either way, and a reload shows it. See `ResilientTokenStreamSink`.
@@ -882,7 +907,7 @@ export default class AgentProvider {
   async #resolveActorDirectory(config: AgentConfig): Promise<ActorDirectory | null> {
     const directory = config.actorDirectory;
     if (directory === undefined) return null;
-    return typeof directory === 'function' ? directory({ app: this.app }) : directory;
+    return typeof directory === 'function' ? directory(this.#storeContext(config)) : directory;
   }
 
   /**
@@ -906,9 +931,14 @@ export default class AgentProvider {
     if (pricingStore === undefined) {
       const connection = this.#mainStoreLucidConnection(config);
       if (connection === undefined) return undefined;
-      return pricingStores.lucid(connection === null ? {} : { connection })({ app: this.app });
+      return pricingStores.lucid({
+        ...(connection === null ? {} : { connection }),
+        ...this.#mainStoreLucidSchema(config),
+      })(this.#storeContext(config));
     }
-    return typeof pricingStore === 'function' ? pricingStore({ app: this.app }) : pricingStore;
+    return typeof pricingStore === 'function'
+      ? pricingStore(this.#storeContext(config))
+      : pricingStore;
   }
 
   /**
@@ -923,11 +953,17 @@ export default class AgentProvider {
   ): Promise<AgentGovernanceQueries | undefined> {
     const governance = config.governanceQueries;
     if (governance === false) return undefined;
-    const ctx = { app: this.app, ...(pricingStore !== undefined ? { pricingStore } : {}) };
+    const ctx = {
+      ...this.#storeContext(config),
+      ...(pricingStore !== undefined ? { pricingStore } : {}),
+    };
     if (governance === undefined) {
       const connection = this.#mainStoreLucidConnection(config);
       if (connection === undefined) return undefined;
-      return governanceQueriesFactories.lucid(connection === null ? {} : { connection })(ctx);
+      return governanceQueriesFactories.lucid({
+        ...(connection === null ? {} : { connection }),
+        ...this.#mainStoreLucidSchema(config),
+      })(ctx);
     }
     return typeof governance === 'function' ? governance(ctx) : governance;
   }
@@ -936,7 +972,7 @@ export default class AgentProvider {
   async #resolveRetriever(config: AgentConfig): Promise<Retriever | undefined> {
     const retriever = config.retriever;
     if (retriever === undefined) return undefined;
-    return typeof retriever === 'function' ? retriever({ app: this.app }) : retriever;
+    return typeof retriever === 'function' ? retriever(this.#storeContext(config)) : retriever;
   }
 
   /**
@@ -949,7 +985,9 @@ export default class AgentProvider {
   ): Promise<AttachmentStagingStore | undefined> {
     const staging = config.attachments;
     if (staging === undefined) return undefined;
-    return typeof staging === 'function' ? staging({ app: this.app, agentStore }) : staging;
+    return typeof staging === 'function'
+      ? staging({ ...this.#storeContext(config), agentStore })
+      : staging;
   }
 
   #resolveAuthorizer(config: AgentConfig, defaultRoles: string[]): RolesPolicy {
