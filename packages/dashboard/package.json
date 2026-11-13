@@ -53,7 +53,10 @@
     "CHANGELOG.md",
     "skills"
   ],
-  "sideEffects": ["*.css", "./src/agora-kit/fonts.ts"],
+  "sideEffects": [
+    "*.css",
+    "./src/agora-kit/fonts.ts"
+  ],
   "scripts": {
     "build": "pnpm run clean && pnpm run build:spa && tsc -p tsconfig.build.json && pnpm run check:dist",
     "build:spa": "vite build",
