@@ -10,6 +10,7 @@ import {
 import type { ActorResolver } from '../spi/actor-resolver.js';
 import type { AgentGovernanceQueries } from '../spi/governance-queries.js';
 import { getTelescopeGovernanceQueries } from '../telescope/governance-registry.js';
+import { consoleShellIdentity, type SignOutOption, type ViewerHook } from './console_shell.js';
 import type { AgentDashboardAuthorize } from './define_config.js';
 import { evaluateDashboardGate } from './gate.js';
 
@@ -166,4 +167,28 @@ export async function switcherShellConfig(
     ...(others > 0 ? { switcher: { endpoint: `${base}/governance/consoles`, others } } : {}),
     ...(searchable ? { search: { endpoint: `${base}/governance/consoles/search` } } : {}),
   };
+}
+
+/**
+ * Every console-shell field of the data block for this request: `switcher` / `search` (from the
+ * registry) plus `viewer` / `signOut` (from the `dashboard.viewer` / `dashboard.signOut` options,
+ * else `ctx.auth.user` and the sign-out authkit announced on the registry). Never throws.
+ */
+export async function consoleShellConfig(
+  app: SwitcherAppLike,
+  ctx: HttpContext,
+  apiBase: string,
+  options: { viewer?: ViewerHook | null | undefined; signOut?: SignOutOption | null | undefined },
+): Promise<Record<string, unknown>> {
+  let registry: unknown = null;
+  try {
+    registry = await readAgoraConsoles(app);
+  } catch {
+    registry = null;
+  }
+  const [switcher, identity] = await Promise.all([
+    switcherShellConfig(app, apiBase),
+    consoleShellIdentity(ctx, options, registry).catch(() => ({})),
+  ]);
+  return { ...switcher, ...identity };
 }

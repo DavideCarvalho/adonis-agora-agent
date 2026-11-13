@@ -1,6 +1,6 @@
 ---
 title: Governance console
-description: The bundled React console — nine sections over the governance read-model, an approvals inbox that decides, a pricing editor, and the one authorize that gates it and the routes it reads.
+description: The bundled React console — ten pages over the governance read-model, an approvals inbox that decides, a pricing editor, and the one authorize that gates it and the routes it reads.
 icon: LayoutDashboard
 ---
 
@@ -121,6 +121,8 @@ export default defineConfig({
 | `path` | `<agentPath>/dashboard` | Where the SPA mounts. |
 | `authorize` | open outside production, `403` in production | Who may use the console and `/agent/governance/*`. See [Access](#access). |
 | `accessDenied` | — | Tweak or replace the [access-denied page](#the-access-denied-page) a refused browser sees. |
+| `viewer` | reads `ctx.auth.user` | Who the sidebar footer shows as signed in. See [Signed-in user and sign-out](#signed-in-user-and-sign-out). |
+| `signOut` | authkit's logout, when installed | The footer's sign-out: a POST path, `{ href }`, or `false`. |
 
 ### The access-denied page
 
@@ -169,11 +171,39 @@ dashboard: {
 When `authorize` throws, the page (or the JSON `detail`) shows the error message only outside production. In production it is the generic refusal.
 </Callout>
 
+### Signed-in user and sign-out
+
+The sidebar footer shows who is signed in and a sign-out button. With `@adonisjs/auth` this needs no
+config: the console reads `ctx.auth.user` (`fullName`, `name` or `email`, and the first of `role` /
+`roles`) when the request is already authenticated. With authkit installed, sign-out posts to
+authkit's logout.
+
+Set them yourself when your app differs:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  dashboard: {
+    authorize: isAdmin,
+    viewer: (ctx) => {
+      const user = ctx.auth.user
+      return user ? { label: user.displayName, email: user.email, role: 'admin' } : null
+    },
+    signOut: '/logout', // a POST with the CSRF token; or { href: '/logout' }; or false
+  },
+})
+```
+
+Return `null` from `viewer` to hide the user row. `signOut` takes same-origin paths only.
+
 ## What is in it
 
-Nine sections, reachable by hash (`#runs`, `#approvals`, …), with a from/to day picker scoping the Overview and a light/dark toggle.
+Ten pages in a sidebar grouped as **Monitor** (Overview, Reliability), **Activity** (Runs, Threads,
+Tool calls, Generative UI), **Governance** (Approvals, Quota) and **Config** (Tools, Pricing). Each
+page has its own hash (`#runs`, `#runs/<id>`, `#approvals`, …). The top bar holds the organization
+picker and, on Overview and Generative UI, the from/to day range. The theme toggle is in the sidebar
+footer. Below 768px the sidebar becomes a drawer and the pickers move to the top of the page.
 
-| Section | What it shows |
+| Page | What it shows |
 | --- | --- |
 | **Overview** | Spend and token stats, spend by model (donut + table), spend by feature — agent turns and [recorded usage](/docs/agent/governance/quota-and-cost#recording-usage-outside-agent-turns) (transcription, TTS, direct calls) side by side, in the units each billed — the usage trend, spend by actor. |
 | **Runs** | Filterable, cursor-paginated run list (status, agent, actor, date range). A row opens the full trace. |
@@ -182,11 +212,12 @@ Nine sections, reachable by hash (`#runs`, `#approvals`, …), with a from/to da
 | **Approvals** | The cross-actor HITL inbox — **and the approve/reject buttons.** |
 | **Tools** | Per-tool rollup: calls, failures, rejections, mean, p50 and p95 duration. Sortable. |
 | **Reliability** | Run-outcome breakdown and reliability stats, time to first token and turn duration (p50/p95), failures by code. |
+| **Generative UI** | How often UI tool calls are accepted on the first try, per tool and model, their common errors, UI cost per turn and per day, and time to first frame. |
 | **Quota** | Today's spend for the calling actor — the one per-actor panel. |
 | **Pricing** | Current per-1M model rates, **and an editor to upsert them.** |
 
 <Callout type="warn" title="It is not a read-only console">
-Two sections write. **Approvals** posts to `/agent/tool-call/approve` and `/agent/tool-call/reject`, which resumes or rejects a suspended run — a real, irreversible side effect on someone else's conversation. **Pricing** posts to `/agent/governance/pricing`, which changes what every subsequent turn costs and, because rollups are computed against current prices, what your spend reports say.
+Two pages write. **Approvals** posts to `/agent/tool-call/approve` and `/agent/tool-call/reject`, which resumes or rejects a suspended run — a real, irreversible side effect on someone else's conversation. **Pricing** posts to `/agent/governance/pricing`, which changes what every subsequent turn costs and, because rollups are computed against current prices, what your spend reports say.
 
 Gate it accordingly. `dashboard.authorize` is the switch, and "anyone authenticated" is not the right value for it.
 </Callout>
@@ -213,7 +244,7 @@ export default defineConfig({
 })
 ```
 
-The header gets an **Organization** control: a fixed chip for one organization, a picker for
+The top bar gets an **Organization** control: a fixed chip for one organization, a picker for
 several (with **All organizations** first). The choice is kept in the page URL as `?tenant=<id>`.
 Picking an organization the viewer was not granted shows nothing, and the attempt is logged. A
 viewer with no organization and no `tenants` sees an empty console that asks them to choose one.
@@ -226,7 +257,7 @@ resolver in `config/context.ts`, else the id.
 ## Switching between consoles
 
 When the app runs other Agora consoles (durable workflows, Telescope, payments, media, the authkit
-admin), the console's brand becomes a menu that lists the ones you may open, and a **Search** button
+admin), the brand at the top of the sidebar becomes a menu that lists the ones you may open, and a **Search** button
 (`Ctrl`/`⌘`-`K`) searches all of them at once. Here, search finds a run or a thread by id, and the
 latest runs of an actor ref or an agent name; links land on `#runs/<id>` and `#threads/<id>`.
 

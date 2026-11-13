@@ -435,7 +435,10 @@ describe('Overview', () => {
       spendByModel: vi.fn().mockRejectedValue(new Error('boom')),
     } as Partial<AgentClient>);
     renderWith(client, <Overview range={RANGE} />);
-    await waitFor(() => expect(screen.getByText(/Failed to load: boom/)).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getAllByText('Spend could not be loaded').length).toBeGreaterThan(0),
+    );
+    expect(screen.getAllByText('boom').length).toBeGreaterThan(0);
   });
 });
 
@@ -455,7 +458,7 @@ describe('ThreadsSection', () => {
     fireEvent.click(screen.getByText('Refund request'));
     await waitFor(() => expect(screen.getByText('Where is my order?')).toBeTruthy());
     expect(client.threadDetail).toHaveBeenCalledWith('thread-abc12345');
-    expect(screen.getByText('← Back to threads')).toBeTruthy();
+    expect(screen.getByText(/Back to threads/)).toBeTruthy();
   });
 });
 
@@ -509,7 +512,7 @@ describe('RunsSection', () => {
     fireEvent.click(screen.getByText('run-abc1…'));
     await waitFor(() => expect(screen.getByText('Where is my order?')).toBeTruthy());
     expect(client.runDetail).toHaveBeenCalledWith('run-abc12345');
-    expect(screen.getByText('← Back to runs')).toBeTruthy();
+    expect(screen.getByText(/Back to runs/)).toBeTruthy();
   });
 
   it('re-queries with the status filter', async () => {
@@ -862,7 +865,7 @@ describe('GenuiSection', () => {
     await waitFor(() =>
       expect(screen.getByText(/does not record generative-UI telemetry/)).toBeTruthy(),
     );
-    expect(screen.queryByText(/Failed to load/)).toBeNull();
+    expect(screen.queryByText(/could not be loaded/)).toBeNull();
   });
 
   it('shows the generic error note on any other failure', async () => {
@@ -872,6 +875,8 @@ describe('GenuiSection', () => {
       } as Partial<AgentClient>),
       <GenuiSection range={RANGE} />,
     );
-    await waitFor(() => expect(screen.getAllByText(/Failed to load/).length).toBeGreaterThan(0));
+    await waitFor(() =>
+      expect(screen.getAllByText(/could not be loaded/).length).toBeGreaterThan(0),
+    );
   });
 });

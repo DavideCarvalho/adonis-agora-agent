@@ -1,10 +1,26 @@
-import { useEffect, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import { ErrorBoundary } from '../agora-kit/blocks/error-boundary';
+import { useIsMobile } from '../agora-kit/hooks/use-mobile';
+import { ActivityIcon, GridIcon } from '../agora-kit/icons';
+import { AppShell, type NavSection } from '../agora-kit/shell/app-shell';
+import { readShellConfig } from '../agora-kit/shell-config';
+import { CONFIG_ELEMENT_ID } from '../client/api-base.js';
 import { defaultRange, isIsoDay, normalizeRange } from '../client/default-range.js';
 import type { GovernanceRange } from '../client/types.js';
 import { ApprovalsSection } from './ApprovalsSection.js';
-import { ConsoleSearch } from './ConsoleSearch.js';
-import { ConsoleSwitcher } from './ConsoleSwitcher.js';
 import { GenuiSection } from './GenuiSection.js';
+import {
+  AgentMark,
+  ApprovalIcon,
+  CalendarIcon,
+  GaugeIcon,
+  ShieldPulseIcon,
+  SparklesIcon,
+  TagIcon,
+  ThreadIcon,
+  ToolboxIcon,
+  WrenchIcon,
+} from './icons.js';
 import { OrgNotice, OrgPicker } from './OrgPicker.js';
 import { Overview } from './Overview.js';
 import { PricingSection } from './PricingSection.js';
@@ -14,43 +30,56 @@ import { RunsSection } from './RunsSection.js';
 import { ThreadsSection } from './ThreadsSection.js';
 import { ToolCallsSection } from './ToolCallsSection.js';
 import { ToolsSection } from './ToolsSection.js';
+import { fieldClass } from './ui.js';
 
-type SectionKey =
+/** The agent console's accent (rose), passed to the kit's ThemeProvider in `main.tsx`. */
+export const AGENT_ACCENT = '#fb7185';
+
+export type SectionKey =
   | 'overview'
+  | 'reliability'
   | 'runs'
   | 'threads'
   | 'tools'
-  | 'approvals'
-  | 'toolstats'
-  | 'reliability'
   | 'genui'
+  | 'approvals'
   | 'quota'
+  | 'toolstats'
   | 'pricing';
 
-const SECTIONS: { key: SectionKey; label: string }[] = [
-  { key: 'overview', label: 'Overview' },
-  { key: 'runs', label: 'Runs' },
-  { key: 'threads', label: 'Threads' },
-  { key: 'tools', label: 'Tool calls' },
-  { key: 'approvals', label: 'Approvals' },
-  { key: 'toolstats', label: 'Tools' },
-  { key: 'reliability', label: 'Reliability' },
-  { key: 'genui', label: 'Generative UI' },
-  { key: 'quota', label: 'Quota' },
-  { key: 'pricing', label: 'Pricing' },
+/** Every page: its sidebar label and glyph. The keys are the URL hash (`#runs`, `#runs/<id>`). */
+const PAGES: Record<SectionKey, { label: string; icon: ReactNode }> = {
+  overview: { label: 'Overview', icon: <GridIcon /> },
+  reliability: { label: 'Reliability', icon: <ShieldPulseIcon /> },
+  runs: { label: 'Runs', icon: <ActivityIcon /> },
+  threads: { label: 'Threads', icon: <ThreadIcon /> },
+  tools: { label: 'Tool calls', icon: <WrenchIcon /> },
+  genui: { label: 'Generative UI', icon: <SparklesIcon /> },
+  approvals: { label: 'Approvals', icon: <ApprovalIcon /> },
+  quota: { label: 'Quota', icon: <GaugeIcon /> },
+  toolstats: { label: 'Tools', icon: <ToolboxIcon /> },
+  pricing: { label: 'Pricing', icon: <TagIcon /> },
+};
+
+/** The sidebar: MONITOR · ACTIVITY · GOVERNANCE · CONFIG (CONSOLE-SHELL-SPEC). */
+const SECTIONS: { section: string; keys: SectionKey[] }[] = [
+  { section: 'Monitor', keys: ['overview', 'reliability'] },
+  { section: 'Activity', keys: ['runs', 'threads', 'tools', 'genui'] },
+  { section: 'Governance', keys: ['approvals', 'quota'] },
+  { section: 'Config', keys: ['toolstats', 'pricing'] },
 ];
 
-/** The sections whose queries the fromDay/toDay range scopes (the only ones that show the picker). */
+/** The pages whose queries the fromDay/toDay range scopes (the only ones that show the picker). */
 const RANGED: ReadonlySet<SectionKey> = new Set<SectionKey>(['overview', 'genui']);
 
-function sectionFromHash(hash: string): SectionKey {
-  const key = hash.replace(/^#/, '').split('/')[0] as SectionKey;
-  return SECTIONS.some((s) => s.key === key) ? key : 'overview';
+export function sectionFromHash(hash: string): SectionKey {
+  const key = hash.replace(/^#\/?/, '').split('/')[0] as SectionKey;
+  return Object.hasOwn(PAGES, key) ? key : 'overview';
 }
 
 /** The record a deep link opens: `#runs/<id>` or `#threads/<id>` (what global search links to). */
 export function detailFromHash(hash: string): string | null {
-  const [, ...rest] = hash.replace(/^#/, '').split('/');
+  const [, ...rest] = hash.replace(/^#\/?/, '').split('/');
   if (rest.length === 0) return null;
   try {
     const id = decodeURIComponent(rest.join('/'));
@@ -60,8 +89,46 @@ export function detailFromHash(hash: string): string | null {
   }
 }
 
-/** The console shell: brand, section tabs, range picker, theme toggle, and the active section. */
+/** The topbar's day range (Overview and Generative UI only). */
+function RangePicker({
+  range,
+  onChange,
+}: {
+  range: GovernanceRange;
+  onChange: (field: 'fromDay' | 'toDay', value: string) => void;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-1.5">
+      <CalendarIcon className="shrink-0 text-faint" />
+      <input
+        className={`${fieldClass} mono w-[8.5rem] min-w-0 flex-1 tnum md:flex-none`}
+        type="date"
+        aria-label="from day"
+        value={range.fromDay}
+        onChange={(e) => onChange('fromDay', e.target.value)}
+      />
+      <span className="text-faint" aria-hidden>
+        →
+      </span>
+      <input
+        className={`${fieldClass} mono w-[8.5rem] min-w-0 flex-1 tnum md:flex-none`}
+        type="date"
+        aria-label="to day"
+        value={range.toDay}
+        onChange={(e) => onChange('toDay', e.target.value)}
+      />
+    </div>
+  );
+}
+
+/**
+ * The agent governance console: the Agora shell (kit) around ten pages in four sidebar sections,
+ * with the organization picker and the day range in the topbar. Every page renders inside its own
+ * error boundary; each page's data regions have theirs.
+ */
 export function App() {
+  // What the provider put in the page: switcher, ⌘K search, viewer, sign-out (all optional).
+  const shell = useMemo(() => readShellConfig(CONFIG_ELEMENT_ID), []);
   const [section, setSection] = useState<SectionKey>(() =>
     sectionFromHash(typeof window !== 'undefined' ? window.location.hash : ''),
   );
@@ -69,9 +136,8 @@ export function App() {
     detailFromHash(typeof window !== 'undefined' ? window.location.hash : ''),
   );
   const [range, setRange] = useState<GovernanceRange>(() => defaultRange());
-  // Bumped when the organization changes, so every section reads again under the new `?tenant=`.
+  // Bumped when the organization changes, so every page reads again under the new `?tenant=`.
   const [tenantKey, setTenantKey] = useState(0);
-  const [theme, setTheme] = useState<'light' | 'dark' | null>(null);
 
   useEffect(() => {
     const onHash = () => {
@@ -82,115 +148,83 @@ export function App() {
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
-  useEffect(() => {
-    const root = document.documentElement;
-    if (theme) root.setAttribute('data-theme', theme);
-    else root.removeAttribute('data-theme');
-  }, [theme]);
-
-  const go = (key: SectionKey) => {
+  const go = useCallback((key: SectionKey) => {
     setSection(key);
     setDetail(null);
-    if (typeof window !== 'undefined') window.location.hash = key;
-  };
+    if (typeof window !== 'undefined' && window.location.hash !== `#${key}`) {
+      window.history.pushState(null, '', `#${key}`);
+    }
+  }, []);
 
   const setDay = (field: 'fromDay' | 'toDay', value: string) => {
     if (!isIsoDay(value)) return;
     setRange((prev) => normalizeRange({ ...prev, [field]: value }));
   };
 
-  return (
+  // Topbar pickers. On a phone the topbar only has room for the title, so they move to a toolbar
+  // row at the top of the page instead (one instance either way).
+  const isMobile = useIsMobile();
+  const pickers = (
     <>
-      <div className="app-bg" />
-      <div className="shell">
-        <header className="masthead">
-          <ConsoleSwitcher
-            brand={
-              <>
-                <div className="brand-mark mono">A</div>
-                <div>
-                  <h1>Agent · governance console</h1>
-                  <p>@adonis-agora/agent — spend, usage &amp; activity</p>
-                </div>
-              </>
-            }
-          />
-          <div className="controls">
-            <OrgPicker onChange={() => setTenantKey((key) => key + 1)} />
-            <ConsoleSearch />
-            {RANGED.has(section) && (
-              <>
-                <input
-                  className="range-input"
-                  type="date"
-                  aria-label="from day"
-                  value={range.fromDay}
-                  onChange={(e) => setDay('fromDay', e.target.value)}
-                />
-                <span className="muted">→</span>
-                <input
-                  className="range-input"
-                  type="date"
-                  aria-label="to day"
-                  value={range.toDay}
-                  onChange={(e) => setDay('toDay', e.target.value)}
-                />
-              </>
-            )}
-            <button
-              type="button"
-              className="icon-btn"
-              aria-label="toggle theme"
-              title="Toggle light / dark"
-              onClick={() => setTheme((t) => (t === 'light' ? 'dark' : 'light'))}
-            >
-              {theme === 'light' ? '☾' : '☀'}
-            </button>
-          </div>
-        </header>
+      <OrgPicker onChange={() => setTenantKey((key) => key + 1)} />
+      {RANGED.has(section) && <RangePicker range={range} onChange={setDay} />}
+    </>
+  );
 
-        <nav className="tabs" aria-label="sections">
-          {SECTIONS.map((s) => (
-            <button
-              key={s.key}
-              type="button"
-              role="tab"
-              className="tab"
-              aria-selected={section === s.key}
-              onClick={() => go(s.key)}
-            >
-              {s.label}
-            </button>
-          ))}
-        </nav>
+  const nav = useMemo<NavSection[]>(
+    () =>
+      SECTIONS.map(({ section: label, keys }) => ({
+        section: label,
+        items: keys.map((key) => ({
+          id: key,
+          label: PAGES[key].label,
+          icon: PAGES[key].icon,
+          href: `#${key}`,
+          onSelect: () => go(key),
+        })),
+      })),
+    [go],
+  );
 
-        <main key={tenantKey}>
+  return (
+    <AppShell
+      brand={{
+        name: 'agent',
+        subtitle: 'governance',
+        mark: <AgentMark />,
+        current: { title: 'Agents', package: '@adonis-agora/agent', icon: 'agent' },
+      }}
+      nav={nav}
+      activeId={section}
+      shell={shell}
+      title={PAGES[section].label}
+      searchPlaceholder="Search runs, threads and every console you can open…"
+      actions={isMobile ? undefined : pickers}
+    >
+      {isMobile && (
+        <div
+          role="toolbar"
+          aria-label="page filters"
+          className="flex flex-col gap-2 border-b border-border px-4 py-3 empty:hidden [&>*]:w-full"
+        >
+          {pickers}
+        </div>
+      )}
+      <ErrorBoundary label={PAGES[section].label} resetKeys={[section, detail, tenantKey]}>
+        <div key={tenantKey}>
           <OrgNotice />
           {section === 'overview' && <Overview range={range} />}
+          {section === 'reliability' && <ReliabilitySection />}
           {section === 'runs' && <RunsSection key={detail ?? ''} initialRunId={detail} />}
           {section === 'threads' && <ThreadsSection key={detail ?? ''} initialThreadId={detail} />}
           {section === 'tools' && <ToolCallsSection />}
-          {section === 'approvals' && <ApprovalsSection />}
-          {section === 'toolstats' && <ToolsSection />}
-          {section === 'reliability' && <ReliabilitySection />}
           {section === 'genui' && <GenuiSection range={range} />}
+          {section === 'approvals' && <ApprovalsSection />}
           {section === 'quota' && <QuotaSection />}
+          {section === 'toolstats' && <ToolsSection />}
           {section === 'pricing' && <PricingSection />}
-        </main>
-
-        <div className="foot">
-          {/* The fromDay/toDay range only scopes Overview's and Generative UI's queries (every other
-              section reads its own unbounded or section-scoped feed) — showing it here on every tab
-              would claim a filter that is not actually in effect, so it only appears on those. */}
-          Read-only governance data
-          {RANGED.has(section) && (
-            <>
-              {' '}
-              · {range.fromDay} → {range.toDay}
-            </>
-          )}
         </div>
-      </div>
-    </>
+      </ErrorBoundary>
+    </AppShell>
   );
 }

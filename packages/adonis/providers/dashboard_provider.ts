@@ -8,6 +8,7 @@ import {
   type AgentDashboardAuthorize,
   answerDashboardDenial,
   apiBaseFor,
+  consoleShellConfig,
   contentTypeFor,
   type DashboardDenialOptions,
   decideDashboardMount,
@@ -15,10 +16,10 @@ import {
   injectApiBase,
   injectBaseHref,
   mountPathFor,
+  type ResolvedAgentDashboardConfig,
   registerAgentConsole,
   resolveDashboardConfig,
   safeAssetSegments,
-  switcherShellConfig,
 } from '../src/dashboard/index.js';
 import type { AgentConfig } from '../src/define_config.js';
 import type { ActorResolver } from '../src/spi/actor-resolver.js';
@@ -72,6 +73,11 @@ import type { ActorResolver } from '../src/spi/actor-resolver.js';
  * block the standalone provider reads.
  */
 export default class DashboardProvider {
+  /** The console-shell options (`dashboard.viewer` / `dashboard.signOut`), resolved at boot. */
+  #shellOptions: Pick<ResolvedAgentDashboardConfig, 'viewer' | 'signOut'> = {
+    viewer: null,
+    signOut: null,
+  };
   constructor(protected app: ApplicationService) {}
 
   /**
@@ -108,6 +114,7 @@ export default class DashboardProvider {
     const mount = mountPathFor(agentPath, dashboardConfig.path);
     const actorResolver = agentConfig.actorResolver;
 
+    this.#shellOptions = { viewer: dashboardConfig.viewer, signOut: dashboardConfig.signOut };
     const authorize = dashboardConfig.authorize;
     if (authorize === undefined) warnNoConsoleAuthorizeOnce(this.app, console.warn);
     // What a refused browser sees — the built-in access-denied page unless the host customised it.
@@ -172,7 +179,8 @@ export default class DashboardProvider {
     const html = await readFile(resolvePath(this.#spaDirectory(), 'index.html'), 'utf8');
     ctx.response.header('content-type', 'text/html; charset=utf-8');
     ctx.response.header('cache-control', 'no-store, must-revalidate');
-    const shell = await switcherShellConfig(this.app, apiBase);
+    // The console-shell fields: switcher, ⌘K search, the signed-in viewer and the sign-out.
+    const shell = await consoleShellConfig(this.app, ctx, apiBase, this.#shellOptions);
     ctx.response.send(injectApiBase(injectBaseHref(html, mount), apiBase, shell));
   }
 

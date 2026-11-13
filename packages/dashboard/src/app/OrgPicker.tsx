@@ -1,5 +1,8 @@
 import { useEffect, useId, useState } from 'react';
+import { UsersIcon } from '../agora-kit/icons';
+import { Badge } from '../agora-kit/ui/badge';
 import { type ConsoleTenantsView, pageTenant } from '../client/agent-client.js';
+import { fieldClass } from './ui.js';
 import { useAgentClient } from './use-governance.js';
 
 /** Put `tenant` in the page URL (`?tenant=`), keeping the hash. `null` removes it. */
@@ -41,18 +44,22 @@ export function OrgPicker({ onChange }: { onChange: (tenant: string | null) => v
 
   if (!view.all && view.tenants.length === 0) {
     return (
-      <span className="org-chip org-empty" role="status">
+      <Badge variant="warn" role="status">
         No organization
-      </span>
+      </Badge>
     );
   }
 
   if (!view.all && view.tenants.length === 1) {
     const only = view.tenants[0] as { id: string; label: string };
     return (
-      <span className="org-chip" title={only.id}>
-        <span className="org-label">Organization</span>
-        {only.label}
+      <span
+        className="inline-flex h-8 max-w-[14rem] items-center gap-1.5 rounded-md border border-border bg-panel-2 px-2.5 text-xs text-fg"
+        title={only.id}
+      >
+        <UsersIcon className="shrink-0 text-faint" />
+        <span className="sr-only">Organization</span>
+        <span className="truncate">{only.label}</span>
       </span>
     );
   }
@@ -68,13 +75,14 @@ export function OrgPicker({ onChange }: { onChange: (tenant: string | null) => v
   );
 
   return (
-    <span className="org-picker">
-      <label className="org-label" htmlFor={id}>
-        Organization
+    <span className="flex min-w-0 items-center gap-1.5">
+      <label className="flex items-center text-faint" htmlFor={id}>
+        <UsersIcon />
+        <span className="sr-only">Organization</span>
       </label>
       {view.tenants.length > 8 && (
         <input
-          className="range-input org-search"
+          className={`${fieldClass} hidden w-24 md:block`}
           type="search"
           aria-label="Filter organizations"
           placeholder="Filter…"
@@ -84,7 +92,7 @@ export function OrgPicker({ onChange }: { onChange: (tenant: string | null) => v
       )}
       <select
         id={id}
-        className="range-input"
+        className={`${fieldClass} min-w-0 flex-1 md:max-w-[14rem] md:flex-none`}
         value={selected}
         onChange={(event) => {
           const next = event.target.value === '' ? null : event.target.value;
@@ -124,8 +132,13 @@ export function OrgNotice() {
   }, [client]);
   if (!empty) return null;
   return (
-    <div className="panel org-notice" role="status">
-      Choose an organization to see its data.
+    <div className="px-4 pt-5 md:px-6">
+      <div
+        className="rounded-lg border border-warn/25 bg-warn/5 px-4 py-3 text-xs text-warn"
+        role="status"
+      >
+        Choose an organization to see its data.
+      </div>
     </div>
   );
 }

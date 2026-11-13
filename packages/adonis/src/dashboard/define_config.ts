@@ -5,6 +5,9 @@ import type {
   AccessDeniedOption as GenericAccessDeniedOption,
   AccessDeniedRenderer as GenericAccessDeniedRenderer,
 } from './access_denied_page.js';
+import type { ConsoleViewer, SignOutOption, ViewerHook } from './console_shell.js';
+
+export type { ConsoleViewer, SignOutOption, ViewerHook };
 
 /**
  * The function form of {@link AgentDashboardConfig.accessDenied}: render (or answer) a refused
@@ -70,6 +73,18 @@ export interface AgentDashboardConfig {
    * asked for (`{ redirectTo }`) still wins.
    */
   accessDenied?: AccessDeniedOption;
+  /**
+   * Who the console's sidebar footer shows as signed in. Omit it to read `ctx.auth.user`
+   * structurally (`fullName`/`name`/`email`, first of `role`/`roles`) when the request is already
+   * authenticated; return `null` for no user row. A throw is treated as `null`.
+   */
+  viewer?: ViewerHook;
+  /**
+   * The footer's "Sign out": a POST action path (`'/logout'`, sent with the CSRF token), `{ href }`
+   * for a plain link, or `false` for none. Omit it to use the sign-out an account console (authkit)
+   * announces on the `agora.consoles` registry, when there is one. Same-origin paths only.
+   */
+  signOut?: SignOutOption;
 }
 
 export interface ResolvedAgentDashboardConfig {
@@ -77,13 +92,21 @@ export interface ResolvedAgentDashboardConfig {
   path?: string;
   authorize?: AgentDashboardAuthorize;
   accessDenied?: AccessDeniedOption;
+  /** The host's `viewer` hook, or `null` for the structural `ctx.auth.user` read. */
+  viewer: ViewerHook | null;
+  /** The host's `signOut` option, or `null` for the one an account console announced. */
+  signOut: SignOutOption | null;
 }
 
 /** Fill defaults for the optional dashboard config block. */
 export function resolveDashboardConfig(
   config: AgentDashboardConfig | undefined,
 ): ResolvedAgentDashboardConfig {
-  const resolved: ResolvedAgentDashboardConfig = { enabled: config?.enabled ?? true };
+  const resolved: ResolvedAgentDashboardConfig = {
+    enabled: config?.enabled ?? true,
+    viewer: config?.viewer ?? null,
+    signOut: config?.signOut ?? null,
+  };
   if (config?.path !== undefined) resolved.path = config.path;
   if (config?.authorize !== undefined) resolved.authorize = config.authorize;
   if (config?.accessDenied !== undefined) resolved.accessDenied = config.accessDenied;

@@ -1,3 +1,15 @@
+import { type Column, DataTable } from '../agora-kit/blocks/data-table';
+import { EmptyState } from '../agora-kit/blocks/empty-state';
+import { ErrorBoundary, RegionError } from '../agora-kit/blocks/error-boundary';
+import {
+  MetricCard,
+  MetricGrid,
+  MetricGridSkeleton,
+  type MetricTone,
+} from '../agora-kit/blocks/metric-card';
+import { PageHeader } from '../agora-kit/blocks/page-header';
+import { Panel } from '../agora-kit/blocks/panel';
+import { QueryBoundary } from '../agora-kit/blocks/query-boundary';
 import {
   formatCount,
   formatDuration,
@@ -5,38 +17,104 @@ import {
   formatTimestamp,
   formatUsd,
 } from '../client/format.js';
-import type { RunDetail, RunToolCallRow } from '../client/types.js';
-import { AsyncBlock, colorAt, Panel, SectionTitle, Stat, StatusPill } from './ui.js';
-import { useRunDetail } from './use-governance.js';
+import type { RunDetail, RunToolCallRow, RunUsageRow } from '../client/types.js';
+import { MessageList } from './MessageList.js';
+import {
+  BackBar,
+  colorAt,
+  LegendRow,
+  numClass,
+  payload,
+  StatusBadge,
+  TableSkeleton,
+} from './ui.js';
+import { asQuery, useRunDetail } from './use-governance.js';
 
-/** Render an arbitrary tool input/output payload as compact one-line JSON (`—` when absent). */
-function payload(value: unknown): string {
-  if (value === null || value === undefined) return '—';
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
+const STATUS_TONE: Record<string, MetricTone> = {
+  completed: 'good',
+  failed: 'bad',
+  running: 'info',
+  cancelled: 'default',
+};
 
-/** One tool-call row shared by the run's tool-call table and its pending-approvals subset. */
-function ToolCallRow({ row }: { row: RunToolCallRow }) {
-  return (
-    <tr>
-      <td className="mono">{row.toolName}</td>
-      <td className="muted">{row.toolType}</td>
-      <td>
-        <StatusPill status={row.status} />
-      </td>
-      <td className="mono muted" title={payload(row.input)}>
+const toolCallColumns: Column<RunToolCallRow>[] = [
+  {
+    id: 'tool',
+    header: 'Tool',
+    cell: (row) => <span className="mono text-fg">{row.toolName}</span>,
+  },
+  { id: 'type', header: 'Type', hideBelow: 'md', cell: (row) => row.toolType },
+  { id: 'status', header: 'Status', cell: (row) => <StatusBadge status={row.status} /> },
+  {
+    id: 'input',
+    header: 'Input',
+    hideBelow: 'md',
+    className: 'max-w-[22rem] truncate',
+    cell: (row) => (
+      <span className="mono" title={payload(row.input)}>
         {payload(row.input).slice(0, 48)}
-      </td>
-      <td className="num mono tnum muted">{formatDuration(row.executionMs)}</td>
-      <td className="num mono tnum muted">{formatTimestamp(row.createdAt)}</td>
-    </tr>
-  );
-}
+      </span>
+    ),
+  },
+  {
+    id: 'duration',
+    header: 'Duration',
+    align: 'right',
+    hideBelow: 'sm',
+    cell: (row) => <span className={numClass}>{formatDuration(row.executionMs)}</span>,
+  },
+  {
+    id: 'when',
+    header: 'When',
+    align: 'right',
+    hideBelow: 'lg',
+    cell: (row) => <span className="mono tnum">{formatTimestamp(row.createdAt)}</span>,
+  },
+];
+
+/** Usage rows have no stable id and (modelId, purpose) can repeat: key them by position. */
+type KeyedUsage = RunUsageRow & { rowKey: string };
+
+const usageColumns: Column<KeyedUsage>[] = [
+  {
+    id: 'model',
+    header: 'Model',
+    cell: (u) => (
+      <span className="text-fg" title={u.modelId}>
+        {formatModelLabel(u.modelId)}
+      </span>
+    ),
+  },
+  { id: 'purpose', header: 'Purpose', cell: (u) => u.purpose },
+  {
+    id: 'feature',
+    header: 'Feature',
+    hideBelow: 'md',
+    cell: (u) => <span className="mono">{u.feature ?? '—'}</span>,
+  },
+  {
+    id: 'tokens',
+    header: 'Tokens',
+    align: 'right',
+    cell: (u) => <span className={numClass}>{formatCount(u.inputTokens + u.outputTokens)}</span>,
+  },
+  {
+    id: 'cost',
+    header: 'Cost',
+    align: 'right',
+    hideBelow: 'sm',
+    cell: (u) => (
+      <span className="mono tnum text-fg">{u.costUsd === null ? '—' : formatUsd(u.costUsd)}</span>
+    ),
+  },
+  {
+    id: 'when',
+    header: 'When',
+    align: 'right',
+    hideBelow: 'lg',
+    cell: (u) => <span className="mono tnum">{formatTimestamp(u.createdAt)}</span>,
+  },
+];
 
 /**
  * Where a run's time went: queue / model / tools, the rest of the wall-clock (persistence, approval
@@ -58,20 +136,18 @@ export function TimingPanel({ detail }: { detail: RunDetail }) {
   ];
   const total = parts.reduce((sum, part) => sum + part.ms, 0);
   return (
-    <Panel>
-      <SectionTitle
-        title="Where the time went"
-        hint={
-          timings
-            ? `${formatCount(timings.modelCalls)} model calls · ${formatCount(timings.toolCalls)} tool calls`
-            : 'queue time only'
-        }
-      />
+    <Panel
+      title="Where the time went"
+      description={
+        timings
+          ? `${formatCount(timings.modelCalls)} model calls · ${formatCount(timings.toolCalls)} tool calls`
+          : 'queue time only'
+      }
+    >
       <div
-        className="timing-bar"
+        className="flex h-2.5 gap-px overflow-hidden rounded-full bg-line"
         role="img"
         aria-label={parts.map((part) => `${part.label} ${formatDuration(part.ms)}`).join(', ')}
-        style={{ display: 'flex', height: 10, borderRadius: 4, overflow: 'hidden', gap: 1 }}
       >
         {parts.map((part, i) =>
           part.ms > 0 && total > 0 ? (
@@ -83,45 +159,62 @@ export function TimingPanel({ detail }: { detail: RunDetail }) {
           ) : null,
         )}
       </div>
-      <div className="legend" style={{ display: 'flex', gap: 16, marginTop: 8, flexWrap: 'wrap' }}>
+      <div className="mt-2 grid grid-cols-2 gap-x-6 sm:grid-cols-4">
         {parts.map((part, i) => (
-          <div className="row" key={part.label}>
-            <span className="swatch" style={{ background: colorAt(i) }} />
-            <span className="name">{part.label}</span>
-            <span className="mono tnum muted">{formatDuration(part.ms)}</span>
-          </div>
+          <LegendRow
+            key={part.label}
+            color={colorAt(i)}
+            name={part.label}
+            value={formatDuration(part.ms)}
+          />
         ))}
       </div>
       {timings && timings.steps.length > 0 && (
-        <div className="table-wrap" style={{ marginTop: 12 }}>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Step</th>
-                <th className="num">Model</th>
-                <th className="num">Tools</th>
-                <th>Tool calls</th>
-              </tr>
-            </thead>
-            <tbody>
-              {timings.steps.map((step) => (
-                <tr key={step.step}>
-                  <td className="mono">{step.step + 1}</td>
-                  <td className="num mono tnum">{formatDuration(step.modelMs ?? null)}</td>
-                  <td className="num mono tnum">
+        <div className="-mx-4 mt-3 -mb-4 border-t border-border">
+          <DataTable
+            label="steps"
+            columns={[
+              {
+                id: 'step',
+                header: 'Step',
+                cell: (step) => <span className="mono text-fg">{step.step + 1}</span>,
+              },
+              {
+                id: 'model',
+                header: 'Model',
+                align: 'right',
+                cell: (step) => (
+                  <span className={numClass}>{formatDuration(step.modelMs ?? null)}</span>
+                ),
+              },
+              {
+                id: 'tools',
+                header: 'Tools',
+                align: 'right',
+                cell: (step) => (
+                  <span className={numClass}>
                     {formatDuration(step.tools.length > 0 ? step.toolsMs : null)}
-                  </td>
-                  <td className="mono muted">
+                  </span>
+                ),
+              },
+              {
+                id: 'calls',
+                header: 'Tool calls',
+                hideBelow: 'sm',
+                cell: (step) => (
+                  <span className="mono">
                     {step.tools.length === 0
                       ? '—'
                       : step.tools
                           .map((tool) => `${tool.toolName} ${formatDuration(tool.ms)}`)
                           .join(' · ')}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </span>
+                ),
+              },
+            ]}
+            rows={timings.steps}
+            rowKey={(step) => String(step.step)}
+          />
         </div>
       )}
     </Panel>
@@ -129,179 +222,127 @@ export function TimingPanel({ detail }: { detail: RunDetail }) {
 }
 
 /**
- * The full trace of one run from `GET /agent/governance/runs/:id`: a summary stat row, its message
- * timeline, its tool calls (with the pending-approval subset called out), and its usage ledger. All
- * read-only; the approve/reject actions live in the dedicated Approvals inbox.
+ * One run's full trace from `GET /agent/governance/runs/:id` (container): summary metrics, timing,
+ * its message timeline, its tool calls (the pending-approval subset called out) and its usage
+ * ledger. Read-only; approve/reject live in the Approvals inbox.
  */
 export function RunDetailView({ runId, onBack }: { runId: string; onBack: () => void }) {
-  const detail = useRunDetail(runId);
+  const detail = asQuery(useRunDetail(runId));
   return (
-    <div className="stack">
-      <div className="controls">
-        <button type="button" className="btn" onClick={onBack}>
-          ← Back to runs
-        </button>
-        <span className="mono muted" title={runId}>
-          run {runId.slice(0, 12)}…
-        </span>
-      </div>
-
-      <AsyncBlock
-        state={detail}
+    <>
+      <BackBar label="Back to runs" onBack={onBack} id={runId} kind="run" />
+      <QueryBoundary
+        query={detail}
+        label="Run"
+        skeleton={
+          <>
+            <MetricGridSkeleton count={4} />
+            <TableSkeleton columns={toolCallColumns} rows={4} />
+          </>
+        }
         isEmpty={(d) => d === null}
-        empty="Run not found."
-        skeletonRows={6}
+        empty={
+          <EmptyState
+            title="Run not found."
+            description="It may have been pruned, or it belongs to another organization."
+          />
+        }
       >
-        {(data) => {
-          const { run, messages, toolCalls, approvals, usage } = data;
-          return (
-            <div className="stack">
-              <div className="grid stat-4">
-                <Stat
-                  label="Status"
-                  value={<StatusPill status={run.status} />}
-                  sub={run.agentName ?? 'agent'}
-                />
-                <Stat
-                  label="Steps"
-                  value={formatCount(run.stepCount)}
-                  sub={run.durable ? 'durable' : 'inline'}
-                />
-                <Stat
-                  label="Tokens"
-                  value={formatCount(run.inputTokens + run.outputTokens)}
-                  sub={`${formatCount(run.inputTokens)} in · ${formatCount(run.outputTokens)} out`}
-                />
-                <Stat
-                  label="Cost"
-                  value={run.costUsd === null ? '—' : formatUsd(run.costUsd)}
-                  sub={`${formatDuration(run.durationMs)} · ${formatTimestamp(run.startedAt)}`}
-                />
-              </div>
+        {(data) => (data === null ? null : <RunDetailBody detail={data} />)}
+      </QueryBoundary>
+    </>
+  );
+}
 
-              <TimingPanel detail={data} />
+/** The run detail (presentational). */
+export function RunDetailBody({ detail }: { detail: RunDetail }) {
+  const { run, messages, toolCalls, approvals, usage } = detail;
+  return (
+    <>
+      <PageHeader
+        title={run.agentName ?? 'Run'}
+        description={
+          <span className="mono">
+            {run.runId} · {run.actorRef} · started {formatTimestamp(run.startedAt)}
+          </span>
+        }
+        actions={<StatusBadge status={run.status} />}
+      />
+      <MetricGrid className="md:grid-cols-4">
+        <MetricCard
+          label="Status"
+          value={run.status}
+          caption={run.agentName ?? 'agent'}
+          tone={STATUS_TONE[run.status] ?? 'default'}
+        />
+        <MetricCard
+          label="Steps"
+          value={formatCount(run.stepCount)}
+          caption={run.durable ? 'durable' : 'inline'}
+        />
+        <MetricCard
+          label="Tokens"
+          value={formatCount(run.inputTokens + run.outputTokens)}
+          caption={`${formatCount(run.inputTokens)} in · ${formatCount(run.outputTokens)} out`}
+          tone="info"
+        />
+        <MetricCard
+          label="Cost"
+          value={run.costUsd === null ? '—' : formatUsd(run.costUsd)}
+          caption={`${formatDuration(run.durationMs)} · ${formatTimestamp(run.startedAt)}`}
+          tone="brand"
+        />
+      </MetricGrid>
 
-              {run.error && (
-                <Panel>
-                  <div className="err">{run.error}</div>
-                </Panel>
-              )}
+      {run.error && <RegionError title="The run failed" error={run.error} />}
 
-              <Panel>
-                <SectionTitle title="Messages" hint={`${messages.length} in trace`} />
-                {messages.length === 0 ? (
-                  <div className="empty">No messages recorded.</div>
-                ) : (
-                  <div className="stack">
-                    {messages.map((m) => (
-                      <div key={m.id} className="msg">
-                        <div className="msg-head">
-                          <StatusPill status={m.role} />
-                          <span className="num mono tnum muted">
-                            {formatTimestamp(m.createdAt)}
-                          </span>
-                        </div>
-                        <div className="msg-body">{m.content}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </Panel>
+      <ErrorBoundary label="Timing">
+        <TimingPanel detail={detail} />
+      </ErrorBoundary>
 
-              {approvals.length > 0 && (
-                <Panel>
-                  <SectionTitle title="Pending approvals" hint="awaiting a HITL decision" />
-                  <div className="table-wrap">
-                    <table className="table">
-                      <thead>
-                        <tr>
-                          <th>Tool</th>
-                          <th>Type</th>
-                          <th>Status</th>
-                          <th>Input</th>
-                          <th className="num">Duration</th>
-                          <th className="num">When</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {approvals.map((row) => (
-                          <ToolCallRow key={row.toolCallId} row={row} />
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </Panel>
-              )}
+      <ErrorBoundary label="Messages">
+        <Panel title="Messages" description={`${messages.length} in trace`}>
+          {messages.length === 0 ? (
+            <EmptyState title="No messages recorded." className="p-4" />
+          ) : (
+            <MessageList messages={messages} />
+          )}
+        </Panel>
+      </ErrorBoundary>
 
-              <Panel>
-                <SectionTitle title="Tool calls" hint={`${toolCalls.length} total`} />
-                {toolCalls.length === 0 ? (
-                  <div className="empty">No tool calls in this run.</div>
-                ) : (
-                  <div className="table-wrap">
-                    <table className="table">
-                      <thead>
-                        <tr>
-                          <th>Tool</th>
-                          <th>Type</th>
-                          <th>Status</th>
-                          <th>Input</th>
-                          <th className="num">Duration</th>
-                          <th className="num">When</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {toolCalls.map((row) => (
-                          <ToolCallRow key={row.toolCallId} row={row} />
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </Panel>
+      {approvals.length > 0 && (
+        <ErrorBoundary label="Pending approvals">
+          <Panel title="Pending approvals" description="awaiting a HITL decision" flush>
+            <DataTable
+              columns={toolCallColumns}
+              rows={approvals}
+              rowKey={(row) => row.toolCallId}
+            />
+          </Panel>
+        </ErrorBoundary>
+      )}
 
-              <Panel>
-                <SectionTitle title="Usage" hint="model calls in this run" />
-                {usage.length === 0 ? (
-                  <div className="empty">No usage recorded.</div>
-                ) : (
-                  <div className="table-wrap">
-                    <table className="table">
-                      <thead>
-                        <tr>
-                          <th>Model</th>
-                          <th>Purpose</th>
-                          <th>Feature</th>
-                          <th className="num">Tokens</th>
-                          <th className="num">Cost</th>
-                          <th className="num">When</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {usage.map((u, i) => (
-                          // biome-ignore lint/suspicious/noArrayIndexKey: usage rows have no stable id and (modelId, purpose) can repeat
-                          <tr key={`${u.modelId}-${u.purpose}-${i}`}>
-                            <td title={u.modelId}>{formatModelLabel(u.modelId)}</td>
-                            <td className="muted">{u.purpose}</td>
-                            <td className="mono muted">{u.feature ?? '—'}</td>
-                            <td className="num mono tnum">
-                              {formatCount(u.inputTokens + u.outputTokens)}
-                            </td>
-                            <td className="num mono tnum">
-                              {u.costUsd === null ? '—' : formatUsd(u.costUsd)}
-                            </td>
-                            <td className="num mono tnum muted">{formatTimestamp(u.createdAt)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </Panel>
-            </div>
-          );
-        }}
-      </AsyncBlock>
-    </div>
+      <ErrorBoundary label="Tool calls">
+        <Panel title="Tool calls" description={`${toolCalls.length} total`} flush>
+          <DataTable
+            columns={toolCallColumns}
+            rows={toolCalls}
+            rowKey={(row) => row.toolCallId}
+            empty={<EmptyState title="No tool calls in this run." />}
+          />
+        </Panel>
+      </ErrorBoundary>
+
+      <ErrorBoundary label="Usage">
+        <Panel title="Usage" description="model calls in this run" flush>
+          <DataTable
+            columns={usageColumns}
+            rows={usage.map((u, i) => ({ ...u, rowKey: String(i) }))}
+            rowKey={(u) => u.rowKey}
+            empty={<EmptyState title="No usage recorded." />}
+          />
+        </Panel>
+      </ErrorBoundary>
+    </>
   );
 }

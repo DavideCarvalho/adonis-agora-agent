@@ -1,231 +1,247 @@
 import { useState } from 'react';
+import type { Column } from '../agora-kit/blocks/data-table';
+import { DataTable } from '../agora-kit/blocks/data-table';
+import { EmptyState } from '../agora-kit/blocks/empty-state';
+import { ErrorBoundary } from '../agora-kit/blocks/error-boundary';
+import { MetricCard, MetricGrid, MetricGridSkeleton } from '../agora-kit/blocks/metric-card';
+import { PageHeader } from '../agora-kit/blocks/page-header';
+import { Panel } from '../agora-kit/blocks/panel';
+import { QueryBoundary } from '../agora-kit/blocks/query-boundary';
+import { PageBody } from '../agora-kit/shell/app-shell';
 import { isUnavailable } from '../client/agent-client.js';
 import { formatCount, formatModelLabel, formatUsd } from '../client/format.js';
 import {
   donutSegments,
+  type SpendTotals,
   summarizeActors,
   summarizeSpend,
   withShares,
 } from '../client/spend-summary.js';
 import type { TrendMetric } from '../client/trend-path.js';
-import type { FeatureSpendRow, GovernanceRange } from '../client/types.js';
+import type {
+  ActorSpendRow,
+  FeatureSpendRow,
+  GovernanceRange,
+  ModelSpendRow,
+  UsageTrendPoint,
+} from '../client/types.js';
 import { Donut } from './Donut.js';
 import { TrendChart } from './TrendChart.js';
-import { AsyncBlock, colorAt, Panel, SectionTitle, ShareBar, Stat } from './ui.js';
 import {
+  ChartSkeleton,
+  colorAt,
+  DonutSkeleton,
+  LegendRow,
+  numClass,
+  Segmented,
+  ShareBar,
+  TableSkeleton,
+} from './ui.js';
+import {
+  asQuery,
   useSpendByActor,
   useSpendByFeature,
   useSpendByModel,
   useUsageTrend,
 } from './use-governance.js';
 
+const TREND_OPTIONS: { key: TrendMetric; label: string }[] = [
+  { key: 'costUsd', label: 'Cost' },
+  { key: 'totalTokens', label: 'Tokens' },
+];
+
 /**
- * The console's landing view: headline spend/usage stats, a spend-by-model donut + table, the daily
- * usage/cost trend, and a spend-by-actor breakdown. Every number comes from the agent's own
- * `/agent/governance/*` rollups for the selected range.
+ * The console's landing page (container): headline spend/usage metrics, spend by model (donut +
+ * table), spend by feature, the daily usage/cost trend, and spend by actor — every number from the
+ * agent's own `/agent/governance/*` rollups for the selected range. Each region loads, fails and
+ * renders on its own.
  */
 export function Overview({ range }: { range: GovernanceRange }) {
-  const models = useSpendByModel(range);
-  const actors = useSpendByActor(range);
-  const features = useSpendByFeature(range);
-  const trend = useUsageTrend(range);
+  const models = asQuery(useSpendByModel(range));
+  const actors = asQuery(useSpendByActor(range));
+  const featuresState = useSpendByFeature(range);
+  const features = asQuery(featuresState);
+  const trend = asQuery(useUsageTrend(range));
   const [metric, setMetric] = useState<TrendMetric>('costUsd');
 
-  const totals = models.data ? summarizeSpend(models.data) : null;
-  const shares = models.data ? withShares(models.data) : [];
-  const segments = donutSegments(shares);
-
   return (
-    <div className="stack">
-      {/* headline stats */}
-      <div className="grid stat-4">
-        <Stat
-          label="Total spend"
-          value={totals ? formatUsd(totals.costUsd) : '—'}
-          sub="over range"
-        />
-        <Stat
-          label="Tokens"
-          value={totals ? formatCount(totals.totalTokens) : '—'}
-          sub={
-            totals
-              ? `${formatCount(totals.inputTokens)} in · ${formatCount(totals.outputTokens)} out`
-              : undefined
-          }
-        />
-        <Stat
-          label="Requests"
-          value={totals ? formatCount(totals.requests) : '—'}
-          sub="model calls"
-        />
-        <Stat label="Models" value={models.data ? String(models.data.length) : '—'} sub="in use" />
-      </div>
+    <PageBody>
+      <PageHeader
+        title="Overview"
+        description={`Spend, tokens and who drives them · ${range.fromDay} → ${range.toDay}`}
+      />
 
-      {/* spend by model */}
-      <Panel>
-        <SectionTitle title="Spend by model" hint="priced against the current model rates" />
-        <AsyncBlock
-          state={models}
-          isEmpty={(rows) => rows.length === 0}
-          empty="No usage recorded in this range."
-        >
-          {(rows) => (
-            <div className="grid cols-2" style={{ alignItems: 'center' }}>
-              <div style={{ display: 'grid', placeItems: 'center', gap: 14 }}>
-                <Donut
-                  segments={segments}
-                  centerLabel={totals ? formatUsd(totals.costUsd) : undefined}
-                  centerSub="total"
-                />
-                <div className="legend" style={{ width: '100%' }}>
-                  {shares.slice(0, 6).map((row, i) => (
-                    <div className="row" key={row.modelId}>
-                      <span className="swatch" style={{ background: colorAt(i) }} />
-                      <span className="name" title={row.modelId}>
-                        {formatModelLabel(row.modelId)}
-                      </span>
-                      <span className="mono tnum muted">{formatUsd(row.costUsd)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="table-wrap">
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Model</th>
-                      <th className="num">Requests</th>
-                      <th className="num">Tokens</th>
-                      <th className="num">Cost</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((row) => (
-                      <tr key={row.modelId}>
-                        <td title={row.modelId}>{formatModelLabel(row.modelId)}</td>
-                        <td className="num mono tnum">{formatCount(row.requests)}</td>
-                        <td className="num mono tnum">
-                          {formatCount(row.inputTokens + row.outputTokens)}
-                        </td>
-                        <td className="num mono tnum">{formatUsd(row.costUsd)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </AsyncBlock>
-      </Panel>
+      <ErrorBoundary label="Totals">
+        <QueryBoundary query={models} label="Spend" skeleton={<MetricGridSkeleton count={4} />}>
+          {(rows) => <SpendMetrics totals={summarizeSpend(rows)} models={rows.length} />}
+        </QueryBoundary>
+      </ErrorBoundary>
 
-      {/* spend by feature: agent turns and usage recorded outside them, side by side */}
-      {isUnavailable(features.error) ? null : (
-        <Panel>
-          <SectionTitle
-            title="Spend by feature"
-            hint="agent turns and recorded usage (transcription, TTS, direct calls)"
-          />
-          <AsyncBlock
-            state={features}
+      <ErrorBoundary label="Spend by model">
+        <Panel title="Spend by model" description="priced against the current model rates" flush>
+          <QueryBoundary
+            query={models}
+            label="Spend by model"
+            skeleton={<DonutSkeleton />}
             isEmpty={(rows) => rows.length === 0}
-            empty="No spend by feature in this range."
+            empty={
+              <EmptyState
+                title="No usage recorded in this range."
+                description="Model calls show up here once an agent runs."
+              />
+            }
           >
-            {(rows) => <FeatureTable rows={rows} />}
-          </AsyncBlock>
+            {(rows) => <SpendByModel rows={rows} />}
+          </QueryBoundary>
         </Panel>
+      </ErrorBoundary>
+
+      {/* Spend by feature: agent turns and usage recorded outside them, side by side. An older
+          server without the route (501/404) leaves the panel out altogether. */}
+      {isUnavailable(featuresState.error) ? null : (
+        <ErrorBoundary label="Spend by feature">
+          <Panel
+            title="Spend by feature"
+            description="agent turns and recorded usage (transcription, TTS, direct calls)"
+            flush
+          >
+            <QueryBoundary
+              query={features}
+              label="Spend by feature"
+              skeleton={<TableSkeleton columns={featureColumns(0)} rows={3} />}
+              isEmpty={(rows) => rows.length === 0}
+              empty={<EmptyState title="No spend by feature in this range." />}
+            >
+              {(rows) => <FeatureTable rows={rows} />}
+            </QueryBoundary>
+          </Panel>
+        </ErrorBoundary>
       )}
 
-      {/* usage trend */}
-      <Panel>
-        <SectionTitle
+      <ErrorBoundary label="Usage trend">
+        <Panel
           title="Usage trend"
-          hint={
-            <span className="controls" role="tablist">
-              <button
-                type="button"
-                role="tab"
-                className="tab"
-                aria-selected={metric === 'costUsd'}
-                onClick={() => setMetric('costUsd')}
-              >
-                Cost
-              </button>
-              <button
-                type="button"
-                role="tab"
-                className="tab"
-                aria-selected={metric === 'totalTokens'}
-                onClick={() => setMetric('totalTokens')}
-              >
-                Tokens
-              </button>
-            </span>
+          description="per day"
+          action={
+            <Segmented
+              label="trend metric"
+              value={metric}
+              options={TREND_OPTIONS}
+              onChange={setMetric}
+            />
           }
-        />
-        <AsyncBlock
-          state={trend}
-          isEmpty={(points) => points.length === 0}
-          empty="No trend data in this range."
         >
-          {(points) => <TrendChart points={points} metric={metric} />}
-        </AsyncBlock>
-      </Panel>
+          <QueryBoundary
+            query={trend}
+            label="Usage trend"
+            skeleton={<ChartSkeleton />}
+            isEmpty={(points) => points.length === 0}
+            empty={<EmptyState title="No trend data in this range." />}
+          >
+            {(points: UsageTrendPoint[]) => <TrendChart points={points} metric={metric} />}
+          </QueryBoundary>
+        </Panel>
+      </ErrorBoundary>
 
-      {/* spend by actor */}
-      <Panel>
-        <SectionTitle title="Spend by actor" hint="who is driving cost" />
-        <AsyncBlock
-          state={actors}
-          isEmpty={(rows) => rows.length === 0}
-          empty="No actor activity in this range."
-        >
-          {(rows) => {
-            const actorTotals = summarizeActors(rows);
-            const maxCost = Math.max(...rows.map((r) => r.costUsd), 0);
-            return (
-              <div className="table-wrap">
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Actor</th>
-                      <th className="num">Requests</th>
-                      <th className="num">Tokens</th>
-                      <th className="num">Cost</th>
-                      <th style={{ width: 160 }}>Share</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((row) => (
-                      <tr key={row.actorRef}>
-                        <td className="mono" title={row.actorRef}>
-                          {row.actorRef}
-                        </td>
-                        <td className="num mono tnum">{formatCount(row.requests)}</td>
-                        <td className="num mono tnum">{formatCount(row.totalTokens)}</td>
-                        <td className="num mono tnum">{formatUsd(row.costUsd)}</td>
-                        <td>
-                          <ShareBar fraction={maxCost > 0 ? row.costUsd / maxCost : 0} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr>
-                      <td className="muted">Total</td>
-                      <td className="num mono tnum muted">{formatCount(actorTotals.requests)}</td>
-                      <td className="num mono tnum muted">
-                        {formatCount(actorTotals.totalTokens)}
-                      </td>
-                      <td className="num mono tnum muted">{formatUsd(actorTotals.costUsd)}</td>
-                      <td />
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            );
-          }}
-        </AsyncBlock>
-      </Panel>
+      <ErrorBoundary label="Spend by actor">
+        <Panel title="Spend by actor" description="who is driving cost" flush>
+          <QueryBoundary
+            query={actors}
+            label="Spend by actor"
+            skeleton={<TableSkeleton columns={actorColumns(0)} rows={4} />}
+            isEmpty={(rows) => rows.length === 0}
+            empty={<EmptyState title="No actor activity in this range." />}
+          >
+            {(rows) => <ActorTable rows={rows} />}
+          </QueryBoundary>
+        </Panel>
+      </ErrorBoundary>
+    </PageBody>
+  );
+}
+
+/** The headline row: total spend, tokens, requests, models in use. */
+export function SpendMetrics({ totals, models }: { totals: SpendTotals; models: number }) {
+  return (
+    <MetricGrid className="md:grid-cols-4">
+      <MetricCard
+        label="Total spend"
+        value={formatUsd(totals.costUsd)}
+        caption="over range"
+        tone="brand"
+      />
+      <MetricCard
+        label="Tokens"
+        value={formatCount(totals.totalTokens)}
+        caption={`${formatCount(totals.inputTokens)} in · ${formatCount(totals.outputTokens)} out`}
+        tone="info"
+      />
+      <MetricCard label="Requests" value={formatCount(totals.requests)} caption="model calls" />
+      <MetricCard label="Models" value={String(models)} caption="in use" tone="violet" />
+    </MetricGrid>
+  );
+}
+
+const modelColumns: Column<ModelSpendRow>[] = [
+  {
+    id: 'model',
+    header: 'Model',
+    cell: (row) => (
+      <span className="text-fg" title={row.modelId}>
+        {formatModelLabel(row.modelId)}
+      </span>
+    ),
+  },
+  {
+    id: 'requests',
+    header: 'Requests',
+    align: 'right',
+    hideBelow: 'sm',
+    cell: (row) => <span className={numClass}>{formatCount(row.requests)}</span>,
+  },
+  {
+    id: 'tokens',
+    header: 'Tokens',
+    align: 'right',
+    cell: (row) => (
+      <span className={numClass}>{formatCount(row.inputTokens + row.outputTokens)}</span>
+    ),
+  },
+  {
+    id: 'cost',
+    header: 'Cost',
+    align: 'right',
+    cell: (row) => <span className="mono tnum text-fg">{formatUsd(row.costUsd)}</span>,
+  },
+];
+
+/** The donut of spend by model, its legend, and the per-model table. */
+export function SpendByModel({ rows }: { rows: ModelSpendRow[] }) {
+  const totals = summarizeSpend(rows);
+  const shares = withShares(rows);
+  return (
+    <div className="grid items-center lg:grid-cols-[minmax(240px,320px)_1fr]">
+      <div className="flex flex-col items-center gap-4 border-b border-border p-5 lg:border-r lg:border-b-0">
+        <Donut
+          segments={donutSegments(shares)}
+          centerLabel={formatUsd(totals.costUsd)}
+          centerSub="total"
+        />
+        <div className="w-full">
+          {shares.slice(0, 6).map((row, i) => (
+            <LegendRow
+              key={row.modelId}
+              color={colorAt(i)}
+              name={formatModelLabel(row.modelId)}
+              title={row.modelId}
+              value={formatUsd(row.costUsd)}
+            />
+          ))}
+        </div>
+      </div>
+      <div className="min-w-0 self-start">
+        <DataTable columns={modelColumns} rows={rows} rowKey={(row) => row.modelId} />
+      </div>
     </div>
   );
 }
@@ -240,40 +256,119 @@ function featureUnits(row: FeatureSpendRow): string {
   return parts.length > 0 ? parts.join(' · ') : '—';
 }
 
-function FeatureTable({ rows }: { rows: FeatureSpendRow[] }) {
+function featureColumns(maxCost: number): Column<FeatureSpendRow>[] {
+  return [
+    {
+      id: 'feature',
+      header: 'Feature',
+      cell: (row) => (
+        <span className="mono text-fg" title={row.feature}>
+          {row.feature}
+        </span>
+      ),
+    },
+    {
+      id: 'source',
+      header: 'Source',
+      hideBelow: 'sm',
+      cell: (row) => <span>{row.source === 'agent' ? 'agent turn' : 'recorded'}</span>,
+    },
+    {
+      id: 'requests',
+      header: 'Requests',
+      align: 'right',
+      hideBelow: 'md',
+      cell: (row) => <span className={numClass}>{formatCount(row.requests)}</span>,
+    },
+    {
+      id: 'units',
+      header: 'Units',
+      align: 'right',
+      hideBelow: 'md',
+      cell: (row) => <span className={numClass}>{featureUnits(row)}</span>,
+    },
+    {
+      id: 'cost',
+      header: 'Cost',
+      align: 'right',
+      cell: (row) => <span className="mono tnum text-fg">{formatUsd(row.costUsd)}</span>,
+    },
+    {
+      id: 'share',
+      header: 'Share',
+      className: 'w-40',
+      hideBelow: 'sm',
+      cell: (row) => <ShareBar fraction={maxCost > 0 ? row.costUsd / maxCost : 0} />,
+    },
+  ];
+}
+
+export function FeatureTable({ rows }: { rows: FeatureSpendRow[] }) {
   const maxCost = Math.max(...rows.map((row) => row.costUsd), 0);
   return (
-    <div className="table-wrap">
-      <table className="table">
-        <thead>
-          <tr>
-            <th>Feature</th>
-            <th>Source</th>
-            <th className="num">Requests</th>
-            <th className="num">Units</th>
-            <th className="num">Cost</th>
-            <th style={{ width: 160 }}>Share</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={`${row.source}:${row.feature}`}>
-              <td className="mono" title={row.feature}>
-                {row.feature}
-              </td>
-              <td>
-                <span className="muted">{row.source === 'agent' ? 'agent turn' : 'recorded'}</span>
-              </td>
-              <td className="num mono tnum">{formatCount(row.requests)}</td>
-              <td className="num mono tnum">{featureUnits(row)}</td>
-              <td className="num mono tnum">{formatUsd(row.costUsd)}</td>
-              <td>
-                <ShareBar fraction={maxCost > 0 ? row.costUsd / maxCost : 0} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      columns={featureColumns(maxCost)}
+      rows={rows}
+      rowKey={(row) => `${row.source}:${row.feature}`}
+    />
+  );
+}
+
+function actorColumns(maxCost: number): Column<ActorSpendRow>[] {
+  return [
+    {
+      id: 'actor',
+      header: 'Actor',
+      cell: (row) => (
+        <span className="mono text-fg" title={row.actorRef}>
+          {row.actorRef}
+        </span>
+      ),
+    },
+    {
+      id: 'requests',
+      header: 'Requests',
+      align: 'right',
+      hideBelow: 'sm',
+      cell: (row) => <span className={numClass}>{formatCount(row.requests)}</span>,
+    },
+    {
+      id: 'tokens',
+      header: 'Tokens',
+      align: 'right',
+      hideBelow: 'md',
+      cell: (row) => <span className={numClass}>{formatCount(row.totalTokens)}</span>,
+    },
+    {
+      id: 'cost',
+      header: 'Cost',
+      align: 'right',
+      cell: (row) => <span className="mono tnum text-fg">{formatUsd(row.costUsd)}</span>,
+    },
+    {
+      id: 'share',
+      header: 'Share',
+      className: 'w-40',
+      hideBelow: 'sm',
+      cell: (row) => <ShareBar fraction={maxCost > 0 ? row.costUsd / maxCost : 0} />,
+    },
+  ];
+}
+
+/** Spend per actor with a share bar, and the totals underneath. */
+export function ActorTable({ rows }: { rows: ActorSpendRow[] }) {
+  const totals = summarizeActors(rows);
+  const maxCost = Math.max(...rows.map((r) => r.costUsd), 0);
+  return (
+    <>
+      <DataTable columns={actorColumns(maxCost)} rows={rows} rowKey={(row) => row.actorRef} />
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-3 py-2.5 text-[11px] text-faint">
+        <span className="font-semibold uppercase tracking-[0.12em]">Total</span>
+        <span className="mono tnum">
+          {formatCount(totals.requests)} req · {formatCount(totals.totalTokens)} tok ·{' '}
+          <span className="text-fg-2">{formatUsd(totals.costUsd)}</span>
+        </span>
+      </div>
+    </>
   );
 }

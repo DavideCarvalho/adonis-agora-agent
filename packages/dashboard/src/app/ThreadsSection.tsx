@@ -1,12 +1,71 @@
 import { useState } from 'react';
+import { type Column, DataTable } from '../agora-kit/blocks/data-table';
+import { EmptyState } from '../agora-kit/blocks/empty-state';
+import { ErrorBoundary } from '../agora-kit/blocks/error-boundary';
+import { PageHeader } from '../agora-kit/blocks/page-header';
+import { LoadMore } from '../agora-kit/blocks/pager';
+import { Panel } from '../agora-kit/blocks/panel';
+import { QueryBoundary } from '../agora-kit/blocks/query-boundary';
+import { PageBody } from '../agora-kit/shell/app-shell';
 import { formatCount, formatTimestamp } from '../client/format.js';
+import type { ThreadActivityRow } from '../client/types.js';
 import { ThreadDetailView } from './ThreadDetailView.js';
-import { AsyncBlock, Panel, SectionTitle } from './ui.js';
-import { useRecentThreads } from './use-governance.js';
+import { numClass, TableSkeleton } from './ui.js';
+import { asQuery, useRecentThreads } from './use-governance.js';
+
+/** Keep the URL on the open thread (`#threads/<id>`) without re-routing. */
+function syncThreadHash(threadId: string | null): void {
+  if (typeof window === 'undefined') return;
+  const hash = threadId === null ? '#threads' : `#threads/${encodeURIComponent(threadId)}`;
+  if (window.location.hash !== hash) window.history.replaceState(window.history.state, '', hash);
+}
+
+const threadColumns: Column<ThreadActivityRow>[] = [
+  {
+    id: 'thread',
+    header: 'Thread',
+    cell: (row) =>
+      row.title ? (
+        <span className="text-fg">{row.title}</span>
+      ) : (
+        <span className="text-faint italic">untitled</span>
+      ),
+  },
+  {
+    id: 'actor',
+    header: 'Actor',
+    hideBelow: 'sm',
+    cell: (row) => (
+      <span className="mono" title={row.actorRef}>
+        {row.actorRef}
+      </span>
+    ),
+  },
+  {
+    id: 'messages',
+    header: 'Messages',
+    align: 'right',
+    hideBelow: 'md',
+    cell: (row) => <span className={numClass}>{formatCount(row.messageCount)}</span>,
+  },
+  {
+    id: 'tokens',
+    header: 'Tokens',
+    align: 'right',
+    cell: (row) => <span className={numClass}>{formatCount(row.totalTokens)}</span>,
+  },
+  {
+    id: 'last',
+    header: 'Last activity',
+    align: 'right',
+    hideBelow: 'md',
+    cell: (row) => <span className="mono tnum">{formatTimestamp(row.lastActivityAt)}</span>,
+  },
+];
 
 /**
- * Newest-first recent threads with message count + rolled-up token total, from `threads/recent`.
- * Clicking a row opens the {@link ThreadDetailView} drill-down; "Load more" appends the next page.
+ * Newest-first recent threads from `threads/recent` (container), cursor-paged (Load more). A row
+ * opens the {@link ThreadDetailView} drill-down.
  */
 export function ThreadsSection({
   pageSize = 25,
@@ -15,75 +74,61 @@ export function ThreadsSection({
   pageSize?: number;
   initialThreadId?: string | null;
 }) {
-  const [selected, setSelected] = useState<string | null>(initialThreadId);
+  const [selected, setSelectedState] = useState<string | null>(initialThreadId);
   const threads = useRecentThreads(pageSize);
+  const setSelected = (id: string | null) => {
+    setSelectedState(id);
+    syncThreadHash(id);
+  };
 
-  if (selected) return <ThreadDetailView threadId={selected} onBack={() => setSelected(null)} />;
+  if (selected) {
+    return (
+      <PageBody>
+        <ErrorBoundary label="Thread" resetKeys={[selected]}>
+          <ThreadDetailView threadId={selected} onBack={() => setSelected(null)} />
+        </ErrorBoundary>
+      </PageBody>
+    );
+  }
 
   return (
-    <Panel>
-      <SectionTitle title="Recent threads" hint="newest first" />
-      <AsyncBlock
-        state={threads}
-        isEmpty={(rows) => rows.length === 0}
-        empty="No threads yet."
-        skeletonRows={6}
-      >
-        {(rows) => (
-          <>
-            <div className="table-wrap">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Thread</th>
-                    <th>Actor</th>
-                    <th className="num">Messages</th>
-                    <th className="num">Tokens</th>
-                    <th className="num">Last activity</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row) => (
-                    <tr
-                      key={row.threadId}
-                      className="clickable"
-                      tabIndex={0}
-                      onClick={() => setSelected(row.threadId)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          setSelected(row.threadId);
-                        }
-                      }}
-                      title={row.threadId}
-                    >
-                      <td>{row.title || <span className="muted">untitled</span>}</td>
-                      <td className="mono muted" title={row.actorRef}>
-                        {row.actorRef}
-                      </td>
-                      <td className="num mono tnum">{formatCount(row.messageCount)}</td>
-                      <td className="num mono tnum">{formatCount(row.totalTokens)}</td>
-                      <td className="num mono tnum muted">{formatTimestamp(row.lastActivityAt)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {threads.nextCursor !== null && (
-              <div className="controls" style={{ justifyContent: 'center', marginTop: 14 }}>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={threads.loading}
-                  onClick={threads.loadMore}
-                >
-                  {threads.loading ? 'Loading…' : 'Load more'}
-                </button>
-              </div>
+    <PageBody>
+      <PageHeader
+        title="Threads"
+        description="Conversations by last activity, with their message count and token total."
+      />
+      <ErrorBoundary label="Threads list">
+        <Panel title="Recent threads" description="newest first" flush>
+          <QueryBoundary
+            query={asQuery(threads)}
+            label="Threads"
+            skeleton={<TableSkeleton columns={threadColumns} rows={8} />}
+            isEmpty={(rows) => rows.length === 0}
+            empty={
+              <EmptyState
+                title="No threads yet."
+                description="A thread appears once someone talks to an agent."
+              />
+            }
+          >
+            {(rows) => (
+              <DataTable
+                label="threads"
+                columns={threadColumns}
+                rows={rows}
+                rowKey={(row) => row.threadId}
+                onRowClick={(row) => setSelected(row.threadId)}
+              />
             )}
-          </>
-        )}
-      </AsyncBlock>
-    </Panel>
+          </QueryBoundary>
+          <LoadMore
+            hasNext={threads.nextCursor !== null}
+            loading={threads.loading && threads.data !== undefined}
+            onLoadMore={threads.loadMore}
+            className="border-t border-border"
+          />
+        </Panel>
+      </ErrorBoundary>
+    </PageBody>
   );
 }
