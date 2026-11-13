@@ -29,7 +29,7 @@ sources:
 `@adonis-agora/agent-dashboard` is a read-only React SPA over `@adonis-agora/agent`'s
 cross-actor `/agent/governance/*` read routes — spend by model/actor, usage trend,
 threads, tool calls, quota, and the HITL approvals inbox. With tenancy on, those reads are
-scoped to the viewer's organization (the header Organization picker keeps the choice in
+scoped to the viewer's organization (the top bar Organization picker keeps the choice in
 `?tenant=`; `tenants` on the `authorize` result widens it). Since agent@0.21.0 the same SPA
 ships EMBEDDED in `@adonis-agora/agent`; this package remains for standalone installs and
 for its framework-free browser client.
