@@ -1,6 +1,7 @@
 import { args, flags } from '@adonisjs/core/ace';
 import { AgentCommand, opt } from '../src/cli/agent_command.js';
 import {
+  type DecisionRefusal,
   decideToolCall,
   decisionRefusal,
   type ToolCallDecision,
@@ -34,11 +35,26 @@ abstract class DecideCommand extends AgentCommand {
   protected abstract decision(): ToolCallDecision;
   protected abstract readonly verb: 'approve' | 'reject';
 
+  /** Refuse (exit `1`); with `--json`, first print `{ ok: false, toolCallId, status, message }`. */
+  private refuseDecision(refusal: DecisionRefusal): never {
+    if (this.json) {
+      this.logger.log(
+        JSON.stringify({ ok: false, toolCallId: this.toolCallId, ...refusal }, null, 2),
+      );
+    }
+    return this.refuse(refusal.message);
+  }
+
   protected async execute() {
     const service = await this.agentService();
     const actor = this.cliActor();
     const runId = opt(this.runId) ?? (await service.toolCallRun(this.toolCallId));
-    if (runId === null) return this.refuse(`Unknown tool call "${this.toolCallId}".`);
+    if (runId === null) {
+      return this.refuseDecision({
+        status: 404,
+        message: `Unknown tool call "${this.toolCallId}".`,
+      });
+    }
     // Refuse before asking: the same checks the decision itself runs (and runs again).
     const refusal = await decisionRefusal(service, {
       actor,
@@ -47,7 +63,7 @@ abstract class DecideCommand extends AgentCommand {
       privileged: OPERATOR,
       fromAnotherProcess: true,
     });
-    if (refusal !== null) return this.refuse(refusal.message);
+    if (refusal !== null) return this.refuseDecision(refusal);
     if (!(await this.confirmed(this.force, `${this.verb} tool call ${this.toolCallId}?`))) {
       return this.refuse('Cancelled.');
     }
@@ -59,13 +75,13 @@ abstract class DecideCommand extends AgentCommand {
       privileged: OPERATOR,
       fromAnotherProcess: true,
     });
-    const result = outcome.ok
-      ? { ok: true as const, toolCallId: this.toolCallId, runId: outcome.runId, by: actor.id }
-      : { ok: false as const, toolCallId: this.toolCallId, ...outcome.refusal };
-    if (!outcome.ok) {
-      if (this.json) this.logger.log(JSON.stringify(result, null, 2));
-      return this.refuse(outcome.refusal.message);
-    }
+    if (!outcome.ok) return this.refuseDecision(outcome.refusal);
+    const result = {
+      ok: true as const,
+      toolCallId: this.toolCallId,
+      runId: outcome.runId,
+      by: actor.id,
+    };
     return this.output(result, () =>
       this.logger.success(
         `${this.verb === 'approve' ? 'Approved' : 'Rejected'} ${this.toolCallId}`,

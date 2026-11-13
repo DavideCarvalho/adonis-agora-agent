@@ -371,6 +371,14 @@ describe('agent:* commands', { timeout: 60_000 }, () => {
       expect(exitCode).toBe(1);
       expect(logs.join('\n')).toContain('Unknown tool call');
       expect(runner.signals).toEqual([]);
+      // --json: the same refusal document from every refusal site.
+      const json = await run(app, AgentApprovalsApprove, ['ghost', '--force', '--json']);
+      expect(json.exitCode).toBe(1);
+      expect(JSON.parse(json.logs[0] as string)).toMatchObject({
+        ok: false,
+        toolCallId: 'ghost',
+        status: 404,
+      });
     });
 
     it('keeps the approver gate: a call routed to a role the CLI does not hold is refused', async () => {

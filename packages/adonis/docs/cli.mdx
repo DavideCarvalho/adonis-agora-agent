@@ -46,10 +46,11 @@ node ace agent:threads:show <threadId>
 node ace agent:tool-calls:list --first 100
 ```
 
-Lists page with cursors: the table ends with the `--after` (and `--before`) to pass for the next
-page, and `--json` answers the console route's `{ data, meta }`. `--first`/`--last` set the page
-size (default 50, at most 200). `agent:runs:list` pages forward only and filters by `--actor`,
-`--agent`, `--status` (`running`, `completed`, `failed`, `cancelled`) and `--from`/`--to`.
+Lists page with cursors, and `--json` answers the console route's `{ data, meta }`. The threads,
+tool-call and approvals lists take `--after`/`--before` (the table ends with the cursor to pass)
+and `--first`/`--last` for the page size (default 50, at most 200). `agent:runs:list` pages
+forward only — `--after` and `--first` — and filters by `--actor`, `--agent`, `--status`
+(`running`, `completed`, `failed`, `cancelled`) and `--from`/`--to`.
 
 ## Approvals
 
