@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import type { QueryLike } from '../agora-kit/blocks/query-boundary';
 import { AgentClient } from '../client/agent-client.js';
 import type {
   CursorPageResponse,
@@ -28,7 +29,8 @@ export function useAgentClient(): AgentClient {
 
 /** The lifecycle of one async read. */
 export interface AsyncState<T> {
-  data: T | null;
+  /** The last answer; `undefined` until the first one arrives (a `null` answer is a real "not found"). */
+  data: T | undefined;
   loading: boolean;
   error: Error | null;
   /** Re-run the fetch (e.g. a manual refresh). */
@@ -41,7 +43,7 @@ export interface AsyncState<T> {
  * range change never flashes stale data. No caching — the console is a live read surface.
  */
 export function useAsync<T>(run: () => Promise<T>, deps: readonly unknown[]): AsyncState<T> {
-  const [data, setData] = useState<T | null>(null);
+  const [data, setData] = useState<T | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -135,14 +137,16 @@ function runsFilterKey(filter: ListRunsFilter): string {
 
 /** A cursor-paged list read page by page: the rows loaded so far and how to load more. */
 export interface CursorListState<T> {
-  /** Every row loaded so far, `null` until the first page arrives. */
-  data: T[] | null;
+  /** Every row loaded so far, `undefined` until the first page arrives. */
+  data: T[] | undefined;
   /** Cursor for the next page; `null` when the last page has been loaded. */
   nextCursor: string | null;
   loading: boolean;
   error: Error | null;
   /** Fetch and append the next page (no-op once `nextCursor` is `null`). */
   loadMore: () => void;
+  /** Reload from the first page. */
+  reload: () => void;
 }
 
 /**
@@ -157,7 +161,7 @@ export function useCursorList<T>(
 ): CursorListState<T> {
   const fetchRef = useRef(fetchPage);
   fetchRef.current = fetchPage;
-  const [data, setData] = useState<T[] | null>(null);
+  const [data, setData] = useState<T[] | undefined>(undefined);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -171,7 +175,7 @@ export function useCursorList<T>(
       .then((page) => {
         if (genRef.current !== gen) return;
         setData((prev) =>
-          after === undefined || prev === null ? page.data : [...prev, ...page.data],
+          after === undefined || prev === undefined ? page.data : [...prev, ...page.data],
         );
         setNextCursor(page.meta.nextCursor);
         cursorRef.current = page.meta.nextCursor;
@@ -184,14 +188,18 @@ export function useCursorList<T>(
       });
   }, []);
 
+  const [nonce, setNonce] = useState(0);
+  const reload = useCallback(() => setNonce((n) => n + 1), []);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: deps are the intentional trigger set.
   useEffect(() => {
     const gen = ++genRef.current;
-    setData(null);
+    setData(undefined);
     setNextCursor(null);
     cursorRef.current = null;
     setError(null);
     load(undefined, gen);
-  }, [...deps, load]);
+  }, [...deps, load, nonce]);
 
   const loadMore = useCallback(() => {
     const cursor = cursorRef.current;
@@ -200,7 +208,7 @@ export function useCursorList<T>(
     load(cursor, genRef.current);
   }, [load]);
 
-  return { data, nextCursor, loading, error, loadMore };
+  return { data, nextCursor, loading, error, loadMore, reload };
 }
 
 /**
@@ -253,4 +261,22 @@ export function usePricing() {
 export function useGenuiStats(range: GovernanceRange) {
   const client = useAgentClient();
   return useAsync(() => client.genuiStats(range), [client, rangeKey(range)]);
+}
+
+/**
+ * A read as the console kit's `QueryLike` (what `QueryBoundary` renders): pending until the first
+ * answer, and an error only counts while there is no data to keep showing.
+ */
+export function asQuery<T>(state: {
+  data: T | undefined;
+  loading: boolean;
+  error: Error | null;
+  reload?: () => void;
+}): QueryLike<T> {
+  return {
+    data: state.error ? undefined : state.data,
+    error: state.error,
+    isPending: state.data === undefined && state.error === null,
+    ...(state.reload ? { refetch: state.reload } : {}),
+  };
 }

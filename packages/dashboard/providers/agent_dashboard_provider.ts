@@ -5,6 +5,7 @@ import {
   type AgentDashboardConfig,
   answerDashboardDenial,
   apiBaseFor,
+  consoleShellConfig,
   contentTypeFor,
   type DashboardDenialOptions,
   decideDashboardMount,
@@ -12,10 +13,10 @@ import {
   injectApiBase,
   injectBaseHref,
   mountPathFor,
+  type ResolvedAgentDashboardConfig,
   registerAgentConsole,
   resolveDashboardConfig,
   safeAssetSegments,
-  switcherShellConfig,
   warnNoConsoleAuthorizeOnce,
 } from '@adonis-agora/agent/dashboard';
 import type { HttpContext } from '@adonisjs/core/http';
@@ -48,6 +49,11 @@ import type { ApplicationService } from '@adonisjs/core/types';
  * "duplicate route" error at boot.
  */
 export default class AgentDashboardProvider {
+  /** The console-shell options (`dashboard.viewer` / `dashboard.signOut`), resolved at boot. */
+  private shellOptions: Pick<ResolvedAgentDashboardConfig, 'viewer' | 'signOut'> = {
+    viewer: null,
+    signOut: null,
+  };
   constructor(protected app: ApplicationService) {}
 
   /** The built SPA directory (`dist/spa`) as a `file://` URL, next to this compiled provider. */
@@ -76,6 +82,7 @@ export default class AgentDashboardProvider {
     const mount = mountPathFor(agentPath, dashboardConfig.path);
     const actorResolver = agentConfig.actorResolver;
 
+    this.shellOptions = { viewer: dashboardConfig.viewer, signOut: dashboardConfig.signOut };
     const authorize = dashboardConfig.authorize;
     if (authorize === undefined) warnNoConsoleAuthorizeOnce(this.app, console.warn);
     // What a refused browser sees — the built-in access-denied page unless the host customised it.
@@ -140,7 +147,8 @@ export default class AgentDashboardProvider {
     const html = await readFile(new URL('index.html', this.spaDirUrl), 'utf8');
     ctx.response.header('content-type', 'text/html; charset=utf-8');
     ctx.response.header('cache-control', 'no-store, must-revalidate');
-    const shell = await switcherShellConfig(this.app, apiBase);
+    // The console-shell fields: switcher, ⌘K search, the signed-in viewer and the sign-out.
+    const shell = await consoleShellConfig(this.app, ctx, apiBase, this.shellOptions);
     ctx.response.send(injectApiBase(injectBaseHref(html, mount), apiBase, shell));
   }
 

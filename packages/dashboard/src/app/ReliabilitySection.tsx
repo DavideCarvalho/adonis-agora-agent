@@ -1,9 +1,23 @@
+import { type Column, DataTable } from '../agora-kit/blocks/data-table';
+import { EmptyState } from '../agora-kit/blocks/empty-state';
+import { ErrorBoundary } from '../agora-kit/blocks/error-boundary';
+import { MetricCard, MetricGrid, MetricGridSkeleton } from '../agora-kit/blocks/metric-card';
+import { PageHeader } from '../agora-kit/blocks/page-header';
+import { Panel } from '../agora-kit/blocks/panel';
+import { QueryBoundary } from '../agora-kit/blocks/query-boundary';
+import { PageBody } from '../agora-kit/shell/app-shell';
 import { formatCount, formatDuration, formatPercent } from '../client/format.js';
 import type { DonutSegment } from '../client/spend-summary.js';
-import type { Latency, RunFailureCodeRow, RunReliability, RunTrendPoint } from '../client/types.js';
+import type {
+  Latency,
+  RunAgentBreakdownRow,
+  RunFailureCodeRow,
+  RunReliability,
+  RunTrendPoint,
+} from '../client/types.js';
 import { Donut } from './Donut.js';
-import { AsyncBlock, colorAt, Empty, Panel, SectionTitle, ShareBar, Stat } from './ui.js';
-import { useReliability } from './use-governance.js';
+import { colorAt, DonutSkeleton, LegendRow, numClass, ShareBar } from './ui.js';
+import { asQuery, useReliability } from './use-governance.js';
 
 /** One outcome slice of the reliability donut, with its semantic CSS colour token. */
 interface Slice {
@@ -42,7 +56,7 @@ function ReliabilityDonut({ slices, total }: { slices: Slice[]; total: number })
           cy={center}
           r={radius}
           fill="none"
-          stroke="var(--line)"
+          stroke="var(--agora-line)"
           strokeWidth={thickness}
         />
         {total > 0 &&
@@ -74,7 +88,7 @@ function ReliabilityDonut({ slices, total }: { slices: Slice[]; total: number })
         className="mono tnum"
         fontSize="18"
         fontWeight="600"
-        fill="var(--text)"
+        fill="var(--agora-text)"
       >
         {formatCount(total)}
       </text>
@@ -84,7 +98,7 @@ function ReliabilityDonut({ slices, total }: { slices: Slice[]; total: number })
         textAnchor="middle"
         className="mono"
         fontSize="10"
-        fill="var(--muted)"
+        fill="var(--agora-muted)"
       >
         runs
       </text>
@@ -111,7 +125,7 @@ function ReliabilityTrendChart({ points }: { points: RunTrendPoint[] }) {
 
   return (
     <svg
-      className="chart-svg"
+      className="block h-[160px] w-full"
       viewBox={`0 0 ${TREND_WIDTH} ${TREND_HEIGHT}`}
       role="img"
       aria-label="daily runs vs failed trend"
@@ -125,7 +139,7 @@ function ReliabilityTrendChart({ points }: { points: RunTrendPoint[] }) {
           x2={TREND_WIDTH - TREND_PAD}
           y1={TREND_PAD + innerH * f}
           y2={TREND_PAD + innerH * f}
-          stroke="var(--line-soft)"
+          stroke="var(--agora-line-soft)"
           strokeWidth="1"
         />
       ))}
@@ -141,13 +155,19 @@ function ReliabilityTrendChart({ points }: { points: RunTrendPoint[] }) {
                 y={innerH - runsH}
                 width={barW}
                 height={runsH}
-                fill="var(--primary)"
+                fill="var(--agora-accent)"
                 opacity={0.6}
               >
                 <title>{`${p.day} · ${p.runs} runs`}</title>
               </rect>
               {p.failed > 0 && (
-                <rect x={cx} y={innerH - failedH} width={barW} height={failedH} fill="var(--bad)">
+                <rect
+                  x={cx}
+                  y={innerH - failedH}
+                  width={barW}
+                  height={failedH}
+                  fill="var(--agora-bad)"
+                >
                   <title>{`${p.day} · ${p.failed} failed`}</title>
                 </rect>
               )}
@@ -155,7 +175,13 @@ function ReliabilityTrendChart({ points }: { points: RunTrendPoint[] }) {
           );
         })}
       </g>
-      <text x={TREND_PAD} y={TREND_HEIGHT - 1} fontSize="10" className="mono" fill="var(--muted)">
+      <text
+        x={TREND_PAD}
+        y={TREND_HEIGHT - 1}
+        fontSize="10"
+        className="mono"
+        fill="var(--agora-muted)"
+      >
         {points[0]?.day ?? ''}
       </text>
       <text
@@ -164,7 +190,7 @@ function ReliabilityTrendChart({ points }: { points: RunTrendPoint[] }) {
         fontSize="10"
         textAnchor="end"
         className="mono"
-        fill="var(--muted)"
+        fill="var(--agora-muted)"
       >
         {points[points.length - 1]?.day ?? ''}
       </text>
@@ -173,12 +199,13 @@ function ReliabilityTrendChart({ points }: { points: RunTrendPoint[] }) {
 }
 
 /** A latency headline: p50 as the value, p95 and the sample count underneath. */
-function LatencyStat({ label, latency }: { label: string; latency: Latency }) {
+function LatencyCard({ label, latency }: { label: string; latency: Latency }) {
   return (
-    <Stat
+    <MetricCard
       label={label}
       value={formatDuration(latency.p50Ms)}
-      sub={`p50 · p95 ${formatDuration(latency.p95Ms)} · ${formatCount(latency.samples)} turns`}
+      caption={`p50 · p95 ${formatDuration(latency.p95Ms)} · ${formatCount(latency.samples)} turns`}
+      tone="info"
     />
   );
 }
@@ -193,216 +220,269 @@ function FailuresByCode({ rows }: { rows: RunFailureCodeRow[] }) {
     segments.push({ key: row.code, value: row.count, fraction, offset });
     offset += fraction;
   }
+  const colorOf = new Map(rows.map((row, i) => [row.code, colorAt(i)]));
+  const columns: Column<RunFailureCodeRow>[] = [
+    { id: 'code', header: 'Code', cell: (row) => <span className="mono text-fg">{row.code}</span> },
+    {
+      id: 'failed',
+      header: 'Failed',
+      align: 'right',
+      cell: (row) => <span className={numClass}>{formatCount(row.count)}</span>,
+    },
+    {
+      id: 'share',
+      header: 'Share',
+      className: 'w-40',
+      cell: (row) => (
+        <ShareBar
+          fraction={total > 0 ? row.count / total : 0}
+          {...(colorOf.has(row.code) ? { color: colorOf.get(row.code) as string } : {})}
+        />
+      ),
+    },
+  ];
   return (
-    <div className="grid cols-2" style={{ alignItems: 'center' }}>
-      <div style={{ display: 'grid', placeItems: 'center', gap: 14 }}>
+    <div className="grid items-center lg:grid-cols-[minmax(240px,320px)_1fr]">
+      <div className="flex flex-col items-center gap-4 border-b border-border p-5 lg:border-r lg:border-b-0">
         <Donut
           segments={segments}
           centerLabel={formatCount(total)}
           centerSub="failed"
           label="failures by code"
         />
-        <div className="legend" style={{ width: '100%' }}>
+        <div className="w-full">
           {rows.slice(0, 6).map((row, i) => (
-            <div className="row" key={row.code}>
-              <span className="swatch" style={{ background: colorAt(i) }} />
-              <span className="name mono">{row.code}</span>
-              <span className="mono tnum muted">{formatCount(row.count)}</span>
-            </div>
+            <LegendRow
+              key={row.code}
+              color={colorAt(i)}
+              name={row.code}
+              mono
+              value={formatCount(row.count)}
+            />
           ))}
         </div>
       </div>
-      <div className="table-wrap">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Code</th>
-              <th className="num">Failed</th>
-              <th style={{ width: 160 }}>Share</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, i) => (
-              <tr key={row.code}>
-                <td className="mono">{row.code}</td>
-                <td className="num mono tnum">{formatCount(row.count)}</td>
-                <td>
-                  <ShareBar fraction={total > 0 ? row.count / total : 0} color={colorAt(i)} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="min-w-0 self-start">
+        <DataTable columns={columns} rows={rows} rowKey={(row) => row.code} />
       </div>
     </div>
   );
 }
 
+function agentColumns(totalRuns: number): Column<RunAgentBreakdownRow>[] {
+  return [
+    {
+      id: 'agent',
+      header: 'Agent',
+      cell: (row) => <span className="text-fg">{row.agentName ?? '—'}</span>,
+    },
+    {
+      id: 'runs',
+      header: 'Runs',
+      align: 'right',
+      cell: (row) => <span className={numClass}>{formatCount(row.runs)}</span>,
+    },
+    {
+      id: 'failed',
+      header: 'Failed',
+      align: 'right',
+      cell: (row) => (
+        <span className={row.failed > 0 ? 'mono tnum text-bad' : numClass}>
+          {formatCount(row.failed)}
+        </span>
+      ),
+    },
+    {
+      id: 'success',
+      header: 'Success rate',
+      align: 'right',
+      hideBelow: 'sm',
+      cell: (row) => <span className={numClass}>{formatPercent(row.successRate)}</span>,
+    },
+    {
+      id: 'share',
+      header: 'Share',
+      className: 'w-40',
+      hideBelow: 'md',
+      cell: (row) => <ShareBar fraction={totalRuns > 0 ? row.runs / totalRuns : 0} />,
+    },
+  ];
+}
+
+interface RateRow {
+  key: string;
+  label: string;
+  rate: number;
+  color: string;
+}
+
+const rateColumns: Column<RateRow>[] = [
+  { id: 'outcome', header: 'Outcome', cell: (row) => <span className="text-fg">{row.label}</span> },
+  {
+    id: 'rate',
+    header: 'Rate',
+    align: 'right',
+    cell: (row) => <span className={numClass}>{formatPercent(row.rate)}</span>,
+  },
+  {
+    id: 'share',
+    header: 'Share',
+    className: 'w-40',
+    cell: (row) => <ShareBar fraction={row.rate} color={row.color} />,
+  },
+];
+
 /**
- * The run reliability surface from `GET /agent/governance/reliability`: success / failure / cancel
- * rates + mean settled duration, shown as headline stats, a hand-rolled outcome donut with a legend,
- * per-rate bars, turn latency (time to first token, duration), failures by code, a daily runs/failed
- * trend chart, and a per-agent breakdown table.
+ * The run reliability page from `GET /agent/governance/reliability` (container): success / failure
+ * / cancel rates and mean settled duration, the outcome donut, turn latency, failures by code, the
+ * daily runs/failed trend and the per-agent breakdown. The optional blocks only show when the server
+ * sends them.
  */
 export function ReliabilitySection() {
-  const reliability = useReliability();
+  const reliability = asQuery(useReliability());
   return (
-    <Panel>
-      <SectionTitle title="Reliability" hint="run outcomes over all time" />
-      <AsyncBlock
-        state={reliability}
+    <PageBody>
+      <PageHeader
+        title="Reliability"
+        description="How runs end, how fast turns are and what fails — over all time."
+      />
+      <QueryBoundary
+        query={reliability}
+        label="Reliability"
+        skeleton={
+          <>
+            <MetricGridSkeleton count={4} />
+            <DonutSkeleton />
+          </>
+        }
         isEmpty={(r: RunReliability) => r.runs === 0}
-        empty="No runs recorded yet."
-        skeletonRows={4}
+        empty={
+          <EmptyState
+            title="No runs recorded yet."
+            description="Run outcomes show up here once an agent runs."
+          />
+        }
       >
-        {(r) => {
-          const slices: Slice[] = [
-            { key: 'completed', label: 'Completed', value: r.completed, color: 'var(--good)' },
-            { key: 'failed', label: 'Failed', value: r.failed, color: 'var(--bad)' },
-            { key: 'cancelled', label: 'Cancelled', value: r.cancelled, color: 'var(--warn)' },
-            { key: 'running', label: 'Running', value: r.running, color: 'var(--info)' },
-          ];
-          return (
-            <div className="stack">
-              <div className="grid stat-4">
-                <Stat
-                  label="Runs"
-                  value={formatCount(r.runs)}
-                  sub={`${formatCount(r.running)} running`}
-                />
-                <Stat
-                  label="Success rate"
-                  value={formatPercent(r.successRate)}
-                  sub={`${formatCount(r.completed)} completed`}
-                />
-                <Stat
-                  label="Failure rate"
-                  value={formatPercent(r.failureRate)}
-                  sub={`${formatCount(r.failed)} failed`}
-                />
-                <Stat
-                  label="Avg duration"
-                  value={formatDuration(r.avgDurationMs)}
-                  sub="settled runs"
-                />
+        {(r) => <ReliabilityView r={r} />}
+      </QueryBoundary>
+    </PageBody>
+  );
+}
+
+/** The reliability page body (presentational). */
+export function ReliabilityView({ r }: { r: RunReliability }) {
+  const slices: Slice[] = [
+    { key: 'completed', label: 'Completed', value: r.completed, color: 'var(--agora-good)' },
+    { key: 'failed', label: 'Failed', value: r.failed, color: 'var(--agora-bad)' },
+    { key: 'cancelled', label: 'Cancelled', value: r.cancelled, color: 'var(--agora-warn)' },
+    { key: 'running', label: 'Running', value: r.running, color: 'var(--agora-info)' },
+  ];
+  const rates: RateRow[] = [
+    { key: 'success', label: 'Success', rate: r.successRate, color: 'var(--agora-good)' },
+    { key: 'failure', label: 'Failure', rate: r.failureRate, color: 'var(--agora-bad)' },
+    { key: 'cancel', label: 'Cancel', rate: r.cancelRate, color: 'var(--agora-warn)' },
+  ];
+  return (
+    <>
+      <MetricGrid className="md:grid-cols-4">
+        <MetricCard
+          label="Runs"
+          value={formatCount(r.runs)}
+          caption={`${formatCount(r.running)} running`}
+        />
+        <MetricCard
+          label="Success rate"
+          value={formatPercent(r.successRate)}
+          caption={`${formatCount(r.completed)} completed`}
+          tone="good"
+        />
+        <MetricCard
+          label="Failure rate"
+          value={formatPercent(r.failureRate)}
+          caption={`${formatCount(r.failed)} failed`}
+          tone={r.failed > 0 ? 'bad' : 'default'}
+        />
+        <MetricCard
+          label="Avg duration"
+          value={formatDuration(r.avgDurationMs)}
+          caption="settled runs"
+          tone="info"
+        />
+      </MetricGrid>
+
+      <ErrorBoundary label="Outcomes">
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Panel title="Outcomes" description="every run by how it ended">
+            <div className="flex flex-col items-center gap-4 py-1 sm:flex-row sm:justify-center sm:gap-8">
+              <ReliabilityDonut slices={slices} total={r.runs} />
+              <div className="w-full sm:w-48">
+                {slices.map((slice) => (
+                  <LegendRow
+                    key={slice.key}
+                    color={slice.color}
+                    name={slice.label}
+                    value={formatCount(slice.value)}
+                  />
+                ))}
               </div>
-
-              <div className="grid cols-2" style={{ alignItems: 'center' }}>
-                <div style={{ display: 'grid', placeItems: 'center', gap: 14 }}>
-                  <ReliabilityDonut slices={slices} total={r.runs} />
-                  <div className="legend" style={{ width: '100%' }}>
-                    {slices.map((slice) => (
-                      <div className="row" key={slice.key}>
-                        <span className="swatch" style={{ background: slice.color }} />
-                        <span className="name">{slice.label}</span>
-                        <span className="mono tnum muted">{formatCount(slice.value)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="table-wrap">
-                  <table className="table">
-                    <thead>
-                      <tr>
-                        <th>Outcome</th>
-                        <th className="num">Rate</th>
-                        <th style={{ width: 160 }}>Share</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td>Success</td>
-                        <td className="num mono tnum">{formatPercent(r.successRate)}</td>
-                        <td>
-                          <ShareBar fraction={r.successRate} color="var(--good)" />
-                        </td>
-                      </tr>
-                      <tr>
-                        <td>Failure</td>
-                        <td className="num mono tnum">{formatPercent(r.failureRate)}</td>
-                        <td>
-                          <ShareBar fraction={r.failureRate} color="var(--bad)" />
-                        </td>
-                      </tr>
-                      <tr>
-                        <td>Cancel</td>
-                        <td className="num mono tnum">{formatPercent(r.cancelRate)}</td>
-                        <td>
-                          <ShareBar fraction={r.cancelRate} color="var(--warn)" />
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {r.latency !== undefined && (
-                <div className="grid cols-2">
-                  <LatencyStat label="Time to first token" latency={r.latency.ttft} />
-                  <LatencyStat label="Turn duration" latency={r.latency.duration} />
-                </div>
-              )}
-
-              {r.failuresByCode !== undefined && r.failuresByCode.length > 0 && (
-                <Panel>
-                  <SectionTitle title="Failures by code" hint="the code the run's error carried" />
-                  <FailuresByCode rows={r.failuresByCode} />
-                </Panel>
-              )}
-
-              {r.trend !== undefined && r.trend.length > 0 && (
-                <Panel>
-                  <SectionTitle title="Runs vs failed" hint="daily, over the same window" />
-                  <ReliabilityTrendChart points={r.trend} />
-                </Panel>
-              )}
-
-              {r.byAgent !== undefined && (
-                <Panel>
-                  <SectionTitle title="By agent" hint="run volume + failures per agent" />
-                  {r.byAgent.length === 0 ? (
-                    <Empty>No agent-attributed runs recorded yet.</Empty>
-                  ) : (
-                    <div className="table-wrap">
-                      <table className="table">
-                        <thead>
-                          <tr>
-                            <th>Agent</th>
-                            <th className="num">Runs</th>
-                            <th className="num">Failed</th>
-                            <th className="num">Success rate</th>
-                            <th style={{ width: 160 }}>Share</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {r.byAgent.map((row) => (
-                            <tr key={row.agentName ?? '—'}>
-                              <td>{row.agentName ?? <span className="muted">—</span>}</td>
-                              <td className="num mono tnum">{formatCount(row.runs)}</td>
-                              <td className="num mono tnum">
-                                {row.failed > 0 ? (
-                                  <span className="warnnum">{formatCount(row.failed)}</span>
-                                ) : (
-                                  formatCount(row.failed)
-                                )}
-                              </td>
-                              <td className="num mono tnum">{formatPercent(row.successRate)}</td>
-                              <td>
-                                <ShareBar fraction={r.runs > 0 ? row.runs / r.runs : 0} />
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </Panel>
-              )}
             </div>
-          );
-        }}
-      </AsyncBlock>
-    </Panel>
+          </Panel>
+          <Panel title="Rates" description="share of all runs" flush>
+            <DataTable columns={rateColumns} rows={rates} rowKey={(row) => row.key} />
+          </Panel>
+        </div>
+      </ErrorBoundary>
+
+      {r.latency !== undefined && (
+        <ErrorBoundary label="Latency">
+          <MetricGrid className="md:grid-cols-2">
+            <LatencyCard label="Time to first token" latency={r.latency.ttft} />
+            <LatencyCard label="Turn duration" latency={r.latency.duration} />
+          </MetricGrid>
+        </ErrorBoundary>
+      )}
+
+      {r.failuresByCode !== undefined && r.failuresByCode.length > 0 && (
+        <ErrorBoundary label="Failures by code">
+          <Panel title="Failures by code" description="the code the run's error carried" flush>
+            <FailuresByCode rows={r.failuresByCode} />
+          </Panel>
+        </ErrorBoundary>
+      )}
+
+      {r.trend !== undefined && r.trend.length > 0 && (
+        <ErrorBoundary label="Runs vs failed">
+          <Panel
+            title="Runs vs failed"
+            description="daily, over the same window"
+            action={
+              <span className="flex items-center gap-3 text-[10.5px] text-faint">
+                <span className="flex items-center gap-1">
+                  <span className="size-2 rounded-[2px] bg-primary/60" /> runs
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="size-2 rounded-[2px] bg-bad" /> failed
+                </span>
+              </span>
+            }
+          >
+            <ReliabilityTrendChart points={r.trend} />
+          </Panel>
+        </ErrorBoundary>
+      )}
+
+      {r.byAgent !== undefined && (
+        <ErrorBoundary label="By agent">
+          <Panel title="By agent" description="run volume + failures per agent" flush>
+            <DataTable
+              columns={agentColumns(r.runs)}
+              rows={r.byAgent}
+              rowKey={(row) => row.agentName ?? '—'}
+              empty={<EmptyState title="No agent-attributed runs recorded yet." />}
+            />
+          </Panel>
+        </ErrorBoundary>
+      )}
+    </>
   );
 }

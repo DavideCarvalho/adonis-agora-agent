@@ -34,7 +34,7 @@ export function Donut({
           cy={center}
           r={radius}
           fill="none"
-          stroke="var(--line)"
+          stroke="var(--agora-line)"
           strokeWidth={thickness}
         />
         {segments.map((segment, index) => (
@@ -60,7 +60,7 @@ export function Donut({
           className="mono tnum"
           fontSize="18"
           fontWeight="600"
-          fill="var(--text)"
+          fill="var(--agora-text)"
         >
           {centerLabel}
         </text>
@@ -72,7 +72,7 @@ export function Donut({
           textAnchor="middle"
           className="mono"
           fontSize="10"
-          fill="var(--muted)"
+          fill="var(--agora-muted)"
         >
           {centerSub}
         </text>

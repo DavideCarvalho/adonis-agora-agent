@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -38,6 +38,27 @@ describe('dashboard build post-condition', () => {
     const entrypoint = pkg.main.replace(/^\.\/dist\//, '');
 
     expect(pkg.scripts['check:dist']).toContain(entrypoint);
+  });
+
+  it('keeps the bundled fonts: their CSS is a side effect the bundler must not drop', () => {
+    // With `"sideEffects": false`, Vite tree-shakes `import '../agora-kit/fonts'` and every
+    // fontsource stylesheet with it: the build still emits the .woff2 files, but the CSS has no
+    // @font-face, so the console silently falls back to system fonts.
+    const { sideEffects } = JSON.parse(
+      readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
+    ) as { sideEffects: unknown };
+    expect(sideEffects).toEqual(expect.arrayContaining(['*.css', './src/agora-kit/fonts.ts']));
+
+    // When the SPA was built, its stylesheet carries the faces, with URLs relative to the CSS
+    // (so they resolve under any mount path).
+    const assets = fileURLToPath(new URL('../dist/spa/assets/', import.meta.url));
+    if (!existsSync(assets)) return;
+    const css = readdirSync(assets)
+      .filter((file) => file.endsWith('.css'))
+      .map((file) => readFileSync(`${assets}${file}`, 'utf8'))
+      .join('\n');
+    expect(css).toMatch(/@font-face\{font-family:Sora;[^}]*src:url\(\.\/sora-/);
+    expect(css).toMatch(/@font-face\{font-family:JetBrains Mono;[^}]*src:url\(\.\/jetbrains-mono-/);
   });
 
   it('cleans before it compiles and compiles without incremental state', () => {

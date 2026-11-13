@@ -4,7 +4,7 @@ description: >-
   Serve and consume the @adonis-agora/agent governance console: the embedded provider
   from node ace configure @adonis-agora/agent vs the standalone @adonis-agora/
   agent-dashboard provider (register only ONE — duplicate-route error), the shared
-  config('agent').dashboard block { enabled, path, authorize, accessDenied } where authorize
+  config('agent').dashboard block { enabled, path, authorize, accessDenied, viewer, signOut } where authorize
   gates the console AND /agent/governance/* (open outside production, 403 in production when
   omitted), the governanceQueries: false mount refusal,
   and the framework-free AgentClient from @adonis-agora/agent-dashboard/client

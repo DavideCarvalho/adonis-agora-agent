@@ -4,8 +4,9 @@ A read-only **governance console** for [`@adonis-agora/agent`](../adonis) — a 
 SPA served by a thin AdonisJS provider. It visualizes the agent's own governance read-model: spend by
 model and by actor, the daily usage/cost trend, recent threads and tool calls, and today's quota.
 
-Part of the Agora ecosystem, themed with the Agora design tokens (AdonisJS violet on a dusk-ink
-canvas, warm-paper in light).
+Part of the Agora ecosystem: it uses the shared Agora console shell (sidebar, top bar, ⌘K search,
+console switcher, light and dark themes) with the agent console's rose accent. Fonts are bundled;
+the page loads nothing from a third-party host.
 
 ## What it shows
 

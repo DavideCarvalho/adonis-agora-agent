@@ -232,6 +232,8 @@ A public deployment should set a `quota`: model spend is otherwise unbounded (pe
 | `path` | `string` | `<path>/dashboard` | Where the SPA mounts. |
 | `authorize` | `AgentDashboardAuthorize` — function `(ctx, actor?)`, class, or lazy import | open outside production, `403` in production | Who may use the console **and** the `/agent/governance/*` routes (and, when set, who may act on other actors' runs and threads). `true`/`{ allowed: true }` allows; `false`, `{ allowed: false }`, `reason: 'forbidden'` or throwing → `403`; `{ allowed: false, reason: 'unauthenticated' }` → `401`; `{ redirectTo }` → redirect for a page, `401` JSON otherwise. See [the authorize contract](/docs/agent/governance/dashboard#the-authorize-contract). |
 | `accessDenied` | object or `(info, ctx) => string \| void` | — | Tweak or replace the access-denied page. |
+| `viewer` | `(ctx) => { label, email?, role? } \| null` | reads `ctx.auth.user` | Who the sidebar footer shows as signed in; `null` hides the row. See [signed-in user and sign-out](/docs/agent/governance/dashboard#signed-in-user-and-sign-out). |
+| `signOut` | `string \| { action } \| { href } \| false` | authkit's logout, when installed | The footer's sign-out: a POST path (sent with the CSRF token), a link, or none. Same-origin paths only. |
 
 The console refuses to mount only when `governanceQueries: false` — it is a browser client of routes that would not exist — and logs a boot warning saying so.
 

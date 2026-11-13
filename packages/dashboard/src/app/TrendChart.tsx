@@ -20,7 +20,7 @@ export function TrendChart({ points, metric }: { points: UsageTrendPoint[]; metr
 
   return (
     <svg
-      className="chart-svg"
+      className="block h-[200px] w-full"
       viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
       role="img"
       aria-label={`daily ${metric === 'costUsd' ? 'cost' : 'token'} trend`}
@@ -29,8 +29,8 @@ export function TrendChart({ points, metric }: { points: UsageTrendPoint[]; metr
       <title>{`daily ${metric === 'costUsd' ? 'cost' : 'token'} trend`}</title>
       <defs>
         <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.32" />
-          <stop offset="100%" stopColor="var(--primary)" stopOpacity="0" />
+          <stop offset="0%" stopColor="var(--agora-accent)" stopOpacity="0.32" />
+          <stop offset="100%" stopColor="var(--agora-accent)" stopOpacity="0" />
         </linearGradient>
       </defs>
       {/* baseline gridlines */}
@@ -41,7 +41,7 @@ export function TrendChart({ points, metric }: { points: UsageTrendPoint[]; metr
           x2={WIDTH - PAD}
           y1={PAD + innerH * f}
           y2={PAD + innerH * f}
-          stroke="var(--line-soft)"
+          stroke="var(--agora-line-soft)"
           strokeWidth="1"
         />
       ))}
@@ -51,18 +51,18 @@ export function TrendChart({ points, metric }: { points: UsageTrendPoint[]; metr
           <path
             d={geo.line}
             fill="none"
-            stroke="var(--primary)"
+            stroke="var(--agora-accent)"
             strokeWidth="2"
             strokeLinejoin="round"
           />
         )}
         {geo.vertices.map((v) => (
-          <circle key={v.day} cx={v.x} cy={v.y} r="3" fill="var(--primary)">
+          <circle key={v.day} cx={v.x} cy={v.y} r="3" fill="var(--agora-accent)">
             <title>{`${v.day} · ${fmt(v.value)}`}</title>
           </circle>
         ))}
       </g>
-      <text x={PAD} y={HEIGHT - 1} fontSize="10" className="mono" fill="var(--muted)">
+      <text x={PAD} y={HEIGHT - 1} fontSize="10" className="mono" fill="var(--agora-muted)">
         {points[0]?.day ?? ''}
       </text>
       <text
@@ -71,11 +71,11 @@ export function TrendChart({ points, metric }: { points: UsageTrendPoint[]; metr
         fontSize="10"
         textAnchor="end"
         className="mono"
-        fill="var(--muted)"
+        fill="var(--agora-muted)"
       >
         {points[points.length - 1]?.day ?? ''}
       </text>
-      <text x={PAD} y={PAD + 2} fontSize="10" className="mono" fill="var(--muted)">
+      <text x={PAD} y={PAD + 2} fontSize="10" className="mono" fill="var(--agora-muted)">
         {fmt(geo.max)}
       </text>
     </svg>

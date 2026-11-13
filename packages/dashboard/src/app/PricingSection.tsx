@@ -1,8 +1,18 @@
 import { type FormEvent, useState } from 'react';
+import { type Column, DataTable } from '../agora-kit/blocks/data-table';
+import { EmptyState } from '../agora-kit/blocks/empty-state';
+import { ErrorBoundary } from '../agora-kit/blocks/error-boundary';
+import { PageHeader } from '../agora-kit/blocks/page-header';
+import { Panel } from '../agora-kit/blocks/panel';
+import { QueryBoundary } from '../agora-kit/blocks/query-boundary';
+import { PageBody } from '../agora-kit/shell/app-shell';
+import { Button } from '../agora-kit/ui/button';
 import { isUnavailable } from '../client/agent-client.js';
 import { formatTimestamp, formatUsd } from '../client/format.js';
-import { Empty, ErrorNote, Panel, SectionTitle, Skeleton } from './ui.js';
-import { useAgentClient, usePricing } from './use-governance.js';
+import type { CurrentModelPrice } from '../client/types.js';
+import { TagIcon } from './icons.js';
+import { fieldClass, Notice, numClass, TableSkeleton } from './ui.js';
+import { asQuery, useAgentClient, usePricing } from './use-governance.js';
 
 const emptyForm = {
   modelId: '',
@@ -11,22 +21,118 @@ const emptyForm = {
   cacheWritePricePer1m: '',
   cacheReadPricePer1m: '',
 };
+type PriceForm = typeof emptyForm;
+
+const optionalUsd = (value: number | undefined) => (value === undefined ? '—' : formatUsd(value));
+
+const priceColumns: Column<CurrentModelPrice>[] = [
+  { id: 'model', header: 'Model', cell: (p) => <span className="mono text-fg">{p.modelId}</span> },
+  {
+    id: 'input',
+    header: 'Input / 1M',
+    align: 'right',
+    cell: (p) => <span className="mono tnum text-fg">{formatUsd(p.inputPricePer1m)}</span>,
+  },
+  {
+    id: 'output',
+    header: 'Output / 1M',
+    align: 'right',
+    cell: (p) => <span className="mono tnum text-fg">{formatUsd(p.outputPricePer1m)}</span>,
+  },
+  {
+    id: 'cacheWrite',
+    header: 'Cache write / 1M',
+    align: 'right',
+    hideBelow: 'md',
+    cell: (p) => <span className={numClass}>{optionalUsd(p.cacheWritePricePer1m)}</span>,
+  },
+  {
+    id: 'cacheRead',
+    header: 'Cache read / 1M',
+    align: 'right',
+    hideBelow: 'md',
+    cell: (p) => <span className={numClass}>{optionalUsd(p.cacheReadPricePer1m)}</span>,
+  },
+  {
+    id: 'from',
+    header: 'Effective from',
+    align: 'right',
+    hideBelow: 'lg',
+    cell: (p) => <span className="mono tnum">{formatTimestamp(p.effectiveFrom)}</span>,
+  },
+];
+
+/** The "set a price" form (presentational: state and submit come in as props). */
+export function PriceFormView({
+  form,
+  onChange,
+  onSubmit,
+  saving,
+  error,
+}: {
+  form: PriceForm;
+  onChange: (field: keyof PriceForm, value: string) => void;
+  onSubmit: (e: FormEvent) => void;
+  saving: boolean;
+  error: string | null;
+}) {
+  const field = (
+    name: keyof PriceForm,
+    placeholder: string,
+    label: string,
+    numeric: boolean,
+    className = '',
+  ) => (
+    <label className={`flex min-w-0 flex-col gap-1 ${className}`}>
+      <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
+        {label}
+      </span>
+      <input
+        className={`${fieldClass} ${numeric ? 'mono tnum' : 'mono'}`}
+        placeholder={placeholder}
+        value={form[name]}
+        onChange={(e) => onChange(name, e.target.value)}
+        {...(numeric ? { type: 'number', step: 'any', min: 0 } : {})}
+      />
+    </label>
+  );
+  return (
+    <form className="flex flex-col gap-3" onSubmit={onSubmit}>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[2fr_repeat(4,1fr)]">
+        {field('modelId', 'model id (e.g. gpt-4o)', 'Model', false, 'sm:col-span-2 lg:col-span-1')}
+        {field('inputPricePer1m', 'input $/1M', 'Input', true)}
+        {field('outputPricePer1m', 'output $/1M', 'Output', true)}
+        {field('cacheWritePricePer1m', 'cache write $/1M (optional)', 'Cache write', true)}
+        {field('cacheReadPricePer1m', 'cache read $/1M (optional)', 'Cache read', true)}
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button type="submit" disabled={saving}>
+          {saving ? 'Saving…' : 'Save price'}
+        </Button>
+        {error ? (
+          <span role="alert" className="text-xs text-bad">
+            {error}
+          </span>
+        ) : (
+          <span className="text-[11px] text-faint">Rates are per 1M tokens, in USD.</span>
+        )}
+      </div>
+    </form>
+  );
+}
 
 /**
- * Model pricing from `GET /agent/governance/pricing`, plus an inline upsert form
- * (`POST /agent/governance/pricing`) — the same rates the loop's cost fold and every other governance
- * rollup price usage against. `501` (`404` from an older server) means the app has no pricing store
- * bound at all (`pricingStore: false`); that is a distinct, expected state from a network/auth error, so it gets its own panel
- * rather than the generic error note.
+ * Model pricing from `GET /agent/governance/pricing` and an upsert form (`POST
+ * /agent/governance/pricing`) — the rates the loop's cost fold and every governance rollup price
+ * usage against (container). `501` (`404` from an older server) means no pricing store is bound
+ * (`pricingStore: false`): an expected state with its own notice, not an error.
  */
 export function PricingSection() {
   const client = useAgentClient();
-  const prices = usePricing();
+  const pricesState = usePricing();
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-
-  const unavailable = isUnavailable(prices.error);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -49,7 +155,7 @@ export function PricingSection() {
         ...(Number.isNaN(cacheRead) ? {} : { cacheReadPricePer1m: cacheRead }),
       });
       setForm(emptyForm);
-      prices.reload();
+      pricesState.reload();
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -57,116 +163,66 @@ export function PricingSection() {
     }
   };
 
-  if (unavailable) {
+  const header = (
+    <PageHeader
+      title="Pricing"
+      description="Per-1M token rates every cost figure in this console is priced against."
+    />
+  );
+
+  if (isUnavailable(pricesState.error)) {
     return (
-      <Panel>
-        <SectionTitle title="Pricing" hint="per-1M token rates" />
-        <div className="empty">
+      <PageBody>
+        {header}
+        <Notice title="No pricing store">
           No pricing store is bound on this server (<code>pricingStore: false</code>), so cost stays
           unpriced everywhere. Configure a pricing store in <code>config/agent.ts</code> to enable
-          this panel.
-        </div>
-      </Panel>
+          this page.
+        </Notice>
+      </PageBody>
     );
   }
 
   return (
-    <div className="stack">
-      <Panel>
-        <SectionTitle title="Pricing" hint="per-1M token rates" />
-        {prices.error ? (
-          <ErrorNote error={prices.error} />
-        ) : prices.loading && prices.data === null ? (
-          <Skeleton rows={4} />
-        ) : prices.data === null || prices.data.length === 0 ? (
-          <Empty>No model prices set yet.</Empty>
-        ) : (
-          <div className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Model</th>
-                  <th className="num">Input / 1M</th>
-                  <th className="num">Output / 1M</th>
-                  <th className="num">Cache write / 1M</th>
-                  <th className="num">Cache read / 1M</th>
-                  <th className="num">Effective from</th>
-                </tr>
-              </thead>
-              <tbody>
-                {prices.data.map((price) => (
-                  <tr key={price.modelId}>
-                    <td className="mono">{price.modelId}</td>
-                    <td className="num mono tnum">{formatUsd(price.inputPricePer1m)}</td>
-                    <td className="num mono tnum">{formatUsd(price.outputPricePer1m)}</td>
-                    <td className="num mono tnum muted">
-                      {price.cacheWritePricePer1m === undefined
-                        ? '—'
-                        : formatUsd(price.cacheWritePricePer1m)}
-                    </td>
-                    <td className="num mono tnum muted">
-                      {price.cacheReadPricePer1m === undefined
-                        ? '—'
-                        : formatUsd(price.cacheReadPricePer1m)}
-                    </td>
-                    <td className="num mono tnum muted">{formatTimestamp(price.effectiveFrom)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
-
-      <Panel>
-        <SectionTitle title="Set a price" hint="upserts — retires the model's prior rate" />
-        <form className="stack" onSubmit={submit}>
-          <div className="controls">
-            <input
-              className="range-input"
-              placeholder="model id (e.g. gpt-4o)"
-              value={form.modelId}
-              onChange={(e) => setForm((f) => ({ ...f, modelId: e.target.value }))}
-            />
-            <input
-              className="range-input"
-              type="number"
-              step="any"
-              placeholder="input $/1M"
-              value={form.inputPricePer1m}
-              onChange={(e) => setForm((f) => ({ ...f, inputPricePer1m: e.target.value }))}
-            />
-            <input
-              className="range-input"
-              type="number"
-              step="any"
-              placeholder="output $/1M"
-              value={form.outputPricePer1m}
-              onChange={(e) => setForm((f) => ({ ...f, outputPricePer1m: e.target.value }))}
-            />
-            <input
-              className="range-input price-input"
-              type="number"
-              step="any"
-              placeholder="cache write $/1M (optional)"
-              value={form.cacheWritePricePer1m}
-              onChange={(e) => setForm((f) => ({ ...f, cacheWritePricePer1m: e.target.value }))}
-            />
-            <input
-              className="range-input price-input"
-              type="number"
-              step="any"
-              placeholder="cache read $/1M (optional)"
-              value={form.cacheReadPricePer1m}
-              onChange={(e) => setForm((f) => ({ ...f, cacheReadPricePer1m: e.target.value }))}
-            />
-            <button type="submit" className="btn approve" disabled={saving}>
-              {saving ? 'Saving…' : 'Save price'}
-            </button>
-          </div>
-          {saveError && <div className="err">{saveError}</div>}
-        </form>
-      </Panel>
-    </div>
+    <PageBody>
+      {header}
+      <ErrorBoundary label="Prices">
+        <Panel title="Current rates" description="per-1M token rates" flush>
+          <QueryBoundary
+            query={asQuery(pricesState)}
+            label="Prices"
+            skeleton={<TableSkeleton columns={priceColumns} rows={4} />}
+            isEmpty={(rows) => rows.length === 0}
+            empty={
+              <EmptyState
+                icon={<TagIcon />}
+                title="No model prices set yet."
+                description="Set one below; usage recorded before it stays unpriced."
+              />
+            }
+          >
+            {(rows) => (
+              <DataTable
+                label="model prices"
+                columns={priceColumns}
+                rows={rows}
+                rowKey={(p) => p.modelId}
+              />
+            )}
+          </QueryBoundary>
+        </Panel>
+      </ErrorBoundary>
+      <ErrorBoundary label="Set a price">
+        <Panel title="Set a price" description="upserts — retires the model's prior rate">
+          <PriceFormView
+            form={form}
+            onChange={(field, value) => setForm((f) => ({ ...f, [field]: value }))}
+            onSubmit={(e) => void submit(e)}
+            saving={saving}
+            error={saveError}
+          />
+        </Panel>
+      </ErrorBoundary>
+    </PageBody>
   );
 }

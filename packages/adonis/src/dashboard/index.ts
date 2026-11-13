@@ -47,6 +47,18 @@ export {
   resolveAccessDeniedPage,
 } from './access_denied_page.js';
 export {
+  type ConsoleShellIdentity,
+  type ConsoleSignOut,
+  type ConsoleViewer,
+  consoleShellIdentity,
+  csrfTokenOf,
+  resolveSignOut,
+  resolveViewer,
+  type SignOutOption,
+  type ViewerHook,
+  viewerFromUser,
+} from './console_shell.js';
+export {
   type AccessDeniedOption,
   type AccessDeniedRenderer,
   type AgentDashboardAuthorize,
@@ -79,6 +91,7 @@ export {
   AGENT_CONSOLE_ID,
   type AgentConsoleRegistration,
   agentConsoleDecision,
+  consoleShellConfig,
   registerAgentConsole,
   searchAgentConsole,
   switcherShellConfig,
