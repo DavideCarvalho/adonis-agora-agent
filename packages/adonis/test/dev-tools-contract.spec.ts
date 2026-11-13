@@ -4,10 +4,10 @@ import {
   authorizeByToken,
   resolveConsoleAuthorize,
 } from '../src/console-authorize.js';
+import { type DevToolsActions, DevToolsActionsGate } from '../src/dev-tools/actions.js';
 import { agentDevTools } from '../src/dev-tools/agent-tools.js';
 import type { DevTool, DevToolsLib } from '../src/dev-tools/contract.js';
 import { csrfBlocksPath, csrfWarning } from '../src/dev-tools/csrf.js';
-import { actionAllowed } from '../src/dev-tools/endpoint.js';
 import { DevToolsHubImpl, endpointAuthorizeWarning } from '../src/dev-tools/hub.js';
 import { registerDevTools } from '../src/dev-tools/index.js';
 import {
@@ -276,14 +276,142 @@ describe('dev tools limits and redaction', () => {
 });
 
 describe('dev tools actions', () => {
-  it('refuses by default, executes all, or a list of libs / tool names', () => {
-    expect(actionAllowed('refuse', 'durable', 'durable_retry_run')).toBe(false);
-    expect(actionAllowed('execute', 'durable', 'durable_retry_run')).toBe(true);
-    expect(actionAllowed(['durable'], 'durable', 'durable_retry_run')).toBe(true);
-    expect(actionAllowed(['payments_refund_payment'], 'durable', 'durable_retry_run')).toBe(false);
-    expect(actionAllowed(['payments_refund_payment'], 'payments', 'payments_refund_payment')).toBe(
+  const caller = { id: 'user:1', via: 'session' as const };
+  const ctx = { request: {} } as never;
+  const decide = (actions: DevToolsActions, lib: string, tool: string) =>
+    new DevToolsActionsGate(actions, ctx, caller).decide({ lib, tool, destructive: false });
+
+  it('refuses by default, executes all, or a list of libs / tool names', async () => {
+    expect(await decide('refuse', 'durable', 'durable_retry_run')).toEqual({
+      reason: 'not-configured',
+    });
+    expect(await decide('execute', 'durable', 'durable_retry_run')).toBe(true);
+    expect(await decide(['durable'], 'durable', 'durable_retry_run')).toBe(true);
+    expect(await decide(['payments_refund_payment'], 'durable', 'durable_retry_run')).not.toBe(
       true,
     );
+    expect(await decide(['payments_refund_payment'], 'payments', 'payments_refund_payment')).toBe(
+      true,
+    );
+  });
+
+  it('map: a tool key wins over its lib key; neither refuses; throw and redirectTo deny', async () => {
+    const actions: DevToolsActions = {
+      payments: () => true,
+      payments_refund_payment: () => false,
+      durable: () => ({ redirectTo: '/login' }),
+      telescope: () => {
+        throw new Error('boom');
+      },
+    };
+    expect(await decide(actions, 'payments', 'payments_capture_payment')).toBe(true);
+    expect(await decide(actions, 'payments', 'payments_refund_payment')).toEqual({
+      reason: 'denied',
+    });
+    expect(await decide(actions, 'media', 'media_delete_file')).toEqual({
+      reason: 'not-configured',
+    });
+    expect(await decide(actions, 'durable', 'durable_retry_run')).toEqual({ reason: 'denied' });
+    expect(await decide(actions, 'telescope', 'telescope_prune')).toMatchObject({
+      reason: 'threw',
+    });
+    // `{ allowed: false }`, an authz-style result, and a key on the prototype chain all deny.
+    expect(await decide({ durable: () => ({ allowed: false }) }, 'durable', 'x')).not.toBe(true);
+    expect(await decide(null as never, 'durable', 'durable_retry_run')).toEqual({
+      reason: 'not-configured',
+    });
+    expect(await decide({}, 'constructor', 'constructor_x')).toEqual({
+      reason: 'not-configured',
+    });
+  });
+
+  it('map: takes an authorizeByRoles-shaped hook ({ allowed: boolean, reason })', async () => {
+    const byRoles =
+      (allowed: boolean) =>
+      async (_ctx: unknown): Promise<boolean | { allowed: boolean; reason?: 'forbidden' }> =>
+        allowed ? true : { allowed: false, reason: 'forbidden' };
+    const actions: DevToolsActions = { flags: byRoles(true), payments: byRoles(false) };
+    expect(await decide(actions, 'flags', 'flags_save_flag')).toBe(true);
+    expect(await decide(actions, 'payments', 'payments_refund_payment')).toEqual({
+      reason: 'denied',
+    });
+  });
+
+  it('map: runs each distinct authorize once per request, whatever the tool count', async () => {
+    let runs = 0;
+    const admin = () => {
+      runs += 1;
+      return true;
+    };
+    const gate = new DevToolsActionsGate({ flags: admin, payments: admin }, ctx, caller);
+    for (const [lib, tool] of [
+      ['flags', 'flags_save_flag'],
+      ['flags', 'flags_delete_flag'],
+      ['payments', 'payments_refund_payment'],
+    ] as const) {
+      expect(await gate.decide({ lib, tool, destructive: false })).toBe(true);
+    }
+    expect(runs).toBe(1);
+    // A new request runs it again.
+    await new DevToolsActionsGate({ flags: admin }, ctx, caller).decide({
+      lib: 'flags',
+      tool: 'flags_save_flag',
+      destructive: false,
+    });
+    expect(runs).toBe(2);
+  });
+
+  it('map: takes an authorizer class (built through the container) and a lazy import', async () => {
+    class Owner {
+      authorize() {
+        return { allowed: true as const };
+      }
+    }
+    const made: unknown[] = [];
+    const withContainer = {
+      request: {},
+      containerResolver: {
+        make: async (Class: new () => unknown) => {
+          made.push(Class);
+          return new Class();
+        },
+      },
+    } as never;
+    const gate = new DevToolsActionsGate(
+      { flags: Owner, payments: async () => ({ default: Owner }) },
+      withContainer,
+      caller,
+    );
+    expect(await gate.decide({ lib: 'flags', tool: 'flags_save_flag', destructive: false })).toBe(
+      true,
+    );
+    expect(
+      await gate.decide({ lib: 'payments', tool: 'payments_refund_payment', destructive: true }),
+    ).toBe(true);
+    expect(made).toEqual([Owner, Owner]);
+  });
+
+  it('function: gets lib, tool, destructive and caller; a throw or non-true denies', async () => {
+    const seen: unknown[] = [];
+    const gate = new DevToolsActionsGate(
+      async (_ctx, action) => {
+        seen.push(action);
+        if (action.lib === 'media') throw new Error('boom');
+        return !action.destructive;
+      },
+      ctx,
+      caller,
+    );
+    expect(await gate.decide({ lib: 'flags', tool: 'flags_save_flag', destructive: false })).toBe(
+      true,
+    );
+    expect(
+      await gate.decide({ lib: 'payments', tool: 'payments_refund_payment', destructive: true }),
+    ).toEqual({ reason: 'denied' });
+    expect(
+      await gate.decide({ lib: 'media', tool: 'media_delete_file', destructive: true }),
+    ).toMatchObject({ reason: 'threw' });
+    expect(seen[0]).toEqual({ lib: 'flags', tool: 'flags_save_flag', destructive: false, caller });
   });
 });
 

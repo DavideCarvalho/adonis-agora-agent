@@ -1,3 +1,9 @@
+export type {
+  DevToolsActionRequest,
+  DevToolsActions,
+  DevToolsActionsAuthorizer,
+  DevToolsActionsMap,
+} from '../dev-tools/actions.js';
 export { actorFromAuthInfo, isActor, isMcpAuthInfo } from './actor.js';
 export type {
   ApiKeyActorResolver,

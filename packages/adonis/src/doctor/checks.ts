@@ -97,21 +97,40 @@ export function checkMcpOpen(mcp: AnyConfig | undefined, inProduction: boolean):
   };
 }
 
-/** `agent.mcp-execute`: action tools served over MCP without an authorizer. */
+/**
+ * `agent.mcp-execute`: action tools served over MCP without a per-caller check — the product
+ * endpoint without an `authorizer`, or `devTools.actions: 'execute'`.
+ */
 export function checkMcpExecute(mcp: AnyConfig | undefined): AgoraDoctorResult {
   if (mcp === undefined) return { status: 'skip', message: MCP_OFF };
-  const executes =
+  const productExecutes =
     mcp.actions === 'execute' ||
     ((mcp.endpoints as AnyConfig[] | undefined) ?? []).some((e) => e.actions === 'execute');
-  if (!executes) return { status: 'ok', message: 'MCP clients cannot run action tools.' };
-  if (mcp.authorizer !== undefined) {
-    return { status: 'ok', message: 'Action tools over MCP go through your authorizer.' };
+  const product = productExecutes && mcp.authorizer === undefined;
+  const devTools = resolveDevTools(mcp as never)?.actions === 'execute';
+  if (!product && !devTools) {
+    return {
+      status: 'ok',
+      message: productExecutes
+        ? 'Action tools over MCP go through your authorizer.'
+        : 'MCP clients cannot run action tools without a per-caller check.',
+    };
+  }
+  const devFix =
+    "Authorize dev tool actions per lib or tool: `devTools.actions: { payments: authorizeByRoles({ roles: ['ADMIN'] }) }`, or keep `'refuse'`.";
+  if (!product) {
+    return {
+      status: 'warn',
+      message:
+        "`devTools.actions: 'execute'` lets every caller the libs' consoles admit run every dev action tool (refund, cancel, delete…).",
+      fix: devFix,
+      docs: `${DOCS}/dev-tools#actions`,
+    };
   }
   return {
     status: 'warn',
-    message:
-      "`actions: 'execute'` lets MCP clients run action tools, checked only by roles (no `authorizer`).",
-    fix: "Set an `authorizer` in config/mcp.ts (e.g. an ability-based one), or keep `actions: 'refuse'`.",
+    message: `\`actions: 'execute'\` lets MCP clients run action tools, checked only by roles (no \`authorizer\`)${devTools ? "; so does `devTools.actions: 'execute'` for the dev tools" : ''}.`,
+    fix: `Set an \`authorizer\` in config/mcp.ts (e.g. an ability-based one), or keep \`actions: 'refuse'\`.${devTools ? ` ${devFix}` : ''}`,
     docs: `${DOCS}/mcp`,
   };
 }

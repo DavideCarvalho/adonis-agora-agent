@@ -54,6 +54,18 @@ describe('agent doctor checks', () => {
     expect(checkMcpExecute({ actions: 'execute', authorizer: {} }).status).toBe('ok');
   });
 
+  it("mcp-execute: devTools.actions 'execute' warns and suggests the map form", () => {
+    const dev = checkMcpExecute({ devTools: { actions: 'execute' } });
+    expect(dev).toMatchObject({ status: 'warn' });
+    expect(dev.fix).toContain('devTools.actions: { payments: authorizeByRoles(');
+    expect(checkMcpExecute({ devTools: { actions: { payments: () => true } } }).status).toBe('ok');
+    expect(checkMcpExecute({ devTools: { actions: ['durable'] } }).status).toBe('ok');
+    expect(checkMcpExecute({ devTools: false }).status).toBe('ok');
+    const both = checkMcpExecute({ actions: 'execute', devTools: { actions: 'execute' } });
+    expect(both.fix).toContain('authorizer');
+    expect(both.fix).toContain('devTools.actions: {');
+  });
+
   it('mcp-csrf: every MCP path, including the dev tools one', () => {
     const shield = { csrf: { enabled: true, exceptRoutes: ['/api/mcp'] } };
     const result = checkMcpCsrf({ path: 'api/mcp', endpoints: [{ path: 'mcp/family' }] }, shield);

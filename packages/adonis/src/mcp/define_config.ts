@@ -1,4 +1,5 @@
 import type { ConsoleAuthorize } from '../console-authorize.js';
+import type { DevToolsActions } from '../dev-tools/actions.js';
 import type { RolesPolicy } from '../spi/roles-policy.js';
 import type { EmptyRoles, ToolRegistry } from '../tool-registry.js';
 import type { McpAuth, McpAuthContext, McpAuthFactory } from './auth.js';
@@ -122,10 +123,23 @@ export interface McpDevToolsConfig {
   /** Lib ids or full tool names to leave out: `['payments', 'durable_get_run']`. */
   exclude?: string[];
   /**
-   * Action tools (retry, cancel, refund…): `'refuse'` (default) neither lists nor runs them;
-   * `'execute'` serves them all; a list serves those of these lib ids or tool names.
+   * Action tools (retry, cancel, refund…), decided per request — a refused action is neither listed
+   * nor callable, and a lib's own console `authorize` still gates the lib first:
+   * - `'refuse'` (default): none; `'execute'`: all; `['payments', 'durable_retry_run']`: those.
+   * - a map of lib ids / tool names to a console `authorize` (`authorizeByRoles(…)`, a class, a lazy
+   *   import). A tool-name key wins over its lib's; an action in neither is refused; a throw or
+   *   `{ redirectTo }` refuses. Each distinct `authorize` runs once per request.
+   * - a function `(ctx, { lib, tool, destructive, caller }) => boolean`. A throw refuses.
+   *
+   * ```ts
+   * actions: {
+   *   flags: authorizeByRoles({ roles: [Roles.ADMIN] }),
+   *   flags_save_flag: authorizeByRoles({ roles: [Roles.OWNER] }),
+   *   payments_refund_payment: () => false,
+   * },
+   * ```
    */
-  actions?: 'refuse' | 'execute' | string[];
+  actions?: DevToolsActions;
   /** Route middleware for the dev endpoint, e.g. a rate limiter. The product `middleware` is not used. */
   middleware?: McpRouteMiddleware[];
   /**

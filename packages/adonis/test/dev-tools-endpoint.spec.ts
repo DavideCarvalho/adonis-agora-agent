@@ -440,6 +440,186 @@ describe('dev tools endpoint: actions', () => {
   });
 });
 
+describe('dev tools endpoint: actions authorized per caller', () => {
+  const action = (name: string, destructive = false): DevTool => ({
+    ...read(name),
+    kind: 'action',
+    destructive,
+    run: async () => ({ ran: name }),
+  });
+  /** flags: open console; payments: open console; durable: console token. */
+  const actionLibs = (): DevToolsLib[] => [
+    {
+      lib: 'flags',
+      title: 'Flags',
+      authorize: async () => ({ allowed: true }),
+      tools: [read('flags_list_flags'), action('flags_save_flag'), action('flags_toggle_flag')],
+    },
+    {
+      lib: 'payments',
+      title: 'Payments',
+      authorize: async () => ({ allowed: true }),
+      tools: [read('payments_list_payments'), action('payments_refund_payment', true)],
+    },
+    {
+      lib: 'durable',
+      title: 'Durable workflows',
+      authorize: byToken('dur-token'),
+      tools: [action('durable_retry_run')],
+    },
+  ];
+  /** `Bearer admin` / `Bearer owner`: the caller's role, read off the request. */
+  const role =
+    (wanted: string) =>
+    (ctx: HttpContext): boolean => {
+      calls[wanted] = (calls[wanted] ?? 0) + 1;
+      return ctx.request.header('x-role') === wanted;
+    };
+  const rpcAs = (url: string, body: unknown, who: string) =>
+    fetch(`${url}/mcp/agora`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        'x-role': who,
+      },
+      body: JSON.stringify(body),
+    });
+  const namesAs = async (url: string, who: string) => {
+    const body = await (await rpcAs(url, listTools, who)).json();
+    return body.result.tools.map((tool: { name: string }) => tool.name).sort();
+  };
+  const callAs = async (url: string, name: string, who: string) =>
+    (await (await rpcAs(url, callTool(name), who)).json()).result;
+
+  it('map: per lib and per tool, a tool key winning; refused tools are neither listed nor callable', async () => {
+    booted = await bootApp(
+      {
+        devTools: {
+          actions: {
+            flags: role('admin'),
+            flags_save_flag: role('owner'),
+            payments_refund_payment: () => false,
+          },
+        },
+      },
+      { libs: actionLibs() },
+    );
+    expect(await namesAs(booted.url, 'admin')).toEqual([
+      'flags_list_flags',
+      'flags_toggle_flag',
+      'payments_list_payments',
+    ]);
+    expect(await namesAs(booted.url, 'owner')).toEqual([
+      'flags_list_flags',
+      'flags_save_flag',
+      'payments_list_payments',
+    ]);
+    expect((await callAs(booted.url, 'flags_toggle_flag', 'admin')).content[0].text).toBe(
+      '{"ran":"flags_toggle_flag"}',
+    );
+    for (const [tool, who] of [
+      ['flags_save_flag', 'admin'],
+      ['flags_toggle_flag', 'owner'],
+      ['payments_refund_payment', 'admin'],
+    ] as const) {
+      audit.length = 0;
+      const result = await callAs(booted.url, tool, who);
+      expect(result.isError).toBe(true);
+      expect(audit.some(({ obj }) => obj.devTool === tool && obj.ok === true)).toBe(false);
+    }
+    // Refusals are logged at debug only.
+    const refused = audit.filter(({ obj }) => obj.reason !== undefined);
+    expect(refused.length).toBeGreaterThan(0);
+    expect(refused.every(({ level }) => level === 'debug')).toBe(true);
+    expect(refused[0]?.obj).toMatchObject({ lib: expect.any(String), caller: 'dev-open' });
+  });
+
+  it('map: each authorize runs once per request, and the lib console still gates first', async () => {
+    booted = await bootApp(
+      { devTools: { actions: { flags: role('admin'), durable: () => true } } },
+      { libs: actionLibs() },
+    );
+    expect(await namesAs(booted.url, 'admin')).toContain('flags_save_flag');
+    expect(calls.admin).toBe(1); // two flags actions, one run
+    // durable's console wants its token: its action stays out though `actions` allows it.
+    expect(await namesAs(booted.url, 'admin')).not.toContain('durable_retry_run');
+    expect(await toolNames(booted.url, 'dur-token')).toContain('durable_retry_run');
+  });
+
+  it('map: a throwing authorize refuses, and an instructions text that matches what is served', async () => {
+    booted = await bootApp(
+      {
+        devTools: {
+          actions: {
+            flags: () => {
+              throw new Error('boom');
+            },
+          },
+        },
+      },
+      { libs: actionLibs() },
+    );
+    expect(await namesAs(booted.url, 'admin')).toEqual([
+      'flags_list_flags',
+      'payments_list_payments',
+    ]);
+    const init = await rpcAs(
+      booted.url,
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-03-26',
+          capabilities: {},
+          clientInfo: { name: 't', version: '1' },
+        },
+      },
+      'admin',
+    );
+    expect((await init.json()).result.instructions).toContain('Read-only');
+    expect(audit).toContainEqual({
+      level: 'debug',
+      obj: expect.objectContaining({ devTool: 'flags_save_flag', reason: 'threw', error: 'boom' }),
+    });
+  });
+
+  it('function: decides each action with lib, tool, destructive and caller; a throw refuses', async () => {
+    const seen: unknown[] = [];
+    booted = await bootApp(
+      {
+        devTools: {
+          actions: async (ctx, request) => {
+            seen.push(request);
+            if (request.lib === 'flags' && request.tool === 'flags_toggle_flag') {
+              throw new Error('boom');
+            }
+            return ctx.request.header('x-role') === 'owner' || !request.destructive;
+          },
+        },
+      },
+      { libs: actionLibs() },
+    );
+    expect(await namesAs(booted.url, 'admin')).toEqual([
+      'flags_list_flags',
+      'flags_save_flag',
+      'payments_list_payments',
+    ]);
+    expect(seen).toContainEqual({
+      lib: 'payments',
+      tool: 'payments_refund_payment',
+      destructive: true,
+      caller: { id: 'dev-open', via: 'open' },
+    });
+    expect((await callAs(booted.url, 'payments_refund_payment', 'admin')).isError).toBe(true);
+    expect((await callAs(booted.url, 'payments_refund_payment', 'owner')).content[0].text).toBe(
+      '{"ran":"payments_refund_payment"}',
+    );
+    expect((await callAs(booted.url, 'flags_toggle_flag', 'owner')).isError).toBe(true);
+  });
+});
+
 /** An OAuth-shaped product auth like meuprontoo's `meuprontooMcpAuth()`: `good` passes. */
 const productAuth: McpAuth = {
   oauth: async () => ({
