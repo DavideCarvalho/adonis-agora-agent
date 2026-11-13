@@ -7,6 +7,10 @@ import type { ApplicationService } from '@adonisjs/core/types';
  * `getAuthkit(ctx)` / `ctx.authkit` answers `check()`, `getIdentity()`, `hasGlobalRole()` and
  * `getUser()`, and an `authkitClientGuard` default guard authenticates `ctx.auth` from it.
  *
+ * Also binds the account as this request's bearer caller on `authkit.server` (its
+ * `bindBearerAccount`, when the installed authkit-server has it), so an `authorize` written with
+ * authkit-server's `getAccountId(ctx)` / `realAccountId(ctx)` sees the account too.
+ *
  * Structural only: neither `@adonis-agora/authkit-server` nor `@adonis-agora/authkit-client` is
  * imported. Both are optional.
  */
@@ -146,7 +150,10 @@ function identityAuthenticator(identity: BridgedIdentity): AuthenticatorLike {
  * 1. `ctx.authkit` becomes an authkit `Authenticator` resolving to it — built by the app's own
  *    authkit client (so `resolveUser`, e.g. `lucidMirror`, gives `getUser()` the app's user), or a
  *    minimal one when the app has no authkit client.
- * 2. When `ctx.auth`'s default guard is `authkitClientGuard`, it is (re)authenticated from that, so
+ * 2. `authkit.server`'s `bindBearerAccount(ctx, accountId)` (optional, newer authkit-server) records
+ *    the account for `getAccountId(ctx)`, `realAccountId(ctx)` and `impersonationState(ctx)` (not
+ *    impersonating).
+ * 3. When `ctx.auth`'s default guard is `authkitClientGuard`, it is (re)authenticated from that, so
  *    `ctx.auth.user` and `ctx.auth.check()` see the account too — even after a silent-auth middleware
  *    already found no browser session on this request.
  *
@@ -157,6 +164,8 @@ export async function bridgeIdentity(
   ctx: HttpContext,
   identity: BridgedIdentity,
 ): Promise<void> {
+  await bindBearerAccount(app, ctx, identity.userId);
+
   let authenticator: unknown;
   if (app.container.hasBinding('authkit.client' as never)) {
     try {
@@ -183,6 +192,27 @@ export async function bridgeIdentity(
     await auth.check();
   } catch {
     // leave ctx.auth alone
+  }
+}
+
+/** `authkit.server`'s bearer binding, duck-typed (absent before authkit-server shipped it). */
+interface AuthkitServerBearerBinding {
+  bindBearerAccount?: (ctx: object, accountId: string) => void;
+}
+
+async function bindBearerAccount(
+  app: ApplicationService,
+  ctx: HttpContext,
+  accountId: string,
+): Promise<void> {
+  if (!app.container.hasBinding('authkit.server' as never)) return;
+  try {
+    const service = (await app.container.make(
+      'authkit.server' as never,
+    )) as AuthkitServerBearerBinding | null;
+    if (typeof service?.bindBearerAccount === 'function') service.bindBearerAccount(ctx, accountId);
+  } catch {
+    // an authkit server that cannot be built binds nothing
   }
 }
 

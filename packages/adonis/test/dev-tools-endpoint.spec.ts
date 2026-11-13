@@ -575,6 +575,13 @@ interface FakeToken {
   clientId?: string;
 }
 
+/**
+ * authkit-server's bearer account binding, re-modelled: `bindBearerAccount` fills it and
+ * `getAccountId(ctx)` reads it when there is no console session (a dev MCP call has none).
+ */
+const bearerAccounts = new WeakMap<object, string>();
+const getAccountId = (ctx: HttpContext): string | null => bearerAccounts.get(ctx) ?? null;
+
 /** An authkit server in-process: tokens by value, accounts by id. */
 function fakeAuthkit(tokens: (url: string) => Record<string, FakeToken>) {
   const accounts: Record<string, { id: string; email: string; globalRoles: string[] }> = {
@@ -588,6 +595,9 @@ function fakeAuthkit(tokens: (url: string) => Record<string, FakeToken>) {
       },
       globalRolesClaim: 'roles',
       findAccount: async (id: string) => accounts[id] ?? null,
+    },
+    bindBearerAccount: (ctx: object, accountId: string) => {
+      bearerAccounts.set(ctx, accountId);
     },
     provider: {
       AccessToken: {
@@ -683,6 +693,24 @@ describe('dev tools endpoint: sign-in through authkit', () => {
     expect(await toolNames(booted.url, 'tel-token')).toEqual(['telescope_list_entries']);
   });
 
+  it('binds the account for an authorize written with getAccountId (meuprontoo-like)', async () => {
+    const byAccountId: DevToolsLib = {
+      lib: 'payments',
+      title: 'Payments',
+      // `getAccountId(ctx)` + a role lookup by id, ignoring ctx.authkit and ctx.auth
+      authorize: async (ctx) => {
+        const id = getAccountId(ctx);
+        if (id === null) return { allowed: false, reason: 'unauthenticated' };
+        return id === 'admin' ? { allowed: true } : { allowed: false, reason: 'forbidden' };
+      },
+      tools: [read('payments_list_charges')],
+    };
+    booted = await bootApp({}, { libs: [byAccountId], authkit: fakeAuthkit(tokens) });
+    expect(await toolNames(booted.url, 'at-admin')).toEqual(['payments_list_charges']);
+    expect((await rpc(`${booted.url}/mcp/agora`, listTools, 'at-user')).status).toBe(403);
+    expect((await rpc(`${booted.url}/mcp/agora`, listTools)).status).toBe(401);
+  });
+
   it('refuses a token issued for another resource, or for an account that is gone', async () => {
     booted = await bootApp({}, { libs: libs(), authkit: fakeAuthkit(tokens) });
     const product = await rpc(`${booted.url}/mcp/agora`, listTools, 'at-product');
@@ -742,6 +770,30 @@ describe('bridgeIdentity', () => {
     expect(await authkit.check()).toBe(true);
     expect(authkit.hasGlobalRole('ADMIN')).toBe(true);
     expect(checked).toBe(1);
+  });
+
+  it('binds the bearer account on authkit.server when it can, and tolerates one that cannot', async () => {
+    const bound: Array<[object, string]> = [];
+    const withBinding = (service: unknown) =>
+      ({
+        container: {
+          hasBinding: (name: string) => name === 'authkit.server',
+          make: async () => service,
+        },
+      }) as unknown as ApplicationService;
+
+    const ctx = {} as HttpContext;
+    await bridgeIdentity(
+      withBinding({ bindBearerAccount: (c: object, id: string) => bound.push([c, id]) }),
+      ctx,
+      identity,
+    );
+    expect(bound).toEqual([[ctx, 'admin']]);
+
+    // an older authkit-server (no bindBearerAccount) still gets ctx.authkit
+    const older = {} as HttpContext;
+    await bridgeIdentity(withBinding({ config: {} }), older, identity);
+    expect((older as unknown as { authkit?: unknown }).authkit).toBeDefined();
   });
 
   it('builds the authenticator with the app authkit client when there is one', async () => {
