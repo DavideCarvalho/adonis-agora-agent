@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.15
+
+### Minor Changes
+
+- [#596](https://github.com/DavideCarvalho/adonis-agora-agent/pull/596) [`6d8c9f4`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/6d8c9f4d706dc66623fda8cc3290d06a404dbad2) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `devTools.actions` in `config/mcp.ts` is now authorized per caller. Besides `'refuse'`, `'execute'` and a list, it takes a map of lib ids or tool names to a console `authorize` (`{ flags: authorizeByRoles({ roles: ['ADMIN'] }), flags_save_flag: authorizeByRoles({ roles: ['OWNER'] }) }`, a tool key winning over its lib's), or a function `(ctx, { lib, tool, destructive, caller }) => boolean`. A refused action is neither listed nor callable; a throw or `{ redirectTo }` refuses; each `authorize` runs once per request. `agora:doctor` now warns on `devTools.actions: 'execute'` and suggests the map form. New types from `@adonis-agora/agent/mcp`: `DevToolsActions`, `DevToolsActionsMap`, `DevToolsActionsAuthorizer`, `DevToolsActionRequest`.
+
 ## 1.0.0-rc.14
 
 ### Major Changes
