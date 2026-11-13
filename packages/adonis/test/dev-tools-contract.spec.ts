@@ -242,6 +242,29 @@ describe('dev tools limits and redaction', () => {
     });
   });
 
+  it('writes out an object reached twice, and marks only a real cycle', () => {
+    const definition = { enabled: true, variants: { on: true, off: false } };
+    const shared = { key: 'beta', stored: definition, definition, list: [definition, definition] };
+    expect(redactDevToolOutput(shared)).toEqual({
+      key: 'beta',
+      stored: { enabled: true, variants: { on: true, off: false } },
+      definition: { enabled: true, variants: { on: true, off: false } },
+      list: [
+        { enabled: true, variants: { on: true, off: false } },
+        { enabled: true, variants: { on: true, off: false } },
+      ],
+    });
+
+    const loop: Record<string, unknown> = { name: 'a' };
+    loop.self = loop;
+    const arr: unknown[] = [1];
+    arr.push(arr);
+    expect(redactDevToolOutput({ loop, arr })).toEqual({
+      loop: { name: 'a', self: '[circular]' },
+      arr: [1, '[circular]'],
+    });
+  });
+
   it('keeps an oversized detail object valid JSON, cutting its biggest parts', () => {
     const detail = {
       run: { id: 'r1', status: 'failed' },
