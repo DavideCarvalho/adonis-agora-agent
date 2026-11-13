@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.18
+
+### Minor Changes
+
+- [#600](https://github.com/DavideCarvalho/adonis-agora-agent/pull/600) [`f1e30c0`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/f1e30c0fe244c1465a141394e478e81c1f38067c) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `node ace agent:*`: everything the governance console shows and does, from the shell. Reads: `agent:spend:show` (`--by model|actor|feature`), `agent:usage:trend`, `agent:usage:breakdown`, `agent:reliability:show`, `agent:genui:show`, `agent:runs:list|show`, `agent:threads:list|show`, `agent:tool-calls:list`, `agent:approvals:list`, `agent:quota:show`, `agent:tools:list|stats`, `agent:pricing:list`, `agent:tenants:list` — a table, or the console route's JSON with `--json`, `--tenant` to narrow, cursor paging with `--after`/`--before`/`--first`/`--last`. Actions: `agent:approvals:approve|reject` decide a parked tool call through the same HITL rules as the console (approver role, expiry, ended run), recorded as `cli:<os user>` via `cli` (`--note` is the rejection reason; asks first unless `--force`; needs the durable runner — an in-process turn is refused); `agent:pricing:set` (asks before replacing a price, `--dry-run`). New exports: `decideToolCall`, `decisionRefusal`, `AgentGovernanceConsole` (bound in the container), and the optional `AgentRunner.signalsReachOtherProcesses`.
+
 ## 1.0.0-rc.17
 
 ### Minor Changes
