@@ -52,14 +52,20 @@ export class ActionProposalService {
   async list(actor: Actor, threadId: string, after?: ListActionProposals['after']) {
     return (await this.listPage(actor, threadId, after)).items;
   }
-  async listPage(actor: Actor, threadId: string, after?: ListActionProposals['after']) {
+  /** One page of the thread's proposals, oldest first; `limit` 1..1000, default 1000. */
+  async listPage(
+    actor: Actor,
+    threadId: string,
+    after?: ListActionProposals['after'],
+    limit = 1000,
+  ) {
     const scope = await this.scope(actor, threadId);
-    const query = { limit: 1000, ...(after !== undefined ? { after } : {}) };
+    const query = { limit, ...(after !== undefined ? { after } : {}) };
     validateActionProposalListQuery(query);
     const raw = await this.store.listActionProposals(scope, query);
     const last = raw.at(-1);
     const next =
-      raw.length === 1000 && last ? { createdAt: last.createdAt, id: last.id } : undefined;
+      raw.length === limit && last ? { createdAt: last.createdAt, id: last.id } : undefined;
     const permitted =
       actor.id === scope.actorRef
         ? raw

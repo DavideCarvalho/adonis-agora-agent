@@ -91,5 +91,8 @@
   },
   "engines": {
     "node": ">=24"
+  },
+  "dependencies": {
+    "@adonis-agora/filter-client": ">=1.0.0-rc.1 <2.0.0"
   }
 }

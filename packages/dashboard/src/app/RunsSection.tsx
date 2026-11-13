@@ -10,7 +10,7 @@ const STATUSES: RunStatus[] = ['running', 'completed', 'failed', 'cancelled'];
 
 /**
  * The run governance list from `GET /agent/governance/runs`: a status/agent/actor filter bar over a
- * newest-first table, forward-paginated with the server's opaque `nextCursor`. Clicking a row opens
+ * newest-first table, forward-paginated with the server's opaque `meta.nextCursor`. Clicking a row opens
  * the full {@link RunDetailView} trace; the "Back to runs" control returns to the filtered list.
  */
 export function RunsSection({ initialRunId = null }: { initialRunId?: string | null } = {}) {
@@ -28,7 +28,8 @@ export function RunsSection({ initialRunId = null }: { initialRunId?: string | n
     [actor, agent, status],
   );
 
-  const { runs, nextCursor, loading, error, loadMore } = useRuns(filter);
+  const { data, nextCursor, loading, error, loadMore } = useRuns(filter);
+  const runs = data ?? [];
 
   // Across several organizations (tenancy, no single one picked), say whose each run is.
   const showTenant = pageTenant() === null && runs.some((run) => run.tenantRef != null);

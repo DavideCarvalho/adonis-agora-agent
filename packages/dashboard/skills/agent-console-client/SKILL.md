@@ -90,7 +90,9 @@ const client = new AgentClient({ baseUrl: '/agent' })
 const byModel = await client.spendByModel({ fromDay: '2026-03-01', toDay: '2026-03-07' })
 const trend = await client.usageTrend({ fromDay: '2026-03-01', toDay: '2026-03-07' })
 const quota = await client.quotaToday()
-const approvals = await client.pendingApprovals({})
+// List reads return one page, `{ data, meta }`; `meta.nextCursor` goes back as `after`.
+const { data: approvals, meta } = await client.pendingApprovals({ first: 50 })
+const failed = await client.listRuns({ status: 'failed', from: '2026-03-01' })
 
 // HITL decisions from your own UI:
 await client.approveToolCall(runId, toolCallId)

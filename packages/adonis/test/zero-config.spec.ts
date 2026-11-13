@@ -91,12 +91,12 @@ describe('zero config over HTTP', () => {
     expect(cookie).toMatch(/^agent_anon=/);
     await readSse(first);
 
-    const mine = (await (
+    const { data: mine } = (await (
       await fetch(`${url}/agent/threads`, { headers: { cookie: cookie as string } })
-    ).json()) as ThreadSummary[];
+    ).json()) as { data: ThreadSummary[] };
     expect(mine).toHaveLength(1);
     const stranger = await fetch(`${url}/agent/threads`);
-    expect(await stranger.json()).toEqual([]);
+    expect(((await stranger.json()) as { data: unknown[] }).data).toEqual([]);
     expect(stranger.headers.get('set-cookie')).toMatch(/^agent_anon=/);
   });
 });

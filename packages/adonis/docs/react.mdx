@@ -104,7 +104,8 @@ Outside React, or to give one hook a connection of its own, `createAgentClient(o
 import { createAgentClient } from '@adonis-agora/agent/react'
 
 const agent = createAgentClient()
-const threads = await agent.listThreads()
+const { data: threads, meta } = await agent.listThreads({ first: 20 })
+const more = meta.nextCursor ? await agent.listThreads({ after: meta.nextCursor, first: 20 }) : null
 ```
 
 ## Continuing a conversation
@@ -120,7 +121,7 @@ const chat = useAgentChat({
 })
 ```
 
-`chat.isLoadingHistory` is `true` from the first render with a `threadId`, so a page can show a skeleton instead of flashing an empty state. The list of conversations is `useThreads()` — `{ threads, rename, remove, refresh }`.
+`chat.isLoadingHistory` is `true` from the first render with a `threadId`, so a page can show a skeleton instead of flashing an empty state. The list of conversations is `useThreads({ pageSize? })` — `{ threads, hasMore, loadMore, rename, remove, refresh }`: it reads the first page (50 by default) and `loadMore()` appends the next.
 
 ## Typing ahead — the message queue
 
@@ -221,7 +222,7 @@ import { mediaAttachments } from '@adonis-agora/agent/react/media'
 
 | Hook | Reads |
 | --- | --- |
-| `useThreads()` | `GET /agent/threads` — list, rename, delete |
+| `useThreads()` | `GET /agent/threads` — list (paged), rename, delete |
 | `useModels()` / `chat.models` | `GET /agent/models` — the picker, the thread's pin, a lock; `defaultModel` is the chat's agent's (or persona's) `model` |
 | `useQuota()` / `chat.quota` | `GET /agent/quota` — budget windows; sends are refused client-side while one is exhausted |
 | `useToolCatalog()` | `GET /agent/tools` — the words a tool call is narrated with |

@@ -4,23 +4,19 @@ import { ThreadDetailView } from './ThreadDetailView.js';
 import { AsyncBlock, Panel, SectionTitle } from './ui.js';
 import { useRecentThreads } from './use-governance.js';
 
-const PAGE_STEP = 25;
-
 /**
  * Newest-first recent threads with message count + rolled-up token total, from `threads/recent`.
- * Clicking a row opens the {@link ThreadDetailView} drill-down; "Load more" simply re-requests the
- * feed with a larger `limit` (the endpoint has no cursor, unlike the runs list).
+ * Clicking a row opens the {@link ThreadDetailView} drill-down; "Load more" appends the next page.
  */
 export function ThreadsSection({
-  limit: initialLimit = 25,
+  pageSize = 25,
   initialThreadId = null,
 }: {
-  limit?: number;
+  pageSize?: number;
   initialThreadId?: string | null;
 }) {
   const [selected, setSelected] = useState<string | null>(initialThreadId);
-  const [limit, setLimit] = useState(initialLimit);
-  const threads = useRecentThreads(limit);
+  const threads = useRecentThreads(pageSize);
 
   if (selected) return <ThreadDetailView threadId={selected} onBack={() => setSelected(null)} />;
 
@@ -73,13 +69,13 @@ export function ThreadsSection({
                 </tbody>
               </table>
             </div>
-            {rows.length >= limit && (
+            {threads.nextCursor !== null && (
               <div className="controls" style={{ justifyContent: 'center', marginTop: 14 }}>
                 <button
                   type="button"
                   className="btn"
                   disabled={threads.loading}
-                  onClick={() => setLimit((n) => n + PAGE_STEP)}
+                  onClick={threads.loadMore}
                 >
                   {threads.loading ? 'Loading…' : 'Load more'}
                 </button>

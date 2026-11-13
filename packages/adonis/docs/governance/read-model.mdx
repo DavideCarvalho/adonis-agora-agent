@@ -51,7 +51,7 @@ dashboard: {
 
 ## The routes
 
-All read-only (`GET`, except the pricing upsert), all gated by `dashboard.authorize` (governance is cross-actor data). `from`/`to` are inclusive UTC days (`YYYY-MM-DD`); `limit` defaults to `50`, clamped to `200`.
+All read-only (`GET`, except the pricing upsert), all gated by `dashboard.authorize` (governance is cross-actor data). `from`/`to` are inclusive UTC days (`YYYY-MM-DD`). The lists (`tool-calls/recent`, `threads/recent`, `runs`, `approvals/pending`) answer a [cursor page](/docs/agent/streaming-and-http#lists) — `{ data, meta: { nextCursor, prevCursor, hasNext, hasPrev } }` — paged with `first` (default `50`, at most `200`) and `after`; an unknown `filter[...]` field or another `sort` is a `400`.
 
 | Method & path | Purpose |
 | --- | --- |
@@ -60,11 +60,11 @@ All read-only (`GET`, except the pricing upsert), all gated by `dashboard.author
 | `GET /agent/governance/usage/trend` | The daily token + cost trend over the range. |
 | `GET /agent/governance/spend/feature` | Spend per feature over the range — agent turns and [recorded usage](/docs/agent/governance/quota-and-cost#recording-usage-outside-agent-turns) side by side. `501` on an adapter without `spendByFeature`. |
 | `GET /agent/governance/usage/breakdown` | Spend per actor × feature — cost by actor and by feature. Query: `from?`, `to?` (UTC days) or `since?` + `until?` (ISO instants, `until` exclusive — a billing period that is not whole UTC days), `actor?`, `feature?`, `reprice?` (`false` → recorded cost only). `501` on an adapter without `usageBreakdown`. |
-| `GET /agent/governance/tool-calls/recent` | Newest-first recent tool-call activity feed. |
-| `GET /agent/governance/threads/recent` | Newest-first recent thread activity feed. |
-| `GET /agent/governance/runs` | Filterable, cursor-paginated run list, newest-first. Query: `actor?`, `agent?`, `status?`, `from?`, `to?`, `after?`, `first?`. |
+| `GET /agent/governance/tool-calls/recent` | Newest-first recent tool-call activity feed, as a cursor page. No filter fields. |
+| `GET /agent/governance/threads/recent` | Newest-first recent thread activity feed, as a cursor page. No filter fields. |
+| `GET /agent/governance/runs` | Run list, newest first, as a forward-only cursor page (`after`, `first`). Filters: `filter[actor]`, `filter[agent]`, `filter[status]` (`running`, `completed`, `failed`, `cancelled`), `filter[startedAt][gte\|lte\|between]` (UTC days, `YYYY-MM-DD`). |
 | `GET /agent/governance/runs/:id` | One run's full trace — run + messages + tool calls + approvals + usage — or `null`. |
-| `GET /agent/governance/approvals/pending` | Cross-thread HITL approvals inbox, oldest first. Query: `actor?`, `limit?`. |
+| `GET /agent/governance/approvals/pending` | Cross-thread HITL approvals inbox, oldest first, as a cursor page. Filter: `filter[actor]`. |
 | `GET /agent/governance/tools/stats` | Per-tool call/failure/rejection/latency rollup. Query: `from?`, `to?`. |
 | `GET /agent/governance/consoles` | The other Agora consoles the caller may open: `{ version: 1, current: 'agent', consoles: [{ id, title, package?, icon, href }] }`. |
 | `GET /agent/governance/consoles/search` | Search across every console the caller may open. Query: `q`. Answers `{ version: 1, query, groups: [{ id, title, icon, hits: [{ title, subtitle?, href }] }] }`. |
@@ -85,7 +85,7 @@ And one route answers `501` rather than `404` when it is unsupported:
 
 ## The response payloads
 
-Every route returns the return value of its `AgentGovernanceQueries` method verbatim. These are the shapes a client can rely on.
+The rollups and details return their `AgentGovernanceQueries` method's value as is; the lists put its rows under `data`. These are the shapes a client can rely on.
 
 ### Rollups
 
@@ -138,8 +138,8 @@ interface ThreadActivityRow {
 
 ### Runs
 
-`listRuns` takes the ecosystem's forward-only cursor parameters and returns a `CursorPage` — the same
-shape `@adonis-agora/filter` uses, so every `@adonis-agora/*` listing paginates identically:
+`listRuns` takes forward-only cursor parameters and returns a `CursorPage` (rows under `items`). The
+route answers it as `{ data, meta }`:
 
 ```ts
 interface CursorParams { after?: string; first?: number }   // forward-only: no before/last
@@ -179,10 +179,13 @@ interface RunSummaryRow {
 }
 ```
 
-Pass `nextCursor` back as `?after=` for the next page; `null` means that was the last one. Page size is
-`?first=` (default 50, clamped to 200). `prevCursor`/`hasPrev` are constants, not a bug: neither backend
-behind a paginated `@adonis-agora/agent` surface can page backwards, so the fields are kept — to match
-`@adonis-agora/filter`'s `CursorPage` byte for byte — rather than dropped.
+Over HTTP, pass `meta.nextCursor` back as `?after=` for the next page; `null` means that was the last
+one. Page size is `?first=` (default 50, at most 200). The runs list pages forward only, so
+`meta.prevCursor` is always `null` and `before` is a `400`:
+
+```http
+GET /agent/governance/runs?filter[status]=failed&filter[startedAt][between]=2026-11-01,2026-11-13&first=50
+```
 
 `runDetail` is the full trace, or `null`:
 
@@ -289,7 +292,7 @@ There's one more route mounted alongside the read-model that is **not** behind `
 
 | Method & path | Purpose |
 | --- | --- |
-| `GET /agent/approvals/mine` | The **calling actor's own** pending HITL approvals, oldest first. Query: `limit?` (default `50`, clamped to `200`). |
+| `GET /agent/approvals/mine` | The **calling actor's own** pending HITL approvals, oldest first, as a cursor page (`first`, `after`/`before`). |
 
 It reads the same store as the governance inbox — `pendingApprovals({ actor })` filters by the call's owning actor: its run's `actor_ref`, or, for a call with no run, its thread's — but is always scoped to `actor.id`, so it needs no admin gate. This is the route a non-admin surface (a coordinator's chat, an operator console) polls to discover *its own* suspended tool calls, even when the cross-actor `GET /agent/governance/approvals/pending` inbox above is ADMIN-only. The two are complementary: `approvals/mine` is per-actor and always available; `governance/approvals/pending` is platform-wide and governance-gated.
 

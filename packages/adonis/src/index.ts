@@ -342,8 +342,14 @@ export * from './negotiated-tool-ui.js';
 export type { OwnershipVerdict } from './ownership.js';
 export { evaluateOwnership } from './ownership.js';
 // The ecosystem-wide cursor pagination vocabulary — structurally identical to
-// `@adonis-agora/filter`'s `CursorParams`/`CursorPage`, deliberately not a dependency.
-export type { CursorPage, CursorParams } from './pagination.js';
+// `@adonis-agora/filter`'s `CursorParams`/`CursorPage`/`CursorPageResponse`.
+export type {
+  CursorPage,
+  CursorPageMeta,
+  CursorPageResponse,
+  CursorParams,
+  ListPageParams,
+} from './pagination.js';
 export { type PartialJson, parsePartialJson } from './partial-json.js';
 export * from './personas.js';
 export * from './pricing/bedrock.js';

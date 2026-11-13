@@ -1144,9 +1144,10 @@ export class AgentService {
     actor: Actor,
     threadId: string,
     after?: import('./spi/action-proposal-store.js').ListActionProposals['after'],
+    limit?: number,
   ) {
     if (!this.options.actionProposals) return { items: [] };
-    return this.options.actionProposals.listPage(actor, threadId, after);
+    return this.options.actionProposals.listPage(actor, threadId, after, limit);
   }
   decideActionProposal(
     actor: Actor,

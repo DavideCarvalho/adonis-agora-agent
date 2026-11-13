@@ -113,6 +113,22 @@ import {
   withActorLabels,
 } from '../src/index.js';
 import { untilClosed } from '../src/interruptible.js';
+import {
+  ApprovalsFilter,
+  applyListFilter,
+  assertFixedSort,
+  cursorPage,
+  decodeCursor,
+  encodeCursor,
+  InvalidColumnFilterError,
+  type ListSizes,
+  NoFieldsFilter,
+  parseForwardParams,
+  parseListWindow,
+  RunsFilter,
+  windowFetchSize,
+  windowPage,
+} from '../src/list-api.js';
 import type { McpToolImporter } from '../src/mcp-client/index.js';
 import {
   createToolUiChannelGuide,
@@ -270,7 +286,35 @@ const MAX_ATTACHMENTS_PER_MESSAGE = 10;
  * exists so a composer can show the files someone uploaded; a host that needs real paging over a
  * large inventory has `AgentService.listAttachments` and its own store's `list`.
  */
-const ATTACHMENT_PAGE_SIZE = 50;
+/** Page sizes of the actor's own lists (threads, attachments, approvals inbox). */
+const OWN_LIST_SIZES: ListSizes = { defaultSize: 50, maxSize: 200 };
+/** Page sizes of the governance lists. */
+const GOVERNANCE_LIST_SIZES: ListSizes = { defaultSize: 50, maxSize: 200 };
+/** Page sizes of a thread's action proposals (the store reads at most 1000 at once). */
+const PROPOSAL_LIST_SIZES: ListSizes = { defaultSize: 100, maxSize: 1000 };
+
+/**
+ * Answer a list route: `run` reads the request and returns the body; a refused filter, sort or
+ * cursor (`InvalidColumnFilterError`) answers `400`.
+ */
+async function answerList(ctx: HttpContext, run: () => Promise<unknown>): Promise<unknown> {
+  try {
+    const body = await run();
+    if (body === undefined) return;
+    return ctx.response.json(body);
+  } catch (error) {
+    if (error instanceof InvalidColumnFilterError) {
+      return ctx.response.badRequest({ message: error.message });
+    }
+    throw error;
+  }
+}
+
+/** Check a list request that takes no filter and has one order; throws on anything else. */
+async function plainList(qs: Record<string, unknown>, order: string): Promise<void> {
+  await applyListFilter({}, NoFieldsFilter, qs);
+  assertFixedSort(qs.sort, order);
+}
 
 /**
  * Reduce a send's `attachments` to `{ mediaId }` refs, or say why not. One shape: a ref names an
@@ -1399,11 +1443,18 @@ export default class AgentProvider {
       return ctx.response.json({ ok: true });
     });
 
-    // 6. GET /agent/threads — the actor's threads.
+    // 6. GET /agent/threads — the actor's threads, most recently updated first. Cursor paging
+    // (`after`/`before` + `first`/`last`); no filter fields; sort fixed to `-updatedAt`.
     router.get(p('threads'), async (ctx: HttpContext) => {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
-      return ctx.response.json(await service.listThreads(actor.id));
+      return answerList(ctx, async () => {
+        const qs = ctx.request.qs();
+        await plainList(qs, '-updatedAt');
+        const window = parseListWindow(qs, OWN_LIST_SIZES);
+        const threads = await service.listThreads(actor.id, { limit: windowFetchSize(window) });
+        return windowPage(threads, window);
+      });
     });
 
     // 6a. POST /agent/messages/:id/feedback — the thread owner rates a message. Only the OWNER: a
@@ -1497,25 +1548,36 @@ export default class AgentProvider {
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (!actor) return;
       return proposalResponse(ctx, async () => {
+        const qs = ctx.request.qs();
+        let params: ReturnType<typeof parseForwardParams>;
+        try {
+          await plainList(qs, 'createdAt');
+          params = parseForwardParams(qs, PROPOSAL_LIST_SIZES);
+        } catch (error) {
+          if (error instanceof InvalidColumnFilterError)
+            throw new ActionProposalServiceError(400, error.message);
+          throw error;
+        }
         let after: ListActionProposals['after'];
-        const cursor = ctx.request.input('after');
-        if (cursor !== undefined) {
+        if (params.after !== undefined) {
+          const values = decodeCursor(params.after);
           try {
-            if (typeof cursor !== 'string') throw new Error('cursor');
-            after = JSON.parse(cursor) as NonNullable<ListActionProposals['after']>;
+            if (values?.length !== 2) throw new Error('cursor');
+            after = { createdAt: values[0] as number, id: values[1] as string };
             validateActionProposalListQuery({ after });
           } catch {
-            throw new ActionProposalServiceError(400, 'Invalid action proposal cursor');
+            throw new ActionProposalServiceError(400, 'Invalid cursor.');
           }
         }
-        const page = await service.listActionProposalsPage(actor, ctx.params.id, after);
-        if (page.next)
-          ctx.response.header(
-            'X-Action-Proposals-Next',
-            encodeURIComponent(JSON.stringify(page.next)),
-          );
-        ctx.response.header('Access-Control-Expose-Headers', 'X-Action-Proposals-Next');
-        return page.items;
+        const page = await service.listActionProposalsPage(
+          actor,
+          ctx.params.id,
+          after,
+          params.size,
+        );
+        return cursorPage(page.items, {
+          nextCursor: page.next ? encodeCursor([page.next.createdAt, page.next.id]) : null,
+        });
       });
     });
     for (const [route, decision] of [
@@ -1879,12 +1941,21 @@ export default class AgentProvider {
         const actor = await this.#resolveActor(ctx, actorResolver);
         if (actor === null) return;
         try {
+          const qs = ctx.request.qs();
+          await plainList(qs, '-createdAt');
+          const window = parseListWindow(qs, OWN_LIST_SIZES);
           return ctx.response.json(
-            await service.listAttachments(actor, { limit: ATTACHMENT_PAGE_SIZE }),
+            windowPage(
+              await service.listAttachments(actor, { limit: windowFetchSize(window) }),
+              window,
+            ),
           );
         } catch (error) {
           if (error instanceof AttachmentInventoryError) {
             return ctx.response.status(error.status).json({ message: error.message });
+          }
+          if (error instanceof InvalidColumnFilterError) {
+            return ctx.response.badRequest({ message: error.message });
           }
           throw error;
         }
@@ -1963,25 +2034,25 @@ export default class AgentProvider {
     // tool calls, even when the cross-actor governance read-model below is ADMIN-only.
     if (governance !== undefined) {
       const gov = governance;
-      const limitFor = (ctx: HttpContext) => {
-        const raw = Number.parseInt(String(ctx.request.input('limit', '50')), 10);
-        const value = Number.isFinite(raw) && raw > 0 ? raw : 50;
-        return Math.min(value, 200);
-      };
-      // GET /agent/approvals/mine — the authenticated actor's own pending HITL approvals, oldest first.
+      // GET /agent/approvals/mine — the authenticated actor's own pending HITL approvals, oldest
+      // first. Cursor paging; no filter fields; sort fixed to `requestedAt`.
       router.get(p('approvals/mine'), async (ctx: HttpContext) => {
         const actor = await this.#resolveActor(ctx, actorResolver);
         if (actor === null) return;
-        // With tenancy on, only the calls of the request's own tenant.
-        const scope = service.tenantScope();
-        const inbox = scope === undefined ? gov : gov.forTenants?.(scope);
-        if (inbox === undefined) return ctx.response.json([]);
-        return ctx.response.json(
-          await withActorLabels(
-            await inbox.pendingApprovals({ limit: limitFor(ctx), actor: actor.id }),
-            actorDirectory,
-          ),
-        );
+        return answerList(ctx, async () => {
+          const qs = ctx.request.qs();
+          await plainList(qs, 'requestedAt');
+          const window = parseListWindow(qs, OWN_LIST_SIZES);
+          // With tenancy on, only the calls of the request's own tenant.
+          const scope = service.tenantScope();
+          const inbox = scope === undefined ? gov : gov.forTenants?.(scope);
+          const rows =
+            inbox === undefined
+              ? []
+              : await inbox.pendingApprovals({ limit: windowFetchSize(window), actor: actor.id });
+          const page = windowPage(rows, window);
+          return { ...page, data: await withActorLabels(page.data, actorDirectory) };
+        });
       });
     }
 
@@ -1990,7 +2061,7 @@ export default class AgentProvider {
     // (`#consoleGate`): omitted, they are open outside production and `403` in production. Restricting
     // them (e.g. ADMIN-only) never locks the per-actor `approvals/mine` route above. All read-only
     // except the pricing writes. `from`/`to` are inclusive UTC days (`YYYY-MM-DD`), defaulting to
-    // today; `limit` defaults to 50, clamped to 200 (mirroring the dashboard's own clamp).
+    // today. The lists page with `after`/`first` (default 50, at most 200).
     if (governance !== undefined) {
       const governanceAll = governance;
       const g = (suffix: string) => p(`governance/${suffix}`);
@@ -2000,18 +2071,6 @@ export default class AgentProvider {
         const to = ctx.request.input('to', today);
         return { fromDay: String(from), toDay: String(to) };
       };
-      const positiveIntInput = (ctx: HttpContext, key: string) => {
-        const raw = Number.parseInt(String(ctx.request.input(key, '50')), 10);
-        const value = Number.isFinite(raw) && raw > 0 ? raw : 50;
-        return Math.min(value, 200);
-      };
-      /** `?limit=` — the cap on the top-N feeds (`recentToolCalls`, `recentThreads`, the approvals
-       *  inbox). Those are capped lists, not cursor-paginated surfaces, so they keep `limit`. */
-      const limitOf = (ctx: HttpContext) => positiveIntInput(ctx, 'limit');
-      /** `?first=` — the page size of the cursor-paginated surfaces, which speak `{ after, first }`
-       *  (the ecosystem interface mirroring `@adonis-agora/filter`'s `CursorParams`). Same default
-       *  (50) and ceiling (200) as `?limit=`. */
-      const firstOf = (ctx: HttpContext) => positiveIntInput(ctx, 'first');
 
       // GET /agent/governance/tenants — the organizations this viewer may pick (the console picker).
       router.get(g('tenants'), async (ctx: HttpContext) => {
@@ -2144,19 +2203,30 @@ export default class AgentProvider {
       });
 
       // GET /agent/governance/tool-calls/recent — newest-first recent tool-call activity feed.
+      // Cursor paging; no filter fields; sort fixed to `-createdAt`.
       router.get(g('tool-calls/recent'), async (ctx: HttpContext) => {
         const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
         if (gov === null) return;
-        return ctx.response.json(await gov.recentToolCalls(limitOf(ctx)));
+        return answerList(ctx, async () => {
+          const qs = ctx.request.qs();
+          await plainList(qs, '-createdAt');
+          const window = parseListWindow(qs, GOVERNANCE_LIST_SIZES);
+          return windowPage(await gov.recentToolCalls(windowFetchSize(window)), window);
+        });
       });
 
       // GET /agent/governance/threads/recent — newest-first recent thread activity feed.
+      // Cursor paging; no filter fields; sort fixed to `-lastActivityAt`.
       router.get(g('threads/recent'), async (ctx: HttpContext) => {
         const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
         if (gov === null) return;
-        return ctx.response.json(
-          await withActorLabels(await gov.recentThreads(limitOf(ctx)), actorDirectory),
-        );
+        return answerList(ctx, async () => {
+          const qs = ctx.request.qs();
+          await plainList(qs, '-lastActivityAt');
+          const window = parseListWindow(qs, GOVERNANCE_LIST_SIZES);
+          const page = windowPage(await gov.recentThreads(windowFetchSize(window)), window);
+          return { ...page, data: await withActorLabels(page.data, actorDirectory) };
+        });
       });
 
       // GET /agent/governance/threads/:id — one thread's governance drill-down (metadata + lifetime
@@ -2206,31 +2276,26 @@ export default class AgentProvider {
         };
       };
 
-      // GET /agent/governance/runs — filterable, cursor-paginated run list, newest-first.
-      // Query: actor?, agent?, status?, from?, to?, after?, first?
-      // `after`/`first` are the ecosystem's forward-only cursor pagination interface (mirroring
-      // `@adonis-agora/filter`'s `CursorParams`); the body is a `CursorPage` — `items`, `nextCursor`,
-      // and the constant `prevCursor: null` / `hasPrev: false`.
+      // GET /agent/governance/runs — filterable run list, newest first. `filter[actor]`,
+      // `filter[agent]`, `filter[status]`, `filter[startedAt][gte|lte|between]` (UTC days); sort
+      // fixed to `-startedAt`; forward cursor paging (`after` + `first`).
       router.get(g('runs'), async (ctx: HttpContext) => {
         const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
         if (gov === null) return;
-        const filterActor = ctx.request.input('actor');
-        const agent = ctx.request.input('agent');
-        const status = ctx.request.input('status');
-        const after = ctx.request.input('after');
-        const { from, to } = optionalRange(ctx);
-        const page = await gov.listRuns({
-          first: firstOf(ctx),
-          ...(filterActor !== undefined ? { actor: String(filterActor) } : {}),
-          ...(agent !== undefined ? { agent: String(agent) } : {}),
-          ...(status !== undefined ? { status: String(status) as never } : {}),
-          ...(after !== undefined ? { after: String(after) } : {}),
-          ...(from !== undefined ? { from } : {}),
-          ...(to !== undefined ? { to } : {}),
-        });
-        return ctx.response.json({
-          ...page,
-          items: await withActorLabels(page.items, actorDirectory),
+        return answerList(ctx, async () => {
+          const qs = ctx.request.qs();
+          const filter = await applyListFilter({}, RunsFilter, qs);
+          assertFixedSort(qs.sort, '-startedAt');
+          const { after, size } = parseForwardParams(qs, GOVERNANCE_LIST_SIZES);
+          const page = await gov.listRuns({
+            ...filter,
+            first: size,
+            ...(after !== undefined ? { after } : {}),
+          });
+          return cursorPage({
+            ...page,
+            items: await withActorLabels(page.items, actorDirectory),
+          });
         });
       });
 
@@ -2253,16 +2318,15 @@ export default class AgentProvider {
       router.get(g('approvals/pending'), async (ctx: HttpContext) => {
         const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
         if (gov === null) return;
-        const filterActor = ctx.request.input('actor');
-        return ctx.response.json(
-          await withActorLabels(
-            await gov.pendingApprovals({
-              limit: limitOf(ctx),
-              ...(filterActor !== undefined ? { actor: String(filterActor) } : {}),
-            }),
-            actorDirectory,
-          ),
-        );
+        return answerList(ctx, async () => {
+          const qs = ctx.request.qs();
+          const filter = await applyListFilter({}, ApprovalsFilter, qs);
+          assertFixedSort(qs.sort, 'requestedAt');
+          const window = parseListWindow(qs, GOVERNANCE_LIST_SIZES);
+          const rows = await gov.pendingApprovals({ ...filter, limit: windowFetchSize(window) });
+          const page = windowPage(rows, window);
+          return { ...page, data: await withActorLabels(page.data, actorDirectory) };
+        });
       });
 
       // GET /agent/governance/tools/stats — per-tool call/failure/rejection/latency rollup.

@@ -354,9 +354,9 @@ describe('the rest of the REST surface the React client calls', () => {
     const opened = await client.openChatStream({ body: { message: 'scratch', transient: true } });
     await new Response(opened.body).text();
     const threadId = opened.threadId as string;
-    expect(await client.listThreads()).toEqual([]);
+    expect((await client.listThreads()).data).toEqual([]);
     expect(await client.promoteThread(threadId)).toEqual({ ok: true });
-    expect((await client.listThreads()).map((thread) => thread.id)).toEqual([threadId]);
+    expect((await client.listThreads()).data.map((thread) => thread.id)).toEqual([threadId]);
   });
 
   it('lists the skills this caller can invoke, and an empty list when none are configured', async () => {

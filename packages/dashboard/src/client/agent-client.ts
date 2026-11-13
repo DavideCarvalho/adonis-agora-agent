@@ -1,7 +1,10 @@
+import { FilterQueryBuilder, filterQuery } from '@adonis-agora/filter-client';
 import { resolveApiBase } from './api-base.js';
 import type {
   ActorSpendRow,
   CurrentModelPrice,
+  CursorPageResponse,
+  CursorParams,
   FeatureSpendRow,
   GenuiStats,
   GovernanceRange,
@@ -59,8 +62,8 @@ export interface AgentClientOptions {
   baseUrl?: string;
   /** Injectable `fetch` (tests pass a stub). Defaults to the global. */
   fetch?: FetchLike;
-  /** Cap for the `recent*` feeds; the server clamps to 200. Defaults to 50. */
-  limit?: number;
+  /** Page size of the list reads when a call passes no `first`; the server caps it at 200. Default 50. */
+  pageSize?: number;
   /**
    * The organization every governance read is scoped to (`?tenant=`), with tenancy on. Defaults to
    * the page's own `?tenant=`; `null` = every organization the viewer may see.
@@ -84,19 +87,26 @@ export function pageTenant(): string | null {
 export class AgentClient {
   private readonly base: string;
   private readonly doFetch: FetchLike;
-  private readonly limit: number;
+  private readonly pageSize: number;
   private readonly tenant: () => string | null;
 
   constructor(options: AgentClientOptions = {}) {
     this.base = (options.baseUrl ?? resolveApiBase()).replace(/\/+$/, '');
     this.doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
-    this.limit = options.limit ?? 50;
+    this.pageSize = options.pageSize ?? 50;
     this.tenant = options.tenant ?? pageTenant;
   }
 
-  private async get<T>(path: string, query: Record<string, string> = {}): Promise<T> {
+  private async get<T>(
+    path: string,
+    query: Record<string, string> | FilterQueryBuilder = {},
+  ): Promise<T> {
     const tenant = path.startsWith('/governance/') ? this.tenant() : null;
-    const search = new URLSearchParams(tenant !== null ? { ...query, tenant } : query).toString();
+    const params = new URLSearchParams(
+      query instanceof FilterQueryBuilder ? query.toQueryString() : query,
+    );
+    if (tenant !== null) params.set('tenant', tenant);
+    const search = params.toString();
     const url = `${this.base}${path}${search ? `?${search}` : ''}`;
     const response = await this.doFetch(url, {
       method: 'GET',
@@ -162,14 +172,21 @@ export class AgentClient {
     });
   }
 
-  recentToolCalls(limit = this.limit): Promise<ToolCallActivityRow[]> {
-    return this.get<ToolCallActivityRow[]>('/governance/tool-calls/recent', {
-      limit: String(limit),
-    });
+  /** The paging half of a list request, as a filter-client builder. */
+  private page(params: CursorParams): FilterQueryBuilder {
+    const query = filterQuery().first(params.first ?? this.pageSize);
+    if (params.after) query.after(params.after);
+    return query;
   }
 
-  recentThreads(limit = this.limit): Promise<ThreadActivityRow[]> {
-    return this.get<ThreadActivityRow[]>('/governance/threads/recent', { limit: String(limit) });
+  /** `GET /agent/governance/tool-calls/recent` — one page of the newest-first tool-call feed. */
+  recentToolCalls(page: CursorParams = {}): Promise<CursorPageResponse<ToolCallActivityRow>> {
+    return this.get('/governance/tool-calls/recent', this.page(page));
+  }
+
+  /** `GET /agent/governance/threads/recent` — one page of the newest-first thread feed. */
+  recentThreads(page: CursorParams = {}): Promise<CursorPageResponse<ThreadActivityRow>> {
+    return this.get('/governance/threads/recent', this.page(page));
   }
 
   /** `GET /agent/governance/threads/:id` — one thread's governance drill-down, or `null` if unknown. */
@@ -199,18 +216,17 @@ export class AgentClient {
   // ── Run lifecycle governance (the run-tracking read-model). ─────────────────
 
   /**
-   * `GET /agent/governance/runs` — filterable, cursor-paginated run list, newest-first. Pagination is
-   * the ecosystem's forward-only cursor interface: `{ after, first }` on the way in (sent as
-   * `?after=&first=`), a `CursorPage` of runs on the way out.
+   * `GET /agent/governance/runs` — one page of the run list, newest first, filtered by actor, agent,
+   * status and the UTC days it started on. Pass `meta.nextCursor` back as `after`.
    */
   listRuns(filter: ListRunsFilter = {}): Promise<ListRunsResult> {
-    const query: Record<string, string> = { first: String(filter.first ?? this.limit) };
-    if (filter.actor) query.actor = filter.actor;
-    if (filter.agent) query.agent = filter.agent;
-    if (filter.status) query.status = filter.status;
-    if (filter.from) query.from = filter.from;
-    if (filter.to) query.to = filter.to;
-    if (filter.after) query.after = filter.after;
+    const query = this.page(filter);
+    if (filter.actor) query.where('actor', 'equals', filter.actor);
+    if (filter.agent) query.where('agent', 'equals', filter.agent);
+    if (filter.status) query.where('status', 'equals', filter.status);
+    if (filter.from && filter.to) query.where('startedAt', 'between', [filter.from, filter.to]);
+    else if (filter.from) query.where('startedAt', 'gte', filter.from);
+    else if (filter.to) query.where('startedAt', 'lte', filter.to);
     return this.get<ListRunsResult>('/governance/runs', query);
   }
 
@@ -219,11 +235,13 @@ export class AgentClient {
     return this.get<RunDetail | null>(`/governance/runs/${encodeURIComponent(runId)}`);
   }
 
-  /** `GET /agent/governance/approvals/pending` — cross-thread HITL inbox, oldest first. */
-  pendingApprovals(filter: PendingApprovalsFilter = {}): Promise<PendingApprovalRow[]> {
-    const query: Record<string, string> = { limit: String(filter.limit ?? this.limit) };
-    if (filter.actor) query.actor = filter.actor;
-    return this.get<PendingApprovalRow[]>('/governance/approvals/pending', query);
+  /** `GET /agent/governance/approvals/pending` — one page of the cross-thread HITL inbox, oldest first. */
+  pendingApprovals(
+    filter: PendingApprovalsFilter = {},
+  ): Promise<CursorPageResponse<PendingApprovalRow>> {
+    const query = this.page(filter);
+    if (filter.actor) query.where('actor', 'equals', filter.actor);
+    return this.get('/governance/approvals/pending', query);
   }
 
   /** `GET /agent/governance/tools/stats` — per-tool call/failure/rejection/latency rollup. */

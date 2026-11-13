@@ -27,3 +27,5 @@ minimumReleaseAgeExclude:
   # Earlier releases are installed under aliases to test replay across upgrades.
   - '@adonis-agora/agent@0.56.0 || 0.58.0 || 0.59.0'
   - '@adonis-agora/durable@0.43.1 || 0.43.3'
+  - '@adonis-agora/filter@1.0.0-rc.5'
+  - '@adonis-agora/filter-client@1.0.0-rc.1'

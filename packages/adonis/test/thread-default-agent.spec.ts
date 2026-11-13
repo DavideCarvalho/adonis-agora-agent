@@ -74,10 +74,9 @@ describe("a thread's default agent", { timeout: 30_000 }, () => {
     await send({ threadId, agent: 'sales' });
     expect(seen).toEqual(['default', 'support', 'sales']);
 
-    const listed = (await (await fetch(`${url}/agent/threads`, { headers: headers() })).json()) as {
-      id: string;
-      defaultAgent: string | null;
-    }[];
+    const { data: listed } = (await (
+      await fetch(`${url}/agent/threads`, { headers: headers() })
+    ).json()) as { data: { id: string; defaultAgent: string | null }[] };
     expect(listed.find((thread) => thread.id === threadId)?.defaultAgent).toBe('support');
 
     expect((await patch(threadId, { defaultAgent: null })).status).toBe(200);

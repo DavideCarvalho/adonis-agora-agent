@@ -199,6 +199,9 @@ importers:
 
   packages/adonis:
     dependencies:
+      '@adonis-agora/filter':
+        specifier: '>=1.0.0-rc.5 <2.0.0'
+        version: 1.0.0-rc.5(@adonisjs/core@7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(@adonisjs/core@7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.6(@types/node@26.6.6))(pg@8.23.1)(supports-color@10.2.2))
       '@adonis-agora/media':
         specifier: '>=0.18.0 <2.0.0 || >=1.0.0-rc.0 <2.0.0'
         version: 0.28.1(a18a6b3ba8f678f78323eb34ecdf305d)
@@ -439,6 +442,10 @@ importers:
         version: 4.6.7
 
   packages/dashboard:
+    dependencies:
+      '@adonis-agora/filter-client':
+        specifier: '>=1.0.0-rc.1 <2.0.0'
+        version: 1.0.0-rc.1
     devDependencies:
       '@adonis-agora/agent':
         specifier: workspace:*
@@ -741,8 +748,27 @@ packages:
       vitest:
         optional: true
 
+  '@adonis-agora/filter-client@1.0.0-rc.1':
+    resolution: {integrity: sha512-aTMnF8aElvXbok/7y9R24xoNG27zjeM1XVhmdiUCMu5L59RzTabmNQXQxfrF6sgjCjjRbYbSzZ2Q4JWi0xntiw==}
+    engines: {node: '>=24'}
+    peerDependencies:
+      '@tanstack/table-core': '>=8.0.0'
+    peerDependenciesMeta:
+      '@tanstack/table-core':
+        optional: true
+
   '@adonis-agora/filter@0.11.2':
     resolution: {integrity: sha512-wa88BebA1BPUoiTwMiXH/rvQjuUtO9AXX4Xl+oYCt0bKQhLafFllCIBGunQ4zWUdy/QlvOhgmK91Ih+YnqWsHQ==}
+    engines: {node: '>=24'}
+    peerDependencies:
+      '@adonisjs/core': ^7.3.0
+      '@adonisjs/lucid': ^22.0.0
+    peerDependenciesMeta:
+      '@adonisjs/lucid':
+        optional: true
+
+  '@adonis-agora/filter@1.0.0-rc.5':
+    resolution: {integrity: sha512-vG/5dLmJeVmHHqUQXh/ftoGN3mgNoXWaPdbor0vkD3LudVCTrS6ZQPedoX1yOc6Qq28SI8ZdUNsXzdkmSa5t3A==}
     engines: {node: '>=24'}
     peerDependencies:
       '@adonisjs/core': ^7.3.0
@@ -6563,7 +6589,15 @@ snapshots:
       ioredis: 6.0.0(supports-color@10.2.2)
       vitest: 5.1.0(@types/node@26.6.6)(jsdom@31.0.0)(vite@8.3.7(@types/node@26.6.6)(esbuild@0.28.2)(jiti@2.7.0)(sass@1.108.1)(terser@5.51.2)(yaml@2.9.1))
 
+  '@adonis-agora/filter-client@1.0.0-rc.1': {}
+
   '@adonis-agora/filter@0.11.2(@adonisjs/core@7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(@adonisjs/core@7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.6(@types/node@26.6.6))(pg@8.23.1)(supports-color@10.2.2))':
+    dependencies:
+      '@adonisjs/core': 7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1)
+    optionalDependencies:
+      '@adonisjs/lucid': 22.4.2(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(@adonisjs/core@7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.6(@types/node@26.6.6))(pg@8.23.1)(supports-color@10.2.2)
+
+  '@adonis-agora/filter@1.0.0-rc.5(@adonisjs/core@7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(@adonisjs/lucid@22.4.2(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(@adonisjs/core@7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1))(better-sqlite3@13.0.3)(luxon@3.7.2)(mysql2@3.24.6(@types/node@26.6.6))(pg@8.23.1)(supports-color@10.2.2))':
     dependencies:
       '@adonisjs/core': 7.6.0(@adonisjs/assembler@8.6.0(babel-plugin-macros@3.1.0)(typescript@7.0.2))(supports-color@10.2.2)(youch@4.1.1)
     optionalDependencies:

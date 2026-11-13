@@ -127,7 +127,7 @@ import type { ChatStorage } from '@openuidev/react-ui'
 const storage: ChatStorage = {
   thread: {
     listThreads: async () => ({
-      threads: (await (await csrfFetch('/agent/threads')).json()).map((t) => ({ id: t.id, title: t.title, createdAt: t.createdAt })),
+      threads: (await (await csrfFetch('/agent/threads?first=100')).json()).data.map((t) => ({ id: t.id, title: t.title, createdAt: t.createdAt })),
     }),
     // No request: the AG-UI route creates a thread under the id it is first sent.
     createThread: async (first) => ({ id: crypto.randomUUID(), title: String(first.content).slice(0, 40), createdAt: Date.now() }),

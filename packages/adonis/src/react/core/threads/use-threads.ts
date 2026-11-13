@@ -13,14 +13,23 @@ export interface UseThreadsOptions {
   backend?: AgentBackend;
   /** `false` holds the first request (e.g. until the user is signed in). Default `true`. */
   enabled?: boolean;
+  /** Threads per page (`first`). Default 50; the server caps it at 200. */
+  pageSize?: number;
 }
+
+/** The most a refresh re-reads at once: the server's page cap. */
+const MAX_PAGE = 200;
 
 export interface ThreadsState {
   /** Newest first, as the server orders them. `[]` until loaded. */
   threads: ThreadSummary[];
   isLoading: boolean;
   error: Error | null;
-  /** Ask the server again. */
+  /** More threads wait on the server: {@link ThreadsState.loadMore} reads the next page. */
+  hasMore: boolean;
+  /** Append the next page. A no-op when {@link ThreadsState.hasMore} is `false`. */
+  loadMore: () => Promise<void>;
+  /** Ask the server again, for as many threads as are loaded (at least one page). */
   refresh: () => Promise<void>;
   /** Rename on the server; the list shows the new title at once and rolls back on failure. */
   rename: (id: string, title: string) => Promise<void>;
@@ -34,9 +43,12 @@ export interface ThreadsState {
  * place). Headless — it renders nothing.
  */
 export function useThreads(options: UseThreadsOptions = {}): ThreadsState {
-  const { enabled = true } = options;
+  const { enabled = true, pageSize = 50 } = options;
   const backend = useAgentBackend(options.backend);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const nextCursorRef = useRef(nextCursor);
+  nextCursorRef.current = nextCursor;
   const [isLoading, setIsLoading] = useState(enabled);
   const [error, setError] = useState<Error | null>(null);
   const threadsRef = useRef(threads);
@@ -48,9 +60,11 @@ export function useThreads(options: UseThreadsOptions = {}): ThreadsState {
     const mine = ++generation.current;
     setIsLoading(true);
     try {
-      const list = await backend.listThreads();
+      const first = Math.min(MAX_PAGE, Math.max(pageSize, threadsRef.current.length));
+      const page = await backend.listThreads({ first });
       if (mine !== generation.current) return;
-      setThreads(list);
+      setThreads(page.data);
+      setNextCursor(page.meta.nextCursor);
       setError(null);
     } catch (caught) {
       if (mine !== generation.current) return;
@@ -58,7 +72,29 @@ export function useThreads(options: UseThreadsOptions = {}): ThreadsState {
     } finally {
       if (mine === generation.current) setIsLoading(false);
     }
-  }, [backend]);
+  }, [backend, pageSize]);
+
+  const loadMore = useCallback(async (): Promise<void> => {
+    const after = nextCursorRef.current;
+    if (after === null) return;
+    const mine = ++generation.current;
+    setIsLoading(true);
+    try {
+      const page = await backend.listThreads({ after, first: pageSize });
+      if (mine !== generation.current) return;
+      setThreads((current) => {
+        const known = new Set(current.map((thread) => thread.id));
+        return [...current, ...page.data.filter((thread) => !known.has(thread.id))];
+      });
+      setNextCursor(page.meta.nextCursor);
+      setError(null);
+    } catch (caught) {
+      if (mine !== generation.current) return;
+      setError(caught instanceof Error ? caught : new Error(String(caught)));
+    } finally {
+      if (mine === generation.current) setIsLoading(false);
+    }
+  }, [backend, pageSize]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -110,5 +146,14 @@ export function useThreads(options: UseThreadsOptions = {}): ThreadsState {
     [backend],
   );
 
-  return { threads, isLoading, error, refresh, rename, remove };
+  return {
+    threads,
+    isLoading,
+    error,
+    hasMore: nextCursor !== null,
+    loadMore,
+    refresh,
+    rename,
+    remove,
+  };
 }

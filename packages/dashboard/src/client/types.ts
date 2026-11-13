@@ -1,3 +1,5 @@
+import type { CursorPageResponse } from '@adonis-agora/filter-client';
+
 /**
  * Wire shapes returned by the `@adonis-agora/agent` provider's read-only governance routes
  * (`/agent/governance/*`) plus the per-actor `quota` route. These MIRROR the target's SPI
@@ -5,36 +7,18 @@
  * so any drift here is a bug against the server contract, not a local choice.
  */
 
-// ── Cursor pagination vocabulary ─────────────────────────────────────────────
-// These two types MIRROR `@adonis-agora/filter`'s `CursorParams`/`CursorPage<T>` structurally — the
-// one pagination interface every `@adonis-agora/*` package speaks — and are the same declarations the
-// target package carries in `src/pagination.ts`. Duplicated rather than imported for the same reason
-// as everything else in this file: the SPA is a pure wire-shape consumer with no runtime dependency
-// on the server package (nor on `@adonis-agora/filter`). Drift here is a bug.
+// ── Lists ────────────────────────────────────────────────────────────────────
+// The governance lists answer `@adonis-agora/filter`'s cursor page: rows under `data`, cursors under
+// `meta`. The response types are filter-client's own.
 
-/**
- * Cursor pagination parameters. **Forward-only** — the server's backends (Qdrant's scroll, the runs
- * read-model's opaque forward cursor) have no backward token, so `@adonis-agora/filter`'s
- * `before`/`last` are deliberately absent rather than declared-and-ignored.
- */
+export type { CursorPageMeta, CursorPageResponse } from '@adonis-agora/filter-client';
+
+/** Paging of a list read: the page size and the cursor to read after. */
 export interface CursorParams {
-  /** Opaque cursor from a prior page's {@link CursorPage.nextCursor}; omit for the first page. */
+  /** `meta.nextCursor` of the previous page; omit for the first page. */
   after?: string;
-  /** Page size. */
+  /** Page size; the server's default is 50, its ceiling 200. */
   first?: number;
-}
-
-/**
- * One page of cursor-paginated results. `prevCursor`/`hasPrev` are always `null`/`false` here (see
- * {@link CursorParams}); they exist so this is the SAME shape as `@adonis-agora/filter`'s
- * `CursorPage`, and so a surface that later gains backward paging fills them in without breaking.
- */
-export interface CursorPage<T> {
-  items: T[];
-  nextCursor: string | null;
-  prevCursor: string | null;
-  hasNext: boolean;
-  hasPrev: boolean;
 }
 
 /** Inclusive UTC-day range, each `YYYY-MM-DD`. Sent as `?from=&to=`. */
@@ -116,9 +100,8 @@ export interface QuotaToday {
 export type RunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
 /**
- * Filters + cursor for `GET /agent/governance/runs`. All optional; absent = no constraint.
- *
- * Pagination is {@link CursorParams} — sent as `?after=&first=`.
+ * Filters + cursor for `GET /agent/governance/runs`. All optional; absent = no constraint. Sent as
+ * `filter[actor]`, `filter[agent]`, `filter[status]`, `filter[startedAt]` and `after`/`first`.
  */
 export interface ListRunsFilter extends CursorParams {
   /** Exact `actor_ref`. */
@@ -130,10 +113,6 @@ export interface ListRunsFilter extends CursorParams {
   from?: string;
   /** Inclusive UTC-day upper bound on `started_at`, `YYYY-MM-DD`. */
   to?: string;
-  /** Opaque cursor from a prior page's {@link ListRunsResult.nextCursor}; omit for the first page. */
-  after?: string;
-  /** Page size; defaults to 50, clamped to 200 by the server. */
-  first?: number;
 }
 
 /** A run row for the governance list + detail. Newest-first in {@link ListRunsResult}. */
@@ -197,11 +176,10 @@ export interface RunTimings {
 }
 
 /**
- * `GET /agent/governance/runs` — one page, newest-first, with an opaque forward cursor. Exactly
- * {@link CursorPage} of {@link RunSummaryRow}: rows under `items`, and the constant `prevCursor:
- * null` / `hasPrev: false` of a forward-only backend.
+ * `GET /agent/governance/runs` — one page, newest first. The list pages forward only, so
+ * `meta.prevCursor` is always `null`.
  */
-export type ListRunsResult = CursorPage<RunSummaryRow>;
+export type ListRunsResult = CursorPageResponse<RunSummaryRow>;
 
 /** A message belonging to a run, for {@link RunDetail}. */
 export interface RunMessageRow {
@@ -252,11 +230,9 @@ export interface RunDetail {
 }
 
 /** Filters for `GET /agent/governance/approvals/pending`. */
-export interface PendingApprovalsFilter {
-  /** Restrict to a single acting ref (the owning run's `actor_ref`). */
+export interface PendingApprovalsFilter extends CursorParams {
+  /** Restrict to a single acting ref (the owning run's `actor_ref`). Sent as `filter[actor]`. */
   actor?: string;
-  /** Cap the inbox; defaults to 50, clamped to 200 by the server. */
-  limit?: number;
 }
 
 /**

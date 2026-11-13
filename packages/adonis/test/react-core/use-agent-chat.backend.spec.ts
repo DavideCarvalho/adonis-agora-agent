@@ -70,7 +70,10 @@ function fakeBackend(
       return next === null ? null : { body: next };
     },
     cancelStream: async () => ({ aborted: true }),
-    listThreads: vi.fn(async () => backend.threads.map((thread) => ({ ...thread }))),
+    listThreads: vi.fn(async () => ({
+      data: backend.threads.map((thread) => ({ ...thread })),
+      meta: { nextCursor: null, prevCursor: null, hasNext: false, hasPrev: false },
+    })),
     async getThread(id): Promise<ThreadDetail> {
       return { ...summary(id, 'T'), messages: backend.messages };
     },
