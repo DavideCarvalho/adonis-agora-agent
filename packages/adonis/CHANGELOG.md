@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.16
+
+### Patch Changes
+
+- [#598](https://github.com/DavideCarvalho/adonis-agora-agent/pull/598) [`263cf2a`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/263cf2aeed55471d5f1b2412ac1fafa5c5582b9a) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Dev tools: an object that appears twice in a tool's result (a flag's `stored` and `definition`) is written out both times instead of showing as `"[circular]"`; only a real cycle is marked.
+
 ## 1.0.0-rc.15
 
 ### Minor Changes
