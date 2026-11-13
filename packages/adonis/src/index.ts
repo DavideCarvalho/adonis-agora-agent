@@ -293,6 +293,7 @@ export {
   scrubGenuiError,
   summarizeGenuiCalls,
 } from './genui-telemetry.js';
+export { AgentGovernanceConsole, GovernanceUnavailableError } from './governance-console.js';
 export type { GovernanceGateVerdict } from './governance-gate.js';
 export { evaluateGovernanceGate } from './governance-gate.js';
 export * from './history-window.js';
@@ -571,6 +572,7 @@ export {
   StructuredOutputError,
   validateStructured,
 } from './structured-output.js';
+export * from './tool-call-decision.js';
 export type { RegisteredTool, ToolsBarrel } from './tool-discovery.js';
 export {
   discoverTools,

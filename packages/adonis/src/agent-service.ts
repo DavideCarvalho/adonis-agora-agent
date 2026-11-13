@@ -1243,6 +1243,11 @@ export class AgentService {
     return (await this.store.toolCallApproval?.(toolCallId, runId)) ?? null;
   }
 
+  /** Whether an approve/reject sent from another process (the CLI) reaches a parked run. */
+  get signalsReachOtherProcesses(): boolean {
+    return this.runner.signalsReachOtherProcesses === true;
+  }
+
   /**
    * May `actor` settle a call whose recorded approver is `approver` (never the requester — that is
    * the ownership check)? The configured policy's `canDecide`, else "holds that role".

@@ -54,6 +54,13 @@ export interface AgentRunner {
    * either way, no rejection is recorded against a human who only submitted a form.
    */
   signal(runId: string, toolCallId: string, reply: HumanReply): Promise<void>;
+  /**
+   * OPTIONAL: `true` when {@link signal} reaches a run parked in ANOTHER process — the reply is
+   * persisted where the run's own worker reads it (a durable engine's signal table). Absent → the
+   * runner only resumes runs parked in this process (the inline runner's in-memory waits), so a
+   * decision made from a CLI process is refused rather than lost.
+   */
+  readonly signalsReachOtherProcesses?: boolean;
   cancel(runId: string): Promise<void>;
   /**
    * OPTIONAL: execute in this process what of `runId` waits for a worker to pick it up — the run

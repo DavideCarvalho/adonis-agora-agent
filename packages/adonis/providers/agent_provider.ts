@@ -39,6 +39,16 @@ import { agentDoctorChecks } from '../src/doctor/checks.js';
 import { type AgentEngine, assertRunnable, engineOnlyModel } from '../src/engine.js';
 import type { Catalog } from '../src/genui/index.js';
 import type { SandboxClientConfig } from '../src/genui/sandbox-kit.js';
+import { AgentGovernanceConsole } from '../src/governance-console.js';
+import {
+  governancePendingApprovalsPage,
+  governanceRunDetail,
+  governanceRunsPage,
+  governanceThreadDetail,
+  governanceThreadsPage,
+  governanceToolCallsPage,
+  plainList,
+} from '../src/governance-reads.js';
 import {
   ActionProposalExecutor,
   ActionProposalWorker,
@@ -91,7 +101,6 @@ import {
   parseStreamCursor,
   pricingStores,
   QuotaBlockedError,
-  REQUESTER_APPROVER,
   RegenerateNeedsThreadError,
   ResilientTokenStreamSink,
   type Retriever,
@@ -109,23 +118,17 @@ import {
   toApprovalPolicy,
   toModelCatalog,
   UnknownAgentError,
-  withActorLabel,
   withActorLabels,
 } from '../src/index.js';
 import { untilClosed } from '../src/interruptible.js';
 import {
-  ApprovalsFilter,
-  applyListFilter,
-  assertFixedSort,
   cursorPage,
   decodeCursor,
   encodeCursor,
   InvalidColumnFilterError,
   type ListSizes,
-  NoFieldsFilter,
   parseForwardParams,
   parseListWindow,
-  RunsFilter,
   windowFetchSize,
   windowPage,
 } from '../src/list-api.js';
@@ -136,12 +139,18 @@ import {
   type ToolUiChannelGuide,
 } from '../src/negotiated-tool-ui.js';
 import { ensureModelPricing } from '../src/pricing/boot-pricing.js';
+import { PRICE_INPUT_SHAPE, parseModelPriceInput } from '../src/pricing/price-input.js';
 import type { ListActionProposals } from '../src/spi/action-proposal-store.js';
 import { catalogModelIds, staticCatalogView } from '../src/spi/model-catalog.js';
 import type { DescribedModel } from '../src/spi/model-provider.js';
 import type { PresentationErrorHandler } from '../src/spi/tool.js';
 import { assertSchemaName } from '../src/stores/db-schema.js';
 import { setTelescopeGovernanceQueries } from '../src/telescope/governance-registry.js';
+import {
+  decideToolCall,
+  decisionRefusal,
+  type ToolCallDecision,
+} from '../src/tool-call-decision.js';
 import type { UiCapabilities } from '../src/ui-capabilities.js';
 import { validateUiCapabilities } from '../src/ui-capabilities.js';
 
@@ -288,8 +297,6 @@ const MAX_ATTACHMENTS_PER_MESSAGE = 10;
  */
 /** Page sizes of the actor's own lists (threads, attachments, approvals inbox). */
 const OWN_LIST_SIZES: ListSizes = { defaultSize: 50, maxSize: 200 };
-/** Page sizes of the governance lists. */
-const GOVERNANCE_LIST_SIZES: ListSizes = { defaultSize: 50, maxSize: 200 };
 /** Page sizes of a thread's action proposals (the store reads at most 1000 at once). */
 const PROPOSAL_LIST_SIZES: ListSizes = { defaultSize: 100, maxSize: 1000 };
 
@@ -308,12 +315,6 @@ async function answerList(ctx: HttpContext, run: () => Promise<unknown>): Promis
     }
     throw error;
   }
-}
-
-/** Check a list request that takes no filter and has one order; throws on anything else. */
-async function plainList(qs: Record<string, unknown>, order: string): Promise<void> {
-  await applyListFilter({}, NoFieldsFilter, qs);
-  assertFixedSort(qs.sort, order);
 }
 
 /**
@@ -698,6 +699,16 @@ export default class AgentProvider {
           : { provider: new LedgerQuotaProvider(store), gated: false },
     });
     this.app.container.bindValue(AgentService, service);
+    // What the governance console reads and writes, for the `agent:*` ace commands.
+    this.app.container.bindValue(
+      AgentGovernanceConsole,
+      new AgentGovernanceConsole({
+        queries: governance,
+        pricing: pricingStore,
+        actorDirectory,
+        tenancy,
+      }),
+    );
 
     // The governance console's read-model, as read-only dev tools on `/mcp/agora` (when
     // `mcp_provider` serves them), behind the same `dashboard.authorize` as the console.
@@ -1328,16 +1339,11 @@ export default class AgentProvider {
           message: `remember must be a boolean and via a string of 1-${MAX_VIA_LENGTH} characters`,
         });
       }
-      const runId = await this.#runOfToolCall(ctx, service, body);
-      if (runId === null) return;
-      if (!(await this.#mayDecide(ctx, service, actor, runId, body.toolCallId, consoleAuthorize)))
-        return;
-      try {
-        await service.approve(runId, body.toolCallId, { executedByRef: actor.id, remember, via });
-      } catch (error) {
-        return this.#conflictOnMismatch(ctx, error);
-      }
-      return ctx.response.json({ ok: true });
+      return this.#decide(ctx, service, actor, body, consoleAuthorize, {
+        kind: 'approve',
+        ...(remember !== undefined ? { remember } : {}),
+        ...(via !== undefined ? { via } : {}),
+      });
     });
 
     // 5. POST /agent/tool-call/reject — authenticated + owner-scoped (mirrors approve).
@@ -1356,16 +1362,11 @@ export default class AgentProvider {
           message: `via must be a string of 1-${MAX_VIA_LENGTH} characters`,
         });
       }
-      const runId = await this.#runOfToolCall(ctx, service, body);
-      if (runId === null) return;
-      if (!(await this.#mayDecide(ctx, service, actor, runId, body.toolCallId, consoleAuthorize)))
-        return;
-      try {
-        await service.reject(runId, body.toolCallId, body.reason, { executedByRef: actor.id, via });
-      } catch (error) {
-        return this.#conflictOnMismatch(ctx, error);
-      }
-      return ctx.response.json({ ok: true });
+      return this.#decide(ctx, service, actor, body, consoleAuthorize, {
+        kind: 'reject',
+        ...(body.reason !== undefined ? { reason: body.reason } : {}),
+        ...(via !== undefined ? { via } : {}),
+      });
     });
 
     // 5b. POST /agent/tool-call/answer — authenticated + owner-scoped (mirrors approve). Settles a
@@ -2207,12 +2208,7 @@ export default class AgentProvider {
       router.get(g('tool-calls/recent'), async (ctx: HttpContext) => {
         const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
         if (gov === null) return;
-        return answerList(ctx, async () => {
-          const qs = ctx.request.qs();
-          await plainList(qs, '-createdAt');
-          const window = parseListWindow(qs, GOVERNANCE_LIST_SIZES);
-          return windowPage(await gov.recentToolCalls(windowFetchSize(window)), window);
-        });
+        return answerList(ctx, () => governanceToolCallsPage(gov, ctx.request.qs()));
       });
 
       // GET /agent/governance/threads/recent — newest-first recent thread activity feed.
@@ -2220,13 +2216,7 @@ export default class AgentProvider {
       router.get(g('threads/recent'), async (ctx: HttpContext) => {
         const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
         if (gov === null) return;
-        return answerList(ctx, async () => {
-          const qs = ctx.request.qs();
-          await plainList(qs, '-lastActivityAt');
-          const window = parseListWindow(qs, GOVERNANCE_LIST_SIZES);
-          const page = windowPage(await gov.recentThreads(windowFetchSize(window)), window);
-          return { ...page, data: await withActorLabels(page.data, actorDirectory) };
-        });
+        return answerList(ctx, () => governanceThreadsPage(gov, actorDirectory, ctx.request.qs()));
       });
 
       // GET /agent/governance/threads/:id — one thread's governance drill-down (metadata + lifetime
@@ -2235,20 +2225,13 @@ export default class AgentProvider {
       router.get(g('threads/:id'), async (ctx: HttpContext) => {
         const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
         if (gov === null) return;
-        if (gov.threadDetail === undefined) {
+        const detail = await governanceThreadDetail(gov, actorDirectory, String(ctx.params.id));
+        if (detail === undefined) {
           return ctx.response
             .status(501)
             .json({ message: 'this governance adapter does not support thread detail' });
         }
-        const detail = await withActorLabel(
-          await gov.threadDetail(String(ctx.params.id)),
-          actorDirectory,
-        );
-        if (detail === null) return ctx.response.json(null);
-        return ctx.response.json({
-          ...detail,
-          runs: await withActorLabels(detail.runs, actorDirectory),
-        });
+        return ctx.response.json(detail);
       });
 
       // GET /agent/governance/genui — generative-UI telemetry over the range (first-try success by
@@ -2282,21 +2265,7 @@ export default class AgentProvider {
       router.get(g('runs'), async (ctx: HttpContext) => {
         const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
         if (gov === null) return;
-        return answerList(ctx, async () => {
-          const qs = ctx.request.qs();
-          const filter = await applyListFilter({}, RunsFilter, qs);
-          assertFixedSort(qs.sort, '-startedAt');
-          const { after, size } = parseForwardParams(qs, GOVERNANCE_LIST_SIZES);
-          const page = await gov.listRuns({
-            ...filter,
-            first: size,
-            ...(after !== undefined ? { after } : {}),
-          });
-          return cursorPage({
-            ...page,
-            items: await withActorLabels(page.items, actorDirectory),
-          });
-        });
+        return answerList(ctx, () => governanceRunsPage(gov, actorDirectory, ctx.request.qs()));
       });
 
       // GET /agent/governance/runs/:id — one run's full trace (run + messages + tool calls +
@@ -2304,12 +2273,9 @@ export default class AgentProvider {
       router.get(g('runs/:id'), async (ctx: HttpContext) => {
         const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
         if (gov === null) return;
-        const detail = await gov.runDetail(String(ctx.params.id));
-        if (detail === null) return ctx.response.json(null);
-        return ctx.response.json({
-          ...detail,
-          run: (await withActorLabel(detail.run, actorDirectory)) ?? detail.run,
-        });
+        return ctx.response.json(
+          await governanceRunDetail(gov, actorDirectory, String(ctx.params.id)),
+        );
       });
 
       // GET /agent/governance/approvals/pending — cross-actor HITL approvals inbox, oldest first. This
@@ -2318,15 +2284,9 @@ export default class AgentProvider {
       router.get(g('approvals/pending'), async (ctx: HttpContext) => {
         const gov = await this.#consoleView(ctx, actorResolver, consoleAuthorize, governanceAll);
         if (gov === null) return;
-        return answerList(ctx, async () => {
-          const qs = ctx.request.qs();
-          const filter = await applyListFilter({}, ApprovalsFilter, qs);
-          assertFixedSort(qs.sort, 'requestedAt');
-          const window = parseListWindow(qs, GOVERNANCE_LIST_SIZES);
-          const rows = await gov.pendingApprovals({ ...filter, limit: windowFetchSize(window) });
-          const page = windowPage(rows, window);
-          return { ...page, data: await withActorLabels(page.data, actorDirectory) };
-        });
+        return answerList(ctx, () =>
+          governancePendingApprovalsPage(gov, actorDirectory, ctx.request.qs()),
+        );
       });
 
       // GET /agent/governance/tools/stats — per-tool call/failure/rejection/latency rollup.
@@ -2365,35 +2325,11 @@ export default class AgentProvider {
         router.post(g('pricing'), async (ctx: HttpContext) => {
           if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
           if (pricing === undefined) return noPricing(ctx);
-          const body = (ctx.request.body() ?? {}) as {
-            modelId?: unknown;
-            inputPricePer1m?: unknown;
-            outputPricePer1m?: unknown;
-            cacheWritePricePer1m?: unknown;
-            cacheReadPricePer1m?: unknown;
-          };
-          if (
-            typeof body.modelId !== 'string' ||
-            body.modelId.length === 0 ||
-            typeof body.inputPricePer1m !== 'number' ||
-            typeof body.outputPricePer1m !== 'number'
-          ) {
-            return ctx.response.status(400).json({
-              message:
-                'body must be {modelId: string, inputPricePer1m: number, outputPricePer1m: number, cacheWritePricePer1m?: number, cacheReadPricePer1m?: number}',
-            });
+          const price = parseModelPriceInput(ctx.request.body());
+          if (price === null) {
+            return ctx.response.status(400).json({ message: `body must be ${PRICE_INPUT_SHAPE}` });
           }
-          await pricing.upsertModelPrice({
-            modelId: body.modelId,
-            inputPricePer1m: body.inputPricePer1m,
-            outputPricePer1m: body.outputPricePer1m,
-            ...(typeof body.cacheWritePricePer1m === 'number'
-              ? { cacheWritePricePer1m: body.cacheWritePricePer1m }
-              : {}),
-            ...(typeof body.cacheReadPricePer1m === 'number'
-              ? { cacheReadPricePer1m: body.cacheReadPricePer1m }
-              : {}),
-          });
+          await pricing.upsertModelPrice(price);
           return ctx.response.json({ ok: true });
         });
       }
@@ -2530,12 +2466,7 @@ export default class AgentProvider {
     kind: 'run' | 'thread',
     consoleAuthorize: AgentConsoleAuthorize | undefined,
   ): Promise<boolean> {
-    let privileged = false;
-    if (consoleAuthorize !== undefined) {
-      privileged = (
-        await evaluateGovernanceGate(actor, ctx, consoleAuthorize, !this.app.inProduction)
-      ).ok;
-    }
+    const privileged = await this.#privileged(ctx, actor, consoleAuthorize);
     const verdict = evaluateOwnership(actor.id, ownerRef, privileged);
     if (!verdict.ok) {
       const error = verdict.status === 404 ? `${kind} not found` : 'forbidden';
@@ -2572,13 +2503,9 @@ export default class AgentProvider {
   }
 
   /**
-   * May `actor` settle this call, and is it still open? The call's recorded approver decides who:
-   * the requester (the default, and every call recorded before approvers existed) is the run's own
-   * actor — the ownership check this always was, governance-privileged callers included; any other
-   * approver goes through the policy's `canDecide` (by default: holds that role) → `403`. A request
-   * that already lapsed — recorded `expired`, or past its `expiresAt` with the run's own timer about
-   * to fire — answers `410`: signalling it anyway would race the timeout, and a late approval must
-   * not be what a later replay of the run reads back. Answers the response itself when it refuses.
+   * May `actor` settle this call, and is it still open? {@link decisionRefusal} — the rules the
+   * approve/reject routes and the CLI share — answered here when it refuses (the protocol adapters'
+   * `mayDecide`).
    */
   async #mayDecide(
     ctx: HttpContext,
@@ -2588,34 +2515,50 @@ export default class AgentProvider {
     toolCallId: string,
     consoleAuthorize: AgentConsoleAuthorize | undefined,
   ): Promise<boolean> {
-    const approval = await service.toolCallApproval(toolCallId, runId);
-    const approver = approval?.approver ?? REQUESTER_APPROVER;
-    const owner = await service.runOwner(runId);
-    if (approver === REQUESTER_APPROVER) {
-      if (!(await this.#assertOwner(ctx, actor, owner, 'run', consoleAuthorize))) return false;
-    } else {
-      if (owner === null) {
-        ctx.response.notFound({ message: 'Unknown run.' });
-        return false;
-      }
-      if (!(await service.mayDecide(actor, { toolCallId, approver, requesterRef: owner }))) {
-        ctx.response.forbidden({ message: `This approval is for ${approver}.` });
-        return false;
-      }
-    }
-    const lapsed =
-      approval !== null &&
-      (approval.status === 'expired' ||
-        (approval.status === 'pending_approval' &&
-          approval.expiresAt !== null &&
-          Date.parse(approval.expiresAt) <= Date.now()));
-    if (lapsed) {
-      ctx.response.gone({
-        message: `The approval request for tool call ${toolCallId} has expired.`,
-      });
-      return false;
-    }
-    return true;
+    const refusal = await decisionRefusal(service, {
+      actor,
+      runId,
+      toolCallId,
+      privileged: () => this.#privileged(ctx, actor, consoleAuthorize),
+    });
+    if (refusal === null) return true;
+    ctx.response.status(refusal.status).json({ message: refusal.message });
+    return false;
+  }
+
+  /** May `actor` act across actors? It passes the console's `authorize` (none configured → no). */
+  async #privileged(
+    ctx: HttpContext,
+    actor: Actor,
+    consoleAuthorize: AgentConsoleAuthorize | undefined,
+  ): Promise<boolean> {
+    if (consoleAuthorize === undefined) return false;
+    return (await evaluateGovernanceGate(actor, ctx, consoleAuthorize, !this.app.inProduction)).ok;
+  }
+
+  /**
+   * Deliver an approve/reject through {@link decideToolCall} — the HITL rules the CLI shares — and
+   * answer it: `{ ok: true }`, or the refusal's status. A cross-actor caller counts as privileged
+   * when it passes the console's `authorize` (the ownership check of {@link #assertOwner}).
+   */
+  async #decide(
+    ctx: HttpContext,
+    service: AgentService,
+    actor: Actor,
+    body: { runId?: string; toolCallId: string },
+    consoleAuthorize: AgentConsoleAuthorize | undefined,
+    decision: ToolCallDecision,
+  ): Promise<void> {
+    const outcome = await decideToolCall(service, {
+      actor,
+      toolCallId: body.toolCallId,
+      runId: body.runId,
+      decision,
+      privileged: () => this.#privileged(ctx, actor, consoleAuthorize),
+    });
+    if (outcome.ok) return ctx.response.json({ ok: true });
+    const { status, message, code } = outcome.refusal;
+    ctx.response.status(status).json({ message, ...(code !== undefined ? { code } : {}) });
   }
 
   /** A refused queue request: the error's own status, as `{ message, code? }`. */
