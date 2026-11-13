@@ -317,6 +317,9 @@ describe('dev tools actions', () => {
     });
     // `{ allowed: false }`, an authz-style result, and a key on the prototype chain all deny.
     expect(await decide({ durable: () => ({ allowed: false }) }, 'durable', 'x')).not.toBe(true);
+    expect(await decide(null as never, 'durable', 'durable_retry_run')).toEqual({
+      reason: 'not-configured',
+    });
     expect(await decide({}, 'constructor', 'constructor_x')).toEqual({
       reason: 'not-configured',
     });

@@ -162,7 +162,8 @@ devTools: {
 },
 ```
 
-A `false` or a throw refuses. A refused action is logged at `debug` level only.
+Anything but `true` (a `false`, a truthy non-boolean) or a throw refuses. A refused action is logged at
+`debug` level only.
 
 The shorthands still work: `'refuse'` (the default), `'execute'` (every action of every lib the
 caller gets in), or a list of lib ids and tool names (`['durable', 'payments_refund_payment']`). Your

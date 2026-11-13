@@ -17,7 +17,8 @@ export interface DevToolsActionRequest {
 /**
  * The function form of `devTools.actions`: decides each action tool for this request. Run while the
  * request's tools are assembled, so a `false` both hides the tool from `tools/list` and refuses a call
- * to it. A throw refuses.
+ * to it. Anything but `true`, or a throw,
+ * refuses.
  */
 export type DevToolsActionsAuthorizer = (
   ctx: HttpContext,
@@ -81,7 +82,10 @@ export class DevToolsActionsGate {
   }): Promise<true | DevToolsActionRefusal> {
     const actions = this.#actions;
     if (actions === 'execute') return true;
-    if (actions === 'refuse') return { reason: 'not-configured' };
+    // `null` / `undefined` from an untyped config: the default, refuse.
+    if (actions === 'refuse' || actions === null || actions === undefined) {
+      return { reason: 'not-configured' };
+    }
     if (Array.isArray(actions)) {
       return actions.includes(action.lib) || actions.includes(action.tool)
         ? true
@@ -117,7 +121,10 @@ export class DevToolsActionsGate {
 
 /** Whether `actions` is the map or function form. */
 export function isDynamicActions(actions: DevToolsActions): boolean {
-  return typeof actions === 'function' || (typeof actions === 'object' && !Array.isArray(actions));
+  return (
+    typeof actions === 'function' ||
+    (actions !== null && typeof actions === 'object' && !Array.isArray(actions))
+  );
 }
 
 function own(map: DevToolsActionsMap, key: string): ConsoleAuthorize | undefined {
