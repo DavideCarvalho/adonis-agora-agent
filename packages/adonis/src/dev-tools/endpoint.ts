@@ -20,6 +20,11 @@ import {
 import { createMcpServer } from '../mcp/server.js';
 import { ToolRegistry } from '../tool-registry.js';
 import type { Actor } from '../types.js';
+import {
+  type DevToolsActionRefusal,
+  type DevToolsActions,
+  DevToolsActionsGate,
+} from './actions.js';
 import { bridgeIdentity, identityForToken } from './authkit-bridge.js';
 import type { DevTool, DevToolsCaller, DevToolsDecision } from './contract.js';
 import type { DevToolsHubImpl, RegisteredDevToolsLib } from './hub.js';
@@ -35,8 +40,12 @@ import { devToolStandardSchema } from './schema.js';
 /** The scope a Poppy (personal agent) grant must carry to reach the dev tools. */
 export const AGORA_DEV_SCOPE = 'agora:dev';
 
-/** What `actions` in `devTools` may say: none, all, or these lib ids / tool names. */
-export type DevToolsActions = 'refuse' | 'execute' | string[];
+export type {
+  DevToolsActionRequest,
+  DevToolsActions,
+  DevToolsActionsAuthorizer,
+  DevToolsActionsMap,
+} from './actions.js';
 
 /** The logger surface the endpoint writes its audit lines to. */
 export interface DevToolsLogger {
@@ -110,11 +119,11 @@ export class DevToolsEndpoint {
     const req = ctx.request.request as IncomingMessage;
     const res = ctx.response.response;
     try {
-      const registry = await this.#registryFor(ctx, admission);
+      const { registry, servesActions } = await this.#registryFor(ctx, admission);
       const server = createMcpServer({
         name: 'agora-dev-tools',
         version: this.#options.version,
-        instructions: instructionsFor(admission.allowed, this.#options.actions),
+        instructions: instructionsFor(admission.allowed, servesActions),
         registry,
         // Access was decided per lib above; a personal agent still needs its `agora:dev` scope role.
         policy: personalAgentGate({ can: () => true }),
@@ -364,16 +373,33 @@ export class DevToolsEndpoint {
 
   // ── tools ─────────────────────────────────────────────────────────────────
 
-  /** This request's registry: the allowed libs' tools that are available and not hidden actions. */
-  async #registryFor(ctx: HttpContext, admission: Admission): Promise<ToolRegistry> {
+  /**
+   * This request's registry: the allowed libs' tools that are available, minus the action tools
+   * `devTools.actions` does not grant this caller — so a refused action is neither listed nor callable.
+   */
+  async #registryFor(
+    ctx: HttpContext,
+    admission: Admission,
+  ): Promise<{ registry: ToolRegistry; servesActions: boolean }> {
     const registry = new ToolRegistry();
     const devRole = scopeRole(AGORA_DEV_SCOPE);
+    const gate = new DevToolsActionsGate(this.#options.actions, ctx, admission.caller);
+    let servesActions = false;
     for (const lib of admission.allowed) {
       for (const tool of lib.tools) {
-        if (tool.kind === 'action' && !actionAllowed(this.#options.actions, lib.lib, tool.name)) {
-          continue;
+        if (tool.kind === 'action') {
+          const decision = await gate.decide({
+            lib: lib.lib,
+            tool: tool.name,
+            destructive: tool.destructive === true,
+          });
+          if (decision !== true) {
+            if (gate.dynamic) await this.#logActionRefused(admission.caller, lib, tool, decision);
+            continue;
+          }
         }
         if (!(await isAvailable(tool))) continue;
+        if (tool.kind === 'action') servesActions = true;
         registry.register(
           {
             name: tool.name,
@@ -386,7 +412,30 @@ export class DevToolsEndpoint {
         );
       }
     }
-    return registry;
+    return { registry, servesActions };
+  }
+
+  async #logActionRefused(
+    caller: DevToolsCaller,
+    lib: RegisteredDevToolsLib,
+    tool: DevTool,
+    refusal: DevToolsActionRefusal,
+  ): Promise<void> {
+    const logger = await this.#options.logger();
+    logger?.debug(
+      {
+        devTool: tool.name,
+        lib: lib.lib,
+        caller: caller.id,
+        reason: refusal.reason,
+        ...(refusal.error !== undefined
+          ? {
+              error: refusal.error instanceof Error ? refusal.error.message : String(refusal.error),
+            }
+          : {}),
+      },
+      'agora dev tools: action not served',
+    );
   }
 
   async #run(
@@ -433,21 +482,13 @@ export class DevToolsEndpoint {
   }
 }
 
-/** Whether `actions` lets this action tool be listed and called. */
-export function actionAllowed(actions: DevToolsActions, lib: string, tool: string): boolean {
-  if (actions === 'execute') return true;
-  if (actions === 'refuse') return false;
-  return actions.includes(lib) || actions.includes(tool);
-}
-
-function instructionsFor(libs: RegisteredDevToolsLib[], actions: DevToolsActions): string {
+function instructionsFor(libs: RegisteredDevToolsLib[], servesActions: boolean): string {
   const titles = libs.map((lib) => lib.title);
   const what =
     titles.length > 0 ? `Tools for: ${titles.join(', ')}.` : 'No tools are available to you.';
-  const acts =
-    actions === 'refuse'
-      ? ' Read-only: nothing here changes data.'
-      : ' Some tools are actions that change data: confirm with the person first.';
+  const acts = servesActions
+    ? ' Some tools are actions that change data: confirm with the person first.'
+    : ' Read-only: nothing here changes data.';
   return `Developer tools of this app's Agora libraries, as their consoles show them. ${what}${acts} List tools return { items, next }; pass next back to page.`;
 }
 

@@ -116,6 +116,58 @@ payments, media, the agent and authkit keep their own.
 A personal agent signed in through Poppy reaches the dev tools only when its user granted the
 `agora:dev` scope.
 
+## Actions
+
+Tools that change data (retry, cancel, refund…) are hidden by default. `devTools.actions` decides
+which ones each caller gets. An action it refuses is not listed in `tools/list` and cannot be
+called. The lib's console `authorize` still runs first: `actions` only narrows what a lib already
+lets the caller see.
+
+Give each lib, or each tool, its own `authorize`. These take the same forms as a console's
+`authorize` (a function, an authorizer class, a lazy import):
+
+```ts title="config/mcp.ts"
+import { authorizeByRoles } from '@adonis-agora/authz'
+import { defineMcpConfig } from '@adonis-agora/agent/mcp'
+
+export default defineMcpConfig({
+  name: 'Acme',
+  version: '1.0.0',
+  devTools: {
+    authorize: authorizeByRoles({ roles: ['ADMIN'] }),
+    actions: {
+      flags: authorizeByRoles({ roles: ['ADMIN'] }),
+      flags_save_flag: authorizeByRoles({ roles: ['OWNER'] }),
+      payments_refund_payment: () => false,
+      durable: () => import('#policies/dev_tools_actions'),
+    },
+  },
+})
+```
+
+- A tool-name key (`flags_save_flag`) wins over its lib's key (`flags`).
+- An action that matches neither key is refused.
+- An `authorize` that throws, or answers `{ redirectTo }`, refuses.
+- Each `authorize` runs once per request, however many tools point at it.
+
+For full control, pass a function. It is asked once per action tool, per request:
+
+```ts title="config/mcp.ts"
+devTools: {
+  actions: async (ctx, { lib, tool, destructive, caller }) => {
+    const user = ctx.auth.user
+    if (!user) return false
+    return destructive ? user.isOwner : user.isAdmin
+  },
+},
+```
+
+A `false` or a throw refuses. A refused action is logged at `debug` level only.
+
+The shorthands still work: `'refuse'` (the default), `'execute'` (every action of every lib the
+caller gets in), or a list of lib ids and tool names (`['durable', 'payments_refund_payment']`). Your
+product endpoint's `actions: 'execute'` does not apply here.
+
 ## Opt-outs
 
 All optional, in `config/mcp.ts`:
@@ -129,7 +181,7 @@ export default defineMcpConfig({
   devTools: {
     path: 'mcp/agora', // the default
     exclude: ['payments', 'durable_get_run'], // lib ids or tool names
-    actions: ['durable'], // 'refuse' (default) | 'execute' | lib ids or tool names
+    actions: ['durable'], // see Actions above
     middleware: [() => import('#middleware/throttle_dev_tools')],
   },
 })
@@ -137,8 +189,7 @@ export default defineMcpConfig({
 
 - `devTools: false` turns the endpoint off.
 - `authorize`: who may use the tools of libs without a console (see above).
-- `actions`: tools that change data (retry, cancel, refund…) are hidden by default. Your product
-  endpoint's `actions: 'execute'` does not apply here.
+- `actions`: which tools that change data each caller gets (see [Actions](#actions)).
 - None of the product endpoint's settings (`auth`, `allowedTools`, `authorizer`, `middleware`,
   `publicUrl`) apply to the dev endpoint.
 
