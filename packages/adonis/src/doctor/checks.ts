@@ -160,6 +160,73 @@ export function checkDevToolsGate(
   };
 }
 
+/** authkit's `mcp` option, as the doctor reads it from `config/authkit.ts`. */
+export type AuthkitMcpOption =
+  | { installed: false }
+  | { installed: true; mcp: boolean }
+  | { installed: true; unresolved: string };
+
+/** `mcp: true`, an options object, or a resolved `{ enabled }` — on unless it says otherwise. */
+function mcpOptionOn(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value !== 'object' || value === null) return false;
+  return (value as { enabled?: unknown }).enabled !== false;
+}
+
+/**
+ * Reads `mcp` from `config/authkit.ts` without importing authkit: the file's `defineConfig` is a
+ * config provider (`{ type: 'provider', resolver }`), resolved here the way the authkit provider
+ * resolves it; a plain object is read as is. No `config/authkit.ts` → authkit is not installed.
+ */
+export async function readAuthkitMcpOption(app: ApplicationService): Promise<AuthkitMcpOption> {
+  const raw = app.config.get<unknown>('authkit', undefined);
+  if (raw === undefined || raw === null) return { installed: false };
+  try {
+    const provider = raw as { type?: unknown; resolver?: unknown };
+    const config =
+      provider.type === 'provider' && typeof provider.resolver === 'function'
+        ? await (provider.resolver as (app: ApplicationService) => Promise<unknown>)(app)
+        : raw;
+    return { installed: true, mcp: mcpOptionOn((config as AnyConfig | null)?.mcp) };
+  } catch (error) {
+    return {
+      installed: true,
+      unresolved: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/** `agent.dev-tools-authkit-mcp`: with authkit, MCP clients can sign in to the dev tools hub. */
+export function checkDevToolsAuthkitMcp(
+  mcp: AnyConfig | undefined,
+  authkit: AuthkitMcpOption,
+): AgoraDoctorResult {
+  if (mcp === undefined) return { status: 'skip', message: MCP_OFF };
+  const devTools = resolveDevTools(mcp as never);
+  if (devTools === null) {
+    return { status: 'skip', message: 'The dev tools endpoint is off (`devTools: false`).' };
+  }
+  if (!authkit.installed) return { status: 'skip', message: 'authkit is not installed.' };
+  if ('unresolved' in authkit) {
+    return {
+      status: 'skip',
+      message: `config/authkit.ts could not be resolved: ${authkit.unresolved}`,
+    };
+  }
+  if (authkit.mcp) {
+    return {
+      status: 'ok',
+      message: `MCP clients can sign in to /${devTools.path} through authkit.`,
+    };
+  }
+  return {
+    status: 'warn',
+    message: `The dev tools hub at /${devTools.path} is on, but authkit's \`mcp\` option is off: MCP clients can't register.`,
+    fix: 'Set `mcp: true` in config/authkit.ts.',
+    docs: `${DOCS}/dev-tools#connect-a-client`,
+  };
+}
+
 /** `agent.tenancy-store`: with organizations on, the store can scope threads and runs. */
 export function checkTenancyStore(
   agent: AnyConfig | undefined,
@@ -323,6 +390,18 @@ export function agentDoctorChecks(
       title: 'Dev tools of libs without a console',
       run: async (app) =>
         checkDevToolsGate(mcpConfig(app), (await deps.consolelessLibs?.()) ?? [], app.inProduction),
+    },
+    {
+      id: 'agent.dev-tools-authkit-mcp',
+      lib: 'agent',
+      title: 'Dev tools sign-in through authkit',
+      run: async (app) => {
+        const mcp = mcpConfig(app);
+        if (mcp === undefined || resolveDevTools(mcp as never) === null) {
+          return checkDevToolsAuthkitMcp(mcp, { installed: false });
+        }
+        return checkDevToolsAuthkitMcp(mcp, await readAuthkitMcpOption(app));
+      },
     },
     {
       id: 'agent.tenancy-store',

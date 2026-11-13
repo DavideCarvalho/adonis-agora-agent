@@ -6,12 +6,14 @@ import { readDoctorChecks, runAgoraDoctor } from '../src/doctor/agora_doctor.js'
 import {
   checkActorResolver,
   checkConsoleGate,
+  checkDevToolsAuthkitMcp,
   checkDevToolsGate,
   checkMcpCsrf,
   checkMcpExecute,
   checkMcpOpen,
   checkTenancyStore,
   mcpConfig,
+  readAuthkitMcpOption,
 } from '../src/doctor/checks.js';
 import { agoraDoctorChecks } from '../src/doctor/index.js';
 import { FakeModelProvider, InMemoryAgentStore } from '../src/testing/index.js';
@@ -119,6 +121,55 @@ describe('agent doctor checks', () => {
     ).toBe('ok');
   });
 
+  it('dev-tools-authkit-mcp: warns when the hub is on with authkit but authkit mcp is off', () => {
+    const off = checkDevToolsAuthkitMcp({}, { installed: true, mcp: false });
+    expect(off).toMatchObject({ status: 'warn', fix: 'Set `mcp: true` in config/authkit.ts.' });
+    expect(off.message).toContain("MCP clients can't register");
+    expect(off.message).toContain('/mcp/agora');
+    expect(checkDevToolsAuthkitMcp({}, { installed: true, mcp: true }).status).toBe('ok');
+    expect(checkDevToolsAuthkitMcp({}, { installed: false }).status).toBe('skip');
+    expect(checkDevToolsAuthkitMcp({}, { installed: true, unresolved: 'boom' }).status).toBe(
+      'skip',
+    );
+    expect(
+      checkDevToolsAuthkitMcp({ devTools: false }, { installed: true, mcp: false }).status,
+    ).toBe('skip');
+    expect(checkDevToolsAuthkitMcp(undefined, { installed: true, mcp: false }).status).toBe('skip');
+  });
+
+  it('reads authkit mcp from a config provider, a resolved config or a plain object', async () => {
+    const appWith = (authkit: unknown) =>
+      ({ config: { get: (_key: string, fallback: unknown) => authkit ?? fallback } }) as never;
+    const provider = (config: unknown) => ({ type: 'provider', resolver: async () => config });
+    expect(await readAuthkitMcpOption(appWith(undefined))).toEqual({ installed: false });
+    expect(await readAuthkitMcpOption(appWith(provider({ mcp: { enabled: true } })))).toEqual({
+      installed: true,
+      mcp: true,
+    });
+    expect(await readAuthkitMcpOption(appWith(provider({ mcp: { enabled: false } })))).toEqual({
+      installed: true,
+      mcp: false,
+    });
+    expect(await readAuthkitMcpOption(appWith({ mcp: true }))).toEqual({
+      installed: true,
+      mcp: true,
+    });
+    expect(await readAuthkitMcpOption(appWith({ issuer: 'x' }))).toEqual({
+      installed: true,
+      mcp: false,
+    });
+    const failing = {
+      type: 'provider',
+      resolver: async () => {
+        throw new Error('no db');
+      },
+    };
+    expect(await readAuthkitMcpOption(appWith(failing))).toEqual({
+      installed: true,
+      unresolved: 'no db',
+    });
+  });
+
   it('ids are unique, prefixed agent., and the --no-boot entry exports them', () => {
     const ids = agoraDoctorChecks.map((check) => check.id);
     expect(new Set(ids).size).toBe(ids.length);
@@ -130,6 +181,7 @@ describe('agent doctor checks', () => {
       'agent.mcp-execute',
       'agent.mcp-csrf',
       'agent.dev-tools-gate',
+      'agent.dev-tools-authkit-mcp',
       'agent.tenancy-store',
     ]);
   });
@@ -155,7 +207,7 @@ describe('agent_provider registers its checks into agora.doctor', () => {
     await app.init();
     await app.boot();
     const checks = await readDoctorChecks(app.container);
-    expect(checks.filter((check) => check.lib === 'agent')).toHaveLength(7);
+    expect(checks.filter((check) => check.lib === 'agent')).toHaveLength(8);
     const { report } = await runAgoraDoctor(app, checks, { only: 'agent.console-gate' });
     expect(report.results).toEqual([
       expect.objectContaining({ id: 'agent.console-gate', status: 'warn' }),
