@@ -16,31 +16,34 @@ const REDACTED = '[redacted]';
  * logs): a key that names a secret (`secret`, `token`, `password`, `authorization`, `cookie`,
  * `api_key`) loses its value, whatever its type. Kept: `null`, booleans (`hasPassword: true`) and
  * the numbers of token-count keys (`inputTokens`, `tokenCount`).
+ *
+ * Only a real cycle (an object inside itself) becomes `'[circular]'`: the same object reached twice
+ * from different places (a flag's `stored` and `definition`) is written out both times.
  */
-export function redactDevToolOutput(value: unknown, seen = new WeakSet<object>()): unknown {
-  if (Array.isArray(value)) {
-    if (seen.has(value)) return '[circular]';
-    seen.add(value);
-    return value.map((item) => redactDevToolOutput(item, seen));
-  }
+export function redactDevToolOutput(value: unknown, ancestors = new WeakSet<object>()): unknown {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === 'bigint') return value.toString();
   if (typeof value !== 'object' || value === null) return value;
-  if (seen.has(value)) return '[circular]';
-  seen.add(value);
-  const source =
-    typeof (value as { toJSON?: unknown }).toJSON === 'function'
-      ? (value as { toJSON(): unknown }).toJSON()
-      : value;
-  if (source !== value) return redactDevToolOutput(source, seen);
-  const out: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    out[key] =
-      SENSITIVE_KEY.test(key) && !harmless(key, child)
-        ? REDACTED
-        : redactDevToolOutput(child, seen);
+  if (ancestors.has(value)) return '[circular]';
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) return value.map((item) => redactDevToolOutput(item, ancestors));
+    const source =
+      typeof (value as { toJSON?: unknown }).toJSON === 'function'
+        ? (value as { toJSON(): unknown }).toJSON()
+        : value;
+    if (source !== value) return redactDevToolOutput(source, ancestors);
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      out[key] =
+        SENSITIVE_KEY.test(key) && !harmless(key, child)
+          ? REDACTED
+          : redactDevToolOutput(child, ancestors);
+    }
+    return out;
+  } finally {
+    ancestors.delete(value);
   }
-  return out;
 }
 
 function harmless(key: string, value: unknown): boolean {
