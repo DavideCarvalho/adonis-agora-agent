@@ -55,15 +55,15 @@ The thread is free again; the next message starts a new turn. Stopping a turn do
 
 | Route | Body | Answers |
 | --- | --- | --- |
-| `GET <path>/threads/:id/action-proposals` | `?after=<cursor>` | The proposals the caller may see, as an array. |
+| `GET <path>/threads/:id/action-proposals` | `?first=&after=<cursor>` | The proposals the caller may see, oldest first: `{ data, meta }`. |
 | `POST <path>/threads/:id/action-proposals/:proposalId/approve` | `{ remember?: boolean }` | The mutation result. |
 | `POST <path>/threads/:id/action-proposals/:proposalId/reject` | `{ reason?: string }` | The mutation result. |
 
-A list page holds at most 1000 proposals. When there are more, the response carries `X-Action-Proposals-Next`: decode it with `decodeURIComponent` and send the resulting JSON string as `after`. The header is listed in `Access-Control-Expose-Headers`; a cross-origin host must also allow it in its CORS configuration. The thread's owner sees every proposal; anyone else sees those the policy lets them decide, so a page may be empty and still have a next cursor.
+A page holds `first` proposals (default `100`, at most `1000`). When there are more, `meta.nextCursor` is set: send it back as `after` for the next page. The list pages forward only (`meta.prevCursor` is always `null`). The thread's owner sees every proposal; anyone else sees those the policy lets them decide, so a page may be empty and still have a next cursor.
 
 A decision is authorized by the approval policy (`canDecide`, else the requester or a holder of the approver role) and recorded with the deciding actor and the channel (`via: 'web'` on these routes). A body with other fields or wrong types is a `400`, an unknown thread or proposal a `404`, a thread of another tenant or an actor who may not decide a `403`. The mutation result has a `status` — `applied`, `unchanged` (the same decision again), `conflict`, `not_found` or `expired` — and the proposal. The blocking routes (`POST <path>/tool-call/approve` / `reject`) refuse a call that became a proposal with `400`.
 
-In process, `AgentService` offers the same operations: `listActionProposals(actor, threadId)`, `listActionProposalsPage(actor, threadId, after?)` and `decideActionProposal(actor, threadId, proposalId, 'approved' | 'rejected', { remember?, reason? }, via?)` — pass `via` (`'slack'`, `'teams'`, …) to record where a decision came from. Each throws `ActionProposalServiceError` (`status` 400, 403, 404, or 501 for a decision when independent mode is off; with it off the two list methods answer no proposals).
+In process, `AgentService` offers the same operations: `listActionProposals(actor, threadId)`, `listActionProposalsPage(actor, threadId, after?, limit?)` and `decideActionProposal(actor, threadId, proposalId, 'approved' | 'rejected', { remember?, reason? }, via?)` — pass `via` (`'slack'`, `'teams'`, …) to record where a decision came from. Each throws `ActionProposalServiceError` (`status` 400, 403, 404, or 501 for a decision when independent mode is off; with it off the two list methods answer no proposals).
 
 ### Text decisions
 

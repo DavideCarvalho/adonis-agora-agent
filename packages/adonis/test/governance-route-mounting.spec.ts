@@ -237,7 +237,10 @@ describe('governance route mounting', () => {
 
     const response = await fetch(`${booted.url}/agent/approvals/mine`, asActor('patient-1'));
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual([expect.objectContaining({ actorRef: 'patient-1' })]);
+    expect(await response.json()).toEqual({
+      data: [expect.objectContaining({ actorRef: 'patient-1' })],
+      meta: { nextCursor: null, prevCursor: null, hasNext: false, hasPrev: false },
+    });
     // The route must always constrain the inbox to the CALLING actor, never the whole platform.
     expect(booted.governance.seenApprovalFilters).toEqual([
       expect.objectContaining({ actor: 'patient-1' }),

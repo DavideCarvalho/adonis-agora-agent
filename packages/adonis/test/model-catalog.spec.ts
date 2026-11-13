@@ -75,9 +75,9 @@ describe('model catalog', () => {
       });
     expect((await patch('big')).status).toBe(400);
     expect(await (await patch('mini')).json()).toEqual({ ok: true });
-    const listed = (await (await fetch(`${url}/agent/threads`, { headers })).json()) as {
-      model: string | null;
-    }[];
+    const { data: listed } = (await (await fetch(`${url}/agent/threads`, { headers })).json()) as {
+      data: { model: string | null }[];
+    };
     expect(listed[0]?.model).toBe('mini');
 
     await readSse(await send(url, { message: 'again', threadId }));

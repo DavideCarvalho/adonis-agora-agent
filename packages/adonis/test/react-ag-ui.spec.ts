@@ -469,7 +469,10 @@ describe('AgentChatTransport over a re-framed AG-UI stream', () => {
           : { body: bodyOf(next), runId: request.runId, threadId: 't1' };
       },
       cancelStream: async () => ({ aborted: true }),
-      listThreads: async () => [],
+      listThreads: async () => ({
+        data: [],
+        meta: { nextCursor: null, prevCursor: null, hasNext: false, hasPrev: false },
+      }),
       getThread: async () => {
         throw new Error('unused');
       },

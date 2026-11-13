@@ -22,14 +22,22 @@ function json(body: unknown): Response {
   });
 }
 
+const EMPTY_META = { nextCursor: null, prevCursor: null, hasNext: false, hasPrev: false };
+
+/** `GET …/threads` answers a page; every other read an empty list. */
+function answer(url: string): Response {
+  return json(String(url).includes('/threads?') ? { data: [], meta: EMPTY_META } : []);
+}
+
 function fakeBackend(): AgentBackend {
   return {
     openChatStream: vi.fn(),
     resumeChatStream: async () => null,
     cancelStream: async () => ({}),
-    listThreads: vi.fn(async () => [
-      { id: 't1', title: 'One', createdAt: '', updatedAt: '' } as never,
-    ]),
+    listThreads: vi.fn(async () => ({
+      data: [{ id: 't1', title: 'One', createdAt: '', updatedAt: '' } as never],
+      meta: EMPTY_META,
+    })),
     getThread: vi.fn(),
     updateThread: vi.fn(),
     deleteThread: vi.fn(),
@@ -42,7 +50,7 @@ function fakeBackend(): AgentBackend {
 
 describe('AgentProvider', () => {
   it('builds one AgentClient from the connection props and hands it to every hook', async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => json([]));
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => answer(url));
     const wrapper = ({ children }: { children: ReactNode }) => (
       <AgentProvider
         baseUrl="https://api.example.com/"
@@ -62,12 +70,14 @@ describe('AgentProvider', () => {
     expect(result.current.chat.backend).toBe(result.current.backend);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     await waitFor(() =>
-      expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/threads'))).toBe(true),
+      expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/threads?first=50'))).toBe(
+        true,
+      ),
     );
     const [url, init] = fetchMock.mock.calls.find(([candidate]) =>
-      String(candidate).endsWith('/threads'),
+      String(candidate).endsWith('/threads?first=50'),
     ) as [string, RequestInit];
-    expect(url).toBe('https://api.example.com/api/agent/threads');
+    expect(url).toBe('https://api.example.com/api/agent/threads?first=50');
     expect(init.credentials).toBe('include');
     expect((init.headers as Record<string, string>)['x-csrf']).toBe('tok');
   });
@@ -176,7 +186,7 @@ describe('AgentProvider', () => {
 
 describe('without a provider', () => {
   it('every hook shares one same-origin client on `/agent`', async () => {
-    const fetchMock = vi.fn(async () => json([]));
+    const fetchMock = vi.fn(async (url: string) => answer(url));
     const original = globalThis.fetch;
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     try {
@@ -188,7 +198,7 @@ describe('without a provider', () => {
       expect(result.current.chat.backend).toBe(result.current.backend);
       await waitFor(() => expect(fetchMock).toHaveBeenCalled());
       const urls = fetchMock.mock.calls.map((call) => (call as unknown as [string])[0]);
-      await waitFor(() => expect(urls).toContain('/agent/threads'));
+      await waitFor(() => expect(urls).toContain('/agent/threads?first=50'));
       expect(urls.every((url) => url.startsWith('/agent/'))).toBe(true);
     } finally {
       globalThis.fetch = original;

@@ -220,6 +220,27 @@ export default defineConfig({
 
 With a single model you can also just drop `modelId`: the AI SDK adapters report the model each call used. An agent `model` that the catalog does not list fails boot. See [A model per agent and per persona](/docs/agent/streaming-and-http#a-model-per-agent-and-per-persona).
 
+## HTTP lists answer `{ data, meta }` and take `filter[...]`
+
+Every list route speaks `@adonis-agora/filter`'s wire format (see [Lists](/docs/agent/streaming-and-http#lists)). The old parameters and bare-array bodies are gone, with no alias.
+
+| Route | Before | After |
+| --- | --- | --- |
+| `GET /agent/threads` | array (50) | `{ data, meta }`, `first` + `after`/`before` |
+| `GET /agent/attachments` | array (50) | `{ data, meta }`, `first` + `after`/`before` |
+| `GET /agent/approvals/mine` | array, `?limit=` | `{ data, meta }`, `first` + `after`/`before` |
+| `GET /agent/threads/:id/action-proposals` | array + `X-Action-Proposals-Next` header (JSON cursor) | `{ data, meta }`, `first` + opaque `after` |
+| `GET /agent/governance/tool-calls/recent`, `threads/recent` | array, `?limit=` | `{ data, meta }`, `first` + `after`/`before` |
+| `GET /agent/governance/approvals/pending` | array, `?actor=&limit=` | `{ data, meta }`, `filter[actor]`, `first` + `after`/`before` |
+| `GET /agent/governance/runs` | `{ items, nextCursor, … }`, `?actor=&agent=&status=&from=&to=` | `{ data, meta }`, `filter[actor]`, `filter[agent]`, `filter[status]`, `filter[startedAt][gte\|lte\|between]`, `first` + `after` |
+
+An unknown `filter[...]` field, an operator a field does not take, any `sort` but the list's own order and a cursor the server did not mint answer `400`.
+
+In the clients:
+
+- React: `AgentClient.listThreads(page?)` returns `{ data, meta }`; a custom `AgentBackend.listThreads` must too. `useThreads()` reads the first page and adds `hasMore` and `loadMore()`.
+- `@adonis-agora/agent-dashboard/client`: `listRuns`, `recentThreads(page?)`, `recentToolCalls(page?)` and `pendingApprovals(filter?)` return `{ data, meta }`; `recentThreads`/`recentToolCalls` take `{ after?, first? }` instead of a number; `PendingApprovalsFilter.limit` is now `first`; the `limit` option is now `pageSize`.
+
 ## Peer ranges
 
 The optional `@adonis-agora/*` peers now accept 1.x, including its release candidates, as well as the 0.x releases they accepted before:

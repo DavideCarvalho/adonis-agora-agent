@@ -4,6 +4,8 @@ import type {
   AgentCatalogEntry,
   AgentClientConfig,
   ChatQueueState,
+  CursorPageResponse,
+  ListPageParams,
   MessageAttachment,
   MessageFeedback,
   ModelCatalogView,
@@ -270,8 +272,16 @@ export class AgentClient implements AgentBackend {
     );
   }
 
-  listThreads(): Promise<ThreadSummary[]> {
-    return this.request<ThreadSummary[]>('GET', '/threads');
+  /**
+   * `GET <path>/threads` — one page of the actor's threads, most recently updated first. Pass the
+   * previous page's `meta.nextCursor` as `after` for the next one.
+   */
+  listThreads(page: ListPageParams = {}): Promise<CursorPageResponse<ThreadSummary>> {
+    const params = new URLSearchParams();
+    if (page.after !== undefined) params.set('after', page.after);
+    if (page.first !== undefined) params.set('first', String(page.first));
+    const query = params.size > 0 ? `?${params}` : '';
+    return this.request<CursorPageResponse<ThreadSummary>>('GET', `/threads${query}`);
   }
 
   /**
@@ -455,43 +465,21 @@ export class AgentClient implements AgentBackend {
    */
   async listActionProposals({ threadId }: { threadId: string }): Promise<ActionProposal[]> {
     const proposals = new Map<string, ActionProposal>();
-    let after: { createdAt: number; id: string } | undefined;
+    const seen = new Set<string>();
+    let after: string | undefined;
     for (;;) {
       const route = `/threads/${encodeURIComponent(threadId)}/action-proposals${
-        after === undefined ? '' : `?after=${encodeURIComponent(JSON.stringify(after))}`
+        after === undefined ? '' : `?after=${encodeURIComponent(after)}`
       }`;
-      const response = await this.requestResponse('GET', route);
-      const page = await this.handleResponse<unknown>(
-        response,
-        'GET',
-        `${this.agentPath()}${route}`,
-      );
-      if (!Array.isArray(page)) throw new TypeError('Invalid action proposal page');
-      for (const proposal of page) proposals.set(proposal.id, proposal);
-      const header = response.headers.get('X-Action-Proposals-Next');
-      if (header === null) return [...proposals.values()];
-      let next: unknown;
-      try {
-        next = JSON.parse(decodeURIComponent(header));
-      } catch {
-        throw new TypeError('Invalid action proposal cursor');
-      }
-      if (
-        typeof next !== 'object' ||
-        next === null ||
-        !('createdAt' in next) ||
-        typeof next.createdAt !== 'number' ||
-        !Number.isSafeInteger(next.createdAt) ||
-        !('id' in next) ||
-        typeof next.id !== 'string' ||
-        next.id.length === 0 ||
-        next.id.length > 255 ||
-        (after !== undefined &&
-          (next.createdAt < after.createdAt ||
-            (next.createdAt === after.createdAt && next.id <= after.id)))
-      )
+      const page = await this.request<unknown>('GET', route);
+      if (!isCursorPage(page)) throw new TypeError('Invalid action proposal page');
+      for (const proposal of page.data as ActionProposal[]) proposals.set(proposal.id, proposal);
+      const next = page.meta.nextCursor;
+      if (next === null) return [...proposals.values()];
+      if (typeof next !== 'string' || next.length === 0 || seen.has(next))
         throw new TypeError('Invalid or non-advancing action proposal cursor');
-      after = { createdAt: next.createdAt, id: next.id };
+      seen.add(next);
+      after = next;
     }
   }
   approveActionProposal({
@@ -650,4 +638,17 @@ function streamResponse(response: Response): ChatStreamResponse {
     ...(runId ? { runId } : {}),
     ...(threadId ? { threadId } : {}),
   };
+}
+
+/** A `{ data, meta }` cursor page, structurally. */
+function isCursorPage(value: unknown): value is CursorPageResponse<unknown> {
+  if (typeof value !== 'object' || value === null) return false;
+  const { data, meta } = value as { data?: unknown; meta?: unknown };
+  return (
+    Array.isArray(data) &&
+    typeof meta === 'object' &&
+    meta !== null &&
+    'nextCursor' in meta &&
+    (meta.nextCursor === null || typeof meta.nextCursor === 'string')
+  );
 }

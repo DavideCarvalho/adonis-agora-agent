@@ -141,7 +141,7 @@ describe('the agent registers its governance tools', () => {
     const console = await route.json();
     const response = await rpc(booted.url, call('agent_list_runs'), 'console');
     const tool = JSON.parse((await response.json()).result.content[0].text);
-    expect(tool).toEqual({ items: console.items, next: console.nextCursor });
+    expect(tool).toEqual({ items: console.data, next: console.meta.nextCursor });
   });
 
   it('agent_get_run leaves messages out unless asked, then cuts each to 2 KB', async () => {

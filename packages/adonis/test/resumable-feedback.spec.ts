@@ -133,9 +133,9 @@ describe('the REST surface of #211 over HTTP', () => {
       body: JSON.stringify({ title: 'Renamed' }),
     });
     expect(await patched.json()).toEqual({ ok: true });
-    const list = (await (await fetch(`${url}/agent/threads`, { headers: as('u1') })).json()) as {
-      title: string;
-    }[];
+    const { data: list } = (await (
+      await fetch(`${url}/agent/threads`, { headers: as('u1') })
+    ).json()) as { data: { title: string }[] };
     expect(list.map((thread) => thread.title)).toEqual(['Renamed']);
     const bad = await fetch(`${url}/agent/threads/${threadId}`, {
       method: 'PATCH',
@@ -183,9 +183,11 @@ describe('activeRunId and GET /agent/config', () => {
     expect(during).not.toHaveProperty('activeStreamId');
     release();
     await readSse(response);
-    const after = (await (await fetch(`${url}/agent/threads`, { headers: as })).json()) as {
-      activeRunId: string | null;
-    }[];
+    const { data: after } = (await (
+      await fetch(`${url}/agent/threads`, { headers: as })
+    ).json()) as {
+      data: { activeRunId: string | null }[];
+    };
     expect(after[0]?.activeRunId).toBeNull();
   });
 

@@ -2,13 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { AgentApiError, AgentClient, isUnsupported } from './agent-client.js';
 import type { ListRunsResult, ModelSpendRow } from './types.js';
 
-/** An empty `CursorPage` of runs — the wire shape `GET /governance/runs` answers with. */
+/** An empty page of runs — the wire shape `GET /governance/runs` answers with. */
 const emptyRunsPage: ListRunsResult = {
-  items: [],
-  nextCursor: null,
-  prevCursor: null,
-  hasNext: false,
-  hasPrev: false,
+  data: [],
+  meta: { nextCursor: null, prevCursor: null, hasNext: false, hasPrev: false },
 };
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -36,13 +33,13 @@ describe('AgentClient', () => {
 
   it('maps each read to its real route', async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])));
-    const client = new AgentClient({ baseUrl: '/agent', fetch: fetchMock, limit: 10 });
+    const client = new AgentClient({ baseUrl: '/agent', fetch: fetchMock, pageSize: 10 });
     const range = { fromDay: '2026-03-01', toDay: '2026-03-01' };
 
     await client.spendByActor(range);
     await client.usageTrend(range);
     await client.recentToolCalls();
-    await client.recentThreads();
+    await client.recentThreads({ after: 'c1', first: 5 });
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ windows: [{ period: 'day', usedTokens: 7, usedUsd: 0 }] }),
     );
@@ -52,20 +49,24 @@ describe('AgentClient', () => {
     expect(urls).toEqual([
       '/agent/governance/spend/actor?from=2026-03-01&to=2026-03-01',
       '/agent/governance/usage/trend?from=2026-03-01&to=2026-03-01',
-      '/agent/governance/tool-calls/recent?limit=10',
-      '/agent/governance/threads/recent?limit=10',
+      '/agent/governance/tool-calls/recent?first=10',
+      '/agent/governance/threads/recent?after=c1&first=5',
       '/agent/quota',
     ]);
   });
 
-  it('maps the run-lifecycle reads to their real routes with filters + `after`/`first`', async () => {
+  it('maps the run-lifecycle reads to their real routes with filter[...] + `after`/`first`', async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])));
-    const client = new AgentClient({ baseUrl: '/agent', fetch: fetchMock, limit: 25 });
+    const client = new AgentClient({ baseUrl: '/agent', fetch: fetchMock, pageSize: 25 });
 
     fetchMock.mockResolvedValueOnce(jsonResponse(emptyRunsPage));
     await client.listRuns({ status: 'failed', agent: 'support', actor: 'user:alice' });
     fetchMock.mockResolvedValueOnce(jsonResponse(emptyRunsPage));
     await client.listRuns({ after: 'c2', first: 10 });
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyRunsPage));
+    await client.listRuns({ from: '2026-03-01', to: '2026-03-07' });
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyRunsPage));
+    await client.listRuns({ from: '2026-03-01' });
     fetchMock.mockResolvedValueOnce(jsonResponse(null));
     await client.runDetail('run/1 with space');
     await client.pendingApprovals({ actor: 'user:bob' });
@@ -75,10 +76,12 @@ describe('AgentClient', () => {
 
     const urls = fetchMock.mock.calls.map((c) => c[0]);
     expect(urls).toEqual([
-      '/agent/governance/runs?first=25&actor=user%3Aalice&agent=support&status=failed',
-      '/agent/governance/runs?first=10&after=c2',
+      '/agent/governance/runs?filter%5Bactor%5D=user%3Aalice&filter%5Bagent%5D=support&filter%5Bstatus%5D=failed&first=25',
+      '/agent/governance/runs?after=c2&first=10',
+      '/agent/governance/runs?filter%5BstartedAt%5D%5Bbetween%5D=2026-03-01%2C2026-03-07&first=25',
+      '/agent/governance/runs?filter%5BstartedAt%5D%5Bgte%5D=2026-03-01&first=25',
       '/agent/governance/runs/run%2F1%20with%20space',
-      '/agent/governance/approvals/pending?limit=25&actor=user%3Abob',
+      '/agent/governance/approvals/pending?filter%5Bactor%5D=user%3Abob&first=25',
       '/agent/governance/tools/stats?from=2026-03-01&to=2026-03-07',
       '/agent/governance/reliability?from=2026-03-01',
     ]);

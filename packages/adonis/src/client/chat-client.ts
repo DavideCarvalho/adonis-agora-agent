@@ -506,31 +506,20 @@ export function createAgentChatClient(options: AgentChatClientOptions = {}): Age
           },
         );
         if (!response.ok) throw await httpError(response);
-        const rows: unknown = await response.json();
-        if (!Array.isArray(rows)) throw new Error('Invalid action proposal list');
-        items.push(...(rows as ActionProposal[]));
-        const next = response.headers.get('X-Action-Proposals-Next');
-        if (!next) return items;
-        let parsed: { createdAt: number; id: string };
-        try {
-          cursor = decodeURIComponent(next);
-          parsed = JSON.parse(cursor);
-          if (
-            !parsed ||
-            typeof parsed !== 'object' ||
-            Object.keys(parsed).some((key) => key !== 'createdAt' && key !== 'id') ||
-            !Number.isSafeInteger(parsed.createdAt) ||
-            typeof parsed.id !== 'string' ||
-            !parsed.id ||
-            parsed.id.length > 255
-          )
-            throw new Error('cursor');
-        } catch {
+        const body = (await response.json()) as {
+          data?: unknown;
+          meta?: { nextCursor?: unknown };
+        } | null;
+        if (!body || !Array.isArray(body.data) || typeof body.meta !== 'object' || !body.meta)
+          throw new Error('Invalid action proposal list');
+        items.push(...(body.data as ActionProposal[]));
+        const next = body.meta.nextCursor;
+        if (next === null || next === undefined) return items;
+        if (typeof next !== 'string' || next.length === 0)
           throw new Error('Invalid action proposal cursor');
-        }
-        const fingerprint = JSON.stringify([parsed.createdAt, parsed.id]);
-        if (seen.has(fingerprint)) throw new Error('Repeated action proposal cursor');
-        seen.add(fingerprint);
+        if (seen.has(next)) throw new Error('Repeated action proposal cursor');
+        seen.add(next);
+        cursor = next;
       }
       throw new Error('Action proposal pagination limit exceeded');
     },

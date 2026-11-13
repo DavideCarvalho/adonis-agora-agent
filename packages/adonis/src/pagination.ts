@@ -1,16 +1,18 @@
 /**
  * The ecosystem's cursor-pagination vocabulary.
  *
- * These two types **intentionally mirror `@adonis-agora/filter`'s `CursorParams` / `CursorPage<T>`
+ * These types **intentionally mirror `@adonis-agora/filter`'s `CursorParams` / `CursorPage<T>` /
+ * `CursorPageResponse<T>`
  * STRUCTURALLY** — same property names, same meanings — so every `@adonis-agora/*` package speaks the
  * one pagination interface and a consumer can move a page between them without a translation layer.
- * The mirroring is deliberate and must be kept in sync by hand: this package does NOT depend on
- * `@adonis-agora/filter` (it has no need for the rest of it, and a runtime dependency purely to share
- * two interfaces would be a worse trade than the duplication). If `@adonis-agora/filter` changes the
- * shape, change it here too.
+ * The mirroring is deliberate and must be kept in sync by hand: the browser entry points (`./react`,
+ * `./client`) import these types and must not pull the server-side filter lib in. If
+ * `@adonis-agora/filter` changes the shape, change it here too.
  *
- * The one intentional difference is that every paginated surface in THIS package is **forward-only**,
- * so {@link CursorParams} omits `before`/`last` — see its docblock.
+ * `CursorParams` / `CursorPage` are the store SPI's (rows under `items`); `CursorPageResponse` is
+ * what the HTTP lists answer (rows under `data`). The SPI's one intentional difference is that its
+ * paginated reads are **forward-only**, so {@link CursorParams} omits `before`/`last` — see its
+ * docblock.
  */
 
 /**
@@ -61,4 +63,31 @@ export interface CursorPage<T> {
   prevCursor: string | null;
   hasNext: boolean;
   hasPrev: boolean;
+}
+
+/** The `meta` of a cursor-paged HTTP list. A cursor is `null` when there is no page that way. */
+export interface CursorPageMeta {
+  nextCursor: string | null;
+  prevCursor: string | null;
+  hasNext: boolean;
+  hasPrev: boolean;
+}
+
+/**
+ * What the agent's cursor-paged HTTP lists answer (`GET /agent/threads`, `/agent/attachments`,
+ * `/agent/approvals/mine`, `/agent/governance/runs`…): `{ data, meta }`, the same shape as
+ * `@adonis-agora/filter`'s `CursorPageResponse`. Pass `meta.nextCursor` back as `after` (and
+ * `meta.prevCursor` as `before`, where the list pages backward).
+ */
+export interface CursorPageResponse<T> {
+  data: T[];
+  meta: CursorPageMeta;
+}
+
+/** The paging half of a cursor-paged HTTP list request. */
+export interface ListPageParams {
+  /** Read the page after this cursor (`meta.nextCursor` of the previous page). */
+  after?: string;
+  /** Page size. */
+  first?: number;
 }

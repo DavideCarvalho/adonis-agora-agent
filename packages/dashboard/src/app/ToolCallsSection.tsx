@@ -1,17 +1,13 @@
-import { useState } from 'react';
 import { formatTimestamp } from '../client/format.js';
 import { AsyncBlock, Panel, SectionTitle, StatusPill } from './ui.js';
 import { useRecentToolCalls } from './use-governance.js';
 
-const PAGE_STEP = 25;
-
 /**
- * Newest-first recent tool-call activity feed, from `tool-calls/recent`. "Load more" re-requests the
- * feed with a larger `limit` (the endpoint has no cursor, unlike the runs list).
+ * Newest-first recent tool-call activity feed, from `tool-calls/recent`. "Load more" appends the next
+ * page.
  */
-export function ToolCallsSection({ limit: initialLimit = 25 }: { limit?: number }) {
-  const [limit, setLimit] = useState(initialLimit);
-  const calls = useRecentToolCalls(limit);
+export function ToolCallsSection({ pageSize = 25 }: { pageSize?: number }) {
+  const calls = useRecentToolCalls(pageSize);
   return (
     <Panel>
       <SectionTitle title="Recent tool calls" hint="newest first" />
@@ -51,13 +47,13 @@ export function ToolCallsSection({ limit: initialLimit = 25 }: { limit?: number 
                 </tbody>
               </table>
             </div>
-            {rows.length >= limit && (
+            {calls.nextCursor !== null && (
               <div className="controls" style={{ justifyContent: 'center', marginTop: 14 }}>
                 <button
                   type="button"
                   className="btn"
                   disabled={calls.loading}
-                  onClick={() => setLimit((n) => n + PAGE_STEP)}
+                  onClick={calls.loadMore}
                 >
                   {calls.loading ? 'Loading…' : 'Load more'}
                 </button>

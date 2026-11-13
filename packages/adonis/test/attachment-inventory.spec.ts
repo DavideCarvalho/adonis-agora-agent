@@ -431,7 +431,11 @@ describe('GET <path>/attachments', () => {
 
     const response = await fetch(`${url}/agent/attachments`, { headers: { 'x-actor-id': 'u1' } });
     expect(response.status).toBe(200);
-    const listed = (await response.json()) as StagedAttachment[];
+    const { data: listed, meta } = (await response.json()) as {
+      data: StagedAttachment[];
+      meta: { nextCursor: string | null };
+    };
+    expect(meta.nextCursor).toBeNull();
     expect(listed.map((entry) => entry.name)).toEqual(['mine.txt']);
     expect(listed[0]).not.toHaveProperty('url');
   });

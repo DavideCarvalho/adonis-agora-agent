@@ -100,7 +100,7 @@ There is no wildcard and no prefix rule. A store's `allowedContentTypes` **repla
 
 An upload belongs to no thread until it is sent, so a thread read cannot show it. Two things answer "what has this person uploaded":
 
-- `GET /agent/attachments` — the caller's own staged files, newest first (50), **metadata only**: `{ mediaId, name, contentType, sizeBytes, createdAt }`, no url (one is minted only when a turn or a thread read resolves the file). Mounted with the other attachment routes; `501` when the store keeps no inventory.
+- `GET /agent/attachments` — the caller's own staged files, newest first, as a [cursor page](/docs/agent/streaming-and-http#lists) (`first`, `after`/`before`): `data` is **metadata only**, `{ mediaId, name, contentType, sizeBytes, createdAt }`, no url (one is minted only when a turn or a thread read resolves the file). Mounted with the other attachment routes; `501` when the store keeps no inventory.
 - `AgentService.listAttachments(actor, { limit })` — the same, in process.
 
 Uploads that were staged and never sent pile up. `AgentService.collectableAttachments` is the sweep's **read** half: the actor's staged files that are older than a cutoff you choose and that no message references — neither a message in one of their threads nor one waiting in a thread's queue. It returns them; deleting is yours:

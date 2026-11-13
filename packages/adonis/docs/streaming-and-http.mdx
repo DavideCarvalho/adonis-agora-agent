@@ -27,7 +27,7 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 | 3 | `POST /agent/chat/:runId/cancel` | Abort a run. Returns `{ aborted: true }`. Under the inline runner the model call the run is in is aborted at once, as is a tool that passes on [`ctx.abortSignal`](/docs/agent/authoring/tools#the-tool-context); the stream ends with a `cancelled` frame, and the step the Stop cut short is not persisted. |
 | 4 | `POST /agent/tool-call/approve` | Approve a pending `action` tool call. Body: `{ toolCallId, runId?, remember?, via? }`. A call that became an independent proposal is a `400` — decide it on its proposal route. |
 | 5 | `POST /agent/tool-call/reject` | Reject a pending `action` tool call. Body: `{ toolCallId, runId?, reason?, via? }`. |
-| 6 | `GET /agent/threads` | List the actor's threads. |
+| 6 | `GET /agent/threads` | The actor's threads, most recently updated first, as a [cursor page](#lists): `{ data: ThreadSummary[], meta }`. |
 | 6c | `GET /agent/models?agent=&persona=` | The models the caller may pick: `{ providers: [{ id, label, models: [{ id, label, description?, badges?, available, unavailableReason?, contextWindow? }] }], default, locked?: { model, reason? } }` — see [Models](#models). `default` is the model that agent, under that persona (else its default persona), runs on when nobody picks one. An empty catalog when none is configured. |
 | 6d | `GET /agent/agents` | The registered agents for a picker: `{ name, description, isDefault?, lockedModel?, personas?, defaultPersona? }[]` — `lockedModel` when the catalog locks that agent to one model for the caller; `personas` (`{ id, label, description? }[]`) and `defaultPersona` when it declares them. |
 | 6b | `GET /agent/tools?agent=` | The tools the caller can reach through an agent, as `{ name, kind, presentation? }[]` — the same list the model is offered. `?agent=*` (`ALL_AGENTS`) is the union across every agent, each tool once, under the same gates. `404` for an unknown agent. See [Presentation](/docs/agent/authoring/tools#presentation--how-a-chat-surface-talks-about-a-tool). |
@@ -41,7 +41,7 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 | 8g | `PATCH /agent/queue/:messageId` | `{ message?, attachments?: { mediaId }[] \| null, position? }` — edit and/or move a waiting message. Answers the queue; `410` when it already started or was removed, `404` unknown, `403` another actor's. |
 | 8h | `DELETE /agent/queue/:messageId` | Remove a waiting message. Answers the queue; `410` / `404` / `403` as above. |
 | 8i | `POST /agent/queue/:messageId/interrupt` | Run a waiting message **now**: it moves to the head as an interrupt, any pause is lifted, and the running turn is cancelled for it. Answers the queue plus `interrupting` (the cancelled run) — or `runId` when nothing was running and it started at once. `410` / `404` / `403` as above. |
-| 8j | `GET /agent/threads/:id/action-proposals` | The thread's [independent proposals](/docs/agent/independent-approvals#over-http) the caller may see; paginated through `?after=` and the `X-Action-Proposals-Next` header. Without `actionApprovalMode: 'independent'` there are none: `200` with `[]`. |
+| 8j | `GET /agent/threads/:id/action-proposals` | The thread's [independent proposals](/docs/agent/independent-approvals#over-http) the caller may see, oldest first, as a forward-only [cursor page](#lists) (`first` default `100`, at most `1000`). Without `actionApprovalMode: 'independent'` there are none: `200` with an empty page. |
 | 8k | `POST /agent/threads/:id/action-proposals/:proposalId/approve` \| `…/reject` | Decide a proposal: `{ remember? }` / `{ reason? }`. Answers the mutation result (`applied`, `unchanged`, `conflict`, `not_found`, `expired`). |
 | 9 | `DELETE /agent/threads/:id` | Soft-delete a thread. |
 | 10 | `POST /agent/threads/:id/fork-from/:messageId` | Fork a thread up to a message (regenerate / branch). |
@@ -50,7 +50,21 @@ The provider mounts eleven core routes under `config.path` (default `agent`) at 
 | 10d | `GET /agent/skills?threadId=` | The skills this caller can invoke right now, scope-resolved — the same list the model is offered: `{ name, description, scope, shadows? }[]`. An empty list when no skills are configured. |
 | 11b | `GET /agent/quota` | `{ windows: [{ period, usedTokens?, limitTokens?, usedUsd, limitUsd?, resetsAt?, warnAt? }], blocked?, warning?: { period, ratio, reason? } }` — see [Budget windows](/docs/agent/governance/quota-and-cost#budgets). `usedTokens` is omitted for a USD-only budget; `warning` names the fullest window past its `warnAt` (never while `blocked`). A send while one is exhausted answers `429` `{ code: 'quota_exceeded', period, message }`. |
 | 11 | `GET /agent/config` | Server facts a client would otherwise repeat: `{ attachments: { enabled, upload, maxBytes, allowedContentTypes, maxPerMessage }, models: { enabled }, quota: { enforced }, identity: { anonymous } }` (what the React `useAgentConfig` reads). |
-| 12 | `GET /agent/approvals/mine` <span data-opt>optional</span> | The **calling actor's own** pending HITL approvals, oldest first. Query: `limit?` (default `50`, clamped to `200`). Mounts with `governanceQueries` but is **not** behind `dashboard.authorize` — it is always scoped to `actor.id`, so a non-admin surface (e.g. a coordinator's chat) can poll its own suspended tool calls even when the cross-actor read-model is ADMIN-only. |
+| 12 | `GET /agent/approvals/mine` <span data-opt>optional</span> | The **calling actor's own** pending HITL approvals, oldest first, as a [cursor page](#lists). Mounts with `governanceQueries` but is **not** behind `dashboard.authorize` — it is always scoped to `actor.id`, so a non-admin surface (e.g. a coordinator's chat) can poll its own suspended tool calls even when the cross-actor read-model is ADMIN-only. |
+
+### Lists
+
+The routes that answer a list (`GET /agent/threads`, `/agent/attachments`, `/agent/approvals/mine`, a thread's `action-proposals` and the [governance lists](/docs/agent/governance/read-model#the-routes)) speak `@adonis-agora/filter`'s wire format and answer a cursor page:
+
+```json
+{ "data": [], "meta": { "nextCursor": "WzUwXQ", "prevCursor": null, "hasNext": true, "hasPrev": false } }
+```
+
+- **Paging:** `first` (page size; default `50`, at most `200` unless a route says otherwise) and `after=<meta.nextCursor>` for the next page. Where `meta.prevCursor` is set, `before=<meta.prevCursor>` with `last` reads the page before. Cursors are opaque: send them back as they came.
+- **Filters:** `filter[field]=value` (`filter[field][op]=value` for an operator), only on the fields a route lists. Any other field, or an operator the field does not take, is a `400`.
+- **Sort:** each list has one order; `sort` may name it, and anything else is a `400`.
+
+The catalogs (`/agent/models`, `/agent/agents`, `/agent/tools`, `/agent/skills`, `/agent/memories`, the persona catalog) answer plain arrays.
 
 <Callout type="info" title="Refusals answer { message, code? }">
 Every refused request answers its HTTP status with a JSON body `{ message, code? }` — `message` in words a person can read, `code` a machine-readable reason where there is one (`unauthorized`, `model_not_allowed`, `thread_required`, `quota_exceeded`, …). `@adonis-agora/agent/client` throws it as `AgentChatHttpError` (`status`, `code`, `body`, and the server's `message` as its own); `@adonis-agora/agent/react` reads the same body.

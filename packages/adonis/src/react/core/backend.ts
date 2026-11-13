@@ -4,6 +4,8 @@ import type {
   AgentCatalogEntry,
   AgentClientConfig,
   ChatQueueState,
+  CursorPageResponse,
+  ListPageParams,
   MessageAttachment,
   MessageFeedback,
   MessageFeedbackValue,
@@ -173,7 +175,11 @@ export interface AgentBackend {
   /** Hard-stop a run server-side. */
   cancelStream(runId: string): Promise<unknown>;
 
-  listThreads(): Promise<ThreadSummary[]>;
+  /**
+   * `GET <base>/threads?after=&first=` — one page of the actor's threads, most recently updated
+   * first; `meta.nextCursor` goes back as `after` for the next one.
+   */
+  listThreads(page?: ListPageParams): Promise<CursorPageResponse<ThreadSummary>>;
   getThread(id: string): Promise<ThreadDetail>;
   updateThread(id: string, patch: ThreadPatch): Promise<unknown>;
   deleteThread(id: string): Promise<unknown>;

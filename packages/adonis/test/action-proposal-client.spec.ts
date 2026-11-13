@@ -21,7 +21,7 @@ it('maps a text decision JSON receipt without attaching a nonexistent run', asyn
 });
 it('uses exact scoped paths for polling and proposal decisions', async () => {
   const fetch = vi.fn(async (_input: Parameters<typeof globalThis.fetch>[0], _init?: RequestInit) =>
-    Response.json([]),
+    Response.json({ data: [], meta: page(null) }),
   );
   const client = createAgentChatClient({ fetch });
   await client.listActionProposals('thread /');
@@ -32,14 +32,29 @@ it('uses exact scoped paths for polling and proposal decisions', async () => {
   );
 });
 
-it('traverses filtered empty pages using the explicit cursor header', async () => {
-  const cursor = encodeURIComponent(JSON.stringify({ createdAt: 1, id: 'last' }));
+const page = (nextCursor: string | null) => ({
+  nextCursor,
+  prevCursor: null,
+  hasNext: nextCursor !== null,
+  hasPrev: false,
+});
+
+it('traverses filtered empty pages through meta.nextCursor', async () => {
   const fetch = vi
     .fn<typeof globalThis.fetch>()
-    .mockResolvedValueOnce(Response.json([], { headers: { 'X-Action-Proposals-Next': cursor } }))
-    .mockResolvedValueOnce(Response.json([{ id: 'new' }]));
+    .mockResolvedValueOnce(Response.json({ data: [], meta: page('opaque-1') }))
+    .mockResolvedValueOnce(Response.json({ data: [{ id: 'new' }], meta: page(null) }));
   expect(await createAgentChatClient({ fetch }).listActionProposals('thread')).toEqual([
     { id: 'new' },
   ]);
-  expect(String(fetch.mock.calls[1]?.[0])).toContain('after=');
+  expect(String(fetch.mock.calls[1]?.[0])).toContain('after=opaque-1');
+});
+
+it('refuses a cursor that repeats', async () => {
+  const fetch = vi
+    .fn<typeof globalThis.fetch>()
+    .mockImplementation(async () => Response.json({ data: [], meta: page('same') }));
+  await expect(createAgentChatClient({ fetch }).listActionProposals('thread')).rejects.toThrow(
+    'Repeated action proposal cursor',
+  );
 });

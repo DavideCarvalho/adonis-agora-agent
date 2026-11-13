@@ -325,24 +325,26 @@ const featureRows: FeatureSpendRow[] = [
   },
 ];
 
+/** One cursor page of `rows`, `{ data, meta }` as the list routes answer. */
+function page<T>(rows: T[], nextCursor: string | null = null) {
+  return {
+    data: rows,
+    meta: { nextCursor, prevCursor: null, hasNext: nextCursor !== null, hasPrev: false },
+  };
+}
+
 function fakeClient(overrides: Partial<AgentClient> = {}): AgentClient {
   return {
     spendByModel: vi.fn().mockResolvedValue(modelRows),
     spendByActor: vi.fn().mockResolvedValue(actorRows),
     usageTrend: vi.fn().mockResolvedValue(trendPoints),
-    recentThreads: vi.fn().mockResolvedValue(threadRows),
-    recentToolCalls: vi.fn().mockResolvedValue(toolCallRows),
+    recentThreads: vi.fn().mockResolvedValue(page(threadRows)),
+    recentToolCalls: vi.fn().mockResolvedValue(page(toolCallRows)),
     quotaToday: vi.fn().mockResolvedValue({ usedTokens: 123 }),
-    listRuns: vi.fn().mockResolvedValue({
-      items: runRows,
-      nextCursor: null,
-      prevCursor: null,
-      hasNext: false,
-      hasPrev: false,
-    } as ListRunsResult),
+    listRuns: vi.fn().mockResolvedValue(page(runRows) as ListRunsResult),
     runDetail: vi.fn().mockResolvedValue(runDetail),
     threadDetail: vi.fn().mockResolvedValue(threadDetail),
-    pendingApprovals: vi.fn().mockResolvedValue(pendingRows),
+    pendingApprovals: vi.fn().mockResolvedValue(page(pendingRows)),
     perToolStats: vi.fn().mockResolvedValue(toolStatRows),
     runReliability: vi.fn().mockResolvedValue(reliability),
     approveToolCall: vi.fn().mockResolvedValue({ ok: true }),
@@ -521,27 +523,17 @@ describe('RunsSection', () => {
     );
   });
 
-  it('paginates by appending the next page from nextCursor', async () => {
+  it('paginates by appending the next page from meta.nextCursor', async () => {
     const page2Run: RunSummaryRow = { ...runRows[0]!, runId: 'run-def67890', agentName: 'billing' };
-    const listRuns = vi.fn().mockImplementation((filter?: { after?: string }) =>
-      Promise.resolve(
-        filter?.after
-          ? ({
-              items: [page2Run],
-              nextCursor: null,
-              prevCursor: null,
-              hasNext: false,
-              hasPrev: false,
-            } as ListRunsResult)
-          : ({
-              items: runRows,
-              nextCursor: 'cursor-1',
-              prevCursor: null,
-              hasNext: true,
-              hasPrev: false,
-            } as ListRunsResult),
-      ),
-    );
+    const listRuns = vi
+      .fn()
+      .mockImplementation((filter?: { after?: string }) =>
+        Promise.resolve(
+          filter?.after
+            ? (page([page2Run]) as ListRunsResult)
+            : (page(runRows, 'cursor-1') as ListRunsResult),
+        ),
+      );
     const client = fakeClient({ listRuns } as Partial<AgentClient>);
     renderWith(client, <RunsSection />);
 
@@ -635,7 +627,7 @@ describe('ApprovalsSection', () => {
 
   it('shows an empty inbox state', async () => {
     const client = fakeClient({
-      pendingApprovals: vi.fn().mockResolvedValue([]),
+      pendingApprovals: vi.fn().mockResolvedValue(page([])),
     } as Partial<AgentClient>);
     renderWith(client, <ApprovalsSection />);
     await waitFor(() => expect(screen.getByText('No tool calls awaiting approval.')).toBeTruthy());

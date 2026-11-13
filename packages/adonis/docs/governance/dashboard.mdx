@@ -273,12 +273,15 @@ const client = new AgentClient({ baseUrl: '/agent' })
 const spend = await client.spendByModel({ fromDay: '2026-03-01', toDay: '2026-03-07' })
 const byFeature = await client.spendByFeature({ fromDay: '2026-03-01', toDay: '2026-03-07' })
 const runs = await client.listRuns({ status: 'failed', first: 50 })
-const trace = await client.runDetail(runs.items[0].runId)
+const trace = await client.runDetail(runs.data[0].runId)
+const older = runs.meta.nextCursor
+  ? await client.listRuns({ status: 'failed', first: 50, after: runs.meta.nextCursor })
+  : null
 const thread = await client.threadDetail(trace.run.threadId)
 const prices = await client.pricing()
 ```
 
-Thirteen read methods and three writes (`approveToolCall`, `rejectToolCall`, `upsertPrice`). It is a plain `fetch` wrapper — no React, no state — so it works from a server-side script as readily as from a browser.
+Thirteen read methods and three writes (`approveToolCall`, `rejectToolCall`, `upsertPrice`). The list reads (`listRuns`, `recentThreads`, `recentToolCalls`, `pendingApprovals`) return one page, `{ data, meta }`; pass `meta.nextCursor` back as `after` for the next one. `pageSize` in the constructor sets the page size when a call passes no `first`. It is a plain `fetch` wrapper — no React, no state — so it works from a server-side script as readily as from a browser.
 
 ## The standalone package
 
