@@ -28,6 +28,8 @@ const SETTLED = new Set(['completed', 'failed', 'cancelled', 'dead']);
  * agent (`tokenSinks.redis()` / `tokenSinks.lucid()`).
  */
 export class DurableOpenCodeAgentRunner implements AgentRunner {
+  /** Signals land in the engine's store, which the run's own worker reads. */
+  readonly signalsReachOtherProcesses = true;
   constructor(
     private readonly engine: WorkflowEngine,
     private readonly turns: OpenCodeTurns,

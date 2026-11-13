@@ -30,6 +30,8 @@ function isControlFlowSignal(error: unknown): boolean {
  * by run, so it can never cross-resolve another run. Mirrors the {@link InlineAgentRunner} interface.
  */
 export class DurableAgentRunner implements AgentRunner {
+  /** Signals land in the engine's store, which the run's own worker reads. */
+  readonly signalsReachOtherProcesses = true;
   /**
    * `store` is optional so a bare `new DurableAgentRunner(engine)` still works; when passed (the
    * provider does), {@link cancel} settles the `agent_run` row `cancelled` for governance.

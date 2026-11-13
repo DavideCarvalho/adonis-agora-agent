@@ -34,6 +34,7 @@
     "diagnostics",
     "testing",
     "doctor",
+    "cli",
     "---Reference---",
     "config-reference",
     "programmatic-api"

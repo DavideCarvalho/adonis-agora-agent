@@ -1,0 +1,100 @@
+---
+title: CLI
+description: node ace agent:* — what the governance console shows and does (spend, runs, threads, approvals, pricing), from the shell.
+icon: Terminal
+---
+
+Every page of the [governance console](/docs/agent/governance/dashboard) has a command. They boot
+the app (not its workers or HTTP server), read the same governance read-model, pricing store and
+service the console uses, and print a table — or one JSON document with `--json`. A refusal prints
+the reason and exits `1`.
+
+The commands come with `node ace configure @adonis-agora/agent` (`@adonis-agora/agent/commands` in
+`adonisrc.ts`). Running a command means shell access to the app, so it reads every organization;
+`--tenant <id>` narrows a read to one (tenancy on).
+
+## Spend and usage
+
+```sh
+node ace agent:spend:show --from 2026-11-01 --to 2026-11-13
+node ace agent:spend:show --by actor
+node ace agent:spend:show --by feature --json
+node ace agent:usage:trend --from 2026-11-01
+node ace agent:usage:breakdown --actor user:42 --feature transcription
+node ace agent:usage:breakdown --since 2026-11-13T09:00:00Z --until 2026-11-13T10:00:00Z
+```
+
+`--from`/`--to` are UTC days (`YYYY-MM-DD`, default today). `agent:usage:breakdown` takes
+`--since`/`--until` (ISO instants, together) instead, and `--no-reprice` for the recorded cost only.
+
+## Reliability and generative UI
+
+```sh
+node ace agent:reliability:show --from 2026-11-01
+node ace agent:genui:show --from 2026-11-01 --to 2026-11-13
+node ace agent:tools:stats
+```
+
+## Runs, threads, tool calls
+
+```sh
+node ace agent:runs:list --status failed --agent support --from 2026-11-10
+node ace agent:runs:list --first 20 --after <cursor>
+node ace agent:runs:show <runId> --messages
+node ace agent:threads:list
+node ace agent:threads:show <threadId>
+node ace agent:tool-calls:list --first 100
+```
+
+Lists page with cursors: the table ends with the `--after` (and `--before`) to pass for the next
+page, and `--json` answers the console route's `{ data, meta }`. `--first`/`--last` set the page
+size (default 50, at most 200). `agent:runs:list` pages forward only and filters by `--actor`,
+`--agent`, `--status` (`running`, `completed`, `failed`, `cancelled`) and `--from`/`--to`.
+
+## Approvals
+
+```sh
+node ace agent:approvals:list --actor user:42
+node ace agent:approvals:approve <toolCallId>
+node ace agent:approvals:approve <toolCallId> --remember --force
+node ace agent:approvals:reject <toolCallId> --note "Refund over the limit" --force
+```
+
+A decision goes through the same rules as the console's inbox: a call routed to an approver role
+needs that role (a CLI caller holds none, so decide those in the app), an expired request is
+refused, and so is a run that already ended. It is recorded as made by `cli:<os user>`, through
+`cli`, and `--note` is the rejection's reason. Each asks first; `--force` skips the question (and
+is required without a terminal). `--run <runId>` names the run when the call id is not unique.
+
+Deciding from the shell needs turns that run on the durable runner (`durable: true`, or a durable
+engine): a turn run in-process waits in the web process's memory, where a command cannot reach it,
+so the command refuses instead.
+
+## Quota and tools
+
+```sh
+node ace agent:quota:show --actor user:42
+node ace agent:tools:list --actor user:42 --role ADMIN --agent support
+node ace agent:tools:list --actor user:42 --agent '*'
+```
+
+Both answer for the actor you name: `agent:quota:show` the budget windows `GET <path>/quota`
+reports, `agent:tools:list` the tools that actor reaches through an agent (`--role` repeats).
+
+## Pricing
+
+```sh
+node ace agent:pricing:list
+node ace agent:pricing:set gpt-4o-mini --input 0.15 --output 0.6
+node ace agent:pricing:set gpt-4o-mini --input 0.15 --output 0.6 --cache-read 0.075 --dry-run
+```
+
+Rates are USD per 1M tokens; cache rates default to the input rate. Replacing a model's current
+price asks first (`--force` skips it); `--dry-run` shows what would change.
+
+## Organizations
+
+```sh
+node ace agent:tenants:list
+node ace agent:runs:list --tenant acme
+```

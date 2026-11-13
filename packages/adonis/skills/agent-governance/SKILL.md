@@ -20,6 +20,7 @@ sources:
   - "DavideCarvalho/adonis-agent:packages/adonis/docs/governance/dashboard.mdx"
   - "DavideCarvalho/adonis-agent:packages/adonis/src/governance-gate.ts"
   - "DavideCarvalho/adonis-agent:packages/adonis/src/ownership.ts"
+  - "DavideCarvalho/adonis-agent:packages/adonis/docs/cli.mdx"
 ---
 
 # Governance: identity, authorization, ownership
@@ -154,6 +155,24 @@ answers 404 the same way, and `GET /agent/threads` lists only the request's orga
 
 Source: `packages/adonis/docs/governance/authorization.mdx` ("Object-level ownership"),
 `packages/adonis/src/ownership.ts`.
+
+### Pattern 4 — operate the console from the shell
+
+Every console page has an `agent:*` ace command over the same read-model and service:
+
+```sh
+node ace agent:approvals:list --json
+node ace agent:approvals:reject <toolCallId> --note "Over the refund limit" --force
+node ace agent:runs:list --status failed --from 2026-11-01
+node ace agent:spend:show --by actor
+node ace agent:pricing:set gpt-4o-mini --input 0.15 --output 0.6
+```
+
+`agent:approvals:approve|reject` run the console's HITL rules (approver role, expiry, a run that
+ended) and record `cli:<os user>` via `cli`. A call routed to an approver role still needs that
+role — the CLI holds none — and deciding needs the durable runner (an in-process turn is refused).
+
+Source: `packages/adonis/docs/cli.mdx`, `packages/adonis/src/tool-call-decision.ts`.
 
 ## Common mistakes
 
