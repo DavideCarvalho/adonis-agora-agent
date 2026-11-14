@@ -1,5 +1,11 @@
 # @adonis-agora/agent-dashboard
 
+## 1.0.0-rc.7
+
+### Patch Changes
+
+- [#603](https://github.com/DavideCarvalho/adonis-agora-agent/pull/603) [`d4fa3d0`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/d4fa3d06bf4832e4ef810970321bfa25e5b0a37b) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Console ⌘K shows its loading state: a spinner in the search box while a request is in flight, skeleton rows until the first answer, earlier hits kept but dimmed during a re-search, "Nothing found" only after an empty answer, and a quiet "didn't answer" line with Retry when the search fails. Synced with the shared console kit (DataTable `rowClassName`/`subRow`, ⌘K console-local `commands`, collapsible nav sections).
+
 ## 1.0.0-rc.6
 
 ### Patch Changes
