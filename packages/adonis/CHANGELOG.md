@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.23
+
+### Patch Changes
+
+- [#609](https://github.com/DavideCarvalho/adonis-agora-agent/pull/609) [`0f201ca`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/0f201ca749d3154228a52e02328474ce48a9aeb1) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - The console's access-denied page uses the console's own accent (rose `#fb7185`) by default, like the rest of the console.
+
 ## 1.0.0-rc.22
 
 ### Patch Changes
