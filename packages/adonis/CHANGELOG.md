@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.22
+
+### Patch Changes
+
+- [#604](https://github.com/DavideCarvalho/adonis-agora-agent/pull/604) [`cf5305c`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/cf5305c4f6e69cd2e7d4a2eacf2d2fc1ad12956e) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Server: the `agora.consoles` registry accepts the `flags` and `cms` icon keys, so those consoles show their own tile instead of `generic`. Console: the console switcher shows the CMS console with its own orange tile and glyph, and the kit gains a 16px `DocumentIcon`; the collapsible nav section toggle has a test pinning its focus ring (Agora console kit round 3).
+
 ## 1.0.0-rc.21
 
 ### Patch Changes
