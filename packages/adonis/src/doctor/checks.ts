@@ -1,6 +1,7 @@
 import type { ApplicationService } from '@adonisjs/core/types';
 import { resolveAgentTenancy } from '../agora/tenancy.js';
 import { resolveDashboardConfig } from '../dashboard/define_config.js';
+import { devToolsAuthIssuers, devToolsAuthProblems } from '../dev-tools/auth.js';
 import { csrfBlocksPath } from '../dev-tools/csrf.js';
 import { DEV_TOOLS_BINDING, resolveDevTools } from '../dev-tools/resolve.js';
 import { normalizeMcpPath } from '../mcp/discovery.js';
@@ -233,6 +234,9 @@ export function checkDevToolsAuthkitMcp(
   if (devTools === null) {
     return { status: 'skip', message: 'The dev tools endpoint is off (`devTools: false`).' };
   }
+  if (devTools.auth !== undefined) {
+    return { status: 'skip', message: '`devTools.auth` signs MCP clients in, not authkit.' };
+  }
   if (!authkit.installed) return { status: 'skip', message: 'authkit is not installed.' };
   if ('unresolved' in authkit) {
     return {
@@ -251,6 +255,56 @@ export function checkDevToolsAuthkitMcp(
     message: `The dev tools hub at /${devTools.path} is on, but \`mcpClients: false\` in config/authkit.ts turns MCP client login off: MCP clients can't register.`,
     fix: 'Remove `mcpClients: false` from config/authkit.ts.',
     docs: `${DOCS}/dev-tools#connect-a-client`,
+  };
+}
+
+/**
+ * `agent.dev-tools-auth`: how MCP clients sign in to the dev tools hub — `devTools.auth` (any
+ * authorization server), authkit, or header tokens only — and whether `devTools.auth` is usable.
+ */
+export function checkDevToolsAuth(
+  mcp: AnyConfig | undefined,
+  authkitInstalled: boolean,
+): AgoraDoctorResult {
+  if (mcp === undefined) return { status: 'skip', message: MCP_OFF };
+  const devTools = resolveDevTools(mcp as never);
+  if (devTools === null) {
+    return { status: 'skip', message: 'The dev tools endpoint is off (`devTools: false`).' };
+  }
+  const where = `/${devTools.path}`;
+  if (devTools.auth !== undefined) {
+    const { errors, warnings } = devToolsAuthProblems(devTools.auth);
+    const issuers = devToolsAuthIssuers(devTools.auth);
+    const mode = `custom auth (${issuers.length > 0 ? issuers.join(', ') : 'no issuers'})`;
+    if (errors.length > 0) {
+      return {
+        status: 'error',
+        message: `${where} uses ${mode}: ${errors.join(' ')}`,
+        fix: 'Use `jwtAuth({ issuer })` / `introspectionAuth(…)`, or give `devTools.auth` an `authorizationServers` list and a `verify(token, ctx)`.',
+        docs: `${DOCS}/dev-tools#any-oauth-server`,
+      };
+    }
+    if (warnings.length > 0) {
+      return {
+        status: 'warn',
+        message: `${where} uses ${mode}: ${warnings.join(' ')}`,
+        fix: 'List your issuer in `devTools.auth.authorizationServers`.',
+        docs: `${DOCS}/dev-tools#any-oauth-server`,
+      };
+    }
+    return {
+      status: 'ok',
+      message: `MCP clients sign in to ${where} with ${mode}${authkitInstalled ? '; authkit is installed but not used for the hub' : ''}.`,
+    };
+  }
+  if (authkitInstalled) {
+    return { status: 'ok', message: `MCP clients sign in to ${where} through authkit.` };
+  }
+  return {
+    status: 'ok',
+    message: `${where} is token-only: no OAuth sign-in, MCP clients send a header token checked by the consoles' authorize.`,
+    fix: 'For browser sign-in from MCP clients, set `devTools.auth: jwtAuth({ issuer })` or install authkit.',
+    docs: `${DOCS}/dev-tools#any-oauth-server`,
   };
 }
 
@@ -428,6 +482,18 @@ export function agentDoctorChecks(
           return checkDevToolsAuthkitMcp(mcp, { installed: false });
         }
         return checkDevToolsAuthkitMcp(mcp, await readAuthkitMcpOption(app));
+      },
+    },
+    {
+      id: 'agent.dev-tools-auth',
+      lib: 'agent',
+      title: 'Dev tools sign-in mode',
+      run: async (app) => {
+        const mcp = mcpConfig(app);
+        if (mcp === undefined || resolveDevTools(mcp as never) === null) {
+          return checkDevToolsAuth(mcp, false);
+        }
+        return checkDevToolsAuth(mcp, (await readAuthkitMcpOption(app)).installed);
       },
     },
     {

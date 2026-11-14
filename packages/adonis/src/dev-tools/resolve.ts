@@ -24,6 +24,7 @@ export interface ResolvedDevTools {
   actions: NonNullable<McpDevToolsConfig['actions']>;
   middleware: NonNullable<McpDevToolsConfig['middleware']>;
   authorize: McpDevToolsConfig['authorize'];
+  auth: McpDevToolsConfig['auth'];
 }
 
 /**
@@ -40,5 +41,6 @@ export function resolveDevTools(config: Partial<McpConfig> | undefined): Resolve
     actions: devTools?.actions ?? 'refuse',
     middleware: devTools?.middleware ?? [],
     authorize: devTools?.authorize,
+    auth: devTools?.auth,
   };
 }
