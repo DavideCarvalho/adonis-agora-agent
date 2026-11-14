@@ -233,6 +233,9 @@ devTools: {
 },
 ```
 
+A token must name the hub in its `aud`. If your server returns no `aud` for tokens bound to no
+resource, set `requireAudience: false` to accept them.
+
 #### Your own check
 
 `devTools.auth` takes any object with the issuers to advertise and a `verify`:
@@ -255,7 +258,8 @@ devTools: {
 ```
 
 Return `null` for a token that is not yours; a console that takes `authorizeByToken` still gets it.
-Throw `McpAuthError` to refuse one you recognized.
+Throw `McpAuthError` to refuse one you recognized. Any other error (your key server is down) answers `503`, so the
+client does not loop through the login.
 
 With `devTools.auth` set, authkit is not used for the hub, even when it is installed. A request
 without a token is answered `401` with the sign-in pointer, and `agora:doctor` reports which mode
