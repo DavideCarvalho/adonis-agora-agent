@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.20
+
+### Patch Changes
+
+- [#602](https://github.com/DavideCarvalho/adonis-agora-agent/pull/602) [`78e3d34`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/78e3d3468916ec37e9296c519aca804f9b95edeb) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - `agent.dev-tools-authkit-mcp` follows authkit's automatic MCP client login: it warns only when `config/authkit.ts` sets `mcpClients: false` while the dev tools hub is on, and it reads `mcpClients` structurally (the input `false` or the resolved `{ allowed: false }`). The `mcp: true` advice is gone from the docs.
+
 ## 1.0.0-rc.19
 
 ### Patch Changes
