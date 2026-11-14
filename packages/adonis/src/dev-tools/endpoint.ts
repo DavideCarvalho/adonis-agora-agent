@@ -76,7 +76,7 @@ export interface DevToolsEndpointOptions {
   inProduction?: boolean;
 }
 
-type Refusal = { status: 401 | 403; error: string; challenge: string };
+type Refusal = { status: 401 | 403 | 503; error: string; challenge: string };
 
 interface Admission {
   caller: DevToolsCaller;
@@ -246,16 +246,20 @@ export class DevToolsEndpoint {
         principal = await custom.verify(bearer, { ctx, app: this.#options.app, resource });
       } catch (error) {
         if (!(error instanceof McpAuthError)) {
+          // The JWKS or introspection endpoint is unreachable: a server-side outage, not a bad
+          // token. A 503 keeps MCP clients out of a login loop and shows up in monitoring.
           const logger = await this.#options.logger();
           logger?.warn(
             { devTools: true, error: error instanceof Error ? error.message : String(error) },
             'agora dev tools: devTools.auth could not verify a token',
           );
+          return this.#refuse(ctx, needed, tokenId ?? 'token', {
+            status: 503,
+            error: 'temporarily_unavailable: the authorization server could not be reached',
+            challenge: '',
+          });
         }
-        const refusal =
-          error instanceof McpAuthError
-            ? error
-            : new McpAuthError('invalid_token', { cause: error });
+        const refusal = error;
         return this.#refuse(ctx, needed, tokenId ?? 'token', {
           status: refusal.status,
           error: refusal.message,

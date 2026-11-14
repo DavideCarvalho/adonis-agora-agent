@@ -57,8 +57,16 @@ function serveIssuer(req: IncomingMessage, res: ServerResponse) {
       body += chunk;
     });
     req.on('end', () => {
-      const basic = Buffer.from('hub:s3cret').toString('base64');
-      if (req.headers.authorization !== `Basic ${basic}`) return json(401, {});
+      // RFC 6749 §2.3.1: decode Basic, split on the first `:`, form-urldecode each part.
+      const raw = Buffer.from(
+        String(req.headers.authorization ?? '').replace(/^Basic /, ''),
+        'base64',
+      ).toString();
+      const at = raw.indexOf(':');
+      const decode = (v: string) => new URLSearchParams(`v=${v}`).get('v');
+      if (decode(raw.slice(0, at)) !== 'hub:dev' || decode(raw.slice(at + 1)) !== 's3:cr/et+%@') {
+        return json(401, {});
+      }
       const token = new URLSearchParams(body).get('token') ?? '';
       json(200, opaque[token] ?? { active: false });
     });
@@ -431,6 +439,19 @@ describe('devTools.auth: jwtAuth', () => {
     expect(registry?.some((r) => r.path === '/mcp/agora') ?? false).toBe(false);
   });
 
+  it('an issuer configured with a trailing slash still verifies its tokens', async () => {
+    booted = await bootApp(() => jwtAuth({ issuer: `${issuer}/`, jwksUri: `${issuer}/keys` }));
+    const token = await jwt({ sub: 'u-1', aud: `${booted.url}/mcp/agora`, roles: ['admin'] });
+    expect(await toolNames(booted.url, token)).toEqual(['durable_list_runs']);
+  });
+
+  it('a JWKS that cannot be reached is a 503, not invalid_token', async () => {
+    booted = await bootApp(() => jwtAuth({ issuer, jwksUri: `${issuer}/missing-keys` }));
+    const token = await jwt({ sub: 'u-1', aud: `${booted.url}/mcp/agora`, roles: ['admin'] });
+    const response = await rpc(booted.url, listTools, token);
+    expect(response.status).toBe(503);
+  });
+
   it('fails boot on a devTools.auth without verify', async () => {
     await expect(bootApp(() => ({ authorizationServers: [issuer] }))).rejects.toThrow(
       /devTools\.auth\.verify/,
@@ -456,11 +477,12 @@ describe('devTools.auth: introspectionAuth', () => {
         roles: ['admin'],
         aud: 'https://api.example.com',
       };
+      opaque['op-no-aud'] = { active: true, sub: 'u-1', roles: ['admin'] };
       return introspectionAuth({
         issuer,
         endpoint: `${issuer}/introspect`,
-        clientId: 'hub',
-        clientSecret: 's3cret',
+        clientId: 'hub:dev',
+        clientSecret: 's3:cr/et+%@',
       });
     });
     expect(await toolNames(booted.url, 'op-admin')).toEqual(['durable_list_runs']);
@@ -468,6 +490,35 @@ describe('devTools.auth: introspectionAuth', () => {
     const inactive = await rpc(booted.url, listTools, 'op-unknown');
     expect(inactive.status).toBe(401);
     expect(inactive.headers.get('www-authenticate')).toContain('error="invalid_token"');
+    // a token bound to no resource is refused by default
+    expect((await rpc(booted.url, listTools, 'op-no-aud')).status).toBe(401);
+  });
+
+  it('requireAudience: false accepts a token without aud; an unreachable endpoint is a 503', async () => {
+    opaque['op-no-aud'] = { active: true, sub: 'u-1', roles: ['admin'] };
+    booted = await bootApp(() =>
+      introspectionAuth({
+        issuer,
+        endpoint: `${issuer}/introspect`,
+        clientId: 'hub:dev',
+        clientSecret: 's3:cr/et+%@',
+        requireAudience: false,
+      }),
+    );
+    expect(await toolNames(booted.url, 'op-no-aud')).toEqual(['durable_list_runs']);
+    await booted.close();
+    booted = await bootApp(() =>
+      introspectionAuth({
+        issuer,
+        endpoint: `${issuer}/introspect`,
+        clientId: 'wrong',
+        clientSecret: 'wrong',
+      }),
+    );
+    const down = await rpc(booted.url, listTools, 'op-no-aud');
+    expect(down.status).toBe(503);
+    expect(down.headers.get('www-authenticate')).toBeNull();
+    expect(warnings).toContain('agora dev tools: devTools.auth could not verify a token');
   });
 });
 

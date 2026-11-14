@@ -307,20 +307,22 @@ export function jwtAuth(options: JwtAuthOptions): DevToolsAuth {
       } catch {
         return null; // not a JWT
       }
-      if (typeof unverified.iss !== 'string' || unverified.iss !== options.issuer) return null;
+      if (typeof unverified.iss !== 'string' || !sameIssuer(unverified.iss, options.issuer)) {
+        return null;
+      }
       const jwks = await keySet(jose);
       let payload: Record<string, unknown>;
       try {
         ({ payload } = await jose.jwtVerify(token, jwks, {
-          issuer: options.issuer,
+          issuer: unverified.iss, // same issuer up to a trailing slash (checked above)
           audience: audiencesOf(options.audience, context),
           algorithms: options.algorithms ?? DEFAULT_ALGORITHMS,
           clockTolerance: options.clockTolerance ?? 30,
           requiredClaims: ['exp', 'sub'],
         }));
       } catch (error) {
-        if (error instanceof jose.errors.JOSEError && !isKeySetFailure(jose, error)) {
-          throw new McpAuthError(`invalid_token: ${error.message}`, { cause: error });
+        if (isTokenFailure(jose, error)) {
+          throw new McpAuthError(`invalid_token: ${(error as Error).message}`, { cause: error });
         }
         throw error;
       }
@@ -329,9 +331,23 @@ export function jwtAuth(options: JwtAuthOptions): DevToolsAuth {
   };
 }
 
-/** A JWKS that could not be fetched is an outage, not a bad token. */
-function isKeySetFailure(jose: typeof import('jose'), error: unknown): boolean {
-  return error instanceof jose.errors.JWKSTimeout || error instanceof jose.errors.JWKSInvalid;
+/**
+ * Whether jose refused the token itself (claims, signature, format, no matching key) — as opposed to
+ * a JWKS it could not fetch, which is an outage and surfaces as a `503`.
+ */
+function isTokenFailure(jose: typeof import('jose'), error: unknown): boolean {
+  const e = jose.errors;
+  return (
+    error instanceof e.JWTClaimValidationFailed ||
+    error instanceof e.JWTExpired ||
+    error instanceof e.JWSSignatureVerificationFailed ||
+    error instanceof e.JWSInvalid ||
+    error instanceof e.JWTInvalid ||
+    error instanceof e.JOSEAlgNotAllowed ||
+    error instanceof e.JOSENotSupported ||
+    error instanceof e.JWKSNoMatchingKey ||
+    error instanceof e.JWKSMultipleMatchingKeys
+  );
 }
 
 // ── introspectionAuth ───────────────────────────────────────────────────────
@@ -344,8 +360,13 @@ export interface IntrospectionAuthOptions {
   /** The hub's client credentials at the authorization server (HTTP Basic). */
   clientId: string;
   clientSecret: string;
-  /** Accepted `aud` values when the response has one. Default: the hub's resource URL. */
+  /** Accepted `aud` values. Default: the hub's resource URL. */
   audience?: string | string[];
+  /**
+   * Refuse a token whose introspection response has no `aud` (one not bound to a resource, which
+   * any resource of the server could have been issued). Default `true`.
+   */
+  requireAudience?: boolean;
   scopes?: string[];
   requiredScopes?: string[];
   rolesClaim?: string;
@@ -355,13 +376,17 @@ export interface IntrospectionAuthOptions {
 
 /**
  * Verify opaque access tokens with the authorization server's introspection endpoint (RFC 7662):
- * one `POST` per request. `active: false` → `401`; an `aud` that does not name the hub → `401`.
+ * one `POST` per request. `active: false` → `401`; an `aud` that does not name the hub, or none
+ * (unless `requireAudience: false`) → `401`. An unreachable endpoint → `503`.
  */
 export function introspectionAuth(options: IntrospectionAuthOptions): DevToolsAuth {
   absoluteUrl(options.issuer, 'introspectionAuth `issuer`');
   absoluteUrl(options.endpoint, 'introspectionAuth `endpoint`');
+  // RFC 6749 §2.3.1 (client_secret_basic): id and secret are form-urlencoded, then joined by `:`
+  // and base64-encoded — so a `:` in the id cannot split it.
+  const formEncode = (value: string) => new URLSearchParams({ v: value }).toString().slice(2);
   const basic = Buffer.from(
-    `${encodeURIComponent(options.clientId)}:${encodeURIComponent(options.clientSecret)}`,
+    `${formEncode(options.clientId)}:${formEncode(options.clientSecret)}`,
   ).toString('base64');
 
   return {
@@ -393,6 +418,9 @@ export function introspectionAuth(options: IntrospectionAuthOptions): DevToolsAu
         throw new McpAuthError('invalid_token: the token expired');
       }
       const aud = claims.aud;
+      if (aud === undefined && options.requireAudience !== false) {
+        throw new McpAuthError('invalid_token: the token names no audience (resource)');
+      }
       if (aud !== undefined) {
         const given = Array.isArray(aud) ? aud : [aud];
         const accepted = audiencesOf(options.audience, context);
