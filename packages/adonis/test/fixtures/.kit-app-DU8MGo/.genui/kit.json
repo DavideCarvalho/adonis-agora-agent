@@ -1,0 +1,229 @@
+{
+  "version": 2,
+  "components": [
+    {
+      "name": "Button",
+      "description": "A button in the app's style.",
+      "props": [
+        {
+          "name": "variant",
+          "type": "\"default\" | \"outline\" | \"ghost\" | \"destructive\"",
+          "required": false,
+          "description": "How the button looks.",
+          "default": "\"default\""
+        },
+        {
+          "name": "size",
+          "type": "\"sm\" | \"md\" | \"lg\"",
+          "required": false,
+          "description": "Its size."
+        },
+        {
+          "name": "disabled",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "\"submit\" | \"reset\" | \"button\"",
+          "required": false
+        },
+        {
+          "name": "value",
+          "type": "string | number | readonly string[]",
+          "required": false
+        },
+        {
+          "name": "className",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "children",
+          "type": "ReactNode",
+          "required": false
+        }
+      ],
+      "inherits": "button"
+    },
+    {
+      "name": "Extra",
+      "props": []
+    },
+    {
+      "name": "Card",
+      "description": "A surface that groups related content.",
+      "props": [
+        {
+          "name": "className",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "children",
+          "type": "ReactNode",
+          "required": false
+        }
+      ],
+      "inherits": "div"
+    },
+    {
+      "name": "CardHeader",
+      "props": [
+        {
+          "name": "className",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "children",
+          "type": "ReactNode",
+          "required": false
+        }
+      ],
+      "inherits": "div"
+    },
+    {
+      "name": "CardTitle",
+      "props": [
+        {
+          "name": "className",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "children",
+          "type": "ReactNode",
+          "required": false
+        }
+      ],
+      "inherits": "div"
+    },
+    {
+      "name": "CardContent",
+      "props": [
+        {
+          "name": "className",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "children",
+          "type": "ReactNode",
+          "required": false
+        }
+      ],
+      "inherits": "div"
+    },
+    {
+      "name": "Input",
+      "description": "A text field.",
+      "props": [
+        {
+          "name": "checked",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "name": "disabled",
+          "type": "boolean",
+          "required": false
+        },
+        {
+          "name": "max",
+          "type": "string | number",
+          "required": false
+        },
+        {
+          "name": "min",
+          "type": "string | number",
+          "required": false
+        },
+        {
+          "name": "placeholder",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "step",
+          "type": "string | number",
+          "required": false
+        },
+        {
+          "name": "type",
+          "type": "HTMLInputTypeAttribute",
+          "required": false
+        },
+        {
+          "name": "value",
+          "type": "string | number | readonly string[]",
+          "required": false
+        },
+        {
+          "name": "onChange",
+          "type": "ChangeEventHandler<HTMLInputElement, HTMLInputElement>",
+          "required": false
+        },
+        {
+          "name": "className",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "children",
+          "type": "ReactNode",
+          "required": false
+        }
+      ],
+      "inherits": "input"
+    },
+    {
+      "name": "Slider",
+      "description": "A range slider.",
+      "props": [
+        {
+          "name": "value",
+          "type": "number[]",
+          "required": true,
+          "description": "The current values (one thumb per value)."
+        },
+        {
+          "name": "onValueChange",
+          "type": "(value: number[]) => void",
+          "required": false,
+          "description": "Called with the new values while dragging."
+        },
+        {
+          "name": "min",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "max",
+          "type": "number",
+          "required": false
+        },
+        {
+          "name": "step",
+          "type": "number",
+          "required": false,
+          "default": "1"
+        },
+        {
+          "name": "className",
+          "type": "string",
+          "required": false
+        }
+      ]
+    }
+  ],
+  "jsx": true,
+  "assets": {
+    "kit": {
+      "url": "/@genui-sandbox-kit/kit.js?v=d654b52c0628",
+      "hash": "d654b52c0628"
+    },
+    "css": null,
+    "tailwind": null
+  }
+}
