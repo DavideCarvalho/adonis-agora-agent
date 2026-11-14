@@ -179,23 +179,31 @@ export function checkDevToolsGate(
   };
 }
 
-/** authkit's `mcp` option, as the doctor reads it from `config/authkit.ts`. */
+/** Whether authkit lets MCP clients sign in, as the doctor reads it from `config/authkit.ts`. */
 export type AuthkitMcpOption =
   | { installed: false }
-  | { installed: true; mcp: boolean }
+  | { installed: true; mcpClients: boolean }
   | { installed: true; unresolved: string };
 
-/** `mcp: true`, an options object, or a resolved `{ enabled }` — on unless it says otherwise. */
-function mcpOptionOn(value: unknown): boolean {
-  if (value === true) return true;
-  if (typeof value !== 'object' || value === null) return false;
-  return (value as { enabled?: unknown }).enabled !== false;
+/**
+ * MCP client login is automatic in authkit: on whenever an MCP resource is registered (the dev
+ * tools hub registers itself), off only with `mcpClients: false`. Read structurally, without
+ * importing authkit: the input `mcpClients: false`, or the resolved `{ allowed: false }`.
+ */
+function mcpClientsAllowed(config: AnyConfig | null | undefined): boolean {
+  const value = config?.mcpClients;
+  if (value === false) return false;
+  if (typeof value === 'object' && value !== null) {
+    return (value as { allowed?: unknown }).allowed !== false;
+  }
+  return true;
 }
 
 /**
- * Reads `mcp` from `config/authkit.ts` without importing authkit: the file's `defineConfig` is a
- * config provider (`{ type: 'provider', resolver }`), resolved here the way the authkit provider
- * resolves it; a plain object is read as is. No `config/authkit.ts` → authkit is not installed.
+ * Reads `mcpClients` from `config/authkit.ts` without importing authkit: the file's `defineConfig`
+ * is a config provider (`{ type: 'provider', resolver }`), resolved here the way the authkit
+ * provider resolves it; a plain object is read as is. No `config/authkit.ts` → authkit is not
+ * installed.
  */
 export async function readAuthkitMcpOption(app: ApplicationService): Promise<AuthkitMcpOption> {
   const raw = app.config.get<unknown>('authkit', undefined);
@@ -206,7 +214,7 @@ export async function readAuthkitMcpOption(app: ApplicationService): Promise<Aut
       provider.type === 'provider' && typeof provider.resolver === 'function'
         ? await (provider.resolver as (app: ApplicationService) => Promise<unknown>)(app)
         : raw;
-    return { installed: true, mcp: mcpOptionOn((config as AnyConfig | null)?.mcp) };
+    return { installed: true, mcpClients: mcpClientsAllowed(config as AnyConfig | null) };
   } catch (error) {
     return {
       installed: true,
@@ -232,16 +240,16 @@ export function checkDevToolsAuthkitMcp(
       message: `config/authkit.ts could not be resolved: ${authkit.unresolved}`,
     };
   }
-  if (authkit.mcp) {
+  if (authkit.mcpClients) {
     return {
       status: 'ok',
-      message: `MCP clients can sign in to /${devTools.path} through authkit.`,
+      message: `MCP clients can sign in to /${devTools.path} through authkit (automatic: the hub registers itself as an MCP resource).`,
     };
   }
   return {
     status: 'warn',
-    message: `The dev tools hub at /${devTools.path} is on, but authkit's \`mcp\` option is off: MCP clients can't register.`,
-    fix: 'Set `mcp: true` in config/authkit.ts.',
+    message: `The dev tools hub at /${devTools.path} is on, but \`mcpClients: false\` in config/authkit.ts turns MCP client login off: MCP clients can't register.`,
+    fix: 'Remove `mcpClients: false` from config/authkit.ts.',
     docs: `${DOCS}/dev-tools#connect-a-client`,
   };
 }
