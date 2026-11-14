@@ -69,11 +69,13 @@ export default defineConfig({
 })
 ```
 
+In your existing `User` model, add the token provider:
+
 ```ts title="app/models/user.ts"
 import { DbAccessTokensProvider } from '@adonisjs/auth/access_tokens'
 
 export default class User extends compose(BaseModel, AuthFinder) {
-  // …
+  // …your existing columns
   static accessTokens = DbAccessTokensProvider.forModel(User)
 }
 ```
