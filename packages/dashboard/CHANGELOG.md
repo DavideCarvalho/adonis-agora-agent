@@ -1,5 +1,11 @@
 # @adonis-agora/agent-dashboard
 
+## 1.0.0-rc.9
+
+### Patch Changes
+
+- [#611](https://github.com/DavideCarvalho/adonis-agora-agent/pull/611) [`54808c6`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/54808c6b54ab24e7eceadda214a8317b6723bea7) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Console sidebar matches the old authkit admin console exactly (Agora console kit): nav rows are 32px with no gap between them, section labels and the brand/switcher header use authkit's spacing, the footer role shows as sent (no forced uppercase), and the theme toggle sits left-aligned with a 13px icon next to a 26px sign-out button.
+
 ## 1.0.0-rc.8
 
 ### Patch Changes
