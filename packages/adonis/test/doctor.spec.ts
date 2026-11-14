@@ -133,43 +133,52 @@ describe('agent doctor checks', () => {
     ).toBe('ok');
   });
 
-  it('dev-tools-authkit-mcp: warns when the hub is on with authkit but authkit mcp is off', () => {
-    const off = checkDevToolsAuthkitMcp({}, { installed: true, mcp: false });
-    expect(off).toMatchObject({ status: 'warn', fix: 'Set `mcp: true` in config/authkit.ts.' });
+  it('dev-tools-authkit-mcp: automatic login, warns only on mcpClients: false with the hub on', () => {
+    const off = checkDevToolsAuthkitMcp({}, { installed: true, mcpClients: false });
+    expect(off).toMatchObject({
+      status: 'warn',
+      fix: 'Remove `mcpClients: false` from config/authkit.ts.',
+    });
     expect(off.message).toContain("MCP clients can't register");
     expect(off.message).toContain('/mcp/agora');
-    expect(checkDevToolsAuthkitMcp({}, { installed: true, mcp: true }).status).toBe('ok');
+    const on = checkDevToolsAuthkitMcp({}, { installed: true, mcpClients: true });
+    expect(on.status).toBe('ok');
+    expect(on.message).toContain('automatic');
     expect(checkDevToolsAuthkitMcp({}, { installed: false }).status).toBe('skip');
     expect(checkDevToolsAuthkitMcp({}, { installed: true, unresolved: 'boom' }).status).toBe(
       'skip',
     );
     expect(
-      checkDevToolsAuthkitMcp({ devTools: false }, { installed: true, mcp: false }).status,
+      checkDevToolsAuthkitMcp({ devTools: false }, { installed: true, mcpClients: false }).status,
     ).toBe('skip');
-    expect(checkDevToolsAuthkitMcp(undefined, { installed: true, mcp: false }).status).toBe('skip');
+    expect(checkDevToolsAuthkitMcp(undefined, { installed: true, mcpClients: false }).status).toBe(
+      'skip',
+    );
   });
 
-  it('reads authkit mcp from a config provider, a resolved config or a plain object', async () => {
+  it('reads authkit mcpClients structurally: provider, resolved config or plain object', async () => {
     const appWith = (authkit: unknown) =>
       ({ config: { get: (_key: string, fallback: unknown) => authkit ?? fallback } }) as never;
     const provider = (config: unknown) => ({ type: 'provider', resolver: async () => config });
+    const on = { installed: true, mcpClients: true };
+    const off = { installed: true, mcpClients: false };
     expect(await readAuthkitMcpOption(appWith(undefined))).toEqual({ installed: false });
-    expect(await readAuthkitMcpOption(appWith(provider({ mcp: { enabled: true } })))).toEqual({
-      installed: true,
-      mcp: true,
-    });
-    expect(await readAuthkitMcpOption(appWith(provider({ mcp: { enabled: false } })))).toEqual({
-      installed: true,
-      mcp: false,
-    });
-    expect(await readAuthkitMcpOption(appWith({ mcp: true }))).toEqual({
-      installed: true,
-      mcp: true,
-    });
-    expect(await readAuthkitMcpOption(appWith({ issuer: 'x' }))).toEqual({
-      installed: true,
-      mcp: false,
-    });
+    // resolved authkit config: `mcpClients` is `{ allowed, resources, ... }`
+    expect(
+      await readAuthkitMcpOption(
+        appWith(provider({ mcpClients: { allowed: true, resources: [] } })),
+      ),
+    ).toEqual(on);
+    expect(
+      await readAuthkitMcpOption(appWith(provider({ mcpClients: { allowed: false } }))),
+    ).toEqual(off);
+    // input shape
+    expect(await readAuthkitMcpOption(appWith({ mcpClients: false }))).toEqual(off);
+    expect(
+      await readAuthkitMcpOption(appWith({ mcpClients: { resources: ['https://x/mcp'] } })),
+    ).toEqual(on);
+    // nothing said: automatic
+    expect(await readAuthkitMcpOption(appWith({ issuer: 'x' }))).toEqual(on);
     const failing = {
       type: 'provider',
       resolver: async () => {

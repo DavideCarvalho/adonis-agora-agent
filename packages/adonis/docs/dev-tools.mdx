@@ -35,9 +35,11 @@ How the client gets in depends on how your consoles are protected:
   browser session does. `authkitDashboardAuthorize()`, `authorizeByRoles({ roles: ['ADMIN'] })` or
   `(ctx) => ctx.auth.user?.isAdmin` work over MCP unchanged.
 
-<Callout title="authkit needs MCP sign-in turned on">
-The OAuth login uses authkit's MCP support: `mcp: true` in `config/authkit.ts`. The dev endpoint
-registers itself as a protected resource of its own, so a token issued for your product MCP endpoint
+<Callout title="MCP sign-in turns on by itself">
+The OAuth login uses authkit's MCP client login. It is on whenever an MCP resource is registered with
+authkit, and the dev endpoint registers itself as one, so there is nothing to set. Only
+`mcpClients: false` in `config/authkit.ts`, or the admin console's MCP clients switch, turns it off.
+The dev endpoint is a protected resource of its own, so a token issued for your product MCP endpoint
 is refused here, and the other way round.
 </Callout>
 
