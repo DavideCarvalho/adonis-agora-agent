@@ -6,6 +6,7 @@ import { readDoctorChecks, runAgoraDoctor } from '../src/doctor/agora_doctor.js'
 import {
   checkActorResolver,
   checkConsoleGate,
+  checkDevToolsAuth,
   checkDevToolsAuthkitMcp,
   checkDevToolsGate,
   checkMcpCsrf,
@@ -156,6 +157,43 @@ describe('agent doctor checks', () => {
     );
   });
 
+  it('dev-tools-auth: reports the sign-in mode and flags a broken devTools.auth', () => {
+    const verify = async () => null;
+    const custom = checkDevToolsAuth(
+      { devTools: { auth: { authorizationServers: ['https://id.example.com'], verify } } },
+      true,
+    );
+    expect(custom.status).toBe('ok');
+    expect(custom.message).toContain('custom auth (https://id.example.com)');
+    expect(custom.message).toContain('authkit is installed but not used');
+    expect(checkDevToolsAuth({}, true).message).toContain('through authkit');
+    const tokenOnly = checkDevToolsAuth({}, false);
+    expect(tokenOnly.status).toBe('ok');
+    expect(tokenOnly.message).toContain('token-only');
+    expect(
+      checkDevToolsAuth({ devTools: { auth: { authorizationServers: [], verify } } }, false),
+    ).toMatchObject({ status: 'warn' });
+    const noVerify = checkDevToolsAuth(
+      { devTools: { auth: { authorizationServers: ['https://id.example.com'] } } },
+      false,
+    );
+    expect(noVerify.status).toBe('error');
+    expect(noVerify.message).toContain('verify');
+    expect(
+      checkDevToolsAuth({ devTools: { auth: { authorizationServers: ['nope'], verify } } }, false)
+        .status,
+    ).toBe('error');
+    expect(checkDevToolsAuth({ devTools: false }, true).status).toBe('skip');
+    expect(checkDevToolsAuth(undefined, true).status).toBe('skip');
+    // with devTools.auth the authkit sign-in check steps aside
+    expect(
+      checkDevToolsAuthkitMcp(
+        { devTools: { auth: { authorizationServers: ['https://id.example.com'], verify } } },
+        { installed: true, mcpClients: false },
+      ).status,
+    ).toBe('skip');
+  });
+
   it('reads authkit mcpClients structurally: provider, resolved config or plain object', async () => {
     const appWith = (authkit: unknown) =>
       ({ config: { get: (_key: string, fallback: unknown) => authkit ?? fallback } }) as never;
@@ -203,6 +241,7 @@ describe('agent doctor checks', () => {
       'agent.mcp-csrf',
       'agent.dev-tools-gate',
       'agent.dev-tools-authkit-mcp',
+      'agent.dev-tools-auth',
       'agent.tenancy-store',
     ]);
   });
@@ -228,7 +267,7 @@ describe('agent_provider registers its checks into agora.doctor', () => {
     await app.init();
     await app.boot();
     const checks = await readDoctorChecks(app.container);
-    expect(checks.filter((check) => check.lib === 'agent')).toHaveLength(8);
+    expect(checks.filter((check) => check.lib === 'agent')).toHaveLength(9);
     const { report } = await runAgoraDoctor(app, checks, { only: 'agent.console-gate' });
     expect(report.results).toEqual([
       expect.objectContaining({ id: 'agent.console-gate', status: 'warn' }),

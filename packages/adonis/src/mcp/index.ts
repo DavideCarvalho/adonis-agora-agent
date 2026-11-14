@@ -4,6 +4,15 @@ export type {
   DevToolsActionsAuthorizer,
   DevToolsActionsMap,
 } from '../dev-tools/actions.js';
+export type {
+  DevToolsAuth,
+  DevToolsAuthContext,
+  DevToolsPrincipal,
+  DevToolsUserResolver,
+  IntrospectionAuthOptions,
+  JwtAuthOptions,
+} from '../dev-tools/auth.js';
+export { devToolsPrincipal, introspectionAuth, jwtAuth } from '../dev-tools/auth.js';
 export { actorFromAuthInfo, isActor, isMcpAuthInfo } from './actor.js';
 export type {
   ApiKeyActorResolver,

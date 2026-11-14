@@ -32,6 +32,8 @@ How the client gets in depends on how your consoles are protected:
 
 - **Your app's own `@adonisjs/auth` access tokens**: each developer sends a personal token instead
   of a shared one. See [Without authkit](#without-authkit).
+- **Any OAuth server** (Sésame, Auth0, Keycloak, Entra ID…) with `devTools.auth`: the client opens
+  that server's login. See [Any OAuth server](#any-oauth-server).
 - **`@adonis-agora/authkit-server` in the app**: the client opens the login in your browser (standard
   MCP OAuth), and the account you sign in with reaches each console's `authorize` exactly like your
   browser session does. `authkitDashboardAuthorize()`, `authorizeByRoles({ roles: ['ADMIN'] })` or
@@ -115,8 +117,153 @@ claude mcp add --transport http agora http://localhost:3333/mcp/agora \
 Put the check in `authorize`, not in `devTools.middleware`: every lib with a console decides with its
 own `authorize`, and `devTools.middleware` is for route concerns such as rate limiting.
 
-Browser login (MCP OAuth, where the client opens a sign-in page) needs authkit's MCP client login.
-Without authkit, MCP clients use a header token.
+For a browser login (the client opens a sign-in page) without authkit, use
+[Any OAuth server](#any-oauth-server).
+
+### Any OAuth server
+
+Set `devTools.auth` and MCP clients sign in with your own authorization server. The hub lists it in
+`/.well-known/oauth-protected-resource/mcp/agora`, so the client finds the login on its own, and
+every request's bearer token is checked before the consoles' `authorize` run.
+
+`jwtAuth` checks JWT access tokens against the issuer's published keys. It accepts a token whose
+`aud` is the hub's URL (`https://app.example.com/mcp/agora`):
+
+```ts title="config/mcp.ts"
+import env from '#start/env'
+import User from '#models/user'
+import { defineMcpConfig, jwtAuth } from '@adonis-agora/agent/mcp'
+
+export default defineMcpConfig({
+  name: 'Acme',
+  version: '1.0.0',
+  devTools: {
+    auth: jwtAuth({
+      issuer: env.get('APP_URL'),
+      resolveUser: (claims) => User.find(claims.sub),
+    }),
+    authorize: async (ctx) => ctx.auth.user?.isAdmin === true,
+  },
+})
+```
+
+With `resolveUser`, `ctx.auth.user` is that user for the whole request, so the `authorize` you
+already wrote for your consoles (`authorizeByRoles({ roles: ['ADMIN'] })`,
+`(ctx) => ctx.auth.user?.isAdmin`) works over MCP unchanged. A token whose user no longer exists is
+refused.
+
+To decide from the token itself, read its claims with `devToolsPrincipal(ctx)`:
+
+```ts title="config/agent.ts"
+import { defineConfig } from '@adonis-agora/agent'
+import { devToolsPrincipal } from '@adonis-agora/agent/mcp'
+
+export default defineConfig({
+  dashboard: {
+    authorize: (ctx) =>
+      devToolsPrincipal(ctx)?.roles?.includes('admin') === true || ctx.auth.user?.isAdmin === true,
+  },
+})
+```
+
+`devToolsPrincipal(ctx)` returns `{ subject, claims, roles, scopes, user }`, or `undefined` outside a
+dev tools request. `roles` comes from the `roles` claim; pick another with `rolesClaim`.
+
+#### Sésame
+
+With [`@adonisjs/sesame`](https://docs.adonisjs.com/guides/oauth-server/introduction) in the same
+app, issue JWT access tokens and accept the hub as a resource:
+
+```ts title="config/sesame.ts"
+import env from '#start/env'
+import { defineConfig } from '@adonisjs/sesame'
+
+export default defineConfig({
+  issuer: env.get('APP_URL'),
+  accessTokenFormat: 'jwt',
+  jwk: JSON.parse(env.get('SESAME_JWK')),
+  externalResources: [`${env.get('APP_URL')}/mcp/agora`],
+  allowDynamicRegistration: true,
+  // …store, scopes, login and consent pages
+})
+```
+
+Mount Sésame's discovery routes (`sesame.registerDiscoveryRoutes()` in `start/routes.ts`) so `jwtAuth` finds the keys. List the
+hub in `externalResources` rather than calling `registerProtectedResource('/mcp/agora')`: the hub
+serves its own `/.well-known/oauth-protected-resource/mcp/agora`, and both would claim the route.
+MCP clients register themselves, so keep dynamic registration (or client ID metadata documents) on.
+
+#### Auth0, Keycloak and other OIDC servers
+
+Give `jwtAuth` the issuer exactly as it appears in the tokens' `iss`:
+
+```ts title="config/mcp.ts"
+devTools: {
+  auth: jwtAuth({
+    issuer: 'https://acme.eu.auth0.com/',
+    // Auth0 puts custom claims under a namespace
+    rolesClaim: 'https://acme.com/roles',
+    requiredScopes: ['agora:dev'],
+    scopes: ['openid', 'agora:dev'],
+  }),
+},
+```
+
+- Register the hub's URL as the API / audience in your server (Auth0 API identifier, Keycloak
+  audience mapper). For another audience, set `audience`.
+- `jwksUri` skips discovery when the server does not publish
+  `/.well-known/openid-configuration`.
+- `requiredScopes` refuses a token without those scopes (`403`); `scopes` is what the hub
+  advertises.
+
+#### Opaque tokens
+
+For a server that issues opaque access tokens, check each one with its introspection endpoint:
+
+```ts title="config/mcp.ts"
+import { introspectionAuth } from '@adonis-agora/agent/mcp'
+
+devTools: {
+  auth: introspectionAuth({
+    issuer: 'https://id.acme.com',
+    endpoint: 'https://id.acme.com/oauth/introspect',
+    clientId: env.get('DEV_TOOLS_CLIENT_ID'),
+    clientSecret: env.get('DEV_TOOLS_CLIENT_SECRET'),
+  }),
+},
+```
+
+A token must name the hub in its `aud`. If your server returns no `aud` for tokens bound to no
+resource, set `requireAudience: false` to accept them.
+
+#### Your own check
+
+`devTools.auth` takes any object with the issuers to advertise and a `verify`:
+
+```ts title="config/mcp.ts"
+import { McpAuthError } from '@adonis-agora/agent/mcp'
+
+devTools: {
+  auth: {
+    authorizationServers: ['https://id.acme.com'],
+    scopes: ['agora:dev'],
+    async verify(token, { resource }) {
+      const claims = await myVerifier(token) // your library
+      if (!claims) return null // not ours: left for an authorizeByToken console
+      if (claims.aud !== resource) throw new McpAuthError('invalid_token: wrong audience')
+      return { subject: claims.sub, claims, roles: claims.roles }
+    },
+  },
+},
+```
+
+Return `null` for a token that is not yours; a console that takes `authorizeByToken` still gets it.
+Throw `McpAuthError` to refuse one you recognized. Any other error (your key server is down) answers `503`, so the
+client does not loop through the login.
+
+With `devTools.auth` set, authkit is not used for the hub, even when it is installed. A request
+without a token is answered `401` with the sign-in pointer, and `agora:doctor` reports which mode
+the hub uses.
 
 ## What you see
 
@@ -268,6 +415,7 @@ export default defineMcpConfig({
 - `devTools: false` turns the endpoint off.
 - `authorize`: who may use the tools of libs without a console (see above).
 - `actions`: which tools that change data each caller gets (see [Actions](#actions)).
+- `auth`: sign-in with any OAuth server (see [Any OAuth server](#any-oauth-server)).
 - None of the product endpoint's settings (`auth`, `allowedTools`, `authorizer`, `middleware`,
   `publicUrl`) apply to the dev endpoint.
 

@@ -25,6 +25,7 @@ import {
   type DevToolsActions,
   DevToolsActionsGate,
 } from './actions.js';
+import { bindDevToolsPrincipal, type DevToolsAuth } from './auth.js';
 import { bridgeIdentity, identityForToken } from './authkit-bridge.js';
 import type { DevTool, DevToolsCaller, DevToolsDecision } from './contract.js';
 import type { DevToolsHubImpl, RegisteredDevToolsLib } from './hub.js';
@@ -60,8 +61,10 @@ export interface DevToolsEndpointOptions {
   /** Normalized route path, no slashes around (`mcp/agora`). */
   path: string;
   actions: DevToolsActions;
-  /** `authKitAuth()` resolved, when `@adonis-agora/authkit-server` is in the app. */
+  /** `authKitAuth()` resolved, when `@adonis-agora/authkit-server` is in the app (and no `auth`). */
   authkit?: McpAuth | undefined;
+  /** `devTools.auth`: OAuth with any authorization server. Wins over `authkit`. */
+  auth?: DevToolsAuth | undefined;
   logger: () => Promise<DevToolsLogger | undefined>;
   version: string;
   /**
@@ -73,7 +76,7 @@ export interface DevToolsEndpointOptions {
   inProduction?: boolean;
 }
 
-type Refusal = { status: 401 | 403; error: string; challenge: string };
+type Refusal = { status: 401 | 403 | 503; error: string; challenge: string };
 
 interface Admission {
   caller: DevToolsCaller;
@@ -85,9 +88,11 @@ interface Admission {
  * The dev MCP endpoint: stateless, re-authorized on every request, per lib. See the "Dev tools over
  * MCP" docs page for the behaviour; the order of a request is:
  *
- * 1. a bearer token is first offered to authkit (when installed): a token issued for THIS endpoint
- *    signs the account in and is bridged into the request like a browser session; a Poppy token
- *    needs the `agora:dev` scope. Any other bearer is left on the request for `authorizeByToken`.
+ * 1. a bearer token is first offered to `devTools.auth` when set (its principal is bound to the
+ *    request: `devToolsPrincipal(ctx)`, and `ctx.auth.user` with a resolved user), else to authkit
+ *    (when installed): a token issued for THIS endpoint signs the account in and is bridged into the
+ *    request like a browser session; a Poppy token needs the `agora:dev` scope. A bearer neither
+ *    recognizes is left on the request for `authorizeByToken`.
  * 2. each lib the JSON-RPC message needs runs its own console `authorize(ctx)`, once.
  * 3. none allowed → `401`/`403`; else a registry of the allowed libs' tools serves the message.
  */
@@ -102,8 +107,24 @@ export class DevToolsEndpoint {
     return this.#options.path;
   }
 
-  /** `GET /.well-known/oauth-protected-resource/<path>` — only mounted with authkit. */
+  /** Whether the hub does OAuth discovery (`devTools.auth`, or authkit). */
+  get oauth(): boolean {
+    return this.#options.auth !== undefined || this.#options.authkit?.oauth !== undefined;
+  }
+
+  /** `GET /.well-known/oauth-protected-resource/<path>` — only mounted with `devTools.auth` or authkit. */
   async metadata(ctx: HttpContext) {
+    const auth = this.#options.auth;
+    if (auth !== undefined) {
+      ctx.response.header('access-control-allow-origin', '*');
+      return ctx.response.json({
+        resource: mcpResourceUrl(origin(ctx), this.#options.path),
+        authorization_servers: [...auth.authorizationServers],
+        scopes_supported: [...(auth.scopes ?? [])],
+        bearer_methods_supported: ['header'],
+        resource_name: auth.resourceName ?? 'Agora dev tools',
+      });
+    }
     const oauth = this.#options.authkit?.oauth;
     if (oauth === undefined) return ctx.response.status(404).json({ error: 'not found' });
     const meta = typeof oauth === 'function' ? await oauth() : oauth;
@@ -217,7 +238,48 @@ export class DevToolsEndpoint {
     let actor: Actor | undefined;
     let signedIn = false;
     const authkit = this.#options.authkit;
-    if (bearer !== undefined && authkit !== undefined) {
+    const custom = this.#options.auth;
+    if (bearer !== undefined && custom !== undefined) {
+      const resource = mcpResourceUrl(origin(ctx), this.#options.path);
+      let principal: Awaited<ReturnType<DevToolsAuth['verify']>>;
+      try {
+        principal = await custom.verify(bearer, { ctx, app: this.#options.app, resource });
+      } catch (error) {
+        if (!(error instanceof McpAuthError)) {
+          // The JWKS or introspection endpoint is unreachable: a server-side outage, not a bad
+          // token. A 503 keeps MCP clients out of a login loop and shows up in monitoring.
+          const logger = await this.#options.logger();
+          logger?.warn(
+            { devTools: true, error: error instanceof Error ? error.message : String(error) },
+            'agora dev tools: devTools.auth could not verify a token',
+          );
+          return this.#refuse(ctx, needed, tokenId ?? 'token', {
+            status: 503,
+            error: 'temporarily_unavailable: the authorization server could not be reached',
+            challenge: '',
+          });
+        }
+        const refusal = error;
+        return this.#refuse(ctx, needed, tokenId ?? 'token', {
+          status: refusal.status,
+          error: refusal.message,
+          challenge: this.#challenge(ctx, {
+            error:
+              refusal.error ?? (refusal.status === 403 ? 'insufficient_scope' : 'invalid_token'),
+          }),
+        });
+      }
+      if (principal !== null) {
+        bindDevToolsPrincipal(ctx, principal);
+        signedIn = true;
+        caller = { id: `user:${principal.subject}`, via: 'session' };
+        actor = {
+          id: principal.subject,
+          ...(principal.roles !== undefined ? { roles: principal.roles } : {}),
+        };
+      }
+      // `null`: not this auth's token, left on the request for an `authorizeByToken` console.
+    } else if (bearer !== undefined && authkit !== undefined) {
       try {
         const info = await authkit.verify(bearer, {
           resource: mcpResourceUrl(origin(ctx), this.#options.path),
@@ -288,8 +350,11 @@ export class DevToolsEndpoint {
     const allowed = decisions.filter(({ decision }) => decision.allowed).map(({ lib }) => lib);
     if (needed.length > 0 && allowed.length === 0) {
       // A signed-in account is never sent back to the login: what is left is a 403.
+      // With OAuth on, a caller with no credentials at all is sent to the login, whatever the console
+      // answered: a `403` would leave an MCP client nowhere to go.
+      const anonymous = bearer === undefined && caller.via === 'open' && this.oauth;
       const unauthenticated =
-        !signedIn && decisions.some(({ decision }) => isUnauthenticated(decision));
+        !signedIn && (anonymous || decisions.some(({ decision }) => isUnauthenticated(decision)));
       return this.#refuse(
         ctx,
         needed,
@@ -334,7 +399,7 @@ export class DevToolsEndpoint {
     };
   }
 
-  /** `Bearer realm="agora-dev"`, plus the error and, with authkit, where to sign in. */
+  /** `Bearer realm="agora-dev"`, plus the error and, with OAuth on, where to sign in. */
   #challenge(
     ctx: HttpContext,
     options: { error?: 'invalid_token' | 'insufficient_scope'; scope?: string },
@@ -342,7 +407,7 @@ export class DevToolsEndpoint {
     const params = ['realm="agora-dev"'];
     if (options.error !== undefined) params.push(`error="${options.error}"`);
     if (options.scope !== undefined) params.push(`scope="${options.scope}"`);
-    if (this.#options.authkit?.oauth !== undefined) {
+    if (this.oauth) {
       params.push(
         `resource_metadata="${protectedResourceMetadataUrl(origin(ctx), this.#options.path)}"`,
       );

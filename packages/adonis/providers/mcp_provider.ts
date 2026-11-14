@@ -9,6 +9,7 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { personalAgentGate } from '../src/a2a/gate.js';
 import { DefaultToolAuthorizer } from '../src/authorizer.js';
 import { resolveConsoleAuthorize } from '../src/console-authorize.js';
+import { devToolsAuthProblems } from '../src/dev-tools/auth.js';
 import type { DevToolsHub } from '../src/dev-tools/contract.js';
 import { csrfBlocksPath, csrfWarning } from '../src/dev-tools/csrf.js';
 import { DevToolsEndpoint, type DevToolsLogger } from '../src/dev-tools/endpoint.js';
@@ -200,12 +201,22 @@ export default class McpProvider {
         `[@adonis-agora/agent] devTools.path "${path}" in config/mcp.ts is already an MCP endpoint's path: pick another one (default "${DEV_TOOLS_PATH}").`,
       );
     }
-    // With authkit in the app, a person signs in through the standard MCP OAuth flow. The endpoint is
-    // a protected resource of its own: a token for the product endpoint is refused here, and back.
+    // `devTools.auth` (any authorization server) wins; else, with authkit in the app, a person signs
+    // in through the standard MCP OAuth flow. Either way the endpoint is a protected resource of its
+    // own: a token for the product endpoint is refused here, and back.
+    const auth = devTools.auth;
+    if (auth !== undefined) {
+      const { errors, warnings } = devToolsAuthProblems(auth);
+      if (errors.length > 0) {
+        throw new Error(`[@adonis-agora/agent] config/mcp.ts: ${errors.join(' ')}`);
+      }
+      for (const warning of warnings) console.warn(`[@adonis-agora/agent] ${warning}`);
+    }
     const hasAuthkit = this.app.container.hasBinding('authkit.server' as never);
-    const authkit = hasAuthkit
-      ? await resolveMcpAuth(authKitAuth({ resourceName: 'Agora dev tools' }), { app: this.app })
-      : undefined;
+    const authkit =
+      auth === undefined && hasAuthkit
+        ? await resolveMcpAuth(authKitAuth({ resourceName: 'Agora dev tools' }), { app: this.app })
+        : undefined;
     let logger: DevToolsLogger | undefined;
     const endpoint = new DevToolsEndpoint({
       app: this.app,
@@ -213,6 +224,7 @@ export default class McpProvider {
       path,
       actions: devTools.actions,
       authkit,
+      auth,
       version: config.version ?? '1.0.0',
       ...(devTools.authorize !== undefined
         ? { endpointAuthorize: resolveConsoleAuthorize(devTools.authorize) }
@@ -242,6 +254,8 @@ export default class McpProvider {
     if (authkit !== undefined) {
       // By path: the dev endpoint has no `publicUrl` of its own; the issuer's origin is the app's.
       registerOAuthResource({ path: route });
+    }
+    if (endpoint.oauth) {
       router
         .get(`/.well-known/oauth-protected-resource/${path}`, (c: HttpContext) =>
           endpoint.metadata(c),

@@ -1,5 +1,6 @@
 import type { ConsoleAuthorize } from '../console-authorize.js';
 import type { DevToolsActions } from '../dev-tools/actions.js';
+import type { DevToolsAuth } from '../dev-tools/auth.js';
 import type { RolesPolicy } from '../spi/roles-policy.js';
 import type { EmptyRoles, ToolRegistry } from '../tool-registry.js';
 import type { McpAuth, McpAuthContext, McpAuthFactory } from './auth.js';
@@ -148,6 +149,14 @@ export interface McpDevToolsConfig {
    * production. Libs with a console keep their own gate; this never widens them.
    */
   authorize?: ConsoleAuthorize;
+  /**
+   * OAuth for the hub with any authorization server: `jwtAuth({ issuer })`, `introspectionAuth(…)`
+   * or your own `{ authorizationServers, verify }`. The hub advertises the issuers in its
+   * protected-resource metadata, so MCP clients open the login, and `verify` turns each bearer into
+   * the principal the consoles' `authorize` see (`devToolsPrincipal(ctx)`, and `ctx.auth.user` when it
+   * resolves a user). Set, it replaces the authkit sign-in (the hub does not register with authkit).
+   */
+  auth?: DevToolsAuth;
 }
 
 /** An extra MCP server — see {@link McpConfig.endpoints}. */
