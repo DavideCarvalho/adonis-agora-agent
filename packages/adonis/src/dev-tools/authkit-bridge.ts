@@ -1,5 +1,6 @@
 import type { HttpContext } from '@adonisjs/core/http';
 import type { ApplicationService } from '@adonisjs/core/types';
+import { actorFromClaims } from '../mcp/jwt-verifier.js';
 
 /**
  * Bridges an MCP sign-in (an authkit access token the dev endpoint verified) into the request, so a
@@ -26,6 +27,7 @@ export interface BridgedIdentity {
   orgId?: string | null;
   orgSlug?: string | null;
   orgRole?: string | null;
+  sessionId?: string;
   /** The real actor of an impersonation (`act` claim). */
   actor?: { sub: string; email?: string };
   issuedAt: number;
@@ -292,6 +294,7 @@ export async function bridgeAuthkitClaims(
 function localIdentity(claims: Record<string, unknown>, rolesClaim: string): BridgedIdentity {
   const roles = claims[rolesClaim];
   const text = (key: string) => (typeof claims[key] === 'string' ? (claims[key] as string) : null);
+  const actor = actorFromClaims(claims);
   return {
     userId: String(claims.sub),
     email: text('email') ?? '',
@@ -302,9 +305,16 @@ function localIdentity(claims: Record<string, unknown>, rolesClaim: string): Bri
       ...(text('name') !== null ? { name: text('name') as string } : {}),
       ...(text('picture') !== null ? { avatarUrl: text('picture') as string } : {}),
     },
-    orgId: text('org_id'),
+    ...(text('sid') !== null ? { sessionId: text('sid') as string } : {}),
+    orgId:
+      text('org_id') ??
+      text('active_organization_id') ??
+      text('organization_id') ??
+      text('tenant_id') ??
+      text('tid'),
     orgSlug: text('org_slug'),
     orgRole: text('org_role'),
+    ...(actor !== undefined ? { actor } : {}),
     issuedAt: typeof claims.iat === 'number' ? claims.iat * 1000 : 0,
     expiresAt: typeof claims.exp === 'number' ? claims.exp * 1000 : 0,
     raw: claims,

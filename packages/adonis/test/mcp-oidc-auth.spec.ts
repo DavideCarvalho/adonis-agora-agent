@@ -275,6 +275,14 @@ describe('oidcAuth.verify', () => {
     });
   });
 
+  it('a self-referential act is not an impersonation', async () => {
+    const auth = await resolveMcpAuth(oidcAuth({ issuer }), { app });
+    const info = await auth.verify(await jwt({ sub: 'u', aud: resource, act: { sub: 'u' } }), {
+      resource,
+    });
+    expect(info.extra.act).toBeUndefined();
+  });
+
   it('does not bridge a client_credentials token, nor with authkit: false', async () => {
     const auth = await resolveMcpAuth(oidcAuth({ issuer }), { app });
     const machine = {} as HttpContext;

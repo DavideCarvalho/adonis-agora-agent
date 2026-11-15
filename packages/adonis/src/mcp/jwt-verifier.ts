@@ -180,7 +180,7 @@ export function rolesFrom(value: unknown): string[] | undefined {
 
 /**
  * The real actor of an impersonation token: its RFC 8693 `act` claim (`{ sub, email? }`), or
- * `undefined` when the token acts for its own subject.
+ * `undefined` when the token acts for its own subject (no `act`, or `act.sub` = `sub`).
  */
 export function actorFromClaims(
   claims: Record<string, unknown>,
@@ -189,5 +189,7 @@ export function actorFromClaims(
   if (typeof act !== 'object' || act === null) return undefined;
   const { sub, email } = act as { sub?: unknown; email?: unknown };
   if (typeof sub !== 'string' || sub === '') return undefined;
+  // A token acting for its own subject is not an impersonation.
+  if (sub === claims.sub) return undefined;
   return { sub, ...(typeof email === 'string' && email !== '' ? { email } : {}) };
 }
