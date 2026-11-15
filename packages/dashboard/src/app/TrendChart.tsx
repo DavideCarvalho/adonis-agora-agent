@@ -30,6 +30,7 @@ export function TrendChart({ points, metric }: { points: UsageTrendPoint[]; metr
       x={day}
       series={series}
       formatValue={formatValue}
+      integer={!cost}
       ariaLabel={`daily ${cost ? 'cost' : 'token'} trend`}
       height={200}
     />

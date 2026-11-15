@@ -81,6 +81,7 @@ function ReliabilityTrendChart({ points }: { points: RunTrendPoint[] }) {
       x={trendDay}
       series={TREND_SERIES}
       layout="grouped"
+      integer
       formatValue={formatCount}
       ariaLabel="daily runs vs failed trend"
       height={160}
