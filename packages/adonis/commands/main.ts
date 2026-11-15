@@ -8,6 +8,7 @@ import {
   AgentToolsList,
   AgentToolsStats,
 } from './agent_catalog.js';
+import { AgentCryptoReseal } from './agent_crypto.js';
 import AgentDoctor from './agent_doctor.js';
 import {
   AgentApprovalsList,
@@ -54,6 +55,7 @@ const loader = new ListLoader([
   AgentPricingList,
   AgentPricingSet,
   AgentTenantsList,
+  AgentCryptoReseal,
 ]);
 
 export const getMetaData = loader.getMetaData.bind(loader);

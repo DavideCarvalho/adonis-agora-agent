@@ -59,6 +59,23 @@ export interface PoppyConnectionStore {
     id: string,
     patch: Partial<Pick<PoppyPendingConnect, 'flow' | 'status'>>,
   ): Promise<void>;
+  /**
+   * Every sealed value the store holds (`agent:crypto:reseal`, the `agent.crypto` doctor check).
+   * Optional: a custom store without it is reported as not walkable.
+   */
+  listSealed?(): Promise<PoppySealedValue[]>;
+  /** Swap one sealed value if it is still `from`. `false`: it changed meanwhile (left alone). */
+  replaceSealed?(ref: PoppySealedRef, from: string, to: string): Promise<boolean>;
+}
+
+/** Where a sealed value lives: a connection's `state` or a pending connect's `flow`. */
+export type PoppySealedRef =
+  | { table: 'connection'; owner: string; issuer: string }
+  | { table: 'pending'; id: string };
+
+export interface PoppySealedValue {
+  ref: PoppySealedRef;
+  value: string;
 }
 
 export class InMemoryPoppyConnectionStore implements PoppyConnectionStore {
@@ -88,6 +105,28 @@ export class InMemoryPoppyConnectionStore implements PoppyConnectionStore {
   async updatePending(id: string, patch: Partial<Pick<PoppyPendingConnect, 'flow' | 'status'>>) {
     const found = this.#pending.get(id);
     if (found) Object.assign(found, patch);
+  }
+  async listSealed(): Promise<PoppySealedValue[]> {
+    const out: PoppySealedValue[] = [];
+    for (const c of this.#connections.values()) {
+      out.push({ ref: { table: 'connection', owner: c.owner, issuer: c.issuer }, value: c.state });
+    }
+    for (const p of this.#pending.values()) {
+      if (p.flow !== null) out.push({ ref: { table: 'pending', id: p.id }, value: p.flow });
+    }
+    return out;
+  }
+  async replaceSealed(ref: PoppySealedRef, from: string, to: string): Promise<boolean> {
+    if (ref.table === 'connection') {
+      const found = this.#connections.get(`${ref.owner}\n${ref.issuer}`);
+      if (found?.state !== from) return false;
+      found.state = to;
+      return true;
+    }
+    const found = this.#pending.get(ref.id);
+    if (found?.flow !== from) return false;
+    found.flow = to;
+    return true;
   }
 }
 
@@ -324,6 +363,51 @@ export class LucidPoppyConnectionStore implements PoppyConnectionStore {
     if (Object.keys(row).length === 0) return;
     await this.db.from(this.#tables.pending).where('id', id).update(row);
   }
+
+  async listSealed(): Promise<PoppySealedValue[]> {
+    await this.ready();
+    const connections = await this.db
+      .from(this.#tables.connections)
+      .select('owner', 'issuer', 'state');
+    const pending = (await this.db.from(this.#tables.pending).select('id', 'flow')).filter(
+      (row) => row.flow != null,
+    );
+    return [
+      ...connections.map((row) => ({
+        ref: { table: 'connection' as const, owner: String(row.owner), issuer: String(row.issuer) },
+        value: String(row.state),
+      })),
+      ...pending.map((row) => ({
+        ref: { table: 'pending' as const, id: String(row.id) },
+        value: String(row.flow),
+      })),
+    ];
+  }
+
+  async replaceSealed(ref: PoppySealedRef, from: string, to: string): Promise<boolean> {
+    await this.ready();
+    const affected =
+      ref.table === 'connection'
+        ? await this.db
+            .from(this.#tables.connections)
+            .where('owner', ref.owner)
+            .where('issuer', ref.issuer)
+            .where('state', from)
+            .update({ state: to })
+        : await this.db
+            .from(this.#tables.pending)
+            .where('id', ref.id)
+            .where('flow', from)
+            .update({ flow: to });
+    return affectedRows(affected) > 0;
+  }
+}
+
+/** knex answers an update with a count (or, on some drivers, an array). */
+function affectedRows(result: unknown): number {
+  if (typeof result === 'number') return result;
+  if (Array.isArray(result)) return typeof result[0] === 'number' ? result[0] : result.length;
+  return Number(result ?? 0);
 }
 
 /** The slice of a Redis client {@link redisPoppyConnectionStore} uses (ioredis has it). */
@@ -334,6 +418,8 @@ export interface PoppyConnectionRedisClient {
   sadd(key: string, ...members: string[]): Promise<unknown>;
   srem(key: string, ...members: string[]): Promise<unknown>;
   smembers(key: string): Promise<string[]>;
+  /** `SCAN cursor MATCH pattern COUNT n` (ioredis has it): lets `agent:crypto:reseal` walk the store. */
+  scan?(cursor: string, ...args: (string | number)[]): Promise<[string, string[]]>;
 }
 
 /** {@link PoppyConnectionStore} over Redis: JSON values, an index set per owner. */
@@ -376,5 +462,57 @@ export function redisPoppyConnectionStore(
       if (!found) return;
       await redis.set(pendingKey(id), JSON.stringify({ ...found, ...patch }), 'KEEPTTL');
     },
+    ...(typeof redis.scan === 'function'
+      ? {
+          async listSealed() {
+            const out: PoppySealedValue[] = [];
+            for (const k of await scanKeys(`${p}conn:*`)) {
+              const c = await get<PoppyConnectionRecord>(k);
+              if (c)
+                out.push({
+                  ref: { table: 'connection', owner: c.owner, issuer: c.issuer },
+                  value: c.state,
+                });
+            }
+            for (const k of await scanKeys(`${p}pending:*`)) {
+              const found = await get<PoppyPendingConnect>(k);
+              if (found?.flow)
+                out.push({ ref: { table: 'pending', id: found.id }, value: found.flow });
+            }
+            return out;
+          },
+        }
+      : {}),
+    // Read, compare, write: not atomic, so a value written between the two is lost only if it
+    // was written in that instant; `agent:crypto:reseal` is an operator command, not a hot path.
+    async replaceSealed(ref, from, to) {
+      if (ref.table === 'connection') {
+        const found = await get<PoppyConnectionRecord>(key(ref.owner, ref.issuer));
+        if (found?.state !== from) return false;
+        await redis.set(key(ref.owner, ref.issuer), JSON.stringify({ ...found, state: to }));
+        return true;
+      }
+      const found = await get<PoppyPendingConnect>(pendingKey(ref.id));
+      if (found?.flow !== from) return false;
+      await redis.set(pendingKey(ref.id), JSON.stringify({ ...found, flow: to }), 'KEEPTTL');
+      return true;
+    },
   };
+
+  async function scanKeys(pattern: string): Promise<string[]> {
+    const keys: string[] = [];
+    let cursor = '0';
+    do {
+      const [next, batch] = await (redis.scan as NonNullable<typeof redis.scan>)(
+        cursor,
+        'MATCH',
+        pattern,
+        'COUNT',
+        200,
+      );
+      keys.push(...batch);
+      cursor = next;
+    } while (cursor !== '0');
+    return [...new Set(keys)];
+  }
 }

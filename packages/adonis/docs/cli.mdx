@@ -93,6 +93,19 @@ node ace agent:pricing:set gpt-4o-mini --input 0.15 --output 0.6 --cache-read 0.
 Rates are USD per 1M tokens; cache rates default to the input rate. Replacing a model's current
 price asks first (`--force` skips it); `--dry-run` shows what would change.
 
+## Encryption at rest
+
+```sh
+node ace agent:crypto:reseal --dry-run --json
+node ace agent:crypto:reseal
+node ace agent:crypto:reseal --all
+```
+
+Re-seals the poppy connections with the current key: values sealed with an older key in `crypto.keys`,
+and values in the pre-1.0 format. `--all` rewrites every value (after rotating `config/encryption.ts`).
+`--dry-run` opens them without writing. Exits 1 when a value can't be opened. See
+[Rotating the sealing key](/docs/agent/poppy-connections#rotating-the-sealing-key).
+
 ## Organizations
 
 ```sh

@@ -22,6 +22,7 @@ import {
 } from '../../src/index.js';
 import { generateEs256Key } from '../../src/poppy-client/keys.js';
 import {
+  connectionStateAad,
   createPoppyConnectionsHandler,
   InMemoryPoppyConnectionStore,
   PoppyConnections,
@@ -316,8 +317,12 @@ describe('poppy-connections: connect flows', () => {
     const token = [...app.fake.accountTokens.keys()][0]!;
     expect(row!.state).not.toContain(token);
     expect(
-      new Sealer(SECRET).open<{ accountToken: { refreshToken: string } }>(row!.state).accountToken
-        .refreshToken,
+      (
+        await new Sealer(SECRET).open<{ accountToken: { refreshToken: string } }>(
+          row!.state,
+          connectionStateAad(row!.owner, row!.issuer),
+        )
+      ).accountToken.refreshToken,
     ).toBe(token);
     // Already connected: no new card.
     expect(await preflight(app, 'connect', { company: app.fake.domain }, 'call-2')).toMatchObject({
@@ -625,8 +630,12 @@ describe('poppy-connections: revocation and refresh', () => {
     expect(current.some((k) => !first.includes(k))).toBe(true);
     const [row] = await app.store.listConnections('account-1');
     expect(
-      new Sealer(SECRET).open<{ accountToken: { refreshToken: string } }>(row!.state).accountToken
-        .refreshToken,
+      (
+        await new Sealer(SECRET).open<{ accountToken: { refreshToken: string } }>(
+          row!.state,
+          connectionStateAad(row!.owner, row!.issuer),
+        )
+      ).accountToken.refreshToken,
     ).toBe(current[0]);
   });
 

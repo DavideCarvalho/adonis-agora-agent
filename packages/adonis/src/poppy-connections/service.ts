@@ -36,7 +36,8 @@ import {
   type PoppyConnectionsConfig,
   type PoppyConnectionsTexts,
 } from './config.js';
-import { Sealer } from './crypto.js';
+import { connectionStateAad, pendingFlowAad, Sealer } from './crypto.js';
+import { type SealedReport, walkSealed } from './reseal.js';
 import type { PoppyConnectionRecord, PoppyConnectionStore, PoppyPendingConnect } from './store.js';
 
 /** A Company outside the allow-list. The model is told plainly, and nothing is fetched. */
@@ -130,7 +131,7 @@ export class PoppyConnections {
     }
     this.#config = config;
     this.#store = options.store;
-    this.#sealer = new Sealer(options.secret);
+    this.#sealer = new Sealer(options.secret, config.crypto);
     this.#secret = options.secret;
     this.#onConnected = options.onConnected;
     this.#log = options.log ?? (() => {});
@@ -252,6 +253,20 @@ export class PoppyConnections {
   // ── state ──────────────────────────────────────────────────────────────────
 
   /** Serialize everything one owner does: refresh tokens rotate, and a lost rotation is a lost login. */
+  /** How the sealed values stand against the configured keys (no decryption). */
+  sealedReport(): Promise<SealedReport> {
+    return walkSealed(this.#store, this.#sealer, { reseal: false });
+  }
+
+  /** Re-seal every value not on the active key (`agent:crypto:reseal`). */
+  reseal(options: { dryRun?: boolean; all?: boolean } = {}): Promise<SealedReport> {
+    return walkSealed(this.#store, this.#sealer, {
+      reseal: true,
+      dryRun: options.dryRun === true,
+      all: options.all === true,
+    });
+  }
+
   async #exclusive<T>(owner: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.#locks.get(owner) ?? Promise.resolve();
     const run = previous.catch(() => {}).then(fn);
@@ -270,7 +285,12 @@ export class PoppyConnections {
     const byIssuer = new Map(rows.map((row) => [row.issuer, row]));
     const domains = new Map(rows.map((row) => [row.issuer, row.domain]));
     const companies: Record<string, CompanyState> = {};
-    for (const row of rows) companies[row.issuer] = this.#sealer.open<CompanyState>(row.state);
+    for (const row of rows) {
+      companies[row.issuer] = await this.#sealer.open<CompanyState>(
+        row.state,
+        connectionStateAad(owner, row.issuer),
+      );
+    }
     const data: StateFile = { version: 1, profiles: { [owner]: { companies } } };
     const store = StateStore.memory(data, async (current) => {
       const now = Date.now();
@@ -289,7 +309,7 @@ export class PoppyConnections {
           organization: existing?.organization ?? domain,
           scope: state.accountToken?.scope ?? '',
           status,
-          state: this.#sealer.seal(state),
+          state: await this.#sealer.seal(state, connectionStateAad(owner, issuer)),
           createdAt: existing?.createdAt ?? now,
           updatedAt: now,
         };
@@ -500,10 +520,10 @@ export class PoppyConnections {
       const url = new URL(signIn.url);
       url.searchParams.set('state', state);
       await this.#store.updatePending(id, {
-        flow: this.#sealer.seal({
-          kind: 'direct',
-          signIn: { ...signIn, state, url: url.toString() },
-        } satisfies Flow),
+        flow: await this.#sealer.seal(
+          { kind: 'direct', signIn: { ...signIn, state, url: url.toString() } } satisfies Flow,
+          pendingFlowAad(id),
+        ),
       });
       return url.toString();
     });
@@ -516,7 +536,7 @@ export class PoppyConnections {
     const id = (params.get('state') ?? '').split('.')[0] ?? '';
     const pending = await this.#openPending(id);
     if (pending === null || pending.flow === null) return { ok: false, organization: null };
-    const flow = this.#sealer.open<Flow>(pending.flow);
+    const flow = await this.#sealer.open<Flow>(pending.flow, pendingFlowAad(pending.id));
     if (flow.kind !== 'direct') return { ok: false, organization: pending.organization };
     try {
       await this.withCompany(pending.owner, pending.domain, (client) =>
@@ -561,7 +581,7 @@ export class PoppyConnections {
     const pending = await this.#openPending(id);
     if (pending === null || pending.flow === null || pending.status !== 'open')
       return { status: 'expired' };
-    const flow = this.#sealer.open<Flow>(pending.flow);
+    const flow = await this.#sealer.open<Flow>(pending.flow, pendingFlowAad(pending.id));
     if (flow.kind !== 'mediated') return { status: 'failed' };
     const result = await this.withCompany(pending.owner, pending.domain, (client) =>
       submitMediatedCode(client, flow.scope, flow.signInId, code),
@@ -584,12 +604,10 @@ export class PoppyConnections {
     if (result.status === 'code_required') {
       const sentTo = result.sentTo ?? '';
       await this.#store.updatePending(pending.id, {
-        flow: this.#sealer.seal({
-          kind: 'mediated',
-          signInId: result.signInId,
-          sentTo,
-          scope,
-        } satisfies Flow),
+        flow: await this.#sealer.seal(
+          { kind: 'mediated', signInId: result.signInId, sentTo, scope } satisfies Flow,
+          pendingFlowAad(pending.id),
+        ),
       });
       return { status: 'code_required', sentTo };
     }
@@ -613,7 +631,9 @@ export class PoppyConnections {
           : {}),
         scope,
       };
-      await this.#store.updatePending(id, { flow: this.#sealer.seal(flow) });
+      await this.#store.updatePending(id, {
+        flow: await this.#sealer.seal(flow, pendingFlowAad(id)),
+      });
       return {
         userCode: d.user_code,
         verificationUri: d.verification_uri_complete ?? d.verification_uri,
@@ -625,7 +645,7 @@ export class PoppyConnections {
   async deviceInfo(id: string): Promise<{ userCode: string; verificationUri: string } | null> {
     const pending = await this.#openPending(id);
     if (pending === null || pending.flow === null) return null;
-    const flow = this.#sealer.open<Flow>(pending.flow);
+    const flow = await this.#sealer.open<Flow>(pending.flow, pendingFlowAad(pending.id));
     if (flow.kind !== 'device') return null;
     return {
       userCode: flow.userCode,
@@ -638,7 +658,7 @@ export class PoppyConnections {
     const pending = await this.#openPending(id);
     if (pending === null || pending.flow === null) return 'expired';
     if (pending.status === 'connected') return 'connected';
-    const flow = this.#sealer.open<Flow>(pending.flow);
+    const flow = await this.#sealer.open<Flow>(pending.flow, pendingFlowAad(pending.id));
     if (flow.kind !== 'device') return 'failed';
     try {
       const result = await this.withCompany(pending.owner, pending.domain, (client) =>

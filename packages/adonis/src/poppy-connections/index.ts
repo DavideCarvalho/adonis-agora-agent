@@ -12,7 +12,14 @@ export {
   type PoppyConnectionsTexts,
   type TwoStepConvention,
 } from './config.js';
-export { Sealer } from './crypto.js';
+export {
+  connectionStateAad,
+  legacySealerReader,
+  POPPY_CONNECTIONS_PURPOSE,
+  type PoppyCryptoConfig,
+  pendingFlowAad,
+  Sealer,
+} from './crypto.js';
 export {
   createPoppyConnectionsHandler,
   defaultConnectRenderer,
@@ -20,6 +27,7 @@ export {
   type PoppyConnectRenderer,
   type PoppyConnectView,
 } from './http.js';
+export { type SealedColumnReport, type SealedReport, walkSealed } from './reseal.js';
 export { continueAfterConnect, resumeAfterConnect } from './resume.js';
 export {
   normalizeKeys,
@@ -39,6 +47,8 @@ export {
   type PoppyConnectionRedisClient,
   type PoppyConnectionStore,
   type PoppyPendingConnect,
+  type PoppySealedRef,
+  type PoppySealedValue,
   poppyConnectionTableStatements,
   redisPoppyConnectionStore,
 } from './store.js';
