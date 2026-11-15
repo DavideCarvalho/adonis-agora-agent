@@ -16,7 +16,7 @@ import {
   verify as nodeVerify,
   randomBytes,
 } from 'node:crypto';
-import { type Keyring } from './keyring.js';
+import type { Keyring, SecretLike } from './keyring.js';
 import { open, SealedValueError, type SealOptions, seal } from './seal.js';
 
 /** An OKP JSON Web Key (RFC 8037): X25519 for encryption, Ed25519 for signatures. */
@@ -54,9 +54,53 @@ export function generateKeyPair(
   options: { kid?: string } = {},
 ): { publicKey: OkpJwk; privateKey: OkpJwk } {
   const pair = type === 'x25519' ? generateKeyPairSync('x25519') : generateKeyPairSync('ed25519');
-  const raw = pair.privateKey.export({ format: 'jwk' }) as { crv: string; x: string; d: string };
+  return toPair(type, pair.privateKey.export({ format: 'jwk' }) as RawOkp, options.kid);
+}
+
+/** PKCS#8 prefix of a raw 32-byte X25519 / Ed25519 private key (RFC 8410). */
+const PKCS8_PREFIX = {
+  x25519: Buffer.from('302e020100300506032b656e04220420', 'hex'),
+  ed25519: Buffer.from('302e020100300506032b657004220420', 'hex'),
+};
+
+/**
+ * The same key pair every time from `secret` (an app key): HKDF-SHA256(secret, salt = `purpose`)
+ * → the 32-byte private key. No private key to store: every instance derives it. Changing the
+ * secret changes the key (and its thumbprint `kid`).
+ */
+export function deriveKeyPair(
+  type: 'x25519' | 'ed25519',
+  secret: SecretLike,
+  purpose: string,
+  options: { kid?: string } = {},
+): { publicKey: OkpJwk; privateKey: OkpJwk } {
+  const raw = typeof secret === 'string' ? secret : secret.release();
+  if (typeof raw !== 'string' || raw.length < 16) {
+    throw new Error('crypto-kit: deriveKeyPair() needs a secret of at least 16 characters');
+  }
+  if (typeof purpose !== 'string' || purpose.length === 0) {
+    throw new Error('crypto-kit: deriveKeyPair() needs a purpose');
+  }
+  const info = Buffer.from(`agora:okp:v1:${type}`, 'utf8');
+  const seed = Buffer.from(hkdfSync('sha256', raw, Buffer.from(purpose, 'utf8'), info, 32));
+  const key = createPrivateKey({
+    key: Buffer.concat([PKCS8_PREFIX[type], seed]),
+    format: 'der',
+    type: 'pkcs8',
+  });
+  seed.fill(0);
+  return toPair(type, key.export({ format: 'jwk' }) as RawOkp, options.kid);
+}
+
+type RawOkp = { crv: string; x: string; d: string };
+
+function toPair(
+  type: 'x25519' | 'ed25519',
+  raw: RawOkp,
+  kidOption: string | undefined,
+): { publicKey: OkpJwk; privateKey: OkpJwk } {
   const crv = type === 'x25519' ? 'X25519' : 'Ed25519';
-  const kid = options.kid ?? jwkThumbprint({ crv, x: raw.x });
+  const kid = kidOption ?? jwkThumbprint({ crv, x: raw.x });
   if (!KID.test(kid)) throw new Error('crypto-kit: kid must match [A-Za-z0-9._-]{1,128}');
   const meta =
     type === 'x25519'

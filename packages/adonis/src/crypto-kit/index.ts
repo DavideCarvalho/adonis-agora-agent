@@ -1,5 +1,6 @@
 // agora crypto-kit v1 — copied verbatim from _1x/shared/crypto-kit; never edit in one lib only.
 export {
+  deriveKeyPair,
   generateKeyPair,
   type JwkSource,
   type Jwks,

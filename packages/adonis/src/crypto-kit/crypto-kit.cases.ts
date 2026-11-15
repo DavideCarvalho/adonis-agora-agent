@@ -4,6 +4,7 @@
 //   for (const [name, run] of Object.entries(cryptoKitCases)) test(name, run)
 import assert from 'node:assert/strict';
 import {
+  deriveKeyPair,
   generateKeyPair,
   jwkThumbprint,
   openPrivateKey,
@@ -271,6 +272,21 @@ export const cryptoKitCases: Record<string, () => Promise<void>> = {
     assert.deepEqual(toJwks([privateKey]), { keys: [publicKey] });
     assert.equal(generateKeyPair('x25519', { kid: 'app-2026-11' }).publicKey.kid, 'app-2026-11');
     assert.throws(() => generateKeyPair('x25519', { kid: 'bad:kid' }), /kid/);
+  },
+
+  async 'deriveKeyPair: the same pair from the same secret and purpose, another otherwise'() {
+    const a = deriveKeyPair('ed25519', KEY, 'lib:webhooks');
+    assert.deepEqual(deriveKeyPair('ed25519', { release: () => KEY }, 'lib:webhooks'), a);
+    assert.equal(a.publicKey.kid, jwkThumbprint(a.publicKey));
+    assert.notEqual(deriveKeyPair('ed25519', NEW, 'lib:webhooks').publicKey.x, a.publicKey.x);
+    assert.notEqual(deriveKeyPair('ed25519', KEY, 'lib:other').publicKey.x, a.publicKey.x);
+    assert.equal(verify(a.publicKey, 'm', sign(a.privateKey, 'm')), true);
+    const x = deriveKeyPair('x25519', KEY, 'lib:secrets', { kid: 'app' });
+    assert.equal(x.publicKey.crv, 'X25519');
+    assert.notEqual(x.publicKey.x, a.publicKey.x);
+    assert.equal(openWith(x.privateKey, sealTo(x.publicKey, 'v')), 'v');
+    assert.throws(() => deriveKeyPair('ed25519', 'short', 'p'), /16/);
+    assert.throws(() => deriveKeyPair('ed25519', KEY, ''), /purpose/);
   },
 
   async 'sealTo / openWith: only the private key opens; aad bound; every byte tamper-proof'() {
