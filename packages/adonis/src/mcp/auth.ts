@@ -1,3 +1,4 @@
+import type { HttpContext } from '@adonisjs/core/http';
 import type { ApplicationService } from '@adonisjs/core/types';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { scopeRole } from '../a2a/gate.js';
@@ -21,10 +22,13 @@ export interface McpAuthContext {
 export interface McpOAuthMetadata {
   /** The OAuth 2.0 / OIDC authorization server (the authkit issuer, e.g. `http://localhost:3333/oidc`). */
   issuer: string;
-  /** Authorization endpoint the MCP client redirects to (e.g. `${issuer}/auth`). */
-  authorizationEndpoint: string;
-  /** Token endpoint the MCP client exchanges the code at (e.g. `${issuer}/token`). */
-  tokenEndpoint: string;
+  /**
+   * Authorization endpoint the MCP client redirects to (e.g. `${issuer}/auth`). Informational: the
+   * RFC 9728 document names only the issuer, and MCP clients discover its endpoints from there.
+   */
+  authorizationEndpoint?: string;
+  /** Token endpoint the MCP client exchanges the code at (e.g. `${issuer}/token`). Informational. */
+  tokenEndpoint?: string;
   /** Scopes supported by the authorization server. */
   scopesSupported: string[];
   /** Human label for the protected resource. */
@@ -77,6 +81,11 @@ export interface McpVerifyContext {
    * what a token's audience must name (MCP Authorization spec, RFC 8707).
    */
   resource: string;
+  /**
+   * The request. A strategy may put what it verified on it (`oidcAuth` binds an authkit identity to
+   * `ctx.authkit`). Absent when `verify` is called outside an HTTP request.
+   */
+  ctx?: HttpContext;
 }
 
 /**

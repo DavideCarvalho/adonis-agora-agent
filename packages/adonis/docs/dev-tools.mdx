@@ -166,8 +166,53 @@ export default defineConfig({
 })
 ```
 
-`devToolsPrincipal(ctx)` returns `{ subject, claims, roles, scopes, user }`, or `undefined` outside a
+`devToolsPrincipal(ctx)` returns `{ subject, claims, roles, scopes, user, actor }`, or `undefined` outside a
 dev tools request. `roles` comes from the `roles` claim; pick another with `rolesClaim`.
+
+#### authkit on another server
+
+When `@adonis-agora/authkit-server` runs on another server, point `jwtAuth` at it:
+
+```ts title="config/mcp.ts"
+import env from '#start/env'
+import User from '#models/user'
+import { defineMcpConfig, jwtAuth } from '@adonis-agora/agent/mcp'
+
+export default defineMcpConfig({
+  name: 'Acme',
+  version: '1.0.0',
+  devTools: {
+    auth: jwtAuth({
+      issuer: env.get('AUTHKIT_ISSUER'),
+      resolveUser: (claims) => User.find(claims.sub),
+    }),
+    authorize: async (ctx) => ctx.auth.user?.isAdmin === true,
+  },
+})
+```
+
+On the authkit server, list the hub so it issues JWT tokens for it:
+
+```ts title="config/authkit.ts (on the authkit server)"
+mcpClients: {
+  resources: ['https://app.acme.com/mcp/agora'],
+},
+accessTokens: {
+  resources: {
+    'https://app.acme.com/mcp/agora': { format: 'jwt' },
+  },
+},
+```
+
+With `@adonis-agora/authkit-client` installed, every verified user token is also put on the request
+as an authkit identity: `getAuthkit(ctx)` answers for the caller, and `authkitDashboardAuthorize()`
+accepts it when the token's `roles` claim holds the role. authkit's access tokens for MCP clients
+carry no `roles` claim, so gate on your own user (`resolveUser`, as above) to decide by role. When
+the token carries an `email`, `ctx.auth` (with `authkitClientGuard`) sees the caller too. Set
+`authkit: false` to skip the identity.
+
+An impersonation token (one with an `act` claim) is audited as the admin who holds it, with
+`onBehalfOf` naming the impersonated account; consoles still authorize the impersonated account.
 
 #### Sésame
 

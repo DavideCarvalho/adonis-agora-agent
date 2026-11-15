@@ -272,7 +272,15 @@ export class DevToolsEndpoint {
       if (principal !== null) {
         bindDevToolsPrincipal(ctx, principal);
         signedIn = true;
-        caller = { id: `user:${principal.subject}`, via: 'session' };
+        // Audit by who is really acting (an impersonation's `act`); authorize on the subject.
+        caller =
+          principal.actor !== undefined && principal.actor.sub !== principal.subject
+            ? {
+                id: `user:${principal.actor.sub}`,
+                via: 'session',
+                onBehalfOf: `user:${principal.subject}`,
+              }
+            : { id: `user:${principal.subject}`, via: 'session' };
         actor = {
           id: principal.subject,
           ...(principal.roles !== undefined ? { roles: principal.roles } : {}),
@@ -527,6 +535,7 @@ export class DevToolsEndpoint {
         devTool: tool.name,
         lib: lib.lib,
         caller: caller.id,
+        ...(caller.onBehalfOf !== undefined ? { onBehalfOf: caller.onBehalfOf } : {}),
         kind: tool.kind,
         ok,
         ms,

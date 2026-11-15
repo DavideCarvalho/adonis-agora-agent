@@ -1,6 +1,17 @@
 import type { HttpContext } from '@adonisjs/core/http';
 import type { ApplicationService } from '@adonisjs/core/types';
 import { McpAuthError } from '../mcp/auth.js';
+import {
+  absoluteUrl,
+  actorFromClaims,
+  createJwtVerifier,
+  rolesFrom,
+  sameIssuer,
+  scopesFrom,
+} from '../mcp/jwt-verifier.js';
+import { bridgeAuthkitClaims } from './authkit-bridge.js';
+
+export { actorFromClaims, discoverJwksUri, issuerMetadataUrls } from '../mcp/jwt-verifier.js';
 
 /**
  * `devTools.auth`: OAuth for the dev tools hub (`/mcp/agora`) with any authorization server.
@@ -47,6 +58,11 @@ export interface DevToolsPrincipal {
   scopes?: string[];
   /** The app's user for this subject. Set → `ctx.auth.user` is this user during the request. */
   user?: unknown;
+  /**
+   * Who is really acting, when the token was minted for an impersonation (RFC 8693 `act` claim).
+   * Audit lines use `actor.sub` when set; authorization stays on `subject`.
+   */
+  actor?: { sub: string; email?: string };
 }
 
 const principals = new WeakMap<object, DevToolsPrincipal>();
@@ -98,20 +114,6 @@ export function bindDevToolsPrincipal(ctx: HttpContext, principal: DevToolsPrinc
   });
 }
 
-/** Roles from a claim, when it is a string array (or a space-separated string). */
-function rolesFrom(value: unknown): string[] | undefined {
-  if (Array.isArray(value)) return value.filter((r): r is string => typeof r === 'string');
-  if (typeof value === 'string' && value !== '') return value.split(/\s+/);
-  return undefined;
-}
-
-function scopesFrom(claims: Record<string, unknown>): string[] {
-  const scope = claims.scope ?? claims.scp;
-  if (typeof scope === 'string') return scope.split(/\s+/).filter((s) => s !== '');
-  if (Array.isArray(scope)) return scope.filter((s): s is string => typeof s === 'string');
-  return [];
-}
-
 /** Resolve the app's user for a verified token. `null` → the account is gone (`401`). */
 export type DevToolsUserResolver = (
   claims: Record<string, unknown>,
@@ -144,11 +146,13 @@ async function principalOf(
     );
   }
   const roles = rolesFrom(claims[options.rolesClaim ?? 'roles']);
+  const actor = actorFromClaims(claims);
   const principal: DevToolsPrincipal = {
     subject,
     claims,
     scopes,
     ...(roles !== undefined ? { roles } : {}),
+    ...(actor !== undefined ? { actor } : {}),
   };
   if (options.resolveUser !== undefined) {
     const user = await options.resolveUser(claims, context);
@@ -166,18 +170,6 @@ function audiencesOf(
 ): string[] {
   if (audience === undefined) return [context.resource];
   return Array.isArray(audience) ? audience : [audience];
-}
-
-function absoluteUrl(value: string, option: string): URL {
-  try {
-    const url = new URL(value);
-    if (url.protocol === 'http:' || url.protocol === 'https:') return url;
-  } catch {
-    // reported below
-  }
-  throw new Error(
-    `[@adonis-agora/agent] ${option} must be an absolute http(s) URL, got ${JSON.stringify(value)}`,
-  );
 }
 
 // ── jwtAuth ─────────────────────────────────────────────────────────────────
@@ -206,148 +198,48 @@ export interface JwtAuthOptions {
   resolveUser?: DevToolsUserResolver;
   /** Advertised as `resource_name`. */
   resourceName?: string;
+  /**
+   * Put a verified user token on the request as an authkit identity (`ctx.authkit`, global roles
+   * from `rolesClaim`), so `getAuthkit(ctx)` and `authkitDashboardAuthorize` see the caller.
+   * Default: when `@adonis-agora/authkit-client` is installed. Set `false` for an issuer that is not
+   * authkit.
+   */
+  authkit?: boolean;
 }
-
-/** The well-known metadata documents of an issuer, in the order they are tried. */
-export function issuerMetadataUrls(issuer: string): string[] {
-  const url = absoluteUrl(issuer, 'jwtAuth `issuer`');
-  const base = issuer.replace(/\/+$/, '');
-  const path = url.pathname.replace(/\/+$/, '');
-  const urls = [`${base}/.well-known/openid-configuration`];
-  if (path !== '') urls.push(`${url.origin}/.well-known/oauth-authorization-server${path}`);
-  urls.push(`${base}/.well-known/oauth-authorization-server`);
-  return [...new Set(urls)];
-}
-
-const sameIssuer = (a: string, b: string) => a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
-
-/** Fetch the issuer's metadata (OIDC discovery, then RFC 8414) and return its `jwks_uri`. */
-export async function discoverJwksUri(
-  issuer: string,
-  fetcher: typeof fetch = fetch,
-): Promise<string> {
-  const failures: string[] = [];
-  for (const url of issuerMetadataUrls(issuer)) {
-    try {
-      const response = await fetcher(url, {
-        headers: { accept: 'application/json' },
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!response.ok) {
-        failures.push(`${url}: ${response.status}`);
-        continue;
-      }
-      const meta = (await response.json()) as { issuer?: unknown; jwks_uri?: unknown };
-      if (typeof meta.issuer === 'string' && !sameIssuer(meta.issuer, issuer)) {
-        failures.push(`${url}: issuer is ${JSON.stringify(meta.issuer)}`);
-        continue;
-      }
-      if (typeof meta.jwks_uri !== 'string') {
-        failures.push(`${url}: no jwks_uri`);
-        continue;
-      }
-      return meta.jwks_uri;
-    } catch (error) {
-      failures.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  throw new Error(
-    `[@adonis-agora/agent] jwtAuth could not discover the JWKS of ${issuer} (${failures.join('; ')}). Set \`jwksUri\`.`,
-  );
-}
-
-const DEFAULT_ALGORITHMS = [
-  'RS256',
-  'RS384',
-  'RS512',
-  'PS256',
-  'PS384',
-  'PS512',
-  'ES256',
-  'ES384',
-  'ES512',
-  'EdDSA',
-  'Ed25519',
-];
 
 /**
- * Verify JWT access tokens of an OAuth / OIDC authorization server (Sésame with
- * `accessTokenFormat: 'jwt'`, Auth0, Keycloak, Entra ID…) against its JWKS: signature, `iss`,
- * `aud` (the hub's URL by default) and `exp`/`nbf`. The JWKS URL is discovered from the issuer's
- * metadata on first use and its keys are cached (refetched when a token names an unknown key).
+ * Verify JWT access tokens of an OAuth / OIDC authorization server (authkit with JWT access tokens,
+ * Sésame with `accessTokenFormat: 'jwt'`, Auth0, Keycloak, Entra ID…) against its JWKS: signature,
+ * `iss`, `aud` (the hub's URL by default) and `exp`/`nbf`. The JWKS URL is discovered from the
+ * issuer's metadata on first use and its keys are cached (refetched when a token names an unknown key).
  *
  * A token with another `iss`, or that is not a JWT, is not this auth's: it is left on the request
  * for an `authorizeByToken` console.
+ *
+ * With `@adonis-agora/authkit-client` installed (or `authkit: true`), a verified user token is also
+ * put on the request as an authkit identity (`ctx.authkit`, and `ctx.auth` with `authkitClientGuard`),
+ * so a console gated by `authkitDashboardAuthorize` accepts the caller.
  */
 export function jwtAuth(options: JwtAuthOptions): DevToolsAuth {
   absoluteUrl(options.issuer, 'jwtAuth `issuer`');
   if (options.jwksUri !== undefined) absoluteUrl(options.jwksUri, 'jwtAuth `jwksUri`');
-  type Jose = typeof import('jose');
-  let keys: Promise<ReturnType<Jose['createRemoteJWKSet']>> | undefined;
-  const keySet = (jose: Jose) => {
-    keys ??= (async () => {
-      const uri = options.jwksUri ?? (await discoverJwksUri(options.issuer));
-      return jose.createRemoteJWKSet(new URL(uri));
-    })().catch((error: unknown) => {
-      keys = undefined; // try discovery again on the next token
-      throw error;
-    });
-    return keys;
-  };
+  const verifyJwt = createJwtVerifier(options);
 
   return {
     authorizationServers: [options.issuer],
     ...(options.scopes !== undefined ? { scopes: options.scopes } : {}),
     ...(options.resourceName !== undefined ? { resourceName: options.resourceName } : {}),
     async verify(token, context) {
-      const jose = await import('jose');
-      let unverified: Record<string, unknown>;
-      try {
-        unverified = jose.decodeJwt(token);
-      } catch {
-        return null; // not a JWT
-      }
-      if (typeof unverified.iss !== 'string' || !sameIssuer(unverified.iss, options.issuer)) {
-        return null;
-      }
-      const jwks = await keySet(jose);
-      let payload: Record<string, unknown>;
-      try {
-        ({ payload } = await jose.jwtVerify(token, jwks, {
-          issuer: unverified.iss, // same issuer up to a trailing slash (checked above)
-          audience: audiencesOf(options.audience, context),
-          algorithms: options.algorithms ?? DEFAULT_ALGORITHMS,
-          clockTolerance: options.clockTolerance ?? 30,
-          requiredClaims: ['exp', 'sub'],
-        }));
-      } catch (error) {
-        if (isTokenFailure(jose, error)) {
-          throw new McpAuthError(`invalid_token: ${(error as Error).message}`, { cause: error });
-        }
-        throw error;
-      }
-      return principalOf(payload, options, context);
+      const payload = await verifyJwt(token, audiencesOf(options.audience, context));
+      if (payload === null) return null;
+      const principal = await principalOf(payload, options, context);
+      await bridgeAuthkitClaims(context.ctx, payload, {
+        mode: options.authkit,
+        globalRolesClaim: options.rolesClaim,
+      });
+      return principal;
     },
   };
-}
-
-/**
- * Whether jose refused the token itself (claims, signature, format, no matching key) — as opposed to
- * a JWKS it could not fetch, which is an outage and surfaces as a `503`.
- */
-function isTokenFailure(jose: typeof import('jose'), error: unknown): boolean {
-  const e = jose.errors;
-  return (
-    error instanceof e.JWTClaimValidationFailed ||
-    error instanceof e.JWTExpired ||
-    error instanceof e.JWSSignatureVerificationFailed ||
-    error instanceof e.JWSInvalid ||
-    error instanceof e.JWTInvalid ||
-    error instanceof e.JOSEAlgNotAllowed ||
-    error instanceof e.JOSENotSupported ||
-    error instanceof e.JWKSNoMatchingKey ||
-    error instanceof e.JWKSMultipleMatchingKeys
-  );
 }
 
 // ── introspectionAuth ───────────────────────────────────────────────────────

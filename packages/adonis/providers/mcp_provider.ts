@@ -348,6 +348,7 @@ export default class McpProvider {
       try {
         return await auth.verify(token, {
           resource: mcpResourceUrl(this.#origin(ctx), endpoint.path),
+          ctx,
         });
       } catch (error) {
         const status = error instanceof McpAuthError ? error.status : 401;

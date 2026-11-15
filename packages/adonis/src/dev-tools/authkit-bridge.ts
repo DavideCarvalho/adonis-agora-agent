@@ -11,8 +11,10 @@ import type { ApplicationService } from '@adonisjs/core/types';
  * `bindBearerAccount`, when the installed authkit-server has it), so an `authorize` written with
  * authkit-server's `getAccountId(ctx)` / `realAccountId(ctx)` sees the account too.
  *
- * Structural only: neither `@adonis-agora/authkit-server` nor `@adonis-agora/authkit-client` is
- * imported. Both are optional.
+ * Both peers are optional: `@adonis-agora/authkit-client` is imported lazily (its
+ * `bindAuthkitIdentity` / `identityFromClaims`, the same helpers an app uses for a remote authkit),
+ * and `@adonis-agora/authkit-server` is only read through the container. Without authkit-client a
+ * minimal authenticator stands in.
  */
 
 /** The authkit `Identity` shape (from `@adonis-agora/authkit-core`), re-declared. */
@@ -24,6 +26,8 @@ export interface BridgedIdentity {
   orgId?: string | null;
   orgSlug?: string | null;
   orgRole?: string | null;
+  /** The real actor of an impersonation (`act` claim). */
+  actor?: { sub: string; email?: string };
   issuedAt: number;
   expiresAt: number;
   raw: Record<string, unknown>;
@@ -165,9 +169,53 @@ export async function bridgeIdentity(
   identity: BridgedIdentity,
 ): Promise<void> {
   await bindBearerAccount(app, ctx, identity.userId);
+  await bindIdentity(ctx, identity, app);
+}
 
+/** The parts of `@adonis-agora/authkit-client` the bridge uses (>= 1.0.0-rc.7). */
+interface AuthkitClientModule {
+  bindAuthkitIdentity(ctx: HttpContext, identity: never): Promise<void>;
+  identityFromClaims(claims: Record<string, unknown>, globalRolesClaim?: string): BridgedIdentity;
+  Authenticator: new (
+    ctx: HttpContext,
+    deps: { resolver: { resolve(): Promise<unknown> } },
+  ) => unknown;
+}
+
+let authkitClient: Promise<AuthkitClientModule | null> | undefined;
+
+/** `@adonis-agora/authkit-client`, when the app has it (with the identity bridge); else `null`. */
+export function loadAuthkitClient(): Promise<AuthkitClientModule | null> {
+  authkitClient ??= import('@adonis-agora/authkit-client').then(
+    (mod) => {
+      const candidate = mod as unknown as Partial<AuthkitClientModule>;
+      return typeof candidate.bindAuthkitIdentity === 'function' &&
+        typeof candidate.identityFromClaims === 'function' &&
+        typeof candidate.Authenticator === 'function'
+        ? (candidate as AuthkitClientModule)
+        : null;
+    },
+    () => null,
+  );
+  return authkitClient;
+}
+
+/**
+ * `ctx.authkit` (and an `authkitClientGuard` `ctx.auth`) for `identity`: authkit-client's
+ * `bindAuthkitIdentity` when installed, else the structural fallback below.
+ */
+async function bindIdentity(
+  ctx: HttpContext,
+  identity: BridgedIdentity,
+  app?: ApplicationService,
+): Promise<void> {
+  const client = await loadAuthkitClient();
+  if (client !== null) {
+    await client.bindAuthkitIdentity(ctx, identity as never);
+    return;
+  }
   let authenticator: unknown;
-  if (app.container.hasBinding('authkit.client' as never)) {
+  if (app?.container.hasBinding('authkit.client' as never)) {
     try {
       const manager = (await app.container.make(
         'authkit.client' as never,
@@ -193,6 +241,74 @@ export async function bridgeIdentity(
   } catch {
     // leave ctx.auth alone
   }
+}
+
+/** When a verified JWT is put on the request as an authkit identity. */
+export interface BridgeClaimsOptions {
+  /** `true`: always; `false`: never; `undefined`: when `@adonis-agora/authkit-client` is installed. */
+  mode?: boolean | undefined;
+  /** The claim holding the global roles. Default `'roles'`. */
+  globalRolesClaim?: string | undefined;
+}
+
+/**
+ * Put the claims of a JWT access token verified remotely (`jwtAuth`, `oidcAuth`) on the request as
+ * an authkit identity, the way authkit-client's `bridgeAuthkitToken` does, without verifying it a
+ * second time. A `client_credentials` token (`sub` = `client_id`) has no user and is not bridged.
+ *
+ * A token without an `email` claim (authkit's access tokens carry none today) is bound to
+ * `ctx.authkit` only: the app's `resolveUser` (e.g. `lucidMirror`, which syncs the email) is not run
+ * and `ctx.auth` is left alone, so a mirrored user is never overwritten with an empty email.
+ * Returns whether an identity was bound.
+ */
+export async function bridgeAuthkitClaims(
+  ctx: HttpContext | undefined,
+  claims: Record<string, unknown>,
+  options: BridgeClaimsOptions = {},
+): Promise<boolean> {
+  if (ctx === undefined || options.mode === false) return false;
+  const sub = claims.sub;
+  if (typeof sub !== 'string' || sub === '') return false;
+  if (typeof claims.client_id === 'string' && claims.client_id === sub) return false;
+  const client = await loadAuthkitClient();
+  if (client === null && options.mode !== true) return false;
+  const rolesClaim = options.globalRolesClaim ?? 'roles';
+  const identity =
+    client !== null
+      ? client.identityFromClaims(claims, rolesClaim)
+      : localIdentity(claims, rolesClaim);
+  if (identity.email === '') {
+    (ctx as unknown as { authkit?: unknown }).authkit =
+      client !== null
+        ? new client.Authenticator(ctx, { resolver: { resolve: async () => identity } })
+        : identityAuthenticator(identity);
+    return true;
+  }
+  await bindIdentity(ctx, identity);
+  return true;
+}
+
+/** `identityFromClaims` for an app without authkit-client (`authkit: true` forced). */
+function localIdentity(claims: Record<string, unknown>, rolesClaim: string): BridgedIdentity {
+  const roles = claims[rolesClaim];
+  const text = (key: string) => (typeof claims[key] === 'string' ? (claims[key] as string) : null);
+  return {
+    userId: String(claims.sub),
+    email: text('email') ?? '',
+    globalRoles: Array.isArray(roles)
+      ? roles.filter((r): r is string => typeof r === 'string')
+      : [],
+    profile: {
+      ...(text('name') !== null ? { name: text('name') as string } : {}),
+      ...(text('picture') !== null ? { avatarUrl: text('picture') as string } : {}),
+    },
+    orgId: text('org_id'),
+    orgSlug: text('org_slug'),
+    orgRole: text('org_role'),
+    issuedAt: typeof claims.iat === 'number' ? claims.iat * 1000 : 0,
+    expiresAt: typeof claims.exp === 'number' ? claims.exp * 1000 : 0,
+    raw: claims,
+  };
 }
 
 /** `authkit.server`'s bearer binding, duck-typed (absent before authkit-server shipped it). */

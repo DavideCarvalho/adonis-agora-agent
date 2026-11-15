@@ -137,6 +137,8 @@ auth: authKitAuth({
 }),
 ```
 
+This is the shortcut for an app that runs `@adonis-agora/authkit-server` itself. When authkit runs on another server, use [`oidcAuth`](#oauth-with-authkit-on-another-server-oidcauth).
+
 There is nothing to turn on in AuthKit: this server registers itself as an MCP resource, which turns MCP client login on by itself (`mcpClients: false` in AuthKit's config turns it off). That is the whole login: `claude mcp add --transport http acme https://acme.com/mcp` opens the browser, the user signs in to your app and consents, and Claude Code is connected — see [AuthKit → MCP clients](https://davidecarvalho.github.io/agora/docs/authkit/mcp-clients). This server registers its URL with AuthKit at boot (`publicUrl` + `path`, or just the path on the issuer's origin when `publicUrl` is unset), so tokens are bound to it without the URL appearing in AuthKit's config.
 
 The token must resolve through the authkit provider, must not be expired, and must have been issued **for this server**: its audience (RFC 8707 `aud`) must be this endpoint's URL. A token for another resource, or one with no audience (a web login's), is a `401 token was not issued for this MCP server` — the MCP authorization spec forbids accepting tokens meant for someone else. `audience: 'any'` turns the check off, for clients that do not send `resource`. Anything else is a `401` carrying the reason. When the token belongs to a grant, the grant is loaded on every request too — a grant the user revoked stops its tokens immediately (`401 authorization revoked`). The authkit service is resolved lazily from the container on first use (`'authkit.server'`), so the peer only has to be bootable by the time the first MCP request arrives — not at provider boot.
@@ -196,6 +198,73 @@ auth: authKitAuth({
 
 Any other error thrown from `toActor` is still a `401` carrying its message; `McpAuthError` is what lets you pick the status and what stops [`anyOf`](#more-than-one-kind-of-token-anyof) from trying the next strategy.
 
+### OAuth with authkit on another server: `oidcAuth`
+
+When authkit (or any OIDC server) runs on another server, `oidcAuth` checks JWT access tokens against
+the issuer's published keys. Nothing of authkit runs in this app:
+
+```ts title="config/mcp.ts"
+import env from '#start/env'
+import { defineMcpConfig, oidcAuth } from '@adonis-agora/agent/mcp'
+
+export default defineMcpConfig({
+  name: 'Acme',
+  version: '1.0.0',
+  publicUrl: env.get('APP_URL'), // https://agent.acme.com
+  auth: oidcAuth({
+    issuer: env.get('AUTHKIT_ISSUER'), // https://auth.acme.com/oidc
+    toActor: async ({ subject, roles }) => ({ id: subject, roles: await rolesFor(subject) }),
+  }),
+})
+```
+
+The endpoint lists the issuer in `/.well-known/oauth-protected-resource/mcp` and answers a refused
+request with `WWW-Authenticate: Bearer resource_metadata="…"`, so MCP clients find the login on their
+own. A token must be signed by the issuer, unexpired, and issued for this endpoint: its `aud` must be
+the endpoint's URL (`https://agent.acme.com/mcp`). Set `resource` to accept another URL.
+
+On the authkit server, list the endpoint so it issues tokens for it, as JWTs:
+
+```ts title="config/authkit.ts (on the authkit server)"
+export default defineConfig({
+  // …
+  mcpClients: {
+    resources: ['https://agent.acme.com/mcp'],
+  },
+  accessTokens: {
+    resources: {
+      'https://agent.acme.com/mcp': { format: 'jwt' },
+    },
+  },
+})
+```
+
+`mcpClients.resources` is how an app on another server is announced to authkit; the app that runs
+authkit itself registers its endpoints on its own. `accessTokens.resources` makes the tokens for that
+URL JWTs, which `oidcAuth` can check without calling authkit.
+
+| Option | Default | |
+| --- | --- | --- |
+| `issuer` | — | The `iss` of the tokens, advertised in the metadata. |
+| `resource` | the endpoint's URL | Accepted `aud` value(s). |
+| `jwksUri` | from the issuer's discovery | Where the signing keys are. |
+| `scopes` | `['openid', 'profile', 'email', 'offline_access', 'roles']` | Advertised as `scopes_supported`. |
+| `requiredScopes` | none | A token without them is a `403 insufficient_scope`. |
+| `rolesClaim` | `'roles'` | The claim `roles` is read from. |
+| `toActor` | `{ id: subject, roles }` | Map the token to the MCP actor. Throw `McpAuthError` to refuse it. |
+| `authkit` | on when `@adonis-agora/authkit-client` is installed | Put the caller on `ctx.authkit` (see below). `false` for an issuer that is not authkit. |
+
+`toActor` receives `{ subject, claims, scopes, roles, clientId, actor, personalAgent }`. `actor` is
+the admin behind an impersonation token (its `act` claim): record it as who did the action, and
+authorize on `subject`. It also reaches the tools as `authInfo.extra.act`.
+
+With `@adonis-agora/authkit-client` installed, a token that names a user is put on the request as an
+authkit identity, so `getAuthkit(ctx)` answers for the caller. When the token carries an `email`,
+`ctx.auth` (with `authkitClientGuard`) and your `resolveUser` see it too. authkit's access tokens for
+MCP clients carry no `roles` claim: look the roles up in `toActor`, as above.
+
+A token that is not a JWT of this issuer is left for the next strategy in [`anyOf`](#more-than-one-kind-of-token-anyof).
+
 ### Static API keys
 
 For a trusted gateway or a machine integration, `apiKeyAuth` skips OAuth entirely:
@@ -237,6 +306,69 @@ For local development, drop `auth` and name a fixed identity instead:
 actor: { id: 'mcp-dev', roles: ['ADMIN'] },
 ```
 
+## Deployment topologies
+
+| Where authkit runs | Product MCP endpoint | Dev tools hub (`/mcp/agora`) | Personal agents, Poppy |
+| --- | --- | --- | --- |
+| In this app | `authKitAuth()`; registers itself with authkit | Signs in through authkit, nothing to set | Supported |
+| On another server | `oidcAuth({ issuer })` | `devTools.auth: jwtAuth({ issuer })` | Not yet |
+| No authkit | `oidcAuth` / `jwtAuth` with your OIDC server, or `apiKeyAuth()` | `jwtAuth`, `introspectionAuth`, or `authorizeByToken` | Not available |
+
+An end-to-end setup with authkit on its own server (`auth.acme.com`) and two apps that serve MCP:
+
+```ts title="auth.acme.com — config/authkit.ts"
+export default defineConfig({
+  // …
+  mcpClients: {
+    resources: [
+      'https://agent.acme.com/mcp',
+      'https://agent.acme.com/mcp/agora',
+      'https://jobs.acme.com/mcp/agora',
+    ],
+  },
+  accessTokens: {
+    resources: {
+      'https://agent.acme.com/mcp': { format: 'jwt' },
+      'https://agent.acme.com/mcp/agora': { format: 'jwt' },
+      'https://jobs.acme.com/mcp/agora': { format: 'jwt' },
+    },
+  },
+})
+```
+
+```ts title="agent.acme.com — config/mcp.ts"
+export default defineMcpConfig({
+  name: 'Acme',
+  version: '1.0.0',
+  publicUrl: 'https://agent.acme.com',
+  auth: oidcAuth({ issuer: 'https://auth.acme.com/oidc', toActor }),
+  devTools: {
+    auth: jwtAuth({
+      issuer: 'https://auth.acme.com/oidc',
+      resolveUser: (claims) => User.find(claims.sub),
+    }),
+    authorize: async (ctx) => ctx.auth.user?.isAdmin === true,
+  },
+})
+```
+
+```ts title="jobs.acme.com — config/mcp.ts (a durable control plane, dev tools only)"
+export default defineMcpConfig({
+  name: 'Jobs',
+  version: '1.0.0',
+  devTools: {
+    auth: jwtAuth({
+      issuer: 'https://auth.acme.com/oidc',
+      resolveUser: (claims) => User.find(claims.sub),
+    }),
+    authorize: async (ctx) => ctx.auth.user?.isAdmin === true,
+  },
+})
+```
+
+Each app signs its people in to its consoles with `@adonis-agora/authkit-client`, and each MCP
+client adds one URL per app.
+
 ## The routes
 
 | Method & path | Purpose |
@@ -244,7 +376,7 @@ actor: { id: 'mcp-dev', roles: ['ADMIN'] },
 | `POST /mcp` | The Streamable HTTP endpoint: `initialize`, `tools/list`, `tools/call`. |
 | `GET /mcp` | The SSE channel for server→client notifications on an established session. |
 | `DELETE /mcp` | Terminate the session and release its transport. |
-| `GET /.well-known/oauth-protected-resource/mcp` | RFC 9728 protected-resource metadata. **Mounted only when `auth` exposes OAuth metadata** — i.e. with `authKitAuth()` (alone or inside `anyOf`), not with `apiKeyAuth()` or open mode. |
+| `GET /.well-known/oauth-protected-resource/mcp` | RFC 9728 protected-resource metadata. **Mounted only when `auth` exposes OAuth metadata** — i.e. with `authKitAuth()` or `oidcAuth()` (alone or inside `anyOf`), not with `apiKeyAuth()` or open mode. |
 
 The well-known document is deliberately minimal and unauthenticated (and served with `Access-Control-Allow-Origin: *`, since MCP clients that run in a browser fetch it cross-origin):
 

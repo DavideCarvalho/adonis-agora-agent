@@ -272,7 +272,9 @@ describe('mcp_provider: the authorization server knows this server', () => {
       },
       body: JSON.stringify(initialize),
     }).then((r) => r.body?.cancel());
-    expect(seen).toEqual([{ resource: 'https://acme.example.com/tools/mcp' }]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ resource: 'https://acme.example.com/tools/mcp' });
+    expect((seen[0] as { ctx?: unknown }).ctx).toBeDefined();
     await booted.close();
 
     booted = await bootApp({ auth: recording, path: 'api/mcp' });
