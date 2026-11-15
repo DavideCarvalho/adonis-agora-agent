@@ -1,83 +1,37 @@
+import { useCallback, useMemo } from 'react';
+import { TimeSeriesChart } from '../agora-kit/charts/time-series-chart';
 import { formatCount, formatUsd } from '../client/format.js';
-import { buildTrendGeometry, type TrendMetric } from '../client/trend-path.js';
+import type { TrendMetric } from '../client/trend-path.js';
 import type { UsageTrendPoint } from '../client/types.js';
 
-const WIDTH = 720;
-const HEIGHT = 200;
-const PAD = 12;
+const day = (point: UsageTrendPoint) => point.day;
 
 /**
- * A hand-rolled SVG area/line chart for the daily usage trend — no charting dependency. Geometry is
- * computed by the pure {@link buildTrendGeometry}; this component only paints it (gradient fill,
- * stroke, vertex dots) and labels the endpoints. `viewBox` + `width:100%` make it fluid/responsive.
+ * The daily usage trend (cost or tokens) as the kit's area chart. Hovering or focusing a day shows
+ * its value in the kit tooltip, formatted as USD or a token count.
  */
 export function TrendChart({ points, metric }: { points: UsageTrendPoint[]; metric: TrendMetric }) {
-  const innerW = WIDTH - PAD * 2;
-  const innerH = HEIGHT - PAD * 2;
-  const geo = buildTrendGeometry(points, metric, innerW, innerH);
-  const fmt = metric === 'costUsd' ? formatUsd : formatCount;
-  const gradId = `trend-fill-${metric}`;
+  const cost = metric === 'costUsd';
+  const series = useMemo(
+    () => [
+      {
+        key: metric,
+        label: cost ? 'cost' : 'tokens',
+        value: (point: UsageTrendPoint) => point[metric],
+      },
+    ],
+    [metric, cost],
+  );
+  const formatValue = useCallback((n: number) => (cost ? formatUsd(n) : formatCount(n)), [cost]);
 
   return (
-    <svg
-      className="block h-[200px] w-full"
-      viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-      role="img"
-      aria-label={`daily ${metric === 'costUsd' ? 'cost' : 'token'} trend`}
-      preserveAspectRatio="none"
-    >
-      <title>{`daily ${metric === 'costUsd' ? 'cost' : 'token'} trend`}</title>
-      <defs>
-        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="var(--agora-accent)" stopOpacity="0.32" />
-          <stop offset="100%" stopColor="var(--agora-accent)" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      {/* baseline gridlines */}
-      {[0.25, 0.5, 0.75].map((f) => (
-        <line
-          key={f}
-          x1={PAD}
-          x2={WIDTH - PAD}
-          y1={PAD + innerH * f}
-          y2={PAD + innerH * f}
-          stroke="var(--agora-line-soft)"
-          strokeWidth="1"
-        />
-      ))}
-      <g transform={`translate(${PAD} ${PAD})`}>
-        {geo.area && <path d={geo.area} fill={`url(#${gradId})`} />}
-        {geo.line && (
-          <path
-            d={geo.line}
-            fill="none"
-            stroke="var(--agora-accent)"
-            strokeWidth="2"
-            strokeLinejoin="round"
-          />
-        )}
-        {geo.vertices.map((v) => (
-          <circle key={v.day} cx={v.x} cy={v.y} r="3" fill="var(--agora-accent)">
-            <title>{`${v.day} · ${fmt(v.value)}`}</title>
-          </circle>
-        ))}
-      </g>
-      <text x={PAD} y={HEIGHT - 1} fontSize="10" className="mono" fill="var(--agora-muted)">
-        {points[0]?.day ?? ''}
-      </text>
-      <text
-        x={WIDTH - PAD}
-        y={HEIGHT - 1}
-        fontSize="10"
-        textAnchor="end"
-        className="mono"
-        fill="var(--agora-muted)"
-      >
-        {points[points.length - 1]?.day ?? ''}
-      </text>
-      <text x={PAD} y={PAD + 2} fontSize="10" className="mono" fill="var(--agora-muted)">
-        {fmt(geo.max)}
-      </text>
-    </svg>
+    <TimeSeriesChart
+      data={points}
+      x={day}
+      series={series}
+      formatValue={formatValue}
+      ariaLabel={`daily ${cost ? 'cost' : 'token'} trend`}
+      height={200}
+    />
   );
 }
