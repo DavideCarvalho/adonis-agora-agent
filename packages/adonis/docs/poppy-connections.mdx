@@ -55,7 +55,8 @@ the JSON in an env var. Several keys rotate: the first signs, all are published.
 | `companies` | none | A list, a map to `{ label, scopes, readScopes }`, or a predicate. |
 | `owner` | `actor.tenantRef ?? actor.id` | Whose connection a turn uses. |
 | `store` | `'lucid'` | `'memory'`, `redisPoppyConnectionStore(redis)`, or your own; `connection`, `autoCreateTables`, `schema` (default: `config/agent.ts`'s `schema`). |
-| `secret` | app key | Seals connections at rest (AES-256-GCM). |
+| `secret` | app key | Opens connections sealed by older versions; seals new ones only when set explicitly. |
+| `crypto` | the app's `encryption` | How connections are sealed at rest: `keys` (newest first), an `encryption` instance, `kms`. See [Rotating the sealing key](#rotating-the-sealing-key). |
 | `insecureDev` | `false` | **Development only, not spec-compliant**: http companies and identity. Refused in production. |
 | `tools` | `{ prefix: 'poppy_' }` | `prefix`, `roles`, `ability`, `connect` (`'action'` card that resumes, or `'link'`), `writes` (`false` = build your own confirmed writes), `register` (`false` = you call `registerPoppyConnectionTools` on your own registry), `twoStep` (see below). |
 | `texts` | English | Pages and confirmation cards. |
@@ -70,11 +71,42 @@ them (they carry no `personal_agent` role).
 
 One connection per **owner** (person/account) and company: the company's issuer, the granted scopes,
 and the client state — the per-company User ID, the DPoP and delegated keys, the refresh token and
-access tokens — **sealed** with the app key. The Session header, DPoP proofs and nonces, renewals, narrowing and
+access tokens — **sealed** at rest with your app's encryption (`config/encryption.ts`), each value bound to its row. The Session header, DPoP proofs and nonces, renewals, narrowing and
 refresh token rotation are handled by the client; calls of one owner are serialized so a rotated token is
 never lost. `PoppyConnections` (container binding) gives your code `list(owner)` and
 `disconnect(owner, domain)`; a disconnect revokes the refresh token at the company ([Poppy §5.5](https://personalagentprotocol.org/docs/spec#ending-sessions)), and a
 revocation on their side is noticed (`invalid_grant`) and marks the connection `revoked`.
+
+## Rotating the sealing key
+
+By default connections are sealed with the app's `encryption` service, so they follow
+`config/encryption.ts`. Connections saved by agent before 1.0 still open with the app key; nothing to
+migrate.
+
+To rotate with a key of their own, list the keys newest first in `config/poppy_connections.ts`:
+
+```ts
+crypto: {
+  keys: [env.get('POPPY_KEY_2026_11'), env.get('APP_KEY')], // the first seals, all open
+},
+```
+
+Deploy, then rewrite what the older keys sealed and check nothing is left:
+
+```sh
+node ace agent:crypto:reseal --dry-run
+node ace agent:crypto:reseal
+node ace agora:doctor --deep --lib=agent   # agent.crypto: ok
+```
+
+Then drop the old key from `keys`. If you rotate the keys of `config/encryption.ts` instead, run
+`node ace agent:crypto:reseal --all` after deploying: the agent can't tell those keys apart, so it rewrites
+every value.
+
+For envelope encryption, pass `crypto: { kms }`: an object with `wrap(dataKey, context)` and
+`unwrap(wrapped, context)` over your cloud KMS (AWS KMS `Encrypt`/`Decrypt`, GCP KMS, Azure Key
+Vault `wrapKey`/`unwrapKey`). Each value gets its own data key, wrapped by the KMS. Turning it on makes
+existing values `retired` until you run the reseal.
 
 ## Connecting — a link, then the conversation resumes
 

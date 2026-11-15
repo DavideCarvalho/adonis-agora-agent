@@ -1,4 +1,5 @@
 import type { Actor } from '../types.js';
+import type { PoppyCryptoConfig } from './crypto.js';
 import type { PoppyConnectionStore } from './store.js';
 
 /** What this app's agent may do at one Company. */
@@ -119,6 +120,12 @@ export interface PoppyConnectionsConfig {
   autoCreateTables?: boolean;
   /** Seals tokens and keys at rest. Default: the app key. */
   secret?: string;
+  /**
+   * Key rotation for what is sealed at rest. Default: one key `app` from `secret`. Rotate with
+   * `keys: [{ id: '2026-11', secret: env.get('POPPY_KEY_2026_11') }, { id: 'app', secret: env.get('APP_KEY').release() }]`,
+   * `active: '2026-11'`, then `node ace agent:crypto:reseal`.
+   */
+  crypto?: PoppyCryptoConfig;
   /**
    * DEVELOPMENT ONLY, not spec-compliant: accept `http://` Companies and serve the identity over
    * http (a local app). Refused when `NODE_ENV=production`.

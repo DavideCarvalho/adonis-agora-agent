@@ -2,11 +2,15 @@ import type { HttpContext } from '@adonisjs/core/http';
 import type { ApplicationService } from '@adonisjs/core/types';
 import { onActionProposalAdmitted } from '../src/action-proposal-listeners.js';
 import { AgentService } from '../src/agent-service.js';
+import type { EncrypterLike } from '../src/crypto-kit/index.js';
+import { registerDoctorChecks } from '../src/doctor/agora_doctor.js';
 import type { PoppyConnectionsConfig } from '../src/poppy-connections/config.js';
+import type { PoppyCryptoConfig } from '../src/poppy-connections/crypto.js';
 import {
   createPoppyConnectionsHandler,
   type PoppyConnectRenderer,
 } from '../src/poppy-connections/http.js';
+import { sealedReportVerdict } from '../src/poppy-connections/reseal.js';
 import { continueAfterConnect, resumeAfterConnect } from '../src/poppy-connections/resume.js';
 import { setPoppyConnectionsHandler } from '../src/poppy-connections/runtime.js';
 import { PoppyConnections } from '../src/poppy-connections/service.js';
@@ -51,6 +55,16 @@ export default class PoppyConnectionsProvider {
     const config = configOf(this.app);
     if (!config) return;
     const connections = await this.app.container.make(PoppyConnections);
+    // `node ace agora:doctor --deep`: values still sealed in the old format or with a retired key.
+    await registerDoctorChecks(this.app.container, [
+      {
+        id: 'agent.crypto',
+        lib: 'agent',
+        title: 'Poppy connections: sealed with the active key',
+        cost: 'deep',
+        run: async () => sealedReportVerdict(await connections.sealedReport()),
+      },
+    ]).catch(() => undefined);
     // The agent provider's registry when there is one; an app with its own loop registers the tools
     // in its own registry (`tools.register: false` + `registerPoppyConnectionTools`).
     if (config.tools?.register !== false && this.app.container.hasBinding(ToolRegistry)) {
@@ -138,13 +152,28 @@ export default class PoppyConnectionsProvider {
         ? (appKey as { release: () => string }).release()
         : String(appKey ?? ''));
     return new PoppyConnections({
-      config,
+      config: { ...config, crypto: await this.#crypto(config) },
       store: await this.#store(config),
       secret,
       production: this.app.inProduction,
       onConnected: (pending) => this.#resume(pending),
       log: (line) => logger.warn(line),
     });
+  }
+
+  /**
+   * What seals the connections: `crypto.keys`/`crypto.encryption` when set, else `secret` when set,
+   * else the app's own `encryption` service (`config/encryption.ts`).
+   */
+  async #crypto(config: Config): Promise<PoppyCryptoConfig> {
+    const crypto = config.crypto ?? {};
+    if (crypto.keys?.length || crypto.encryption || config.secret !== undefined) return crypto;
+    try {
+      const encryption = (await this.app.container.make('encryption')) as EncrypterLike;
+      return { ...crypto, encryption };
+    } catch {
+      return crypto; // no config/encryption.ts: the app key (`secret`) seals
+    }
   }
 
   async #store(config: Config): Promise<PoppyConnectionStore> {
