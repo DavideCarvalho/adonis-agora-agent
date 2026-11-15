@@ -1,5 +1,11 @@
 # @adonis-agora/agent-dashboard
 
+## 1.0.0-rc.11
+
+### Patch Changes
+
+- [#622](https://github.com/DavideCarvalho/adonis-agora-agent/pull/622) [`2ad02fe`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/2ad02fe216659fe267a80d6323cc2eed4f3757b0) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - ⌘K now navigates: it lists every page of the console's sidebar and every other Agora console you can open ("Go to Workflows", found by "durable" too), matched case- and accent-insensitively, before the console's own commands and the cross-console search hits. ⌘K opens even without a search endpoint, and shows the pages and consoles before anything is typed.
+
 ## 1.0.0-rc.10
 
 ### Patch Changes
