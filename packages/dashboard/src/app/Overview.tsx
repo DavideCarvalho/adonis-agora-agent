@@ -7,11 +7,12 @@ import { MetricCard, MetricGrid, MetricGridSkeleton } from '../agora-kit/blocks/
 import { PageHeader } from '../agora-kit/blocks/page-header';
 import { Panel } from '../agora-kit/blocks/panel';
 import { QueryBoundary } from '../agora-kit/blocks/query-boundary';
+import { DonutChart } from '../agora-kit/charts/donut-chart';
 import { PageBody } from '../agora-kit/shell/app-shell';
 import { isUnavailable } from '../client/agent-client.js';
 import { formatCount, formatModelLabel, formatUsd } from '../client/format.js';
 import {
-  donutSegments,
+  type ModelSpendShare,
   type SpendTotals,
   summarizeActors,
   summarizeSpend,
@@ -25,7 +26,6 @@ import type {
   ModelSpendRow,
   UsageTrendPoint,
 } from '../client/types.js';
-import { Donut } from './Donut.js';
 import { TrendChart } from './TrendChart.js';
 import {
   ChartSkeleton,
@@ -219,11 +219,20 @@ const modelColumns: Column<ModelSpendRow>[] = [
 export function SpendByModel({ rows }: { rows: ModelSpendRow[] }) {
   const totals = summarizeSpend(rows);
   const shares = withShares(rows);
+  const priced = totals.costUsd > 0;
   return (
     <div className="grid items-center lg:grid-cols-[minmax(240px,320px)_1fr]">
       <div className="flex flex-col items-center gap-4 border-b border-border p-5 lg:border-r lg:border-b-0">
-        <Donut
-          segments={donutSegments(shares)}
+        <DonutChart
+          data={shares}
+          label={modelName}
+          rowKey={modelKey}
+          // nothing priced: the slices fall back to token share, like the legend's ordering
+          value={priced ? modelCost : modelTokens}
+          valueLabel={priced ? 'cost' : 'tokens'}
+          formatValue={priced ? formatUsd : formatCount}
+          color={sliceColor}
+          ariaLabel="spend by model"
           centerLabel={formatUsd(totals.costUsd)}
           centerSub="total"
         />
@@ -372,3 +381,9 @@ export function ActorTable({ rows }: { rows: ActorSpendRow[] }) {
     </>
   );
 }
+
+const modelName = (row: ModelSpendShare) => formatModelLabel(row.modelId);
+const modelKey = (row: ModelSpendShare) => row.modelId;
+const modelCost = (row: ModelSpendShare) => row.costUsd;
+const modelTokens = (row: ModelSpendShare) => row.totalTokens;
+const sliceColor = (_row: ModelSpendShare, index: number) => colorAt(index);

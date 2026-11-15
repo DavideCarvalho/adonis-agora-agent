@@ -5,9 +5,10 @@ import { MetricCard, MetricGrid, MetricGridSkeleton } from '../agora-kit/blocks/
 import { PageHeader } from '../agora-kit/blocks/page-header';
 import { Panel } from '../agora-kit/blocks/panel';
 import { QueryBoundary } from '../agora-kit/blocks/query-boundary';
+import { BarChart } from '../agora-kit/charts/bar-chart';
+import { DonutChart } from '../agora-kit/charts/donut-chart';
 import { PageBody } from '../agora-kit/shell/app-shell';
 import { formatCount, formatDuration, formatPercent } from '../client/format.js';
-import type { DonutSegment } from '../client/spend-summary.js';
 import type {
   Latency,
   RunAgentBreakdownRow,
@@ -15,7 +16,6 @@ import type {
   RunReliability,
   RunTrendPoint,
 } from '../client/types.js';
-import { Donut } from './Donut.js';
 import { colorAt, DonutSkeleton, LegendRow, numClass, ShareBar } from './ui.js';
 import { asQuery, useReliability } from './use-governance.js';
 
@@ -27,174 +27,65 @@ interface Slice {
   color: string;
 }
 
+const sliceLabel = (slice: Slice) => slice.label;
+const sliceValue = (slice: Slice) => slice.value;
+const sliceColor = (slice: Slice) => slice.color;
+
 /**
- * A hand-rolled inline-SVG donut of run outcomes (no chart library) — each slice is a
- * `stroke-dasharray` arc on a ring rotated -90° so the first slice starts at 12 o'clock, mirroring
- * the Overview {@link Donut} but coloured by semantic outcome tokens (`--good`/`--bad`/`--warn`/
- * `--info`) rather than the categorical palette. The total run count sits in the hole.
+ * The run-outcome donut (the kit's `DonutChart`), coloured by semantic outcome tokens rather than
+ * the categorical palette, with the total run count in the hole. Hovering or focusing a slice shows
+ * its count and share in the kit tooltip.
  */
 function ReliabilityDonut({ slices, total }: { slices: Slice[]; total: number }) {
-  const size = 168;
-  const thickness = 20;
-  const radius = (size - thickness) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const center = size / 2;
-  let offset = 0;
-
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox={`0 0 ${size} ${size}`}
-      role="img"
-      aria-label="run outcomes"
-    >
-      <title>run outcomes</title>
-      <g transform={`rotate(-90 ${center} ${center})`}>
-        <circle
-          cx={center}
-          cy={center}
-          r={radius}
-          fill="none"
-          stroke="var(--agora-line)"
-          strokeWidth={thickness}
-        />
-        {total > 0 &&
-          slices.map((slice) => {
-            const fraction = slice.value / total;
-            const dash = fraction * circumference;
-            const el = (
-              <circle
-                key={slice.key}
-                cx={center}
-                cy={center}
-                r={radius}
-                fill="none"
-                stroke={slice.color}
-                strokeWidth={thickness}
-                strokeDasharray={`${dash} ${circumference}`}
-                strokeDashoffset={-offset * circumference}
-                strokeLinecap="butt"
-              />
-            );
-            offset += fraction;
-            return el;
-          })}
-      </g>
-      <text
-        x={center}
-        y={center - 3}
-        textAnchor="middle"
-        className="mono tnum"
-        fontSize="18"
-        fontWeight="600"
-        fill="var(--agora-text)"
-      >
-        {formatCount(total)}
-      </text>
-      <text
-        x={center}
-        y={center + 15}
-        textAnchor="middle"
-        className="mono"
-        fontSize="10"
-        fill="var(--agora-muted)"
-      >
-        runs
-      </text>
-    </svg>
+    <DonutChart
+      data={slices}
+      label={sliceLabel}
+      value={sliceValue}
+      color={sliceColor}
+      valueLabel="runs"
+      formatValue={formatCount}
+      ariaLabel="run outcomes"
+      centerLabel={formatCount(total)}
+      centerSub="runs"
+    />
   );
 }
 
-const TREND_WIDTH = 720;
-const TREND_HEIGHT = 160;
-const TREND_PAD = 12;
+const trendDay = (p: RunTrendPoint) => p.day;
+const TREND_SERIES = [
+  {
+    key: 'runs',
+    label: 'runs',
+    value: (p: RunTrendPoint) => p.runs,
+    // matches the panel legend's `bg-primary/60`, so runs and failed stay apart on a red accent
+    color: 'color-mix(in oklab, var(--agora-accent) 60%, transparent)',
+  },
+  {
+    key: 'failed',
+    label: 'failed',
+    value: (p: RunTrendPoint) => p.failed,
+    color: 'var(--agora-bad)',
+  },
+];
 
 /**
- * A hand-rolled inline-SVG grouped-bar chart of the daily runs/failed trend — no charting dependency,
- * mirroring the visual language of {@link import('./TrendChart.js').TrendChart}. Each day gets two
- * bars: total runs (`--primary`) and the failed subset (`--bad`), so a failure spike reads directly
- * against that day's volume instead of needing a second axis.
+ * The daily runs/failed trend as the kit's grouped bars: total runs (accent) and the failed subset
+ * (`--agora-bad`) side by side, so a failure spike reads against that day's volume. Hovering or
+ * focusing a day shows both counts in the kit tooltip.
  */
 function ReliabilityTrendChart({ points }: { points: RunTrendPoint[] }) {
-  const innerW = TREND_WIDTH - TREND_PAD * 2;
-  const innerH = TREND_HEIGHT - TREND_PAD * 2;
-  const max = Math.max(...points.map((p) => p.runs), 1);
-  const slot = innerW / points.length;
-  const barW = Math.max(2, Math.min(18, slot * 0.32));
-
   return (
-    <svg
-      className="block h-[160px] w-full"
-      viewBox={`0 0 ${TREND_WIDTH} ${TREND_HEIGHT}`}
-      role="img"
-      aria-label="daily runs vs failed trend"
-      preserveAspectRatio="none"
-    >
-      <title>daily runs vs failed trend</title>
-      {[0.25, 0.5, 0.75].map((f) => (
-        <line
-          key={f}
-          x1={TREND_PAD}
-          x2={TREND_WIDTH - TREND_PAD}
-          y1={TREND_PAD + innerH * f}
-          y2={TREND_PAD + innerH * f}
-          stroke="var(--agora-line-soft)"
-          strokeWidth="1"
-        />
-      ))}
-      <g transform={`translate(${TREND_PAD} ${TREND_PAD})`}>
-        {points.map((p, i) => {
-          const cx = slot * i + slot / 2;
-          const runsH = (p.runs / max) * innerH;
-          const failedH = (p.failed / max) * innerH;
-          return (
-            <g key={p.day}>
-              <rect
-                x={cx - barW}
-                y={innerH - runsH}
-                width={barW}
-                height={runsH}
-                fill="var(--agora-accent)"
-                opacity={0.6}
-              >
-                <title>{`${p.day} · ${p.runs} runs`}</title>
-              </rect>
-              {p.failed > 0 && (
-                <rect
-                  x={cx}
-                  y={innerH - failedH}
-                  width={barW}
-                  height={failedH}
-                  fill="var(--agora-bad)"
-                >
-                  <title>{`${p.day} · ${p.failed} failed`}</title>
-                </rect>
-              )}
-            </g>
-          );
-        })}
-      </g>
-      <text
-        x={TREND_PAD}
-        y={TREND_HEIGHT - 1}
-        fontSize="10"
-        className="mono"
-        fill="var(--agora-muted)"
-      >
-        {points[0]?.day ?? ''}
-      </text>
-      <text
-        x={TREND_WIDTH - TREND_PAD}
-        y={TREND_HEIGHT - 1}
-        fontSize="10"
-        textAnchor="end"
-        className="mono"
-        fill="var(--agora-muted)"
-      >
-        {points[points.length - 1]?.day ?? ''}
-      </text>
-    </svg>
+    <BarChart
+      data={points}
+      x={trendDay}
+      series={TREND_SERIES}
+      layout="grouped"
+      integer
+      formatValue={formatCount}
+      ariaLabel="daily runs vs failed trend"
+      height={160}
+    />
   );
 }
 
@@ -210,16 +101,13 @@ function LatencyCard({ label, latency }: { label: string; latency: Latency }) {
   );
 }
 
+const failureCode = (row: RunFailureCodeRow) => row.code;
+const failureCount = (row: RunFailureCodeRow) => row.count;
+const failureColor = (_row: RunFailureCodeRow, index: number) => colorAt(index);
+
 /** Failed runs split by the stable code their stream `error` frame carried: a donut and a table. */
 function FailuresByCode({ rows }: { rows: RunFailureCodeRow[] }) {
   const total = rows.reduce((sum, row) => sum + row.count, 0);
-  const segments: DonutSegment[] = [];
-  let offset = 0;
-  for (const row of rows) {
-    const fraction = total > 0 ? row.count / total : 0;
-    segments.push({ key: row.code, value: row.count, fraction, offset });
-    offset += fraction;
-  }
   const colorOf = new Map(rows.map((row, i) => [row.code, colorAt(i)]));
   const columns: Column<RunFailureCodeRow>[] = [
     { id: 'code', header: 'Code', cell: (row) => <span className="mono text-fg">{row.code}</span> },
@@ -244,11 +132,16 @@ function FailuresByCode({ rows }: { rows: RunFailureCodeRow[] }) {
   return (
     <div className="grid items-center lg:grid-cols-[minmax(240px,320px)_1fr]">
       <div className="flex flex-col items-center gap-4 border-b border-border p-5 lg:border-r lg:border-b-0">
-        <Donut
-          segments={segments}
+        <DonutChart
+          data={rows}
+          label={failureCode}
+          value={failureCount}
+          color={failureColor}
+          valueLabel="failed runs"
+          formatValue={formatCount}
+          ariaLabel="failures by code"
           centerLabel={formatCount(total)}
           centerSub="failed"
-          label="failures by code"
         />
         <div className="w-full">
           {rows.slice(0, 6).map((row, i) => (
