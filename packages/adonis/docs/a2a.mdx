@@ -23,6 +23,12 @@ Authentication and delegation come from [AuthKit's personal agents](https://davi
 Personal agents speaking [Personal Agent Protocol ("Poppy")](/docs/agent/poppy) instead get its
 conversation endpoint — same gate, same `scope:<id>` roles.
 
+<Callout title="authkit runs in this app">
+Personal agents need `@adonis-agora/authkit-server` in the same app as the agent: it verifies the
+personal agent's identity and the user's delegation. An app whose authkit runs on another server
+cannot serve personal agents yet. MCP endpoints can: see [`oidcAuth`](/docs/agent/mcp#oauth-with-authkit-on-another-server-oidcauth).
+</Callout>
+
 ## Mounting it
 
 Register the provider in `adonisrc.ts`, after the agent provider:

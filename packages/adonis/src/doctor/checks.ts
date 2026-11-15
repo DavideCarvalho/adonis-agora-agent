@@ -93,7 +93,7 @@ export function checkMcpOpen(mcp: AnyConfig | undefined, inProduction: boolean):
   return {
     status: inProduction ? 'error' : 'warn',
     message: `${open.join(', ')} ${open.length === 1 ? 'runs' : 'run'} without auth, as the fixed \`actor\` (open mode).`,
-    fix: 'Set `auth` (authKitAuth() or apiKeyAuth()) in config/mcp.ts and remove `actor`.',
+    fix: 'Set `auth` (authKitAuth(), oidcAuth({ issuer }) or apiKeyAuth()) in config/mcp.ts and remove `actor`.',
     docs: `${DOCS}/mcp`,
   };
 }

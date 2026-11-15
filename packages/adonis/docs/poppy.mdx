@@ -23,6 +23,12 @@ The rest of the protocol — `poppy.json`, the OAuth server, the `Poppy-Session`
 `Symbol.for('@adonis-agora/poppy:authenticate')`, where AuthKit installs the function that verifies a
 Session header and access token. This surface reads it per request.
 
+<Callout title="authkit runs in this app">
+Poppy conversations need `@adonis-agora/authkit-server` in the same app as the agent: that slot is
+filled only there. An app whose authkit runs on another server cannot be a Company Agent yet. MCP
+endpoints can: see [`oidcAuth`](/docs/agent/mcp#oauth-with-authkit-on-another-server-oidcauth).
+</Callout>
+
 ## Mounting it
 
 ```ts title="adonisrc.ts"

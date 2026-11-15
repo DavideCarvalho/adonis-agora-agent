@@ -978,26 +978,26 @@ describe('bridgeIdentity', () => {
 
   it('builds the authenticator with the app authkit client when there is one', async () => {
     let resolved: unknown;
-    const app = {
-      container: {
-        hasBinding: (name: string) => name === 'authkit.client',
-        make: async () => ({
-          async createAuthenticator(
-            _ctx: unknown,
-            options: {
-              resolver: {
-                resolver(rc: unknown): Promise<{ resolve(c: unknown): Promise<unknown> }>;
-              };
-            },
-          ) {
-            const resolver = await options.resolver.resolver({});
-            resolved = await resolver.resolve({});
-            return { fromClient: true };
+    const container = {
+      hasBinding: (name: string) => name === 'authkit.client',
+      make: async () => ({
+        async createAuthenticator(
+          _ctx: unknown,
+          options: {
+            resolver: {
+              resolver(rc: unknown): Promise<{ resolve(c: unknown): Promise<unknown> }>;
+            };
           },
-        }),
-      },
-    } as unknown as ApplicationService;
-    const ctx = {} as HttpContext;
+        ) {
+          const resolver = await options.resolver.resolver({});
+          resolved = await resolver.resolve({});
+          return { fromClient: true };
+        },
+      }),
+    };
+    const app = { container } as unknown as ApplicationService;
+    // authkit-client's `bindAuthkitIdentity` resolves the manager from the request's container.
+    const ctx = { containerResolver: container } as unknown as HttpContext;
     await bridgeIdentity(app, ctx, identity);
     expect((ctx as unknown as { authkit: unknown }).authkit).toEqual({ fromClient: true });
     expect(resolved).toBe(identity);

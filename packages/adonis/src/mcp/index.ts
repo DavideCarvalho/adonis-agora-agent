@@ -29,6 +29,7 @@ export type {
   McpAuthInfo,
   McpChallengeError,
   McpOAuthMetadata,
+  McpVerifyContext,
 } from './auth.js';
 export { anyOf, apiKeyAuth, authKitAuth, McpAuthError, resolveMcpAuth } from './auth.js';
 export type {
@@ -47,5 +48,7 @@ export {
   publicOrigin,
   wwwAuthenticateChallenge,
 } from './discovery.js';
+export type { OidcActorInfo, OidcActorResolver, OidcMcpAuthOptions } from './oidc-auth.js';
+export { oidcAuth } from './oidc-auth.js';
 export type { CreateMcpServerOptions, McpToolContextOptions } from './server.js';
 export { createMcpServer } from './server.js';

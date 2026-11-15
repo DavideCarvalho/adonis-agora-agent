@@ -95,6 +95,11 @@ export interface DevToolsCaller {
   id: string;
   /** `token`: a bearer the endpoint did not recognize itself; `session`: a signed-in account; `open`: neither. */
   via: 'token' | 'session' | 'open';
+  /**
+   * With an impersonation token: the account being impersonated (`user:<sub>`), while `id` is the
+   * real actor (the token's `act`).
+   */
+  onBehalfOf?: string;
 }
 
 /** One property of a {@link DevToolInputSchema}. */

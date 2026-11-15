@@ -47,7 +47,9 @@ export interface McpConfig {
   publicUrl?: string;
   /**
    * How MCP clients authenticate. Pass a ready {@link McpAuth} or a lazy {@link McpAuthFactory} thunk
-   * (`authKitAuth()` / `apiKeyAuth()`, or several of them combined with `anyOf()`). Omit → the server is open (no bearer check); the acting actor
+   * (`authKitAuth()` with authkit-server in this app, `oidcAuth({ issuer })` with an authkit — or any
+   * OIDC issuer — on another server, `apiKeyAuth()`, or several of them combined with `anyOf()`).
+   * Omit → the server is open (no bearer check); the acting actor
    * falls back to `actor`. Fail-closed: with no `auth` AND no `actor`, requests are rejected.
    */
   auth?: McpAuth | McpAuthFactory;
@@ -155,6 +157,8 @@ export interface McpDevToolsConfig {
    * protected-resource metadata, so MCP clients open the login, and `verify` turns each bearer into
    * the principal the consoles' `authorize` see (`devToolsPrincipal(ctx)`, and `ctx.auth.user` when it
    * resolves a user). Set, it replaces the authkit sign-in (the hub does not register with authkit).
+   * With `@adonis-agora/authkit-client` installed, `jwtAuth` also binds the caller to `ctx.authkit`,
+   * so consoles gated by `authkitDashboardAuthorize` accept it.
    */
   auth?: DevToolsAuth;
 }
