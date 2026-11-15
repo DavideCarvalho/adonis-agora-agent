@@ -526,7 +526,7 @@
     "agent-0-59": "npm:@adonis-agora/agent@0.59.0",
     "ai": "7.0.170",
     "ajv": "8.20.0",
-    "better-sqlite3": "13.0.3",
+    "better-sqlite3": "13.1.1",
     "bootstrap": "5.3.9",
     "esbuild": "0.28.2",
     "jsdom": "31.0.0",
