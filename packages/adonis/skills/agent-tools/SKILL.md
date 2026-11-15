@@ -320,7 +320,9 @@ a custom Poppy scope).
 > `packages/adonis/docs/poppy-client.mdx`.
 > The other direction — the app's own agent acting at OTHER Poppy companies for its users — is
 > `@adonis-agora/agent/poppy_connections_provider` + `config/poppy_connections.ts`: allow-listed
-> companies (default none), connections sealed with the app key, `poppy_*` tools where every company
+> companies (default none), connections sealed with the Agora crypto kit over Adonis'
+> encryption (default the app's `encryption` service, each value bound to its row; values
+> sealed by older versions still open), `poppy_*` tools where every company
 > write (`poppy_write`, `poppy_request`) is an `action` behind the normal confirmation. Source:
 > `packages/adonis/docs/poppy-connections.mdx`.
  An `action` still parks on approval — but by default the
