@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.27
+
+### Patch Changes
+
+- [#623](https://github.com/DavideCarvalho/adonis-agora-agent/pull/623) [`285ecec`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/285ececd8c3c024561757cab790f50358755faaa) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Ships the current console: chart tooltips (TanStack Charts) and ⌘K navigation to pages and consoles. The console is bundled into this package, so the dashboard-only release did not reach apps.
+
 ## 1.0.0-rc.26
 
 ### Minor Changes
