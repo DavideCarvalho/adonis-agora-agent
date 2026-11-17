@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import type { Column } from '../agora-kit/blocks/data-table';
 import { DataTable } from '../agora-kit/blocks/data-table';
 import { EmptyState } from '../agora-kit/blocks/empty-state';
@@ -37,6 +36,7 @@ import {
   ShareBar,
   TableSkeleton,
 } from './ui.js';
+import { useMetricParam } from './url-state.js';
 import {
   asQuery,
   useSpendByActor,
@@ -62,7 +62,9 @@ export function Overview({ range }: { range: GovernanceRange }) {
   const featuresState = useSpendByFeature(range);
   const features = asQuery(featuresState);
   const trend = asQuery(useUsageTrend(range));
-  const [metric, setMetric] = useState<TrendMetric>('costUsd');
+  // `?metric=totalTokens`; cost (the default) leaves the URL.
+  const [metric, setMetricParam] = useMetricParam();
+  const setMetric = (next: TrendMetric) => void setMetricParam(next);
 
   return (
     <PageBody>

@@ -1,9 +1,12 @@
+import { parseAsString, useQueryStates } from 'nuqs';
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { ErrorBoundary } from '../agora-kit/blocks/error-boundary';
 import { useIsMobile } from '../agora-kit/hooks/use-mobile';
 import { ActivityIcon, GridIcon } from '../agora-kit/icons';
 import { AppShell, type NavSection } from '../agora-kit/shell/app-shell';
 import { readShellConfig } from '../agora-kit/shell-config';
+import { splitHash, subscribeHashUrl } from '../agora-kit/url-state/hash-url';
+import { NuqsHashAdapter } from '../agora-kit/url-state/nuqs-hash-adapter';
 import { CONFIG_ELEMENT_ID } from '../client/api-base.js';
 import { defaultRange, isIsoDay, normalizeRange } from '../client/default-range.js';
 import type { GovernanceRange } from '../client/types.js';
@@ -31,6 +34,7 @@ import { ThreadsSection } from './ThreadsSection.js';
 import { ToolCallsSection } from './ToolCallsSection.js';
 import { ToolsSection } from './ToolsSection.js';
 import { fieldClass } from './ui.js';
+import { hashWith, sharedSearch } from './url-state.js';
 
 /** The agent console's accent (rose), passed to the kit's ThemeProvider in `main.tsx`. */
 export const AGENT_ACCENT = '#fb7185';
@@ -73,13 +77,13 @@ const SECTIONS: { section: string; keys: SectionKey[] }[] = [
 const RANGED: ReadonlySet<SectionKey> = new Set<SectionKey>(['overview', 'genui']);
 
 export function sectionFromHash(hash: string): SectionKey {
-  const key = hash.replace(/^#\/?/, '').split('/')[0] as SectionKey;
+  const key = splitHash(hash).path.replace(/^\/?/, '').split('/')[0] as SectionKey;
   return Object.hasOwn(PAGES, key) ? key : 'overview';
 }
 
 /** The record a deep link opens: `#runs/<id>` or `#threads/<id>` (what global search links to). */
 export function detailFromHash(hash: string): string | null {
-  const [, ...rest] = hash.replace(/^#\/?/, '').split('/');
+  const [, ...rest] = splitHash(hash).path.replace(/^\/?/, '').split('/');
   if (rest.length === 0) return null;
   try {
     const id = decodeURIComponent(rest.join('/'));
@@ -127,6 +131,17 @@ function RangePicker({
  * error boundary; each page's data regions have theirs.
  */
 export function App() {
+  return (
+    <NuqsHashAdapter>
+      <Console />
+    </NuqsHashAdapter>
+  );
+}
+
+/** The day range's URL params (`?from=2026-11-01&to=2026-11-07`); absent = the trailing 7 days. */
+const rangeParams = { from: parseAsString, to: parseAsString };
+
+function Console() {
   // What the provider put in the page: switcher, ⌘K search, viewer, sign-out (all optional).
   const shell = useMemo(() => readShellConfig(CONFIG_ELEMENT_ID), []);
   const [section, setSection] = useState<SectionKey>(() =>
@@ -135,30 +150,52 @@ export function App() {
   const [detail, setDetail] = useState<string | null>(() =>
     detailFromHash(typeof window !== 'undefined' ? window.location.hash : ''),
   );
-  const [range, setRange] = useState<GovernanceRange>(() => defaultRange());
+  // The day range is in the hash's query, kept across pages; absent = the trailing 7 days.
+  const [rangeQuery, setRangeQuery] = useQueryStates(rangeParams, { history: 'push' });
+  const range = useMemo<GovernanceRange>(
+    () =>
+      rangeQuery.from === null && rangeQuery.to === null
+        ? defaultRange()
+        : normalizeRange({
+            ...(rangeQuery.from !== null ? { fromDay: rangeQuery.from } : {}),
+            ...(rangeQuery.to !== null ? { toDay: rangeQuery.to } : {}),
+          }),
+    [rangeQuery.from, rangeQuery.to],
+  );
   // Bumped when the organization changes, so every page reads again under the new `?tenant=`.
   const [tenantKey, setTenantKey] = useState(0);
 
-  useEffect(() => {
-    const onHash = () => {
-      setSection(sectionFromHash(window.location.hash));
-      setDetail(detailFromHash(window.location.hash));
-    };
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
-  }, []);
+  // Follows links, back/forward and the pages' own query-only filter writes (no `hashchange`).
+  useEffect(
+    () =>
+      subscribeHashUrl(() => {
+        setSection(sectionFromHash(window.location.hash));
+        setDetail(detailFromHash(window.location.hash));
+      }),
+    [],
+  );
 
+  // Another page drops the old page's filters but keeps the topbar's day range.
   const go = useCallback((key: SectionKey) => {
     setSection(key);
     setDetail(null);
-    if (typeof window !== 'undefined' && window.location.hash !== `#${key}`) {
-      window.history.pushState(null, '', `#${key}`);
+    const hash = hashWith(key, sharedSearch(window.location.hash));
+    if (typeof window !== 'undefined' && window.location.hash !== hash) {
+      window.history.pushState(null, '', hash);
+      window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
     }
   }, []);
 
   const setDay = (field: 'fromDay' | 'toDay', value: string) => {
     if (!isIsoDay(value)) return;
-    setRange((prev) => normalizeRange({ ...prev, [field]: value }));
+    const next = normalizeRange({ ...range, [field]: value });
+    const fallback = defaultRange();
+    // The trailing 7 days again: out of the URL, so the link keeps following today.
+    void setRangeQuery(
+      next.fromDay === fallback.fromDay && next.toDay === fallback.toDay
+        ? { from: null, to: null }
+        : { from: next.fromDay, to: next.toDay },
+    );
   };
 
   // Topbar pickers. On a phone the topbar only has room for the title, so they move to a toolbar

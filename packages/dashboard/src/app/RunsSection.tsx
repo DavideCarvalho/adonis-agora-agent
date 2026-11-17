@@ -1,3 +1,4 @@
+import { parseAsString, parseAsStringLiteral, useQueryStates } from 'nuqs';
 import { useMemo, useState } from 'react';
 import { type Column, DataTable } from '../agora-kit/blocks/data-table';
 import { EmptyState } from '../agora-kit/blocks/empty-state';
@@ -7,21 +8,37 @@ import { LoadMore } from '../agora-kit/blocks/pager';
 import { Panel } from '../agora-kit/blocks/panel';
 import { QueryBoundary } from '../agora-kit/blocks/query-boundary';
 import { PageBody } from '../agora-kit/shell/app-shell';
+import { splitHash } from '../agora-kit/url-state/hash-url';
 import { pageTenant } from '../client/agent-client.js';
 import { formatCount, formatDuration, formatTimestamp, formatUsd } from '../client/format.js';
 import type { ListRunsFilter, RunStatus, RunSummaryRow } from '../client/types.js';
 import { RunDetailView } from './RunDetailView.js';
 import { fieldClass, numClass, StatusBadge, TableSkeleton } from './ui.js';
+import { hashWith } from './url-state.js';
 import { asQuery, useRuns } from './use-governance.js';
 
 const STATUSES: RunStatus[] = ['running', 'completed', 'failed', 'cancelled'];
 
-/** Keep the URL on the open run (`#runs/<id>`) without re-routing, so a reload or a copy keeps it. */
+/** Keep the URL on the open run (`#runs/<id>`) without re-routing, so a reload or a copy keeps it.
+ *  The list's filters stay in the query, so the back button returns to the filtered list. */
 function syncRunHash(runId: string | null): void {
   if (typeof window === 'undefined') return;
-  const hash = runId === null ? '#runs' : `#runs/${encodeURIComponent(runId)}`;
+  const path = runId === null ? 'runs' : `runs/${encodeURIComponent(runId)}`;
+  const hash = hashWith(path, splitHash(window.location.hash).search);
   if (window.location.hash !== hash) window.history.replaceState(window.history.state, '', hash);
 }
+
+/**
+ * The run list's filters, in the hash's query (`#runs?status=failed&agent=support`). Picking a
+ * status adds a history entry; typing the agent or actor rewrites the current one.
+ */
+export const runFilterParams = {
+  status: parseAsStringLiteral(['', ...STATUSES] as const)
+    .withDefault('')
+    .withOptions({ history: 'push' }),
+  agent: parseAsString.withDefault(''),
+  actor: parseAsString.withDefault(''),
+};
 
 /**
  * The run list from `GET /agent/governance/runs` (container): a status/agent/actor filter toolbar
@@ -30,9 +47,7 @@ function syncRunHash(runId: string | null): void {
  */
 export function RunsSection({ initialRunId = null }: { initialRunId?: string | null } = {}) {
   const [selected, setSelectedState] = useState<string | null>(initialRunId);
-  const [actor, setActor] = useState('');
-  const [agent, setAgent] = useState('');
-  const [status, setStatus] = useState<'' | RunStatus>('');
+  const [{ actor, agent, status }, setFilters] = useQueryStates(runFilterParams);
   const setSelected = (id: string | null) => {
     setSelectedState(id);
     syncRunHash(id);
@@ -74,7 +89,7 @@ export function RunsSection({ initialRunId = null }: { initialRunId?: string | n
           className={fieldClass}
           aria-label="status filter"
           value={status}
-          onChange={(e) => setStatus(e.target.value as '' | RunStatus)}
+          onChange={(e) => void setFilters({ status: e.target.value as '' | RunStatus })}
         >
           <option value="">All statuses</option>
           {STATUSES.map((s) => (
@@ -88,14 +103,14 @@ export function RunsSection({ initialRunId = null }: { initialRunId?: string | n
           aria-label="agent filter"
           placeholder="agent"
           value={agent}
-          onChange={(e) => setAgent(e.target.value)}
+          onChange={(e) => void setFilters({ agent: e.target.value })}
         />
         <input
           className={`${fieldClass} w-36`}
           aria-label="actor filter"
           placeholder="actor"
           value={actor}
-          onChange={(e) => setActor(e.target.value)}
+          onChange={(e) => void setFilters({ actor: e.target.value })}
         />
       </Toolbar>
       <ErrorBoundary label="Runs list" resetKeys={[actor, agent, status]}>

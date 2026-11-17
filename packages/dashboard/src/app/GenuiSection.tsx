@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { type Column, DataTable } from '../agora-kit/blocks/data-table';
 import { EmptyState } from '../agora-kit/blocks/empty-state';
 import { ErrorBoundary } from '../agora-kit/blocks/error-boundary';
@@ -22,6 +21,7 @@ import type { GenuiStats, GovernanceRange, UsageTrendPoint } from '../client/typ
 import { SparklesIcon } from './icons.js';
 import { TrendChart } from './TrendChart.js';
 import { Notice, numClass, Segmented, ShareBar } from './ui.js';
+import { useMetricParam } from './url-state.js';
 import { asQuery, useGenuiStats } from './use-governance.js';
 
 const usd = (value: number | null) => (value === null ? '—' : formatUsd(value));
@@ -230,7 +230,9 @@ export function GenuiMetrics({ stats }: { stats: GenuiStats }) {
 
 /** The breakdowns under the tiles (presentational). */
 export function GenuiBreakdowns({ stats }: { stats: GenuiStats }) {
-  const [metric, setMetric] = useState<TrendMetric>('costUsd');
+  // `?metric=totalTokens`; cost (the default) leaves the URL.
+  const [metric, setMetricParam] = useMetricParam();
+  const setMetric = (next: TrendMetric) => void setMetricParam(next);
   return (
     <>
       <ErrorBoundary label="First-try success by tool and model">

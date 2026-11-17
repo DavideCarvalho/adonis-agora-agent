@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { type ReactNode, StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { NuqsHashAdapter } from '../agora-kit/url-state/nuqs-hash-adapter';
 import type { AgentClient } from '../client/agent-client.js';
 import { AgentApiError } from '../client/agent-client.js';
 import type {
@@ -360,7 +361,9 @@ function fakeClient(overrides: Partial<AgentClient> = {}): AgentClient {
 function renderWith(client: AgentClient, ui: ReactNode) {
   return render(
     <StrictMode>
-      <AgentClientContext.Provider value={client}>{ui}</AgentClientContext.Provider>
+      <NuqsHashAdapter>
+        <AgentClientContext.Provider value={client}>{ui}</AgentClientContext.Provider>
+      </NuqsHashAdapter>
     </StrictMode>,
   );
 }
@@ -545,6 +548,72 @@ describe('RunsSection', () => {
     await waitFor(() => expect(screen.getByText('billing')).toBeTruthy());
     // Both pages are now on screen.
     expect(screen.getByText('support')).toBeTruthy();
+  });
+});
+
+describe('RunsSection: filters in the URL', () => {
+  it('opens filtered from a shared link', async () => {
+    window.history.replaceState(null, '', '/agent#runs?status=failed&agent=support');
+    const client = fakeClient();
+    renderWith(client, <RunsSection />);
+    await waitFor(() =>
+      expect(client.listRuns).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'failed', agent: 'support' }),
+      ),
+    );
+    expect((screen.getByLabelText('status filter') as HTMLSelectElement).value).toBe('failed');
+    expect((screen.getByLabelText('agent filter') as HTMLInputElement).value).toBe('support');
+  });
+
+  it('a status pick pushes, typing replaces, and back restores the previous filter', async () => {
+    window.history.replaceState(null, '', '/agent?tenant=acme#runs');
+    const client = fakeClient();
+    renderWith(client, <RunsSection />);
+    await waitFor(() => expect(screen.getByText('support')).toBeTruthy());
+    const start = window.history.length;
+
+    fireEvent.change(screen.getByLabelText('status filter'), { target: { value: 'failed' } });
+    await waitFor(() => expect(window.location.hash).toBe('#runs?status=failed'));
+    expect(window.location.search).toBe('?tenant=acme');
+    expect(window.history.length).toBe(start + 1);
+
+    fireEvent.change(screen.getByLabelText('actor filter'), { target: { value: 'ann' } });
+    await waitFor(() => expect(window.location.hash).toBe('#runs?status=failed&actor=ann'));
+    expect(window.history.length).toBe(start + 1);
+
+    act(() => window.history.back());
+    await waitFor(() =>
+      expect((screen.getByLabelText('status filter') as HTMLSelectElement).value).toBe(''),
+    );
+    expect(window.location.hash).toBe('#runs');
+  });
+
+  it('opening a run keeps the filters in the URL', async () => {
+    window.history.replaceState(null, '', '/agent#runs?status=completed');
+    const client = fakeClient();
+    renderWith(client, <RunsSection />);
+    await waitFor(() => expect(screen.getByText('support')).toBeTruthy());
+    fireEvent.click(screen.getByText('run-abc1…'));
+    await waitFor(() => expect(window.location.hash).toBe('#runs/run-abc12345?status=completed'));
+    fireEvent.click(screen.getByText(/Back to runs/));
+    await waitFor(() => expect(window.location.hash).toBe('#runs?status=completed'));
+  });
+});
+
+describe('ToolsSection: sort in the URL', () => {
+  it('opens on the sort a link names; a header click writes it; the default leaves the URL', async () => {
+    window.history.replaceState(null, '', '/agent#toolstats?sort=toolName&dir=asc');
+    const client = fakeClient();
+    renderWith(client, <ToolsSection />);
+    await waitFor(() => expect(screen.getByText('search_orders')).toBeTruthy());
+    // By name, ascending: refund_order before search_orders.
+    expect(screen.getAllByRole('row')[1]?.textContent ?? '').toContain('refund_order');
+
+    fireEvent.click(screen.getByText(/^Rejected/));
+    await waitFor(() => expect(window.location.hash).toBe('#toolstats?sort=rejected'));
+    fireEvent.click(screen.getByRole('button', { name: /^Calls/ }));
+    await waitFor(() => expect(window.location.hash).toBe('#toolstats'));
+    expect(screen.getAllByRole('row')[1]?.textContent ?? '').toContain('search_orders');
   });
 });
 
