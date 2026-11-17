@@ -234,12 +234,18 @@ A public deployment should set a `quota`: model spend is otherwise unbounded (pe
 | `accessDenied` | object or `(info, ctx) => string \| void` | — | Tweak or replace the access-denied page. |
 | `viewer` | `(ctx) => { label, email?, role? } \| null` | reads `ctx.auth.user` | Who the sidebar footer shows as signed in; `null` hides the row. See [signed-in user and sign-out](/docs/agent/governance/dashboard#signed-in-user-and-sign-out). |
 | `signOut` | `string \| { action } \| { href } \| false` | authkit's logout, when installed | The footer's sign-out: a POST path (sent with the CSRF token), a link, or none. Same-origin paths only. |
+| `apps` | `Record<string, { label?, governance, pricing?, controlPlane, timeoutMs? }>` | — | Other apps the console also shows, with an App selector (`?app=`). See [Federated console](/docs/agent/governance/federated-console). |
+| `appLabel` | `string` | `This app` | This app's name in the App selector. |
 
 The console refuses to mount only when `governanceQueries: false` — it is a browser client of routes that would not exist — and logs a boot warning saying so.
 
 <Callout type="warn">
 The console is not read-only: its Approvals section decides pending HITL calls and its Pricing section writes model rates. `authorize` is the switch that decides who can do that.
 </Callout>
+
+### `consoleCommands`
+
+`{ connection?: string; prefix: string }`. Answer another app's [federated console](/docs/agent/governance/federated-console) over Redis: approvals and price changes it sends for this app's agents. Every web process listens; one runs each command. Needs `@adonisjs/redis`. Off when omitted.
 
 ### `emitDiagnostics`
 

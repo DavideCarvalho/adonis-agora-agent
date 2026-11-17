@@ -22,6 +22,11 @@ export type ConsoleAuthorizeResult =
        * rows with none. Omitted = the viewer's own active tenant.
        */
       tenants?: ConsoleTenants;
+      /**
+       * The federated console: which of the other apps in `dashboard.apps` the viewer may pick, by
+       * key, or `'*'` for all of them. Omitted = all. This app is always shown.
+       */
+      apps?: ConsoleTenants;
     }
   | { allowed: false; reason?: 'unauthenticated' | 'forbidden' }
   | { redirectTo: string };
@@ -94,7 +99,7 @@ export type AgentConsoleAuthorize =
  * when the hook asked for one, and the thrown error when the hook threw.
  */
 export type ConsoleAuthorizeDecision =
-  | { allowed: true; tenants?: ConsoleTenants }
+  | { allowed: true; tenants?: ConsoleTenants; apps?: ConsoleTenants }
   | { allowed: false; status: 401 | 403; redirectTo?: string; error?: unknown };
 
 /** Normalise any value an authorize hook returned. Anything unrecognised denies (`403`). */
@@ -107,16 +112,21 @@ export function normalizeConsoleAuthorizeResult(result: unknown): ConsoleAuthori
   }
   const resolved = resolveAuthorizeResult(result);
   if (resolved.allowed) {
-    const tenants = consoleTenantsOf(result);
-    return tenants === undefined ? resolved : { allowed: true, tenants };
+    const tenants = consoleTenantsOf(result, 'tenants');
+    const apps = consoleTenantsOf(result, 'apps');
+    return {
+      allowed: true,
+      ...(tenants !== undefined ? { tenants } : {}),
+      ...(apps !== undefined ? { apps } : {}),
+    };
   }
   return resolved;
 }
 
-/** The `tenants` an allowing result carried (`'*'` or a list of non-empty ids), when valid. */
-function consoleTenantsOf(result: unknown): ConsoleTenants | undefined {
+/** The `tenants` (or `apps`) an allowing result carried (`'*'` or a list of non-empty ids). */
+function consoleTenantsOf(result: unknown, key: 'tenants' | 'apps'): ConsoleTenants | undefined {
   if (typeof result !== 'object' || result === null) return undefined;
-  const tenants = (result as { tenants?: unknown }).tenants;
+  const tenants = (result as Record<string, unknown>)[key];
   if (tenants === '*') return '*';
   if (Array.isArray(tenants)) {
     return tenants.filter((id): id is string => typeof id === 'string' && id !== '');

@@ -462,6 +462,30 @@ export interface AgentConfig {
    * `governanceQueries: false` turns its read-model off.
    */
   dashboard?: AgentDashboardConfig;
+  /**
+   * Answer another app's federated agent console (its `dashboard.apps` in `config/agent.ts`): that
+   * console reads this app's governance tables itself and sends here, over Redis, what only this app
+   * can do — settle a pending approval, change a model price. Every web process listens; one claims
+   * each command and runs it, and logs it with who sent it.
+   *
+   * ```ts
+   * consoleCommands: { connection: 'main', prefix: 'entretextos' },
+   * ```
+   *
+   * Needs `@adonisjs/redis`. Off when omitted.
+   */
+  consoleCommands?: AgentConsoleCommandsConfig;
+}
+
+/** {@link AgentConfig.consoleCommands}. */
+export interface AgentConsoleCommandsConfig {
+  /** The `@adonisjs/redis` connection. Defaults to its default connection. */
+  connection?: string;
+  /**
+   * This app's name on the channel (`<prefix>-agent-console`): the same `prefix` the other app's
+   * console names in its `dashboard.apps` entry. Not the connection's `keyPrefix`.
+   */
+  prefix: string;
 }
 
 /** Identity helper giving `config/agent.ts` full type-checking. */

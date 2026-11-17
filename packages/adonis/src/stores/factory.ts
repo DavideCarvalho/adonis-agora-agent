@@ -39,6 +39,17 @@ export interface StoreContext {
    * tables in unless it names its own. Absent → none (each connection's current schema).
    */
   schema?: string;
+  /**
+   * Built for another app's federated console, which only reads that app's tables: nothing is
+   * created or altered (`autoCreateTables` is ignored).
+   */
+  readOnly?: boolean;
+}
+
+/** `autoCreateTables` as a factory passes it on: always off for a read-only (federated) reader. */
+function autoCreateOf(own: boolean | undefined, ctx: StoreContext): { autoCreateTables?: boolean } {
+  if (ctx.readOnly === true) return { autoCreateTables: false };
+  return own === undefined ? {} : { autoCreateTables: own };
 }
 
 /** The schema a factory uses: its own `schema` option, else the config's top-level one. */
@@ -245,9 +256,7 @@ export const pricingStores = {
         ? db.connection(config.connection)
         : db) as unknown as LucidDatabaseLike;
       return new LucidPricingStore(client, {
-        ...(config.autoCreateTables !== undefined
-          ? { autoCreateTables: config.autoCreateTables }
-          : {}),
+        ...autoCreateOf(config.autoCreateTables, ctx),
         ...schemaOf(config.schema, ctx),
       });
     };
@@ -319,9 +328,7 @@ export const governanceQueries = {
         ? db.connection(config.connection)
         : db) as unknown as LucidDatabaseLike;
       return new LucidGovernanceQueries(client, ctx.pricingStore, {
-        ...(config.autoCreateTables !== undefined
-          ? { autoCreateTables: config.autoCreateTables }
-          : {}),
+        ...autoCreateOf(config.autoCreateTables, ctx),
         ...schemaOf(config.schema, ctx),
       });
     };

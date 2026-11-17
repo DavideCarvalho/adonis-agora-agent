@@ -183,9 +183,12 @@ export {
   TenantScopeRewriter,
 } from './data/index.js';
 export { RunNotActiveError, settleDeadRun } from './dead-run.js';
+// The federated console: other apps' agents in this console (`dashboard.apps`), and the channel
+// an app answers them on (`consoleCommands`).
 export type {
   ActorDirectoryFactory,
   AgentConfig,
+  AgentConsoleCommandsConfig,
   AttachmentStagingContext,
   AttachmentStagingFactory,
   DefaultAgentOptions,
@@ -264,6 +267,16 @@ export {
   type AgentEngineFactory,
   assertRunnable,
 } from './engine.js';
+export type { AgentConsoleVerb, FederatedConsoleApp } from './federation/console.js';
+export {
+  AGENT_CONSOLE_VERBS,
+  agentConsoleCommandHandler,
+  buildFederatedAgentApp,
+  FederatedApp,
+  FederatedAppError,
+} from './federation/console.js';
+export type { AgentConsoleCommand, AgentConsoleReply } from './federation/redis_channel.js';
+export { RedisConsoleChannel } from './federation/redis_channel.js';
 export {
   AgentGenui,
   type GenuiFactory,
