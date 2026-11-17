@@ -1,3 +1,4 @@
+import { encodeCursor } from '@adonis-agora/filter';
 import { afterEach, describe, expect, it } from 'vitest';
 import type {
   ActorSpendRow,
@@ -25,6 +26,7 @@ import {
   windowFetchSize,
   windowPage,
 } from '../src/list-api.js';
+import { decodeKeyset, encodeKeyset } from '../src/stores/keyset.js';
 import { FakeModelProvider } from '../src/testing/fake-model-provider.js';
 import type { InMemoryAgentStore } from '../src/testing/in-memory-store.js';
 import { type BootedApp, bootAgentApp } from './helpers/boot-agent-app.js';
@@ -282,6 +284,57 @@ describe('GET /agent/governance/tool-calls/recent', () => {
     for (const query of ['filter[toolName]=search', 'sort=createdAt', 'after=forged']) {
       expect((await get(`${base}?${query}`)).status, query).toBe(400);
     }
+  });
+});
+
+/** A read-model that also pages the feeds by keyset, over the same five calls as its parent. */
+class KeysetGovernance extends RecordingGovernance {
+  pageCalls: Array<{ after?: string; first?: number }> = [];
+  windowReads = 0;
+  override async recentToolCalls(limit: number): Promise<ToolCallActivityRow[]> {
+    this.windowReads += 1;
+    return super.recentToolCalls(limit);
+  }
+  async toolCallsPage(page: { after?: string; first?: number }) {
+    this.pageCalls.push(page);
+    const rows = await super.recentToolCalls(5);
+    const start = page.after === undefined ? 0 : (decodeKeyset(page.after)?.at ?? 0);
+    const end = start + (page.first ?? 50);
+    return {
+      items: rows.slice(start, end),
+      nextCursor: end < rows.length ? encodeKeyset(end, `call-${end}`) : null,
+      prevCursor: null,
+      hasNext: end < rows.length,
+      hasPrev: false,
+    };
+  }
+}
+
+describe('GET /agent/governance/tool-calls/recent, keyset read-model', () => {
+  it('pages through toolCallsPage, keeps old window cursors and before on the capped read', async () => {
+    const governance = new KeysetGovernance();
+    const { url } = await boot(governance);
+    const base = `${url}/agent/governance/tool-calls/recent`;
+    type Page = CursorPageResponse<ToolCallActivityRow>;
+    const ids = (page: Page) => page.data.map((row) => row.toolCallId);
+
+    const first = (await get<Page>(`${base}?first=2`)).body;
+    expect(ids(first)).toEqual(['call-0', 'call-1']);
+    const second = (
+      await get<Page>(`${base}?first=2&after=${encodeURIComponent(first.meta.nextCursor ?? '')}`)
+    ).body;
+    expect(ids(second)).toEqual(['call-2', 'call-3']);
+    expect(governance.pageCalls).toEqual([
+      { first: 2 },
+      { first: 2, after: first.meta.nextCursor },
+    ]);
+    expect(governance.windowReads).toBe(0);
+
+    // A window cursor an older server handed out (`[offset]`) still reads from that offset.
+    const legacy = (await get<Page>(`${base}?first=2&after=${encodeCursor([2])}`)).body;
+    expect(ids(legacy)).toEqual(['call-2', 'call-3']);
+    expect(governance.windowReads).toBe(1);
+    expect((await get(`${base}?after=forged`)).status).toBe(400);
   });
 });
 

@@ -54,4 +54,10 @@ export async function configure(command: Configure) {
   );
   await codemods.makeUsingStub(stubsRoot, 'database/migrations/create_agent_rag_chunks.stub', {});
   await codemods.makeUsingStub(stubsRoot, 'database/migrations/create_agent_rag_trees.stub', {});
+  // Opt-in on an existing install (CONCURRENTLY on Postgres): the governance lists' indexes.
+  await codemods.makeUsingStub(
+    stubsRoot,
+    'database/migrations/add_agent_governance_list_indexes.stub',
+    {},
+  );
 }

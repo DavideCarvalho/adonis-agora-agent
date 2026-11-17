@@ -143,6 +143,36 @@ A persisted tool call is addressable by exactly the id the model emitted — the
 `createAgentTables` issues a plain `CREATE INDEX`. On Postgres that blocks writes to the table while the index builds, which on a large `agent_message` or `agent_token_usage` can stall live turns for as long as the build takes. To avoid it, create the missing indexes yourself first with `CREATE INDEX CONCURRENTLY` under the same names (for example `CREATE INDEX CONCURRENTLY "agent_message_thread_seq_idx" ON "agent_message" ("thread_id", "seq")`); the next boot or migration finds them and skips them. MySQL 8 builds a secondary index online, and SQLite holds the database's write lock for the build either way.
 </Callout>
 
+## Indexes for the governance console
+
+`configure` also publishes `add_agent_governance_list_indexes`. Its indexes back the console's
+tool-call and thread feeds and the runs list filtered by agent or tenant. Without them, each page
+reads the tables in full. It calls `createAgentGovernanceIndexes`, which creates only the indexes
+that are missing. On Postgres it builds them `CONCURRENTLY`, so writes go on during the build.
+Run it once on an existing install. If you installed before it existed, add it yourself:
+
+```ts title="database/migrations/xxxx_add_agent_governance_list_indexes.ts"
+import app from '@adonisjs/core/services/app'
+import { BaseSchema } from '@adonisjs/lucid/schema'
+import db from '@adonisjs/lucid/services/db'
+import { createAgentGovernanceIndexes, dropAgentGovernanceIndexes } from '@adonis-agora/agent'
+
+const configured = app.config.get('agent.schema')
+const SCHEMA = typeof configured === 'string' ? configured : undefined
+
+export default class extends BaseSchema {
+  static disableTransactions = true
+
+  async up() {
+    await createAgentGovernanceIndexes(db.connection(this.db.connectionName), { schema: SCHEMA })
+  }
+
+  async down() {
+    await dropAgentGovernanceIndexes(db.connection(this.db.connectionName), { schema: SCHEMA })
+  }
+}
+```
+
 ## Behavior details
 
 - **`forkThread` and `truncateFrom` run in a transaction.** `forkThread` copies kept messages under fresh ids onto a new thread, owned by the source's `actor_ref` and `tenant_ref` unless `ForkThreadOptions` names others; `truncateFrom` deletes doomed messages' tool calls explicitly (not only via FK cascade) so it works on SQLite even without `PRAGMA foreign_keys=ON`.

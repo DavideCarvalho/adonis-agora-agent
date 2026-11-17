@@ -25,9 +25,19 @@ import type {
   UsageBreakdownRow,
   UsageTrendPoint,
 } from '../index.js';
+import type { CursorPage, CursorParams } from '../pagination.js';
 import { summarizeLatency, summarizeRunMetrics } from '../run-metrics.js';
 import { rangeBounds } from '../spi/governance-queries.js';
 import { modelPriceCandidates } from '../spi/pricing-store.js';
+import {
+  decodeKeyset,
+  encodeKeyset,
+  isBefore,
+  type KeysetPosition,
+  keysetPage,
+  newestFirst,
+  readRunsCursor,
+} from '../stores/keyset.js';
 import type {
   GovernanceRunRow,
   GovernanceToolCallRow,
@@ -36,6 +46,11 @@ import type {
 } from './in-memory-store.js';
 
 /** Default page size + hard cap, mirroring the governance routes' clamp. */
+/** A run's keyset position: `(startedAt ms, runId)`. */
+function runPosition(run: { startedAt: string; runId: string }): KeysetPosition {
+  return { at: Date.parse(run.startedAt), id: run.runId };
+}
+
 function clampLimit(limit: number | undefined, fallback = 50): number {
   const value =
     limit !== undefined && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : fallback;
@@ -249,47 +264,80 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
   }
 
   async recentToolCalls(limit: number): Promise<ToolCallActivityRow[]> {
-    return [...this.store.governanceToolCalls()]
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    return this.toolCallRows()
       .slice(0, limit)
+      .map((row) => row.view);
+  }
+
+  async toolCallsPage(page: CursorParams = {}): Promise<CursorPage<ToolCallActivityRow>> {
+    const limit = clampLimit(page.first);
+    const from = page.after !== undefined ? decodeKeyset(page.after) : null;
+    const rows = this.toolCallRows().filter((row) => from === null || isBefore(row, from));
+    return keysetPage(rows.slice(0, limit + 1), limit);
+  }
+
+  /** Every tool call, `(createdAt, id)` newest first — the Lucid twin's order. */
+  private toolCallRows(): Array<{ at: number; id: string; view: ToolCallActivityRow }> {
+    return [...this.store.governanceToolCalls()]
       .map((row) => ({
-        toolCallId: row.toolCallId,
-        toolName: row.toolName,
-        toolType: row.toolType,
-        status: row.status,
-        threadId: row.threadId,
-        createdAt: row.createdAt,
-      }));
+        at: Date.parse(row.createdAt),
+        id: row.toolCallId,
+        view: {
+          toolCallId: row.toolCallId,
+          toolName: row.toolName,
+          toolType: row.toolType,
+          status: row.status,
+          threadId: row.threadId,
+          createdAt: row.createdAt,
+        },
+      }))
+      .sort(newestFirst);
   }
 
   async recentThreads(limit: number): Promise<ThreadActivityRow[]> {
+    return this.threadRows()
+      .slice(0, limit)
+      .map((row) => row.view);
+  }
+
+  async threadsPage(page: CursorParams = {}): Promise<CursorPage<ThreadActivityRow>> {
+    const limit = clampLimit(page.first);
+    const from = page.after !== undefined ? decodeKeyset(page.after) : null;
+    const rows = this.threadRows().filter((row) => from === null || isBefore(row, from));
+    return keysetPage(rows.slice(0, limit + 1), limit);
+  }
+
+  /** Every thread, `(updatedAt, id)` newest first — the Lucid twin's order. */
+  private threadRows(): Array<{ at: number; id: string; view: ThreadActivityRow }> {
     const usage = this.store.governanceUsage();
     return [...this.store.governanceThreads()]
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .slice(0, limit)
       .map((thread) => {
         const totalTokens = usage
           .filter((row) => row.threadId === thread.threadId)
           .reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0);
         return {
-          threadId: thread.threadId,
-          title: thread.title,
-          actorRef: thread.actorRef,
-          messageCount: thread.messageCount,
-          totalTokens,
-          lastActivityAt: thread.updatedAt,
+          at: Date.parse(thread.updatedAt),
+          id: thread.threadId,
+          view: {
+            threadId: thread.threadId,
+            title: thread.title,
+            actorRef: thread.actorRef,
+            messageCount: thread.messageCount,
+            totalTokens,
+            lastActivityAt: thread.updatedAt,
+          },
         };
-      });
+      })
+      .sort(newestFirst);
   }
 
   // ── Run lifecycle read-model (behavioral twin of LucidGovernanceQueries) ────
 
   async listRuns(filter: ListRunsFilter = {}): Promise<ListRunsResult> {
     const limit = clampLimit(filter.first);
-    const offset = ((): number => {
-      const parsed = filter.after !== undefined ? Number.parseInt(filter.after, 10) : 0;
-      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-    })();
+    const cursor = readRunsCursor(filter.after);
+    const offset = 'offset' in cursor ? cursor.offset : 0;
+    const position = 'position' in cursor ? cursor.position : null;
 
     const matched = this.store
       .governanceRuns()
@@ -300,19 +348,21 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
         const day = run.startedAt.slice(0, 10);
         if (filter.from !== undefined && day < filter.from) return false;
         if (filter.to !== undefined && day > filter.to) return false;
+        if (position !== null && !isBefore(runPosition(run), position)) return false;
         return true;
       })
       // Newest-first, `runId` desc for a stable tiebreak (mirrors the Lucid ordering).
-      .sort(
-        (left, right) =>
-          right.startedAt.localeCompare(left.startedAt) || right.runId.localeCompare(left.runId),
-      );
+      .sort((left, right) => newestFirst(runPosition(left), runPosition(right)));
 
     const page = matched.slice(offset, offset + limit);
     const hasMore = matched.length > offset + limit;
+    const last = page.at(-1);
     return {
       items: page.map(runToSummary),
-      nextCursor: hasMore ? String(offset + limit) : null,
+      nextCursor:
+        hasMore && last !== undefined
+          ? encodeKeyset(runPosition(last).at, runPosition(last).id)
+          : null,
       // Forward-only, exactly like the Lucid twin — see `src/pagination.ts`.
       prevCursor: null,
       hasNext: hasMore,

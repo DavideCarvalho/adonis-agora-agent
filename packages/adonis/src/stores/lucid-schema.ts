@@ -913,6 +913,87 @@ export async function createAgentTables(
 }
 
 /**
+ * The governance console's list indexes: what its feeds and the runs list seek on, newest first
+ * (tool calls by `created_at`, threads by `updated_at`, runs by agent or tenant and `started_at`).
+ * Not part of {@link createTableStatements}: on a table that already holds years of rows an index
+ * build is long, so it ships as its own opt-in migration ({@link createAgentGovernanceIndexes}).
+ */
+export function governanceIndexStatements(schema?: string): string[] {
+  const t = AGENT_TABLES;
+  const q = agentTablesSql(schema);
+  return [
+    `CREATE INDEX IF NOT EXISTS "${t.toolCalls}_created_id_idx" ON ${q.toolCalls} ("created_at", "id")`,
+    `CREATE INDEX IF NOT EXISTS "${t.threads}_updated_id_idx" ON ${q.threads} ("updated_at", "id")`,
+    `CREATE INDEX IF NOT EXISTS "${t.threads}_tenant_updated_idx" ON ${q.threads} ("tenant_ref", "updated_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.runs}_agent_started_idx" ON ${q.runs} ("agent_name", "started_at")`,
+    `CREATE INDEX IF NOT EXISTS "${t.runs}_tenant_started_idx" ON ${q.runs} ("tenant_ref", "started_at")`,
+  ];
+}
+
+/** The names of {@link governanceIndexStatements}' indexes. */
+function governanceIndexNames(): string[] {
+  return governanceIndexStatements().map(
+    (stmt) => /^CREATE INDEX IF NOT EXISTS "([^"]+)"/.exec(stmt)?.[1] as string,
+  );
+}
+
+/**
+ * Create the governance list indexes ({@link governanceIndexStatements}) that are missing — what
+ * the opt-in `add_agent_governance_list_indexes` migration runs, once, on an existing install. On
+ * Postgres each one is built `CONCURRENTLY`, so writes go on while it builds (run it outside a
+ * transaction). Returns the names it created.
+ */
+export async function createAgentGovernanceIndexes(
+  db: LucidRawRunner,
+  options: AgentSchemaOptions = {},
+): Promise<string[]> {
+  const schema = validateSchema(db, options.schema, 'createAgentGovernanceIndexes');
+  const mysql = isMySql(db);
+  const postgres = /postgres|pg|redshift/i.test(dialectOf(db));
+  const existing = await existingIndexes(db, schema);
+  const created: string[] = [];
+  for (const stmt of governanceIndexStatements(schema)) {
+    const index = /^CREATE INDEX IF NOT EXISTS "([^"]+)"/.exec(stmt)?.[1] as string;
+    if (existing?.has(index)) continue;
+    const statement = postgres
+      ? stmt.replace(/^CREATE INDEX /, 'CREATE INDEX CONCURRENTLY ')
+      : forDialect(stmt, mysql);
+    await issue(
+      db,
+      statement,
+      async () => (await existingIndexes(db, schema))?.has(index) ?? false,
+    );
+    created.push(index);
+  }
+  return created;
+}
+
+/** Drop the governance list indexes (the opt-in migration's `down()`). */
+export async function dropAgentGovernanceIndexes(
+  db: LucidRawRunner,
+  options: AgentSchemaOptions = {},
+): Promise<void> {
+  const schema = validateSchema(db, options.schema, 'dropAgentGovernanceIndexes');
+  const mysql = isMySql(db);
+  const postgres = /postgres|pg|redshift/i.test(dialectOf(db));
+  const t = AGENT_TABLES;
+  const tableOf = (name: string) =>
+    name.startsWith(t.toolCalls) ? t.toolCalls : name.startsWith(t.threads) ? t.threads : t.runs;
+  for (const name of governanceIndexNames()) {
+    if (mysql) {
+      // MySQL has no `DROP INDEX IF EXISTS`, and an index belongs to its table.
+      if (!(await existingIndexes(db, schema))?.has(name)) continue;
+      await db.rawQuery(
+        portableSql(db, `DROP INDEX "${name}" ON ${qualifiedSql(tableOf(name), schema)}`),
+      );
+      continue;
+    }
+    const statement = `DROP INDEX${postgres ? ' CONCURRENTLY' : ''} IF EXISTS ${qualifiedSql(name, schema)}`;
+    await db.rawQuery(statement);
+  }
+}
+
+/**
  * `DROP TABLE IF EXISTS` for the twelve agent tables, in reverse dependency order so a dialect that
  * enforces the `REFERENCES` clauses never refuses a drop for a child that still exists. The mirror of
  * {@link createAgentTables}, and what the published migration's `down()` calls.

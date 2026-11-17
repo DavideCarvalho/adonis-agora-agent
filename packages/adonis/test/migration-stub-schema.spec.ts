@@ -134,6 +134,7 @@ describe('one stub, one schema', () => {
     expect(stubs.sort()).toEqual([
       'add_action_proposal_discovery.stub',
       'add_action_proposal_runtime.stub',
+      'add_agent_governance_list_indexes.stub',
       'create_agent_rag_chunks.stub',
       'create_agent_rag_trees.stub',
       'create_agent_tables.stub',
