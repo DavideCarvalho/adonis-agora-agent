@@ -205,9 +205,10 @@ function Console() {
   const pickers = (
     <>
       <AppPicker
-        onChange={() => {
-          // Another app: the open run or thread and the page's filters were the old app's.
-          go(section);
+        onChange={(_app, { picked }) => {
+          // Another app picked: the open run or thread and the page's filters were the old app's.
+          // Back/forward already lands on that entry's own page and filters.
+          if (picked) go(section);
           setTenantKey((key) => key + 1);
         }}
       />

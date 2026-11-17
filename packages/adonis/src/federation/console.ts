@@ -46,6 +46,55 @@ export interface FederatedConsoleApp {
 
 export { FEDERATED_APP_KEY } from './app_key.js';
 
+/**
+ * Checks one `dashboard.apps` entry at boot, so a misconfigured app fails the boot instead of every
+ * request that picks it. `redisConnections` are the names in `config/redis.ts` (`undefined`: none).
+ */
+export function validateFederatedConsoleApp(
+  key: string,
+  entry: FederatedConsoleApp,
+  redisConnections: { names: string[]; default: string | undefined } | undefined,
+): void {
+  const fail = (message: string): never => {
+    throw new Error(`[@adonis-agora/agent] dashboard.apps["${key}"]: ${message}`);
+  };
+  if (!entry || typeof entry !== 'object') fail('must be an object');
+  if (!entry.governance) fail("`governance` is required (that app's governance read-model)");
+  const plane = entry.controlPlane;
+  if (!(plane instanceof RedisConsoleChannel)) {
+    if (!plane || typeof plane !== 'object') {
+      fail('`controlPlane` is required ({ connection, prefix })');
+    }
+    if (typeof plane.prefix !== 'string' || plane.prefix.trim() === '') {
+      fail("`controlPlane.prefix` must be the other app's `consoleCommands.prefix` (not empty)");
+    }
+    if (
+      plane.connection !== undefined &&
+      (typeof plane.connection !== 'string' || plane.connection === '')
+    ) {
+      fail('`controlPlane.connection` must be a connection name of config/redis.ts');
+    }
+    if (!redisConnections) {
+      fail('the federated console needs @adonisjs/redis (no config/redis.ts found)');
+    } else {
+      const name = plane.connection ?? redisConnections.default;
+      if (name === undefined || !redisConnections.names.includes(name)) {
+        fail(
+          `\`controlPlane.connection\` "${name ?? '(default)'}" is not a connection of config/redis.ts (${redisConnections.names.join(', ') || 'none'})`,
+        );
+      }
+    }
+  }
+  if (
+    entry.timeoutMs !== undefined &&
+    (typeof entry.timeoutMs !== 'number' ||
+      !Number.isFinite(entry.timeoutMs) ||
+      entry.timeoutMs <= 0)
+  ) {
+    fail('`timeoutMs` must be a positive number of milliseconds');
+  }
+}
+
 /** The commands another app's console may send this app. */
 export const AGENT_CONSOLE_VERBS = ['decide', 'upsertPrice'] as const;
 export type AgentConsoleVerb = (typeof AGENT_CONSOLE_VERBS)[number];

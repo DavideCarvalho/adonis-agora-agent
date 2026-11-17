@@ -43,6 +43,7 @@ import {
   type FederatedApp,
   FederatedAppError,
   type FederatedConsoleApp,
+  validateFederatedConsoleApp,
 } from '../src/federation/console.js';
 import { RedisConsoleChannel, resolveRedisConnection } from '../src/federation/redis_channel.js';
 import type { Catalog } from '../src/genui/index.js';
@@ -775,6 +776,10 @@ export default class AgentProvider {
     ).catch(() => undefined);
 
     const dashboard = resolveDashboardConfig(config.dashboard);
+    const redisConnections = this.#redisConnections();
+    for (const [key, entry] of Object.entries(dashboard.apps)) {
+      validateFederatedConsoleApp(key, entry, redisConnections);
+    }
     this.#federatedApps = dashboard.apps;
     this.#appLabel = dashboard.appLabel;
     if (config.consoleCommands !== undefined) {
@@ -907,13 +912,33 @@ export default class AgentProvider {
     return granted === undefined || granted === '*' || granted.includes(picked) ? picked : null;
   }
 
+  /** The connection names of `config/redis.ts`, or `undefined` without one. */
+  #redisConnections(): { names: string[]; default: string | undefined } | undefined {
+    const redis = this.app.config.get<
+      { connection?: unknown; connections?: Record<string, unknown> } | undefined
+    >('redis', undefined);
+    if (!redis || typeof redis !== 'object' || !redis.connections) return undefined;
+    return {
+      names: Object.keys(redis.connections),
+      default: typeof redis.connection === 'string' ? redis.connection : undefined,
+    };
+  }
+
   /** The configured app `id`, built (its read-model, prices and channel) on first use. */
   #federatedApp(id: string): Promise<FederatedApp> {
     let app = this.#federated.get(id);
     if (!app) {
       const spec = this.#federatedApps[id];
       if (!spec) return Promise.reject(new FederatedAppError('unknown app', 404));
-      app = buildFederatedAgentApp(id, spec, this.app);
+      app = buildFederatedAgentApp(id, spec, this.app).catch((error: unknown) => {
+        // A console-side failure to set the app up (its Redis connection, a store factory that
+        // throws): the documented 503 naming the app, the cause in this app's log.
+        throw new FederatedAppError(
+          `${spec.label ?? id}: the console could not reach this app`,
+          503,
+          error instanceof Error ? error.message : String(error),
+        );
+      });
       // A failed build (a bad connection name) is retried on the next request, not cached.
       app.catch(() => this.#federated.delete(id));
       this.#federated.set(id, app);

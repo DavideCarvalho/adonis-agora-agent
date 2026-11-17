@@ -87,7 +87,11 @@ interface Booted {
   close(): Promise<void>;
 }
 
-async function bootConsole(bus: RedisBus, dashboard: Record<string, unknown>): Promise<Booted> {
+async function bootConsole(
+  bus: RedisBus,
+  dashboard: Record<string, unknown>,
+  appConfig: Record<string, unknown> = {},
+): Promise<Booted> {
   const ignitor = new IgnitorFactory()
     .withCoreProviders()
     .withCoreConfig()
@@ -112,12 +116,18 @@ async function bootConsole(bus: RedisBus, dashboard: Record<string, unknown>): P
             ...dashboard,
           },
         },
+        ...appConfig,
       },
     })
     .create(new URL('../', import.meta.url));
   const app = ignitor.createApp('web');
   await app.init();
-  await app.boot();
+  try {
+    await app.boot();
+  } catch (error) {
+    await app.terminate().catch(() => undefined);
+    throw error;
+  }
   const server = await app.container.make('server');
   server.use([() => import('@adonisjs/core/bodyparser_middleware')]);
   await server.boot();
@@ -285,5 +295,87 @@ describe('federated agent console', () => {
       as('ana'),
     );
     expect(other.status).toBe(200);
+  });
+
+  it('answers 503 naming the app when the console cannot set it up, and logs the cause', async () => {
+    const bus = new RedisBus();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let builds = 0;
+    booted = await bootConsole(bus, {
+      apps: {
+        'entre-textos': {
+          label: 'Entre Textos',
+          governance: async () => {
+            builds++;
+            if (builds === 1) throw new Error('connection "pg2" is not defined');
+            return governanceOf('et');
+          },
+          controlPlane: new RedisConsoleChannel({ client: bus.connection(), prefix: 'et' }),
+        },
+      },
+    });
+    const failed = await fetch(
+      `${booted.url}/agent/governance/spend/model?app=entre-textos`,
+      as('ana'),
+    );
+    expect(failed.status).toBe(503);
+    expect((await failed.json()).message).toBe(
+      'Entre Textos: the console could not reach this app',
+    );
+    expect(warn.mock.calls.flat().join('\n')).toContain('connection "pg2" is not defined');
+    warn.mockRestore();
+    // Not cached: the next request builds it again.
+    const ok = await fetch(
+      `${booted.url}/agent/governance/spend/model?app=entre-textos`,
+      as('ana'),
+    );
+    expect(ok.status).toBe(200);
+  });
+
+  it('fails the boot on a misconfigured app, not its first request', async () => {
+    const bus = new RedisBus();
+    const redis = { redis: { connection: 'main', connections: { main: {}, cache: {} } } };
+    const entry = (over: Record<string, unknown>) => ({
+      apps: {
+        'entre-textos': {
+          governance: governanceOf('et'),
+          controlPlane: { connection: 'main', prefix: 'et' },
+          ...over,
+        },
+      },
+    });
+    await expect(
+      bootConsole(bus, entry({ controlPlane: { connection: 'main', prefix: '' } }), redis),
+    ).rejects.toThrow(/apps\["entre-textos"\]: `controlPlane.prefix`/);
+    await expect(
+      bootConsole(bus, entry({ controlPlane: { connection: 'nope', prefix: 'et' } }), redis),
+    ).rejects.toThrow(/"nope" is not a connection of config\/redis.ts \(main, cache\)/);
+    await expect(bootConsole(bus, entry({}), {})).rejects.toThrow(/needs @adonisjs\/redis/);
+    await expect(bootConsole(bus, entry({ timeoutMs: -1 }), redis)).rejects.toThrow(
+      /`timeoutMs` must be a positive number/,
+    );
+  });
+});
+
+describe('RedisConsoleChannel reply subscription', () => {
+  it('retries the reply subscription on the next send after a first one fails', async () => {
+    const bus = new RedisBus();
+    await new RedisConsoleChannel({ client: bus.connection(), prefix: 'et' }).answer(async () => ({
+      ok: true,
+    }));
+    const hub = bus.connection();
+    let failures = 1;
+    const subscribe = hub.subscribe;
+    hub.subscribe = async (channel, handler) => {
+      if (failures-- > 0) throw new Error('connection reset');
+      return subscribe(channel, handler);
+    };
+    const channel = new RedisConsoleChannel({ client: hub, prefix: 'et' });
+    await expect(channel.send({ id: 'a', verb: 'decide', args: [] })).rejects.toMatchObject({
+      code: 'federated-app-unreachable',
+      message: expect.stringContaining('connection reset'),
+    });
+    expect(await channel.send({ id: 'b', verb: 'decide', args: [] })).toMatchObject({ ok: true });
+    await channel.close();
   });
 });
