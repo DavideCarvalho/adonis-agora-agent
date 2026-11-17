@@ -10,6 +10,7 @@ import { NuqsHashAdapter } from '../agora-kit/url-state/nuqs-hash-adapter';
 import { CONFIG_ELEMENT_ID } from '../client/api-base.js';
 import { defaultRange, isIsoDay, normalizeRange } from '../client/default-range.js';
 import type { GovernanceRange } from '../client/types.js';
+import { AppPicker } from './AppPicker.js';
 import { ApprovalsSection } from './ApprovalsSection.js';
 import { GenuiSection } from './GenuiSection.js';
 import {
@@ -203,7 +204,15 @@ function Console() {
   const isMobile = useIsMobile();
   const pickers = (
     <>
-      <OrgPicker onChange={() => setTenantKey((key) => key + 1)} />
+      <AppPicker
+        onChange={(_app, { picked }) => {
+          // Another app picked: the open run or thread and the page's filters were the old app's.
+          // Back/forward already lands on that entry's own page and filters.
+          if (picked) go(section);
+          setTenantKey((key) => key + 1);
+        }}
+      />
+      <OrgPicker key={tenantKey} onChange={() => setTenantKey((key) => key + 1)} />
       {RANGED.has(section) && <RangePicker range={range} onChange={setDay} />}
     </>
   );

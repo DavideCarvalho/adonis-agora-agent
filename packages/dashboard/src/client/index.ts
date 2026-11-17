@@ -1,9 +1,10 @@
-export type { AgentClientOptions, ConsoleTenantsView } from './agent-client.js';
+export type { AgentClientOptions, ConsoleAppsView, ConsoleTenantsView } from './agent-client.js';
 export {
   AgentApiError,
   AgentClient,
   isUnavailable,
   isUnsupported,
+  pageApp,
   pageTenant,
 } from './agent-client.js';
 export * from './api-base.js';

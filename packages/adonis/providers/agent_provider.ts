@@ -37,6 +37,15 @@ import { registerDevTools } from '../src/dev-tools/index.js';
 import { registerDoctorChecks } from '../src/doctor/agora_doctor.js';
 import { agentDoctorChecks } from '../src/doctor/checks.js';
 import { type AgentEngine, assertRunnable, engineOnlyModel } from '../src/engine.js';
+import {
+  agentConsoleCommandHandler,
+  buildFederatedAgentApp,
+  type FederatedApp,
+  FederatedAppError,
+  type FederatedConsoleApp,
+  validateFederatedConsoleApp,
+} from '../src/federation/console.js';
+import { RedisConsoleChannel, resolveRedisConnection } from '../src/federation/redis_channel.js';
 import type { Catalog } from '../src/genui/index.js';
 import type { SandboxClientConfig } from '../src/genui/sandbox-kit.js';
 import { AgentGovernanceConsole } from '../src/governance-console.js';
@@ -375,6 +384,13 @@ export default class AgentProvider {
   #actionProposalWorker: ActionProposalWorker | null = null;
   #sink: TokenStreamSink | null = null;
   #actorDirectory: ActorDirectory | null = null;
+  /** The configured other apps (federated console, `dashboard.apps`), each built on first use. */
+  #federated = new Map<string, Promise<FederatedApp>>();
+  #federatedApps: Record<string, FederatedConsoleApp> = {};
+  #appLabel = 'This app';
+  /** What `consoleCommands` answers with, set at boot and wired in `start()` (web only). */
+  #consoleCommands: { service: AgentService; pricing: AgentPricingStore | undefined } | null = null;
+  #consoleChannel: RedisConsoleChannel | null = null;
   #mcpTools: McpToolImporter | null = null;
   /** Whatever was built at boot that may own a schema: the store, the pricing store, the read-model. */
   #schemaOwners: unknown[] = [];
@@ -759,6 +775,17 @@ export default class AgentProvider {
       }),
     ).catch(() => undefined);
 
+    const dashboard = resolveDashboardConfig(config.dashboard);
+    const redisConnections = this.#redisConnections();
+    for (const [key, entry] of Object.entries(dashboard.apps)) {
+      validateFederatedConsoleApp(key, entry, redisConnections);
+    }
+    this.#federatedApps = dashboard.apps;
+    this.#appLabel = dashboard.appLabel;
+    if (config.consoleCommands !== undefined) {
+      this.#consoleCommands = { service, pricing: pricingStore };
+    }
+
     await this.#registerRoutes(
       config,
       service,
@@ -834,6 +861,111 @@ export default class AgentProvider {
     }
     this.#actionProposalWorker?.start();
     this.#pricingCheckRun = this.#checkPricing();
+    await this.#answerConsoleCommands();
+  }
+
+  /**
+   * Answer another app's federated agent console (`consoleCommands` in config/agent.ts). Web
+   * processes only: a short-lived `ace` command that won a command's claim could exit before it
+   * answers. A Redis connection that cannot claim a command (no `SET NX`) answers nothing, and says so.
+   */
+  async #answerConsoleCommands(): Promise<void> {
+    const deps = this.#consoleCommands;
+    this.#consoleCommands = null;
+    const options = this.app.config.get<AgentConfig>('agent', {} as AgentConfig).consoleCommands;
+    if (deps === null || options === undefined || this.app.getEnvironment() !== 'web') return;
+    try {
+      const channel = new RedisConsoleChannel({
+        client: await resolveRedisConnection(this.app.container as never, options.connection),
+        prefix: options.prefix,
+      });
+      await channel.answer(
+        agentConsoleCommandHandler({
+          service: deps.service,
+          pricing: deps.pricing,
+          log: (line) => console.info(line),
+        }),
+        {
+          onError: (error) =>
+            console.error(
+              `[agent] federated console command failed: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+        },
+      );
+      this.#consoleChannel = channel;
+    } catch (error) {
+      console.error(
+        `[agent] consoleCommands is on, but ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /**
+   * The other app this request is about (`?app=`): its key, `undefined` for this app, or `null` for
+   * a key that is not configured or that `authorize`'s `apps` grant does not name.
+   */
+  #pickedApp(ctx: HttpContext, granted: ConsoleTenants | undefined): string | null | undefined {
+    if (Object.keys(this.#federatedApps).length === 0) return undefined;
+    const picked = (ctx.request.qs() as { app?: unknown }).app;
+    if (typeof picked !== 'string' || picked === '') return undefined;
+    if (!Object.hasOwn(this.#federatedApps, picked)) return null;
+    return granted === undefined || granted === '*' || granted.includes(picked) ? picked : null;
+  }
+
+  /** The connection names of `config/redis.ts`, or `undefined` without one. */
+  #redisConnections(): { names: string[]; default: string | undefined } | undefined {
+    const redis = this.app.config.get<
+      { connection?: unknown; connections?: Record<string, unknown> } | undefined
+    >('redis', undefined);
+    if (!redis || typeof redis !== 'object' || !redis.connections) return undefined;
+    return {
+      names: Object.keys(redis.connections),
+      default: typeof redis.connection === 'string' ? redis.connection : undefined,
+    };
+  }
+
+  /** The configured app `id`, built (its read-model, prices and channel) on first use. */
+  #federatedApp(id: string): Promise<FederatedApp> {
+    let app = this.#federated.get(id);
+    if (!app) {
+      const spec = this.#federatedApps[id];
+      if (!spec) return Promise.reject(new FederatedAppError('unknown app', 404));
+      app = buildFederatedAgentApp(id, spec, this.app).catch((error: unknown) => {
+        // A console-side failure to set the app up (its Redis connection, a store factory that
+        // throws): the documented 503 naming the app, the cause in this app's log.
+        throw new FederatedAppError(
+          `${spec.label ?? id}: the console could not reach this app`,
+          503,
+          error instanceof Error ? error.message : String(error),
+        );
+      });
+      // A failed build (a bad connection name) is retried on the next request, not cached.
+      app.catch(() => this.#federated.delete(id));
+      this.#federated.set(id, app);
+    }
+    return app;
+  }
+
+  /**
+   * Run `work` against the picked other app, answering its errors: `404` unknown app, `503` not
+   * answering (named), `501` not run there, the app's own refusal status, `502` its own failure
+   * (the detail stays in this log).
+   */
+  async #onApp(ctx: HttpContext, id: string, work: (app: FederatedApp) => Promise<unknown>) {
+    try {
+      return await work(await this.#federatedApp(id));
+    } catch (error) {
+      if (error instanceof FederatedAppError) {
+        if (error.detail !== undefined) {
+          console.warn(
+            `[@adonis-agora/agent] federated console: ${error.message}: ${error.detail}`,
+          );
+        }
+        ctx.response.status(error.status).json({ message: error.message, error: error.message });
+        return undefined;
+      }
+      throw error;
+    }
   }
 
   /**
@@ -871,6 +1003,11 @@ export default class AgentProvider {
     // An MCP client DOES own a connection — a spawned stdio child or an HTTP session — so it closes.
     await this.#mcpTools?.close();
     this.#mcpTools = null;
+    await this.#consoleChannel?.close();
+    this.#consoleChannel = null;
+    const federated = [...this.#federated.values()];
+    this.#federated.clear();
+    await Promise.all(federated.map((app) => app.then((a) => a.close()).catch(() => undefined)));
     this.#store = null;
     this.#sink = null;
     this.#actorDirectory = null;
@@ -1324,6 +1461,9 @@ export default class AgentProvider {
     // privileged control: only the actor that OWNS the run (or a governance-privileged actor) may
     // approve its pending tool call — an authenticated non-owner who learns a runId/toolCallId cannot.
     router.post(p('tool-call/approve'), async (ctx: HttpContext) => {
+      if (this.#appParam(ctx) !== undefined) {
+        return this.#decideOnApp(ctx, actorResolver, consoleAuthorize, 'approve');
+      }
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
       const body = (ctx.request.body() ?? {}) as {
@@ -1348,6 +1488,9 @@ export default class AgentProvider {
 
     // 5. POST /agent/tool-call/reject — authenticated + owner-scoped (mirrors approve).
     router.post(p('tool-call/reject'), async (ctx: HttpContext) => {
+      if (this.#appParam(ctx) !== undefined) {
+        return this.#decideOnApp(ctx, actorResolver, consoleAuthorize, 'reject');
+      }
       const actor = await this.#resolveActor(ctx, actorResolver);
       if (actor === null) return;
       const body = (ctx.request.body() ?? {}) as {
@@ -2078,7 +2221,8 @@ export default class AgentProvider {
         const verdict = await this.#consoleVerdict(ctx, actorResolver, consoleAuthorize);
         if (verdict === null) return;
         ctx.response.header('cache-control', 'private, no-store');
-        if (!this.#tenancy.enabled) {
+        // Another app's organizations are not this app's: no picker while it is shown.
+        if (!this.#tenancy.enabled || this.#pickedApp(ctx, verdict.apps) !== undefined) {
           return ctx.response.json({ enabled: false, all: false, tenants: [], selected: null });
         }
         const resolved = this.#consoleTenants(ctx, verdict.tenants);
@@ -2094,6 +2238,23 @@ export default class AgentProvider {
           own: own.mode === 'tenant' ? own.tenant.id : null,
           tenants: ids.map((id) => ({ id, label: labels[id] ?? id })),
           selected: resolved.selected,
+        });
+      });
+
+      // GET /agent/governance/apps — the federated console's selector: this app, then the other apps
+      // this viewer may pick (`dashboard.apps`, filtered by an `apps` grant).
+      router.get(g('apps'), async (ctx: HttpContext) => {
+        const verdict = await this.#consoleVerdict(ctx, actorResolver, consoleAuthorize);
+        if (verdict === null) return;
+        ctx.response.header('cache-control', 'private, no-store');
+        const granted = verdict.apps;
+        const apps = Object.entries(this.#federatedApps)
+          .filter(([id]) => granted === undefined || granted === '*' || granted.includes(id))
+          .map(([id, app]) => ({ id, label: app.label ?? id }));
+        return ctx.response.json({
+          local: { label: this.#appLabel },
+          apps,
+          selected: this.#pickedApp(ctx, granted) ?? null,
         });
       });
 
@@ -2314,7 +2475,17 @@ export default class AgentProvider {
 
         // GET /agent/governance/pricing — every model's current per-1M rates.
         router.get(g('pricing'), async (ctx: HttpContext) => {
-          if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
+          const verdict = await this.#consoleVerdict(ctx, actorResolver, consoleAuthorize);
+          if (verdict === null) return;
+          const picked = this.#pickedApp(ctx, verdict.apps);
+          if (picked === null) return ctx.response.status(404).json({ message: 'unknown app' });
+          if (picked !== undefined) {
+            return this.#onApp(ctx, picked, async (app) =>
+              app.pricing === undefined
+                ? noPricing(ctx)
+                : ctx.response.json(await app.pricing.listCurrentPrices()),
+            );
+          }
           if (pricing === undefined) return noPricing(ctx);
           return ctx.response.json(await pricing.listCurrentPrices());
         });
@@ -2323,12 +2494,28 @@ export default class AgentProvider {
         // `AgentPricingStore.upsertModelPrice`). Body: `{modelId, inputPricePer1m, outputPricePer1m,
         // cacheWritePricePer1m?, cacheReadPricePer1m?}`.
         router.post(g('pricing'), async (ctx: HttpContext) => {
-          if (!(await this.#consoleGate(ctx, actorResolver, consoleAuthorize))) return;
-          if (pricing === undefined) return noPricing(ctx);
+          const verdict = await this.#consoleVerdict(ctx, actorResolver, consoleAuthorize);
+          if (verdict === null) return;
+          const picked = this.#pickedApp(ctx, verdict.apps);
+          if (picked === null) return ctx.response.status(404).json({ message: 'unknown app' });
+          if (picked === undefined && pricing === undefined) return noPricing(ctx);
           const price = parseModelPriceInput(ctx.request.body());
           if (price === null) {
             return ctx.response.status(400).json({ message: `body must be ${PRICE_INPUT_SHAPE}` });
           }
+          if (picked !== undefined) {
+            // The price lives in that app's store, and is changed by that app.
+            return this.#onApp(ctx, picked, async (app) => {
+              await app.send(
+                'upsertPrice',
+                [price],
+                await this.#consoleActorId(ctx, actorResolver, verdict.actor),
+              );
+              return ctx.response.json({ ok: true });
+            });
+          }
+          // Narrowed for the compiler: the no-store case answered above.
+          if (pricing === undefined) return noPricing(ctx);
           await pricing.upsertModelPrice(price);
           return ctx.response.json({ ok: true });
         });
@@ -2374,7 +2561,7 @@ export default class AgentProvider {
     ctx: HttpContext,
     actorResolver: ActorResolver,
     consoleAuthorize: AgentConsoleAuthorize | undefined,
-  ): Promise<{ tenants?: ConsoleTenants } | null> {
+  ): Promise<{ tenants?: ConsoleTenants; apps?: ConsoleTenants; actor?: Actor } | null> {
     const verdict = await evaluateDashboardGate(ctx, {
       actorResolver,
       authorize: consoleAuthorize,
@@ -2384,7 +2571,11 @@ export default class AgentProvider {
       answerConsoleDenialJson(ctx, verdict);
       return null;
     }
-    return verdict.tenants !== undefined ? { tenants: verdict.tenants } : {};
+    return {
+      ...(verdict.tenants !== undefined ? { tenants: verdict.tenants } : {}),
+      ...(verdict.apps !== undefined ? { apps: verdict.apps } : {}),
+      ...(verdict.actor !== undefined ? { actor: verdict.actor } : {}),
+    };
   }
 
   /** What the console viewer may see under tenancy (`?tenant=` narrows it; a forged one is logged). */
@@ -2418,6 +2609,17 @@ export default class AgentProvider {
   ): Promise<AgentGovernanceQueries | null> {
     const verdict = await this.#consoleVerdict(ctx, actorResolver, consoleAuthorize);
     if (verdict === null) return null;
+    // The federated console: another app's governance tables, read as they are (its own tenancy is
+    // not this app's).
+    const picked = this.#pickedApp(ctx, verdict.apps);
+    if (picked === null) {
+      ctx.response.status(404).json({ message: 'unknown app', error: 'unknown app' });
+      return null;
+    }
+    if (picked !== undefined) {
+      const other = await this.#onApp(ctx, picked, async (app) => app.governance);
+      return (other as AgentGovernanceQueries | undefined) ?? null;
+    }
     if (!this.#tenancy.enabled) return governance;
     const { scope } = this.#consoleTenants(ctx, verdict.tenants);
     if (scope === undefined) return governance;
@@ -2541,6 +2743,93 @@ export default class AgentProvider {
    * answer it: `{ ok: true }`, or the refusal's status. A cross-actor caller counts as privileged
    * when it passes the console's `authorize` (the ownership check of {@link #assertOwner}).
    */
+  /**
+   * Who acts in the federated console, for the owning app's log and records: the actor the gate
+   * resolved, else the resolver's answer, else `undefined` (the owning app logs `unknown`).
+   */
+  async #consoleActorId(
+    ctx: HttpContext,
+    actorResolver: ActorResolver,
+    resolved: Actor | undefined,
+  ): Promise<string | undefined> {
+    if (resolved !== undefined) return resolved.id;
+    try {
+      return (await actorResolver.resolve(ctx))?.id;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The `?app=` of a request, when the console has other apps and one is named. */
+  #appParam(ctx: HttpContext): string | undefined {
+    if (Object.keys(this.#federatedApps).length === 0) return undefined;
+    const picked = (ctx.request.qs() as { app?: unknown }).app;
+    return typeof picked === 'string' && picked !== '' ? picked : undefined;
+  }
+
+  /**
+   * Settle another app's pending tool call from the federated console: the console's `authorize`
+   * decides who may (as for every cross-actor console action), and that app runs the decision.
+   */
+  async #decideOnApp(
+    ctx: HttpContext,
+    actorResolver: ActorResolver,
+    consoleAuthorize: AgentConsoleAuthorize | undefined,
+    kind: 'approve' | 'reject',
+  ): Promise<unknown> {
+    const verdict = await this.#consoleVerdict(ctx, actorResolver, consoleAuthorize);
+    if (verdict === null) return;
+    const picked = this.#pickedApp(ctx, verdict.apps);
+    if (picked === null || picked === undefined) {
+      return ctx.response.status(404).json({ message: 'unknown app' });
+    }
+    const body = (ctx.request.body() ?? {}) as {
+      runId?: unknown;
+      toolCallId?: unknown;
+      reason?: unknown;
+      remember?: unknown;
+      via?: unknown;
+    };
+    if (typeof body.toolCallId !== 'string' || body.toolCallId === '') {
+      return ctx.response.badRequest({ message: 'toolCallId is required' });
+    }
+    const via = decisionVia(body.via);
+    const remember = kind === 'approve' ? decisionRemember(body.remember) : undefined;
+    if (via === null || remember === null) {
+      return ctx.response.badRequest({
+        message: `remember must be a boolean and via a string of 1-${MAX_VIA_LENGTH} characters`,
+      });
+    }
+    const decision =
+      kind === 'approve'
+        ? {
+            kind,
+            ...(remember !== undefined ? { remember } : {}),
+            ...(via !== undefined ? { via } : {}),
+          }
+        : {
+            kind,
+            ...(typeof body.reason === 'string' ? { reason: body.reason } : {}),
+            ...(via !== undefined ? { via } : {}),
+          };
+    const toolCallId = body.toolCallId;
+    const by = await this.#consoleActorId(ctx, actorResolver, verdict.actor);
+    return this.#onApp(ctx, picked, async (app) => {
+      await app.send(
+        'decide',
+        [
+          {
+            toolCallId,
+            ...(typeof body.runId === 'string' && body.runId !== '' ? { runId: body.runId } : {}),
+            decision,
+          },
+        ],
+        by,
+      );
+      return ctx.response.json({ ok: true });
+    });
+  }
+
   async #decide(
     ctx: HttpContext,
     service: AgentService,

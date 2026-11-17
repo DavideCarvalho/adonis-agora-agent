@@ -1,0 +1,124 @@
+---
+title: Federated console
+description: Show other apps' agents in one governance console, with an App selector. Each app keeps its own tables and runs its own agent; the console reads their governance data and sends approvals to the app itself.
+icon: Network
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+One app's governance console can also show the agents of other apps: their runs, tool calls,
+threads, spend, approvals and model prices. An **App** selector appears in the console's top bar,
+and the picked app goes in the URL as `?app=<key>`, so a link opens the same app.
+
+Each app keeps its own agent tables and runs its own agent. The console:
+
+- reads the other app's **governance read-model and model prices** straight from that app's
+  tables, read-only;
+- sends what only that app can do — **approving or rejecting a pending tool call, changing a
+  model price** — to the app itself, over Redis.
+
+## The console app
+
+List the other apps under `dashboard.apps` in `config/agent.ts`:
+
+```ts title="config/agent.ts"
+import { defineConfig, governanceQueries, pricingStores } from '@adonis-agora/agent'
+
+export default defineConfig({
+  // …
+  dashboard: {
+    authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false,
+    appLabel: 'Hub',
+    apps: {
+      'entre-textos': {
+        label: 'Entre Textos',
+        governance: governanceQueries.lucid({ connection: 'pg', schema: 'entretextos' }),
+        pricing: pricingStores.lucid({ connection: 'pg', schema: 'entretextos' }),
+        controlPlane: { connection: 'main', prefix: 'entretextos' },
+      },
+    },
+  },
+})
+```
+
+| Option | What it is |
+| --- | --- |
+| `label` | The name in the selector. Defaults to the key. |
+| `governance` | Where that app's agent tables are. Only read: the console never creates or alters a table there. |
+| `pricing` | Where that app's model prices are. Prices its spend and fills the Pricing page. Omit it and the Pricing page says it is not available for that app. |
+| `controlPlane` | The `@adonisjs/redis` connection to publish on (`connection`, default connection when omitted) and that app's `prefix`. |
+| `timeoutMs` | How long an action waits for that app to answer. Default `15000`. |
+| `appLabel` | The name of the console's own app in the selector. Defaults to `This app`. |
+
+Keys are 1–64 characters of `A-Z a-z 0-9 _ . -`. The console needs `@adonisjs/redis`. Each entry is
+checked at boot: an empty `controlPlane.prefix`, a `connection` that is not in `config/redis.ts` or
+a `timeoutMs` that is not a positive number fails the boot.
+
+The selector lists every configured app. An `authorize` that answers `apps` limits it:
+
+```ts title="config/agent.ts"
+authorize: (ctx, actor) => ({ allowed: true, apps: ['entre-textos'] }),
+```
+
+With another app picked, the Organization picker is off: that app's organizations are not this
+app's. The Quota page keeps showing the viewer's own quota in this app.
+
+## The other app
+
+Each app shown in the console answers it from its own `config/agent.ts`:
+
+```ts title="config/agent.ts"
+export default defineConfig({
+  // …
+  consoleCommands: { connection: 'main', prefix: 'entretextos' },
+})
+```
+
+`prefix` is the same one the console names in `controlPlane`. It is not the Redis connection's
+`keyPrefix`. Every web process of the app listens; one of them runs each command.
+
+A decision from the console is settled by this app under the same rules as its own approvals: the
+console viewer is the deciding actor, and the console's `authorize` counts as permission to act on
+other actors' calls. A call that names its own approver (a role) still asks this app's approval
+policy. The console sends the viewer's id and no roles, so a call whose approver is a role
+cannot be settled from another app's console: under the default policy it is refused with a `403`.
+Settle those in this app's own console, or let this app's approval policy allow that viewer by id.
+This app's log names each one and who sent it:
+
+```
+[agent] federated console: approve call_01J… by ana@example.com
+```
+
+<Callout type="info">
+  A decision reaches the parked run the way a decision made in this app does. With turns running
+  in-process (no durable runner) and several web processes, run turns with `durable: true` so the
+  process that takes the command can resume the run.
+</Callout>
+
+## Database access
+
+The console reads the other app's tables with its own database connection. On Postgres, give that
+connection's role read access to them, once, as the owner of the other app's schema:
+
+```sql
+GRANT USAGE ON SCHEMA entretextos TO console_role;
+GRANT SELECT ON
+  entretextos.agent_thread, entretextos.agent_message, entretextos.agent_tool_call,
+  entretextos.agent_token_usage, entretextos.agent_model_pricing, entretextos.agent_run,
+  entretextos.agent_genui_call
+TO console_role;
+```
+
+No `INSERT`, `UPDATE` or `DELETE`: every change goes through the other app.
+
+## When something fails
+
+| Answer | When |
+| --- | --- |
+| `404` | `?app=` names an app that is not configured, or that `authorize` does not grant. |
+| `503` | The app does not answer: it is down, or `consoleCommands` is off. The message names the app. Its pages still load, from its tables. Also when the console cannot set up that app (a `governance` or `pricing` factory that fails, a missing `redis` binding): the cause is in the console app's log, and the next request tries again. |
+| `502` | The app answered with an error of its own. The detail is in the console app's log. |
+| `501` | The app does not run that command (an older version), or has no pricing store. |
+
+The app's own refusals keep their status: an unknown call is a `404`, a call for another approver
+a `403`, a run that ended a `409`, an expired request a `410`.

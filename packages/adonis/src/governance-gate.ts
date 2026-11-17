@@ -22,6 +22,8 @@ export interface GovernanceGateVerdict {
   redirectTo?: string;
   /** When allowed: the tenants `authorize` granted (`'*'` or ids); absent = the viewer's own. */
   tenants?: ConsoleTenants;
+  /** When allowed: the federated apps `authorize` granted (`'*'` or keys); absent = all. */
+  apps?: ConsoleTenants;
 }
 
 /**
@@ -46,9 +48,12 @@ export async function evaluateGovernanceGate(
   if (authorize === undefined) return { ok: true, status: 200 };
   const decision = await consoleAuthorizeFor(authorize)(ctx, actor);
   if (decision.allowed) {
-    return decision.tenants === undefined
-      ? { ok: true, status: 200 }
-      : { ok: true, status: 200, tenants: decision.tenants };
+    return {
+      ok: true,
+      status: 200,
+      ...(decision.tenants !== undefined ? { tenants: decision.tenants } : {}),
+      ...(decision.apps !== undefined ? { apps: decision.apps } : {}),
+    };
   }
   if (decision.error !== undefined) {
     return {

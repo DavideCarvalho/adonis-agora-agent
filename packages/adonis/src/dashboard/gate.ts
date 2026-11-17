@@ -12,7 +12,7 @@ import type { AccessDeniedOption, AgentDashboardAuthorize } from './define_confi
 
 /** The outcome of the console access gate: proceed (with the actor, when one resolved), or deny. */
 export type DashboardGateVerdict =
-  | { ok: true; actor?: Actor; tenants?: ConsoleTenants }
+  | { ok: true; actor?: Actor; tenants?: ConsoleTenants; apps?: ConsoleTenants }
   | {
       ok: false;
       status: 401 | 403;
@@ -72,6 +72,7 @@ export async function evaluateDashboardGate(
       ok: true,
       ...(actor !== undefined ? { actor } : {}),
       ...(verdict.tenants !== undefined ? { tenants: verdict.tenants } : {}),
+      ...(verdict.apps !== undefined ? { apps: verdict.apps } : {}),
     };
   }
   return {

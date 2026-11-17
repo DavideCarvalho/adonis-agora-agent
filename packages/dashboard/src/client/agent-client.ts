@@ -69,6 +69,11 @@ export interface AgentClientOptions {
    * the page's own `?tenant=`; `null` = every organization the viewer may see.
    */
   tenant?: () => string | null;
+  /**
+   * The other app every governance read and decision is about (`?app=`, the federated console).
+   * Defaults to the page's own `?app=`; `null` = this app.
+   */
+  app?: () => string | null;
 }
 
 /** The `?tenant=` of the page, or `null`. */
@@ -76,6 +81,20 @@ export function pageTenant(): string | null {
   if (typeof window === 'undefined') return null;
   const value = new URLSearchParams(window.location.search).get('tenant');
   return value === null || value === '' ? null : value;
+}
+
+/** The `?app=` of the page (the federated console's other app), or `null` for this app. */
+export function pageApp(): string | null {
+  if (typeof window === 'undefined') return null;
+  const value = new URLSearchParams(window.location.search).get('app');
+  return value === null || value === '' ? null : value;
+}
+
+/** What `GET /governance/apps` answers: this app, then the other apps the console shows. */
+export interface ConsoleAppsView {
+  local: { label: string };
+  apps: Array<{ id: string; label: string }>;
+  selected: string | null;
 }
 
 /**
@@ -89,23 +108,33 @@ export class AgentClient {
   private readonly doFetch: FetchLike;
   private readonly pageSize: number;
   private readonly tenant: () => string | null;
+  private readonly app: () => string | null;
 
   constructor(options: AgentClientOptions = {}) {
     this.base = (options.baseUrl ?? resolveApiBase()).replace(/\/+$/, '');
     this.doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.pageSize = options.pageSize ?? 50;
     this.tenant = options.tenant ?? pageTenant;
+    this.app = options.app ?? pageApp;
+  }
+
+  /** The scope a governance read or a decision carries: `tenant=` and `app=`, when picked. */
+  private scope(path: string, params: URLSearchParams): void {
+    const scoped = path.startsWith('/governance/');
+    const tenant = scoped ? this.tenant() : null;
+    if (tenant !== null) params.set('tenant', tenant);
+    const app = scoped || path.startsWith('/tool-call/') ? this.app() : null;
+    if (app !== null) params.set('app', app);
   }
 
   private async get<T>(
     path: string,
     query: Record<string, string> | FilterQueryBuilder = {},
   ): Promise<T> {
-    const tenant = path.startsWith('/governance/') ? this.tenant() : null;
     const params = new URLSearchParams(
       query instanceof FilterQueryBuilder ? query.toQueryString() : query,
     );
-    if (tenant !== null) params.set('tenant', tenant);
+    this.scope(path, params);
     const search = params.toString();
     const url = `${this.base}${path}${search ? `?${search}` : ''}`;
     const response = await this.doFetch(url, {
@@ -120,8 +149,10 @@ export class AgentClient {
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
-    const tenant = path.startsWith('/governance/') ? this.tenant() : null;
-    const url = `${this.base}${path}${tenant !== null ? `?${new URLSearchParams({ tenant })}` : ''}`;
+    const params = new URLSearchParams();
+    this.scope(path, params);
+    const search = params.toString();
+    const url = `${this.base}${path}${search ? `?${search}` : ''}`;
     const response = await this.doFetch(url, {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
@@ -132,6 +163,11 @@ export class AgentClient {
       throw new AgentApiError(`POST ${path} failed (${response.status})`, response.status);
     }
     return (await response.json()) as T;
+  }
+
+  /** The apps this console shows (the federated console's selector), from `GET /governance/apps`. */
+  apps(): Promise<ConsoleAppsView> {
+    return this.get<ConsoleAppsView>('/governance/apps');
   }
 
   /** The organizations this viewer may pick (tenancy), from `GET /governance/tenants`. */

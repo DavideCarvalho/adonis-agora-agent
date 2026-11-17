@@ -371,6 +371,9 @@ importers:
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
+      ioredis:
+        specifier: 6.0.0
+        version: 6.0.0(supports-color@10.2.2)
       jsdom:
         specifier: 31.0.1
         version: 31.0.1

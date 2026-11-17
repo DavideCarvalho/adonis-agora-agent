@@ -1,5 +1,7 @@
 import type { HttpContext } from '@adonisjs/core/http';
 import type { AgentConsoleAuthorize } from '../console-authorize.js';
+import { FEDERATED_APP_KEY } from '../federation/app_key.js';
+import type { FederatedConsoleApp } from '../federation/console.js';
 import type { Actor } from '../types.js';
 import type {
   AccessDeniedOption as GenericAccessDeniedOption,
@@ -85,6 +87,29 @@ export interface AgentDashboardConfig {
    * announces on the `agora.consoles` registry, when there is one. Same-origin paths only.
    */
   signOut?: SignOutOption;
+  /**
+   * Other apps this console also shows (the federated console), by a key that becomes their
+   * `?app=` in the console's URL. Each keeps its own tables and runs its own agent: the console
+   * reads that app's governance tables and sends approvals and price changes to that app over Redis
+   * (that app sets `consoleCommands` in its `config/agent.ts`).
+   *
+   * ```ts
+   * apps: {
+   *   'entre-textos': {
+   *     label: 'Entre Textos',
+   *     governance: governanceQueries.lucid({ connection: 'pg', schema: 'entretextos' }),
+   *     pricing: pricingStores.lucid({ connection: 'pg', schema: 'entretextos' }),
+   *     controlPlane: { connection: 'main', prefix: 'entretextos' },
+   *   },
+   * }
+   * ```
+   *
+   * Keys are 1–64 characters of `[A-Za-z0-9_.-]`. An `authorize` that grants `apps` as a list hides
+   * the apps it does not name.
+   */
+  apps?: Record<string, FederatedConsoleApp>;
+  /** The name of THIS app in the app selector (shown once `apps` is set). Defaults to `This app`. */
+  appLabel?: string;
 }
 
 export interface ResolvedAgentDashboardConfig {
@@ -96,6 +121,10 @@ export interface ResolvedAgentDashboardConfig {
   viewer: ViewerHook | null;
   /** The host's `signOut` option, or `null` for the one an account console announced. */
   signOut: SignOutOption | null;
+  /** The other apps the console shows (empty: none). */
+  apps: Record<string, FederatedConsoleApp>;
+  /** The name of this app in the app selector. */
+  appLabel: string;
 }
 
 /** Fill defaults for the optional dashboard config block. */
@@ -106,11 +135,26 @@ export function resolveDashboardConfig(
     enabled: config?.enabled ?? true,
     viewer: config?.viewer ?? null,
     signOut: config?.signOut ?? null,
+    apps: validApps(config?.apps),
+    appLabel: config?.appLabel ?? 'This app',
   };
   if (config?.path !== undefined) resolved.path = config.path;
   if (config?.authorize !== undefined) resolved.authorize = config.authorize;
   if (config?.accessDenied !== undefined) resolved.accessDenied = config.accessDenied;
   return resolved;
+}
+
+function validApps(
+  apps: Record<string, FederatedConsoleApp> | undefined,
+): Record<string, FederatedConsoleApp> {
+  for (const key of Object.keys(apps ?? {})) {
+    if (!FEDERATED_APP_KEY.test(key)) {
+      throw new Error(
+        `[@adonis-agora/agent] dashboard.apps: "${key}" is not a valid app key (1–64 characters of A-Z, a-z, 0-9, _ . -)`,
+      );
+    }
+  }
+  return { ...(apps ?? {}) };
 }
 
 /** Whether the provider registers the console's routes, and (when it refuses) what to say about it. */
