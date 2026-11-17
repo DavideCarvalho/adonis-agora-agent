@@ -1,5 +1,11 @@
 # @adonis-agora/agent-dashboard
 
+## 1.0.0-rc.12
+
+### Minor Changes
+
+- [#632](https://github.com/DavideCarvalho/adonis-agora-agent/pull/632) [`3538323`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/35383239741c4fb673891d62b6b73382c75fbe75) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Console filters now live in the URL, so a filtered view can be shared, bookmarked and reloaded, and back/forward step through it: the day range (kept across pages), the Runs status, agent and actor, the Tools sort and the chart metric on Overview and Generative UI. They sit in the hash's query (`#runs?status=failed&agent=support`); a value at its default is left out, so existing `#<page>` and `#runs/<id>` links open as before, and opening a run keeps the list's filters.
+
 ## 1.0.0-rc.11
 
 ### Patch Changes
