@@ -1,4 +1,5 @@
 import { type GenuiCallRow, type GenuiStats, summarizeGenuiCalls } from '../genui-telemetry.js';
+import type { CursorPage, CursorParams } from '../pagination.js';
 import { summarizeLatency, summarizeRunMetrics } from '../run-metrics.js';
 import type { RunStepTiming, RunTimings, StoreTenantScope } from '../spi/agent-store.js';
 import type {
@@ -33,6 +34,14 @@ import { rangeBounds } from '../spi/governance-queries.js';
 import type { AgentPricingStore, CurrentModelPrice } from '../spi/pricing-store.js';
 import { estimateCost, resolveModelPrice } from '../spi/pricing-store.js';
 import { validateSchema } from './db-schema.js';
+import {
+  decodeKeyset,
+  encodeKeyset,
+  type KeysetPosition,
+  keysetPage,
+  readRunsCursor,
+  seekSql,
+} from './keyset.js';
 import { inAppendOrder, type LucidDatabaseLike, toolCallIdOfRow } from './lucid.js';
 import {
   type AgentTableKey,
@@ -782,24 +791,48 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
    */
   async recentToolCalls(limit: number): Promise<ToolCallActivityRow[]> {
     await this.ready();
+    return (await this.toolCallRows(limit)).map((row) => row.view);
+  }
+
+  /**
+   * The tool-call feed one keyset page at a time: `(created_at, id) < cursor`, `first + 1` rows, no
+   * offset. An index on `(created_at, id)` (the opt-in governance list indexes) serves it.
+   */
+  async toolCallsPage(page: CursorParams = {}): Promise<CursorPage<ToolCallActivityRow>> {
+    await this.ready();
+    const limit = clampLimit(page.first);
+    const from = page.after !== undefined ? decodeKeyset(page.after) : null;
+    const rows = await this.toolCallRows(limit + 1, from ?? undefined);
+    return keysetPage(rows, limit);
+  }
+
+  private async toolCallRows(
+    limit: number,
+    from?: KeysetPosition,
+  ): Promise<Array<{ at: number; id: string; view: ToolCallActivityRow }>> {
+    const where: string[] = [];
+    const bindings: unknown[] = [];
     const inScope = this.messageInScopeSql();
-    const calls =
-      inScope === null
-        ? await this.db
-            .from(this.tables.toolCalls)
-            .orderBy('created_at', 'desc')
-            .limit(limit)
-            .select('*')
-        : rowsOf(
-            await this.db.rawQuery(
-              portableSql(
-                this.db,
-                `SELECT * FROM ${this.tablesSql.toolCalls} WHERE ${inScope.sql} ` +
-                  `ORDER BY "created_at" DESC LIMIT ${Math.max(1, Math.trunc(limit))}`,
-              ),
-              inScope.bindings,
-            ),
-          );
+    if (inScope !== null) {
+      where.push(inScope.sql);
+      bindings.push(...inScope.bindings);
+    }
+    if (from !== undefined) {
+      const seek = seekSql('"created_at"', from);
+      where.push(seek.sql);
+      bindings.push(...seek.bindings);
+    }
+    const calls = rowsOf(
+      await this.db.rawQuery(
+        portableSql(
+          this.db,
+          `SELECT * FROM ${this.tablesSql.toolCalls}` +
+            (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
+            ` ORDER BY "created_at" DESC, "id" DESC LIMIT ${Math.max(1, Math.trunc(limit))}`,
+        ),
+        bindings,
+      ),
+    );
     const threadOf = new Map<string, string>();
     const messageIds = [...new Set(calls.map((call) => String(call.message_id)))];
     for (const chunk of chunked(messageIds)) {
@@ -810,12 +843,16 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       for (const message of messages) threadOf.set(String(message.id), String(message.thread_id));
     }
     return calls.map((call) => ({
-      toolCallId: toolCallIdOfRow(call),
-      toolName: String(call.tool_name),
-      toolType: String(call.tool_type),
-      status: String(call.status),
-      threadId: threadOf.get(String(call.message_id)) ?? '',
-      createdAt: new Date(toInt(call.created_at)).toISOString(),
+      at: toInt(call.created_at),
+      id: String(call.id),
+      view: {
+        toolCallId: toolCallIdOfRow(call),
+        toolName: String(call.tool_name),
+        toolType: String(call.tool_type),
+        status: String(call.status),
+        threadId: threadOf.get(String(call.message_id)) ?? '',
+        createdAt: new Date(toInt(call.created_at)).toISOString(),
+      },
     }));
   }
 
@@ -825,25 +862,44 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
    */
   async recentThreads(limit: number): Promise<ThreadActivityRow[]> {
     await this.ready();
+    return (await this.threadRows(limit)).map((row) => row.view);
+  }
+
+  /** The thread feed one keyset page at a time on `(updated_at, id)`, as {@link toolCallsPage}. */
+  async threadsPage(page: CursorParams = {}): Promise<CursorPage<ThreadActivityRow>> {
+    await this.ready();
+    const limit = clampLimit(page.first);
+    const from = page.after !== undefined ? decodeKeyset(page.after) : null;
+    const rows = await this.threadRows(limit + 1, from ?? undefined);
+    return keysetPage(rows, limit);
+  }
+
+  private async threadRows(
+    limit: number,
+    from?: KeysetPosition,
+  ): Promise<Array<{ at: number; id: string; view: ThreadActivityRow }>> {
+    const where = ['"deleted_at" IS NULL'];
+    const bindings: unknown[] = [];
     const threadTenant = this.tenantSql();
-    const threads =
-      threadTenant === null
-        ? await this.db
-            .from(this.tables.threads)
-            .whereNull('deleted_at')
-            .orderBy('updated_at', 'desc')
-            .limit(limit)
-            .select('*')
-        : rowsOf(
-            await this.db.rawQuery(
-              portableSql(
-                this.db,
-                `SELECT * FROM ${this.tablesSql.threads} WHERE "deleted_at" IS NULL AND ${threadTenant.sql} ` +
-                  `ORDER BY "updated_at" DESC LIMIT ${Math.max(1, Math.trunc(limit))}`,
-              ),
-              threadTenant.bindings,
-            ),
-          );
+    if (threadTenant !== null) {
+      where.push(threadTenant.sql);
+      bindings.push(...threadTenant.bindings);
+    }
+    if (from !== undefined) {
+      const seek = seekSql('"updated_at"', from);
+      where.push(seek.sql);
+      bindings.push(...seek.bindings);
+    }
+    const threads = rowsOf(
+      await this.db.rawQuery(
+        portableSql(
+          this.db,
+          `SELECT * FROM ${this.tablesSql.threads} WHERE ${where.join(' AND ')}` +
+            ` ORDER BY "updated_at" DESC, "id" DESC LIMIT ${Math.max(1, Math.trunc(limit))}`,
+        ),
+        bindings,
+      ),
+    );
     const threadIds = threads.map((thread) => String(thread.id));
     const messageCounts = await this.perThread(this.tablesSql.messages, 'COUNT(*)', threadIds);
     const tokenTotals = await this.perThread(
@@ -854,12 +910,16 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
     return threads.map((thread) => {
       const threadId = String(thread.id);
       return {
-        threadId,
-        title: String(thread.title),
-        actorRef: String(thread.actor_ref),
-        messageCount: messageCounts.get(threadId) ?? 0,
-        totalTokens: tokenTotals.get(threadId) ?? 0,
-        lastActivityAt: new Date(toInt(thread.updated_at)).toISOString(),
+        at: toInt(thread.updated_at),
+        id: threadId,
+        view: {
+          threadId,
+          title: String(thread.title),
+          actorRef: String(thread.actor_ref),
+          messageCount: messageCounts.get(threadId) ?? 0,
+          totalTokens: tokenTotals.get(threadId) ?? 0,
+          lastActivityAt: new Date(toInt(thread.updated_at)).toISOString(),
+        },
       };
     });
   }
@@ -868,9 +928,10 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
 
   /**
    * Filterable, cursor-paginated run list, newest-first (`started_at` desc, then `id` desc for a
-   * stable tiebreak). `after` is an opaque cursor (over the SAME filter set); a page fetches
-   * `first + 1` rows to learn whether a next page exists. A store without recorded runs yields an
-   * empty page.
+   * stable tiebreak). `after` is an opaque keyset cursor (over the SAME filter set): the page seeks
+   * past `(started_at, id)` and fetches `first + 1` rows to learn whether a next page exists, so no
+   * page reads the rows above it. A plain offset (`"50"`, what older versions handed out) still
+   * works. A store without recorded runs yields an empty page.
    *
    * Forward-only, so the returned {@link CursorPage} always carries `prevCursor: null` /
    * `hasPrev: false` — see `src/pagination.ts`.
@@ -878,10 +939,8 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
   async listRuns(filter: ListRunsFilter = {}): Promise<ListRunsResult> {
     await this.ready();
     const limit = clampLimit(filter.first);
-    const offset = ((): number => {
-      const parsed = filter.after !== undefined ? Number.parseInt(filter.after, 10) : 0;
-      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-    })();
+    const cursor = readRunsCursor(filter.after);
+    const offset = 'offset' in cursor ? cursor.offset : 0;
 
     const where: string[] = [];
     const bindings: unknown[] = [];
@@ -910,13 +969,19 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
       where.push(runTenant.sql);
       bindings.push(...runTenant.bindings);
     }
+    if ('position' in cursor) {
+      const seek = seekSql('"started_at"', cursor.position);
+      where.push(seek.sql);
+      bindings.push(...seek.bindings);
+    }
     const rows = rowsOf(
       await this.db.rawQuery(
         portableSql(
           this.db,
           `SELECT * FROM ${this.tablesSql.runs}` +
             (where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '') +
-            ` ORDER BY "started_at" DESC, "id" DESC LIMIT ${limit + 1} OFFSET ${offset}`,
+            ` ORDER BY "started_at" DESC, "id" DESC LIMIT ${limit + 1}` +
+            (offset > 0 ? ` OFFSET ${offset}` : ''),
         ),
         bindings,
       ),
@@ -924,9 +989,13 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
 
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
+    const last = page.at(-1);
     return {
       items: page.map(runRowToSummary),
-      nextCursor: hasMore ? String(offset + limit) : null,
+      nextCursor:
+        hasMore && last !== undefined
+          ? encodeKeyset(toInt(last.started_at), String(last.id))
+          : null,
       prevCursor: null,
       hasNext: hasMore,
       hasPrev: false,

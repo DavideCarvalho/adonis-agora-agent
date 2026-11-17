@@ -134,7 +134,15 @@ interface ThreadActivityRow {
   actorRef: string; actorLabel?: string
   messageCount: number; totalTokens: number; lastActivityAt: string
 }
+
+// optional: one page at a time, newest first (the built-in read-models have both)
+toolCallsPage?(page: { after?: string; first?: number }): Promise<CursorPage<ToolCallActivityRow>>
+threadsPage?(page: { after?: string; first?: number }): Promise<CursorPage<ThreadActivityRow>>
 ```
+
+`toolCallsPage` and `threadsPage` resume after the last row of the previous page, so a deep page costs
+what the first one does. A read-model of your own that only has `recentToolCalls(limit)` /
+`recentThreads(limit)` still serves both feeds: the route then reads every row above the page.
 
 ### Runs
 

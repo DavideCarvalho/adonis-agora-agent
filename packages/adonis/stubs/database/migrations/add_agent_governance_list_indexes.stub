@@ -1,0 +1,31 @@
+{{{
+  exports({ to: app.migrationsPath(`${new Date().getTime() + 1}_add_agent_governance_list_indexes.ts`) })
+}}}
+import app from '@adonisjs/core/services/app'
+import { BaseSchema } from '@adonisjs/lucid/schema'
+import db from '@adonisjs/lucid/services/db'
+import { createAgentGovernanceIndexes, dropAgentGovernanceIndexes } from '@adonis-agora/agent'
+
+/**
+ * The governance console's list indexes: the tool-call and thread feeds and the runs list seek
+ * straight to the next page (tool calls by \`created_at\`, threads by \`updated_at\`, runs by agent or
+ * tenant and \`started_at\`) instead of reading every row above it. Run it once on an existing
+ * install; it creates only the indexes that are missing.
+ *
+ * On Postgres every index is built CONCURRENTLY, so writes go on while it builds. That cannot run
+ * inside a transaction, hence \`disableTransactions\` and the connection checked out from \`db\`.
+ */
+const configured = app.config.get('agent.schema')
+const SCHEMA = typeof configured === 'string' ? configured : undefined
+
+export default class extends BaseSchema {
+  static disableTransactions = true
+
+  async up() {
+    await createAgentGovernanceIndexes(db.connection(this.db.connectionName), { schema: SCHEMA })
+  }
+
+  async down() {
+    await dropAgentGovernanceIndexes(db.connection(this.db.connectionName), { schema: SCHEMA })
+  }
+}

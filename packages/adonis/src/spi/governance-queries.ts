@@ -467,6 +467,19 @@ export interface AgentGovernanceQueries {
   ): Promise<UsageBreakdownRow[]>;
   recentToolCalls(limit: number): Promise<ToolCallActivityRow[]>;
   recentThreads(limit: number): Promise<ThreadActivityRow[]>;
+  /**
+   * OPTIONAL: the tool-call feed (newest first) one keyset page at a time — `first` rows after the
+   * opaque `after` the previous page returned, so a deep page costs what the first one does. Absent
+   * → `GET <path>/governance/tool-calls/recent` pages over {@link recentToolCalls} instead (it
+   * re-reads every row above the page).
+   */
+  toolCallsPage?(page: CursorParams): Promise<CursorPage<ToolCallActivityRow>>;
+  /**
+   * OPTIONAL: the thread feed (most recently active first) one keyset page at a time, as
+   * {@link toolCallsPage}. Absent → `GET <path>/governance/threads/recent` pages over
+   * {@link recentThreads}.
+   */
+  threadsPage?(page: CursorParams): Promise<CursorPage<ThreadActivityRow>>;
 
   // ── Run lifecycle governance. An adapter backed by a store without run recording returns an empty
   // page / null / zeros from these.

@@ -45,9 +45,11 @@ node ace configure @adonis-agora/agent
 `configure` registers `@adonis-agora/agent/agent_provider` and
 `@adonis-agora/agent/dashboard_provider` in `adonisrc.ts`, registers the Assembler init
 hook that generates the typed `app/agent_tools` barrel, publishes `config/agent.ts`,
-`config/mcp.ts`, and five migrations: three for the agent tables (the base tables plus two
-forward-only action-proposal upgrades) and two Postgres-only ones (the pgvector RAG chunk
-table and the document-tree tables — delete the ones you don't use). Then add the model peer and write your config:
+`config/mcp.ts`, and six migrations: three for the agent tables (the base tables plus two
+forward-only action-proposal upgrades), two Postgres-only ones (the pgvector RAG chunk
+table and the document-tree tables — delete the ones you don't use), and the opt-in
+`add_agent_governance_list_indexes` for the governance console's list indexes (run it once on
+an existing install; `CONCURRENTLY` on Postgres). Then add the model peer and write your config:
 
 ```bash
 pnpm add ai zod @ai-sdk/openai

@@ -90,6 +90,25 @@ function windowPosition(cursor: string): number {
   return position;
 }
 
+/**
+ * How a feed the store can page by keyset reads this request: `keyset` (forward, `after` absent or
+ * one of the store's cursors) or `window` — `before`/`last`, or an `after` an older server handed
+ * out as a window position — which keeps the capped-read path so old cursors still work.
+ */
+export function feedPaging(
+  qs: ListQuery,
+  sizes: ListSizes,
+  isKeysetCursor: (cursor: string) => boolean,
+): { kind: 'keyset'; after?: string; size: number } | { kind: 'window' } {
+  const params = parseCursorParams(qs, sizes);
+  if (params.before !== undefined || params.backward) return { kind: 'window' };
+  if (params.after === undefined) return { kind: 'keyset', size: params.size };
+  if (isKeysetCursor(params.after))
+    return { kind: 'keyset', after: params.after, size: params.size };
+  windowPosition(params.after); // a window cursor, or a 400
+  return { kind: 'window' };
+}
+
 /** Read `after`/`before` + `first`/`last` for a windowed list. A bad cursor throws (→ `400`). */
 export function parseListWindow(qs: ListQuery, sizes: ListSizes): ListWindow {
   const params = parseCursorParams(qs, sizes);

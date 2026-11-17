@@ -12,6 +12,7 @@ import {
   applyListFilter,
   assertFixedSort,
   cursorPage,
+  feedPaging,
   type ListQuery,
   type ListSizes,
   NoFieldsFilter,
@@ -23,6 +24,7 @@ import {
 } from './list-api.js';
 import type { ActorDirectory } from './spi/actor-directory.js';
 import type { AgentGovernanceQueries } from './spi/governance-queries.js';
+import { decodeKeyset } from './stores/keyset.js';
 
 /** Page sizes of the governance lists. */
 export const GOVERNANCE_LIST_SIZES: ListSizes = { defaultSize: 50, maxSize: 200 };
@@ -80,9 +82,24 @@ export async function governancePendingApprovalsPage(
   return { ...page, data: await withActorLabels(page.data, directory) };
 }
 
-/** The recent tool-call activity feed, newest first; no filter; sort fixed to `-createdAt`. */
+/**
+ * The recent tool-call activity feed, newest first; no filter; sort fixed to `-createdAt`. Paged by
+ * keyset when the read-model offers `toolCallsPage` (a deep page costs what the first does); window
+ * cursors from older servers, and `before`, keep the capped-read path.
+ */
 export async function governanceToolCallsPage(gov: AgentGovernanceQueries, qs: ListQuery) {
   await plainList(qs, '-createdAt');
+  if (gov.toolCallsPage !== undefined) {
+    const paging = feedPaging(qs, GOVERNANCE_LIST_SIZES, isKeysetCursor);
+    if (paging.kind === 'keyset') {
+      return cursorPage(
+        await gov.toolCallsPage({
+          first: paging.size,
+          ...(paging.after !== undefined ? { after: paging.after } : {}),
+        }),
+      );
+    }
+  }
   const window = parseListWindow(qs, GOVERNANCE_LIST_SIZES);
   return windowPage(await gov.recentToolCalls(windowFetchSize(window)), window);
 }
@@ -94,10 +111,22 @@ export async function governanceThreadsPage(
   qs: ListQuery,
 ) {
   await plainList(qs, '-lastActivityAt');
+  if (gov.threadsPage !== undefined) {
+    const paging = feedPaging(qs, GOVERNANCE_LIST_SIZES, isKeysetCursor);
+    if (paging.kind === 'keyset') {
+      const page = await gov.threadsPage({
+        first: paging.size,
+        ...(paging.after !== undefined ? { after: paging.after } : {}),
+      });
+      return cursorPage({ ...page, items: await withActorLabels(page.items, directory) });
+    }
+  }
   const window = parseListWindow(qs, GOVERNANCE_LIST_SIZES);
   const page = windowPage(await gov.recentThreads(windowFetchSize(window)), window);
   return { ...page, data: await withActorLabels(page.data, directory) };
 }
+
+const isKeysetCursor = (cursor: string) => decodeKeyset(cursor) !== null;
 
 /**
  * One thread's drill-down (metadata + lifetime usage + recent runs/messages), `null` when unknown,

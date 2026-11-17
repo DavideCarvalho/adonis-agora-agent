@@ -35,6 +35,7 @@ export const PUBLISHED_STUBS = [
   'database/migrations/add_action_proposal_runtime.stub',
   'database/migrations/create_agent_rag_chunks.stub',
   'database/migrations/create_agent_rag_trees.stub',
+  'database/migrations/add_agent_governance_list_indexes.stub',
 ];
 
 /**
