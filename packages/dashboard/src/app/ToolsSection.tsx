@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { parseAsStringLiteral, useQueryStates } from 'nuqs';
+import { useMemo } from 'react';
 import { type Column, DataTable } from '../agora-kit/blocks/data-table';
 import { EmptyState } from '../agora-kit/blocks/empty-state';
 import { ErrorBoundary } from '../agora-kit/blocks/error-boundary';
@@ -21,6 +22,22 @@ type SortKey =
   | 'p50ExecutionMs'
   | 'p95ExecutionMs';
 type SortDir = 'asc' | 'desc';
+
+const SORT_KEYS = [
+  'toolName',
+  'calls',
+  'failed',
+  'rejected',
+  'avgDurationMs',
+  'p50ExecutionMs',
+  'p95ExecutionMs',
+] as const satisfies readonly SortKey[];
+
+/** The table's sort in the hash's query. */
+const toolSortParams = {
+  sort: parseAsStringLiteral(SORT_KEYS).withDefault('calls'),
+  dir: parseAsStringLiteral(['asc', 'desc'] as const).withDefault('desc'),
+};
 interface Sort {
   key: SortKey;
   dir: SortDir;
@@ -162,19 +179,22 @@ export function ToolTotals({ rows }: { rows: PerToolStatRow[] }) {
 export function ToolsSection() {
   const statsState = useToolStats();
   const stats = asQuery(statsState);
-  const [sort, setSort] = useState<Sort>({ key: 'calls', dir: 'desc' });
+  // `?sort=failed&dir=asc`; most-called first (the default) leaves the URL. A header click adds a
+  // history entry.
+  const [sortQuery, setSortQuery] = useQueryStates(toolSortParams, { history: 'push' });
+  const sort: Sort = { key: sortQuery.sort, dir: sortQuery.dir };
 
   const toggle = (key: SortKey) =>
-    setSort((prev) =>
-      prev.key === key
-        ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
-        : { key, dir: key === 'toolName' ? 'asc' : 'desc' },
+    void setSortQuery(
+      sort.key === key
+        ? { sort: key, dir: sort.dir === 'asc' ? 'desc' : 'asc' }
+        : { sort: key, dir: key === 'toolName' ? 'asc' : 'desc' },
     );
 
   const columns = toolColumns(sort, toggle);
   const sorted = useMemo(
     () => statsState.data && [...statsState.data].sort((a, b) => compare(a, b, sort.key, sort.dir)),
-    [statsState.data, sort],
+    [statsState.data, sort.key, sort.dir],
   );
 
   return (

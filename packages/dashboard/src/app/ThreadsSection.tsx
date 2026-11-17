@@ -7,16 +7,20 @@ import { LoadMore } from '../agora-kit/blocks/pager';
 import { Panel } from '../agora-kit/blocks/panel';
 import { QueryBoundary } from '../agora-kit/blocks/query-boundary';
 import { PageBody } from '../agora-kit/shell/app-shell';
+import { splitHash } from '../agora-kit/url-state/hash-url';
 import { formatCount, formatTimestamp } from '../client/format.js';
 import type { ThreadActivityRow } from '../client/types.js';
 import { ThreadDetailView } from './ThreadDetailView.js';
 import { numClass, TableSkeleton } from './ui.js';
+import { hashWith } from './url-state.js';
 import { asQuery, useRecentThreads } from './use-governance.js';
 
 /** Keep the URL on the open thread (`#threads/<id>`) without re-routing. */
 function syncThreadHash(threadId: string | null): void {
   if (typeof window === 'undefined') return;
-  const hash = threadId === null ? '#threads' : `#threads/${encodeURIComponent(threadId)}`;
+  const path = threadId === null ? 'threads' : `threads/${encodeURIComponent(threadId)}`;
+  // Keep the query (the topbar's day range) on the URL.
+  const hash = hashWith(path, splitHash(window.location.hash).search);
   if (window.location.hash !== hash) window.history.replaceState(window.history.state, '', hash);
 }
 

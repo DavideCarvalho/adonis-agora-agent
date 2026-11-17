@@ -19,6 +19,11 @@ All data comes from the agent provider's **real** routes — the SPA is a pure c
 | Tool calls | `GET /agent/governance/tool-calls/recent`                                    |
 | Quota      | `GET /agent/quota/today`                                                      |
 
+Filters are in the URL: copy the link to share a filtered view. The day range (`from`, `to`, kept
+across pages), the Runs filters (`status`, `agent`, `actor`), the Tools sort (`sort`, `dir`) and the
+chart metric (`metric`) live in the hash, so `#runs?status=failed&agent=support` opens the failed
+support runs, and back/forward step through your picks.
+
 ## Install
 
 As of `@adonis-agora/agent@0.21.0`, **you don't need to install this package at all**:

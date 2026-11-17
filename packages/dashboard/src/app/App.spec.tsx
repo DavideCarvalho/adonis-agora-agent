@@ -95,3 +95,44 @@ describe('<App> shell', () => {
     expect(screen.queryByLabelText('from day')).toBeNull();
   });
 });
+
+describe('<App> view state in the URL', () => {
+  it('reads the section and record past the query', () => {
+    expect(sectionFromHash('#runs?status=failed')).toBe('runs');
+    expect(detailFromHash('#runs/r1?status=failed')).toBe('r1');
+    expect(detailFromHash('#runs?status=failed')).toBeNull();
+  });
+
+  it('keeps the day range across pages and drops the old page filters', async () => {
+    setConfig({ apiBase: '/agent' });
+    const fetchFn = stubApi();
+    window.history.replaceState(
+      null,
+      '',
+      '/agent/dashboard#overview?from=2026-01-01&to=2026-01-07',
+    );
+    render(<App />);
+    expect((screen.getByLabelText('from day') as HTMLInputElement).value).toBe('2026-01-01');
+    await waitFor(() =>
+      expect(fetchFn.mock.calls.some(([u]) => String(u).includes('2026-01-01'))).toBe(true),
+    );
+
+    fireEvent.change(screen.getByLabelText('to day'), { target: { value: '2026-01-10' } });
+    await waitFor(() =>
+      expect(window.location.hash).toBe('#overview?from=2026-01-01&to=2026-01-10'),
+    );
+
+    fireEvent.click(screen.getByRole('link', { name: 'Runs' }));
+    await waitFor(() => expect(window.location.hash).toBe('#runs?from=2026-01-01&to=2026-01-10'));
+    fireEvent.change(await screen.findByLabelText('status filter'), {
+      target: { value: 'failed' },
+    });
+    await waitFor(() =>
+      expect(window.location.hash).toBe('#runs?from=2026-01-01&to=2026-01-10&status=failed'),
+    );
+
+    fireEvent.click(screen.getByRole('link', { name: 'Generative UI' }));
+    await waitFor(() => expect(window.location.hash).toBe('#genui?from=2026-01-01&to=2026-01-10'));
+    expect((screen.getByLabelText('to day') as HTMLInputElement).value).toBe('2026-01-10');
+  });
+});
