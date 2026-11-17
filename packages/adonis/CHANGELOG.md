@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.28
+
+### Patch Changes
+
+- [#637](https://github.com/DavideCarvalho/adonis-agora-agent/pull/637) [`d790868`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/d7908689152511127f53b54c7f4312cda0322e61) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Ships the console with its filters in the URL (copy the link to share a filtered view). The console is bundled into this package at build time, so it needs its own release to reach apps.
+
 ## 1.0.0-rc.27
 
 ### Patch Changes
