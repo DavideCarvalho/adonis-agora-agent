@@ -252,8 +252,9 @@ if (!verdict.ok) return ctx.response.status(verdict.status).json({ error: verdic
 
 Mechanism: `dashboard.authorize` takes the console `authorize` shared by every
 `@adonis-agora/*` console — a function `(ctx, actor?)`, an authorizer class, or a lazy import — and return `boolean | { allowed: boolean; reason?: 'unauthenticated' | 'forbidden' } |
-{ allowed: true; tenants?: '*' | string[] } | { redirectTo: string }` (with tenancy on,
-omitted `tenants` means the viewer's own organization).
+{ allowed: true; tenants?: '*' | string[]; apps?: '*' | string[] } | { redirectTo: string }` (with tenancy on,
+omitted `tenants` means the viewer's own organization; omitted `apps` means every app in
+`dashboard.apps`).
 Source: `packages/adonis/src/console-authorize.ts`, `packages/adonis/src/governance-gate.ts`.
 
 ### MEDIUM — giving a per-agent resolver a different identity than the global one
