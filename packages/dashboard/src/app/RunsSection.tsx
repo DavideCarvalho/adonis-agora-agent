@@ -1,5 +1,6 @@
 import { parseAsString, parseAsStringLiteral, useQueryStates } from 'nuqs';
 import { useMemo, useState } from 'react';
+import { ComboSelect } from '../agora-kit/blocks/combo-field';
 import { type Column, DataTable } from '../agora-kit/blocks/data-table';
 import { EmptyState } from '../agora-kit/blocks/empty-state';
 import { ErrorBoundary } from '../agora-kit/blocks/error-boundary';
@@ -10,12 +11,13 @@ import { QueryBoundary } from '../agora-kit/blocks/query-boundary';
 import { PageBody } from '../agora-kit/shell/app-shell';
 import { splitHash } from '../agora-kit/url-state/hash-url';
 import { pageTenant } from '../client/agent-client.js';
+import { defaultRange } from '../client/default-range.js';
 import { formatCount, formatDuration, formatTimestamp, formatUsd } from '../client/format.js';
 import type { ListRunsFilter, RunStatus, RunSummaryRow } from '../client/types.js';
 import { RunDetailView } from './RunDetailView.js';
 import { fieldClass, numClass, StatusBadge, TableSkeleton } from './ui.js';
 import { hashWith } from './url-state.js';
-import { asQuery, useRuns } from './use-governance.js';
+import { asQuery, useReliability, useRuns, useSpendByActor } from './use-governance.js';
 
 const STATUSES: RunStatus[] = ['running', 'completed', 'failed', 'cancelled'];
 
@@ -30,7 +32,7 @@ function syncRunHash(runId: string | null): void {
 
 /**
  * The run list's filters, in the hash's query (`#runs?status=failed&agent=support`). Picking a
- * status adds a history entry; typing the agent or actor rewrites the current one.
+ * status adds a history entry; picking the agent or actor rewrites the current one.
  */
 export const runFilterParams = {
   status: parseAsStringLiteral(['', ...STATUSES] as const)
@@ -63,6 +65,7 @@ export function RunsSection({ initialRunId = null }: { initialRunId?: string | n
   );
 
   const runs = useRuns(filter);
+  const { agents, actors } = useRunFilterOptions();
 
   if (selected) {
     return (
@@ -98,19 +101,25 @@ export function RunsSection({ initialRunId = null }: { initialRunId?: string | n
             </option>
           ))}
         </select>
-        <input
-          className={`${fieldClass} w-36`}
+        <ComboSelect
+          className={comboClass}
           aria-label="agent filter"
           placeholder="agent"
-          value={agent}
-          onChange={(e) => void setFilters({ agent: e.target.value })}
+          options={agents.options}
+          loading={agents.loading}
+          creatable
+          value={agent || null}
+          onValueChange={(next) => void setFilters({ agent: next ?? '' })}
         />
-        <input
-          className={`${fieldClass} w-36`}
+        <ComboSelect
+          className={comboClass}
           aria-label="actor filter"
           placeholder="actor"
-          value={actor}
-          onChange={(e) => void setFilters({ actor: e.target.value })}
+          options={actors.options}
+          loading={actors.loading}
+          creatable
+          value={actor || null}
+          onValueChange={(next) => void setFilters({ actor: next ?? '' })}
         />
       </Toolbar>
       <ErrorBoundary label="Runs list" resetKeys={[actor, agent, status]}>
@@ -149,6 +158,35 @@ export function RunsSection({ initialRunId = null }: { initialRunId?: string | n
       </ErrorBoundary>
     </PageBody>
   );
+}
+
+/** The filter combos' look: the toolbar's field height and surface. */
+const comboClass = 'h-8 w-44 bg-panel-2 text-xs';
+
+/**
+ * Suggestions for the agent and actor filters: the agents that ran in the trailing 30 days (the
+ * reliability rollup's `byAgent`) and the actors that spent in them. Both lists can miss a name
+ * (older runs), so the filters stay creatable.
+ */
+function useRunFilterOptions() {
+  const [range] = useState(() => defaultRange(new Date(), 30));
+  const reliability = useReliability();
+  const spend = useSpendByActor(range);
+  const agents = useMemo(
+    () =>
+      (reliability.data?.byAgent ?? []).flatMap((row) =>
+        row.agentName ? [{ value: row.agentName, hint: `${formatCount(row.runs)} runs` }] : [],
+      ),
+    [reliability.data],
+  );
+  const actors = useMemo(
+    () => (spend.data ?? []).map((row) => ({ value: row.actorRef })),
+    [spend.data],
+  );
+  return {
+    agents: { options: agents, loading: reliability.loading },
+    actors: { options: actors, loading: spend.loading },
+  };
 }
 
 function runColumns(showTenant: boolean): Column<RunSummaryRow>[] {

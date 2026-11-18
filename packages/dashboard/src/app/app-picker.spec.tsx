@@ -1,7 +1,8 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentClient, type ConsoleAppsView } from '../client/agent-client.js';
 import { AppPicker } from './AppPicker.js';
+import { pickComboOption } from './combo-test-utils.js';
 import { AgentClientContext } from './use-governance.js';
 
 function withApps(view: ConsoleAppsView, onChange = vi.fn()) {
@@ -36,7 +37,7 @@ describe('<AppPicker> (federated console)', () => {
       selected: null,
     });
     const select = await screen.findByRole('combobox');
-    fireEvent.change(select, { target: { value: 'entre-textos' } });
+    await pickComboOption(select, 'Entre Textos', 'entre');
     expect(window.location.search).toBe('?app=entre-textos');
     expect(window.location.hash).toBe('#runs');
     expect(onChange).toHaveBeenCalledWith('entre-textos', { picked: true });
@@ -52,7 +53,7 @@ describe('<AppPicker> (federated console)', () => {
     // The viewer's own quota is this app's: no `app=`.
     if (urls[2] !== undefined) expect(urls[2]).not.toContain('app=');
 
-    fireEvent.change(select, { target: { value: '' } });
+    await pickComboOption(select, 'Hub');
     expect(window.location.search).toBe('');
   });
 
@@ -79,30 +80,30 @@ describe('<AppPicker> (federated console)', () => {
   it("shows the server's app, not a forged ?app= it does not serve", async () => {
     window.history.replaceState(null, '', '/agent/dashboard?app=forged#runs');
     server();
-    const select = (await screen.findByRole('combobox')) as HTMLSelectElement;
-    await waitFor(() => expect(select.value).toBe(''));
+    const select = (await screen.findByRole('combobox')) as HTMLInputElement;
+    await waitFor(() => expect(select.value).toBe('Hub'));
   });
 
   it('follows back/forward, and tells the console the app moved', async () => {
     window.history.replaceState(null, '', '/agent/dashboard#runs');
     const { onChange } = server();
-    const select = (await screen.findByRole('combobox')) as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: 'entre-textos' } });
-    await waitFor(() => expect(select.value).toBe('entre-textos'));
+    const select = (await screen.findByRole('combobox')) as HTMLInputElement;
+    await pickComboOption(select, 'Entre Textos');
+    await waitFor(() => expect(select.value).toBe('Entre Textos'));
 
     // "Back": the URL is this app's again, and the browser says so with a popstate.
     act(() => {
       window.history.replaceState(null, '', '/agent/dashboard#runs');
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
-    await waitFor(() => expect(select.value).toBe(''));
+    await waitFor(() => expect(select.value).toBe('Hub'));
     expect(onChange).toHaveBeenLastCalledWith(null, { picked: false });
     // "Forward".
     act(() => {
       window.history.replaceState(null, '', '/agent/dashboard?app=entre-textos#runs');
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
-    await waitFor(() => expect(select.value).toBe('entre-textos'));
+    await waitFor(() => expect(select.value).toBe('Entre Textos'));
     expect(onChange).toHaveBeenLastCalledWith('entre-textos', { picked: false });
   });
 });
