@@ -10,7 +10,7 @@ import { NuqsHashAdapter } from '../agora-kit/url-state/nuqs-hash-adapter';
 import { CONFIG_ELEMENT_ID } from '../client/api-base.js';
 import { defaultRange, isIsoDay, normalizeRange } from '../client/default-range.js';
 import type { GovernanceRange } from '../client/types.js';
-import { AppPicker } from './AppPicker.js';
+import { AppPicker, PickedAppNotice } from './AppPicker.js';
 import { ApprovalsSection } from './ApprovalsSection.js';
 import { GenuiSection } from './GenuiSection.js';
 import {
@@ -258,6 +258,7 @@ function Console() {
       )}
       <ErrorBoundary label={PAGES[section].label} resetKeys={[section, detail, tenantKey]}>
         <div key={tenantKey}>
+          <PickedAppNotice />
           <OrgNotice />
           {section === 'overview' && <Overview range={range} />}
           {section === 'reliability' && <ReliabilitySection />}

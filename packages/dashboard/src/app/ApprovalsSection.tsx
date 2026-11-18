@@ -10,6 +10,7 @@ import { PageBody } from '../agora-kit/shell/app-shell';
 import { Button } from '../agora-kit/ui/button';
 import { formatTimestamp } from '../client/format.js';
 import type { PendingApprovalRow } from '../client/types.js';
+import { actionsBlockedFor, usePickedApp } from './AppPicker.js';
 import { ApprovalIcon } from './icons.js';
 import { payload, TableSkeleton } from './ui.js';
 import { asQuery, useAgentClient, usePendingApprovals } from './use-governance.js';
@@ -19,6 +20,8 @@ type Decision = 'approve' | 'reject';
 function approvalColumns(
   busy: Record<string, boolean>,
   onDecide: (row: PendingApprovalRow, action: Decision) => void,
+  /** Why nobody can decide from here (a federated app that is read-only here), or undefined. */
+  blocked: string | undefined,
 ): Column<PendingApprovalRow>[] {
   return [
     {
@@ -70,13 +73,15 @@ function approvalColumns(
       align: 'right',
       cell: (row) => {
         // A call recorded before run tracking has no runId: it cannot be actioned from here.
-        const disabled = row.runId === null || busy[row.toolCallId] === true;
+        const disabled =
+          blocked !== undefined || row.runId === null || busy[row.toolCallId] === true;
         return (
           <span className="inline-flex gap-1.5">
             <Button
               variant="brand"
               size="sm"
               disabled={disabled}
+              title={blocked}
               onClick={() => onDecide(row, 'approve')}
             >
               <CheckIcon />
@@ -86,6 +91,7 @@ function approvalColumns(
               variant="destructive"
               size="sm"
               disabled={disabled}
+              title={blocked}
               onClick={() => onDecide(row, 'reject')}
             >
               <XIcon />
@@ -109,9 +115,10 @@ export function ApprovalsSection() {
   const approvalsState = usePendingApprovals();
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [decisionError, setDecisionError] = useState<Error | null>(null);
+  const blocked = actionsBlockedFor(usePickedApp());
 
   const decide = async (row: PendingApprovalRow, action: Decision) => {
-    if (row.runId === null) return;
+    if (row.runId === null || blocked !== undefined) return;
     setBusy((b) => ({ ...b, [row.toolCallId]: true }));
     setDecisionError(null);
     try {
@@ -125,7 +132,7 @@ export function ApprovalsSection() {
     }
   };
 
-  const columns = approvalColumns(busy, (row, action) => void decide(row, action));
+  const columns = approvalColumns(busy, (row, action) => void decide(row, action), blocked);
 
   return (
     <PageBody>

@@ -1,6 +1,11 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  AppModeBadge,
+  actionsUnavailableReason,
+  FederatedNotice,
+} from '../agora-kit/blocks/app-mode';
 import { ComboSelect } from '../agora-kit/blocks/combo-field';
-import { type ConsoleAppsView, pageApp } from '../client/agent-client.js';
+import { type ConsoleAppEntry, type ConsoleAppsView, pageApp } from '../client/agent-client.js';
 import { useAgentClient } from './use-governance.js';
 
 /**
@@ -84,6 +89,7 @@ export function AppPicker({
   const view = answer?.view ?? null;
   if (view === null || !Array.isArray(view.apps) || view.apps.length === 0) return null;
   const current = answer?.for === urlApp ? (view.selected ?? null) : urlApp;
+  const shown = view.apps.find((app) => app.id === current);
 
   return (
     <span className="flex min-w-0 items-center gap-1.5">
@@ -95,7 +101,11 @@ export function AppPicker({
         className={pickerClass}
         options={[
           { value: LOCAL_APP, label: view.local.label },
-          ...view.apps.map((app) => ({ value: app.id, label: app.label })),
+          ...view.apps.map((app) => ({
+            value: app.id,
+            label: app.label,
+            ...(app.mode === 'federated' ? { hint: 'federated' } : {}),
+          })),
         ]}
         clearable={false}
         value={current ?? LOCAL_APP}
@@ -110,6 +120,53 @@ export function AppPicker({
           window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }));
         }}
       />
+      {shown !== undefined && (
+        <AppModeBadge mode={shown.mode} actions={shown.actions} appLabel={shown.label} />
+      )}
     </span>
+  );
+}
+
+/**
+ * The other app the page shows (`?app=`, as the server serves it), with its mode and who runs its
+ * actions; `null` for this app, an unknown `?app=`, an older server, or until `/apps` answers. Read
+ * once per mount: the console remounts its pages when the app moves.
+ */
+export function usePickedApp(): ConsoleAppEntry | null {
+  const client = useAgentClient();
+  const [picked, setPicked] = useState<ConsoleAppEntry | null>(null);
+  useEffect(() => {
+    let live = true;
+    client
+      .apps()
+      .then((view) => {
+        const app = Array.isArray(view?.apps)
+          ? view.apps.find((entry) => entry.id === view.selected)
+          : undefined;
+        if (live) setPicked(app ?? null);
+      })
+      .catch(() => {
+        if (live) setPicked(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [client]);
+  return picked;
+}
+
+/** Why the page's actions are off for the picked app (federated, read-only here), or undefined. */
+export function actionsBlockedFor(app: ConsoleAppEntry | null): string | undefined {
+  return app === null ? undefined : actionsUnavailableReason(app.label, app);
+}
+
+/** Top of the page body while a federated app is shown: where its data comes from, who acts. */
+export function PickedAppNotice() {
+  const app = usePickedApp();
+  if (app === null || app.mode !== 'federated') return null;
+  return (
+    <div className="px-4 pt-5 md:px-6">
+      <FederatedNotice appLabel={app.label} mode={app.mode} actions={app.actions} />
+    </div>
   );
 }

@@ -2242,7 +2242,9 @@ export default class AgentProvider {
       });
 
       // GET /agent/governance/apps — the federated console's selector: this app, then the other apps
-      // this viewer may pick (`dashboard.apps`, filtered by an `apps` grant).
+      // this viewer may pick (`dashboard.apps`, filtered by an `apps` grant). Every other app is
+      // `federated` (its data is read from its own tables) and runs its own actions (`actions:
+      // 'app'`): approvals and price edits go to it over its `controlPlane`, which is required.
       router.get(g('apps'), async (ctx: HttpContext) => {
         const verdict = await this.#consoleVerdict(ctx, actorResolver, consoleAuthorize);
         if (verdict === null) return;
@@ -2250,7 +2252,12 @@ export default class AgentProvider {
         const granted = verdict.apps;
         const apps = Object.entries(this.#federatedApps)
           .filter(([id]) => granted === undefined || granted === '*' || granted.includes(id))
-          .map(([id, app]) => ({ id, label: app.label ?? id }));
+          .map(([id, app]) => ({
+            id,
+            label: app.label ?? id,
+            mode: 'federated' as const,
+            actions: 'app' as const,
+          }));
         return ctx.response.json({
           local: { label: this.#appLabel },
           apps,

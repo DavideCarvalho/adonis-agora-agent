@@ -355,6 +355,7 @@ function fakeClient(overrides: Partial<AgentClient> = {}): AgentClient {
     upsertPrice: vi.fn().mockResolvedValue({ ok: true }),
     genuiStats: vi.fn().mockResolvedValue(genuiStats),
     spendByFeature: vi.fn().mockResolvedValue(featureRows),
+    apps: vi.fn().mockResolvedValue({ local: { label: 'Hub' }, apps: [], selected: null }),
     ...overrides,
   } as unknown as AgentClient;
 }
@@ -707,6 +708,16 @@ describe('RunDetailView', () => {
   });
 });
 
+/** `/apps` with Entre Textos picked: federated, its actions run by nobody / by the app itself. */
+const federatedApps = (actions: 'app' | 'none') =>
+  vi.fn().mockResolvedValue({
+    local: { label: 'Hub' },
+    apps: [{ id: 'entre-textos', label: 'Entre Textos', mode: 'federated', actions }],
+    selected: 'entre-textos',
+  });
+const readOnlyApp = federatedApps('none');
+const actingApp = federatedApps('app');
+
 describe('ApprovalsSection', () => {
   it('lists pending approvals and fires approve against the real route', async () => {
     const client = fakeClient();
@@ -726,6 +737,29 @@ describe('ApprovalsSection', () => {
 
     fireEvent.click(screen.getByText('Reject'));
     await waitFor(() => expect(client.rejectToolCall).toHaveBeenCalledWith('run-1', 'call-1'));
+  });
+
+  it('turns approve/reject off, with the reason, for a federated app that is read-only here', async () => {
+    const client = fakeClient({ apps: readOnlyApp } as Partial<AgentClient>);
+    renderWith(client, <ApprovalsSection />);
+    await waitFor(() => expect(screen.getByText('refund_order')).toBeTruthy());
+    const approve = screen.getByText('Approve').closest('button') as HTMLButtonElement;
+    await waitFor(() => expect(approve.disabled).toBe(true));
+    expect(approve.title).toBe(
+      'Entre Textos is federated and read-only here: change it in Entre Textos itself.',
+    );
+    expect((screen.getByText('Reject').closest('button') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(approve);
+    expect(client.approveToolCall).not.toHaveBeenCalled();
+  });
+
+  it('keeps approve/reject on for a federated app that runs its own actions', async () => {
+    const client = fakeClient({ apps: actingApp } as Partial<AgentClient>);
+    renderWith(client, <ApprovalsSection />);
+    await waitFor(() => expect(screen.getByText('refund_order')).toBeTruthy());
+    await waitFor(() => expect(client.apps).toHaveBeenCalled());
+    fireEvent.click(screen.getByText('Approve'));
+    await waitFor(() => expect(client.approveToolCall).toHaveBeenCalledWith('run-1', 'call-1'));
   });
 
   it('shows an empty inbox state', async () => {
@@ -871,6 +905,18 @@ describe('PricingSection', () => {
         expect.objectContaining({ modelId: 'claude-x', inputPricePer1m: 3, outputPricePer1m: 15 }),
       ),
     );
+  });
+
+  it('turns Save price off, with the reason, for a federated app that is read-only here', async () => {
+    const client = fakeClient({ apps: readOnlyApp } as Partial<AgentClient>);
+    renderWith(client, <PricingSection />);
+    await waitFor(() => expect(screen.getByText('gpt-4o')).toBeTruthy());
+    const save = screen.getByText('Save price').closest('button') as HTMLButtonElement;
+    await waitFor(() => expect(save.disabled).toBe(true));
+    const reason =
+      'Entre Textos is federated and read-only here: change it in Entre Textos itself.';
+    expect(save.title).toBe(reason);
+    expect(screen.getByText(reason)).toBeTruthy();
   });
 
   it('suggests priced models and unpriced ones with usage for the model id', async () => {
