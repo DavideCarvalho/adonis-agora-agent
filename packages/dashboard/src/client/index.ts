@@ -1,4 +1,9 @@
-export type { AgentClientOptions, ConsoleAppsView, ConsoleTenantsView } from './agent-client.js';
+export type {
+  AgentClientOptions,
+  ConsoleAppEntry,
+  ConsoleAppsView,
+  ConsoleTenantsView,
+} from './agent-client.js';
 export {
   AgentApiError,
   AgentClient,

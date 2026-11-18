@@ -90,10 +90,22 @@ export function pageApp(): string | null {
   return value === null || value === '' ? null : value;
 }
 
+/**
+ * One other app of `GET /governance/apps`. `mode` is how the console reaches it (`federated`: read
+ * from that app's own tables) and `actions` who runs approvals and price edits on its data (`app`:
+ * that app, asked by the console; `none`: nobody, read-only here). Older servers send neither.
+ */
+export interface ConsoleAppEntry {
+  id: string;
+  label: string;
+  mode?: 'control-plane' | 'federated' | undefined;
+  actions?: 'here' | 'app' | 'none' | undefined;
+}
+
 /** What `GET /governance/apps` answers: this app, then the other apps the console shows. */
 export interface ConsoleAppsView {
   local: { label: string };
-  apps: Array<{ id: string; label: string }>;
+  apps: ConsoleAppEntry[];
   selected: string | null;
 }
 

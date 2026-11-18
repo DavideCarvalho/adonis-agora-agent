@@ -1,8 +1,8 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentClient, type ConsoleAppsView } from '../client/agent-client.js';
-import { AppPicker } from './AppPicker.js';
-import { pickComboOption } from './combo-test-utils.js';
+import { AppPicker, PickedAppNotice } from './AppPicker.js';
+import { comboOptionNames, pickComboOption } from './combo-test-utils.js';
 import { AgentClientContext } from './use-governance.js';
 
 function withApps(view: ConsoleAppsView, onChange = vi.fn()) {
@@ -105,5 +105,68 @@ describe('<AppPicker> (federated console)', () => {
     });
     await waitFor(() => expect(select.value).toBe('Entre Textos'));
     expect(onChange).toHaveBeenLastCalledWith('entre-textos', { picked: false });
+  });
+
+  it('tags federated apps in the options and on the trigger', async () => {
+    window.history.replaceState(null, '', '/agent/dashboard?app=entre-textos#runs');
+    withApps({
+      local: { label: 'Hub' },
+      apps: [{ id: 'entre-textos', label: 'Entre Textos', mode: 'federated', actions: 'app' }],
+      selected: 'entre-textos',
+    });
+    const select = await screen.findByRole('combobox');
+    const badge = await waitFor(() => {
+      const found = document.querySelector('[data-app-mode="federated"]');
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    expect(badge.textContent).toBe('federated');
+    expect(badge.getAttribute('title')).toContain('Actions are sent to Entre Textos');
+    expect(await comboOptionNames(select)).toEqual(['Hub', 'Entre Textosfederated']);
+  });
+
+  it('shows no tag for this app, nor for an older server that does not say', async () => {
+    withApps({
+      local: { label: 'Hub' },
+      apps: [{ id: 'entre-textos', label: 'Entre Textos' }],
+      selected: null,
+    });
+    await screen.findByRole('combobox');
+    expect(document.querySelector('[data-app-mode]')).toBeNull();
+  });
+});
+
+describe('<PickedAppNotice>', () => {
+  function notice(view: ConsoleAppsView) {
+    const fetchFn = vi.fn(async () => new Response(JSON.stringify(view), { status: 200 }));
+    const client = new AgentClient({ baseUrl: '/agent', fetch: fetchFn as never });
+    render(
+      <AgentClientContext.Provider value={client}>
+        <PickedAppNotice />
+      </AgentClientContext.Provider>,
+    );
+  }
+
+  it("says where a federated app's data comes from and who runs its actions", async () => {
+    window.history.replaceState(null, '', '/agent/dashboard?app=entre-textos');
+    notice({
+      local: { label: 'Hub' },
+      apps: [{ id: 'entre-textos', label: 'Entre Textos', mode: 'federated', actions: 'none' }],
+      selected: 'entre-textos',
+    });
+    const note = await screen.findByRole('note');
+    expect(note.textContent).toBe(
+      "Federated: this console reads Entre Textos's data from Entre Textos's own store. Read-only here: change it in Entre Textos itself.",
+    );
+  });
+
+  it('renders nothing for this app', async () => {
+    notice({
+      local: { label: 'Hub' },
+      apps: [{ id: 'entre-textos', label: 'Entre Textos', mode: 'federated', actions: 'app' }],
+      selected: null,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByRole('note')).toBeNull();
   });
 });

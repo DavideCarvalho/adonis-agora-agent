@@ -17,6 +17,11 @@ Each app keeps its own agent tables and runs its own agent. The console:
 - sends what only that app can do — **approving or rejecting a pending tool call, changing a
   model price** — to the app itself, over Redis.
 
+The selector tags every other app **federated**, and while one is picked a note at the top of the
+page says that its data comes from its own tables and that its actions are sent to it.
+`GET <path>/governance/apps` lists each one as
+`{ id, label, mode: 'federated', actions: 'app' }`.
+
 ## The console app
 
 List the other apps under `dashboard.apps` in `config/agent.ts`:

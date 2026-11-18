@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { type ReactNode, StrictMode } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { NuqsHashAdapter } from '../agora-kit/url-state/nuqs-hash-adapter';
 import type { AgentClient } from '../client/agent-client.js';
 import { AgentApiError } from '../client/agent-client.js';
@@ -21,6 +21,7 @@ import type {
   ToolCallActivityRow,
   UsageTrendPoint,
 } from '../client/types.js';
+import { ACTIONS_PENDING, PickedAppNotice } from './AppPicker.js';
 import { ApprovalsSection } from './ApprovalsSection.js';
 import { pickComboOption } from './combo-test-utils.js';
 import { GenuiSection } from './GenuiSection.js';
@@ -355,6 +356,7 @@ function fakeClient(overrides: Partial<AgentClient> = {}): AgentClient {
     upsertPrice: vi.fn().mockResolvedValue({ ok: true }),
     genuiStats: vi.fn().mockResolvedValue(genuiStats),
     spendByFeature: vi.fn().mockResolvedValue(featureRows),
+    apps: vi.fn().mockResolvedValue({ local: { label: 'Hub' }, apps: [], selected: null }),
     ...overrides,
   } as unknown as AgentClient;
 }
@@ -707,6 +709,24 @@ describe('RunDetailView', () => {
   });
 });
 
+/** `/apps` with Entre Textos picked: federated, its actions run by nobody / by the app itself. */
+const federatedApps = (actions: 'app' | 'none') =>
+  vi.fn().mockResolvedValue({
+    local: { label: 'Hub' },
+    apps: [{ id: 'entre-textos', label: 'Entre Textos', mode: 'federated', actions }],
+    selected: 'entre-textos',
+  });
+const readOnlyApp = federatedApps('none');
+const actingApp = federatedApps('app');
+const READ_ONLY_REASON =
+  'Entre Textos is federated and read-only here: change it in Entre Textos itself.';
+
+/** The page shows Entre Textos (`?app=`) for the test, and this app again after it. */
+function pickEntreTextos() {
+  window.history.replaceState(null, '', '/agent/dashboard?app=entre-textos');
+  onTestFinished(() => window.history.replaceState(null, '', '/agent/dashboard'));
+}
+
 describe('ApprovalsSection', () => {
   it('lists pending approvals and fires approve against the real route', async () => {
     const client = fakeClient();
@@ -726,6 +746,60 @@ describe('ApprovalsSection', () => {
 
     fireEvent.click(screen.getByText('Reject'));
     await waitFor(() => expect(client.rejectToolCall).toHaveBeenCalledWith('run-1', 'call-1'));
+  });
+
+  it('turns approve/reject off, with the reason shown, for a federated app that is read-only here', async () => {
+    pickEntreTextos();
+    const client = fakeClient({ apps: readOnlyApp } as Partial<AgentClient>);
+    renderWith(client, <ApprovalsSection />);
+    await waitFor(() => expect(screen.getByText('refund_order')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(READ_ONLY_REASON)).toBeTruthy());
+    const approve = screen.getByText('Approve').closest('button') as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    expect(approve.title).toBe(READ_ONLY_REASON);
+    expect((screen.getByText('Reject').closest('button') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(approve);
+    expect(client.approveToolCall).not.toHaveBeenCalled();
+  });
+
+  it('keeps approve/reject on for a federated app that runs its own actions', async () => {
+    pickEntreTextos();
+    const client = fakeClient({ apps: actingApp } as Partial<AgentClient>);
+    renderWith(client, <ApprovalsSection />);
+    await waitFor(() => expect(screen.getByText('refund_order')).toBeTruthy());
+    const approve = screen.getByText('Approve').closest('button') as HTMLButtonElement;
+    await waitFor(() => expect(approve.disabled).toBe(false));
+    fireEvent.click(approve);
+    await waitFor(() => expect(client.approveToolCall).toHaveBeenCalledWith('run-1', 'call-1'));
+  });
+
+  it("keeps approve/reject off while it is not known yet who runs the picked app's actions", async () => {
+    pickEntreTextos();
+    const client = fakeClient({
+      apps: vi.fn(() => new Promise(() => {})),
+    } as Partial<AgentClient>);
+    renderWith(client, <ApprovalsSection />);
+    await waitFor(() => expect(screen.getByText('refund_order')).toBeTruthy());
+    const approve = screen.getByText('Approve').closest('button') as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+    expect(screen.getByText(ACTIONS_PENDING)).toBeTruthy();
+    fireEvent.click(approve);
+    expect(client.approveToolCall).not.toHaveBeenCalled();
+  });
+
+  it('asks /apps once for every consumer of the picked app', async () => {
+    pickEntreTextos();
+    const client = fakeClient({ apps: federatedApps('app') } as Partial<AgentClient>);
+    renderWith(
+      client,
+      <>
+        <PickedAppNotice />
+        <ApprovalsSection />
+        <PricingSection />
+      </>,
+    );
+    await waitFor(() => expect(screen.getByRole('note')).toBeTruthy());
+    expect(client.apps).toHaveBeenCalledTimes(1);
   });
 
   it('shows an empty inbox state', async () => {
@@ -871,6 +945,17 @@ describe('PricingSection', () => {
         expect.objectContaining({ modelId: 'claude-x', inputPricePer1m: 3, outputPricePer1m: 15 }),
       ),
     );
+  });
+
+  it('turns Save price off, with the reason, for a federated app that is read-only here', async () => {
+    pickEntreTextos();
+    const client = fakeClient({ apps: readOnlyApp } as Partial<AgentClient>);
+    renderWith(client, <PricingSection />);
+    await waitFor(() => expect(screen.getByText('gpt-4o')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(READ_ONLY_REASON)).toBeTruthy());
+    const save = screen.getByText('Save price').closest('button') as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    expect(save.title).toBe(READ_ONLY_REASON);
   });
 
   it('suggests priced models and unpriced ones with usage for the model id', async () => {

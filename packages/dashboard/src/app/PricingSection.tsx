@@ -1,4 +1,4 @@
-import { type FormEvent, useId, useMemo, useState } from 'react';
+import { type FormEvent, useId, useMemo, useRef, useState } from 'react';
 import { type ComboOption, ComboSelect } from '../agora-kit/blocks/combo-field';
 import { type Column, DataTable } from '../agora-kit/blocks/data-table';
 import { EmptyState } from '../agora-kit/blocks/empty-state';
@@ -12,6 +12,7 @@ import { isUnavailable } from '../client/agent-client.js';
 import { defaultRange } from '../client/default-range.js';
 import { formatTimestamp, formatUsd } from '../client/format.js';
 import type { CurrentModelPrice } from '../client/types.js';
+import { actionsBlockedFor, usePickedApp } from './AppPicker.js';
 import { TagIcon } from './icons.js';
 import { fieldClass, Notice, numClass, TableSkeleton } from './ui.js';
 import { asQuery, useAgentClient, usePricing, useSpendByModel } from './use-governance.js';
@@ -90,6 +91,7 @@ export function PriceFormView({
   onSubmit,
   saving,
   error,
+  blocked,
 }: {
   form: PriceForm;
   /** Suggestions for the model id: priced models and models with recent usage. */
@@ -98,6 +100,8 @@ export function PriceFormView({
   onSubmit: (e: FormEvent) => void;
   saving: boolean;
   error: string | null;
+  /** Why a price cannot be saved from here (a federated app that is read-only here), or undefined. */
+  blocked?: string | undefined;
 }) {
   const modelFieldId = useId();
   const field = (
@@ -150,10 +154,12 @@ export function PriceFormView({
         {field('cacheReadPricePer1m', 'cache read $/1M (optional)', 'Cache read', true)}
       </div>
       <div className="flex flex-wrap items-center gap-3">
-        <Button type="submit" disabled={saving}>
+        <Button type="submit" disabled={saving || blocked !== undefined} title={blocked}>
           {saving ? 'Saving…' : 'Save price'}
         </Button>
-        {error ? (
+        {blocked !== undefined ? (
+          <span className="text-[11px] text-faint">{blocked}</span>
+        ) : error ? (
           <span role="alert" className="text-xs text-bad">
             {error}
           </span>
@@ -181,9 +187,14 @@ export function PricingSection() {
   const [formKey, setFormKey] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const blocked = actionsBlockedFor(usePickedApp());
+  // Read at submit time, not from the render that built this handler.
+  const blockedRef = useRef(blocked);
+  blockedRef.current = blocked;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (blockedRef.current !== undefined) return;
     // What the model input shows: a picked model, or text typed without picking it.
     const modelId = (form.modelText.trim() || form.modelId).trim();
     const inputRate = Number.parseFloat(form.inputPricePer1m);
@@ -278,6 +289,7 @@ export function PricingSection() {
             onSubmit={(e) => void submit(e)}
             saving={saving}
             error={saveError}
+            blocked={blocked}
           />
         </Panel>
       </ErrorBoundary>

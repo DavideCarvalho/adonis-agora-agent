@@ -185,7 +185,7 @@ describe('federated agent console', () => {
     const apps = await fetch(`${booted.url}/agent/governance/apps`, as('ana'));
     expect(await apps.json()).toEqual({
       local: { label: 'Hub' },
-      apps: [{ id: 'entre-textos', label: 'Entre Textos' }],
+      apps: [{ id: 'entre-textos', label: 'Entre Textos', mode: 'federated', actions: 'app' }],
       selected: null,
     });
 

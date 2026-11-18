@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { type Column, DataTable } from '../agora-kit/blocks/data-table';
 import { EmptyState } from '../agora-kit/blocks/empty-state';
 import { ErrorBoundary, RegionError } from '../agora-kit/blocks/error-boundary';
@@ -10,6 +10,7 @@ import { PageBody } from '../agora-kit/shell/app-shell';
 import { Button } from '../agora-kit/ui/button';
 import { formatTimestamp } from '../client/format.js';
 import type { PendingApprovalRow } from '../client/types.js';
+import { actionsBlockedFor, usePickedApp } from './AppPicker.js';
 import { ApprovalIcon } from './icons.js';
 import { payload, TableSkeleton } from './ui.js';
 import { asQuery, useAgentClient, usePendingApprovals } from './use-governance.js';
@@ -19,6 +20,8 @@ type Decision = 'approve' | 'reject';
 function approvalColumns(
   busy: Record<string, boolean>,
   onDecide: (row: PendingApprovalRow, action: Decision) => void,
+  /** Why nobody can decide from here (a federated app that is read-only here), or undefined. */
+  blocked: string | undefined,
 ): Column<PendingApprovalRow>[] {
   return [
     {
@@ -70,13 +73,15 @@ function approvalColumns(
       align: 'right',
       cell: (row) => {
         // A call recorded before run tracking has no runId: it cannot be actioned from here.
-        const disabled = row.runId === null || busy[row.toolCallId] === true;
+        const disabled =
+          blocked !== undefined || row.runId === null || busy[row.toolCallId] === true;
         return (
           <span className="inline-flex gap-1.5">
             <Button
               variant="brand"
               size="sm"
               disabled={disabled}
+              title={blocked}
               onClick={() => onDecide(row, 'approve')}
             >
               <CheckIcon />
@@ -86,6 +91,7 @@ function approvalColumns(
               variant="destructive"
               size="sm"
               disabled={disabled}
+              title={blocked}
               onClick={() => onDecide(row, 'reject')}
             >
               <XIcon />
@@ -109,9 +115,13 @@ export function ApprovalsSection() {
   const approvalsState = usePendingApprovals();
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [decisionError, setDecisionError] = useState<Error | null>(null);
+  const blocked = actionsBlockedFor(usePickedApp());
+  // Read at click time: a click in the render before `/apps` answered must not see a stale value.
+  const blockedRef = useRef(blocked);
+  blockedRef.current = blocked;
 
   const decide = async (row: PendingApprovalRow, action: Decision) => {
-    if (row.runId === null) return;
+    if (row.runId === null || blockedRef.current !== undefined) return;
     setBusy((b) => ({ ...b, [row.toolCallId]: true }));
     setDecisionError(null);
     try {
@@ -125,7 +135,7 @@ export function ApprovalsSection() {
     }
   };
 
-  const columns = approvalColumns(busy, (row, action) => void decide(row, action));
+  const columns = approvalColumns(busy, (row, action) => void decide(row, action), blocked);
 
   return (
     <PageBody>
@@ -133,6 +143,11 @@ export function ApprovalsSection() {
         title="Approvals"
         description="Tool calls waiting for a human decision, across every thread, oldest first."
       />
+      {blocked !== undefined && (
+        <p role="status" className="text-xs text-faint">
+          {blocked}
+        </p>
+      )}
       {decisionError && <RegionError title="The decision was not saved" error={decisionError} />}
       <ErrorBoundary label="Approvals inbox">
         <Panel title="Pending" description="HITL inbox · oldest first" flush>
