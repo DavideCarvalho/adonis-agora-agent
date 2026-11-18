@@ -164,9 +164,9 @@ export function RunsSection({ initialRunId = null }: { initialRunId?: string | n
 const comboClass = 'h-8 w-44 bg-panel-2 text-xs';
 
 /**
- * Suggestions for the agent and actor filters: the agents that ran in the trailing 30 days (the
- * reliability rollup's `byAgent`) and the actors that spent in them. Both lists can miss a name
- * (older runs), so the filters stay creatable.
+ * Suggestions for the agent and actor filters: every agent the reliability rollup knows (`byAgent`,
+ * all time, the same unbounded query the Reliability page reads) and the actors that spent in the
+ * trailing 30 days. The actor list can miss older names, so both filters stay creatable.
  */
 function useRunFilterOptions() {
   const [range] = useState(() => defaultRange(new Date(), 30));
