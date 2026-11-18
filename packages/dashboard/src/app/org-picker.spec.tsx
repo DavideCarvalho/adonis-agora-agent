@@ -1,7 +1,8 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentClient, type ConsoleTenantsView } from '../client/agent-client.js';
+import { comboOptionNames, pickComboOption } from './combo-test-utils.js';
 import { OrgNotice, OrgPicker } from './OrgPicker.js';
 import { AgentClientContext } from './use-governance.js';
 
@@ -51,15 +52,34 @@ describe('<OrgPicker>', () => {
       },
       <OrgPicker onChange={onChange} />,
     );
-    const select = (await screen.findByRole('combobox')) as HTMLSelectElement;
-    expect([...select.options].map((option) => option.text)).toEqual([
-      'All organizations',
-      'Acme',
-      'Beta',
-    ]);
-    fireEvent.change(select, { target: { value: 'b' } });
+    const select = (await screen.findByRole('combobox')) as HTMLInputElement;
+    expect(select.value).toBe('All organizations');
+    expect(await comboOptionNames(select)).toEqual(['All organizations', 'Acmea', 'Betab']);
+    // Matches the id too (the hint), not just the label.
+    await pickComboOption(select, /Beta/, 'b');
     expect(window.location.search).toBe('?tenant=b');
     expect(onChange).toHaveBeenCalledWith('b');
+  });
+
+  it('autocompletes a long list by label or id; All organizations clears ?tenant=', async () => {
+    window.history.replaceState(null, '', '/agent/dashboard?tenant=org-07');
+    const onChange = vi.fn();
+    const tenants = Array.from({ length: 12 }, (_, i) => {
+      const n = String(i + 1).padStart(2, '0');
+      return { id: `org-${n}`, label: `Tenant ${n}` };
+    });
+    withTenants(
+      { enabled: true, all: true, tenants, selected: 'org-07' },
+      <OrgPicker onChange={onChange} />,
+    );
+    const select = (await screen.findByRole('combobox')) as HTMLInputElement;
+    expect(select.value).toBe('Tenant 07');
+    await pickComboOption(select, /Tenant 11/, 'org-11');
+    expect(window.location.search).toBe('?tenant=org-11');
+    expect(onChange).toHaveBeenLastCalledWith('org-11');
+    await pickComboOption(select, 'All organizations', 'all');
+    expect(window.location.search).toBe('');
+    expect(onChange).toHaveBeenLastCalledWith(null);
   });
 
   it('governance reads send ?tenant=; the notice asks to choose one when there is none', async () => {

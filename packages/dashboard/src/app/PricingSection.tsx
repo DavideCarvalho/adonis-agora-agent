@@ -1,4 +1,5 @@
-import { type FormEvent, useState } from 'react';
+import { type FormEvent, useId, useMemo, useState } from 'react';
+import { type ComboOption, ComboSelect } from '../agora-kit/blocks/combo-field';
 import { type Column, DataTable } from '../agora-kit/blocks/data-table';
 import { EmptyState } from '../agora-kit/blocks/empty-state';
 import { ErrorBoundary } from '../agora-kit/blocks/error-boundary';
@@ -8,14 +9,17 @@ import { QueryBoundary } from '../agora-kit/blocks/query-boundary';
 import { PageBody } from '../agora-kit/shell/app-shell';
 import { Button } from '../agora-kit/ui/button';
 import { isUnavailable } from '../client/agent-client.js';
+import { defaultRange } from '../client/default-range.js';
 import { formatTimestamp, formatUsd } from '../client/format.js';
 import type { CurrentModelPrice } from '../client/types.js';
 import { TagIcon } from './icons.js';
 import { fieldClass, Notice, numClass, TableSkeleton } from './ui.js';
-import { asQuery, useAgentClient, usePricing } from './use-governance.js';
+import { asQuery, useAgentClient, usePricing, useSpendByModel } from './use-governance.js';
 
 const emptyForm = {
+  /** The model picked in the combo; `modelText` is what its input shows (and what is saved). */
   modelId: '',
+  modelText: '',
   inputPricePer1m: '',
   outputPricePer1m: '',
   cacheWritePricePer1m: '',
@@ -62,20 +66,40 @@ const priceColumns: Column<CurrentModelPrice>[] = [
   },
 ];
 
+/**
+ * The model id suggestions: every priced model, then the models with usage in the trailing 30 days
+ * that have no price yet (hinted "unpriced": the ones whose cost the rollups can't count).
+ */
+export function priceModelOptions(
+  prices: readonly CurrentModelPrice[],
+  spend: readonly { modelId: string }[],
+): ComboOption[] {
+  const priced = new Set(prices.map((p) => p.modelId));
+  const unpriced = [...new Set(spend.map((s) => s.modelId))].filter((id) => !priced.has(id));
+  return [
+    ...[...priced].map((value) => ({ value })),
+    ...unpriced.map((value) => ({ value, hint: 'unpriced' })),
+  ];
+}
+
 /** The "set a price" form (presentational: state and submit come in as props). */
 export function PriceFormView({
   form,
+  modelOptions = [],
   onChange,
   onSubmit,
   saving,
   error,
 }: {
   form: PriceForm;
+  /** Suggestions for the model id: priced models and models with recent usage. */
+  modelOptions?: readonly ComboOption[];
   onChange: (field: keyof PriceForm, value: string) => void;
   onSubmit: (e: FormEvent) => void;
   saving: boolean;
   error: string | null;
 }) {
+  const modelFieldId = useId();
   const field = (
     name: keyof PriceForm,
     placeholder: string,
@@ -99,7 +123,27 @@ export function PriceFormView({
   return (
     <form className="flex flex-col gap-3" onSubmit={onSubmit}>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[2fr_repeat(4,1fr)]">
-        {field('modelId', 'model id (e.g. gpt-4o)', 'Model', false, 'sm:col-span-2 lg:col-span-1')}
+        <div className="flex min-w-0 flex-col gap-1 sm:col-span-2 lg:col-span-1">
+          <label
+            htmlFor={modelFieldId}
+            className="text-[10px] font-semibold uppercase tracking-[0.12em] text-faint"
+          >
+            Model
+          </label>
+          <ComboSelect
+            id={modelFieldId}
+            className="mono h-8 bg-panel-2 text-xs"
+            placeholder="model id (e.g. gpt-4o)"
+            options={modelOptions}
+            creatable
+            value={form.modelId === '' ? null : form.modelId}
+            onValueChange={(next) => {
+              onChange('modelId', next ?? '');
+              onChange('modelText', next ?? '');
+            }}
+            onQueryChange={(text) => onChange('modelText', text)}
+          />
+        </div>
         {field('inputPricePer1m', 'input $/1M', 'Input', true)}
         {field('outputPricePer1m', 'output $/1M', 'Output', true)}
         {field('cacheWritePricePer1m', 'cache write $/1M (optional)', 'Cache write', true)}
@@ -130,15 +174,21 @@ export function PriceFormView({
 export function PricingSection() {
   const client = useAgentClient();
   const pricesState = usePricing();
+  const [spendRange] = useState(() => defaultRange(new Date(), 30));
+  const spendState = useSpendByModel(spendRange);
   const [form, setForm] = useState(emptyForm);
+  // Bumped after a save: remounts the form so the model combo drops its typed text too.
+  const [formKey, setFormKey] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    // What the model input shows: a picked model, or text typed without picking it.
+    const modelId = (form.modelText.trim() || form.modelId).trim();
     const inputRate = Number.parseFloat(form.inputPricePer1m);
     const outputRate = Number.parseFloat(form.outputPricePer1m);
-    if (form.modelId.trim() === '' || Number.isNaN(inputRate) || Number.isNaN(outputRate)) {
+    if (modelId === '' || Number.isNaN(inputRate) || Number.isNaN(outputRate)) {
       setSaveError('model id, input rate and output rate are required');
       return;
     }
@@ -148,13 +198,14 @@ export function PricingSection() {
     setSaveError(null);
     try {
       await client.upsertPrice({
-        modelId: form.modelId.trim(),
+        modelId,
         inputPricePer1m: inputRate,
         outputPricePer1m: outputRate,
         ...(Number.isNaN(cacheWrite) ? {} : { cacheWritePricePer1m: cacheWrite }),
         ...(Number.isNaN(cacheRead) ? {} : { cacheReadPricePer1m: cacheRead }),
       });
       setForm(emptyForm);
+      setFormKey((k) => k + 1);
       pricesState.reload();
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : String(error));
@@ -162,6 +213,11 @@ export function PricingSection() {
       setSaving(false);
     }
   };
+
+  const modelOptions = useMemo(
+    () => priceModelOptions(pricesState.data ?? [], spendState.data ?? []),
+    [pricesState.data, spendState.data],
+  );
 
   const header = (
     <PageHeader
@@ -215,7 +271,9 @@ export function PricingSection() {
       <ErrorBoundary label="Set a price">
         <Panel title="Set a price" description="upserts — retires the model's prior rate">
           <PriceFormView
+            key={formKey}
             form={form}
+            modelOptions={modelOptions}
             onChange={(field, value) => setForm((f) => ({ ...f, [field]: value }))}
             onSubmit={(e) => void submit(e)}
             saving={saving}

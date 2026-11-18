@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
+import { ComboSelect } from '../agora-kit/blocks/combo-field';
 import { type ConsoleAppsView, pageApp } from '../client/agent-client.js';
-import { fieldClass } from './ui.js';
 import { useAgentClient } from './use-governance.js';
 
 /**
@@ -26,6 +26,12 @@ export function usePageApp(): string | null {
     () => null,
   );
 }
+
+/** The combo's value for "this app" (no `?app=`); app ids are config keys, never this. */
+export const LOCAL_APP = '\u0000local';
+
+/** The topbar pickers' look: the field height and surface of the other header controls. */
+export const pickerClass = 'h-8 min-w-0 flex-1 bg-panel-2 text-xs md:w-48 md:flex-none';
 
 /**
  * The "App" header control (the federated console): whose agents the console shows — this app, or
@@ -84,24 +90,26 @@ export function AppPicker({
       <label className="text-[11px] text-faint" htmlFor={id}>
         App
       </label>
-      <select
+      <ComboSelect
         id={id}
-        className={`${fieldClass} min-w-0 flex-1 md:max-w-[12rem] md:flex-none`}
-        value={current ?? ''}
-        onChange={(event) => {
+        className={pickerClass}
+        options={[
+          { value: LOCAL_APP, label: view.local.label },
+          ...view.apps.map((app) => ({ value: app.id, label: app.label })),
+        ]}
+        clearable={false}
+        value={current ?? LOCAL_APP}
+        onValueChange={(next) => {
+          if (next === null) return;
+          const app = next === LOCAL_APP ? null : next;
+          // The URL already says so: no history entry for a no-op pick.
+          if (app === urlApp) return;
           picking.current = true;
-          setPageApp(event.target.value === '' ? null : event.target.value);
+          setPageApp(app);
           // A pushState fires nothing: say the URL moved (the picker and the pages follow it).
           window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }));
         }}
-      >
-        <option value="">{view.local.label}</option>
-        {view.apps.map((app) => (
-          <option key={app.id} value={app.id}>
-            {app.label}
-          </option>
-        ))}
-      </select>
+      />
     </span>
   );
 }

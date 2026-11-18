@@ -22,6 +22,7 @@ import type {
   UsageTrendPoint,
 } from '../client/types.js';
 import { ApprovalsSection } from './ApprovalsSection.js';
+import { pickComboOption } from './combo-test-utils.js';
 import { GenuiSection } from './GenuiSection.js';
 import { Overview } from './Overview.js';
 import { PricingSection } from './PricingSection.js';
@@ -565,6 +566,36 @@ describe('RunsSection: filters in the URL', () => {
     expect((screen.getByLabelText('agent filter') as HTMLInputElement).value).toBe('support');
   });
 
+  it('suggests agents from the reliability rollup and actors from spend; picking one filters', async () => {
+    window.history.replaceState(null, '', '/agent#runs');
+    const client = fakeClient({
+      runReliability: vi.fn().mockResolvedValue({
+        ...reliability,
+        byAgent: [
+          { agentName: 'support', runs: 40, failed: 2, successRate: 0.95 },
+          { agentName: 'billing', runs: 12, failed: 1, successRate: 0.9 },
+          { agentName: null, runs: 3, failed: 0, successRate: 1 },
+        ],
+      } as RunReliability),
+    } as Partial<AgentClient>);
+    renderWith(client, <RunsSection />);
+    await waitFor(() => expect(screen.getByText('support')).toBeTruthy());
+    expect(client.spendByActor).toHaveBeenCalled();
+
+    await pickComboOption(screen.getByLabelText('agent filter'), /billing/, 'bill');
+    await waitFor(() => expect(window.location.hash).toBe('#runs?agent=billing'));
+    await waitFor(() =>
+      expect(client.listRuns).toHaveBeenCalledWith(expect.objectContaining({ agent: 'billing' })),
+    );
+
+    await pickComboOption(screen.getByLabelText('actor filter'), 'user:bob', 'bob');
+    await waitFor(() =>
+      expect(client.listRuns).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: 'billing', actor: 'user:bob' }),
+      ),
+    );
+  });
+
   it('a status pick pushes, typing replaces, and back restores the previous filter', async () => {
     window.history.replaceState(null, '', '/agent?tenant=acme#runs');
     const client = fakeClient();
@@ -577,7 +608,7 @@ describe('RunsSection: filters in the URL', () => {
     expect(window.location.search).toBe('?tenant=acme');
     expect(window.history.length).toBe(start + 1);
 
-    fireEvent.change(screen.getByLabelText('actor filter'), { target: { value: 'ann' } });
+    await pickComboOption(screen.getByLabelText('actor filter'), 'Use “ann”', 'ann');
     await waitFor(() => expect(window.location.hash).toBe('#runs?status=failed&actor=ann'));
     expect(window.history.length).toBe(start + 1);
 
@@ -826,9 +857,11 @@ describe('PricingSection', () => {
     await waitFor(() => expect(screen.getByText('gpt-4o')).toBeTruthy());
     expect(client.pricing).toHaveBeenCalled();
 
-    fireEvent.change(screen.getByPlaceholderText('model id (e.g. gpt-4o)'), {
-      target: { value: 'claude-x' },
-    });
+    await pickComboOption(
+      screen.getByPlaceholderText('model id (e.g. gpt-4o)'),
+      'Use “claude-x”',
+      'claude-x',
+    );
     fireEvent.change(screen.getByPlaceholderText('input $/1M'), { target: { value: '3' } });
     fireEvent.change(screen.getByPlaceholderText('output $/1M'), { target: { value: '15' } });
     fireEvent.click(screen.getByText('Save price'));
@@ -836,6 +869,29 @@ describe('PricingSection', () => {
     await waitFor(() =>
       expect(client.upsertPrice).toHaveBeenCalledWith(
         expect.objectContaining({ modelId: 'claude-x', inputPricePer1m: 3, outputPricePer1m: 15 }),
+      ),
+    );
+  });
+
+  it('suggests priced models and unpriced ones with usage for the model id', async () => {
+    const client = fakeClient();
+    renderWith(client, <PricingSection />);
+    await waitFor(() => expect(screen.getByText('gpt-4o')).toBeTruthy());
+    expect(client.spendByModel).toHaveBeenCalled();
+
+    await pickComboOption(
+      screen.getByPlaceholderText('model id (e.g. gpt-4o)'),
+      /claude-haiku.*unpriced/,
+      'haiku',
+    );
+    fireEvent.change(screen.getByPlaceholderText('input $/1M'), { target: { value: '1' } });
+    fireEvent.change(screen.getByPlaceholderText('output $/1M'), { target: { value: '5' } });
+    fireEvent.click(screen.getByText('Save price'));
+    await waitFor(() =>
+      expect(client.upsertPrice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          modelId: 'arn:aws:bedrock:us-east-1:1:inference-profile/us.anthropic.claude-haiku',
+        }),
       ),
     );
   });

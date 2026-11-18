@@ -1,9 +1,13 @@
 import { useEffect, useId, useState } from 'react';
+import { ComboSelect } from '../agora-kit/blocks/combo-field';
 import { UsersIcon } from '../agora-kit/icons';
 import { Badge } from '../agora-kit/ui/badge';
 import { type ConsoleTenantsView, pageTenant } from '../client/agent-client.js';
-import { fieldClass } from './ui.js';
+import { pickerClass } from './AppPicker.js';
 import { useAgentClient } from './use-governance.js';
+
+/** The combo's value for "All organizations" (no `?tenant=`); never a tenant id. */
+const ALL_ORGS = '\u0000all';
 
 /** Put `tenant` in the page URL (`?tenant=`), keeping the hash. `null` removes it. */
 export function setPageTenant(tenant: string | null): void {
@@ -15,14 +19,14 @@ export function setPageTenant(tenant: string | null): void {
 
 /**
  * The "Organization" header control, shown only with tenancy on: a fixed chip when the viewer sees
- * one organization, a picker when they may see several (or all, "All organizations" first). The
+ * one organization, a picker with autocomplete (label or id) when they may see several (or all,
+ * "All organizations" first). The
  * choice lives in the URL (`?tenant=`) and every governance read sends it; the server only ever
  * narrows to what the viewer was granted.
  */
 export function OrgPicker({ onChange }: { onChange: (tenant: string | null) => void }) {
   const client = useAgentClient();
   const [view, setView] = useState<ConsoleTenantsView | null>(null);
-  const [query, setQuery] = useState('');
   const id = useId();
 
   useEffect(() => {
@@ -64,15 +68,15 @@ export function OrgPicker({ onChange }: { onChange: (tenant: string | null) => v
     );
   }
 
-  const selected = view.selected ?? pageTenant() ?? '';
-  const needle = query.trim().toLowerCase();
-  const options = view.tenants.filter(
-    (tenant) =>
-      needle === '' ||
-      tenant.id === selected ||
-      tenant.label.toLowerCase().includes(needle) ||
-      tenant.id.toLowerCase().includes(needle),
-  );
+  const selected = view.selected ?? pageTenant() ?? ALL_ORGS;
+  const options = [
+    { value: ALL_ORGS, label: 'All organizations' },
+    ...view.tenants.map((tenant) => ({
+      value: tenant.id,
+      label: tenant.label,
+      ...(tenant.label === tenant.id ? {} : { hint: tenant.id }),
+    })),
+  ];
 
   return (
     <span className="flex min-w-0 items-center gap-1.5">
@@ -80,33 +84,20 @@ export function OrgPicker({ onChange }: { onChange: (tenant: string | null) => v
         <UsersIcon />
         <span className="sr-only">Organization</span>
       </label>
-      {view.tenants.length > 8 && (
-        <input
-          className={`${fieldClass} hidden w-24 md:block`}
-          type="search"
-          aria-label="Filter organizations"
-          placeholder="Filter…"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-      )}
-      <select
+      <ComboSelect
         id={id}
-        className={`${fieldClass} min-w-0 flex-1 md:max-w-[14rem] md:flex-none`}
+        className={pickerClass}
+        options={options}
+        placeholder="Filter…"
+        clearable={false}
         value={selected}
-        onChange={(event) => {
-          const next = event.target.value === '' ? null : event.target.value;
+        onValueChange={(picked) => {
+          if (picked === null || picked === selected) return;
+          const next = picked === ALL_ORGS ? null : picked;
           setPageTenant(next);
           onChange(next);
         }}
-      >
-        <option value="">All organizations</option>
-        {options.map((tenant) => (
-          <option key={tenant.id} value={tenant.id}>
-            {tenant.label}
-          </option>
-        ))}
-      </select>
+      />
     </span>
   );
 }
