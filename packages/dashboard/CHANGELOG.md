@@ -1,5 +1,11 @@
 # @adonis-agora/agent-dashboard
 
+## 1.0.0-rc.15
+
+### Patch Changes
+
+- [#641](https://github.com/DavideCarvalho/adonis-agora-agent/pull/641) [`9fb481c`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/9fb481ced1e0671e4038ed8cd3b2333d3311c862) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Console: autocomplete on the Runs agent and actor filters (agents from the reliability rollup, actors from spend; typed names still work), on the Pricing model id (priced models plus unpriced ones with recent usage), and on the App and Organization pickers (organizations match by name or id). Syncs the console kit's new `ComboSelect` / `ComboMultiSelect`.
+
 ## 1.0.0-rc.14
 
 ### Patch Changes
