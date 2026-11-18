@@ -1,4 +1,4 @@
-import { type FormEvent, useId, useMemo, useState } from 'react';
+import { type FormEvent, useId, useMemo, useRef, useState } from 'react';
 import { type ComboOption, ComboSelect } from '../agora-kit/blocks/combo-field';
 import { type Column, DataTable } from '../agora-kit/blocks/data-table';
 import { EmptyState } from '../agora-kit/blocks/empty-state';
@@ -188,10 +188,13 @@ export function PricingSection() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const blocked = actionsBlockedFor(usePickedApp());
+  // Read at submit time, not from the render that built this handler.
+  const blockedRef = useRef(blocked);
+  blockedRef.current = blocked;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (blocked !== undefined) return;
+    if (blockedRef.current !== undefined) return;
     // What the model input shows: a picked model, or text typed without picking it.
     const modelId = (form.modelText.trim() || form.modelId).trim();
     const inputRate = Number.parseFloat(form.inputPricePer1m);

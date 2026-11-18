@@ -36,6 +36,7 @@ import { ToolCallsSection } from './ToolCallsSection.js';
 import { ToolsSection } from './ToolsSection.js';
 import { fieldClass } from './ui.js';
 import { hashWith, sharedSearch } from './url-state.js';
+import { AgentClientContext, useAgentClient } from './use-governance.js';
 
 /** The agent console's accent (rose), passed to the kit's ThemeProvider in `main.tsx`. */
 export const AGENT_ACCENT = '#fb7185';
@@ -132,10 +133,15 @@ function RangePicker({
  * error boundary; each page's data regions have theirs.
  */
 export function App() {
+  // One client for the whole console (unless the host injected its own), so the reads it shares
+  // (`/apps`: the picker, the federated note, the pages' actions) go out once.
+  const client = useAgentClient();
   return (
-    <NuqsHashAdapter>
-      <Console />
-    </NuqsHashAdapter>
+    <AgentClientContext.Provider value={client}>
+      <NuqsHashAdapter>
+        <Console />
+      </NuqsHashAdapter>
+    </AgentClientContext.Provider>
   );
 }
 

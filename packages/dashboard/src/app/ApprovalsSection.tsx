@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { type Column, DataTable } from '../agora-kit/blocks/data-table';
 import { EmptyState } from '../agora-kit/blocks/empty-state';
 import { ErrorBoundary, RegionError } from '../agora-kit/blocks/error-boundary';
@@ -116,9 +116,12 @@ export function ApprovalsSection() {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [decisionError, setDecisionError] = useState<Error | null>(null);
   const blocked = actionsBlockedFor(usePickedApp());
+  // Read at click time: a click in the render before `/apps` answered must not see a stale value.
+  const blockedRef = useRef(blocked);
+  blockedRef.current = blocked;
 
   const decide = async (row: PendingApprovalRow, action: Decision) => {
-    if (row.runId === null || blocked !== undefined) return;
+    if (row.runId === null || blockedRef.current !== undefined) return;
     setBusy((b) => ({ ...b, [row.toolCallId]: true }));
     setDecisionError(null);
     try {
@@ -140,6 +143,11 @@ export function ApprovalsSection() {
         title="Approvals"
         description="Tool calls waiting for a human decision, across every thread, oldest first."
       />
+      {blocked !== undefined && (
+        <p role="status" className="text-xs text-faint">
+          {blocked}
+        </p>
+      )}
       {decisionError && <RegionError title="The decision was not saved" error={decisionError} />}
       <ErrorBoundary label="Approvals inbox">
         <Panel title="Pending" description="HITL inbox · oldest first" flush>

@@ -148,6 +148,7 @@ describe('<PickedAppNotice>', () => {
   }
 
   it("says where a federated app's data comes from and who runs its actions", async () => {
+    window.history.replaceState(null, '', '/agent/dashboard?app=entre-textos');
     notice({
       local: { label: 'Hub' },
       apps: [{ id: 'entre-textos', label: 'Entre Textos', mode: 'federated', actions: 'none' }],

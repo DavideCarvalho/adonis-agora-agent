@@ -5,7 +5,12 @@ import {
   FederatedNotice,
 } from '../agora-kit/blocks/app-mode';
 import { ComboSelect } from '../agora-kit/blocks/combo-field';
-import { type ConsoleAppEntry, type ConsoleAppsView, pageApp } from '../client/agent-client.js';
+import {
+  type AgentClient,
+  type ConsoleAppEntry,
+  type ConsoleAppsView,
+  pageApp,
+} from '../client/agent-client.js';
 import { useAgentClient } from './use-governance.js';
 
 /**
@@ -52,26 +57,9 @@ export function AppPicker({
 }: {
   onChange: (app: string | null, how: { picked: boolean }) => void;
 }) {
-  const client = useAgentClient();
   const urlApp = usePageApp();
-  const [answer, setAnswer] = useState<{ view: ConsoleAppsView | null; for: string | null }>();
+  const answer = useAppsAnswer(urlApp);
   const id = useId();
-
-  useEffect(() => {
-    let live = true;
-    client
-      .apps()
-      .then((result) => {
-        if (live) setAnswer({ view: result, for: urlApp });
-      })
-      .catch(() => {
-        // An older server has no `/governance/apps`: nothing to pick.
-        if (live) setAnswer({ view: null, for: urlApp });
-      });
-    return () => {
-      live = false;
-    };
-  }, [client, urlApp]);
 
   // The URL's app moved (a pick, or back/forward): the pages read again for it.
   const changed = useRef(onChange);
@@ -128,42 +116,84 @@ export function AppPicker({
 }
 
 /**
- * The other app the page shows (`?app=`, as the server serves it), with its mode and who runs its
- * actions; `null` for this app, an unknown `?app=`, an older server, or until `/apps` answers. Read
- * once per mount: the console remounts its pages when the app moves.
+ * `/apps` as the server answers it for the page's `?app=`: one request per client and URL app,
+ * shared by the picker, the notice and every page that asks who runs actions. A new `?app=` reads
+ * again; a failed read (an older server has no `/apps`: nothing to pick) is `null` and is retried
+ * by the next caller.
  */
-export function usePickedApp(): ConsoleAppEntry | null {
+const appsReads = new WeakMap<
+  AgentClient,
+  { for: string | null; answer: Promise<ConsoleAppsView | null> }
+>();
+
+export function readApps(
+  client: AgentClient,
+  urlApp: string | null,
+): Promise<ConsoleAppsView | null> {
+  const cached = appsReads.get(client);
+  if (cached !== undefined && cached.for === urlApp) return cached.answer;
+  const entry = {
+    for: urlApp,
+    answer: Promise.resolve()
+      .then(() => client.apps())
+      .catch(() => {
+        if (appsReads.get(client) === entry) appsReads.delete(client);
+        return null;
+      }),
+  };
+  appsReads.set(client, entry);
+  return entry.answer;
+}
+
+/** The shared `/apps` answer for `urlApp`, with the URL app it answered; undefined until then. */
+function useAppsAnswer(
+  urlApp: string | null,
+): { view: ConsoleAppsView | null; for: string | null } | undefined {
   const client = useAgentClient();
-  const [picked, setPicked] = useState<ConsoleAppEntry | null>(null);
+  const [answer, setAnswer] = useState<{ view: ConsoleAppsView | null; for: string | null }>();
   useEffect(() => {
     let live = true;
-    client
-      .apps()
-      .then((view) => {
-        const app = Array.isArray(view?.apps)
-          ? view.apps.find((entry) => entry.id === view.selected)
-          : undefined;
-        if (live) setPicked(app ?? null);
-      })
-      .catch(() => {
-        if (live) setPicked(null);
-      });
+    void readApps(client, urlApp).then((view) => {
+      if (live) setAnswer({ view, for: urlApp });
+    });
     return () => {
       live = false;
     };
-  }, [client]);
-  return picked;
+  }, [client, urlApp]);
+  return answer;
 }
 
-/** Why the page's actions are off for the picked app (federated, read-only here), or undefined. */
-export function actionsBlockedFor(app: ConsoleAppEntry | null): string | undefined {
+/**
+ * The other app the page shows (`?app=`, as the server serves it), with its mode and who runs its
+ * actions: `null` for this app (no `?app=`), an unknown `?app=` or an older server; `undefined`
+ * while `/apps` has not answered for the URL's app yet. Follows the URL, not a remount.
+ */
+export function usePickedApp(): ConsoleAppEntry | null | undefined {
+  const urlApp = usePageApp();
+  const answer = useAppsAnswer(urlApp);
+  if (urlApp === null) return null;
+  if (answer === undefined || answer.for !== urlApp) return undefined;
+  const view = answer.view;
+  if (view === null || !Array.isArray(view.apps)) return null;
+  return view.apps.find((entry) => entry.id === view.selected) ?? null;
+}
+
+/** Shown while the picked app's `/apps` answer is pending: actions wait until it is known. */
+export const ACTIONS_PENDING = 'Checking who runs actions for this app…';
+
+/**
+ * Why the page's actions are off for the picked app, or undefined when they are on: pending until
+ * `/apps` answers for a picked app, then `actionsUnavailableReason` (federated, read-only here).
+ */
+export function actionsBlockedFor(app: ConsoleAppEntry | null | undefined): string | undefined {
+  if (app === undefined) return ACTIONS_PENDING;
   return app === null ? undefined : actionsUnavailableReason(app.label, app);
 }
 
 /** Top of the page body while a federated app is shown: where its data comes from, who acts. */
 export function PickedAppNotice() {
   const app = usePickedApp();
-  if (app === null || app.mode !== 'federated') return null;
+  if (app == null || app.mode !== 'federated') return null;
   return (
     <div className="px-4 pt-5 md:px-6">
       <FederatedNotice appLabel={app.label} mode={app.mode} actions={app.actions} />
