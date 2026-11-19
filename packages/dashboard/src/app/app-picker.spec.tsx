@@ -60,7 +60,7 @@ describe('<AppPicker> (federated console)', () => {
     if (urls[2] !== undefined) expect(urls[2]).not.toContain('app=');
 
     await waitFor(() => expect(select.textContent).toBe('AppEntre Textos'));
-    await pickScopeOption(select, 'Hub');
+    await pickScopeOption(select, /^Hub/);
     expect(window.location.search).toBe('');
   });
 
@@ -129,7 +129,7 @@ describe('<AppPicker> (federated console)', () => {
     });
     expect(badge.textContent).toBe('federated');
     expect(badge.getAttribute('title')).toContain('Actions are sent to Entre Textos');
-    expect(await scopeOptionNames(select)).toEqual(['Hub', 'Entre Textosfederated']);
+    expect(await scopeOptionNames(select)).toEqual(['Hubthis app', 'Entre Textosfederated']);
   });
 
   it('shows no tag for this app, nor for an older server that does not say', async () => {

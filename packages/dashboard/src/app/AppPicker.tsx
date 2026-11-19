@@ -37,8 +37,11 @@ export function usePageApp(): string | null {
   );
 }
 
-/** The menu's id for "this app" (no `?app=`); app ids are config keys, never this. */
-export const LOCAL_APP = '\u0000local';
+/**
+ * The menu's id for "this app" (no `?app=`); app ids are config keys, never this. A lone control
+ * character, so a search never matches it by an id the viewer does not see.
+ */
+export const LOCAL_APP = '\u0000';
 
 const TEXT = {
   noun: 'App',
@@ -84,8 +87,8 @@ export function AppPicker({
   const shown = view.apps.find((app) => app.id === current);
 
   const items: ScopeOption[] = [
-    // This app is a normal option under its own label; no id beside it (its id is internal).
-    { id: LOCAL_APP, label: view.local.label, hint: '' },
+    // This app is a normal option under its own label, "this app" beside it (its id is internal).
+    { id: LOCAL_APP, label: view.local.label, hint: 'this app' },
     ...view.apps.map((app) => ({
       id: app.id,
       label: app.label,

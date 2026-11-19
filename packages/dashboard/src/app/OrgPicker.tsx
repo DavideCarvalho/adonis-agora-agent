@@ -43,17 +43,23 @@ export function usePageTenant(): string | null {
  */
 export function OrgPicker({ onChange }: { onChange: (tenant: string | null) => void }) {
   const client = useAgentClient();
-  const [view, setView] = useState<ConsoleTenantsView | null>(null);
+  // The answer, with the URL organization it was asked for.
+  const [answer, setAnswer] = useState<{ view: ConsoleTenantsView; for: string | null } | null>(
+    null,
+  );
+  const urlTenant = usePageTenant();
+  const view = answer?.view ?? null;
 
   useEffect(() => {
     let live = true;
+    const asked = pageTenant();
     client
       .tenants()
       .then((result) => {
-        if (live) setView(result);
+        if (live) setAnswer({ view: result, for: asked });
       })
       .catch(() => {
-        if (live) setView(null);
+        if (live) setAnswer(null);
       });
     return () => {
       live = false;
@@ -67,7 +73,9 @@ export function OrgPicker({ onChange }: { onChange: (tenant: string | null) => v
     return <ScopeChip noun={TEXT.noun} label={only ? only.label : 'none'} kind="tenant" />;
   }
 
-  const selected = view.selected ?? pageTenant() ?? undefined;
+  // The server's answer once it is for the URL's organization (a forged `?tenant=` is none of
+  // them); until then (back/forward, a refetch in flight) the URL's own value.
+  const selected = (answer?.for === urlTenant ? view.selected : urlTenant) ?? undefined;
   return (
     <ScopeMenu
       items={view.tenants}
