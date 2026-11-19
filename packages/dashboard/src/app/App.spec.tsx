@@ -192,16 +192,22 @@ describe('<App> keeps the picked app and organization', () => {
     const fetchFn = scopedApi();
     window.history.replaceState(null, '', '/agent/dashboard/#overview');
     render(<App />);
-    await waitFor(async () => expect((await appButton()).textContent).toBe('Apphub'));
+    await waitFor(async () =>
+      expect((await appButton()).getAttribute('aria-label')).toBe('App: hub'),
+    );
 
     await pick(await appButton(), /EduLiberta/);
     expect(window.location.search).toBe('?app=eduliberta');
-    await waitFor(async () => expect((await appButton()).textContent).toBe('AppEduLiberta'));
+    await waitFor(async () =>
+      expect((await appButton()).getAttribute('aria-label')).toBe('App: EduLiberta'),
+    );
 
     const stillPicked = async (hash: string) => {
       await waitFor(() => expect(window.location.hash).toBe(hash));
       expect(window.location.search).toContain('app=eduliberta');
-      await waitFor(async () => expect((await appButton()).textContent).toBe('AppEduLiberta'));
+      await waitFor(async () =>
+        expect((await appButton()).getAttribute('aria-label')).toBe('App: EduLiberta'),
+      );
     };
 
     fireEvent.click(screen.getByRole('link', { name: 'Runs' }));
@@ -214,7 +220,9 @@ describe('<App> keeps the picked app and organization', () => {
 
     await pick(await orgButton(), /Globex/);
     await waitFor(() => expect(window.location.search).toBe('?app=eduliberta&tenant=globex'));
-    await waitFor(async () => expect((await orgButton()).textContent).toBe('OrganizationGlobex'));
+    await waitFor(async () =>
+      expect((await orgButton()).getAttribute('aria-label')).toBe('Organization: Globex'),
+    );
     await stillPicked(window.location.hash);
 
     // Every governance read since the pick carried the app.
@@ -233,7 +241,9 @@ describe('<App> keeps the picked app and organization', () => {
     fireEvent.click(screen.getByRole('link', { name: 'Runs' }));
     await waitFor(() => expect(window.location.hash).toBe('#runs'));
     await pick(await orgButton(), /Globex/);
-    await waitFor(async () => expect((await orgButton()).textContent).toBe('OrganizationGlobex'));
+    await waitFor(async () =>
+      expect((await orgButton()).getAttribute('aria-label')).toBe('Organization: Globex'),
+    );
 
     // "Back" to the Overview entry, which has no ?tenant=.
     act(() => {
@@ -241,8 +251,10 @@ describe('<App> keeps the picked app and organization', () => {
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
     await waitFor(async () =>
-      expect((await orgButton()).textContent).toBe('OrganizationAll organizations'),
+      expect((await orgButton()).getAttribute('aria-label')).toBe(
+        'Organization: All organizations',
+      ),
     );
-    expect((await appButton()).textContent).toBe('AppEduLiberta');
+    expect((await appButton()).getAttribute('aria-label')).toBe('App: EduLiberta');
   });
 });
