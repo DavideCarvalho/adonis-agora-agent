@@ -17,11 +17,11 @@ Both end the same way: the final component replaces the placeholder **in place**
 
 ## A tool-driven skeleton
 
-A tool that knows which component it will push can show that component's skeleton the moment it starts, and replace it with the data when the read finishes. The mechanism is [`ctx.emitUi`](/docs/agent/generative-ui#ctxemituicomponent-props-options)'s `id`: a second push with the same `id` replaces the first, live and on the persisted message.
+A tool that knows which component it will push can show that component's skeleton the moment it starts, and replace it with the data when the read finishes. The mechanism is [`ctx.emitUi`](/docs/agent/genui/generative-ui#ctxemituicomponent-props-options)'s `id`: a second push with the same `id` replaces the first, live and on the persisted message.
 
 ### 1. Let the component carry a loading state
 
-With a [catalog](/docs/agent/generative-ui#a-component-catalog--adonis-agoraagentgenui), every push is validated against the component's props schema, so the placeholder has to be a shape the schema accepts. Keep it a separate, strict variant: the real data stays validated by its own schema, and a placeholder can never pass for data.
+With a [catalog](/docs/agent/genui/generative-ui#a-component-catalog--adonis-agoraagentgenui), every push is validated against the component's props schema, so the placeholder has to be a shape the schema accepts. Keep it a separate, strict variant: the real data stays validated by its own schema, and a placeholder can never pass for data.
 
 ```ts title="app/genui/catalog.ts"
 import { defineCatalog, defineComponent } from '@adonis-agora/agent/genui'
@@ -181,7 +181,7 @@ The end without data is a compact notice, not the full-size empty frame: the ske
 
 ## Progressive trees
 
-A layout the model composes is one [`ui__render`](/docs/agent/generative-ui#a-component-catalog--adonis-agoraagentgenui) call, written for as long as the model writes its arguments. With `streaming: 'partial'` the server pushes the tree so far while it is written, and each final node replaces its preview in place (see [Drawing a tree while the model writes it](/docs/agent/generative-ui#drawing-a-tree-while-the-model-writes-it) for the wire format):
+A layout the model composes is one [`ui__render`](/docs/agent/genui/generative-ui#a-component-catalog--adonis-agoraagentgenui) call, written for as long as the model writes its arguments. With `streaming: 'partial'` the server pushes the tree so far while it is written, and each final node replaces its preview in place (see [Drawing a tree while the model writes it](/docs/agent/genui/generative-ui#drawing-a-tree-while-the-model-writes-it) for the wire format):
 
 ```ts title="config/agent.ts"
 genui: genui({ catalog, streaming: 'partial' }) // tree mode is the default
@@ -376,7 +376,7 @@ Cover the other paths the same way: no orders ends on `empty`, a failing query o
 
 ## See also
 
-- [Generative UI](/docs/agent/generative-ui) — `ctx.emitUi`, the catalog, tree mode and the wire format of partial frames.
-- [Builtin components](/docs/agent/genui-builtins) — the props each builtin renderer receives, and what can be missing while it streams.
+- [Generative UI](/docs/agent/genui/generative-ui) — `ctx.emitUi`, the catalog, tree mode and the wire format of partial frames.
+- [Builtin components](/docs/agent/genui/builtins) — the props each builtin renderer receives, and what can be missing while it streams.
 - [One output, many surfaces](/docs/agent/surfaces) — UI capabilities, and what a client that cannot draw a component receives.
 - [Text channels](/docs/agent/channels) — why a channel turn gets the final component only.

@@ -6,7 +6,7 @@ icon: LayoutTemplate
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-[OpenUI](https://www.openui.com) is a React chat UI whose generative UI is **text**: the model answers in OpenUI Lang, a small declarative language over a component library, and the page renders it with that same library. `AgentInterface` (`@openuidev/react-ui`) speaks AG-UI, so it runs against [`agUiAdapter()`](/docs/agent/ag-ui) with no server code of its own beyond the prompt. How it compares with the native client and CopilotKit, row by row, is on [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends); the code below is from the [`frontends` example](https://github.com/DavideCarvalho/agora/tree/main/examples/frontends), verified against `@openuidev/react-ui` 0.17.0.
+[OpenUI](https://www.openui.com) is a React chat UI whose generative UI is **text**: the model answers in OpenUI Lang, a small declarative language over a component library, and the page renders it with that same library. `AgentInterface` (`@openuidev/react-ui`) speaks AG-UI, so it runs against [`agUiAdapter()`](/docs/agent/ag-ui) with no server code of its own beyond the prompt. How it compares with the native client and CopilotKit, row by row, is on [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/genui/frontends); the code below is from the [`frontends` example](https://github.com/DavideCarvalho/agora/tree/main/examples/frontends), verified against `@openuidev/react-ui` 0.17.0.
 
 ```bash
 npm i @openuidev/react-ui @openuidev/react-headless @openuidev/react-lang zustand
@@ -115,7 +115,7 @@ export const library = createLibrary({
 
 Pass `library` to `<AgentInterface componentLibrary>` and build the prompt from `library.prompt(openuiChatPromptOptions)`. The server now imports a React module: keep that file free of anything browser-only.
 
-This is a separate component system from the agent's [catalog](/docs/agent/generative-ui#a-component-catalog--adonis-agoraagentgenui). A component a tool pushes (`present`, `ctx.emitUi`) reaches OpenUI as an `agora.ui` custom event, which OpenUI ignores; with no `uiCapabilities` the server sends it that way rather than as text inside the reply.
+This is a separate component system from the agent's [catalog](/docs/agent/genui/generative-ui#a-component-catalog--adonis-agoraagentgenui). A component a tool pushes (`present`, `ctx.emitUi`) reaches OpenUI as an `agora.ui` custom event, which OpenUI ignores; with no `uiCapabilities` the server sends it that way rather than as text inside the reply.
 
 ## Threads
 
