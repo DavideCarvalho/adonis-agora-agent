@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.35
+
+### Patch Changes
+
+- [#650](https://github.com/DavideCarvalho/adonis-agora-agent/pull/650) [`5ab2b36`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/5ab2b36d91c2ad8de76fbea0b64849e5cee1264e) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Ship the console with the shared App/Organization picker: the dashboard is bundled into this package at build time, and the picker changesets only bumped the dashboard package, so this release carries it to apps.
+
 ## 1.0.0-rc.34
 
 ### Patch Changes
