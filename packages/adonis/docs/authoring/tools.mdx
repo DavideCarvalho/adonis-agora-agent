@@ -231,7 +231,7 @@ defineTool(
 )
 ```
 
-The `confirm` templates are filled on the server too (`fillToolConfirmation`, the same filler as the React layer's `fillTemplate`): every approval frame carries the resolved `confirmation` (`Purge sessions:42?`), so a transport whose client has no tool catalog — [AG-UI](/docs/agent/ag-ui#interrupts-and-resume), [A2UI](/docs/agent/a2ui), OpenUI over AG-UI, A2A — words the prompt as the native page does, and the approve button reads as its `verb` wherever there is one (A2UI, channel cards).
+The `confirm` templates are filled on the server too (`fillToolConfirmation`, the same filler as the React layer's `fillTemplate`): every approval frame carries the resolved `confirmation` (`Purge sessions:42?`), so a transport whose client has no tool catalog — [AG-UI](/docs/agent/ag-ui#interrupts-and-resume), [A2UI](/docs/agent/genui/a2ui), OpenUI over AG-UI, A2A — words the prompt as the native page does, and the approve button reads as its `verb` wherever there is one (A2UI, channel cards).
 
 A tool that declares no `confirm` never shows its identifier to a person: every adapter words the prompt with `resolveToolConfirmation(toolName, input, presentation?)` — the filled `confirm` when declared, else `"<presentation.label>?"`, else the humanized name (`refund_order` → `Refund order?`), with the verb `Approve` (`DEFAULT_CONFIRM_VERB`; a text channel shows its own localized `texts.approve` instead). `humanizeToolName` is exported too.
 
@@ -316,7 +316,7 @@ A call cut short this way settles failed, and the run ends `cancelled` at its ne
 
 Identity is single-sourced on `ctx.actor` — read `ctx.actor.id` / `ctx.actor.tenantRef` and scope every query to it. Never trust an id the model passes in its arguments.
 
-`ctx.emitUi(component, props)` pushes a typed **UI component** into the conversation instead of (or alongside) text — streamed live, persisted on the message, rendered by the frontend's own component, and sent as text to a client that cannot draw it. See [Generative UI](/docs/agent/generative-ui) and [One output, many surfaces](/docs/agent/surfaces).
+`ctx.emitUi(component, props)` pushes a typed **UI component** into the conversation instead of (or alongside) text — streamed live, persisted on the message, rendered by the frontend's own component, and sent as text to a client that cannot draw it. See [Generative UI](/docs/agent/genui/generative-ui) and [One output, many surfaces](/docs/agent/surfaces).
 
 ## More per-tool options
 

@@ -353,7 +353,7 @@ In tree mode, `componentTools: ['Sandbox']` also registers a flat `ui__sandbox` 
 standalone component whose input IS that component's props (prefix `componentToolPrefix`, default `ui__`).
 `streaming: 'partial'` draws the tree while the model writes it; renderers then read
 `useGenuiNode()?.incomplete` and must tolerate half-written props. Source:
-`packages/adonis/docs/generative-ui.mdx`.
+`packages/adonis/docs/genui/generative-ui.mdx`.
 
 For static HTML, use `createReactComponentRegistry` and `createReactServerRenderer` from
 `@adonis-agora/agent/react/genui/server`; install matching `react` and `react-dom` peers.

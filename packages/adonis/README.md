@@ -39,7 +39,7 @@ const Sandbox = createNativeSandboxRenderer({ theme: { vars: tokens }, baseUrl: 
 <GenuiProvider registry={{ Sandbox }} onAction={chat.sendUiAction}>…</GenuiProvider>
 ```
 
-See [Sandbox in React Native](./docs/genui-sandbox-react-native.mdx).
+See [Sandbox in React Native](./docs/genui/sandbox-react-native.mdx).
 
 
 ## Install

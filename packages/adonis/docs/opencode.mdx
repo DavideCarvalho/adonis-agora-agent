@@ -102,7 +102,7 @@ recreated when the server's `bootId` changes, and told the conversation so far.
 On this engine a tool call's arguments arrive whole, so nothing previews while the model writes
 them: `ToolHandler.previewInput` never runs, and a `ui__render` tree (or any `streaming: 'partial'`
 component) appears once, validated, when the call completes. On `aiSdkModel` the same tools stream
-progressively ([Generative UI](/docs/agent/generative-ui)).
+progressively ([Generative UI](/docs/agent/genui/generative-ui)).
 
 The cause is upstream. OpenCode's event schema has a live-only `session.tool.input.delta` event, but
 the server (2.0.18 and 2.0.19) does not publish it: it buffers the model's tool-input deltas and

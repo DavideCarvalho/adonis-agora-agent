@@ -8,7 +8,7 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 A tool answers once. The same run can be watched by a React chat that draws components, an AG-UI client, a webhook that relays text to WhatsApp, or nothing at all (an MCP call). This page follows one result through each of them.
 
-The pieces involved are documented on their own pages: [Generative UI](/docs/agent/generative-ui) (pushing components), [Component registries and server rendering](/docs/agent/authoring/component-rendering) (`present`, custom components, image/PDF export), and the transports ([Streaming & HTTP](/docs/agent/streaming-and-http), [AG-UI](/docs/agent/ag-ui), [MCP](/docs/agent/mcp)).
+The pieces involved are documented on their own pages: [Generative UI](/docs/agent/genui/generative-ui) (pushing components), [Component registries and server rendering](/docs/agent/authoring/component-rendering) (`present`, custom components, image/PDF export), and the transports ([Streaming & HTTP](/docs/agent/streaming-and-http), [AG-UI](/docs/agent/ag-ui), [MCP](/docs/agent/mcp)).
 
 ## Backend and frontend
 
@@ -295,7 +295,7 @@ AG-UI is a second door onto the same runs, not a richer one. The server-side beh
 | Text streaming | `text` frames | **Supported.** `TEXT_MESSAGE_START` / `CONTENT` / `END`, one message per stretch of text |
 | Reasoning | `reasoning` frames | **Supported.** `REASONING_START`, one reasoning message, `REASONING_END` |
 | Tool calls and results | `tool-input-*` with `toolKind` (`read` / `action`) and `parentId`; `tool-output`, `-error`, `-denied` | **Partial.** `TOOL_CALL_START` / `ARGS` / `END` and `TOOL_CALL_RESULT` (a failure or a refusal marked in `metadata['agora.outcome']`). `TOOL_CALL_START` carries the kind as `metadata['agora.toolKind']`, which React keeps; `parentId` is not carried, so nested calls arrive flat |
-| Generative UI and `fallbackText` | `ui` frames, drawn by `<GenerativeUI>`; a [streaming tree](/docs/agent/generative-ui#drawing-a-tree-while-the-model-writes-it) as `partial` frames under one id | **Partial.** The `CUSTOM` event `agora.ui`, with `fallbackText`; a streaming tree's previews are repeated `agora.ui` events with the same `id` and `partial: true`, which `agUiBackend()` draws like the native ones. A generic AG-UI client ignores them unless it knows the name. Negotiation through `forwardedProps.uiCapabilities` works the same |
+| Generative UI and `fallbackText` | `ui` frames, drawn by `<GenerativeUI>`; a [streaming tree](/docs/agent/genui/generative-ui#drawing-a-tree-while-the-model-writes-it) as `partial` frames under one id | **Partial.** The `CUSTOM` event `agora.ui`, with `fallbackText`; a streaming tree's previews are repeated `agora.ui` events with the same `id` and `partial: true`, which `agUiBackend()` draws like the native ones. A generic AG-UI client ignores them unless it knows the name. Negotiation through `forwardedProps.uiCapabilities` works the same |
 | `pageContext`, agent, persona, model | body fields of `POST /chat` | **Supported** through `forwardedProps` (`pageContext`, `agent`, `persona`, `model`, `uiCapabilities`); AG-UI `context` is added to the page context as `agUiContext` |
 | Approvals (`action` tools) | the run stays open; `approval-requested` / `-settled` frames; decided through `POST /agent/tool-call/approve` / `reject` while the stream continues | **Partial.** The AG-UI run **ends** with an `Interrupt` (`reason: 'tool_approval'`) on `RUN_FINISHED`; a generic client decides with a new request carrying `resume`, which re-attaches to the parked run. `agora.approval-requested` / `-settled` are sent as `CUSTOM` events. React shows the normal approval card, decides through the native routes and re-attaches to the run, so the rest streams into the same message |
 | Questions (elicitation) | `elicitation` block with `answer.run()` / `skip.run()` | **Partial.** An `Interrupt` (`reason: 'input_required'`) carrying a JSON Schema of the answers, answered through `resume` by a generic client. React reads the `agora.elicitation` event, shows the normal question block, answers through the native routes and re-attaches to the run |
@@ -315,7 +315,7 @@ AG-UI is a second door onto the same runs, not a richer one. The server-side beh
 | Background (detached) runs | receipt + a later message in the thread | Same on the server; the later message is read from the thread over REST, as on the native path |
 | Frontend tools, AG-UI `state` | — | **Not supported.** `tools` is ignored with a warning; `state` is ignored and no state events are sent |
 
-Choose AG-UI when the client is someone else's (CopilotKit, `@ag-ui/client`, a Python or .NET agent UI). For your own React app, the native stream carries more and needs no adapter. What that means for generative UI in two such clients — CopilotKit and OpenUI — is measured in [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends).
+Choose AG-UI when the client is someone else's (CopilotKit, `@ag-ui/client`, a Python or .NET agent UI). For your own React app, the native stream carries more and needs no adapter. What that means for generative UI in two such clients — CopilotKit and OpenUI — is measured in [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/genui/frontends).
 
 ### Text-only channels — WhatsApp and similar
 

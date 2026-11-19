@@ -8,7 +8,7 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 [A2UI](https://a2ui.org) is Google's open, declarative protocol for agent-generated UI. An agent sends **surfaces** — flat lists of components from a catalog, referenced by id — as JSON messages, and a renderer the client owns (Lit, Angular, Flutter, React) draws them with its own native widgets. No code crosses the wire; a click comes back as an `action` message.
 
-The same `ui` frames the [native stream](/docs/agent/generative-ui) carries — a tool's `ctx.emitUi`, a `present` hook, a model-composed `ui__render` tree — can be served as A2UI: on a route of their own, or inside the [AG-UI](/docs/agent/ag-ui) stream. It is another way to ship the same UI, to clients that already speak A2UI; the catalog, validation, capabilities and persistence stay what they are.
+The same `ui` frames the [native stream](/docs/agent/genui/generative-ui) carries — a tool's `ctx.emitUi`, a `present` hook, a model-composed `ui__render` tree — can be served as A2UI: on a route of their own, or inside the [AG-UI](/docs/agent/ag-ui) stream. It is another way to ship the same UI, to clients that already speak A2UI; the catalog, validation, capabilities and persistence stay what they are.
 
 <Callout type="info" title="Which A2UI">
 This targets **A2UI v0.9**: every message is stamped `"version": "v0.9"`, and surfaces use the v0.9 basic catalog. v0.9.1 is the current production patch of the v0.9 family (same messages); v1.0 is a release candidate and is not targeted yet (checked on 2026-10-11: the spec still reads "a candidate for becoming stable", and a2ui.org lists v0.9.1 as the current production release; it renames the capabilities key to `a2uiRendererCapabilities`, prefixes bindings with `@` and drops `createSurface.theme`, so it will be negotiated alongside v0.9 once it is final); v0.8 is legacy — an inbound v0.8 `userAction` is still accepted. Everything below is tested against the official `@a2ui/web_core` v0.9 schemas and the official React renderer (`@a2ui/react/v0_9`, 0.15.0).
@@ -96,7 +96,7 @@ body: JSON.stringify({
 
 ## Reopening a thread
 
-`GET <path>/a2ui/threads/:threadId` answers a stored thread as JSON, for a client that reloads: `{ threadId, entries }`, where each entry is the user's line (`{ role: 'user', id, text, action? }` — `action` when the message was a UI action, `text` then being what the user said, see [chips](/docs/agent/genui-sandbox#what-the-user-sees)) or an assistant step's surfaces (`{ role: 'assistant', id, messages }`: its text as one `Text`, then each `ui` frame it kept, mapped as the stream maps them and under the same surface ids). Hand `messages` to the processor as they come. Owner-scoped like `threads/:id`; a thread nobody has answers `{ entries: [] }`. `?catalog=<id>` names the client's basic catalog id when it is not the route's default. An approval the thread still waits on is not redrawn — a new message asks again. `a2uiThreadReplay(messages, options)` is the same conversion, framework-free.
+`GET <path>/a2ui/threads/:threadId` answers a stored thread as JSON, for a client that reloads: `{ threadId, entries }`, where each entry is the user's line (`{ role: 'user', id, text, action? }` — `action` when the message was a UI action, `text` then being what the user said, see [chips](/docs/agent/genui/sandbox#what-the-user-sees)) or an assistant step's surfaces (`{ role: 'assistant', id, messages }`: its text as one `Text`, then each `ui` frame it kept, mapped as the stream maps them and under the same surface ids). Hand `messages` to the processor as they come. Owner-scoped like `threads/:id`; a thread nobody has answers `{ entries: [] }`. `?catalog=<id>` names the client's basic catalog id when it is not the route's default. An approval the thread still waits on is not redrawn — a new message asks again. `a2uiThreadReplay(messages, options)` is the same conversion, framework-free.
 
 ```ts title="resources/js/pages/a2ui.tsx (frontend)"
 const { entries } = await (await fetch(`/agent/a2ui/threads/${threadId}`)).json()
@@ -123,7 +123,7 @@ An action's `context` already carries the values its bindings resolve to; the da
 
 ## How the builtins map
 
-The [builtin components](/docs/agent/genui-builtins) map onto A2UI's v0.9 **basic catalog**:
+The [builtin components](/docs/agent/genui/builtins) map onto A2UI's v0.9 **basic catalog**:
 
 | Builtin | Basic catalog |
 | --- | --- |
@@ -272,7 +272,7 @@ Clicking **Approve** on an approval surface goes through the same handler: the r
 
 ## Inbound actions
 
-An A2UI `action` — v0.9 `{ version, action: { name, surfaceId, sourceComponentId, timestamp, context } }`, v0.8 `{ userAction }`, or the bare action — is read as a `UiAction` (`readA2uiAction`): `name` of 1–64 letters, digits, `_ . : -`; `context` a JSON object; at most `maxActionBytes` (8192) in all. It then **becomes the user's turn**: its text is `uiActionText(action)` — a sentence naming the action, where it came from, and the values as JSON — the same format a [sandbox's `agent.send`](/docs/agent/genui-sandbox#the-bridge-back-to-the-agent) produces:
+An A2UI `action` — v0.9 `{ version, action: { name, surfaceId, sourceComponentId, timestamp, context } }`, v0.8 `{ userAction }`, or the bare action — is read as a `UiAction` (`readA2uiAction`): `name` of 1–64 letters, digits, `_ . : -`; `context` a JSON object; at most `maxActionBytes` (8192) in all. It then **becomes the user's turn**: its text is `uiActionText(action)` — a sentence naming the action, where it came from, and the values as JSON — the same format a [sandbox's `agent.send`](/docs/agent/genui/sandbox#the-bridge-back-to-the-agent) produces:
 
 ````text
 I used "refund".
@@ -316,12 +316,12 @@ Inbound, `forwardedProps.a2uiAction` — `{ userAction: { name, surfaceId, sourc
 - **No A2A transport.** The route is plain HTTP with JSON Lines, and AG-UI activities; A2UI over [A2A](/docs/agent/a2a) is not provided.
 - **Only approvals become buttons.** A question set, or any other interrupt, is a text surface saying to answer it in the app. An [independent proposal](/docs/agent/independent-approvals)'s approval gets the same buttons; its `agora.approve` / `agora.reject` is decided through the proposal service (as the AG-UI resume does) and answered with the configured reply.
 - **Components that disappear between previews are not deleted.** A later preview (or the final frame) that no longer has a node leaves its components in the surface, unreferenced — A2UI renderers draw only what the root reaches, so they do not show.
-- **The sandbox is text.** The [sandbox](/docs/agent/genui-sandbox) has no A2UI equivalent and is drawn as its `title` and `summary`, unless you send it as a custom component of your own catalog.
+- **The sandbox is text.** The [sandbox](/docs/agent/genui/sandbox) has no A2UI equivalent and is drawn as its `title` and `summary`, unless you send it as a custom component of your own catalog.
 
 ## See also
 
-- [Generative UI](/docs/agent/generative-ui) — the catalog and the `ui` frames A2UI surfaces are made from.
+- [Generative UI](/docs/agent/genui/generative-ui) — the catalog and the `ui` frames A2UI surfaces are made from.
 - [AG-UI](/docs/agent/ag-ui) — the route the A2UI activities ride on, and its interrupt and resume contract.
-- [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/frontends) — the comparison example, whose A2UI page draws this route with `@a2ui/react`.
-- [Builtin components](/docs/agent/genui-builtins) — the props each builtin carries into its A2UI mapping.
+- [Generative UI: native vs CopilotKit vs OpenUI](/docs/agent/genui/frontends) — the comparison example, whose A2UI page draws this route with `@a2ui/react`.
+- [Builtin components](/docs/agent/genui/builtins) — the props each builtin carries into its A2UI mapping.
 - [One output, many surfaces](/docs/agent/surfaces) — UI capabilities and text fallbacks, which still apply.
