@@ -1,5 +1,11 @@
 # @adonis-agora/agent-dashboard
 
+## 1.0.0-rc.18
+
+### Patch Changes
+
+- [#649](https://github.com/DavideCarvalho/adonis-agora-agent/pull/649) [`1f45fe4`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/1f45fe43d299b8331567e900d2265ee339cb4c93) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Scope picker: the button is named "App: Hub" / "Organization: Globex" for screen readers, search also matches the hint, the highlight stays on a real option when the list shrinks, and focus returns to the button after a pick.
+
 ## 1.0.0-rc.17
 
 ### Patch Changes
