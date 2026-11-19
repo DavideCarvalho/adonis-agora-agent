@@ -42,3 +42,46 @@ export async function closeCombo(input: HTMLElement): Promise<void> {
     await settle();
   });
 }
+
+/** Open a kit `ScopeMenu` (its listbox button) and list its options' names; closes it again. */
+export async function scopeOptionNames(button: HTMLElement): Promise<string[]> {
+  await act(async () => {
+    fireEvent.click(button);
+    await settle();
+  });
+  const names = screen.getAllByRole('option').map((o) => o.textContent ?? '');
+  await act(async () => {
+    fireEvent.click(button);
+    await settle();
+  });
+  return names;
+}
+
+/** Open a kit `ScopeMenu`, optionally search, and pick the option named `option` (on mousedown). */
+export async function pickScopeOption(
+  button: HTMLElement,
+  option: string | RegExp,
+  typed = '',
+): Promise<void> {
+  await act(async () => {
+    fireEvent.click(button);
+    await settle();
+  });
+  if (typed !== '') {
+    const search = screen.getByRole('combobox');
+    await act(async () => {
+      fireEvent.change(search, { target: { value: typed } });
+      await settle();
+    });
+  }
+  const item = screen.getByRole('option', { name: option });
+  await act(async () => {
+    fireEvent.mouseDown(item);
+    await settle();
+  });
+}
+
+/** The header picker button whose noun is `noun` (`App`, `Organization`). */
+export function scopeButton(noun: string): Promise<HTMLElement> {
+  return screen.findByRole('button', { name: new RegExp(`^${noun}`) });
+}

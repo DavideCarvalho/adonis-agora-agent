@@ -1,13 +1,15 @@
-import { useEffect, useId, useState } from 'react';
-import { ComboSelect } from '../agora-kit/blocks/combo-field';
-import { UsersIcon } from '../agora-kit/icons';
-import { Badge } from '../agora-kit/ui/badge';
+import { useEffect, useState, useSyncExternalStore } from 'react';
+import { ScopeChip, ScopeMenu } from '../agora-kit/blocks/scope-menu';
 import { type ConsoleTenantsView, pageTenant } from '../client/agent-client.js';
-import { pickerClass } from './AppPicker.js';
 import { useAgentClient } from './use-governance.js';
 
-/** The combo's value for "All organizations" (no `?tenant=`); never a tenant id. */
-const ALL_ORGS = '\u0000all';
+const TEXT = {
+  noun: 'Organization',
+  all: 'All organizations',
+  some: 'Every organization you can see',
+  search: 'Search organizations',
+  empty: 'No organizations.',
+};
 
 /** Put `tenant` in the page URL (`?tenant=`), keeping the hash. `null` removes it. */
 export function setPageTenant(tenant: string | null): void {
@@ -18,26 +20,46 @@ export function setPageTenant(tenant: string | null): void {
 }
 
 /**
+ * `?tenant=` as the page URL has it now, following the picker and back/forward (`popstate`). The
+ * console reads every page again when it moves, so the picker and the data never disagree.
+ */
+export function usePageTenant(): string | null {
+  return useSyncExternalStore(
+    (onChange) => {
+      window.addEventListener('popstate', onChange);
+      return () => window.removeEventListener('popstate', onChange);
+    },
+    pageTenant,
+    () => null,
+  );
+}
+
+/**
  * The "Organization" header control, shown only with tenancy on: a fixed chip when the viewer sees
- * one organization, a picker with autocomplete (label or id) when they may see several (or all,
+ * one organization (or none), a searchable picker (label or id) when they may see several (or all,
  * "All organizations" first). The
  * choice lives in the URL (`?tenant=`) and every governance read sends it; the server only ever
  * narrows to what the viewer was granted.
  */
 export function OrgPicker({ onChange }: { onChange: (tenant: string | null) => void }) {
   const client = useAgentClient();
-  const [view, setView] = useState<ConsoleTenantsView | null>(null);
-  const id = useId();
+  // The answer, with the URL organization it was asked for.
+  const [answer, setAnswer] = useState<{ view: ConsoleTenantsView; for: string | null } | null>(
+    null,
+  );
+  const urlTenant = usePageTenant();
+  const view = answer?.view ?? null;
 
   useEffect(() => {
     let live = true;
+    const asked = pageTenant();
     client
       .tenants()
       .then((result) => {
-        if (live) setView(result);
+        if (live) setAnswer({ view: result, for: asked });
       })
       .catch(() => {
-        if (live) setView(null);
+        if (live) setAnswer(null);
       });
     return () => {
       live = false;
@@ -46,59 +68,29 @@ export function OrgPicker({ onChange }: { onChange: (tenant: string | null) => v
 
   if (view === null || !view.enabled) return null;
 
-  if (!view.all && view.tenants.length === 0) {
-    return (
-      <Badge variant="warn" role="status">
-        No organization
-      </Badge>
-    );
+  if (!view.all && view.tenants.length <= 1) {
+    const only = view.tenants[0];
+    return <ScopeChip noun={TEXT.noun} label={only ? only.label : 'none'} kind="tenant" />;
   }
 
-  if (!view.all && view.tenants.length === 1) {
-    const only = view.tenants[0] as { id: string; label: string };
-    return (
-      <span
-        className="inline-flex h-8 max-w-[14rem] items-center gap-1.5 rounded-md border border-border bg-panel-2 px-2.5 text-xs text-fg"
-        title={only.id}
-      >
-        <UsersIcon className="shrink-0 text-faint" />
-        <span className="sr-only">Organization</span>
-        <span className="truncate">{only.label}</span>
-      </span>
-    );
-  }
-
-  const selected = view.selected ?? pageTenant() ?? ALL_ORGS;
-  const options = [
-    { value: ALL_ORGS, label: 'All organizations' },
-    ...view.tenants.map((tenant) => ({
-      value: tenant.id,
-      label: tenant.label,
-      ...(tenant.label === tenant.id ? {} : { hint: tenant.id }),
-    })),
-  ];
-
+  // The server's answer once it is for the URL's organization (a forged `?tenant=` is none of
+  // them); until then (back/forward, a refetch in flight) the URL's own value.
+  const selected = (answer?.for === urlTenant ? view.selected : urlTenant) ?? undefined;
   return (
-    <span className="flex min-w-0 items-center gap-1.5">
-      <label className="flex items-center text-faint" htmlFor={id}>
-        <UsersIcon />
-        <span className="sr-only">Organization</span>
-      </label>
-      <ComboSelect
-        id={id}
-        className={pickerClass}
-        options={options}
-        placeholder="Filter…"
-        clearable={false}
-        value={selected}
-        onValueChange={(picked) => {
-          if (picked === null || picked === selected) return;
-          const next = picked === ALL_ORGS ? null : picked;
-          setPageTenant(next);
-          onChange(next);
-        }}
-      />
-    </span>
+    <ScopeMenu
+      items={view.tenants}
+      all={view.all}
+      current={selected}
+      text={TEXT}
+      labelOf={(id) => view.tenants.find((tenant) => tenant.id === id)?.label ?? id}
+      onChoose={(picked) => {
+        const next = picked ?? null;
+        setPageTenant(next);
+        // A replaceState fires nothing: say the URL moved (usePageTenant follows it).
+        window.dispatchEvent(new PopStateEvent('popstate', { state: window.history.state }));
+        onChange(next);
+      }}
+    />
   );
 }
 

@@ -1,10 +1,10 @@
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   AppModeBadge,
   actionsUnavailableReason,
   FederatedNotice,
 } from '../agora-kit/blocks/app-mode';
-import { ComboSelect } from '../agora-kit/blocks/combo-field';
+import { ScopeMenu, type ScopeOption } from '../agora-kit/blocks/scope-menu';
 import {
   type AgentClient,
   type ConsoleAppEntry,
@@ -37,11 +37,19 @@ export function usePageApp(): string | null {
   );
 }
 
-/** The combo's value for "this app" (no `?app=`); app ids are config keys, never this. */
-export const LOCAL_APP = '\u0000local';
+/**
+ * The menu's id for "this app" (no `?app=`); app ids are config keys, never this. A lone control
+ * character, so a search never matches it by an id the viewer does not see.
+ */
+export const LOCAL_APP = '\u0000';
 
-/** The topbar pickers' look: the field height and surface of the other header controls. */
-export const pickerClass = 'h-8 min-w-0 flex-1 bg-panel-2 text-xs md:w-48 md:flex-none';
+const TEXT = {
+  noun: 'App',
+  all: 'All apps',
+  some: 'Pick an app',
+  search: 'Search apps',
+  empty: 'No apps.',
+};
 
 /**
  * The "App" header control (the federated console): whose agents the console shows — this app, or
@@ -59,7 +67,6 @@ export function AppPicker({
 }) {
   const urlApp = usePageApp();
   const answer = useAppsAnswer(urlApp);
-  const id = useId();
 
   // The URL's app moved (a pick, or back/forward): the pages read again for it.
   const changed = useRef(onChange);
@@ -79,27 +86,26 @@ export function AppPicker({
   const current = answer?.for === urlApp ? (view.selected ?? null) : urlApp;
   const shown = view.apps.find((app) => app.id === current);
 
+  const items: ScopeOption[] = [
+    // This app is a normal option under its own label, "this app" beside it (its id is internal).
+    { id: LOCAL_APP, label: view.local.label, hint: 'this app' },
+    ...view.apps.map((app) => ({
+      id: app.id,
+      label: app.label,
+      ...(app.mode === 'federated' ? { hint: 'federated' } : {}),
+    })),
+  ];
+
   return (
     <span className="flex min-w-0 items-center gap-1.5">
-      <label className="text-[11px] text-faint" htmlFor={id}>
-        App
-      </label>
-      <ComboSelect
-        id={id}
-        className={pickerClass}
-        options={[
-          { value: LOCAL_APP, label: view.local.label },
-          ...view.apps.map((app) => ({
-            value: app.id,
-            label: app.label,
-            ...(app.mode === 'federated' ? { hint: 'federated' } : {}),
-          })),
-        ]}
-        clearable={false}
-        value={current ?? LOCAL_APP}
-        onValueChange={(next) => {
-          if (next === null) return;
-          const app = next === LOCAL_APP ? null : next;
+      <ScopeMenu
+        items={items}
+        all={false}
+        current={current ?? LOCAL_APP}
+        text={TEXT}
+        labelOf={(id) => items.find((item) => item.id === id)?.label ?? id}
+        onChoose={(next) => {
+          const app = next === undefined || next === LOCAL_APP ? null : next;
           // The URL already says so: no history entry for a no-op pick.
           if (app === urlApp) return;
           picking.current = true;
