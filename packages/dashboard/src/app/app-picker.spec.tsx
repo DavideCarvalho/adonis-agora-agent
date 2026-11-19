@@ -42,7 +42,7 @@ describe('<AppPicker> (federated console)', () => {
     });
     const select = await scopeButton('App');
     expect(select.getAttribute('aria-haspopup')).toBe('listbox');
-    expect(select.textContent).toBe('AppHub');
+    expect(select.getAttribute('aria-label')).toBe('App: Hub');
     await pickScopeOption(select, /Entre Textos/, 'entre');
     expect(window.location.search).toBe('?app=entre-textos');
     expect(window.location.hash).toBe('#runs');
@@ -59,7 +59,7 @@ describe('<AppPicker> (federated console)', () => {
     // The viewer's own quota is this app's: no `app=`.
     if (urls[2] !== undefined) expect(urls[2]).not.toContain('app=');
 
-    await waitFor(() => expect(select.textContent).toBe('AppEntre Textos'));
+    await waitFor(() => expect(select.getAttribute('aria-label')).toBe('App: Entre Textos'));
     await pickScopeOption(select, /^Hub/);
     expect(window.location.search).toBe('');
   });
@@ -88,7 +88,7 @@ describe('<AppPicker> (federated console)', () => {
     window.history.replaceState(null, '', '/agent/dashboard?app=forged#runs');
     server();
     const select = await scopeButton('App');
-    await waitFor(() => expect(select.textContent).toBe('AppHub'));
+    await waitFor(() => expect(select.getAttribute('aria-label')).toBe('App: Hub'));
   });
 
   it('follows back/forward, and tells the console the app moved', async () => {
@@ -96,21 +96,21 @@ describe('<AppPicker> (federated console)', () => {
     const { onChange } = server();
     const select = await scopeButton('App');
     await pickScopeOption(select, /Entre Textos/);
-    await waitFor(() => expect(select.textContent).toBe('AppEntre Textos'));
+    await waitFor(() => expect(select.getAttribute('aria-label')).toBe('App: Entre Textos'));
 
     // "Back": the URL is this app's again, and the browser says so with a popstate.
     act(() => {
       window.history.replaceState(null, '', '/agent/dashboard#runs');
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
-    await waitFor(() => expect(select.textContent).toBe('AppHub'));
+    await waitFor(() => expect(select.getAttribute('aria-label')).toBe('App: Hub'));
     expect(onChange).toHaveBeenLastCalledWith(null, { picked: false });
     // "Forward".
     act(() => {
       window.history.replaceState(null, '', '/agent/dashboard?app=entre-textos#runs');
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
-    await waitFor(() => expect(select.textContent).toBe('AppEntre Textos'));
+    await waitFor(() => expect(select.getAttribute('aria-label')).toBe('App: Entre Textos'));
     expect(onChange).toHaveBeenLastCalledWith('entre-textos', { picked: false });
   });
 

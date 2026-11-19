@@ -65,7 +65,7 @@ describe('<OrgPicker>', () => {
     );
     const select = await scopeButton('Organization');
     expect(select.getAttribute('aria-haspopup')).toBe('listbox');
-    expect(select.textContent).toBe('OrganizationAll organizations');
+    expect(select.getAttribute('aria-label')).toBe('Organization: All organizations');
     expect(await scopeOptionNames(select)).toEqual(['All organizations', 'Acmea', 'Betab']);
     // Matches the id too, not just the label.
     await pickScopeOption(select, /Beta/, 'b');
@@ -85,7 +85,7 @@ describe('<OrgPicker>', () => {
       <OrgPicker onChange={onChange} />,
     );
     const select = await scopeButton('Organization');
-    expect(select.textContent).toBe('OrganizationTenant 07');
+    expect(select.getAttribute('aria-label')).toBe('Organization: Tenant 07');
     await pickScopeOption(select, /Tenant 11/, 'org-11');
     expect(window.location.search).toBe('?tenant=org-11');
     expect(onChange).toHaveBeenLastCalledWith('org-11');
