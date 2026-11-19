@@ -40,6 +40,7 @@ import {
   type ModelCatalogView,
   staticModelCatalog,
 } from '../spi/model-catalog.js';
+import { describeStackUse, llmUses } from '../stack.js';
 
 /**
  * Pass-through settings forwarded to the AI SDK `streamText` call (headers, temperature,
@@ -122,20 +123,23 @@ function describeModel(model: LanguageModel, id = idOf(model)): DescribedModel[]
 
 export function aiSdkModel(model: LanguageModel, opts?: AiSdkModelOptions): ModelProvider {
   const own = idOf(model);
-  return {
-    describeModels: () => describeModel(model, own),
-    async runTurn(args: ModelTurnArgs): Promise<ModelTurnResult> {
-      // One model, so a pick naming another cannot be honoured — and running this one instead would
-      // answer on a model nobody chose. `aiSdkModels` is the provider for a picker.
-      if (args.model !== undefined && args.model !== own) {
-        throw new Error(
-          `aiSdkModel: this turn picked model "${args.model}", but the provider serves only ` +
-            `"${own ?? 'its one model'}". Offer several with aiSdkModels({ … }).`,
-        );
-      }
-      return runTurnOn(model, opts ?? {}, args);
+  return describeStackUse(
+    {
+      describeModels: () => describeModel(model, own),
+      async runTurn(args: ModelTurnArgs): Promise<ModelTurnResult> {
+        // One model, so a pick naming another cannot be honoured — and running this one instead would
+        // answer on a model nobody chose. `aiSdkModels` is the provider for a picker.
+        if (args.model !== undefined && args.model !== own) {
+          throw new Error(
+            `aiSdkModel: this turn picked model "${args.model}", but the provider serves only ` +
+              `"${own ?? 'its one model'}". Offer several with aiSdkModels({ … }).`,
+          );
+        }
+        return runTurnOn(model, opts ?? {}, args);
+      },
     },
-  };
+    llmUses(describeModel(model, own)),
+  );
 }
 
 /** One model `aiSdkModels` offers, with how a picker shows it. */
@@ -219,7 +223,7 @@ export function aiSdkModels(
       models: list,
     })),
   };
-  return {
+  const provider: AiSdkModelsProvider = {
     catalog: staticModelCatalog(view),
     describeModels: () => entries.flatMap(([, entry]) => describeModel(entry.model)),
     async runTurn(args: ModelTurnArgs): Promise<ModelTurnResult> {
@@ -233,6 +237,10 @@ export function aiSdkModels(
       return runTurnOn(entry.model, settings, args);
     },
   };
+  return describeStackUse(
+    provider,
+    llmUses(entries.flatMap(([, entry]) => describeModel(entry.model))),
+  );
 }
 
 async function runTurnOn(

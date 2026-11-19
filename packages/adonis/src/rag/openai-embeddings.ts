@@ -1,4 +1,5 @@
 import type { EmbeddingProvider, EmbeddingResult } from '../spi/embedding-provider.js';
+import { describeStackUse } from '../stack.js';
 
 /** A non-2xx answer (or a malformed one) from an embeddings or rerank endpoint. */
 export class HttpModelError extends Error {
@@ -227,7 +228,21 @@ export function openAiEmbeddings(options: OpenAiEmbeddingsOptions): EmbeddingPro
       };
     },
   };
-  return provider;
+  // The stack view: the provider and model, never the url (it may carry a key) — only its host.
+  return describeStackUse(provider, {
+    tech: options.baseUrl === undefined ? 'openai' : 'openai-compatible',
+    label: options.model,
+    purpose: 'embeddings',
+    ...(options.baseUrl !== undefined ? hostOfUrl(url) : {}),
+  });
+}
+
+function hostOfUrl(url: string): { host?: string } {
+  try {
+    return { host: new URL(url).host };
+  } catch {
+    return {};
+  }
 }
 
 function parseJson(body: string): unknown {
