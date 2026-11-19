@@ -153,6 +153,7 @@ import type { ListActionProposals } from '../src/spi/action-proposal-store.js';
 import { catalogModelIds, staticCatalogView } from '../src/spi/model-catalog.js';
 import type { DescribedModel } from '../src/spi/model-provider.js';
 import type { PresentationErrorHandler } from '../src/spi/tool.js';
+import { describeStackUse, modelProviderUses } from '../src/stack.js';
 import { assertSchemaName } from '../src/stores/db-schema.js';
 import { setTelescopeGovernanceQueries } from '../src/telescope/governance-registry.js';
 import {
@@ -510,6 +511,9 @@ export default class AgentProvider {
       config.model === undefined && engine !== undefined
         ? engineOnlyModel(engine)
         : await this.#resolveModel(config);
+    // The stack view reads `config/agent.ts`: a `model` thunk says nothing until it runs, so it
+    // carries what the resolved provider runs on (`anthropic` / `claude-sonnet-4-5`, …).
+    describeModelThunk(config.model, model);
     const store = await this.#resolveStore(config);
     const sink = await this.#resolveSink(config);
     // One budget: `{ limits }` over the usage ledger, or a `QuotaProvider` of your own — reported by
@@ -3060,4 +3064,11 @@ function resumableStaging(
     return undefined;
   }
   return candidate as ResumableAttachmentStaging;
+}
+
+/** Copy the resolved provider's LLM uses onto the `model` thunk the config holds. */
+function describeModelThunk(configured: AgentConfig['model'], model: ModelProvider): void {
+  if (typeof configured !== 'function') return;
+  const uses = modelProviderUses(model);
+  if (uses.length > 0) describeStackUse(configured, uses);
 }

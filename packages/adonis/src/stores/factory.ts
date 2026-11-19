@@ -26,6 +26,7 @@ import type { AgentGovernanceQueries } from '../spi/governance-queries.js';
 import type { AgentPricingStore } from '../spi/pricing-store.js';
 import type { Retriever } from '../spi/retriever.js';
 import type { TokenStreamSink } from '../spi/token-stream-sink.js';
+import { describeStackUse, refineLucidUse, type StackUse, stackUsesOf } from '../stack.js';
 import type { LucidDatabaseLike } from './lucid.js';
 
 /**
@@ -183,6 +184,7 @@ export const stores = {
   lucid(config: LucidStoreConfig = {}): StoreFactory {
     const factory: StoreFactory = async (ctx) => {
       const db = await resolveLucidDatabase(ctx.app);
+      refineLucidUse(factory, db, config.connection, 'chat history');
       const { LucidAgentStore } = await import('./lucid.js');
       const client = (config.connection !== undefined
         ? db.connection(config.connection)
@@ -195,6 +197,7 @@ export const stores = {
       });
     };
     // Tag with the connection and schema so the provider can mirror them for pricing/governance.
+    describeStackUse(factory, sqlUse(config.connection, 'chat history'));
     return tagLucidStore(factory, config.connection, config.schema);
   },
 };
@@ -249,8 +252,9 @@ export const pricingStores = {
 
   /** Persist per-model prices in SQL (the `agent_model_pricing` table) via `@adonisjs/lucid`. */
   lucid(config: LucidPricingConfig = {}): PricingFactory {
-    return async (ctx) => {
+    const factory: PricingFactory = async (ctx) => {
       const db = await resolveLucidDatabase(ctx.app);
+      refineLucidUse(factory, db, config.connection, 'model pricing');
       const { LucidPricingStore } = await import('./lucid-pricing.js');
       const client = (config.connection !== undefined
         ? db.connection(config.connection)
@@ -260,6 +264,7 @@ export const pricingStores = {
         ...schemaOf(config.schema, ctx),
       });
     };
+    return describeStackUse(factory, sqlUse(config.connection, 'model pricing'));
   },
 };
 
@@ -321,8 +326,9 @@ export interface LucidGovernanceConfig {
 export const governanceQueries = {
   /** Aggregate the five agent tables in SQL via `@adonisjs/lucid`, priced against the pricing store. */
   lucid(config: LucidGovernanceConfig = {}): GovernanceQueriesFactory {
-    return async (ctx) => {
+    const factory: GovernanceQueriesFactory = async (ctx) => {
       const db = await resolveLucidDatabase(ctx.app);
+      refineLucidUse(factory, db, config.connection, 'governance');
       const { LucidGovernanceQueries } = await import('./lucid-governance-queries.js');
       const client = (config.connection !== undefined
         ? db.connection(config.connection)
@@ -332,6 +338,7 @@ export const governanceQueries = {
         ...schemaOf(config.schema, ctx),
       });
     };
+    return describeStackUse(factory, sqlUse(config.connection, 'governance'));
   },
 };
 
@@ -461,7 +468,7 @@ export interface QdrantRetrieverConfig {
 export const retrievers = {
   /** In-memory embedding retriever — cosine over a Map, single-process. Handy for tests and dev apps. */
   memory(config: MemoryRetrieverConfig): RetrieverFactory {
-    return async () => {
+    const factory: RetrieverFactory = async () => {
       const { MemoryVectorStore } = await import('../rag/memory-vector-store.js');
       const { EmbeddingRetriever } = await import('../rag/embedding-retriever.js');
       const { ingestDocuments } = await import('../rag/ingest.js');
@@ -478,6 +485,7 @@ export const retrievers = {
       }
       return new EmbeddingRetriever(embedder, store);
     };
+    return describeStackUse(factory, embedderUses(config.embedder));
   },
 
   /**
@@ -487,7 +495,7 @@ export const retrievers = {
    * optional. Pass `ensureSchema: true` to provision the extension/table/index at boot for tests.
    */
   pgvector(config: PgVectorRetrieverConfig): RetrieverFactory {
-    return async (ctx) => {
+    const factory: RetrieverFactory = async (ctx) => {
       const { PgLexicalVectorStore, PgVectorStore, PgVectorRetriever } = await import(
         '../rag/pg-vector-store.js'
       );
@@ -498,6 +506,13 @@ export const retrievers = {
         config.db ??
         (await (async () => {
           const dbService = await resolveLucidDatabase(ctx.app);
+          refineLucidUse(
+            factory,
+            dbService,
+            config.connection,
+            'vector store',
+            embedderUses(config.embedder),
+          );
           return (config.connection !== undefined
             ? dbService.connection(config.connection)
             : dbService) as unknown as LucidDatabaseLike;
@@ -544,6 +559,12 @@ export const retrievers = {
       }
       return new PgVectorRetriever(embedder, store);
     };
+    return describeStackUse(factory, [
+      config.db === undefined
+        ? sqlUse(config.connection, 'vector store')
+        : { tech: 'postgres', label: config.table ?? 'agent_rag_chunks', purpose: 'vector store' },
+      ...embedderUses(config.embedder),
+    ]);
   },
 
   /**
@@ -552,7 +573,7 @@ export const retrievers = {
    * OPTIONAL peer. Pass `ensureCollection: true` to provision the collection at boot.
    */
   qdrant(config: QdrantRetrieverConfig): RetrieverFactory {
-    return async () => {
+    const factory: RetrieverFactory = async () => {
       const { QdrantStore, QdrantRetriever } = await import('../rag/qdrant-store.js');
       const { ingestDocuments } = await import('../rag/ingest.js');
       const embedder =
@@ -584,6 +605,17 @@ export const retrievers = {
       }
       return new QdrantRetriever(embedder, store);
     };
+    return describeStackUse(factory, [
+      {
+        tech: 'qdrant',
+        label: config.collection ?? 'agent_rag_chunks',
+        purpose: 'vector store',
+        ...hostOf(
+          config.url ?? (config.client === undefined ? 'http://localhost:6333' : undefined),
+        ),
+      },
+      ...embedderUses(config.embedder),
+    ]);
   },
 };
 
@@ -780,14 +812,26 @@ export const tokenSinks = {
    * passed.
    */
   redis(config: RedisTokenSinkConfig = {}): TokenSinkFactory {
-    return async (ctx) => {
+    const factory: TokenSinkFactory = async (ctx) => {
       const { RedisTokenStreamSink } = await import('../redis-token-stream-sink.js');
       const client = config.client ?? (await buildAdonisRedisClient(ctx.app, config.connection));
+      if (config.client === undefined && config.connection === undefined) {
+        // The default connection, named once `config/redis.ts` is readable.
+        const name = ctx.app.config?.get?.('redis.connection');
+        if (typeof name === 'string' && name !== '') {
+          describeStackUse(factory, { tech: 'redis', connection: name, purpose: 'token stream' });
+        }
+      }
       return new RedisTokenStreamSink(client, {
         ...(config.keyPrefix !== undefined ? { keyPrefix: config.keyPrefix } : {}),
         ...(config.ttlSeconds !== undefined ? { ttlSeconds: config.ttlSeconds } : {}),
       });
     };
+    return describeStackUse(factory, {
+      tech: 'redis',
+      ...(config.connection !== undefined ? { connection: config.connection } : {}),
+      purpose: 'token stream',
+    });
   },
 
   /**
@@ -798,10 +842,11 @@ export const tokenSinks = {
    * `@adonisjs/lucid` installed + configured unless a `db` is passed.
    */
   lucid(config: LucidTokenSinkConfig = {}): TokenSinkFactory {
-    return async (ctx) => {
+    const factory: TokenSinkFactory = async (ctx) => {
       const { LucidTokenStreamSink } = await import('../lucid-token-stream-sink.js');
       const { connection, db: ownDb, schema, ...options } = config;
       const manager = ownDb === undefined ? await resolveLucidDatabase(ctx.app) : undefined;
+      if (manager !== undefined) refineLucidUse(factory, manager, connection, 'token stream');
       const db =
         ownDb ??
         ((connection !== undefined
@@ -812,6 +857,7 @@ export const tokenSinks = {
         ...schemaOf(schema, ctx),
       });
     };
+    return describeStackUse(factory, sqlUse(config.connection, 'token stream'));
   },
 };
 
@@ -953,3 +999,29 @@ export const actorDirectories = {
     };
   },
 };
+
+// ── Stack descriptors ────────────────────────────────────────────────────────
+
+/**
+ * A SQL use before boot: the engine is not known until the factory resolves the `Database` (it
+ * then completes the use, see `refineLucidUse`), the connection is when the config names one.
+ */
+function sqlUse(connection: string | undefined, purpose: string): StackUse {
+  return { tech: 'sql', ...(connection !== undefined ? { connection } : {}), purpose };
+}
+
+/** The uses an embedder (or a lazy embedder factory) carries, e.g. `openAiEmbeddings(...)`'s. */
+function embedderUses(embedder: unknown): StackUse[] {
+  return stackUsesOf(embedder);
+}
+
+/** `{ host }` of a server url, for the descriptor only — never the url itself (it may hold a key). */
+function hostOf(url: string | undefined): { host?: string } {
+  if (url === undefined) return {};
+  try {
+    const host = new URL(url).host;
+    return host === '' ? {} : { host };
+  } catch {
+    return {};
+  }
+}
