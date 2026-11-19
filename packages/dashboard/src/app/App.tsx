@@ -1,5 +1,5 @@
 import { parseAsString, useQueryStates } from 'nuqs';
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ErrorBoundary } from '../agora-kit/blocks/error-boundary';
 import { useIsMobile } from '../agora-kit/hooks/use-mobile';
 import { ActivityIcon, GridIcon } from '../agora-kit/icons';
@@ -25,7 +25,7 @@ import {
   ToolboxIcon,
   WrenchIcon,
 } from './icons.js';
-import { OrgNotice, OrgPicker } from './OrgPicker.js';
+import { OrgNotice, OrgPicker, usePageTenant } from './OrgPicker.js';
 import { Overview } from './Overview.js';
 import { PricingSection } from './PricingSection.js';
 import { QuotaSection } from './QuotaSection.js';
@@ -171,6 +171,15 @@ function Console() {
   );
   // Bumped when the organization changes, so every page reads again under the new `?tenant=`.
   const [tenantKey, setTenantKey] = useState(0);
+  // The URL's organization moved (a pick, or back/forward to an entry with another `?tenant=`):
+  // the picker and the pages read again, so the picker never shows an organization the data is not.
+  const urlTenant = usePageTenant();
+  const seenTenant = useRef(urlTenant);
+  useEffect(() => {
+    if (seenTenant.current === urlTenant) return;
+    seenTenant.current = urlTenant;
+    setTenantKey((key) => key + 1);
+  }, [urlTenant]);
 
   // Follows links, back/forward and the pages' own query-only filter writes (no `hashchange`).
   useEffect(
@@ -218,7 +227,8 @@ function Console() {
           setTenantKey((key) => key + 1);
         }}
       />
-      <OrgPicker key={tenantKey} onChange={() => setTenantKey((key) => key + 1)} />
+      {/* Its pick moves `?tenant=`, which `usePageTenant` above follows. */}
+      <OrgPicker key={tenantKey} onChange={() => {}} />
       {RANGED.has(section) && <RangePicker range={range} onChange={setDay} />}
     </>
   );

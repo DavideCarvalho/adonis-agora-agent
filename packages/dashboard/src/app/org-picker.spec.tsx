@@ -1,8 +1,8 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentClient, type ConsoleTenantsView } from '../client/agent-client.js';
-import { comboOptionNames, pickComboOption } from './combo-test-utils.js';
+import { pickScopeOption, scopeButton, scopeOptionNames } from './combo-test-utils.js';
 import { OrgNotice, OrgPicker } from './OrgPicker.js';
 import { AgentClientContext } from './use-governance.js';
 
@@ -35,7 +35,18 @@ describe('<OrgPicker>', () => {
       <OrgPicker onChange={() => {}} />,
     );
     expect(await screen.findByText('Acme')).toBeTruthy();
-    expect(screen.queryByRole('combobox')).toBeNull();
+    expect(document.querySelector('[data-tenant-chip]')?.textContent).toBe('OrganizationAcme');
+    expect(screen.queryByRole('button', { name: /^Organization/ })).toBeNull();
+  });
+
+  it('a "none" chip when the viewer has no organization', async () => {
+    withTenants(
+      { enabled: true, all: false, tenants: [], selected: null },
+      <OrgPicker onChange={() => {}} />,
+    );
+    await waitFor(() =>
+      expect(document.querySelector('[data-tenant-chip]')?.textContent).toBe('Organizationnone'),
+    );
   });
 
   it('a picker for several: All organizations first; the choice goes to ?tenant=', async () => {
@@ -52,11 +63,12 @@ describe('<OrgPicker>', () => {
       },
       <OrgPicker onChange={onChange} />,
     );
-    const select = (await screen.findByRole('combobox')) as HTMLInputElement;
-    expect(select.value).toBe('All organizations');
-    expect(await comboOptionNames(select)).toEqual(['All organizations', 'Acmea', 'Betab']);
-    // Matches the id too (the hint), not just the label.
-    await pickComboOption(select, /Beta/, 'b');
+    const select = await scopeButton('Organization');
+    expect(select.getAttribute('aria-haspopup')).toBe('listbox');
+    expect(select.textContent).toBe('OrganizationAll organizations');
+    expect(await scopeOptionNames(select)).toEqual(['All organizations', 'Acmea', 'Betab']);
+    // Matches the id too, not just the label.
+    await pickScopeOption(select, /Beta/, 'b');
     expect(window.location.search).toBe('?tenant=b');
     expect(onChange).toHaveBeenCalledWith('b');
   });
@@ -72,12 +84,12 @@ describe('<OrgPicker>', () => {
       { enabled: true, all: true, tenants, selected: 'org-07' },
       <OrgPicker onChange={onChange} />,
     );
-    const select = (await screen.findByRole('combobox')) as HTMLInputElement;
-    expect(select.value).toBe('Tenant 07');
-    await pickComboOption(select, /Tenant 11/, 'org-11');
+    const select = await scopeButton('Organization');
+    expect(select.textContent).toBe('OrganizationTenant 07');
+    await pickScopeOption(select, /Tenant 11/, 'org-11');
     expect(window.location.search).toBe('?tenant=org-11');
     expect(onChange).toHaveBeenLastCalledWith('org-11');
-    await pickComboOption(select, 'All organizations', 'all');
+    await pickScopeOption(select, 'All organizations', 'all');
     expect(window.location.search).toBe('');
     expect(onChange).toHaveBeenLastCalledWith(null);
   });

@@ -2,13 +2,17 @@ import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentClient, type ConsoleAppsView } from '../client/agent-client.js';
 import { AppPicker, PickedAppNotice } from './AppPicker.js';
-import { comboOptionNames, pickComboOption } from './combo-test-utils.js';
+import { pickScopeOption, scopeButton, scopeOptionNames } from './combo-test-utils.js';
 import { AgentClientContext } from './use-governance.js';
 
+/** A server answering `view`, with `selected` from the URL's `?app=` when it lists that app. */
 function withApps(view: ConsoleAppsView, onChange = vi.fn()) {
-  const fetchFn = vi.fn(
-    async (_url: string) => new Response(JSON.stringify(view), { status: 200 }),
-  );
+  const fetchFn = vi.fn(async (_url: string) => {
+    const app = new URLSearchParams(window.location.search).get('app');
+    const listed = view.apps.some((entry) => entry.id === app);
+    const selected = view.selected ?? (listed ? app : null);
+    return new Response(JSON.stringify({ ...view, selected }), { status: 200 });
+  });
   const client = new AgentClient({ baseUrl: '/agent', fetch: fetchFn as never });
   render(
     <AgentClientContext.Provider value={client}>
@@ -26,7 +30,7 @@ describe('<AppPicker> (federated console)', () => {
   it('renders nothing when the console shows only this app', async () => {
     withApps({ local: { label: 'Hub' }, apps: [], selected: null });
     await new Promise((r) => setTimeout(r, 0));
-    expect(screen.queryByRole('combobox')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^App/ })).toBeNull();
   });
 
   it('puts the picked app in ?app=, drops ?tenant=, and every governance call and decision carries it', async () => {
@@ -36,8 +40,10 @@ describe('<AppPicker> (federated console)', () => {
       apps: [{ id: 'entre-textos', label: 'Entre Textos' }],
       selected: null,
     });
-    const select = await screen.findByRole('combobox');
-    await pickComboOption(select, 'Entre Textos', 'entre');
+    const select = await scopeButton('App');
+    expect(select.getAttribute('aria-haspopup')).toBe('listbox');
+    expect(select.textContent).toBe('AppHub');
+    await pickScopeOption(select, /Entre Textos/, 'entre');
     expect(window.location.search).toBe('?app=entre-textos');
     expect(window.location.hash).toBe('#runs');
     expect(onChange).toHaveBeenCalledWith('entre-textos', { picked: true });
@@ -53,7 +59,8 @@ describe('<AppPicker> (federated console)', () => {
     // The viewer's own quota is this app's: no `app=`.
     if (urls[2] !== undefined) expect(urls[2]).not.toContain('app=');
 
-    await pickComboOption(select, 'Hub');
+    await waitFor(() => expect(select.textContent).toBe('AppEntre Textos'));
+    await pickScopeOption(select, 'Hub');
     expect(window.location.search).toBe('');
   });
 
@@ -80,30 +87,30 @@ describe('<AppPicker> (federated console)', () => {
   it("shows the server's app, not a forged ?app= it does not serve", async () => {
     window.history.replaceState(null, '', '/agent/dashboard?app=forged#runs');
     server();
-    const select = (await screen.findByRole('combobox')) as HTMLInputElement;
-    await waitFor(() => expect(select.value).toBe('Hub'));
+    const select = await scopeButton('App');
+    await waitFor(() => expect(select.textContent).toBe('AppHub'));
   });
 
   it('follows back/forward, and tells the console the app moved', async () => {
     window.history.replaceState(null, '', '/agent/dashboard#runs');
     const { onChange } = server();
-    const select = (await screen.findByRole('combobox')) as HTMLInputElement;
-    await pickComboOption(select, 'Entre Textos');
-    await waitFor(() => expect(select.value).toBe('Entre Textos'));
+    const select = await scopeButton('App');
+    await pickScopeOption(select, /Entre Textos/);
+    await waitFor(() => expect(select.textContent).toBe('AppEntre Textos'));
 
     // "Back": the URL is this app's again, and the browser says so with a popstate.
     act(() => {
       window.history.replaceState(null, '', '/agent/dashboard#runs');
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
-    await waitFor(() => expect(select.value).toBe('Hub'));
+    await waitFor(() => expect(select.textContent).toBe('AppHub'));
     expect(onChange).toHaveBeenLastCalledWith(null, { picked: false });
     // "Forward".
     act(() => {
       window.history.replaceState(null, '', '/agent/dashboard?app=entre-textos#runs');
       window.dispatchEvent(new PopStateEvent('popstate'));
     });
-    await waitFor(() => expect(select.value).toBe('Entre Textos'));
+    await waitFor(() => expect(select.textContent).toBe('AppEntre Textos'));
     expect(onChange).toHaveBeenLastCalledWith('entre-textos', { picked: false });
   });
 
@@ -114,7 +121,7 @@ describe('<AppPicker> (federated console)', () => {
       apps: [{ id: 'entre-textos', label: 'Entre Textos', mode: 'federated', actions: 'app' }],
       selected: 'entre-textos',
     });
-    const select = await screen.findByRole('combobox');
+    const select = await scopeButton('App');
     const badge = await waitFor(() => {
       const found = document.querySelector('[data-app-mode="federated"]');
       expect(found).not.toBeNull();
@@ -122,7 +129,7 @@ describe('<AppPicker> (federated console)', () => {
     });
     expect(badge.textContent).toBe('federated');
     expect(badge.getAttribute('title')).toContain('Actions are sent to Entre Textos');
-    expect(await comboOptionNames(select)).toEqual(['Hub', 'Entre Textosfederated']);
+    expect(await scopeOptionNames(select)).toEqual(['Hub', 'Entre Textosfederated']);
   });
 
   it('shows no tag for this app, nor for an older server that does not say', async () => {
@@ -131,7 +138,7 @@ describe('<AppPicker> (federated console)', () => {
       apps: [{ id: 'entre-textos', label: 'Entre Textos' }],
       selected: null,
     });
-    await screen.findByRole('combobox');
+    await scopeButton('App');
     expect(document.querySelector('[data-app-mode]')).toBeNull();
   });
 });
