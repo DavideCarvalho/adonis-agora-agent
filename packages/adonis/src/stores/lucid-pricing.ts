@@ -5,7 +5,13 @@ import type {
 } from '../spi/pricing-store.js';
 import { validateSchema } from './db-schema.js';
 import type { LucidDatabaseLike } from './lucid.js';
-import { type AgentTableKey, agentTables, ensureAgentTables } from './lucid-schema.js';
+import {
+  type AgentTableKey,
+  agentTables,
+  ensureAgentTables,
+  hasPricingTimestampColumns,
+} from './lucid-schema.js';
+import { toDate } from './timestamps.js';
 
 /** Options for {@link LucidPricingStore}. */
 export interface LucidPricingStoreOptions {
@@ -45,6 +51,11 @@ export class LucidPricingStore implements AgentPricingStore {
   private readonly schema: string | undefined;
   /** The agent tables as the query builder names them (`schema.table` under a schema). */
   private readonly tables: Record<AgentTableKey, string>;
+  /**
+   * Whether `agent_model_pricing` has `created_at` / `updated_at`. Always so when the store provisions
+   * the schema; probed once under `autoCreateTables: false`, where the app's migration may lag.
+   */
+  private timestampColumns: Promise<boolean> | null = null;
 
   constructor(
     private readonly db: LucidDatabaseLike,
@@ -62,6 +73,19 @@ export class LucidPricingStore implements AgentPricingStore {
       : Promise.resolve();
   }
 
+  /** Whether the timestamp columns can be written (see {@link timestampColumns}). */
+  private hasTimestamps(): Promise<boolean> {
+    if (this.autoCreateTables) return Promise.resolve(true);
+    if (this.timestampColumns === null) {
+      const probe = hasPricingTimestampColumns(this.db, this.schema);
+      probe.catch(() => {
+        if (this.timestampColumns === probe) this.timestampColumns = null;
+      });
+      this.timestampColumns = probe;
+    }
+    return this.timestampColumns;
+  }
+
   /** Provision the shared schema now (what the agent provider calls at app start). Idempotent. */
   ensureSchema(): Promise<void> {
     return this.ready();
@@ -69,13 +93,15 @@ export class LucidPricingStore implements AgentPricingStore {
 
   async upsertModelPrice(input: ModelPriceInput): Promise<void> {
     await this.ready();
+    const timestamps = await this.hasTimestamps();
+    const now = Date.now();
     // Atomic supersede in a transaction: retire the model's current row, then insert the new one.
     await this.db.transaction(async (trx) => {
       await trx
         .from(this.tables.modelPricing)
         .where('model_id', input.modelId)
         .where('is_current', 1)
-        .update({ is_current: 0 });
+        .update(timestamps ? { is_current: 0, updated_at: now } : { is_current: 0 });
       await trx.table(this.tables.modelPricing).insert({
         id: crypto.randomUUID(),
         model_id: input.modelId,
@@ -83,8 +109,9 @@ export class LucidPricingStore implements AgentPricingStore {
         output_price_per_1m: input.outputPricePer1m,
         cache_write_price_per_1m: input.cacheWritePricePer1m ?? null,
         cache_read_price_per_1m: input.cacheReadPricePer1m ?? null,
-        effective_from: Date.now(),
+        effective_from: now,
         is_current: 1,
+        ...(timestamps ? { created_at: now, updated_at: now } : {}),
       });
     });
   }
@@ -95,6 +122,8 @@ export class LucidPricingStore implements AgentPricingStore {
     return rows.map((row) => {
       const cacheWrite = row.cache_write_price_per_1m;
       const cacheRead = row.cache_read_price_per_1m;
+      const createdAt = toDate(row.created_at);
+      const updatedAt = toDate(row.updated_at);
       return {
         modelId: String(row.model_id),
         inputPricePer1m: toNum(row.input_price_per_1m),
@@ -106,6 +135,8 @@ export class LucidPricingStore implements AgentPricingStore {
         ...(cacheRead !== null && cacheRead !== undefined
           ? { cacheReadPricePer1m: toNum(cacheRead) }
           : {}),
+        ...(createdAt ? { createdAt } : {}),
+        ...(updatedAt ? { updatedAt } : {}),
       };
     });
   }

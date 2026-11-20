@@ -4,6 +4,7 @@ import {
   formatDuration,
   formatModelLabel,
   formatPercent,
+  formatRecordDate,
   formatTimestamp,
   formatUsd,
 } from './format.js';
@@ -71,5 +72,25 @@ describe('formatTimestamp', () => {
   it('renders — for empty/invalid', () => {
     expect(formatTimestamp('')).toBe('—');
     expect(formatTimestamp('nope')).toBe('—');
+  });
+});
+
+describe('formatRecordDate', () => {
+  it('gives the short date and the full local timestamp', () => {
+    const iso = '2026-11-20T12:34:56.000Z';
+    expect(formatRecordDate(iso)).toEqual({
+      short: new Date(iso).toLocaleDateString(undefined, {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      }),
+      full: new Date(iso).toLocaleString(),
+    });
+  });
+
+  it('is — for an unknown time', () => {
+    for (const value of [null, undefined, '', 'nope']) {
+      expect(formatRecordDate(value)).toEqual({ short: '—', full: '' });
+    }
   });
 });

@@ -217,6 +217,7 @@ export interface GovernanceThreadRow {
   title: string;
   actorRef: string;
   messageCount: number;
+  createdAt: string;
   updatedAt: string;
 }
 
@@ -1094,6 +1095,7 @@ export class InMemoryAgentStore
       title: row.title,
       actorRef: row.actorRef,
       messageCount: row.messages.length,
+      createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     }));
   }

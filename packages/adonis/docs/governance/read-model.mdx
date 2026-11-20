@@ -74,7 +74,7 @@ Two more mount **only when a `pricingStore` is also bound** — the store alread
 
 | Method & path | Purpose |
 | --- | --- |
-| `GET /agent/governance/pricing` | Every model's current per-1M rates. |
+| `GET /agent/governance/pricing` | Every model's current per-1M rates, with `createdAt` / `updatedAt` (ISO 8601 or `null`). |
 | `POST /agent/governance/pricing` | Upsert one model's rates. Body: `{ modelId, inputPricePer1m, outputPricePer1m, cacheWritePricePer1m?, cacheReadPricePer1m? }`. A malformed body is `400`; the write is an atomic supersede, so the previous current row is retired in the same breath. |
 
 And one route answers `501` rather than `404` when it is unsupported:
@@ -133,6 +133,7 @@ interface ThreadActivityRow {
   threadId: string; title: string
   actorRef: string; actorLabel?: string
   messageCount: number; totalTokens: number; lastActivityAt: string
+  createdAt?: string | null; updatedAt?: string | null  // ISO 8601; always sent by the route, null when unknown
 }
 
 // optional: one page at a time, newest first (the built-in read-models have both)
@@ -283,8 +284,12 @@ interface ModelPriceInput {
 
 interface CurrentModelPrice extends ModelPriceInput {
   effectiveFrom: string
+  createdAt?: Date  // when the row was written; absent on a row from before it was recorded
+  updatedAt?: Date  // when the row last changed (retiring it moves this)
 }
 ```
+
+`GET /agent/governance/pricing` sends each row with `createdAt` / `updatedAt` as ISO 8601 strings, or `null` when the row has none (`toModelPriceDto(price)` gives you the same shape).
 
 `upsertModelPrice` is an **atomic supersede**: the model's prior current row is retired and the new one inserted as current in one step, so the cost fold always joins to exactly one live price per model with no window where two rows race. For a batch, `seedModelPrices(store, [...])` applies them in order.
 

@@ -161,6 +161,13 @@ export interface ThreadActivityRow {
   messageCount: number;
   totalTokens: number;
   lastActivityAt: string;
+  /**
+   * When the thread was created (ISO 8601), or `null` when the store does not know. Optional so a
+   * custom read-model keeps compiling; the built-in ones always fill it.
+   */
+  createdAt?: string | null;
+  /** When the thread last changed (ISO 8601), or `null` when unknown. Optional, as `createdAt`. */
+  updatedAt?: string | null;
 }
 
 // ── Run lifecycle read-model ─────────────────────────────────────────────────

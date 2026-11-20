@@ -197,6 +197,17 @@ const prices: CurrentModelPrice[] = [
     inputPricePer1m: 3,
     outputPricePer1m: 15,
     effectiveFrom: '2026-03-01T00:00:00.000Z',
+    createdAt: '2026-03-01T00:00:00.000Z',
+    updatedAt: '2026-03-01T00:00:00.000Z',
+  },
+  {
+    // A row written before the timestamps existed.
+    modelId: 'legacy-model',
+    inputPricePer1m: 1,
+    outputPricePer1m: 2,
+    effectiveFrom: '2026-01-01T00:00:00.000Z',
+    createdAt: null,
+    updatedAt: null,
   },
 ];
 
@@ -477,6 +488,26 @@ describe('ThreadDetailView', () => {
     expect(client.threadDetail).toHaveBeenCalledWith('thread-abc12345');
     expect(screen.getByText('Lifetime tokens')).toBeTruthy();
     expect(screen.getByText('support')).toBeTruthy();
+  });
+
+  it('shows when the thread was created and last updated, full timestamp on hover', async () => {
+    const client = fakeClient();
+    renderWith(client, <ThreadDetailView threadId="thread-abc12345" onBack={() => {}} />);
+    await waitFor(() => expect(screen.getByText('Where is my order?')).toBeTruthy());
+
+    const created = screen.getByText('Created').querySelector('time') as HTMLElement;
+    const updated = screen.getByText('Updated').querySelector('time') as HTMLElement;
+    const short = (iso: string) =>
+      new Date(iso).toLocaleDateString(undefined, {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      });
+    expect(created.textContent).toBe(short('2026-03-01T00:00:00.000Z'));
+    expect(created.getAttribute('title')).toBe(
+      new Date('2026-03-01T00:00:00.000Z').toLocaleString(),
+    );
+    expect(updated.textContent).toBe(short('2026-03-07T10:00:00.000Z'));
   });
 
   it('shows a deleted-thread banner', async () => {
@@ -945,6 +976,27 @@ describe('PricingSection', () => {
         expect.objectContaining({ modelId: 'claude-x', inputPricePer1m: 3, outputPricePer1m: 15 }),
       ),
     );
+  });
+
+  it('shows an Updated column: the short date with the full timestamp, — when unknown', async () => {
+    const client = fakeClient();
+    renderWith(client, <PricingSection />);
+    await waitFor(() => expect(screen.getByText('gpt-4o')).toBeTruthy());
+
+    expect(screen.getByRole('columnheader', { name: 'Updated' })).toBeTruthy();
+    const row = screen.getByText('gpt-4o').closest('tr') as HTMLElement;
+    const time = row.querySelector('time') as HTMLElement;
+    expect(time.textContent).toBe(
+      new Date('2026-03-01T00:00:00.000Z').toLocaleDateString(undefined, {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      }),
+    );
+    expect(time.getAttribute('title')).toBe(new Date('2026-03-01T00:00:00.000Z').toLocaleString());
+    const legacy = screen.getByText('legacy-model').closest('tr') as HTMLElement;
+    expect(legacy.querySelector('time')?.textContent).toBe('—');
+    expect(legacy.querySelector('time')?.getAttribute('title')).toBeNull();
   });
 
   it('turns Save price off, with the reason, for a federated app that is read-only here', async () => {
