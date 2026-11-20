@@ -1,5 +1,11 @@
 # @adonis-agora/agent-dashboard
 
+## 1.0.0-rc.19
+
+### Minor Changes
+
+- [#654](https://github.com/DavideCarvalho/adonis-agora-agent/pull/654) [`52e6406`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/52e6406f308887111dfbd57f14aa88aa58e2ff8f) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Pricing lists when each rate was last updated (short date, full timestamp on hover, `—` for a row from before it was recorded), the thread detail shows when the thread was created and last updated, and the threads list's last activity shows the full timestamp on hover.
+
 ## 1.0.0-rc.18
 
 ### Patch Changes
