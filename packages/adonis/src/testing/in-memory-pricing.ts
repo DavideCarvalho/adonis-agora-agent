@@ -10,11 +10,15 @@ export class InMemoryPricingStore implements AgentPricingStore {
   private readonly prices = new Map<string, CurrentModelPrice>();
 
   async upsertModelPrice(input: ModelPriceInput): Promise<void> {
+    // A new current row, like the SQL adapter's supersede: written (and last changed) now.
+    const now = new Date();
     this.prices.set(input.modelId, {
       modelId: input.modelId,
       inputPricePer1m: input.inputPricePer1m,
       outputPricePer1m: input.outputPricePer1m,
-      effectiveFrom: new Date().toISOString(),
+      effectiveFrom: now.toISOString(),
+      createdAt: new Date(now),
+      updatedAt: new Date(now),
       ...(input.cacheWritePricePer1m !== undefined
         ? { cacheWritePricePer1m: input.cacheWritePricePer1m }
         : {}),
@@ -25,6 +29,10 @@ export class InMemoryPricingStore implements AgentPricingStore {
   }
 
   async listCurrentPrices(): Promise<CurrentModelPrice[]> {
-    return [...this.prices.values()];
+    return [...this.prices.values()].map((price) => ({
+      ...price,
+      ...(price.createdAt ? { createdAt: new Date(price.createdAt) } : {}),
+      ...(price.updatedAt ? { updatedAt: new Date(price.updatedAt) } : {}),
+    }));
   }
 }

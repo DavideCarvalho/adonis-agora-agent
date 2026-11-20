@@ -152,6 +152,7 @@ import { PRICE_INPUT_SHAPE, parseModelPriceInput } from '../src/pricing/price-in
 import type { ListActionProposals } from '../src/spi/action-proposal-store.js';
 import { catalogModelIds, staticCatalogView } from '../src/spi/model-catalog.js';
 import type { DescribedModel } from '../src/spi/model-provider.js';
+import { toModelPriceDto } from '../src/spi/pricing-store.js';
 import type { PresentationErrorHandler } from '../src/spi/tool.js';
 import { describeStackUse, modelProviderUses } from '../src/stack.js';
 import { assertSchemaName } from '../src/stores/db-schema.js';
@@ -2494,11 +2495,11 @@ export default class AgentProvider {
             return this.#onApp(ctx, picked, async (app) =>
               app.pricing === undefined
                 ? noPricing(ctx)
-                : ctx.response.json(await app.pricing.listCurrentPrices()),
+                : ctx.response.json((await app.pricing.listCurrentPrices()).map(toModelPriceDto)),
             );
           }
           if (pricing === undefined) return noPricing(ctx);
-          return ctx.response.json(await pricing.listCurrentPrices());
+          return ctx.response.json((await pricing.listCurrentPrices()).map(toModelPriceDto));
         });
 
         // POST /agent/governance/pricing — upsert one model's rate (atomic supersede; see

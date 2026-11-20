@@ -325,6 +325,8 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
             messageCount: thread.messageCount,
             totalTokens,
             lastActivityAt: thread.updatedAt,
+            createdAt: thread.createdAt,
+            updatedAt: thread.updatedAt,
           },
         };
       })
@@ -707,9 +709,7 @@ export class InMemoryGovernanceQueries implements AgentGovernanceQueries {
       threadId: thread.threadId,
       title: thread.title,
       actorRef: thread.actorRef,
-      // GovernanceThreadRow carries no separate createdAt — updatedAt is the closest fact the
-      // in-memory store tracks, unlike the Lucid twin which reads the real thread row.
-      createdAt: thread.updatedAt,
+      createdAt: thread.createdAt,
       updatedAt: thread.updatedAt,
       deleted: false,
       usage: {

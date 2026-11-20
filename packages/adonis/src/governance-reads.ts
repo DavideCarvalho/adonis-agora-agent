@@ -23,7 +23,7 @@ import {
   windowPage,
 } from './list-api.js';
 import type { ActorDirectory } from './spi/actor-directory.js';
-import type { AgentGovernanceQueries } from './spi/governance-queries.js';
+import type { AgentGovernanceQueries, ThreadActivityRow } from './spi/governance-queries.js';
 import { decodeKeyset } from './stores/keyset.js';
 
 /** Page sizes of the governance lists. */
@@ -118,12 +118,20 @@ export async function governanceThreadsPage(
         first: paging.size,
         ...(paging.after !== undefined ? { after: paging.after } : {}),
       });
-      return cursorPage({ ...page, items: await withActorLabels(page.items, directory) });
+      return cursorPage({
+        ...page,
+        items: await withActorLabels(page.items.map(threadTimestamps), directory),
+      });
     }
   }
   const window = parseListWindow(qs, GOVERNANCE_LIST_SIZES);
   const page = windowPage(await gov.recentThreads(windowFetchSize(window)), window);
-  return { ...page, data: await withActorLabels(page.data, directory) };
+  return { ...page, data: await withActorLabels(page.data.map(threadTimestamps), directory) };
+}
+
+/** A thread row always carries `createdAt` / `updatedAt` on the wire: `null` when its read-model has none. */
+function threadTimestamps(row: ThreadActivityRow): ThreadActivityRow {
+  return { ...row, createdAt: row.createdAt ?? null, updatedAt: row.updatedAt ?? null };
 }
 
 const isKeysetCursor = (cursor: string) => decodeKeyset(cursor) !== null;

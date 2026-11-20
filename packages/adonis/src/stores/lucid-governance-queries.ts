@@ -53,6 +53,7 @@ import {
 } from './lucid-schema.js';
 import { portableSql } from './sql-dialect.js';
 import { tenantPredicate } from './tenant-sql.js';
+import { toIsoOrNull } from './timestamps.js';
 
 function toInt(value: unknown): number {
   if (typeof value === 'number') return value;
@@ -919,6 +920,8 @@ export class LucidGovernanceQueries implements AgentGovernanceQueries {
           messageCount: messageCounts.get(threadId) ?? 0,
           totalTokens: tokenTotals.get(threadId) ?? 0,
           lastActivityAt: new Date(toInt(thread.updated_at)).toISOString(),
+          createdAt: toIsoOrNull(thread.created_at),
+          updatedAt: toIsoOrNull(thread.updated_at),
         },
       };
     });

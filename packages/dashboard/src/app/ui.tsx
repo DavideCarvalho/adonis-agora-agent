@@ -4,6 +4,7 @@ import { cn } from '../agora-kit/lib/utils';
 import { Badge } from '../agora-kit/ui/badge';
 import { Card } from '../agora-kit/ui/card';
 import { Skeleton } from '../agora-kit/ui/skeleton';
+import { formatRecordDate } from '../client/format.js';
 
 /**
  * Agent-console presentational helpers on top of the Agora kit: chart palette, share bars, status
@@ -36,6 +37,16 @@ export const fieldClass =
 
 /** Numeric table cell text. */
 export const numClass = 'mono tnum text-fg-2';
+
+/** A created/updated time: the short date, the full timestamp on hover; `—` when unknown. */
+export function RecordDate({ iso }: { iso: string | null | undefined }) {
+  const { short, full } = formatRecordDate(iso);
+  return (
+    <time className="mono tnum" {...(full ? { title: full, dateTime: iso ?? undefined } : {})}>
+      {short}
+    </time>
+  );
+}
 
 /** A normalized 0..1 progress bar; `color` overrides the accent fill. */
 export function ShareBar({ fraction, color }: { fraction: number; color?: string }) {

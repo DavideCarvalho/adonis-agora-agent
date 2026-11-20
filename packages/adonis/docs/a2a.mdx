@@ -142,7 +142,8 @@ used — signed with your IdP keystore, verifiable through the delegation JWKS.
 - A repeated `messageId` in the same context returns the stored reply without running the agent again.
 
 Ownership and replies live in two tables (`agent_a2a_context`, `agent_a2a_message`), created on first
-use (`store: 'lucid'`, the default). `store: 'memory'` keeps them in-process; any `A2aStore` works.
+use (`store: 'lucid'`, the default). `getContext` returns a context with its `createdAt` and `updatedAt`
+(the account binding moves `updatedAt`). `store: 'memory'` keeps them in-process; any `A2aStore` works.
 
 ## Configuration
 

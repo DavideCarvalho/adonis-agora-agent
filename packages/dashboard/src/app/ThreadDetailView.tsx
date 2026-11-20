@@ -8,7 +8,7 @@ import { QueryBoundary } from '../agora-kit/blocks/query-boundary';
 import { formatCount, formatTimestamp, formatUsd } from '../client/format.js';
 import type { GovernanceThreadDetail, RunSummaryRow } from '../client/types.js';
 import { MessageList } from './MessageList.js';
-import { BackBar, numClass, StatusBadge } from './ui.js';
+import { BackBar, numClass, RecordDate, StatusBadge } from './ui.js';
 import { asQuery, useThreadDetail } from './use-governance.js';
 
 const threadRunColumns: Column<RunSummaryRow>[] = [
@@ -82,12 +82,22 @@ export function ThreadDetailView({ threadId, onBack }: { threadId: string; onBac
 
 /** The thread detail (presentational). */
 export function ThreadDetailBody({ detail }: { detail: GovernanceThreadDetail }) {
-  const { title, actorRef, deleted, usage, runs, messages } = detail;
+  const { title, actorRef, deleted, usage, runs, messages, createdAt, updatedAt } = detail;
   return (
     <>
       <PageHeader
         title={title || 'untitled'}
-        description={<span className="mono">{actorRef}</span>}
+        description={
+          <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="mono">{actorRef}</span>
+            <span>
+              Created <RecordDate iso={createdAt} />
+            </span>
+            <span>
+              Updated <RecordDate iso={updatedAt} />
+            </span>
+          </span>
+        }
       />
       {deleted && (
         <div

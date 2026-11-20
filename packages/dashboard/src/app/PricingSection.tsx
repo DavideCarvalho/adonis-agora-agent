@@ -14,7 +14,7 @@ import { formatTimestamp, formatUsd } from '../client/format.js';
 import type { CurrentModelPrice } from '../client/types.js';
 import { actionsBlockedFor, usePickedApp } from './AppPicker.js';
 import { TagIcon } from './icons.js';
-import { fieldClass, Notice, numClass, TableSkeleton } from './ui.js';
+import { fieldClass, Notice, numClass, RecordDate, TableSkeleton } from './ui.js';
 import { asQuery, useAgentClient, usePricing, useSpendByModel } from './use-governance.js';
 
 const emptyForm = {
@@ -64,6 +64,13 @@ const priceColumns: Column<CurrentModelPrice>[] = [
     align: 'right',
     hideBelow: 'lg',
     cell: (p) => <span className="mono tnum">{formatTimestamp(p.effectiveFrom)}</span>,
+  },
+  {
+    id: 'updated',
+    header: 'Updated',
+    align: 'right',
+    hideBelow: 'lg',
+    cell: (p) => <RecordDate iso={p.updatedAt} />,
   },
 ];
 

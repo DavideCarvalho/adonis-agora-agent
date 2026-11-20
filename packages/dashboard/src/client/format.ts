@@ -52,6 +52,20 @@ export function formatModelLabel(modelId: string): string {
   return profile.replace(/^[a-z]{2}[a-z-]*\.[a-z0-9]+\./, '');
 }
 
+/**
+ * A record's created/updated time for a list cell or detail field: a short date (`Mar 7, 2026`) and
+ * the full local timestamp for its `title`. `null`/`undefined`/invalid → `{ short: '—', full: '' }`.
+ */
+export function formatRecordDate(iso: string | null | undefined): { short: string; full: string } {
+  if (iso === null || iso === undefined || iso === '') return { short: '—', full: '' };
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return { short: '—', full: '' };
+  return {
+    short: date.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }),
+    full: date.toLocaleString(),
+  };
+}
+
 /** Format an ISO timestamp as a short, locale-stable `MMM D, HH:MM` label; `''`/invalid → `—`. */
 export function formatTimestamp(iso: string): string {
   if (iso === '') return '—';

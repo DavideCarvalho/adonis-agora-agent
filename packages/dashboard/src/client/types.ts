@@ -85,6 +85,10 @@ export interface ThreadActivityRow {
   messageCount: number;
   totalTokens: number;
   lastActivityAt: string;
+  /** When the thread was created (ISO 8601); `null`/absent when the server does not know. */
+  createdAt?: string | null;
+  /** When the thread last changed (ISO 8601); `null`/absent when the server does not know. */
+  updatedAt?: string | null;
 }
 
 /** The day window of `GET /agent/quota` — the caller's token spend so far today. */
@@ -364,6 +368,10 @@ export interface ModelPriceInput {
 /** A current price row as read back from `GET /agent/governance/pricing`. */
 export interface CurrentModelPrice extends ModelPriceInput {
   effectiveFrom: string;
+  /** When the row was written (ISO 8601); `null`/absent on a row from before it was recorded. */
+  createdAt?: string | null;
+  /** When the row last changed (ISO 8601); `null`/absent on a row from before it was recorded. */
+  updatedAt?: string | null;
 }
 
 // ── Generative-UI telemetry (`GET /agent/governance/genui`) ──────────────────

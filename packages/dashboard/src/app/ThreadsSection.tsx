@@ -8,7 +8,7 @@ import { Panel } from '../agora-kit/blocks/panel';
 import { QueryBoundary } from '../agora-kit/blocks/query-boundary';
 import { PageBody } from '../agora-kit/shell/app-shell';
 import { splitHash } from '../agora-kit/url-state/hash-url';
-import { formatCount, formatTimestamp } from '../client/format.js';
+import { formatCount, formatRecordDate, formatTimestamp } from '../client/format.js';
 import type { ThreadActivityRow } from '../client/types.js';
 import { ThreadDetailView } from './ThreadDetailView.js';
 import { numClass, TableSkeleton } from './ui.js';
@@ -63,7 +63,15 @@ const threadColumns: Column<ThreadActivityRow>[] = [
     header: 'Last activity',
     align: 'right',
     hideBelow: 'md',
-    cell: (row) => <span className="mono tnum">{formatTimestamp(row.lastActivityAt)}</span>,
+    // The thread's `updatedAt`: every message moves it.
+    cell: (row) => (
+      <span
+        className="mono tnum"
+        title={formatRecordDate(row.updatedAt ?? row.lastActivityAt).full}
+      >
+        {formatTimestamp(row.lastActivityAt)}
+      </span>
+    ),
   },
 ];
 

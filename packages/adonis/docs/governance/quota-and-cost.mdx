@@ -222,6 +222,7 @@ keeps `cost_usd` NULL and `cost_source` NULL.
 | `cache_write_price_per_1m` / `cache_read_price_per_1m` | optional cache rates (write ≈ 1.25× input, read ≈ 0.1× input) |
 | `effective_from` | epoch-ms the price took effect |
 | `is_current` | whether this is the active row for the model |
+| `created_at` / `updated_at` | epoch-ms the row was written / last changed (retiring a row moves `updated_at`); `NULL` on rows written before these columns existed |
 
 Seed it with the current prices for the models you use; leave it empty and you still get token accounting, just no cost estimate.
 

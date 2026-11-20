@@ -322,7 +322,9 @@ export function createTableStatements(schema?: string): string[] {
       "cache_write_price_per_1m" DOUBLE PRECISION NULL,
       "cache_read_price_per_1m" DOUBLE PRECISION NULL,
       "effective_from" BIGINT NOT NULL,
-      "is_current" INTEGER NOT NULL
+      "is_current" INTEGER NOT NULL,
+      "created_at" BIGINT NULL,
+      "updated_at" BIGINT NULL
     )`,
     `CREATE TABLE IF NOT EXISTS ${q.runs} (
       "id" VARCHAR(255) PRIMARY KEY NOT NULL,
@@ -516,6 +518,11 @@ const ADDITIVE_COLUMNS: readonly { table: string; column: string; type: string }
   { table: AGENT_TABLES.runs, column: 'model_calls', type: 'INTEGER NULL' },
   { table: AGENT_TABLES.runs, column: 'tool_calls', type: 'INTEGER NULL' },
   { table: AGENT_TABLES.runs, column: 'timings', type: 'TEXT NULL' },
+  // When a price row was written and last changed (epoch ms; retiring a row moves `updated_at`).
+  // NULL-able with no default, so adding them is instant and old rows are left as they were: a
+  // row from before reads back without either.
+  { table: AGENT_TABLES.modelPricing, column: 'created_at', type: 'BIGINT NULL' },
+  { table: AGENT_TABLES.modelPricing, column: 'updated_at', type: 'BIGINT NULL' },
 ];
 
 /**
@@ -697,6 +704,48 @@ export async function hasRunTimingColumns(db: LucidRawRunner, schema?: string): 
   return (
     (await hasColumn(runner, AGENT_TABLES.runs, 'queue_ms', schema)) &&
     (await hasColumn(runner, AGENT_TABLES.runs, 'timings', schema))
+  );
+}
+
+/**
+ * Add each of `columns` its table is missing (`ALTER TABLE … ADD COLUMN`), the same lock-free,
+ * race-safe repair {@link createAgentTables} runs — for the other tables this package provisions
+ * (A2A, Poppy). Returns the `<table>.<column>` repairs issued.
+ */
+export async function addMissingColumns(
+  db: LucidRawRunner,
+  columns: readonly { table: string; column: string; type: string }[],
+  schema?: string,
+): Promise<string[]> {
+  const mysql = isMySql(db);
+  const repairs: string[] = [];
+  for (const { table, column, type } of columns) {
+    if (await hasColumn(db, table, column, schema)) continue;
+    await issue(
+      db,
+      forDialect(
+        `ALTER TABLE ${qualifiedSql(table, schema)} ADD COLUMN "${column}" ${type}`,
+        mysql,
+      ),
+      () => hasColumn(db, table, column, schema),
+    );
+    repairs.push(`${table}.${column}`);
+  }
+  return repairs;
+}
+
+/**
+ * Whether `agent_model_pricing` has its `created_at` / `updated_at` columns — what
+ * `LucidPricingStore` checks under `autoCreateTables: false`. Probed like {@link hasLedgerColumns}.
+ */
+export async function hasPricingTimestampColumns(
+  db: LucidRawRunner,
+  schema?: string,
+): Promise<boolean> {
+  const runner = schemaRunner(db);
+  return (
+    (await hasColumn(runner, AGENT_TABLES.modelPricing, 'created_at', schema)) &&
+    (await hasColumn(runner, AGENT_TABLES.modelPricing, 'updated_at', schema))
   );
 }
 

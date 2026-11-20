@@ -1,3 +1,4 @@
+import { toIsoOrNull } from '../stores/timestamps.js';
 import type { MessageUsage } from '../types.js';
 
 /**
@@ -23,6 +24,10 @@ export interface ModelPriceInput {
 /** A current price row as read back, with the ISO timestamp it took effect. */
 export interface CurrentModelPrice extends ModelPriceInput {
   effectiveFrom: string;
+  /** When the row was written. Absent when the store does not record it (or on an older row). */
+  createdAt?: Date;
+  /** When the row last changed. Absent when the store does not record it (or on an older row). */
+  updatedAt?: Date;
 }
 
 export interface AgentPricingStore {
@@ -122,4 +127,24 @@ export function resolveModelPrice(
     if (price !== undefined) return price;
   }
   return undefined;
+}
+
+/**
+ * A current price as the JSON APIs send it (`GET <path>/governance/pricing`): the row, with
+ * `createdAt` / `updatedAt` as ISO 8601 strings, or `null` when the store did not record them.
+ */
+export interface ModelPriceDto extends ModelPriceInput {
+  effectiveFrom: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+/** {@link CurrentModelPrice} → {@link ModelPriceDto}. */
+export function toModelPriceDto(price: CurrentModelPrice): ModelPriceDto {
+  const { createdAt, updatedAt, ...rest } = price;
+  return {
+    ...rest,
+    createdAt: toIsoOrNull(createdAt),
+    updatedAt: toIsoOrNull(updatedAt),
+  };
 }

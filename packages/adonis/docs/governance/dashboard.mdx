@@ -209,14 +209,14 @@ footer. Below 768px the sidebar becomes a drawer and the pickers move to the top
 | --- | --- |
 | **Overview** | Spend and token stats, spend by model (donut + table), spend by feature — agent turns and [recorded usage](/docs/agent/governance/quota-and-cost#recording-usage-outside-agent-turns) (transcription, TTS, direct calls) side by side, in the units each billed — the usage trend, spend by actor. |
 | **Runs** | Filterable, cursor-paginated run list (status, agent, actor, date range). A row opens the full trace. |
-| **Threads** | Recent threads, and a drill-down with lifetime usage, recent runs and recent messages. |
+| **Threads** | Recent threads by last activity, and a drill-down with when the thread was created and last updated, lifetime usage, recent runs and recent messages. |
 | **Tool calls** | The recent tool-call feed. |
 | **Approvals** | The cross-actor HITL inbox — **and the approve/reject buttons.** |
 | **Tools** | Per-tool rollup: calls, failures, rejections, mean, p50 and p95 duration. Sortable. |
 | **Reliability** | Run-outcome breakdown and reliability stats, time to first token and turn duration (p50/p95), failures by code. |
 | **Generative UI** | How often UI tool calls are accepted on the first try, per tool and model, their common errors, UI cost per turn and per day, and time to first frame. |
 | **Quota** | Today's spend for the calling actor — the one per-actor panel. |
-| **Pricing** | Current per-1M model rates, **and an editor to upsert them.** |
+| **Pricing** | Current per-1M model rates with when each was last updated, **and an editor to upsert them.** |
 
 <Callout type="warn" title="It is not a read-only console">
 Two pages write. **Approvals** posts to `/agent/tool-call/approve` and `/agent/tool-call/reject`, which resumes or rejects a suspended run — a real, irreversible side effect on someone else's conversation. **Pricing** posts to `/agent/governance/pricing`, which changes what every subsequent turn costs and, because rollups are computed against current prices, what your spend reports say.

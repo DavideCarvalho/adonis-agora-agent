@@ -5,8 +5,9 @@ import {
   validateSchema,
 } from '../stores/db-schema.js';
 import type { LucidClientLike, LucidRawRunner } from '../stores/lucid.js';
-import { forDialect } from '../stores/lucid-schema.js';
+import { addMissingColumns, forDialect } from '../stores/lucid-schema.js';
 import { isMySql } from '../stores/sql-dialect.js';
+import { toDate } from '../stores/timestamps.js';
 
 /**
  * A2A conversation state the agent tables do not carry: who a `contextId` belongs to, and the reply
@@ -26,6 +27,13 @@ export interface A2aContext {
   agentSub: string;
   /** The account a delegated turn ran as; `null` until one does. */
   accountRef: string | null;
+  /** When the context was created. Set by the store; absent on a store that does not record it. */
+  createdAt?: Date;
+  /**
+   * When the context last changed (its account binding). Set by the store; absent on a store that
+   * does not record it, and on a context created before it was recorded.
+   */
+  updatedAt?: Date;
 }
 
 /** Where a `messageId` stands: never seen (now claimed), still running, or answered. */
@@ -57,17 +65,26 @@ export class InMemoryA2aStore implements A2aStore {
 
   async getContext(id: string): Promise<A2aContext | null> {
     const found = this.#contexts.get(id);
-    return found ? { ...found } : null;
+    if (!found) return null;
+    return {
+      ...found,
+      ...(found.createdAt ? { createdAt: new Date(found.createdAt) } : {}),
+      ...(found.updatedAt ? { updatedAt: new Date(found.updatedAt) } : {}),
+    };
   }
 
   async createContext(context: A2aContext): Promise<void> {
-    this.#contexts.set(context.id, { ...context });
+    const now = new Date();
+    this.#contexts.set(context.id, { ...context, createdAt: now, updatedAt: new Date(now) });
   }
 
   async bindAccount(id: string, accountRef: string): Promise<boolean> {
     const context = this.#contexts.get(id);
     if (!context) return false;
-    if (context.accountRef === null) context.accountRef = accountRef;
+    if (context.accountRef === null) {
+      context.accountRef = accountRef;
+      context.updatedAt = new Date();
+    }
     return context.accountRef === accountRef;
   }
 
@@ -109,7 +126,8 @@ export function a2aTableStatements(schema?: string): string[] {
       "agent_issuer" VARCHAR(2048) NOT NULL,
       "agent_sub" VARCHAR(255) NOT NULL,
       "account_ref" VARCHAR(255) NULL,
-      "created_at" BIGINT NOT NULL
+      "created_at" BIGINT NOT NULL,
+      "updated_at" BIGINT NULL
     )`,
     `CREATE TABLE IF NOT EXISTS ${qualifiedSql(t.messages, schema)} (
       "context_id" VARCHAR(255) NOT NULL,
@@ -136,7 +154,15 @@ export async function ensureA2aTables(
     // MySQL reads `"quoted"` names as strings: backticks there, like the other stores' DDL.
     await db.rawQuery(forDialect(statement, mysql));
   }
+  // Added after the table first shipped: `CREATE TABLE IF NOT EXISTS` cannot reach an existing one.
+  // NULL-able with no default — instant, and a context from before simply has none.
+  await addMissingColumns(db, A2A_ADDITIVE_COLUMNS, schema);
 }
+
+/** Columns added to the A2A tables after they first shipped. */
+const A2A_ADDITIVE_COLUMNS = [
+  { table: A2A_TABLES.contexts, column: 'updated_at', type: 'BIGINT NULL' },
+] as const;
 
 /** {@link A2aStore} over Lucid (any of SQLite / Postgres / MySQL). */
 export class LucidA2aStore implements A2aStore {
@@ -163,17 +189,21 @@ export class LucidA2aStore implements A2aStore {
       agentIssuer: String(row.agent_issuer),
       agentSub: String(row.agent_sub),
       accountRef: row.account_ref == null ? null : String(row.account_ref),
+      ...withDate('createdAt', row.created_at),
+      ...withDate('updatedAt', row.updated_at),
     };
   }
 
   async createContext(context: A2aContext): Promise<void> {
+    const now = Date.now();
     await this.db.table(this.#tables.contexts).insert({
       id: context.id,
       brand: context.brand,
       agent_issuer: context.agentIssuer,
       agent_sub: context.agentSub,
       account_ref: context.accountRef,
-      created_at: Date.now(),
+      created_at: now,
+      updated_at: now,
     });
   }
 
@@ -182,7 +212,7 @@ export class LucidA2aStore implements A2aStore {
       .from(this.#tables.contexts)
       .where('id', id)
       .whereNull('account_ref')
-      .update({ account_ref: accountRef });
+      .update({ account_ref: accountRef, updated_at: Date.now() });
     // Re-read rather than trust the update count: a concurrent bind to the SAME account also wins.
     const context = await this.getContext(id);
     return context?.accountRef === accountRef;
@@ -230,4 +260,13 @@ export class LucidA2aStore implements A2aStore {
       .where('message_id', messageId)
       .first();
   }
+}
+
+/** `{ [key]: Date }` when `value` is a time, else nothing — so an unknown time stays absent. */
+function withDate<K extends 'createdAt' | 'updatedAt'>(
+  key: K,
+  value: unknown,
+): Partial<Record<K, Date>> {
+  const date = toDate(value);
+  return date ? ({ [key]: date } as Partial<Record<K, Date>>) : {};
 }
