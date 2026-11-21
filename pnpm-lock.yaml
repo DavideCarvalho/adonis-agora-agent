@@ -315,8 +315,8 @@ importers:
         specifier: 1.0.3
         version: 1.0.3(react@19.3.1)(supports-color@10.2.2)
       '@streamdown/mermaid':
-        specifier: 1.0.3
-        version: 1.0.3(react@19.3.1)
+        specifier: 1.0.4
+        version: 1.0.4(react@19.3.1)
       '@tailwindcss/vite':
         specifier: 4.3.5
         version: 4.3.5(vite@8.3.8(@types/node@26.6.6)(esbuild@0.28.2)(jiti@2.7.0)(sass@1.108.2)(terser@5.51.2)(yaml@2.9.1))
@@ -2789,8 +2789,8 @@ packages:
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
 
-  '@streamdown/mermaid@1.0.3':
-    resolution: {integrity: sha512-TgdL9Evm4CiaBaADjQVCaXe5eEZpJpTZ7JYw/OY1OO2JCmlc/6DN2DISXj+KUYAzRw+GgJioCoorpuCN/OIXyA==}
+  '@streamdown/mermaid@1.0.4':
+    resolution: {integrity: sha512-27Ggo/h/onTDal4hhspNpNVQHdCcbykd31not+7YcFur7ImdY8y56N2GZzj1OdnRzG9eu6SUqRwFd3BKsMu25Q==}
     peerDependencies:
       react: ^18.0.0 || ^19.0.0
 
@@ -9048,7 +9048,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@streamdown/mermaid@1.0.3(react@19.3.1)':
+  '@streamdown/mermaid@1.0.4(react@19.3.1)':
     dependencies:
       mermaid: 11.17.2
       react: 19.3.1
