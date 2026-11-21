@@ -326,7 +326,7 @@
     "check:agora-doctor": "node ../../scripts/check-agora-doctor.mjs ."
   },
   "dependencies": {
-    "@adonis-agora/filter": ">=1.0.0-rc.5 <2.0.0",
+    "@adonis-agora/filter": "1.0.0-rc.5",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@standard-schema/spec": "1.1.0",
     "@tailwindcss/browser": "4.3.5",
