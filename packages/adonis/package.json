@@ -491,7 +491,7 @@
     "@adonis-agora/durable": "0.60.0",
     "@adonis-agora/telescope": "0.27.1",
     "@adonisjs/assembler": "8.6.0",
-    "@adonisjs/auth": "10.1.0",
+    "@adonisjs/auth": "10.1.1",
     "@adonisjs/core": "7.6.0",
     "@adonisjs/lucid": "22.4.2",
     "@adonisjs/redis": "11.0.0",
