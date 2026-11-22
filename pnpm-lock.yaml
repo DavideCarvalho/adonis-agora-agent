@@ -291,8 +291,8 @@ importers:
         specifier: 5.3.0
         version: 5.3.0
       '@json-render/core':
-        specifier: 0.23.1
-        version: 0.23.1(zod@4.6.7)
+        specifier: 0.23.2
+        version: 0.23.2(zod@4.6.7)
       '@json-render/react':
         specifier: 0.22.0
         version: 0.22.0(react@19.3.1)(zod@4.6.7)
@@ -1935,8 +1935,8 @@ packages:
     peerDependencies:
       zod: ^4.0.0
 
-  '@json-render/core@0.23.1':
-    resolution: {integrity: sha512-FVTxhxucSNdcZe9CWQ/767N/vtj4f5YLu5BEY8P8eXYs80tvbKh/26avadTEDaAMfCnnyGRsuA/POzyvA2O85A==}
+  '@json-render/core@0.23.2':
+    resolution: {integrity: sha512-2BRXjS2uWLLmlPnlw9kvtCYJFSmnYqBhUyqf6dx7MheKhedGoz80rf4s0XTdGDVue2MLwnFqpcamcEnHi1HLeQ==}
     peerDependencies:
       zod: ^4.0.0
 
@@ -8280,7 +8280,7 @@ snapshots:
     dependencies:
       zod: 4.6.7
 
-  '@json-render/core@0.23.1(zod@4.6.7)':
+  '@json-render/core@0.23.2(zod@4.6.7)':
     dependencies:
       zod: 4.6.7
 
