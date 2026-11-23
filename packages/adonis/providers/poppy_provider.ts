@@ -4,29 +4,32 @@ import { AgentService } from '../src/agent-service.js';
 import { globalPoppyAuthenticate } from '../src/poppy/auth.js';
 import { PoppyConversations } from '../src/poppy/conversations.js';
 import type { PoppyConfig } from '../src/poppy/define_config.js';
-import { announcePoppyEndpoints, poppyConversationsUrl } from '../src/poppy/endpoints.js';
+import {
+  announcePoppyEndpoints,
+  DEFAULT_POPPY_DESCRIPTION,
+  poppyConversationsUrl,
+} from '../src/poppy/endpoints.js';
 import { adonisExchange, createPoppyHandler } from '../src/poppy/handler.js';
 import { type PoppyRequestHandler, setPoppyHandler } from '../src/poppy/runtime.js';
 import { InMemoryPoppyStore, LucidPoppyStore, type PoppyStore } from '../src/poppy/store.js';
 import { ToolRegistry } from '../src/tool-registry.js';
 
 /**
- * Exposes a registered agent as the Company Agent of Personal Agent Protocol ("Poppy", Draft 0.3)
+ * Exposes a registered agent as the Company Agent of Personal Agent Protocol ("Poppy", 1.0)
  * conversations (§8). Reads `config/poppy.ts` and answers, under its `path`:
  *
  * - `POST {path}` — start a conversation (or a Direct Conversation) with its first message;
  * - `POST {path}/{id}/messages` — another message;
  * - `GET {path}/{id}/events` — read events (cursor, `wait`), or stream them as SSE;
- * - `POST {path}/{id}/handoff`, `POST {path}/{id}/close`.
+ * - `POST {path}/{id}/handoff`, `POST {path}/{id}/handoff/cancel`, `POST {path}/{id}/close`.
  *
  * Mounted as SERVER middleware, ahead of the router, like the A2A surface: requests are
  * authenticated by their Session header before the body is read, and never reach the bodyparser,
  * session or CSRF. `PoppyConversations` is bound in the container — the app drives the Company
  * side through it (a person joining, `user_requested`).
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
- * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
- * ways, outside semver majors while it is a draft.
+ * @experimental Implements Personal Agent Protocol 1.0 (https://personalagentprotocol.org/docs/1.0/spec).
+ * The surface may still change between minor releases of this package while it settles.
  */
 function normalizePath(path: string | undefined): string {
   return (path ?? 'poppy/conversations').replace(/^\/+|\/+$/g, '');
@@ -62,10 +65,14 @@ export default class PoppyProvider {
     const path = normalizePath(config.path);
     const prefix = `/${path}`;
 
-    // Tell an authorization server in this process (authkit) where conversations are, for
-    // `poppy.json`. Only with `baseUrl`: an absolute URL cannot be known before a request.
+    // Tell an authorization server in this process (authkit) where conversations are, and what
+    // they can help with, for `poppy.json`. Only with `baseUrl`: an absolute URL cannot be known
+    // before a request.
     if (config.baseUrl !== undefined) {
-      announcePoppyEndpoints({ conversations: poppyConversationsUrl(config.baseUrl, path) });
+      announcePoppyEndpoints({
+        conversations: poppyConversationsUrl(config.baseUrl, path),
+        description: config.description?.trim() || DEFAULT_POPPY_DESCRIPTION,
+      });
     }
     const isPoppy = (url: string) => url === prefix || url.startsWith(`${prefix}/`);
 
@@ -132,6 +139,7 @@ export default class PoppyProvider {
       ...(config.handoff !== undefined ? { handoff: config.handoff } : {}),
       ...(config.direct !== undefined ? { direct: config.direct } : {}),
       ...(config.texts !== undefined ? { texts: config.texts } : {}),
+      ...(config.continueVersion !== undefined ? { continueVersion: config.continueVersion } : {}),
       ...(config.formatAction !== undefined ? { formatAction: config.formatAction } : {}),
       ...(config.retentionMs !== undefined ? { retentionMs: config.retentionMs } : {}),
       onError: (error, context) => logger.error({ err: error }, context),

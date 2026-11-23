@@ -90,9 +90,9 @@ signed-in Poppy access token's (`poppy_provider`: `scope:orders:read`, `scope:or
 custom scopes). A tool behind a missing scope is offered, not run; the refused call is the
 step-up (A2A: an `AUTH_REQUIRED` task; Poppy: an `authorization` event).
 
-> **Experimental:** Poppy (Personal Agent Protocol) is a Draft 0.3 spec still in development
-> (https://personalagentprotocol.org/docs/spec). The Poppy surface implements Draft 0.3 and WILL change
-> as the spec evolves — possibly breaking, outside semver majors while it is a draft.
+> **Experimental:** Poppy conversations implement Personal Agent Protocol **1.0**
+> (https://personalagentprotocol.org/docs/1.0/spec). Everything under `@adonis-agora/agent/poppy` and
+> `poppy_provider` is experimental and may still change between minor releases.
 
 
 Source: `packages/adonis/docs/governance/authorization.mdx` ("Ability-aware

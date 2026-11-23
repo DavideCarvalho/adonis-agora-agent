@@ -293,16 +293,21 @@ for (const backend of REAL) {
         threadId: null,
         parentId: null,
         openDirectId: null,
-        status: 'idle',
+        working: false,
+        handoff: 'none',
         responder: 'agent',
+        closed: false,
         context: { locale: 'en-US' },
+        protocolVersion: '1.0',
+        extensions: {},
+        prompt: null,
         activeRunId: null,
         turnSeq: 0,
         grant: { actor: { id: 'a1', roles: ['personal_agent'] }, scopes: [], signedIn: false },
         prunedSeq: 0,
         createdAt: now,
         updatedAt: now,
-      } as never);
+      });
       expect((await poppy.getConversation('c1'))?.agentName).toBe('support');
       expect(await tablesOf(backend, db, schema)).toEqual(
         ['agent_poppy_conversation', 'agent_poppy_event', 'agent_poppy_message'].sort(),

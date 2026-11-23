@@ -25,6 +25,16 @@ export interface PoppyPrincipal {
   tokenType?: 'DPoP' | 'Bearer' | null;
   /** What the app's `personalAgents.poppy.toActor` answered, when it has one. */
   actor?: Actor;
+  /**
+   * The request's `Poppy-Version` (§3.4), when the resolver checked it. Without it the conversation
+   * endpoint reads and checks the header itself.
+   */
+  protocolVersion?: string;
+  /**
+   * The extensions the request declares in `Poppy-Extensions` (§3.4), `{ name: version }`, when the
+   * resolver parsed them. Without it the conversation endpoint parses the header itself.
+   */
+  extensions?: Record<string, string>;
 }
 
 /** The request a resolver verifies — the `Poppy-Session` JWT and any access token are in `headers`. */
@@ -32,7 +42,10 @@ export interface PoppyAuthRequest {
   method: string;
   /** The full PUBLIC request URL (the Session JWT's `htu` is checked against it; the query is ignored). */
   url: string;
-  /** The request's headers as received (lower-cased names) — `poppy-session`, `authorization` and `dpop` included. */
+  /**
+   * The request's headers as received (lower-cased names) — `poppy-session`, `poppy-version`,
+   * `poppy-extensions`, `authorization` and `dpop` included.
+   */
   headers: Record<string, string | string[] | undefined>;
 }
 
@@ -53,6 +66,9 @@ export type PoppyAuthFailure = {
   /** `null`: a challenge without a code (§8, the request needs the account) or a rate limit (§5.6). */
   error:
     | 'invalid_session'
+    | 'session_ended'
+    | 'version_unsupported'
+    | 'extension_required'
     | 'invalid_token'
     | 'insufficient_scope'
     | 'invalid_dpop_proof'
@@ -60,10 +76,15 @@ export type PoppyAuthFailure = {
     | (string & {})
     | null;
   scope?: string;
-  /** The challenge to answer with, verbatim; `null` for `invalid_session` and rate limits. */
+  /** The challenge to answer with, verbatim; `null` for `invalid_session`, `version_unsupported` and rate limits. */
   wwwAuthenticate: string | null;
   /** For logs and `invalid_session`'s `error_description` — never a token. */
   description?: string;
+  /**
+   * The JSON body to answer with, when the resolver built one (the Session and version errors:
+   * `invalid_session`, `session_ended`, `version_unsupported`, `extension_required`).
+   */
+  body?: Record<string, string> | null;
   /** Extra headers to answer with (`DPoP-Nonce`, `Retry-After`). */
   headers?: Record<string, string>;
 };
@@ -74,9 +95,8 @@ export type PoppyAuthResult = { ok: true; principal: PoppyPrincipal } | PoppyAut
  * Verifies a request's Session header and any access token. `@adonis-agora/authkit-server` installs one in the global
  * slot {@link POPPY_AUTHENTICATE_SLOT}; an app can pass its own (`definePoppyConfig({ authenticate })`).
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
- * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
- * ways, outside semver majors while it is a draft.
+ * @experimental Implements Personal Agent Protocol 1.0 (https://personalagentprotocol.org/docs/1.0/spec).
+ * The surface may still change between minor releases of this package while it settles.
  */
 export type PoppyAuthenticate = (
   request: PoppyAuthRequest,

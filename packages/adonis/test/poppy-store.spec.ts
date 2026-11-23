@@ -23,9 +23,14 @@ function record(id: string): PoppyConversationRecord {
     threadId: null,
     parentId: null,
     openDirectId: null,
-    status: 'idle',
+    working: false,
+    handoff: 'none',
     responder: 'agent',
+    closed: false,
     context: { locale: 'en-US' },
+    protocolVersion: '1.0',
+    extensions: { links: '1' },
+    prompt: null,
     activeRunId: null,
     turnSeq: 0,
     grant: { actor: { id: 'a1', roles: ['personal_agent'] }, scopes: [], signedIn: false },
@@ -96,15 +101,29 @@ describe.each(backends)('PoppyStore contract (%s)', (_name, make) => {
     const store = await make();
     await store.createConversation(record('cnv_1'));
     expect(await store.getConversation('cnv_nope')).toBeNull();
+    expect(await store.getConversation('cnv_1')).toMatchObject({
+      working: false,
+      handoff: 'none',
+      closed: false,
+      protocolVersion: '1.0',
+      extensions: { links: '1' },
+      prompt: null,
+    });
     await store.updateConversation('cnv_1', {
-      status: 'working',
+      working: true,
+      handoff: 'pending',
+      closed: true,
+      prompt: 'speak first',
       accountRef: 'acct-1',
       context: { locale: 'pt-BR', user_available: true },
       grant: { actor: { id: 'acct-1' }, scopes: ['poppy:read'], signedIn: true },
       turnSeq: 3,
     });
     expect(await store.getConversation('cnv_1')).toMatchObject({
-      status: 'working',
+      working: true,
+      handoff: 'pending',
+      closed: true,
+      prompt: 'speak first',
       accountRef: 'acct-1',
       context: { locale: 'pt-BR', user_available: true },
       grant: { scopes: ['poppy:read'], signedIn: true },
@@ -118,8 +137,9 @@ describe.each(backends)('PoppyStore contract (%s)', (_name, make) => {
     await store.createConversation(record('cnv_1'));
     const a = await store.appendEvent('cnv_1', {
       type: 'state',
-      status: 'working',
+      handoff: 'pending',
       responder: 'agent',
+      closed: false,
     });
     const b = await store.appendEvent(
       'cnv_1',
@@ -199,6 +219,50 @@ describe.each(backends)('PoppyStore contract (%s)', (_name, make) => {
 });
 
 describe('LucidPoppyStore schema', () => {
+  it('adds the 1.0 columns to a table created before them, and reads its rows by their status', async () => {
+    db = await makeStoreDb();
+    // The conversation table as it was before 1.0.
+    await db.rawQuery(`CREATE TABLE "agent_poppy_conversation" (
+      "id" VARCHAR(255) PRIMARY KEY NOT NULL, "client_id" VARCHAR(2048) NOT NULL,
+      "user_id" VARCHAR(255) NOT NULL, "account_ref" VARCHAR(255) NULL,
+      "agent_name" VARCHAR(255) NOT NULL, "thread_id" VARCHAR(255) NULL,
+      "parent_id" VARCHAR(255) NULL, "open_direct_id" VARCHAR(255) NULL,
+      "status" VARCHAR(16) NOT NULL, "responder" VARCHAR(16) NOT NULL, "context" TEXT NULL,
+      "active_run_id" VARCHAR(255) NULL, "turn_seq" BIGINT NOT NULL, "grant_info" TEXT NULL,
+      "reader_holder" VARCHAR(255) NULL, "reader_until" BIGINT NULL,
+      "pruned_seq" BIGINT NOT NULL, "created_at" BIGINT NOT NULL, "updated_at" BIGINT NOT NULL)`);
+    const row = (id: string, status: string) => ({
+      id,
+      client_id: 'https://pa.example',
+      user_id: 'u1',
+      agent_name: 'support',
+      status,
+      responder: 'agent',
+      turn_seq: 0,
+      pruned_seq: 0,
+      created_at: 1,
+      updated_at: 1,
+    });
+    await db
+      .table('agent_poppy_conversation')
+      .multiInsert([row('cnv_q', 'queued'), row('cnv_w', 'working'), row('cnv_c', 'closed')]);
+    const store = new LucidPoppyStore(db as never);
+    await store.ready();
+    expect(await store.getConversation('cnv_q')).toMatchObject({
+      working: false,
+      handoff: 'pending',
+      closed: false,
+      protocolVersion: null,
+      extensions: {},
+      prompt: null,
+    });
+    expect(await store.getConversation('cnv_w')).toMatchObject({ working: true, handoff: 'none' });
+    expect(await store.getConversation('cnv_c')).toMatchObject({ closed: true, working: false });
+    expect(await store.getConversation('cnv_q')).not.toHaveProperty('status');
+    await store.updateConversation('cnv_q', { handoff: 'none', working: true });
+    expect(await store.getConversation('cnv_q')).toMatchObject({ handoff: 'none', working: true });
+  });
+
   it('creates its tables on first use, idempotently', async () => {
     db = await makeStoreDb();
     const store = new LucidPoppyStore(db as never);
