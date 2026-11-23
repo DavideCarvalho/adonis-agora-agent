@@ -55,15 +55,21 @@ async function jwtIssuer() {
   const jwk = { ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256', use: 'sig' };
   return {
     publicJwks: { keys: [jwk] },
-    sign: async (claims: Record<string, unknown> = {}) =>
-      new SignJWT({ scope: 'openid profile', client_id: 'claude', ...claims })
-        .setProtectedHeader({ alg: 'RS256', kid: 'k1', typ: 'at+jwt' })
-        .setIssuer('https://app.example.com/oidc')
-        .setSubject((claims.sub as string) ?? 'acc-1')
-        .setAudience((claims.aud as string) ?? 'https://app.example.com/mcp')
-        .setExpirationTime((claims.exp as number) ?? '5m')
-        .setIssuedAt()
-        .sign(privateKey),
+    sign: async (claims: Record<string, unknown> = {}) => {
+      const { iss, typ, withoutExp, ...extra } = claims as {
+        iss?: string;
+        typ?: string;
+        withoutExp?: boolean;
+      };
+      const jwt = new SignJWT({ scope: 'openid profile', client_id: 'claude', ...extra })
+        .setProtectedHeader({ alg: 'RS256', kid: 'k1', typ: typ ?? 'at+jwt' })
+        .setIssuer(iss ?? 'https://app.example.com/oidc')
+        .setSubject((extra.sub as string) ?? 'acc-1')
+        .setAudience((extra.aud as string) ?? 'https://app.example.com/mcp')
+        .setIssuedAt();
+      if (!withoutExp) jwt.setExpirationTime((extra.exp as number) ?? '5m');
+      return jwt.sign(privateKey);
+    },
   };
 }
 
@@ -290,13 +296,45 @@ describe('authKitAuth() → a JWT access token (RFC 9068)', () => {
       auth.verify(otherResource, { resource: 'https://app.example.com/mcp' }),
     ).rejects.toThrow('token was not issued for this MCP server');
 
+    // This issuer's token with a tampered signature: a refusal, not "somebody else's token".
     const forged = `${await issuer.sign({})}x`;
-    const err = await auth
-      .verify(forged, { resource: 'https://app.example.com/mcp' })
+    await expect(
+      auth.verify(forged, { resource: 'https://app.example.com/mcp' }),
+    ).rejects.toBeInstanceOf(McpAuthError);
+  });
+
+  it('refuses a JWT without exp or expired, the same way an opaque token is refused', async () => {
+    const issuer = await jwtIssuer();
+    const { app } = fakeAuthKit({ tokens: {}, publicJwks: issuer.publicJwks });
+    const auth = await resolveMcpAuth(authKitAuth(), { app });
+
+    // RFC 9068 requires `exp`, and a token without one would be immortal.
+    const noExp = await issuer.sign({ withoutExp: true });
+    await expect(
+      auth.verify(noExp, { resource: 'https://app.example.com/mcp' }),
+    ).rejects.toBeInstanceOf(McpAuthError);
+
+    const expired = await issuer.sign({ exp: Math.floor(Date.now() / 1000) - 3600 });
+    await expect(
+      auth.verify(expired, { resource: 'https://app.example.com/mcp' }),
+    ).rejects.toBeInstanceOf(McpAuthError);
+  });
+
+  it('a JWT of another issuer, or a non-JWT, stays a plain Error', async () => {
+    const issuer = await jwtIssuer();
+    const { app } = fakeAuthKit({ tokens: {}, publicJwks: issuer.publicJwks });
+    const auth = await resolveMcpAuth(authKitAuth(), { app });
+
+    const foreign = await issuer.sign({ iss: 'https://other.example.com/oidc' });
+    const foreignErr = await auth
+      .verify(foreign, { resource: 'https://app.example.com/mcp' })
       .catch((e: unknown) => e);
-    // Not this issuer's token: a plain Error, so `anyOf` gives the next strategy its turn.
-    expect(err).toBeInstanceOf(Error);
-    expect(err).not.toBeInstanceOf(McpAuthError);
+    expect(foreignErr).not.toBeInstanceOf(McpAuthError);
+
+    const opaque = await auth
+      .verify('opaque-token', { resource: 'https://app.example.com/mcp' })
+      .catch((e: unknown) => e);
+    expect(opaque).not.toBeInstanceOf(McpAuthError);
   });
 
   it('ignores the JWT path when the issuer exposes no JWKS', async () => {
