@@ -56,18 +56,18 @@ async function jwtIssuer() {
   return {
     publicJwks: { keys: [jwk] },
     sign: async (claims: Record<string, unknown> = {}) => {
-      const { iss, typ, withoutExp, ...extra } = claims as {
-        iss?: string;
-        typ?: string;
-        withoutExp?: boolean;
-      };
-      const jwt = new SignJWT({ scope: 'openid profile', client_id: 'claude', ...extra })
-        .setProtectedHeader({ alg: 'RS256', kid: 'k1', typ: typ ?? 'at+jwt' })
-        .setIssuer(iss ?? 'https://app.example.com/oidc')
-        .setSubject((extra.sub as string) ?? 'acc-1')
-        .setAudience((extra.aud as string) ?? 'https://app.example.com/mcp')
+      const { iss, typ, sub, aud, exp, withoutExp } = claims;
+      const jwt = new SignJWT({
+        scope: 'openid profile',
+        client_id: 'claude',
+        ...claims,
+      })
+        .setProtectedHeader({ alg: 'RS256', kid: 'k1', typ: (typ as string) ?? 'at+jwt' })
+        .setIssuer((iss as string) ?? 'https://app.example.com/oidc')
+        .setSubject((sub as string) ?? 'acc-1')
+        .setAudience((aud as string) ?? 'https://app.example.com/mcp')
         .setIssuedAt();
-      if (!withoutExp) jwt.setExpirationTime((extra.exp as number) ?? '5m');
+      if (!withoutExp) jwt.setExpirationTime((exp as number) ?? '5m');
       return jwt.sign(privateKey);
     },
   };
