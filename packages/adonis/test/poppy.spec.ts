@@ -209,7 +209,7 @@ function setup(script: Script, extra: Partial<PoppyConversationsOptions> = {}) {
   }).then((h) => ({ ...h, agent }));
 }
 
-const auth = (token: string) => ({ authorization: `DPoP ${token}` });
+const auth = (token: string) => ({ authorization: `DPoP ${token}`, 'poppy-version': '1.0' });
 const U1 = auth('u1||out');
 
 async function post(h: Harness, path: string, body: unknown, headers = U1) {
@@ -227,16 +227,20 @@ async function get(h: Harness, path: string, headers = U1) {
   return { status: res.status, headers: res.headers, body: await res.json() };
 }
 
-let messageIds = 0;
+let requestIds = 0;
+const rid = (prefix = 'req') => `${prefix}_${++requestIds}`;
 const msg = (text: string, extra: Record<string, unknown> = {}) => ({
-  message: { id: `msg_${++messageIds}`, author: { type: 'agent' }, text, ...extra },
+  id: rid('msg'),
+  message: { author: { type: 'agent' }, text, ...extra },
 });
+/** A handoff, handoff-cancel or close body: only a request ID (§8.9, §8.12). */
+const req = () => ({ id: rid() });
 
-/** Read events until `until` holds over everything read so far. */
+/** Read events until `until` holds over everything read so far (and the latest read's state). */
 async function readUntil(
   h: Harness,
   id: string,
-  until: (events: PoppyEvent[]) => boolean,
+  until: (events: PoppyEvent[], last: Record<string, any>) => boolean,
   headers = U1,
   timeoutMs = 4000,
 ): Promise<{ events: PoppyEvent[]; last: Record<string, unknown> }> {
@@ -250,7 +254,7 @@ async function readUntil(
     last = res.body;
     events.push(...res.body.events);
     cursor = res.body.cursor;
-    if (until(events)) return { events, last };
+    if (until(events, last)) return { events, last };
   }
   throw new Error(`timed out; events: ${JSON.stringify(events)}`);
 }
@@ -258,10 +262,13 @@ async function readUntil(
 const companyMessages = (events: PoppyEvent[]) =>
   events.filter(
     (e) => e.type === 'message' && (e.message as { role: string }).role === 'company',
-  ) as (PoppyEvent & { message: { id: string; text?: string; data?: any; sender: string } })[];
+  ) as (PoppyEvent & {
+    message: { id: string; text?: string; data?: any; as_of_request?: string };
+  })[];
 
-const settled = (events: PoppyEvent[]) =>
-  events.some((e) => e.type === 'state' && e.status === 'idle');
+/** The Company is no longer replying (§8.7) and has said something. */
+const settled = (events: PoppyEvent[], last: Record<string, any>) =>
+  last.working === false && companyMessages(events).length > 0;
 
 let harness: (Harness & { agent?: ReturnType<typeof buildAgent> }) | null = null;
 
@@ -362,57 +369,157 @@ describe('Poppy routing and auth', () => {
   });
 });
 
+// ── versions ─────────────────────────────────────────────────────────────────
+
+describe('Poppy versions (§3.4, §8.2)', () => {
+  it('a missing or incompatible Poppy-Version is version_unsupported (400, JSON)', async () => {
+    harness = await setup(() => ({ text: 'hi' }));
+    for (const version of [undefined, '0.3', '2.0', 'one']) {
+      const headers: Record<string, string> = { authorization: 'DPoP u1||out' };
+      if (version !== undefined) headers['poppy-version'] = version;
+      const res = await post(harness, '', msg('hi'), headers as never);
+      expect(res.status, String(version)).toBe(400);
+      expect(res.body).toEqual({ error: 'version_unsupported' });
+    }
+    // A later 1.x minor is compatible: handled as 1.0.
+    const later = await post(harness, '', msg('hi'), { ...U1, 'poppy-version': '1.1' });
+    expect(later.status).toBe(201);
+  });
+
+  it("the resolver's version is used when it gives one; its version_unsupported is a JSON body", async () => {
+    const agent = buildAgent(() => ({ text: 'hi' }));
+    let version: string | undefined = '1.0';
+    harness = await serve(
+      { service: agent.service, toolRoles: () => undefined },
+      {
+        authenticate: async (request) => {
+          if (version === undefined) {
+            return { ok: false, status: 400, error: 'version_unsupported', wwwAuthenticate: null };
+          }
+          const result = await fakeResolver(request);
+          return result.ok
+            ? {
+                ok: true,
+                principal: {
+                  ...result.principal,
+                  protocolVersion: version,
+                  extensions: { links: '1' },
+                },
+              }
+            : result;
+        },
+      },
+    );
+    // No header: the resolver's version stands.
+    const res = await post(harness, '', msg('hi'), { authorization: 'DPoP u1||out' } as never);
+    expect(res.status).toBe(201);
+    const stored = await harness.store.getConversation(res.body.conversation_id);
+    expect(stored).toMatchObject({ protocolVersion: '1.0', extensions: { links: '1' } });
+    version = undefined;
+    const refused = await post(harness, '', msg('hi'));
+    expect(refused.status).toBe(400);
+    expect(refused.body).toEqual({ error: 'version_unsupported' });
+  });
+
+  it('records the versions a conversation started in; continueVersion refuses with version_mismatch', async () => {
+    harness = await setup(() => ({ text: 'ok' }), {
+      // Reads carry over; new requests only in the protocol version it started in.
+      continueVersion: ({ started, request, kind }) =>
+        kind === 'read' || started.protocolVersion === request.protocolVersion,
+    });
+    const v11 = {
+      ...U1,
+      'poppy-version': '1.1',
+      'poppy-extensions': '"links";v="1", "x.example/y";v="2"',
+    };
+    const created = await post(harness, '', msg('hi'), v11);
+    const id = created.body.conversation_id;
+    expect(await harness.store.getConversation(id)).toMatchObject({
+      protocolVersion: '1.1',
+      extensions: { links: '1', 'x.example/y': '2' },
+    });
+    await readUntil(harness, id, settled);
+    const mismatch = await post(harness, `/${id}/messages`, msg('more'));
+    expect(mismatch.status).toBe(409);
+    expect(mismatch.body).toEqual({ error: 'version_mismatch', protocol_version: '1.1' });
+    for (const path of ['handoff', 'handoff/cancel', 'close']) {
+      const res = await post(harness, `/${id}/${path}`, req());
+      expect(res.body.error, path).toBe('version_mismatch');
+    }
+    expect((await get(harness, `/${id}/events`)).status).toBe(200);
+    expect((await post(harness, `/${id}/messages`, msg('more'), v11)).status).toBe(202);
+  });
+
+  it('by default a conversation continues in any compatible version', async () => {
+    harness = await setup(() => ({ text: 'ok' }));
+    const id = (await post(harness, '', msg('hi'), { ...U1, 'poppy-version': '1.1' })).body
+      .conversation_id;
+    expect((await post(harness, `/${id}/messages`, msg('more'))).status).toBe(202);
+  });
+});
+
 // ── messages ─────────────────────────────────────────────────────────────────
 
-describe('Poppy messages (§7.3, §7.4)', () => {
+describe('Poppy messages (§8.3, §8.4)', () => {
   it('starts a conversation, answers it, and continues it', async () => {
     harness = await setup((args) => ({ text: `reply to ${args.messages.length}` }));
-    const created = await post(harness, '', msg('The jacket is not warm enough.'));
+    const first = msg('The jacket is not warm enough.', {
+      context: { locale: 'en-US', time_zone: 'America/Los_Angeles', user_available: true },
+    });
+    const created = await post(harness, '', first);
     expect(created.status).toBe(201);
+    // Accepted, not acted on: the response has only the conversation's ID (§8.3).
     expect(created.body).toEqual({
       conversation_id: expect.stringMatching(/^cnv_[A-Za-z0-9_-]+$/),
-      status: 'working',
-      responder: 'agent',
     });
     const id = created.body.conversation_id;
-    const first = await readUntil(harness, id, settled);
-    for (const event of first.events) {
+    const read = await readUntil(harness, id, settled);
+    for (const event of read.events) {
       expect(event).toMatchObject({
         id: expect.stringMatching(/^evt_/),
         type: expect.any(String),
         created_at: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
       });
     }
-    expect(first.events.map((e) => e.type)).toEqual(['message', 'state', 'message', 'state']);
-    expect(first.events[0]?.message).toMatchObject({
+    // `working` is not an event, and nothing else changed: the messages only (§8.7).
+    expect(read.events.map((e) => e.type)).toEqual(['message', 'message']);
+    // The Personal Agent's message has its request's ID, and the role the Company set (§8.4).
+    expect(read.events[0]?.message).toEqual({
+      id: first.id,
       role: 'user',
       author: { type: 'agent' },
       text: 'The jacket is not warm enough.',
+      context: { locale: 'en-US', time_zone: 'America/Los_Angeles', user_available: true },
     });
-    expect(first.events[1]).toMatchObject({ status: 'working', responder: 'agent' });
-    expect(companyMessages(first.events)[0]?.message).toMatchObject({
+    expect(companyMessages(read.events)[0]?.message).toMatchObject({
       role: 'company',
       author: { type: 'agent' },
+      as_of_request: first.id,
       text: expect.stringMatching(/^reply to/),
     });
-    expect(first.last).toMatchObject({ status: 'idle', responder: 'agent', has_more: false });
+    expect(read.last).toEqual({
+      conversation_id: id,
+      events: expect.any(Array),
+      cursor: read.events.at(-1)?.id,
+      has_more: false,
+      working: false,
+      handoff: 'none',
+      responder: 'agent',
+      closed: false,
+    });
 
-    const second = await post(
-      harness,
-      `/${id}/messages`,
-      msg('Medium, please.', { author: { type: 'human' } }),
-    );
+    const human = msg('Medium, please.', { author: { type: 'human' } });
+    const second = await post(harness, `/${id}/messages`, human);
     expect(second.status).toBe(202);
-    expect(second.body).toEqual({ conversation_id: id, status: 'working', responder: 'agent' });
+    expect(second.body).toEqual({ conversation_id: id });
     const all = await readUntil(harness, id, (events) => companyMessages(events).length === 2);
-    expect(
-      all.events.find((e) => (e.message as any)?.text === 'Medium, please.')?.message,
-    ).toMatchObject({
+    expect(all.events.find((e) => (e.message as any)?.id === human.id)?.message).toMatchObject({
       author: { type: 'human' },
     });
+    expect(companyMessages(all.events)[1]?.message.as_of_request).toBe(human.id);
   });
 
-  it('a POST with wait answers as a read, keeping its status code', async () => {
+  it('a POST with wait answers as a read from cursor, keeping its status code', async () => {
     harness = await setup(() => ({ text: 'quick' }));
     const res = await fetch(`${harness.url}/poppy/conversations?wait=3`, {
       method: 'POST',
@@ -425,29 +532,53 @@ describe('Poppy messages (§7.3, §7.4)', () => {
       conversation_id: expect.any(String),
       cursor: expect.any(String),
       has_more: false,
-      status: expect.any(String),
+      working: expect.any(Boolean),
+      handoff: 'none',
       responder: 'agent',
+      closed: false,
     });
     expect(body.events[0].type).toBe('message');
+
+    // From the cursor of the user's message: held until the reply.
+    const id = body.conversation_id;
+    const cursor = body.events.at(-1).id;
+    await readUntil(harness, id, settled);
+    const now = (await get(harness, `/${id}/events`)).body.cursor;
+    const next = await fetch(
+      `${harness.url}/poppy/conversations/${id}/messages?wait=3&cursor=${now}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...U1 },
+        body: JSON.stringify(msg('again')),
+      },
+    );
+    expect(next.status).toBe(202);
+    const nextBody = await next.json();
+    expect(nextBody.events[0].message.text).toBe('again');
+    expect(cursor).not.toBe(now);
   });
 
-  it('a retried message (same id, same content) is accepted once — first message included', async () => {
+  it('a retried request (same id, path and body) is accepted once — first message included', async () => {
     harness = await setup(() => ({ text: 'once' }));
-    const body = { message: { id: 'msg_retry_1', author: { type: 'agent' }, text: 'hi' } };
+    const body = { id: 'msg_retry_1', message: { author: { type: 'agent' }, text: 'hi' } };
     const a = await post(harness, '', body);
-    // Unknown fields are ignored (§3.3): still the same message.
-    const b = await post(harness, '', { ...body, future: 1, message: { ...body.message, x: 2 } });
+    // Unknown fields, and `id`/`role` on the message, are ignored (§3.3, §8.4): the same request.
+    const b = await post(harness, '', {
+      ...body,
+      future: 1,
+      message: { ...body.message, id: 'x', role: 'company', author: { type: 'agent', name: 'n' } },
+    });
     expect(b.status).toBe(201);
     expect(b.body).toEqual(a.body);
     const id = a.body.conversation_id;
     await readUntil(harness, id, settled);
 
-    const later = { message: { id: 'msg_retry_2', author: { type: 'agent' }, text: 'again' } };
+    const later = { id: 'msg_retry_2', message: { author: { type: 'agent' }, text: 'again' } };
     const c = await post(harness, `/${id}/messages`, later);
     const d = await post(harness, `/${id}/messages`, later);
     expect(d.status).toBe(202);
     expect(d.body).toEqual(c.body);
-    const { events } = await readUntil(harness, id, (e) => companyMessages(e).length === 2);
+    await readUntil(harness, id, (e) => companyMessages(e).length === 2);
     await sleep(100);
     const after = await get(harness, `/${id}/events`);
     const userTexts = after.body.events
@@ -455,44 +586,54 @@ describe('Poppy messages (§7.3, §7.4)', () => {
       .map((e: PoppyEvent) => (e.message as any).text);
     expect(userTexts).toEqual(['hi', 'again']);
     expect(harness.agent?.model.calls.length).toBe(2);
-    expect(events.length).toBeGreaterThan(0);
+    // A retry is answered as before, even after the conversation closed.
+    await post(harness, `/${id}/close`, req());
+    expect((await post(harness, `/${id}/messages`, later)).status).toBe(202);
   });
 
-  it('a reused id with different content is message_id_conflict (409)', async () => {
+  it('a reused id with another path or body is request_id_conflict (409)', async () => {
     harness = await setup(() => ({ text: 'ok' }));
     const a = await post(harness, '', {
-      message: { id: 'msg_c', author: { type: 'agent' }, text: 'one' },
+      id: 'msg_c',
+      message: { author: { type: 'agent' }, text: 'one' },
     });
     const id = a.body.conversation_id;
     const b = await post(harness, '', {
-      message: { id: 'msg_c', author: { type: 'agent' }, text: 'two' },
+      id: 'msg_c',
+      message: { author: { type: 'agent' }, text: 'two' },
     });
     expect(b.status).toBe(409);
-    expect(b.body.error).toBe('message_id_conflict');
-    // Unique per User, not per conversation.
+    expect(b.body.error).toBe('request_id_conflict');
+    // Unique per User across all requests, not per conversation or path.
     const c = await post(harness, `/${id}/messages`, {
-      message: { id: 'msg_c', author: { type: 'agent' }, text: 'one' },
+      id: 'msg_c',
+      message: { author: { type: 'agent' }, text: 'one' },
     });
     expect(c.status).toBe(409);
-    expect(c.body.error).toBe('message_id_conflict');
+    expect(c.body.error).toBe('request_id_conflict');
+    expect((await post(harness, `/${id}/handoff`, { id: 'msg_c' })).body.error).toBe(
+      'request_id_conflict',
+    );
     // Another User may use the same id.
     const d = await post(
       harness,
       '',
-      { message: { id: 'msg_c', author: { type: 'agent' }, text: 'two' } },
+      { id: 'msg_c', message: { author: { type: 'agent' }, text: 'two' } },
       auth('u2||out'),
     );
     expect(d.status).toBe(201);
   });
 
-  it('validates messages: a field is required, ids are URL-safe, JSON is JSON', async () => {
+  it('validates requests: an id, a message with content, URL-safe ids, JSON', async () => {
     harness = await setup(() => ({ text: 'ok' }));
     for (const body of [
-      { message: { id: 'msg_v1', author: { type: 'agent' } } },
-      { message: { id: 'bad id!', author: { type: 'agent' }, text: 'x' } },
-      { message: { id: 'msg_v2', sender: 'robot', text: 'x' } },
-      { message: { id: 'msg_v3', author: { type: 'agent' }, data: [1] } },
-      { message: { id: 'msg_v4', author: { type: 'agent' }, context: { user_available: 'yes' } } },
+      { message: { author: { type: 'agent' }, text: 'x' } },
+      { id: 'msg_v1', message: { author: { type: 'agent' } } },
+      { id: 'bad id!', message: { author: { type: 'agent' }, text: 'x' } },
+      { id: 'msg_v2', message: { sender: 'robot', text: 'x' } },
+      { id: 'msg_v3', message: { author: { type: 'agent' }, data: [1] } },
+      { id: 'msg_v4', message: { author: { type: 'agent' }, context: { user_available: 'yes' } } },
+      { id: 'msg_v5' },
       {},
       '{',
     ]) {
@@ -500,36 +641,70 @@ describe('Poppy messages (§7.3, §7.4)', () => {
       expect(res.status, JSON.stringify(body)).toBe(400);
       expect(res.body.error).toBe('invalid_request');
     }
+    const id = (await post(harness, '', msg('hi'))).body.conversation_id;
+    for (const path of ['handoff', 'handoff/cancel', 'close']) {
+      const res = await post(harness, `/${id}/${path}`, {});
+      expect(res.status, path).toBe(400);
+      expect(res.body.error).toBe('invalid_request');
+    }
   });
 
-  it('a context-only message updates context without a turn; data reaches the model as JSON', async () => {
+  it('an author type it does not know is an agent; extension content it does not support is ignored', async () => {
+    harness = await setup(() => ({ text: 'ok' }));
+    const body = {
+      id: rid('msg'),
+      message: {
+        author: { type: 'robot' },
+        text: 'hi',
+        as_of_cursor: 'evt_x',
+        extensions: { 'x.example/thing': { a: 1 } },
+      },
+    };
+    const id = (await post(harness, '', body)).body.conversation_id;
+    const { events } = await readUntil(harness, id, settled);
+    expect(events[0]?.message).toEqual({
+      id: body.id,
+      role: 'user',
+      author: { type: 'agent' },
+      as_of_cursor: 'evt_x',
+      text: 'hi',
+    });
+    // A person's message carries no as_of_cursor (§8.4).
+    const human = {
+      id: rid('msg'),
+      message: { author: { type: 'human' }, text: 'x', as_of_cursor: 'evt_x' },
+    };
+    await post(harness, `/${id}/messages`, human);
+    const after = (await get(harness, `/${id}/events`)).body.events as PoppyEvent[];
+    expect(after.find((e) => (e.message as any)?.id === human.id)?.message).not.toHaveProperty(
+      'as_of_cursor',
+    );
+  });
+
+  it('a context-only message updates context without a turn; null clears a field; data reaches the model as JSON', async () => {
     harness = await setup(() => ({ text: 'ok' }));
     const created = await post(harness, '', {
-      message: {
-        id: 'msg_ctx0',
-        author: { type: 'agent' },
-        context: { locale: 'en-US', time_zone: 'UTC' },
-      },
+      id: 'msg_ctx0',
+      message: { author: { type: 'agent' }, context: { locale: 'en-US', time_zone: 'UTC' } },
     });
-    expect(created.body.status).toBe('idle');
     const id = created.body.conversation_id;
+    // Recorded, and acted on at once: nothing to reply to.
+    const first = await get(harness, `/${id}/events`);
+    expect(first.body.working).toBe(false);
+    expect(first.body.events).toHaveLength(1);
     await post(harness, `/${id}/messages`, {
-      message: { id: 'msg_ctx1', author: { type: 'agent' }, context: { user_available: false } },
+      id: 'msg_ctx1',
+      message: { author: { type: 'agent' }, context: { user_available: false, locale: null } },
     });
     await sleep(100);
     expect(harness.agent?.model.calls.length).toBe(0);
     expect((await harness.store.getConversation(id))?.context).toEqual({
-      locale: 'en-US',
       time_zone: 'UTC',
       user_available: false,
     });
     await post(harness, `/${id}/messages`, {
-      message: {
-        id: 'msg_ctx2',
-        author: { type: 'agent' },
-        text: 'Seats please',
-        data: { seat: '14A' },
-      },
+      id: 'msg_ctx2',
+      message: { author: { type: 'agent' }, text: 'Seats please', data: { seat: '14A' } },
     });
     await readUntil(harness, id, (e) => companyMessages(e).length === 1);
     const sent = JSON.stringify(harness.agent?.model.calls[0]?.messages);
@@ -537,7 +712,7 @@ describe('Poppy messages (§7.3, §7.4)', () => {
     expect(sent).toContain('14A');
   });
 
-  it('a failed turn says so and goes back to idle', async () => {
+  it('a failed turn says so, and the conversation is no longer working', async () => {
     harness = await setup(() => {
       throw new Error('model down');
     });
@@ -549,16 +724,18 @@ describe('Poppy messages (§7.3, §7.4)', () => {
 
 // ── events ───────────────────────────────────────────────────────────────────
 
-describe('Poppy events (§7.5)', () => {
+describe('Poppy events (§8.5)', () => {
   it('pages with cursor and has_more; an empty read keeps the cursor', async () => {
     harness = await setup(() => ({ text: 'ok' }));
     const created = await post(harness, '', {
-      message: { id: 'msg_p0', author: { type: 'agent' }, context: { locale: 'en' } },
+      id: 'msg_p0',
+      message: { author: { type: 'agent' }, context: { locale: 'en' } },
     });
     const id = created.body.conversation_id;
     for (let i = 1; i <= 104; i++) {
       await post(harness, `/${id}/messages`, {
-        message: { id: `msg_p${i}`, author: { type: 'agent' }, context: { n: i } },
+        id: `msg_p${i}`,
+        message: { author: { type: 'agent' }, context: { n: i } },
       });
     }
     const page1 = await get(harness, `/${id}/events`);
@@ -574,8 +751,10 @@ describe('Poppy events (§7.5)', () => {
       events: [],
       cursor: page2.body.cursor,
       has_more: false,
-      status: 'idle',
+      working: false,
+      handoff: 'none',
       responder: 'agent',
+      closed: false,
     });
   });
 
@@ -605,7 +784,7 @@ describe('Poppy events (§7.5)', () => {
   it('wait returns as soon as an event arrives, and an empty list on timeout', async () => {
     harness = await setup(() => ({ text: 'ok' }));
     const id = (
-      await post(harness, '', { message: { id: 'msg_w0', author: { type: 'agent' }, context: {} } })
+      await post(harness, '', { id: 'msg_w0', message: { author: { type: 'agent' }, context: {} } })
     ).body.conversation_id;
     const start = await get(harness, `/${id}/events`);
     const startedAt = Date.now();
@@ -618,10 +797,33 @@ describe('Poppy events (§7.5)', () => {
     const pending = get(harness, `/${id}/events?cursor=${start.body.cursor}&wait=5`);
     await sleep(100);
     await post(harness, `/${id}/messages`, {
-      message: { id: 'msg_w1', author: { type: 'agent' }, context: { a: 1 } },
+      id: 'msg_w1',
+      message: { author: { type: 'agent' }, context: { a: 1 } },
     });
     const woke = await pending;
     expect(woke.body.events[0].type).toBe('message');
+  });
+
+  it('wait also returns when working turns false, with no new event', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // The turn ends without a reply: nothing is added, only `working` changes.
+    harness = await setup(async () => {
+      await gate;
+      return { text: '' };
+    });
+    const id = (await post(harness, '', msg('hi'))).body.conversation_id;
+    const start = await get(harness, `/${id}/events`);
+    expect(start.body.working).toBe(true);
+    const startedAt = Date.now();
+    const pending = get(harness, `/${id}/events?cursor=${start.body.cursor}&wait=10`);
+    await sleep(150);
+    release();
+    const woke = await pending;
+    expect(Date.now() - startedAt).toBeLessThan(5000);
+    expect(woke.body.working).toBe(false);
   });
 });
 
@@ -690,8 +892,11 @@ async function openSse(h: Harness, id: string, headers: Record<string, string> =
   };
 }
 
-describe('Poppy streaming (§7.6)', () => {
-  it('streams text-delta pieces, then the complete message; resumes after Last-Event-ID', async () => {
+const workingIs = (value: boolean) => (items: SseItem[]) =>
+  items.some((i) => i.event === 'working' && i.data.working === value);
+
+describe('Poppy streaming (§8.6)', () => {
+  it('working on open and on change, text-delta pieces, then the complete message; resumes after Last-Event-ID', async () => {
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -703,7 +908,9 @@ describe('Poppy streaming (§7.6)', () => {
     const id = (await post(harness, '', msg('Exchange it?'))).body.conversation_id;
     const sse = await openSse(harness, id);
     expect(sse.res.headers.get('content-type')).toBe('text/event-stream');
-    await sse.until((items) => items.some((i) => i.data.type === 'state'));
+    await sse.until((items) => items.some((i) => i.data.type === 'message'));
+    // The stream opens with `working`, with no SSE id (§8.6).
+    expect(sse.items[0]).toEqual({ event: 'working', data: { working: true } });
     release();
     await sse.until((items) =>
       items.some((i) => i.data.type === 'message' && i.data.message.role === 'company'),
@@ -720,17 +927,18 @@ describe('Poppy streaming (§7.6)', () => {
     expect(reply.data.message.text).toBe('I can do that.');
     // Deltas come before the message they make up.
     expect(sse.items.indexOf(deltas.at(-1)!)).toBeLessThan(sse.items.indexOf(reply));
-    await sse.until((items) =>
-      items.some((i) => i.data.type === 'state' && i.data.status === 'idle'),
-    );
+    await sse.until(workingIs(false));
+    const stop = sse.items.find((i) => i.event === 'working' && i.data.working === false)!;
+    expect(stop.id).toBeUndefined();
+    expect(sse.items.indexOf(stop)).toBeGreaterThan(sse.items.indexOf(reply));
     await sse.close();
 
-    // Reconnect from the user's message: everything after it again, no deltas.
+    // Reconnect from the user's message: the reply again, no deltas.
     const firstId = sse.items.find((i) => i.data.type === 'message')!.id!;
     const resumed = await openSse(harness, id, { 'last-event-id': firstId });
-    await resumed.until((items) => items.some((i) => i.data.status === 'idle'));
-    expect(resumed.items.map((i) => i.data.type)).toEqual(['state', 'message', 'state']);
-    expect(resumed.items.some((i) => i.event === 'text-delta')).toBe(false);
+    await resumed.until((items) => items.some((i) => i.data.type === 'message'));
+    expect(resumed.items.map((i) => i.event ?? i.data.type)).toEqual(['working', 'message']);
+    expect(resumed.items[0]?.data).toEqual({ working: false });
     await resumed.close();
   });
 
@@ -743,9 +951,14 @@ describe('Poppy streaming (§7.6)', () => {
     expect(bad.status).toBe(400);
     expect((await bad.json()).error).toBe('invalid_cursor');
     const sse = await openSse(harness, id);
-    await sse.until((items) => items.some((i) => i.data.status === 'idle'));
-    await post(harness, `/${id}/close`, {});
-    await sse.until((items) => items.some((i) => i.data.status === 'closed'));
+    await sse.until(workingIs(false));
+    await post(harness, `/${id}/close`, req());
+    await sse.until((items) => items.some((i) => i.data.type === 'state' && i.data.closed));
+    expect(sse.items.find((i) => i.data.type === 'state')?.data).toMatchObject({
+      handoff: 'none',
+      responder: 'agent',
+      closed: true,
+    });
     const deadline = Date.now() + 2000;
     while (!sse.done && Date.now() < deadline) await sleep(10);
     expect(sse.done).toBe(true);
@@ -754,7 +967,7 @@ describe('Poppy streaming (§7.6)', () => {
 
 // ── scopes ───────────────────────────────────────────────────────────────────
 
-describe('Poppy scopes (§7.11)', () => {
+describe('Poppy scopes (§8.11)', () => {
   function withTools(script: Script) {
     return setup(script).then((h) => {
       const ran: string[] = [];
@@ -838,7 +1051,7 @@ describe('Poppy scopes (§7.11)', () => {
     const { events } = await readUntil(
       h,
       id,
-      (e) => e.some((x) => x.type === 'authorization') && settled(e),
+      (e, last) => e.some((x) => x.type === 'authorization') && settled(e, last),
       reader,
     );
     expect(h.ran).toEqual([]);
@@ -1123,6 +1336,7 @@ describe('Poppy actions and components', () => {
       id: expect.stringMatching(/^msg_/),
       role: 'company',
       author: { type: 'agent' },
+      as_of_request: expect.stringMatching(/^msg_/),
       text: 'Order A-1: shipped.',
       data: {
         components: [
@@ -1135,77 +1349,126 @@ describe('Poppy actions and components', () => {
 
 // ── handoff and close ────────────────────────────────────────────────────────
 
-describe('Poppy handoff (§7.9) and close (§7.12)', () => {
+const states = (events: PoppyEvent[]) =>
+  events
+    .filter((e) => e.type === 'state')
+    .map((e) => `${e.handoff}/${e.responder}${e.closed ? '/closed' : ''}`);
+
+describe('Poppy handoff (§8.9) and close (§8.12)', () => {
   it('without handoff hooks, the Company Agent says no one is available', async () => {
     harness = await setup(() => ({ text: 'ok' }));
     const id = (await post(harness, '', msg('hi'))).body.conversation_id;
     await readUntil(harness, id, settled);
-    const res = await post(harness, `/${id}/handoff`, {});
+    const res = await post(harness, `/${id}/handoff`, req());
     expect(res.status).toBe(202);
-    expect(res.body).toEqual({ conversation_id: id, status: 'idle', responder: 'agent' });
+    expect(res.body).toEqual({ conversation_id: id });
     const after = await get(harness, `/${id}/events`);
+    expect(after.body).toMatchObject({ handoff: 'none', responder: 'agent' });
     expect(companyMessages(after.body.events).at(-1)?.message).toMatchObject({
       author: { type: 'agent' },
       text: 'No one is available to take this conversation right now.',
     });
   });
 
-  it('queued → a person joins → their messages → they leave → close cancels', async () => {
+  it('pending → the agent keeps answering → a person joins with the backlog → they leave → close cancels', async () => {
     const forwarded: string[] = [];
     const cancelled: string[] = [];
-    harness = await setup(() => ({ text: 'agent answer' }), {
-      handoff: {
-        request: () => 'queued',
-        message: ({ message }) => {
-          forwarded.push(message.text ?? '');
-        },
-        cancel: ({ conversationId }) => {
-          cancelled.push(conversationId);
+    let release: () => void = () => {};
+    let gate: Promise<void> = Promise.resolve();
+    harness = await setup(
+      async () => {
+        await gate;
+        return { text: 'agent answer' };
+      },
+      {
+        handoff: {
+          request: () => 'queued',
+          message: ({ message }) => {
+            forwarded.push(message.text ?? '');
+          },
+          cancel: ({ conversationId }) => {
+            cancelled.push(conversationId);
+          },
         },
       },
-    });
+    );
     const h = harness;
     const id = (await post(h, '', msg('hi'))).body.conversation_id;
     await readUntil(h, id, settled);
-    const queued = await post(h, `/${id}/handoff`, {});
-    expect(queued.body).toEqual({ conversation_id: id, status: 'queued', responder: 'agent' });
-    const callsBefore = h.agent?.model.calls.length;
-    const waiting = await post(h, `/${id}/messages`, msg('The order is A-1.'));
-    expect(waiting.body.status).toBe('queued');
-    expect(forwarded).toEqual(['The order is A-1.']);
-    expect(await h.conversations.humanJoined(id)).toEqual({ status: 'idle', responder: 'human' });
-    await h.conversations.postMessage(id, { text: 'Hi, I am Sam.', author: { type: 'human' } });
-    await post(h, `/${id}/messages`, msg('Medium.'));
-    expect(forwarded).toEqual(['The order is A-1.', 'Medium.']);
-    await sleep(100);
-    expect(h.agent?.model.calls.length).toBe(callsBefore);
+    const handoff = await post(h, `/${id}/handoff`, req());
+    expect(handoff.status).toBe(202);
+    expect(handoff.body).toEqual({ conversation_id: id });
+    expect((await get(h, `/${id}/events`)).body).toMatchObject({
+      handoff: 'pending',
+      responder: 'agent',
+    });
+    // Asking again while pending changes nothing.
+    await post(h, `/${id}/handoff`, req());
 
-    const events = (await get(h, `/${id}/events`)).body.events as PoppyEvent[];
-    const states = events
-      .filter((e) => e.type === 'state')
-      .map((e) => `${e.status}/${e.responder}`);
-    expect(states).toEqual(['working/agent', 'idle/agent', 'queued/agent', 'idle/human']);
-    expect(companyMessages(events).at(-1)?.message).toMatchObject({
-      author: { type: 'human' },
+    // While pending the Company Agent keeps answering (§8.9).
+    await post(h, `/${id}/messages`, msg('The order is A-1.'));
+    await readUntil(h, id, (e) => companyMessages(e).length === 2);
+    expect(forwarded).toEqual([]);
+
+    // A message the agent has not taken up when the person joins goes to them: 'Color blue.'
+    // waits behind the turn answering 'Size medium.'.
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await h.conversations.handoff(id); // pending already: nothing
+    await post(h, `/${id}/messages`, msg('Size medium.'));
+    await sleep(50);
+    await post(h, `/${id}/messages`, msg('Color blue.'));
+    const joined = await h.conversations.humanJoined(id);
+    expect(joined).toMatchObject({ handoff: 'none', responder: 'human' });
+    expect(forwarded).toEqual(['Color blue.']);
+    // The turn already under way still writes its reply.
+    release();
+    await readUntil(h, id, (e, last) => last.working === false && companyMessages(e).length === 3);
+    await h.conversations.postMessage(id, {
+      text: 'Hi, I am Sam.',
+      author: { type: 'human', name: 'Sam' },
+    });
+    await post(h, `/${id}/messages`, msg('Medium.'));
+    expect(forwarded).toEqual(['Color blue.', 'Medium.']);
+
+    const read = await get(h, `/${id}/events`);
+    expect(read.body.working).toBe(false);
+    const events = read.body.events as PoppyEvent[];
+    expect(states(events)).toEqual(['pending/agent', 'none/human']);
+    expect(companyMessages(events).at(-1)?.message).toEqual({
+      id: expect.any(String),
+      role: 'company',
+      author: { type: 'human', name: 'Sam' },
       text: 'Hi, I am Sam.',
     });
 
-    const closed = await post(h, `/${id}/close`, {});
-    expect(closed.status).toBe(200);
-    expect(closed.body).toEqual({ conversation_id: id, status: 'closed', responder: 'human' });
+    const closed = await post(h, `/${id}/close`, req());
+    expect(closed.status).toBe(202);
+    expect(closed.body).toEqual({ conversation_id: id });
     expect(cancelled).toEqual([id]);
+    const end = await get(h, `/${id}/events`);
+    expect(end.body).toMatchObject({
+      working: false,
+      handoff: 'none',
+      responder: 'human',
+      closed: true,
+    });
+    expect(states(end.body.events).at(-1)).toBe('none/human/closed');
   });
 
-  it('a hook that finds no one: back to idle with the reason; a person leaving gives it back', async () => {
+  it('a hook that finds no one: handoff back to none with the reason; a person leaving gives it back', async () => {
     harness = await setup(() => ({ text: 'ok' }), {
       handoff: { request: () => ({ unavailable: 'Our team is offline until 9am.' }) },
     });
     const id = (await post(harness, '', msg('hi'))).body.conversation_id;
     await readUntil(harness, id, settled);
-    const res = await post(harness, `/${id}/handoff`, {});
-    expect(res.body).toMatchObject({ status: 'idle', responder: 'agent' });
-    const events = (await get(harness, `/${id}/events`)).body.events as PoppyEvent[];
+    expect((await post(harness, `/${id}/handoff`, req())).status).toBe(202);
+    const read = await get(harness, `/${id}/events`);
+    expect(read.body).toMatchObject({ handoff: 'none', responder: 'agent' });
+    const events = read.body.events as PoppyEvent[];
     expect(events.slice(-3).map((e) => e.type)).toEqual(['state', 'message', 'state']);
+    expect(states(events)).toEqual(['pending/agent', 'none/agent']);
     expect(companyMessages(events).at(-1)?.message.text).toBe('Our team is offline until 9am.');
 
     const joined = await setup(() => ({ text: 'back to the agent' }), {
@@ -1213,7 +1476,8 @@ describe('Poppy handoff (§7.9) and close (§7.12)', () => {
     });
     const id2 = (await post(joined, '', msg('hi'))).body.conversation_id;
     await readUntil(joined, id2, settled);
-    expect((await post(joined, `/${id2}/handoff`, {})).body.responder).toBe('human');
+    await post(joined, `/${id2}/handoff`, req());
+    expect((await get(joined, `/${id2}/events`)).body.responder).toBe('human');
     await joined.conversations.humanLeft(id2);
     await post(joined, `/${id2}/messages`, msg('still there?'));
     const later = await readUntil(joined, id2, (e) => companyMessages(e).length === 2);
@@ -1221,29 +1485,110 @@ describe('Poppy handoff (§7.9) and close (§7.12)', () => {
     await joined.close();
   });
 
-  it('closed: no more messages or handoffs (409), events stay readable, close is idempotent', async () => {
+  it('a cancel withdraws a pending handoff, unless the withdraw hook keeps looking', async () => {
+    let keep = false;
+    const withdrawn: string[] = [];
+    harness = await setup(() => ({ text: 'ok' }), {
+      handoff: {
+        request: () => 'queued',
+        withdraw: ({ conversationId }) => {
+          withdrawn.push(conversationId);
+          return !keep;
+        },
+      },
+    });
+    const id = (await post(harness, '', msg('hi'))).body.conversation_id;
+    await readUntil(harness, id, settled);
+    // A cancel when nothing is pending changes nothing.
+    expect((await post(harness, `/${id}/handoff/cancel`, req())).status).toBe(202);
+    expect(withdrawn).toEqual([]);
+
+    await post(harness, `/${id}/handoff`, req());
+    const cancel = await post(harness, `/${id}/handoff/cancel`, req());
+    expect(cancel.status).toBe(202);
+    expect(cancel.body).toEqual({ conversation_id: id });
+    expect(withdrawn).toEqual([id]);
+    expect((await get(harness, `/${id}/events`)).body.handoff).toBe('none');
+
+    keep = true;
+    await post(harness, `/${id}/handoff`, req());
+    await post(harness, `/${id}/handoff/cancel`, req());
+    expect((await get(harness, `/${id}/events`)).body.handoff).toBe('pending');
+    const events = (await get(harness, `/${id}/events`)).body.events as PoppyEvent[];
+    expect(states(events)).toEqual(['pending/agent', 'none/agent', 'pending/agent']);
+  });
+
+  it('handoff requests and cancels are acted on in the order they are accepted', async () => {
+    const order: string[] = [];
+    harness = await setup(() => ({ text: 'ok' }), {
+      handoff: {
+        request: async () => {
+          order.push('request:start');
+          await sleep(80);
+          order.push('request:end');
+          return 'queued' as const;
+        },
+        withdraw: () => {
+          order.push('withdraw');
+        },
+      },
+    });
+    const id = (await post(harness, '', msg('hi'))).body.conversation_id;
+    await readUntil(harness, id, settled);
+    const handoff = post(harness, `/${id}/handoff`, req());
+    await sleep(20);
+    await post(harness, `/${id}/handoff/cancel`, req());
+    await handoff;
+    expect(order).toEqual(['request:start', 'request:end', 'withdraw']);
+    expect((await get(harness, `/${id}/events`)).body.handoff).toBe('none');
+  });
+
+  it('closed: no more messages, handoffs or cancels (409), events stay readable, a close again is 202', async () => {
     harness = await setup(() => ({ text: 'ok' }));
     const id = (await post(harness, '', msg('hi'))).body.conversation_id;
     await readUntil(harness, id, settled);
-    expect((await post(harness, `/${id}/close`, {})).status).toBe(200);
-    for (const path of [`/${id}/messages`, `/${id}/handoff`]) {
-      const res = await post(harness, path, path.endsWith('handoff') ? {} : msg('more'));
+    const close = req();
+    expect((await post(harness, `/${id}/close`, close)).status).toBe(202);
+    for (const path of ['messages', 'handoff', 'handoff/cancel']) {
+      const res = await post(harness, `/${id}/${path}`, path === 'messages' ? msg('more') : req());
       expect(res.status, path).toBe(409);
       expect(res.body.error).toBe('conversation_closed');
     }
     const read = await get(harness, `/${id}/events`);
-    expect(read.body.status).toBe('closed');
-    expect(read.body.events.at(-1)).toMatchObject({ type: 'state', status: 'closed' });
-    const again = await post(harness, `/${id}/close`, {});
-    expect(again.status).toBe(200);
+    expect(read.body).toMatchObject({ working: false, handoff: 'none', closed: true });
+    expect(read.body.events.at(-1)).toMatchObject({ type: 'state', closed: true });
+    // A retried close, and a new one: 202, nothing changes.
+    expect((await post(harness, `/${id}/close`, close)).status).toBe(202);
+    const again = await post(harness, `/${id}/close`, req());
+    expect(again.status).toBe(202);
+    expect(again.body).toEqual({ conversation_id: id });
     const reread = await get(harness, `/${id}/events`);
     expect(reread.body.events).toHaveLength(read.body.events.length);
+  });
+
+  it('a close drops a reply still being written', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    harness = await setup(async () => {
+      await gate;
+      return { text: 'too late' };
+    });
+    const id = (await post(harness, '', msg('hi'))).body.conversation_id;
+    await sleep(50);
+    expect((await post(harness, `/${id}/close`, req())).status).toBe(202);
+    release();
+    await sleep(150);
+    const read = await get(harness, `/${id}/events`);
+    expect(read.body.working).toBe(false);
+    expect(companyMessages(read.body.events)).toHaveLength(0);
   });
 });
 
 // ── direct conversations ─────────────────────────────────────────────────────
 
-describe('Poppy Direct Conversations (§7.10)', () => {
+describe('Poppy Direct Conversations (§8.10)', () => {
   it('user_requested, open a Direct Conversation on the same thread, parent blocked, close', async () => {
     const opened: string[] = [];
     const closedHooks: string[] = [];
@@ -1260,16 +1605,23 @@ describe('Poppy Direct Conversations (§7.10)', () => {
     const h = harness;
     const parent = (await post(h, '', msg('exchange the jacket'))).body.conversation_id;
     await readUntil(h, parent, settled);
-    await h.conversations.requestUser(parent, 'A specialist needs to confirm the exchange.');
+    const eventId = await h.conversations.requestUser(
+      parent,
+      'A specialist needs to confirm the exchange.',
+    );
     const requested = await get(h, `/${parent}/events`);
     expect(requested.body.events.at(-1)).toMatchObject({
+      id: eventId,
       type: 'user_requested',
       reason: 'A specialist needs to confirm the exchange.',
     });
+    // The event doesn't change the conversation's state.
+    expect(requested.body).toMatchObject({ working: false, handoff: 'none', responder: 'agent' });
 
     const direct = await post(h, '', {
+      id: rid('msg'),
       parent_conversation_id: parent,
-      message: { id: 'msg_direct_1', author: { type: 'human' }, text: 'Hi, I have a question.' },
+      message: { author: { type: 'human' }, text: 'Hi, I have a question.' },
     });
     expect(direct.status).toBe(201);
     const directId = direct.body.conversation_id;
@@ -1288,7 +1640,8 @@ describe('Poppy Direct Conversations (§7.10)', () => {
 
     for (const [path, body] of [
       [`/${parent}/messages`, msg('meanwhile')],
-      [`/${parent}/handoff`, {}],
+      [`/${parent}/handoff`, req()],
+      [`/${parent}/handoff/cancel`, req()],
     ] as const) {
       const res = await post(h, path, body);
       expect(res.status, path).toBe(409);
@@ -1300,16 +1653,82 @@ describe('Poppy Direct Conversations (§7.10)', () => {
     const second = await post(h, '', { parent_conversation_id: parent, ...msg('another') });
     expect(second.status).toBe(409);
     expect(second.body.error).toBe('direct_conversation_open');
+    // A Direct Conversation can't be a parent.
     const nested = await post(h, '', { parent_conversation_id: directId, ...msg('nested') });
-    expect(nested.status).toBe(404);
+    expect(nested.status).toBe(400);
+    expect(nested.body.error).toBe('invalid_request');
     // The parent can still be read.
     expect((await get(h, `/${parent}/events`)).status).toBe(200);
 
-    expect((await post(h, `/${directId}/close`, {})).status).toBe(200);
+    expect((await post(h, `/${directId}/close`, req())).status).toBe(202);
     expect(closedHooks).toEqual([directId]);
     const afterClose = (await get(h, `/${parent}/events`)).body.events as PoppyEvent[];
     expect(afterClose.at(-1)).toMatchObject({ type: 'direct_closed', conversation_id: directId });
     expect((await post(h, `/${parent}/messages`, msg('back here'))).status).toBe(202);
+  });
+
+  it('accepting user_requested without a message: the Company speaks first; the same acceptance returns the same conversation', async () => {
+    harness = await setup((args) => ({
+      text: JSON.stringify(args.messages).includes('A specialist needs')
+        ? 'Hello, I am the specialist.'
+        : 'ok',
+    }));
+    const h = harness;
+    const parent = (await post(h, '', msg('exchange the jacket'))).body.conversation_id;
+    await readUntil(h, parent, settled);
+    const eventId = await h.conversations.requestUser(parent, 'A specialist needs to confirm.');
+
+    // Not a user_requested event of that parent: invalid_request.
+    const parentMessage = (await get(h, `/${parent}/events`)).body.events[0].id;
+    for (const bad of [parentMessage, 'evt_nope']) {
+      const res = await post(h, '', {
+        id: rid('dir'),
+        parent_conversation_id: parent,
+        user_requested_event_id: bad,
+      });
+      expect(res.status, bad).toBe(400);
+      expect(res.body.error).toBe('invalid_request');
+    }
+    // Without both IDs a message is required.
+    expect((await post(h, '', { id: rid('dir'), parent_conversation_id: parent })).status).toBe(
+      400,
+    );
+
+    const accept = {
+      id: rid('dir'),
+      parent_conversation_id: parent,
+      user_requested_event_id: eventId,
+    };
+    const res = await fetch(`${h.url}/poppy/conversations?wait=3`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...U1 },
+      body: JSON.stringify(accept),
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    const directId = body.conversation_id;
+    // Held until the Company's first message.
+    expect(body.events.map((e: PoppyEvent) => e.type)).toEqual(['message']);
+    expect(body.events[0].message).toMatchObject({
+      role: 'company',
+      author: { type: 'agent' },
+      text: 'Hello, I am the specialist.',
+    });
+    expect(body.events[0].message).not.toHaveProperty('as_of_request');
+    await readUntil(h, directId, (_e, last) => last.working === false);
+
+    // The same parent and event, even with another request ID and after it closes: the same one.
+    const again = await post(h, '', { ...accept, id: rid('dir') });
+    expect(again.status).toBe(201);
+    expect(again.body).toEqual({ conversation_id: directId });
+    await post(h, `/${directId}/close`, req());
+    const afterClose = await post(h, '', { ...accept, id: rid('dir') });
+    expect(afterClose.body).toEqual({ conversation_id: directId });
+    const messages = companyMessages((await get(h, `/${directId}/events`)).body.events);
+    expect(messages).toHaveLength(1);
+    // Another User cannot claim it.
+    const other = await post(h, '', { ...accept, id: rid('dir') }, auth('u2||out'));
+    expect(other.status).toBe(404);
   });
 
   it('unknown or closed parents; closing the parent closes its Direct Conversation', async () => {
@@ -1320,7 +1739,7 @@ describe('Poppy Direct Conversations (§7.10)', () => {
     expect(unknown.body.error).toBe('conversation_not_found');
 
     const closedParent = (await post(h, '', msg('a'))).body.conversation_id;
-    await post(h, `/${closedParent}/close`, {});
+    await post(h, `/${closedParent}/close`, req());
     const onClosed = await post(h, '', { parent_conversation_id: closedParent, ...msg('x') });
     expect(onClosed.status).toBe(409);
     expect(onClosed.body.error).toBe('conversation_closed');
@@ -1328,9 +1747,9 @@ describe('Poppy Direct Conversations (§7.10)', () => {
     const parent = (await post(h, '', msg('b'))).body.conversation_id;
     const directId = (await post(h, '', { parent_conversation_id: parent, ...msg('c') })).body
       .conversation_id;
-    await post(h, `/${parent}/close`, {});
+    await post(h, `/${parent}/close`, req());
     const direct = await get(h, `/${directId}/events`);
-    expect(direct.body.status).toBe('closed');
+    expect(direct.body.closed).toBe(true);
     const parentEvents = (await get(h, `/${parent}/events`)).body.events as PoppyEvent[];
     expect(parentEvents.slice(-2).map((e) => e.type)).toEqual(['direct_closed', 'state']);
   });
@@ -1354,12 +1773,13 @@ describe('Poppy Direct Conversations (§7.10)', () => {
       toolRoles: (name) => agent.registry.spec(name)?.roles,
     });
     const parent = (
-      await post(harness, '', { message: { id: 'msg_d0', author: { type: 'agent' }, context: {} } })
+      await post(harness, '', { id: 'msg_d0', message: { author: { type: 'agent' }, context: {} } })
     ).body.conversation_id;
     const directId = (
       await post(harness, '', {
+        id: 'msg_d1',
         parent_conversation_id: parent,
-        message: { id: 'msg_d1', author: { type: 'human' }, text: 'my orders?' },
+        message: { author: { type: 'human' }, text: 'my orders?' },
       })
     ).body.conversation_id;
     const { events } = await readUntil(harness, directId, (e) =>
@@ -1395,9 +1815,14 @@ describe('Poppy durability', () => {
       threadId,
       parentId: null,
       openDirectId: null,
-      status: 'working',
+      working: true,
+      handoff: 'none',
       responder: 'agent',
+      closed: false,
       context: {},
+      protocolVersion: '1.0',
+      extensions: {},
+      prompt: null,
       activeRunId: runId,
       turnSeq: 1,
       grant: {

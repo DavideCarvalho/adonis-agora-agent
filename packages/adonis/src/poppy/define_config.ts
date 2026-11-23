@@ -7,12 +7,13 @@ import type {
   PoppyDirectHooks,
   PoppyHandoffHooks,
   PoppyTexts,
+  PoppyVersionCheck,
 } from './conversations.js';
 import type { PoppyStore } from './store.js';
 
 /**
  * Shape of `config/poppy.ts`. Exposes an agent as the Company Agent of Personal Agent Protocol
- * ("Poppy", Draft 0.3) conversations — https://personalagentprotocol.org, §8:
+ * ("Poppy", 1.0) conversations — https://personalagentprotocol.org, §8:
  *
  * ```ts
  * import { definePoppyConfig } from '@adonis-agora/agent/poppy'
@@ -24,12 +25,11 @@ import type { PoppyStore } from './store.js';
  * ```
  *
  * Session headers and access tokens are verified by the resolver `@adonis-agora/authkit-server` installs in
- * `Symbol.for('@adonis-agora/poppy:authenticate')`, or by `authenticate`. Advertise the endpoint
- * in `poppy.json` as `agent.protocols: [{ type: 'poppy', endpoint: 'https://…/poppy/conversations' }]`.
+ * `Symbol.for('@adonis-agora/poppy:authenticate')`, or by `authenticate`. The endpoint is advertised
+ * in `poppy.json` as `agent.protocols: [{ type: 'poppy', endpoint, description }]`.
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
- * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
- * ways, outside semver majors while it is a draft.
+ * @experimental Implements Personal Agent Protocol 1.0 (https://personalagentprotocol.org/docs/1.0/spec).
+ * The surface may still change between minor releases of this package while it settles.
  */
 export interface PoppyConfig {
   /** The endpoint path. Default `'poppy/conversations'`. */
@@ -43,6 +43,12 @@ export interface PoppyConfig {
   baseUrl?: string;
   /** The registered agent that answers. Default: the agent provider's default agent. */
   agent?: string;
+  /**
+   * What the agent can help with, in plain language — the `description` of the `poppy` entry in
+   * `poppy.json` (§8.1), which personal agents read to decide whether a conversation can serve a
+   * task. Announced with the endpoint. Default `'Can help with anything.'`.
+   */
+  description?: string;
   /** Verifies Session headers and access tokens; overrides the global resolver. Neither → the endpoint answers 501. */
   authenticate?: PoppyAuthenticate;
   /**
@@ -75,6 +81,11 @@ export interface PoppyConfig {
   /** What the Company Agent says on its own. */
   texts?: Partial<PoppyTexts>;
   /**
+   * Whether a request in other versions than the conversation started in continues it (§8.2);
+   * `false` answers `version_mismatch`. Default: when the protocol versions are compatible.
+   */
+  continueVersion?: (check: PoppyVersionCheck) => boolean | Promise<boolean>;
+  /**
    * Words each action of a reply (executed, failed, refused) — the reply's text always tells them,
    * `data.actions` carries them structured. Default: `texts.action*` + the confirmation detail.
    */
@@ -103,9 +114,8 @@ export interface PoppyConfig {
 /**
  * Identity helper giving `config/poppy.ts` full type-checking.
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
- * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
- * ways, outside semver majors while it is a draft.
+ * @experimental Implements Personal Agent Protocol 1.0 (https://personalagentprotocol.org/docs/1.0/spec).
+ * The surface may still change between minor releases of this package while it settles.
  */
 export function definePoppyConfig(config: PoppyConfig): PoppyConfig {
   return config;

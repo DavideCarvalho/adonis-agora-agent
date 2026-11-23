@@ -7,7 +7,15 @@ import {
   type PoppyPrincipal,
 } from './auth.js';
 import type { PoppyConversations } from './conversations.js';
-import { isPoppyId, PoppyError, parseEmptyBody, parseSendBody } from './protocol.js';
+import {
+  isCompatiblePoppyVersion,
+  isPoppyId,
+  POPPY_PROTOCOL_VERSION,
+  PoppyError,
+  parsePoppyExtensions,
+  parseRequestBody,
+  parseSendBody,
+} from './protocol.js';
 
 /**
  * One HTTP exchange, framework-free: what the Poppy handler reads and writes. `adonisExchange`
@@ -60,12 +68,16 @@ type Route =
   | { kind: 'messages'; id: string }
   | { kind: 'events'; id: string }
   | { kind: 'handoff'; id: string }
+  | { kind: 'handoff-cancel'; id: string }
   | { kind: 'close'; id: string };
 
 /** Match the path after the endpoint: `null` → 404, a method mismatch → 405. */
 function matchRoute(method: string, rest: string[]): Route | 404 | 405 {
   const allow = (expected: string, route: Route) => (method === expected ? route : 405);
   if (rest.length === 0) return allow('POST', { kind: 'start' });
+  if (rest.length === 3 && rest[1] === 'handoff' && rest[2] === 'cancel') {
+    return allow('POST', { kind: 'handoff-cancel', id: rest[0] ?? '' });
+  }
   if (rest.length !== 2) return 404;
   const [id = '', action] = rest;
   switch (action) {
@@ -99,18 +111,17 @@ function cursorOf(exchange: PoppyExchange, header = false): string | undefined {
 }
 
 /**
- * The Poppy conversation endpoint (§8) — `POST {endpoint}`, `POST {endpoint}/{id}/messages`,
- * `GET {endpoint}/{id}/events` (JSON, long-poll with `wait`, or SSE), `POST …/handoff` and
- * `POST …/close`. Returns a handler that answers everything under `/{path}` and reports `false`
- * for anything else, so it can sit in front of the router.
+ * The Poppy conversation endpoint (§8.2) — `POST {endpoint}`, `POST {endpoint}/{id}/messages`,
+ * `GET {endpoint}/{id}/events` (JSON, long-poll with `wait`, or SSE), `POST …/handoff`,
+ * `POST …/handoff/cancel` and `POST …/close`. Returns a handler that answers everything under
+ * `/{path}` and reports `false` for anything else, so it can sit in front of the router.
  *
  * Every request is authenticated BEFORE its body is read, by the resolver of
  * `Symbol.for('@adonis-agora/poppy:authenticate')` (`@adonis-agora/authkit-server`) or the one
- * given. Without either the endpoint answers `501`.
+ * given, then its `Poppy-Version` is checked (§3.4). Without a resolver the endpoint answers `501`.
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
- * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
- * ways, outside semver majors while it is a draft.
+ * @experimental Implements Personal Agent Protocol 1.0 (https://personalagentprotocol.org/docs/1.0/spec).
+ * The surface may still change between minor releases of this package while it settles.
  */
 export function createPoppyHandler(options: PoppyHandlerOptions) {
   const base = `/${options.path}`;
@@ -133,16 +144,17 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
       url: exchange.url,
       headers: exchange.rawHeaders,
     });
-    if (result.ok) return result.principal;
+    if (result.ok) return withVersions(exchange, result.principal);
     const headers: Record<string, string> = {
       ...(result.headers ?? {}),
       ...(result.wwwAuthenticate ? { 'WWW-Authenticate': result.wwwAuthenticate } : {}),
       'Cache-Control': 'no-store',
     };
-    // Token errors are in `WWW-Authenticate`, as in OAuth; `invalid_session` is a JSON body (§8).
+    // Token errors are in `WWW-Authenticate`, as in OAuth; `invalid_session` and
+    // `version_unsupported` are a JSON body (§3.4, §5.3).
     exchange.json(
       result.status,
-      result.error === 'invalid_session'
+      result.error === 'invalid_session' || result.error === 'version_unsupported'
         ? {
             error: result.error,
             ...(result.description !== undefined ? { error_description: result.description } : {}),
@@ -158,7 +170,7 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
     principal: PoppyPrincipal,
     id: string,
   ): Promise<void> {
-    const conversation = await conversations.owned(principal, id);
+    const conversation = await conversations.owned(principal, id, 'read');
     const controller = new AbortController();
     const stop = () => controller.abort();
     const iterator = conversations.stream(
@@ -199,6 +211,9 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
           writer.write(
             `event: text-delta\ndata: ${JSON.stringify({ message_id: item.messageId, text: item.text })}\n\n`,
           );
+        } else {
+          // Not an event: no SSE id (§8.6).
+          writer.write(`event: working\ndata: ${JSON.stringify({ working: item.working })}\n\n`);
         }
         next = await iterator.next();
       }
@@ -223,7 +238,7 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
       case 'messages': {
         if (!isPoppyId(route.id)) throw new PoppyError('conversation_not_found');
         // The conversation is checked before the body is parsed: an unknown one is a 404.
-        await conversations.owned(principal, route.id);
+        await conversations.owned(principal, route.id, 'write');
         const body = parseSendBody(await exchange.readBody(maxBody), { allowParent: false });
         const sent = await conversations.send(principal, route.id, body);
         return answerPost(exchange, principal, route.id, sent);
@@ -241,26 +256,26 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
         });
         return exchange.json(200, result);
       }
-      case 'handoff': {
-        if (!isPoppyId(route.id)) throw new PoppyError('conversation_not_found');
-        await conversations.owned(principal, route.id);
-        parseEmptyBody(await exchange.readBody(maxBody));
-        const state = await conversations.requestHandoff(principal, route.id);
-        return exchange.json(202, { conversation_id: route.id, ...state });
-      }
+      case 'handoff':
+      case 'handoff-cancel':
       case 'close': {
         if (!isPoppyId(route.id)) throw new PoppyError('conversation_not_found');
-        await conversations.owned(principal, route.id);
-        parseEmptyBody(await exchange.readBody(maxBody));
-        const state = await conversations.closeByAgent(principal, route.id);
-        return exchange.json(200, { conversation_id: route.id, ...state });
+        await conversations.owned(principal, route.id, 'write');
+        const body = parseRequestBody(await exchange.readBody(maxBody));
+        const accepted =
+          route.kind === 'handoff'
+            ? await conversations.requestHandoff(principal, route.id, body)
+            : route.kind === 'handoff-cancel'
+              ? await conversations.cancelHandoff(principal, route.id, body)
+              : await conversations.closeByAgent(principal, route.id, body);
+        return answerPost(exchange, principal, route.id, accepted);
       }
     }
   }
 
   /**
-   * A message POST's answer: its status and body — or, with `wait`, a read of the events from
-   * `cursor` (the start without one), still under the POST's status (§8.3).
+   * A POST's answer: its status and `{ conversation_id }` — or, with `wait`, a read of the events
+   * from `cursor` (the start without one), still under the POST's status (§8.3).
    */
   async function answerPost(
     exchange: PoppyExchange,
@@ -270,7 +285,7 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
   ): Promise<void> {
     if (exchange.query.wait === undefined) return exchange.json(answer.status, answer.body);
     const wait = waitMs(exchange, maxWait);
-    const conversation = await conversations.owned(principal, conversationId);
+    const conversation = await conversations.owned(principal, conversationId, 'read');
     const cursor = cursorOf(exchange);
     const read = await conversations.readOwned(conversation, {
       ...(cursor !== undefined ? { cursor } : {}),
@@ -325,6 +340,23 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
       }
     }
     return true;
+  };
+}
+
+/**
+ * The principal with the request's versions (§3.4): what the resolver checked, else the headers.
+ * A missing `Poppy-Version`, or one not compatible with the version served, is `version_unsupported`
+ * — the request is never handled under another version.
+ */
+function withVersions(exchange: PoppyExchange, principal: PoppyPrincipal): PoppyPrincipal {
+  const version = principal.protocolVersion ?? exchange.headers['poppy-version']?.trim();
+  if (!isCompatiblePoppyVersion(version, POPPY_PROTOCOL_VERSION)) {
+    throw new PoppyError('version_unsupported');
+  }
+  return {
+    ...principal,
+    protocolVersion: version as string,
+    extensions: principal.extensions ?? parsePoppyExtensions(exchange.headers['poppy-extensions']),
   };
 }
 

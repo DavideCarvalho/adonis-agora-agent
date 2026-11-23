@@ -3,6 +3,7 @@ import PoppyProvider from '../providers/poppy_provider.js';
 import {
   announcedPoppyEndpoints,
   announcePoppyEndpoints,
+  DEFAULT_POPPY_DESCRIPTION,
   POPPY_ENDPOINTS_SLOT,
   poppyConversationsUrl,
 } from '../src/poppy/index.js';
@@ -46,15 +47,29 @@ describe('Poppy endpoint announcement (for poppy.json)', () => {
     });
   });
 
-  it('the provider announces {baseUrl}/{path} at boot', async () => {
+  it('the provider announces {baseUrl}/{path} and the description at boot', async () => {
     (globalThis as Record<symbol, unknown>)[POPPY_ENDPOINTS_SLOT] = { other: 'https://x/o' };
-    const { app, used } = fakeApp({ baseUrl: 'https://api.acme.com/', path: 'poppy/v1' });
+    const { app, used } = fakeApp({
+      baseUrl: 'https://api.acme.com/',
+      path: 'poppy/v1',
+      description: 'Orders, returns and your account',
+    });
     await new PoppyProvider(app).boot();
     expect(used).toHaveLength(1);
     expect((globalThis as Record<symbol, unknown>)[POPPY_ENDPOINTS_SLOT]).toEqual({
       other: 'https://x/o',
       conversations: 'https://api.acme.com/poppy/v1',
+      description: 'Orders, returns and your account',
     });
+  });
+
+  it('1.0 requires a description on the entry (§8.1): a blank or missing one is the default', async () => {
+    for (const description of [undefined, '   ']) {
+      delete (globalThis as Record<symbol, unknown>)[POPPY_ENDPOINTS_SLOT];
+      await new PoppyProvider(fakeApp({ baseUrl: 'https://api.acme.com', description }).app).boot();
+      expect(announcedPoppyEndpoints().description).toBe(DEFAULT_POPPY_DESCRIPTION);
+    }
+    expect(DEFAULT_POPPY_DESCRIPTION).toBe('Can help with anything.');
   });
 
   it('defaults the path, and announces nothing without baseUrl or without the surface', async () => {

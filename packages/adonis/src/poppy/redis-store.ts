@@ -7,6 +7,7 @@ import {
   type PoppyMessageReceipt,
   type PoppyStore,
   type StoredPoppyEvent,
+  upgradePoppyRecord,
 } from './store.js';
 
 /**
@@ -33,9 +34,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * appends never share one; a message claim, an event key and the reader lease are `SET … NX`.
  * Conversations are JSON values; events one key each (`…:evt:<conversation>:<seq>`).
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
- * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
- * ways, outside semver majors while it is a draft.
+ * @experimental Implements Personal Agent Protocol 1.0 (https://personalagentprotocol.org/docs/1.0/spec).
+ * The surface may still change between minor releases of this package while it settles.
  */
 export function redisPoppyStore(
   redis: PoppyRedisClient,
@@ -54,7 +54,7 @@ export function redisPoppyStore(
 
   const getConversation = async (id: string): Promise<PoppyConversationRecord | null> => {
     const raw = await redis.get(k.conversation(id));
-    return raw === null ? null : (JSON.parse(raw) as PoppyConversationRecord);
+    return raw === null ? null : upgradePoppyRecord(JSON.parse(raw) as PoppyConversationRecord);
   };
 
   const lastSeq = async (id: string): Promise<number> =>
@@ -62,7 +62,7 @@ export function redisPoppyStore(
 
   return {
     async createConversation(record) {
-      await redis.set(k.conversation(record.id), JSON.stringify(record));
+      await redis.set(k.conversation(record.id), JSON.stringify(upgradePoppyRecord(record)));
     },
     getConversation,
     async updateConversation(id, patch: PoppyConversationPatch) {

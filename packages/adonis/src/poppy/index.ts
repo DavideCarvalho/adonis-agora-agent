@@ -8,6 +8,7 @@ export type {
 } from './auth.js';
 export { globalPoppyAuthenticate, globalPoppyIssuer, POPPY_AUTHENTICATE_SLOT } from './auth.js';
 export type {
+  PoppyAccepted,
   PoppyActionFormatter,
   PoppyActionOutcome,
   PoppyConversationsOptions,
@@ -18,6 +19,7 @@ export type {
   PoppyReadResult,
   PoppyStreamItem,
   PoppyTexts,
+  PoppyVersionCheck,
 } from './conversations.js';
 export {
   DEFAULT_POPPY_TEXTS,
@@ -31,6 +33,7 @@ export type { PoppyEndpoints } from './endpoints.js';
 export {
   announcedPoppyEndpoints,
   announcePoppyEndpoints,
+  DEFAULT_POPPY_DESCRIPTION,
   POPPY_ENDPOINTS_SLOT,
   poppyConversationsUrl,
 } from './endpoints.js';
@@ -45,14 +48,19 @@ export type {
   PoppyEventBody,
   PoppyEventMessage,
   PoppyEventType,
+  PoppyHandoff,
   PoppyInboundMessage,
+  PoppyRequestBody,
   PoppyResponder,
-  PoppyStatus,
+  PoppySendBody,
+  PoppyState,
 } from './protocol.js';
 export {
+  isCompatiblePoppyVersion,
   POPPY_PROTOCOL_TYPE,
   POPPY_PROTOCOL_VERSION,
   PoppyError,
+  parsePoppyExtensions,
 } from './protocol.js';
 export type { PoppyRedisClient, RedisPoppyStoreOptions } from './redis-store.js';
 export { redisPoppyStore } from './redis-store.js';
@@ -70,6 +78,8 @@ export {
   ensurePoppyTables,
   InMemoryPoppyStore,
   LucidPoppyStore,
+  POPPY_1_0_COLUMNS,
   POPPY_TABLES,
   poppyTableStatements,
+  upgradePoppyRecord,
 } from './store.js';

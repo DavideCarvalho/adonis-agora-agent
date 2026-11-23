@@ -6,15 +6,15 @@ import {
   validateSchema,
 } from '../stores/db-schema.js';
 import type { LucidClientLike, LucidRawRunner } from '../stores/lucid.js';
-import { forDialect } from '../stores/lucid-schema.js';
+import { addMissingColumns, forDialect } from '../stores/lucid-schema.js';
 import { isMySql } from '../stores/sql-dialect.js';
 import type { Actor } from '../types.js';
 import type {
   PoppyContext,
   PoppyEvent,
   PoppyEventBody,
+  PoppyHandoff,
   PoppyResponder,
-  PoppyStatus,
 } from './protocol.js';
 
 /**
@@ -34,10 +34,22 @@ export interface PoppyConversationRecord {
   parentId: string | null;
   /** On a parent: its open Direct Conversation. */
   openDirectId: string | null;
-  status: PoppyStatus;
+  /** The state of §8.7 — `working` is not an event, the other three are `state` events. */
+  working: boolean;
+  handoff: PoppyHandoff;
   responder: PoppyResponder;
+  closed: boolean;
   /** The User's context as last shared — fields a message leaves out keep their value (§8.4). */
   context: PoppyContext;
+  /** The `Poppy-Version` of the request that started it (§8.2); `null` on a conversation older than 1.0. */
+  protocolVersion: string | null;
+  /** The extensions that request declared, `{ name: version }` (§3.4). */
+  extensions: Record<string, string>;
+  /**
+   * What the Company Agent is to speak about first, before any message of the Personal Agent — set
+   * on a Direct Conversation opened without one (§8.10) until its first turn takes it up.
+   */
+  prompt: string | null;
   /** The run whose reply is being written, while there is one. */
   activeRunId: string | null;
   /**
@@ -67,9 +79,12 @@ export type PoppyConversationPatch = Partial<
     | 'accountRef'
     | 'threadId'
     | 'openDirectId'
-    | 'status'
+    | 'working'
+    | 'handoff'
     | 'responder'
+    | 'closed'
     | 'context'
+    | 'prompt'
     | 'activeRunId'
     | 'turnSeq'
     | 'grant'
@@ -83,7 +98,7 @@ export interface StoredPoppyEvent {
   event: PoppyEvent;
 }
 
-/** What an accepted message keeps for its retries (§8.3). */
+/** What an accepted request keeps for its retries (§8.3). */
 export interface PoppyMessageReceipt {
   fingerprint: string;
   conversationId: string;
@@ -99,9 +114,8 @@ export type PoppyMessageClaim =
  * Where conversations, their events and message receipts live. Events are append-only and read by
  * position, so a cursor replays exactly what came after it, on any replica.
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec),
- * a spec still in development: this API WILL change as the spec evolves — possibly in breaking
- * ways, outside semver majors while it is a draft.
+ * @experimental Implements Personal Agent Protocol 1.0 (https://personalagentprotocol.org/docs/1.0/spec).
+ * The surface may still change between minor releases of this package while it settles.
  */
 export interface PoppyStore {
   createConversation(record: PoppyConversationRecord): Promise<void>;
@@ -123,13 +137,16 @@ export interface PoppyStore {
   findEventSeq(conversationId: string, eventId: string): Promise<number | null>;
   /** Drop the events created before `before` (epoch ms), keeping at least the last one. */
   pruneEvents(conversationId: string, before: number): Promise<void>;
-  /** Claim `messageId` for `owner` — atomically, so two deliveries of one message are one. */
+  /**
+   * Claim request `messageId` for `owner` — atomically, so two deliveries of one request are one
+   * (§8.3). Also what ties a `user_requested` event to the Direct Conversation that accepted it.
+   */
   claimMessage(
     owner: string,
     messageId: string,
     receipt: PoppyMessageReceipt,
   ): Promise<PoppyMessageClaim>;
-  /** Drop a claim whose message could not be taken, so its retry is processed afresh. */
+  /** Drop a claim whose request could not be taken, so its retry is processed afresh. */
   releaseMessage(owner: string, messageId: string): Promise<void>;
   /**
    * Take (or renew) the right to write the reply of the conversation's active run for `ttlMs` —
@@ -160,6 +177,38 @@ function toEvent(seq: number, body: PoppyEventBody, now: number): StoredPoppyEve
   };
 }
 
+/**
+ * A record as stored before the 1.0 state model (a single `status`: `working` / `idle` / `queued` /
+ * `closed`) or the 1.0 fields, brought to the current shape. Safe on a current record.
+ */
+export function upgradePoppyRecord(
+  raw: PoppyConversationRecord & { status?: string },
+): PoppyConversationRecord {
+  const { status, ...rest } = raw;
+  const legacy = typeof status === 'string' ? status : undefined;
+  return {
+    ...rest,
+    working: typeof raw.working === 'boolean' ? raw.working : legacy === 'working',
+    handoff:
+      raw.handoff === 'pending' || raw.handoff === 'none'
+        ? raw.handoff
+        : legacy === 'queued'
+          ? 'pending'
+          : 'none',
+    closed: typeof raw.closed === 'boolean' ? raw.closed : legacy === 'closed',
+    protocolVersion: raw.protocolVersion ?? null,
+    extensions: raw.extensions ?? {},
+    prompt: raw.prompt ?? null,
+  };
+}
+
+/** The pre-1.0 `status` column, still written for a reader of the table: a summary of the state. */
+function legacyStatus(record: Pick<PoppyConversationRecord, 'working' | 'handoff' | 'closed'>) {
+  if (record.closed) return 'closed';
+  if (record.handoff === 'pending') return 'queued';
+  return record.working ? 'working' : 'idle';
+}
+
 // ── In memory ─────────────────────────────────────────────────────────────────
 
 /** Process-local {@link PoppyStore} — tests and single-instance dev. */
@@ -170,7 +219,7 @@ export class InMemoryPoppyStore implements PoppyStore {
   readonly #leases = new Map<string, { holder: string; until: number }>();
 
   async createConversation(record: PoppyConversationRecord): Promise<void> {
-    this.#conversations.set(record.id, structuredClone(record));
+    this.#conversations.set(record.id, structuredClone(upgradePoppyRecord(record)));
   }
 
   async getConversation(id: string): Promise<PoppyConversationRecord | null> {
@@ -281,6 +330,12 @@ export function poppyTableStatements(schema?: string): string[] {
       "open_direct_id" VARCHAR(255) NULL,
       "status" VARCHAR(16) NOT NULL,
       "responder" VARCHAR(16) NOT NULL,
+      "working" SMALLINT NULL,
+      "handoff" VARCHAR(16) NULL,
+      "closed" SMALLINT NULL,
+      "protocol_version" VARCHAR(16) NULL,
+      "extensions" TEXT NULL,
+      "prompt" TEXT NULL,
       "context" TEXT NULL,
       "active_run_id" VARCHAR(255) NULL,
       "turn_seq" BIGINT NOT NULL,
@@ -314,8 +369,23 @@ export function poppyTableStatements(schema?: string): string[] {
 }
 
 /**
- * Create the Poppy tables if missing. Idempotent. `schema` puts them in that database schema
- * (created when missing); refused on SQLite.
+ * The conversation columns added with Poppy 1.0 — added to a table created before it. Nullable: a
+ * row without them is read by its pre-1.0 `status` (which the table still has, and new rows still
+ * fill with a summary of the state).
+ */
+export const POPPY_1_0_COLUMNS = [
+  { table: POPPY_TABLES.conversations, column: 'working', type: 'SMALLINT NULL' },
+  { table: POPPY_TABLES.conversations, column: 'handoff', type: 'VARCHAR(16) NULL' },
+  { table: POPPY_TABLES.conversations, column: 'closed', type: 'SMALLINT NULL' },
+  { table: POPPY_TABLES.conversations, column: 'protocol_version', type: 'VARCHAR(16) NULL' },
+  { table: POPPY_TABLES.conversations, column: 'extensions', type: 'TEXT NULL' },
+  { table: POPPY_TABLES.conversations, column: 'prompt', type: 'TEXT NULL' },
+] as const;
+
+/**
+ * Create the Poppy tables if missing, and add the columns a table created by an earlier version
+ * lacks. Idempotent. `schema` puts them in that database schema (created when missing); refused on
+ * SQLite.
  */
 export async function ensurePoppyTables(
   db: LucidRawRunner,
@@ -327,6 +397,7 @@ export async function ensurePoppyTables(
   for (const statement of poppyTableStatements(schema)) {
     await db.rawQuery(forDialect(statement, mysql));
   }
+  await addMissingColumns(db, POPPY_1_0_COLUMNS, schema);
 }
 
 function toInt(value: unknown): number {
@@ -342,9 +413,12 @@ const PATCH_COLUMNS: Record<keyof PoppyConversationPatch, string> = {
   accountRef: 'account_ref',
   threadId: 'thread_id',
   openDirectId: 'open_direct_id',
-  status: 'status',
+  working: 'working',
+  handoff: 'handoff',
   responder: 'responder',
+  closed: 'closed',
   context: 'context',
+  prompt: 'prompt',
   activeRunId: 'active_run_id',
   turnSeq: 'turn_seq',
   grant: 'grant_info',
@@ -394,8 +468,9 @@ export class LucidPoppyStore implements PoppyStore {
     return this.#ready;
   }
 
-  async createConversation(record: PoppyConversationRecord): Promise<void> {
+  async createConversation(input: PoppyConversationRecord): Promise<void> {
     await this.ready();
+    const record = upgradePoppyRecord(input);
     await this.db.table(this.#tables.conversations).insert({
       id: record.id,
       client_id: record.clientId,
@@ -405,8 +480,14 @@ export class LucidPoppyStore implements PoppyStore {
       thread_id: record.threadId,
       parent_id: record.parentId,
       open_direct_id: record.openDirectId,
-      status: record.status,
+      status: legacyStatus(record),
       responder: record.responder,
+      working: record.working ? 1 : 0,
+      handoff: record.handoff,
+      closed: record.closed ? 1 : 0,
+      protocol_version: record.protocolVersion,
+      extensions: JSON.stringify(record.extensions),
+      prompt: record.prompt,
       context: JSON.stringify(record.context),
       active_run_id: record.activeRunId,
       turn_seq: record.turnSeq,
@@ -423,7 +504,9 @@ export class LucidPoppyStore implements PoppyStore {
     await this.ready();
     const row = await this.db.from(this.#tables.conversations).where('id', id).first();
     if (!row) return null;
-    return {
+    const flag = (value: unknown) =>
+      value == null ? undefined : value === true || toInt(value) === 1;
+    return upgradePoppyRecord({
       id: String(row.id),
       clientId: String(row.client_id),
       userId: String(row.user_id),
@@ -432,7 +515,16 @@ export class LucidPoppyStore implements PoppyStore {
       threadId: nullable(row.thread_id),
       parentId: nullable(row.parent_id),
       openDirectId: nullable(row.open_direct_id),
-      status: String(row.status) as PoppyStatus,
+      status: String(row.status),
+      working: flag(row.working) as boolean,
+      handoff: (row.handoff == null ? undefined : String(row.handoff)) as PoppyHandoff,
+      closed: flag(row.closed) as boolean,
+      protocolVersion: nullable(row.protocol_version),
+      extensions:
+        row.extensions == null
+          ? {}
+          : (JSON.parse(String(row.extensions)) as Record<string, string>),
+      prompt: nullable(row.prompt),
       responder: String(row.responder) as PoppyResponder,
       context: row.context == null ? {} : (JSON.parse(String(row.context)) as PoppyContext),
       activeRunId: nullable(row.active_run_id),
@@ -441,7 +533,7 @@ export class LucidPoppyStore implements PoppyStore {
       prunedSeq: toInt(row.pruned_seq),
       createdAt: toInt(row.created_at),
       updatedAt: toInt(row.updated_at),
-    };
+    });
   }
 
   async updateConversation(id: string, patch: PoppyConversationPatch): Promise<void> {
@@ -451,7 +543,11 @@ export class LucidPoppyStore implements PoppyStore {
       const value = patch[key as keyof PoppyConversationPatch];
       if (value === undefined) continue;
       row[column] =
-        key === 'context' || (key === 'grant' && value !== null) ? JSON.stringify(value) : value;
+        key === 'context' || (key === 'grant' && value !== null)
+          ? JSON.stringify(value)
+          : typeof value === 'boolean'
+            ? Number(value)
+            : value;
     }
     await this.db.from(this.#tables.conversations).where('id', id).update(row);
   }

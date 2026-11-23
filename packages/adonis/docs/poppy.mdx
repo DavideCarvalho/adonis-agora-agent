@@ -6,17 +6,17 @@ icon: MessagesSquare
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-<Callout type="warn" title="Experimental — tracks a draft spec">
-The [Personal Agent Protocol (Poppy) specification](https://personalagentprotocol.org/docs/spec) is a
-**Draft 0.3, still in development**. This surface implements **Draft 0.3** and tracks the spec: it
-**will change** as the spec evolves — possibly in breaking ways, and outside semver majors while the
-spec is a draft. Everything under `@adonis-agora/agent/poppy` and `poppy_provider` is experimental.
+<Callout type="warn" title="Experimental">
+This surface implements [Personal Agent Protocol **1.0**](https://personalagentprotocol.org/docs/1.0/spec).
+Everything under `@adonis-agora/agent/poppy` and `poppy_provider` is experimental and may still change
+between minor releases of this package.
 </Callout>
 
-[Personal Agent Protocol](https://personalagentprotocol.org) ("Poppy", Draft 0.3) is how a user's
-personal agent works with a company: discovery (`poppy.json`), Sessions and sign-in, APIs — and
-**conversations** ([Poppy §8](https://personalagentprotocol.org/docs/spec#conversations)), where the personal agent talks with the Company Agent. `@adonis-agora/agent/poppy_provider`
-makes one of your registered agents that Company Agent.
+[Personal Agent Protocol](https://personalagentprotocol.org) ("Poppy") is how a user's personal agent
+works with a company: discovery (`poppy.json`), Sessions and sign-in, APIs — and **conversations**
+([Poppy §8](https://personalagentprotocol.org/docs/1.0/spec#conversations)), where the personal agent
+talks with the Company Agent. `@adonis-agora/agent/poppy_provider` makes one of your registered agents
+that Company Agent.
 
 The rest of the protocol — `poppy.json`, the OAuth server, the `Poppy-Session` header and access tokens — is
 `@adonis-agora/authkit-server`'s. The two meet in one global slot, never an import:
@@ -46,30 +46,44 @@ export default definePoppyConfig({
   path: 'poppy/conversations',
   baseUrl: 'https://api.acme.com', // the URL DPoP proofs name
   agent: 'support',
+  description: 'Orders, returns, your account and our products',
 })
 ```
 
 It is advertised in `poppy.json` (AuthKit builds that document) as:
 
 ```json
-"agent": { "protocols": [{ "type": "poppy", "endpoint": "https://api.acme.com/poppy/conversations" }] }
+"agent": {
+  "protocols": [{
+    "type": "poppy",
+    "endpoint": "https://api.acme.com/poppy/conversations",
+    "description": "Orders, returns, your account and our products"
+  }]
+}
 ```
 
-With `baseUrl` set, the provider announces that URL at boot in the global slot
-`Symbol.for('@adonis-agora/poppy:endpoints')` (`{ conversations: '<baseUrl>/<path>' }`, merged with what
-is already there — the pattern MCP uses for its OAuth resource), and AuthKit in the same process reads it:
-no URL repeated in its config. **`baseUrl` is required for this**: without it nothing is announced, and
-you give AuthKit the endpoint yourself.
+`description` says, in plain language, what your agent can help with: personal agents read it to
+decide whether a conversation can serve the task at hand, or whether to use your APIs instead. Every
+entry needs one; without yours it is `'Can help with anything.'`.
+
+With `baseUrl` set, the provider announces the endpoint and its description at boot in the global slot
+`Symbol.for('@adonis-agora/poppy:endpoints')` (`{ conversations: '<baseUrl>/<path>', description }`,
+merged with what is already there — the pattern MCP uses for its OAuth resource), and AuthKit in the
+same process reads it: nothing repeated in its config. **`baseUrl` is required for this**: without it
+nothing is announced, and you give AuthKit the entry yourself.
 
 | Request | |
 | --- | --- |
-| `POST {endpoint}` | Start a conversation with its first message → `201 { conversation_id, status, responder }`. With `parent_conversation_id`, a Direct Conversation. |
-| `POST {endpoint}/{id}/messages` | Another message → `202`. |
+| `POST {endpoint}` | Start a conversation with its first message → `201 { conversation_id }`. With `parent_conversation_id`, a Direct Conversation. |
+| `POST {endpoint}/{id}/messages` | Another message → `202 { conversation_id }`. |
 | `GET {endpoint}/{id}/events` | Events after `cursor` (`wait` holds the request), or SSE with `Accept: text/event-stream`. |
 | `POST {endpoint}/{id}/handoff` | Ask for a person → `202`. |
-| `POST {endpoint}/{id}/close` | Close → `200`. |
+| `POST {endpoint}/{id}/handoff/cancel` | Withdraw that request → `202`. |
+| `POST {endpoint}/{id}/close` | Close → `202`, also when already closed. |
 
-Both POSTs take `?wait=&cursor=` and then answer as a read of the events, keeping their `201`/`202`.
+Every POST body has a request `id` chosen by the personal agent (`{ "id": "…" }` for handoff, cancel and
+close). A `202`/`201` means the request was **accepted**; what happened shows in the events and the state.
+Any POST takes `?wait=&cursor=` and then answers as a read of the events, keeping its `201`/`202`.
 
 <Callout type="info">
 Like the A2A surface, these routes are **server middleware** ahead of the router: every request is
@@ -89,10 +103,15 @@ when the `poppy` protocol entry declares a `resource`.
 
 It answers a **principal**: the personal agent (`clientId`), its User (`userId`, opaque and pairwise),
 the app account when signed in (`accountId`, else `null`), the Session, `signedIn`, the token's
-`scopes`, `resource`, `tokenType` and — only when the app configures `personalAgents.poppy.toActor`
-in AuthKit — an `actor`. A refusal (`invalid_token`, `invalid_dpop_proof`, `use_dpop_nonce`,
-a code-less `401`, `insufficient_scope`, `invalid_session`) is answered with the resolver's status, its
-`WWW-Authenticate`, its extra headers (`DPoP-Nonce`) and its description as `error_description`.
+`scopes`, `resource`, `tokenType`, the request's `protocolVersion` and `extensions` when it checked
+them, and — only when the app configures `personalAgents.poppy.toActor` in AuthKit — an `actor`. A
+refusal (`invalid_token`, `invalid_dpop_proof`, `use_dpop_nonce`, a code-less `401`,
+`insufficient_scope`, `invalid_session`, `version_unsupported`) is answered with the resolver's status,
+its `WWW-Authenticate`, its extra headers (`DPoP-Nonce`) and its description as `error_description`.
+
+Every request must say `Poppy-Version: 1.0` (or a later `1.x`, handled as 1.0). A missing or
+incompatible version is `400 { "error": "version_unsupported" }`. The declared `Poppy-Extensions` are
+recorded with the conversation.
 
 A turn runs as `principal.actor`, else your `actorFor(principal, defaults)`, else the default: signed
 in, **the account** — `{ id: accountId }`, as a PACT delegation runs as the account; signed out,
@@ -115,18 +134,19 @@ registry.register({ name: 'cancel_order', kind: 'action', roles: ['scope:orders:
 ## Scopes, sign-in and actions
 
 The protocol has no confirmation step: "sending a message does not authorize the requested account
-action" ([Poppy §8.11](https://personalagentprotocol.org/docs/spec#conversation-sign-in)), the token's scopes do. So:
+action" ([Poppy §8.11](https://personalagentprotocol.org/docs/1.0/spec#conversation-sign-in)), the token's scopes do. So:
 
 - A tool behind a scope the token lacks is **offered but not run**. Its refused call ends the turn
-  with an **`authorization`** event: always `insufficient_scope`, signed in or out, with `scope` naming what was missing (`"orders:write"`). In a Direct Conversation the
-  Company Agent also asks in a message ([Poppy §8.11](https://personalagentprotocol.org/docs/spec#conversation-sign-in) SHOULD). The conversation stays open; the personal agent
-  continues it with its new token.
+  with an **`authorization`** event: always `insufficient_scope`, signed in or out, with `scope`
+  naming what was missing (`"orders:write"`). In a Direct Conversation, where the User reads the
+  messages, the Company Agent also asks in a message (`texts.signIn`). The conversation stays open;
+  the personal agent continues it with its new token.
 - With the scope, an `action` that parks for approval is **approved by the scope** (`actions:
   'approve-delegated'`, the default; `'reject'` refuses them all). The same goes for independent
   proposals (`actionApprovalMode: 'independent'`): the turn decides it, **waits for it to execute**, and
   the reply carries it in `data.actions` — `{ tool, status, summary, result }`, the summary being the
   confirmation your app would have shown the person. A question set (`ask`) is skipped.
-- Every action is also told in the reply's **text** ([Poppy §8](https://personalagentprotocol.org/docs/spec#conversations): a message must make sense without `data`):
+- Every action is also told in the reply's **text** ([Poppy §8](https://personalagentprotocol.org/docs/1.0/spec#conversations): a message must make sense without `data`):
   `status` is `succeeded`, `failed` (with `error`) or `rejected`. When the model wrote nothing, or an
   action did not go through (the model wrote before the result, so its claim is replaced), the text is
   each action worded by `formatAction(action, texts)` — by default `texts.actionSucceeded` /
@@ -135,23 +155,51 @@ action" ([Poppy §8.11](https://personalagentprotocol.org/docs/spec#conversation
 ## Messages and events
 
 A message's `text` and `data` reach the model (data as JSON); its `context` (`locale`, `time_zone`,
-`user_available`, …) is merged into the conversation's and given to the turn as
-`pageContext: { channel: 'poppy', poppy: { conversationId, direct, sender, signedIn, context } }`. A
-context-only message updates it without a turn.
+`user_available`, …) is merged into the conversation's — a field set to `null` is cleared — and given
+to the turn as `pageContext: { channel: 'poppy', poppy: { conversationId, direct, sender, signedIn, context } }`.
+A context-only message updates it without a turn. An `author.type` other than `human` counts as `agent`;
+extension content in `extensions` is not read.
 
-The reply is a `message` event (`role: 'company'`, `author.type: 'agent'`). Components your tools emit
-become `data.components` (`{ name, props, fallback_text }`), and their fallback text is the message's
-text when the model wrote none. While it is written, an SSE reader gets its text as `text-delta`
-events (no SSE `id`, `{ message_id, text }`), then the complete `message` event.
+The personal agent's message is recorded with its request's `id` and `role: 'user'`. The reply is a
+`message` event (`role: 'company'`, `author.type: 'agent'`, `as_of_request` naming the latest message it
+answered). Components your tools emit become `data.components` (`{ name, props, fallback_text }`), and
+their fallback text is the message's text when the model wrote none. While it is written, an SSE reader
+gets its text as `text-delta` events (no SSE `id`, `{ message_id, text }`), then the complete `message`
+event.
 
-Every change of `status` (`working` / `idle` / `queued` / `closed`) or `responder` (`agent` /
-`human`) is a `state` event. Event ids are cursors; an unknown one is `invalid_cursor` (400), one
-pruned by `retentionMs` is `cursor_expired` (410). Reads page by 100 with `has_more`. A stream resumes
-from `Last-Event-ID`, and ends once the conversation closes.
+Every read reports the state in four fields:
 
-Message ids are the personal agent's and unique per User: a retry with the same content answers what
-the first delivery answered (a retried first message returns the conversation it started); different
-content is `message_id_conflict` (409). Unknown fields are ignored everywhere ([Poppy §3.3](https://personalagentprotocol.org/docs/spec#extensions)).
+| Field | |
+| --- | --- |
+| `working` | `true` from the moment a message is accepted until its reply is written. Read until it is `false`. |
+| `handoff` | `pending` while a person is being found, else `none`. |
+| `responder` | `agent`, or `human` once a person joined. |
+| `closed` | The conversation takes no more messages. |
+
+A change of `handoff`, `responder` or `closed` is a `state` event carrying all three. `working` is not
+an event: a read with `wait` also returns when it turns `false`, and a stream sends it as a `working`
+event (`{ "working": false }`, no SSE `id`) when it opens and each time it changes.
+
+Event ids are cursors; an unknown one is `invalid_cursor` (400), one pruned by `retentionMs` is
+`cursor_expired` (410). Reads page by 100 with `has_more`. A stream resumes from `Last-Event-ID`, and
+ends once the conversation closes.
+
+Request ids are unique per User: a retry with the same id, path and body answers what the first
+delivery answered (a retried first message returns the conversation it started); another path or body
+is `request_id_conflict` (409). Unknown fields are ignored everywhere.
+
+A conversation keeps the protocol version and extensions it started with. By default any compatible
+version continues it; `continueVersion` decides otherwise, and a refusal is
+`409 { "error": "version_mismatch", "protocol_version": "1.0" }`:
+
+```ts title="config/poppy.ts"
+export default definePoppyConfig({
+  // ...
+  // Reads in any version; new requests only with the extensions the conversation started with.
+  continueVersion: ({ kind, started, request }) =>
+    kind === 'read' || started.extensions.links === request.extensions.links,
+})
+```
 
 ## Handoff to a person
 
@@ -164,37 +212,55 @@ export default definePoppyConfig({
   handoff: {
     // 'queued' (someone will join), 'joined' (now), or { unavailable: 'why' }.
     request: async ({ conversationId }) => (await support.open(conversationId)) ? 'queued' : { unavailable: 'Our team is offline until 9am.' },
-    // Personal-agent messages while a person handles it (or is being found): the agent stays out.
+    // Personal-agent messages for the person handling it — including the ones the agent had not
+    // answered yet when they joined. The agent stays out.
     message: ({ conversationId, message }) => support.forward(conversationId, message),
+    // The personal agent no longer needs a person: return false to keep looking.
+    withdraw: ({ conversationId }) => support.withdraw(conversationId),
     cancel: ({ conversationId }) => support.cancel(conversationId), // closed meanwhile
   },
 })
 ```
 
+While `handoff` is `pending`, the Company Agent keeps answering. Handoff requests and cancels are acted
+on in the order they were accepted; a request while one is pending, or while a person handles the
+conversation, changes nothing.
+
 The Company side is driven through the `PoppyConversations` binding:
 
 ```ts
 const poppy = await app.container.make(PoppyConversations)
-await poppy.humanJoined(id)                                  // responder → human
-await poppy.postMessage(id, { author: { type: 'human' }, text: 'Hi, I am Sam.' })
+await poppy.humanJoined(id)                                  // handoff none, responder human
+await poppy.postMessage(id, { author: { type: 'human', name: 'Sam' }, text: 'Hi, I am Sam.' })
 await poppy.humanLeft(id)                                    // back to the agent
-await poppy.handoffUnavailable(id, 'Nobody could take it.')  // queued → idle, with the reason
+await poppy.handoffUnavailable(id, 'Nobody could take it.')  // pending → none, with the reason
 await poppy.handoff(id)                                      // the Company Agent hands off on its own
 await poppy.close(id)
 ```
 
+## Closing
+
+A close answers `202` and sets `closed`; a reply still being written is dropped, a pending handoff
+stops (`handoff.cancel` runs), and the events stay readable. Messages, handoffs and cancels to a closed
+conversation are `conversation_closed` (409). Closing a conversation doesn't undo what it started.
+
 ## Direct Conversations
 
-`poppy.requestUser(id, reason)` adds a `user_requested` event; only the personal agent opens the
-Direct Conversation, once the User agrees, with `parent_conversation_id`. It runs in **the parent's
-agent thread**, so the Company Agent knows what was said in either. While it is open the parent gets
-`direct_opened`, can still be read, and refuses messages and handoffs with `direct_conversation_open`
-(409, naming it); closing it adds `direct_closed`; closing the parent closes it. A Direct Conversation
-cannot be a parent. `direct.opened` / `direct.closed` hooks tell your app.
+`poppy.requestUser(id, reason)` adds a `user_requested` event (it answers the event's id); only the
+personal agent opens the Direct Conversation, once the User agrees, with `parent_conversation_id` — and
+`user_requested_event_id` when it accepts your request. Accepting without a message makes the Company
+Agent speak first: it is told the User joined and why (`texts.userJoined`). Accepting the same event
+again returns the same Direct Conversation, even once closed.
+
+It runs in **the parent's agent thread**, so the Company Agent knows what was said in either. While it
+is open the parent gets `direct_opened`, can still be read, and refuses messages, handoffs and cancels
+with `direct_conversation_open` (409, naming it); closing it adds `direct_closed`; closing the parent
+closes it. A Direct Conversation cannot be a parent (`invalid_request`). `direct.opened` /
+`direct.closed` hooks tell your app.
 
 ## MCP and the Poppy issuer
 
-[Poppy §7](https://personalagentprotocol.org/docs/spec#apis) requires a listed MCP server's protected-resource metadata to name the Poppy issuer in
+[Poppy §7](https://personalagentprotocol.org/docs/1.0/spec#apis) requires a listed MCP server's protected-resource metadata to name the Poppy issuer in
 `authorization_servers`. When AuthKit announces it (`Symbol.for('@adonis-agora/poppy:issuer')`), the
 [MCP provider](/docs/agent/mcp) adds it to its `/.well-known/oauth-protected-resource/…` document,
 next to the configured issuer.
@@ -209,9 +275,10 @@ that scope and signs in again. A **signed-out** Session's MCP token (it lives on
 
 ## Durability
 
-Conversations, events and message receipts live in `agent_poppy_conversation`, `agent_poppy_event` and
-`agent_poppy_message`, created on first use (`store: 'lucid'`, the default; `autoCreateTables: false`
-to manage them yourself). `store: 'memory'` keeps them in-process, `redisPoppyStore(redis)` shares them
+Conversations, events and request receipts live in `agent_poppy_conversation`, `agent_poppy_event` and
+`agent_poppy_message`, created on first use (`store: 'lucid'`, the default) — missing columns are added
+to existing tables too. With `autoCreateTables: false` you manage them yourself: `poppyTableStatements()`
+gives the DDL and `POPPY_1_0_COLUMNS` the columns to add to tables created before 1.0. `store: 'memory'` keeps them in-process, `redisPoppyStore(redis)` shares them
 over Redis, any `PoppyStore` works.
 
 The event log is the turn queue: user messages after the last answered one are what the next turn
@@ -231,12 +298,14 @@ gets the complete message only (the spec makes deltas optional).
 | `path` | `'poppy/conversations'` | The endpoint. |
 | `baseUrl` | request origin | Public origin — what the resolver checks DPoP `htu` against. Required to announce the endpoint for `poppy.json`. |
 | `agent` | default agent | The registered agent that answers. |
+| `description` | `'Can help with anything.'` | What the agent can help with — the `poppy.json` entry's `description`. |
 | `authenticate` | global slot | Your own resolver of the Session header and access token. |
 | `actorFor` | `{ id: accountId }` / `poppy:<hash>` | `(principal, defaults) => Actor` when the resolver gave no `actor`. |
 | `store` | `'lucid'` | `'memory'`, or a `PoppyStore` (`redisPoppyStore`). `connection`, `autoCreateTables`, `schema` (default: `config/agent.ts`'s `schema`). |
 | `actions` | `'approve-delegated'` | Or `'reject'`. |
 | `handoff`, `direct` | — | Hooks above. |
-| `texts` | English | `handoffUnavailable`, `failed`, `signIn`, `actionSucceeded`, `actionFailed`, `actionRejected`. |
+| `texts` | English | `handoffUnavailable`, `failed`, `signIn`, `actionSucceeded`, `actionFailed`, `actionRejected`, `userJoined` (`{reason}`, told to the agent, never shown). |
+| `continueVersion` | compatible versions | `({ conversation, started, request, kind }) => boolean` — `false` is `version_mismatch`. |
 | `formatAction` | `formatPoppyAction` | `(action, texts) => string \| null` — how an action reads in the reply. |
 | `timeoutMs` | `120000` | A turn running longer is cancelled. |
 | `maxWaitSeconds` | `30` | Cap on `wait`. |
