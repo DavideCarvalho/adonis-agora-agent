@@ -9,17 +9,33 @@ export type SignInType = 'direct' | 'device' | 'mediated';
 
 export const MEDIATED_EXTENSION = 'mediated-sign-in';
 
-/** The `mediated-sign-in` extension, when both `poppy.json` and the issuer offer it. */
+/**
+ * Version 1 of the `mediated-sign-in` extension, when both `poppy.json` and the issuer offer it. It
+ * defines its own grant type, so it isn't declared in `Poppy-Extensions` (3.3).
+ */
 export function mediatedExtension(company: CompanyClient): MediatedExtension | undefined {
-  const entry = company.document.extensions?.[MEDIATED_EXTENSION] as MediatedExtension | undefined;
-  if (entry?.version !== '1' || !company.discovered.metadata) return undefined;
+  if (signInDisabled(company)) return undefined;
+  const entries = company.document.extensions?.[MEDIATED_EXTENSION];
+  const entry = (Array.isArray(entries) ? entries : []).find((e) => e?.version === '1') as
+    | MediatedExtension
+    | undefined;
+  if (!entry || !company.discovered.metadata) return undefined;
   if (!company.metadata.grant_types_supported.includes(GRANT_MEDIATED_SIGN_IN)) return undefined;
   if (!Array.isArray(entry.fields) || !Array.isArray(entry.scopes)) return undefined;
   return entry;
 }
 
-/** The sign-in types the Company offers (4): the issuer's grants, plus the extension. */
+/** `auth.disabled`: the Company offers Personal Agents no sign-in, even with an issuer (3.2). */
+export function signInDisabled(company: CompanyClient): boolean {
+  return company.document.auth?.disabled === true;
+}
+
+/**
+ * The sign-in types the Company offers (4): the issuer's grants, plus the extension, in the order to
+ * prefer them. Direct Sign-In is preferred whenever it's offered (4). None with `auth.disabled`.
+ */
 export function offeredSignInTypes(company: CompanyClient): SignInType[] {
+  if (signInDisabled(company)) return [];
   const grants = company.discovered.metadata?.grant_types_supported ?? [];
   const out: SignInType[] = [];
   if (grants.includes('authorization_code')) out.push('direct');
@@ -62,7 +78,10 @@ function assertScopeAllowed(company: CompanyClient, type: SignInType, scope: str
 /* ------------------------------------------------------------------ Direct (4.2) */
 
 export interface PendingDirectSignIn {
+  /** The URL to open: with PAR, only `client_id` and `request_uri` (4.2). */
   url: string;
+  /** With PAR: when the `request_uri` expires (epoch ms). Push again after that. */
+  expiresAt?: number | undefined;
   state: string;
   codeVerifier: string;
   redirectUri: string;
@@ -70,32 +89,59 @@ export interface PendingDirectSignIn {
   issuer: string;
 }
 
-/** Direct Sign-In (4.2): PKCE (S256) + random `state`, and the authorization URL to open. */
+/**
+ * Direct Sign-In (4.2): PKCE (S256), a random `state`, and `prompt=consent`, since the redirect may
+ * reach this agent from another device than the one that opened the URL. When the issuer lists a
+ * `pushed_authorization_request_endpoint`, the request is pushed (RFC 9126) with the client assertion
+ * and a DPoP proof, and the URL carries only `client_id` and `request_uri`. A link the User opens
+ * later should point at a page of this agent that calls this when it's opened.
+ */
 export async function startDirectSignIn(
   company: CompanyClient,
   scope: string,
+  opts: { state?: string | undefined } = {},
 ): Promise<PendingDirectSignIn> {
   assertScopeAllowed(company, 'direct', scope);
-  const endpoint = company.metadata.authorization_endpoint;
+  const meta = company.metadata;
+  const endpoint = meta.authorization_endpoint;
   if (!endpoint) throw new PoppyError('unsupported_sign_in', 'no authorization_endpoint');
-  const state = randomBytes(16).toString('base64url');
+  const state = opts.state ?? randomBytes(16).toString('base64url');
   const codeVerifier = randomBytes(32).toString('base64url');
   const redirectUri = company.agent.identity.redirectUri;
+  const clientId = company.agent.identity.clientId;
+  const params: Record<string, string> = {
+    response_type: 'code',
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    scope,
+    state,
+    code_challenge: sha256b64url(codeVerifier),
+    code_challenge_method: 'S256',
+    // 4.2, 10.8: the Company shows its consent page even for scopes granted before.
+    prompt: 'consent',
+  };
   const url = new URL(endpoint);
-  url.searchParams.set('response_type', 'code');
-  url.searchParams.set('client_id', company.agent.identity.clientId);
-  url.searchParams.set('redirect_uri', redirectUri);
-  url.searchParams.set('scope', scope);
-  url.searchParams.set('state', state);
-  url.searchParams.set('code_challenge', sha256b64url(codeVerifier));
-  url.searchParams.set('code_challenge_method', 'S256');
+  let expiresAt: number | undefined;
+  const par = meta.pushed_authorization_request_endpoint;
+  if (par) {
+    requireSecureUrl(par, 'pushed_authorization_request_endpoint', company.security);
+    const pushed = await company.tokens.pushAuthorization(params, company.tokenDpop());
+    url.searchParams.set('client_id', clientId);
+    url.searchParams.set('request_uri', pushed.requestUri);
+    expiresAt = Date.now() + pushed.expiresIn * 1000;
+  } else if (meta.require_pushed_authorization_requests === true) {
+    throw new PoppyError('unsupported_sign_in', 'PAR is required but no endpoint is listed');
+  } else {
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  }
   return {
     url: url.toString(),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
     state,
     codeVerifier,
     redirectUri,
     scope,
-    issuer: company.metadata.issuer,
+    issuer: meta.issuer,
   };
 }
 
@@ -155,21 +201,16 @@ export interface DeviceSignInOptions {
 }
 
 /**
- * Before showing a device link (4.3): its host is the issuer's or one in `protected_resources`, or
- * a subdomain of either. Otherwise a Company could pass off another's sign-in page as its own.
+ * Before showing a device link (4.3): its host is the issuer's or `organization.domain`, or a
+ * subdomain of either. Otherwise a Company could pass off another's sign-in page as its own.
  */
 export function assertDeviceLinkHost(company: CompanyClient, link: string): void {
   requireSecureUrl(link, 'verification_uri', company.security);
   const host = new URL(link).hostname.toLowerCase();
-  const allowed = [company.metadata.issuer, ...company.metadata.protected_resources].flatMap(
-    (u) => {
-      try {
-        return [new URL(u).hostname.toLowerCase()];
-      } catch {
-        return [];
-      }
-    },
-  );
+  const allowed = [
+    new URL(company.metadata.issuer).hostname.toLowerCase(),
+    new URL(`https://${company.document.organization.domain}`).hostname.toLowerCase(),
+  ];
   if (!allowed.some((h) => host === h || host.endsWith(`.${h}`))) {
     throw new PoppyError('foreign_verification_uri', `${host} isn't this Company's sign-in host`);
   }
@@ -341,4 +382,34 @@ export async function submitMediatedCode(
   } catch (e) {
     return mediatedFailure(e);
   }
+}
+
+/**
+ * The scopes to request when a task needs more than the refresh token allows (4.7): every scope still
+ * needed, including the granted ones to keep, never only the missing ones. The Company grants only
+ * the scopes a sign-in names, so asking for the missing ones alone would drop the others.
+ */
+export function scopesForSignIn(
+  company: CompanyClient,
+  needed: string | string[],
+  opts: { keep?: boolean | undefined } = {},
+): string {
+  const out = new Set(opts.keep === false ? [] : scopeSet(company.accountToken?.scope));
+  for (const s of Array.isArray(needed) ? needed : scopeSet(needed)) if (s) out.add(s);
+  return [...out].join(' ');
+}
+
+/**
+ * The scopes a Personal Agent can request (4.7): `scopes_supported` of the issuer's metadata and of
+ * the domain's protected resource metadata, or else the ones `auth.scopes` describes.
+ * `poppy:browser-sign-in` only from a Company that lists a `browser_session_endpoint` (section 6).
+ */
+export function offeredScopes(company: CompanyClient): string[] {
+  const listed = [
+    ...(company.discovered.metadata?.scopes_supported ?? []),
+    ...(company.discovered.resourceScopes ?? []),
+  ];
+  const all = listed.length > 0 ? listed : Object.keys(company.document.auth?.scopes ?? {});
+  const browser = typeof company.document.web?.browser_session_endpoint === 'string';
+  return [...new Set(all)].filter((s) => browser || s !== 'poppy:browser-sign-in');
 }

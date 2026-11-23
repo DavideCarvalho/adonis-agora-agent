@@ -10,24 +10,27 @@ import {
   AgentIdentity,
   ConversationClient,
   ConversationError,
+  offeredScopes as clientOfferedScopes,
   completeDirectSignIn,
   connectMcp,
   discover,
+  isFromCompany,
   mediatedExtension,
   mediatedSignIn,
-  newMessageId,
   OAuthError,
   offeredSignInTypes,
   PoppyAgent,
   PoppyError,
   pollDeviceSignInOnce,
   ResourceAuthError,
+  readState,
   StateStore,
+  scopesForSignIn,
   startDirectSignIn,
   submitMediatedCode,
 } from '../poppy-client/index.js';
 import type { CompanyState, StateFile } from '../poppy-client/store.js';
-import type { ConversationEvent } from '../poppy-client/types.js';
+import type { ConversationEvent, ConversationState } from '../poppy-client/types.js';
 import type { Actor } from '../types.js';
 import {
   DEFAULT_POPPY_CONNECTIONS_TEXTS,
@@ -86,9 +89,25 @@ type Flow =
 export interface PoppyCompanyReply {
   conversationId: string;
   replies: { text: string; data?: Record<string, unknown> }[];
-  /** The Company needs sign-in or more scopes (§8.11). */
+  /**
+   * The Company needs sign-in or more scopes (§8.11). An `error` other than `insufficient_scope` means
+   * the same: sign in again for `scope`.
+   */
   authorization?: { error: string; scope?: string; connected?: boolean };
+  /**
+   * `working` (still replying, or the wait ran out: `timeout`), `waiting_for_person` (handoff
+   * pending), `with_person` (a person at the Company answers), `closed`, or `idle`.
+   */
   status: string;
+}
+
+/** One word for the model from the four state fields (§8.7). */
+function statusOf(state: ConversationState): string {
+  if (state.closed) return 'closed';
+  if (state.working) return 'working';
+  if (state.handoff === 'pending') return 'waiting_for_person';
+  if (state.responder === 'human') return 'with_person';
+  return 'idle';
 }
 
 export interface PoppyConnectionsOptions {
@@ -105,7 +124,7 @@ export interface PoppyConnectionsOptions {
  * This app's agent acting on other Poppy Companies for its users: the agent identity, the
  * connections (sealed at rest), the connect flows and the calls the tools make.
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.3 — will change as the spec evolves.
+ * @experimental Tracks Personal Agent Protocol 1.0 — will change as the spec evolves.
  */
 export class PoppyConnections {
   readonly #names = new Map<string, { name: string | undefined; until: number }>();
@@ -380,7 +399,7 @@ export class PoppyConnections {
     return (await this.list(owner)).find((c) => c.domain === d) ?? null;
   }
 
-  /** Sign out at the Company (revokes the refresh token, §4.9) and mark the connection revoked. */
+  /** Sign out at the Company (revokes the refresh token, §4.6) and mark the connection revoked. */
   async disconnect(owner: string, domain: string): Promise<boolean> {
     return this.withCompany(owner, domain, async (client) => {
       let revoked = false;
@@ -428,7 +447,10 @@ export class PoppyConnections {
       };
     }
     return this.withCompany(owner, input.domain, async (client, policy) => {
-      const scope = input.scope ?? policy.scopes?.join(' ') ?? offeredScopes(client).join(' ');
+      // §4.7: asking for more names every scope still needed, the granted ones included; the
+      // Company grants only what a sign-in names.
+      const wanted = input.scope ?? policy.scopes?.join(' ') ?? offeredScopes(client).join(' ');
+      const scope = scopesForSignIn(client, wanted);
       const now = Date.now();
       await this.#store.createPending({
         id,
@@ -508,24 +530,25 @@ export class PoppyConnections {
     });
   }
 
-  /** Direct Sign-In (§4.2): the authorization URL to send the browser to. */
+  /**
+   * Direct Sign-In (§4.2): the authorization URL to send the browser to. Called when the person opens
+   * this app's connect page, so a pushed request (PAR) is fresh when they reach the Company.
+   */
   async directUrl(id: string): Promise<string | null> {
     const pending = await this.#openPending(id);
     if (pending === null || pending.status !== 'open') return null;
     return this.withCompany(pending.owner, pending.domain, async (client) => {
       const scope = withinType(client, 'direct', pending.scope);
-      const signIn = await startDirectSignIn(client, scope);
       // `state` carries the connect id: the callback finds its sign-in without a session.
-      const state = `${id}.${signIn.state}`;
-      const url = new URL(signIn.url);
-      url.searchParams.set('state', state);
+      const state = `${id}.${randomBytes(16).toString('base64url')}`;
+      const signIn = await startDirectSignIn(client, scope, { state });
       await this.#store.updatePending(id, {
         flow: await this.#sealer.seal(
-          { kind: 'direct', signIn: { ...signIn, state, url: url.toString() } } satisfies Flow,
+          { kind: 'direct', signIn } satisfies Flow,
           pendingFlowAad(id),
         ),
       });
-      return url.toString();
+      return signIn.url;
     });
   }
 
@@ -688,7 +711,7 @@ export class PoppyConnections {
 
   // ── the Company's APIs and agent ──────────────────────────────────────────
 
-  /** The Company's MCP server, with a Bearer token for it (§6). Closed by the caller. */
+  /** The Company's MCP server, with an access token for it (§7). Closed by the caller. */
   mcp(owner: string, domain: string): Promise<McpConnection> {
     return this.withCompany(owner, domain, (client) => connectMcp(client));
   }
@@ -720,7 +743,7 @@ export class PoppyConnections {
         scope = read.length > 0 ? read.join(' ') : undefined;
       }
       const conv = new ConversationClient(client, undefined, { scope });
-      const message = { id: newMessageId(), author: { type: 'agent' as const }, text };
+      const message = { author: { type: 'agent' as const }, text };
       const open = Object.entries(client.state.conversations)
         .filter(
           ([, c]) =>
@@ -742,17 +765,24 @@ export class PoppyConnections {
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), Math.max(1000, deadline - Date.now()));
       const reply: PoppyCompanyReply = { conversationId, replies: [], status: 'working' };
+      // A request the Company accepted keeps `working` true until it acted on it (§8.7).
+      let state: ConversationState = { ...readState(undefined), working: true };
       try {
         for await (const item of conv.follow(conversationId, {
           untilSettled: true,
           signal: ac.signal,
         })) {
+          if (item.kind === 'working') {
+            state = { ...state, working: item.working };
+            continue;
+          }
           if (item.kind !== 'event') continue;
           const ev: ConversationEvent = item.event;
-          if (ev.type === 'message' && ev.message?.role === 'company') {
+          const m = ev.message;
+          if (ev.type === 'message' && m && isFromCompany(m)) {
             reply.replies.push({
-              text: ev.message.text ?? '',
-              ...(ev.message.data !== undefined ? { data: ev.message.data } : {}),
+              text: m.text ?? '',
+              ...(m.data !== undefined ? { data: m.data } : {}),
             });
           } else if (ev.type === 'authorization') {
             reply.authorization = {
@@ -760,13 +790,16 @@ export class PoppyConnections {
               connected: client.accountToken !== undefined,
               ...(typeof ev.scope === 'string' ? { scope: ev.scope } : {}),
             };
-          } else if (ev.type === 'state' && typeof ev.status === 'string') {
-            reply.status = ev.status;
+          } else if (ev.type === 'state') {
+            state = { ...readState(ev), working: state.working };
           }
         }
       } finally {
         clearTimeout(timer);
       }
+      // `follow` returns once the reply is complete: `working` false, or the conversation closed.
+      if (!ac.signal.aborted) state = { ...state, working: false };
+      reply.status = statusOf(state);
       if (ac.signal.aborted && reply.status === 'working') reply.status = 'timeout';
       await client.save();
       return reply;
@@ -774,15 +807,15 @@ export class PoppyConnections {
   }
 }
 
-/** The scopes a Company offers for signing in (4.7). */
+/**
+ * The scopes a Company offers for signing in (§4.7). Never `poppy:browser-sign-in`: this agent
+ * doesn't browse (§6).
+ */
 function offeredScopes(client: CompanyClient): string[] {
-  const metadata = client.discovered.metadata;
-  return (
-    metadata?.scopes_supported ??
-    Object.keys(client.document.auth?.scopes ?? {}).concat(
-      Object.keys(client.document.auth?.scope_hints ?? {}),
-    )
-  );
+  const listed = clientOfferedScopes(client);
+  const all =
+    listed.length > 0 ? listed : [...new Set(Object.keys(client.document.auth?.scope_hints ?? {}))];
+  return all.filter((s) => s !== 'poppy:browser-sign-in');
 }
 
 /** The scopes whose hint says no action changes anything (4.7). An unknown value isn't `none`. */

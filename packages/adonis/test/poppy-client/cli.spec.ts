@@ -25,11 +25,11 @@ let w: World;
 describe('cli', () => {
   afterEach(async () => w?.cleanup());
 
-  it('--help shows the draft warning', async () => {
+  it('--help names the spec version', async () => {
     const { code, text } = await capture(() => runCli(['--help']));
     assert.equal(code, 0);
-    assert.include(text, 'Draft 0.3');
-    assert.include(text, 'https://personalagentprotocol.org/docs/spec');
+    assert.include(text, 'spec 1.0');
+    assert.include(text, 'https://personalagentprotocol.org/docs/1.0/spec');
   });
 
   it('discover / session / status / api / mcp / disconnect against the fake', async () => {

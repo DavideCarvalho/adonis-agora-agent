@@ -1,5 +1,5 @@
 import type { CompanyClient } from './company.js';
-import { ConversationClient, newMessageId, poppyProtocol } from './conversations.js';
+import { authorTypeOf, ConversationClient, isFromCompany, poppyProtocol } from './conversations.js';
 import { PoppyError, ResourceAuthError } from './errors.js';
 import { connectMcp, type McpConnection } from './mcp.js';
 import type { ConversationEvent, MessageContext } from './types.js';
@@ -41,9 +41,9 @@ interface ToolDef {
 function summarize(events: ConversationEvent[]) {
   const out: Record<string, unknown>[] = [];
   for (const ev of events) {
-    if (ev.type === 'message' && ev.message?.role !== 'user') {
+    if (ev.type === 'message' && isFromCompany(ev.message)) {
       out.push({
-        from: `company:${ev.message?.author?.type}`,
+        from: `company:${authorTypeOf(ev.message)}`,
         text: ev.message?.text,
         data: ev.message?.data,
       });
@@ -148,7 +148,6 @@ export async function ask(
   const runTool = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
     if (name === 'talk_to_company' && conv) {
       const message = {
-        id: newMessageId(),
         author: { type: 'agent' as const },
         text: String(args.text ?? ''),
         data:
@@ -165,22 +164,21 @@ export async function ask(
       }
       const { events, state } = await conv.collect(conversationId);
       for (const ev of events) {
-        if (ev.type === 'message' && ev.message?.role !== 'user') {
+        if (ev.type === 'message' && isFromCompany(ev.message)) {
           opts.log(
-            `  company[${ev.message?.author?.type}]: ${ev.message?.text ?? ''}${ev.message?.data ? ` ${JSON.stringify(ev.message.data)}` : ''}`,
+            `  company[${authorTypeOf(ev.message)}]: ${ev.message?.text ?? ''}${ev.message?.data ? ` ${JSON.stringify(ev.message.data)}` : ''}`,
           );
         }
         if (ev.type === 'user_requested') {
-          // 7.10: only the Personal Agent starts Direct Conversations; the user isn't here.
+          // 8.10: only the Personal Agent starts Direct Conversations; the user isn't here.
           await conv.send(conversationId, {
-            id: newMessageId(),
             author: { type: 'agent' },
             text: 'The user is not available to talk right now.',
             context: { user_available: false },
           });
         }
       }
-      return { status: state.status, responder: state.responder, replies: summarize(events) };
+      return { ...state, replies: summarize(events) };
     }
     const mt = mcpTools.get(name);
     if (mt && mcp) {

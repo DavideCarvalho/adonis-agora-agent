@@ -3,7 +3,13 @@ import { parseArgs } from 'node:util';
 import { callOpenApi, listApis, loadOpenApi } from '../api.js';
 import { authorizeBrowserJoin, browserJoinCode, browserSessionEndpoint } from '../browser.js';
 import { type CompanyClient, PoppyAgent, type SignInResult } from '../company.js';
-import { ConversationClient, newMessageId, poppyProtocol } from '../conversations.js';
+import {
+  authorTypeOf,
+  ConversationClient,
+  isFromCompany,
+  poppyProtocol,
+  readState,
+} from '../conversations.js';
 import { discover } from '../discovery.js';
 import { PoppyError, ResourceAuthError } from '../errors.js';
 import { AgentIdentity } from '../identity.js';
@@ -18,21 +24,26 @@ import {
   eligibleSignInTypes,
   mediatedExtension,
   mediatedSignIn,
+  offeredScopes,
   offeredSignInTypes,
   type SignInType,
+  scopesForSignIn,
   startDirectSignIn,
   submitMediatedCode,
 } from '../signin.js';
 import { StateStore } from '../store.js';
-import type { ConversationEvent, MessageContext, OutgoingMessage } from '../types.js';
+import type {
+  ConversationEvent,
+  ConversationState,
+  MessageContext,
+  OutgoingMessage,
+} from '../types.js';
 import { isLoopbackHost, requireSecureUrl } from '../util.js';
 import { Prompter } from './prompt.js';
 
 const HELP = `poppy-agent — reference Personal Agent for the Personal Agent Protocol (Poppy)
 
-  EXPERIMENTAL. Implements spec Draft 0.3 (https://personalagentprotocol.org/docs/spec).
-  The spec is still in development; this client tracks it and WILL change, possibly in
-  breaking ways, as the spec evolves.
+  EXPERIMENTAL. Implements spec 1.0 (https://personalagentprotocol.org/docs/1.0/spec).
 
 Usage: poppy-agent <command> [args] [options]
 
@@ -48,14 +59,14 @@ Sessions & sign-in (4)
   signin <domain> [--method direct|device|mediated] [--scope "<scopes>"] [--no-open]
   status [domain]
   disconnect <domain>                   revoke the refresh token (RFC 7009)
-APIs (6)
+APIs (7)
   apis <domain>                         list APIs (and OpenAPI operations)
   api <domain> <METHOD> <path> [--data <json>] [--api <n>] [--scope <s>]
   mcp tools <domain> [--api <n>]
   mcp call <domain> <tool> [<json-args>] [--api <n>]
-Conversations (7)
+Conversations (8)
   chat <domain> [--conversation <id>] [--as agent|human] [--no-stream]
-Web browsing (5)
+Web browsing (6)
   open <domain> [--page <file>]         authorize a browser join: code from that browser's page
 LLM mode
   ask <domain> "<task>" [--model <id>] [--max-steps <n>] [--yes]
@@ -169,7 +180,7 @@ export async function runCli(argv: string[]): Promise<number> {
   } catch (e) {
     if (e instanceof ResourceAuthError && e.code === 'insufficient_scope') {
       err(
-        `error: insufficient_scope — the Company needs "${e.scope ?? '?'}". Run: poppy-agent signin <domain> --scope "${e.scope ?? ''}"`,
+        `error: insufficient_scope — the Company needs "${e.scope ?? '?'}". Run: poppy-agent signin <domain> --scope "<the scopes you have> ${e.scope ?? ''}"`,
       );
     } else {
       err(`error: ${(e as Error).message}`);
@@ -195,7 +206,19 @@ async function dispatch(ctx: Ctx, command: string, args: string[]): Promise<numb
     case 'discover': {
       if (!args[0]) throw new PoppyError('usage', 'discover <domain>');
       const d = await discover(args[0], { insecureDev: ctx.insecureDev });
-      out(JSON.stringify({ domain: d.domain, poppy: d.document, metadata: d.metadata }, null, 2));
+      out(
+        JSON.stringify(
+          {
+            domain: d.domain,
+            // The chosen version's document, and the Poppy-Version this agent sends with it (3.4).
+            poppy_version: d.version,
+            poppy: d.document,
+            metadata: d.metadata,
+          },
+          null,
+          2,
+        ),
+      );
       return 0;
     }
     case 'session': {
@@ -354,7 +377,7 @@ async function cmdServeIdentity(ctx: Ctx): Promise<number> {
 
 function defaultScope(c: CompanyClient, method: SignInType): string {
   if (method === 'mediated') return (mediatedExtension(c)?.scopes ?? []).join(' ');
-  return (c.metadata.scopes_supported ?? Object.keys(c.document.auth?.scopes ?? {})).join(' ');
+  return offeredScopes(c).join(' ');
 }
 
 async function signIn(
@@ -407,6 +430,7 @@ async function reachable(url: string): Promise<boolean> {
 
 async function directFlow(ctx: Ctx, c: CompanyClient, scope: string): Promise<SignInResult> {
   const identity = c.agent.identity;
+  // Pushed (PAR) when the Company offers it, and opened right away: a request_uri expires quickly.
   const pending = await startDirectSignIn(c, scope);
   const ac = new AbortController();
   const waits: Promise<URLSearchParams>[] = [
@@ -542,8 +566,10 @@ async function cmdOpen(ctx: Ctx, domain?: string | undefined): Promise<number> {
   const code = page
     ? browserJoinCode(await readFile(page, 'utf8'))
     : (await ctx.prompter.askSecret('Code from that page (the form field `code`): ')).trim();
-  await authorizeBrowserJoin(c, code);
-  out('Authorized. Now submit the form in that browser, within its 60 seconds.');
+  const { signedIn } = await authorizeBrowserJoin(c, code);
+  out(
+    `Authorized${signedIn ? ' signed in' : ' signed out'}. Now submit the form in that browser, within its 60 seconds.`,
+  );
   return 0;
 }
 
@@ -572,6 +598,15 @@ async function cmdAsk(ctx: Ctx, domain: string | undefined, task: string): Promi
 
 /* --------------------------------------------------------------------------- chat */
 
+function showState(s: ConversationState): string {
+  return [
+    s.working ? 'working' : 'idle',
+    `handoff ${s.handoff}`,
+    `responder ${s.responder}`,
+    ...(s.closed ? ['closed'] : []),
+  ].join(', ');
+}
+
 function localContext(): MessageContext {
   const ro = Intl.DateTimeFormat().resolvedOptions();
   return { locale: ro.locale, time_zone: ro.timeZone };
@@ -580,14 +615,15 @@ function localContext(): MessageContext {
 const CHAT_HELP = `Type a message to send it. Commands:
   /data <json>          send a message with a data part
   /context k=v ...      send a context-only update (user_available=true|false, locale=…, time_zone=…)
-  /as agent|human       who wrote what you type (default agent; human = the User's own words, 7.8)
-  /handoff              ask for a person at the Company (7.9)
-  /signin [method] [scope]  sign in (e.g. after an authorization event)
-  /direct [text]        open a Direct Conversation (7.10); you then talk as the User
+  /as agent|human       who wrote what you type (default agent; human = the User's own words, 8.8)
+  /handoff              ask for a person at the Company (8.9)
+  /cancel-handoff       withdraw the request for a person (8.9)
+  /signin [method] [scope]  sign in (e.g. after an authorization event); keeps the granted scopes
+  /direct [text]        open a Direct Conversation (8.10); you then talk as the User
   /decline              decline the Company's request to talk to the User
   /leave                close the Direct Conversation
-  /status               show status/responder
-  /close                close the conversation (7.12)
+  /status               show the state (working, handoff, responder, closed)
+  /close                close the conversation (8.12)
   /quit                 leave (the conversation stays open)`;
 
 async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
@@ -604,7 +640,6 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
   let directId: string | undefined;
   let pendingAuth: ConversationEvent | undefined;
   let pendingUserRequest: ConversationEvent | undefined;
-  let status = '';
   const followers = new Map<string, AbortController>();
   const provisional = new Map<string, string>();
   const rl = ctx.prompter.interface;
@@ -628,15 +663,14 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
       case 'message': {
         const m = ev.message!;
         provisional.delete(m.id);
-        if (m.role === 'user') return; // our own message, echoed back
-        let line = `${tag}${bold(`company[${m.author?.name ?? m.author?.type}]`)}: ${m.text ?? ''}`;
+        if (!isFromCompany(m)) return; // our own message, echoed back
+        let line = `${tag}${bold(`company[${m.author?.name ?? authorTypeOf(m)}]`)}: ${m.text ?? ''}`;
         if (m.data) line += `\n${dim(JSON.stringify(m.data, null, 2))}`;
         print(line);
         return;
       }
       case 'state':
-        status = `${ev.status}/${ev.responder}`;
-        print(dim(`${tag}[${status}]`));
+        print(dim(`${tag}[${showState({ ...readState(ev), working: false })}]`));
         return;
       case 'authorization':
         pendingAuth = ev;
@@ -658,7 +692,7 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
         if (directId === ev.conversation_id) directId = undefined;
         return;
       default:
-        return; // MUST skip unknown event types (7.5)
+        return; // MUST skip unknown event types (8.5)
     }
   };
 
@@ -676,12 +710,12 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
             );
             showProvisional(item.delta.message_id);
           } else if (item.kind === 'reconnected') {
-            provisional.clear(); // 7.6: drop pieces of messages not received in full
+            provisional.clear(); // 8.6: drop pieces of messages not received in full
           } else if (item.kind === 'history_gap') {
             print(
               dim('[part of this conversation is no longer available; reading from the start]'),
             );
-          } else render(convId, item.event);
+          } else if (item.kind === 'event') render(convId, item.event);
         }
       } catch (e) {
         if (!ac.signal.aborted)
@@ -692,18 +726,17 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
     })();
   };
 
-  const send = async (msg: Omit<OutgoingMessage, 'id'>) => {
-    const message: OutgoingMessage = { id: newMessageId(), ...msg };
+  const send = async (msg: OutgoingMessage) => {
+    const message: OutgoingMessage = { ...msg };
     const target = directId ?? mainId;
     if (!target) {
       message.context = { ...localContext(), user_available: true, ...message.context };
       const r = await conv.start(message);
       mainId = r.conversation_id;
-      print(dim(`[conversation ${mainId} — ${r.status}/${r.responder}]`));
+      print(dim(`[conversation ${mainId}]`));
       follow(mainId);
     } else {
-      const r = await conv.send(target, message);
-      if (r?.status) status = `${r.status}/${r.responder}`;
+      await conv.send(target, message);
     }
   };
 
@@ -746,24 +779,34 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
           const page = await conv.read(directId ?? mainId, {
             cursor: c.state.conversations[directId ?? mainId]?.cursor || undefined,
           });
-          out(`${directId ?? mainId}: ${page.status}/${page.responder}`);
+          out(`${directId ?? mainId}: ${showState(page)}`);
         }
       } else if (cmd === '/handoff') {
         if (!mainId) out('no conversation yet');
         else {
-          const r = await conv.handoff(mainId);
-          out(dim(`[${r.status}/${r.responder}]`));
+          await conv.handoff(mainId);
+          out(dim('[handoff requested]'));
+        }
+      } else if (cmd === '/cancel-handoff') {
+        if (!mainId) out('no conversation yet');
+        else {
+          await conv.cancelHandoff(mainId);
+          out(dim('[handoff cancel sent; the state says whether it took effect]'));
         }
       } else if (cmd === '/signin') {
         const [method, ...scopeParts] = rest;
-        const scope = scopeParts.join(' ') || pendingAuth?.scope || undefined;
+        // 4.7, 8.11: every scope still needed, the granted ones included (any `error` value).
+        const needed = scopeParts.join(' ') || pendingAuth?.scope || undefined;
+        const scope = needed ? scopesForSignIn(c, needed) : undefined;
         const m =
           method === 'direct' || method === 'device' || method === 'mediated' ? method : undefined;
         const r = await signIn(
           ctx,
           c,
           m,
-          m ? scope : [method, ...scopeParts].filter(Boolean).join(' ') || scope,
+          m
+            ? scope
+            : scopesForSignIn(c, [method, ...scopeParts].filter(Boolean).join(' ')) || scope,
         );
         if (r) {
           pendingAuth = undefined;
@@ -773,7 +816,6 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
         if (!mainId) out('no conversation yet');
         else {
           const message: OutgoingMessage = {
-            id: newMessageId(),
             author: { type: 'human' },
             text: restText || 'Hi, I am here.',
             context: { user_available: true },
@@ -788,7 +830,6 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
         if (!mainId) out('no conversation yet');
         else {
           await conv.send(mainId, {
-            id: newMessageId(),
             author: { type: 'agent' },
             text: pendingUserRequest
               ? 'The user declined to talk directly right now.'
@@ -808,8 +849,8 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
         }
       } else if (cmd === '/close') {
         if (!mainId) break;
-        const r = await conv.close(mainId);
-        out(dim(`[${r.status}/${r.responder}]`));
+        await conv.close(mainId);
+        out(dim('[closed]'));
         break;
       } else out(`unknown command ${cmd}; /help`);
     } catch (e) {

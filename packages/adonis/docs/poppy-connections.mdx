@@ -6,10 +6,9 @@ icon: Link
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-<Callout type="warn" title="Experimental — tracks a draft spec">
-This implements the client side of the [Personal Agent Protocol (Poppy)](https://personalagentprotocol.org/docs/spec)
-**Draft 0.3**. The spec is still in development; this surface **will change, possibly in breaking ways
-and outside semver majors**, as it evolves.
+<Callout type="warn" title="Experimental">
+This implements the client side of the [Personal Agent Protocol (Poppy)](https://personalagentprotocol.org/docs/1.0/spec)
+**1.0**. This surface **can still change outside semver majors**.
 </Callout>
 
 [Poppy](/docs/agent/poppy) lets personal agents talk to your app. This is the other direction: **your
@@ -74,7 +73,7 @@ and the client state — the per-company User ID, the DPoP and delegated keys, t
 access tokens — **sealed** at rest with your app's encryption (`config/encryption.ts`), each value bound to its row. The Session header, DPoP proofs and nonces, renewals, narrowing and
 refresh token rotation are handled by the client; calls of one owner are serialized so a rotated token is
 never lost. `PoppyConnections` (container binding) gives your code `list(owner)` and
-`disconnect(owner, domain)`; a disconnect revokes the refresh token at the company ([Poppy §5.5](https://personalagentprotocol.org/docs/spec#ending-sessions)), and a
+`disconnect(owner, domain)`; a disconnect revokes the refresh token at the company ([Poppy §5.5](https://personalagentprotocol.org/docs/1.0/spec#ending-sessions)), and a
 revocation on their side is noticed (`invalid_grant`) and marks the connection `revoked`.
 
 ## Rotating the sealing key
@@ -113,17 +112,19 @@ existing values `retired` until you run the reseal.
 `poppy_connect` is an **action**: its confirmation card carries a link to a page on **your** app
 (`/{path}/connect/:id`) — a link works in the web chat and in WhatsApp alike. There the person picks:
 
-- **Sign in at the company** (Direct, [Poppy §4.2](https://personalagentprotocol.org/docs/spec#direct-sign-in)): PKCE, `state` and the RFC 9207 `iss` check, back to your callback;
+- **Sign in at the company** (Direct, preferred, [Poppy §4.2](https://personalagentprotocol.org/docs/1.0/spec#direct-sign-in)): PKCE, `state`, `prompt=consent` and the RFC 9207 `iss` check, back to your callback. The authorization request is made when the person opens your page, pushed (PAR) when the company offers it, so a link opened later still works;
 - **a form on your page** (the transitional [Mediated Sign-In extension](https://personalagentprotocol.org/docs/extensions/mediated-sign-in)) when the company offers it: the fields the company declares,
   posted from the person's browser to your server and straight to the company — **never stored, logged
   or shown to the model**; a one-time code on the next page;
-- **a code** (Device, [Poppy §4.3](https://personalagentprotocol.org/docs/spec#device-sign-in)) when Direct is not offered.
+- **a code** (Device, [Poppy §4.3](https://personalagentprotocol.org/docs/1.0/spec#device-sign-in)) when Direct is not offered.
 
 Completing it **decides the parked `connect` call** (a proposal decision under
 `actionApprovalMode: 'independent'`, an approval otherwise): the turn resumes with the account
 connected and does what was asked. The link is a 128-bit capability, keyed to that call with your
 secret, expiring (`connectTtlSeconds`, 15 min) and single-purpose. A call whose account is already
-connected with the scopes asked completes at once, without a card.
+connected with the scopes asked completes at once, without a card. A step-up asks the company for the
+scopes already granted plus the new ones: a company grants only the scopes a sign-in names.
+A company that sets `auth.disabled` offers no way to connect.
 
 ## A loop of your own
 
@@ -142,7 +143,7 @@ registry: `connect` then returns the link as a read tool, and the app builds its
 | `poppy_tools` | read | The company's MCP tools, with `readOnly`. |
 | `poppy_read` | read | Runs a tool the company marks `readOnlyHint`; anything else is refused. |
 | `poppy_write` | **action** | Any other company tool — your confirmation card shows the tool and its arguments (and the company's own preview, for a two-step tool). |
-| `poppy_ask` | read | A question to the company's agent with a token **narrowed to `readScopes`** (default: the scopes whose `auth.scope_hints` say `changes: none`, so without hints set `readScopes`): a question cannot make the company act. |
+| `poppy_ask` | read | A question to the company's agent with a token **narrowed to `readScopes`** (default: the scopes whose `auth.scope_hints` say `changes: none`, so without hints set `readScopes`): a question cannot make the company act. Its `status` is `idle`, `waiting_for_person`, `with_person`, `closed`, or `timeout`. |
 | `poppy_request` | **action** | A request for the company's agent to act — the person confirms the message. |
 | `poppy_disconnect` | action | Revokes the connection. |
 
@@ -154,7 +155,7 @@ your app. `tools.twoStep` renames the fields (`{ confirm, token, summary }`) or 
 
 A company answer of `insufficient_scope`, a code-less `401` challenge or an `authorization` event comes back to the
 model as `needs_permission` / `not_connected` with the next step — `poppy_connect` with the scopes —
-never as a dead end. Opening the company's website for the person ([Poppy §6](https://personalagentprotocol.org/docs/spec#web-browsing) browser sessions) is not offered:
+never as a dead end. Opening the company's website for the person ([Poppy §6](https://personalagentprotocol.org/docs/1.0/spec#web-browsing) browser sessions) is not offered:
 the spec requires the assertion to be posted from a browser the agent controls, not the person's.
 
 
