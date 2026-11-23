@@ -144,11 +144,14 @@ export function createJwtVerifier(options: JwtVerifierOptions): JwtVerifier {
   };
 }
 
+/** The algorithms {@link createJwtVerifier} accepts unless a caller narrows the list. */
+export const DEFAULT_JWT_ALGORITHMS = DEFAULT_ALGORITHMS;
+
 /**
  * Whether jose refused the token itself (claims, signature, format, no matching key) — as opposed to
  * a JWKS it could not fetch, which is an outage and surfaces as a `503`.
  */
-function isTokenFailure(jose: typeof import('jose'), error: unknown): boolean {
+export function isTokenFailure(jose: typeof import('jose'), error: unknown): boolean {
   const e = jose.errors;
   return (
     error instanceof e.JWTClaimValidationFailed ||

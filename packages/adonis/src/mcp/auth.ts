@@ -5,6 +5,7 @@ import { scopeRole } from '../a2a/gate.js';
 import { PERSONAL_AGENT_ROLE } from '../a2a/permission-tool.js';
 import { globalPoppyAuthenticate } from '../poppy/auth.js';
 import type { Actor } from '../types.js';
+import { DEFAULT_JWT_ALGORITHMS, isTokenFailure, sameIssuer } from './jwt-verifier.js';
 
 /**
  * Runtime context a {@link McpAuthFactory} thunk receives when the MCP provider builds the configured
@@ -165,6 +166,12 @@ interface AuthKitServiceLike {
       find(grantId: string): Promise<AuthKitGrant | undefined>;
     };
   };
+  /**
+   * The IdP's public keys (`jwks_uri`), when the issuer runs in this process. Used to verify the
+   * JWT access tokens (RFC 9068) that authkit mints for a resource in ANOTHER process: they are
+   * self-contained, so `AccessToken.find` (which reads the adapter) never returns them.
+   */
+  publicJwks?: { keys: Record<string, unknown>[] };
 }
 
 /** Shape of an oidc-provider access token instance as returned by `AccessToken.find`. */
@@ -294,7 +301,11 @@ export function authKitAuth(options: AuthKitMcpAuthOptions = {}): McpAuthFactory
       oauth,
       async verify(token, context) {
         const service = await getService();
-        const at = await service.provider.AccessToken.find(token);
+        const stored = await service.provider.AccessToken.find(token);
+        // A JWT access token (RFC 9068) is self-contained: the provider never persists it, so
+        // `AccessToken.find` misses it. authkit mints those for resources in ANOTHER process (a
+        // declared `mcpClients.resources`), and this endpoint may be the one verifying them.
+        const at = stored ?? (await verifyJwtAccessToken(service, token));
         if (!at) {
           // Not an access token this issuer knows — plain `Error`, so `anyOf` tries the next strategy.
           throw new Error('invalid or expired access token');
@@ -361,6 +372,98 @@ function audienceNames(aud: string | string[] | undefined, resource: string): bo
   const trim = (value: string) => value.replace(/\/+$/, '');
   const audiences = aud === undefined ? [] : Array.isArray(aud) ? aud : [aud];
   return audiences.some((value) => trim(value) === trim(resource));
+}
+
+/** `header.payload.signature` in base64url — the compact JWS a JWT access token arrives as. */
+const JWS_COMPACT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+/**
+ * The local JWKS set of the last `publicJwks` seen. `createLocalJWKSet` walks every key (and builds
+ * its index) on each call, so building it per request is pure waste; authkit swaps the object on a
+ * key rotation, which is what invalidates this entry.
+ */
+let localKeySet: { source: unknown; set: unknown } | undefined;
+
+/**
+ * A JWT access token (RFC 9068) authkit minted for a resource in another process, read the way
+ * {@link AuthKitAccessTokenLike} expects — so the rest of `authKitAuth` treats opaque and JWT the
+ * same.
+ *
+ * Verified in-process against the issuer's public JWKS, which the local `authkit.server` exposes as
+ * `publicJwks` (the same keys `jwks_uri` serves), under the same rules as {@link createJwtVerifier}:
+ * `iss`, `typ: at+jwt`, `exp` and `sub` required, `RS*`/`PS*`/`ES*`/`EdDSA` only, 30s of clock
+ * tolerance (clients' clocks drift; the sibling verifier has always allowed it).
+ *
+ * `undefined` means "not this issuer's access token" — another issuer's JWT, an opaque token, no
+ * JWKS here — a plain `Error` upstream, so `anyOf` tries the next strategy. A token that IS this
+ * issuer's but does not hold up (bad signature, expired, wrong `typ`, no `exp`, sender-constrained
+ * `cnf`) throws {@link McpAuthError}: it is a refusal, and trying another strategy on it would only
+ * hide it.
+ */
+async function verifyJwtAccessToken(
+  service: AuthKitServiceLike,
+  token: string,
+): Promise<AuthKitAccessTokenLike | undefined> {
+  if (!JWS_COMPACT.test(token)) return undefined;
+  const jwks = service.publicJwks;
+  if (jwks === undefined) return undefined;
+  const jose = await import('jose');
+  let unverified: Record<string, unknown>;
+  try {
+    unverified = jose.decodeJwt(token) as Record<string, unknown>;
+  } catch {
+    return undefined; // not a JWT at all
+  }
+  if (typeof unverified.iss !== 'string' || !sameIssuer(unverified.iss, service.config.issuer)) {
+    return undefined; // another issuer's token
+  }
+  if (localKeySet === undefined || localKeySet.source !== jwks) {
+    localKeySet = { source: jwks, set: jose.createLocalJWKSet(jwks as never) };
+  }
+  try {
+    const { payload } = await jose.jwtVerify(token, localKeySet.set as never, {
+      issuer: unverified.iss, // same issuer up to a trailing slash, checked above
+      typ: 'at+jwt',
+      algorithms: DEFAULT_JWT_ALGORITHMS,
+      clockTolerance: 30,
+      requiredClaims: ['exp', 'sub'],
+    });
+    // Sender-constrained (DPoP `jkt` / mTLS `x5t#S256`): a plain Bearer call cannot prove it.
+    if (payload.cnf) throw new McpAuthError('invalid_token: token is sender-constrained');
+    // `client_credentials` tokens have `sub` === `client_id`: no account behind them.
+    if (payload.sub === payload.client_id) {
+      throw new McpAuthError('invalid_token: no account behind this client_credentials token');
+    }
+    const claims = payload as Record<string, unknown>;
+    const extra =
+      typeof claims.extra === 'object' && claims.extra !== null
+        ? (claims.extra as Record<string, unknown>)
+        : {};
+    const act = claims.act;
+    const exp = typeof payload.exp === 'number' ? payload.exp : undefined;
+    const aud = payload.aud;
+    const clientId = payload.client_id;
+    const scope = payload.scope;
+    const subject = payload.sub as string;
+    return {
+      accountId: subject,
+      ...(typeof aud === 'string' || Array.isArray(aud) ? { aud: aud as string | string[] } : {}),
+      ...(typeof clientId === 'string' ? { clientId } : {}),
+      ...(typeof scope === 'string' ? { scope } : {}),
+      extra: act !== undefined ? { ...extra, act } : extra,
+      ...(exp !== undefined ? { exp } : {}),
+      // A JWT is self-contained: no grant is loaded and nothing to revoke. Its `exp` is the only
+      // bound — authkit keeps those TTLs short for exactly that reason.
+      isExpired: exp !== undefined && exp <= Math.floor(Date.now() / 1000),
+    };
+  } catch (error) {
+    if (error instanceof McpAuthError) throw error;
+    // A token of this issuer that does not hold up: a refusal, not "somebody else's token".
+    if (isTokenFailure(jose, error)) {
+      throw new McpAuthError(`invalid_token: ${(error as Error).message}`, { cause: error });
+    }
+    throw error; // not a verification failure: let it surface
+  }
 }
 
 /** Narrow the grant's stored `activeOrg` to {@link AuthKitActiveOrg}; anything without an `orgId` string is no org. */

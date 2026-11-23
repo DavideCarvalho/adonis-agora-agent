@@ -27,6 +27,8 @@ function fakeAuthKit(options: {
   tokens?: Record<string, FakeToken>;
   grants?: Record<string, Record<string, unknown>>;
   withoutGrantModel?: boolean;
+  /** The issuer's public JWKS (`jwks_uri`), for the JWT access tokens in another process. */
+  publicJwks?: { keys: Record<string, unknown>[] };
 }) {
   const grantFind = vi.fn(async (id: string) => options.grants?.[id]);
   const service = {
@@ -35,11 +37,40 @@ function fakeAuthKit(options: {
       AccessToken: { find: async (token: string) => options.tokens?.[token] },
       ...(options.withoutGrantModel ? {} : { Grant: { find: grantFind } }),
     },
+    ...(options.publicJwks ? { publicJwks: options.publicJwks } : {}),
   };
   const app = {
     container: { make: async (binding: string) => (binding === 'authkit.server' ? service : null) },
   } as unknown as ApplicationService;
   return { app, grantFind };
+}
+
+/**
+ * A key pair + the public JWKS a `authkit.server` would expose, and a signer for the JWT access
+ * tokens (RFC 9068) authkit mints for a resource in another process.
+ */
+async function jwtIssuer() {
+  const { generateKeyPair, exportJWK, SignJWT } = await import('jose');
+  const { publicKey, privateKey } = await generateKeyPair('RS256');
+  const jwk = { ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256', use: 'sig' };
+  return {
+    publicJwks: { keys: [jwk] },
+    sign: async (claims: Record<string, unknown> = {}) => {
+      const { iss, typ, sub, aud, exp, withoutExp } = claims;
+      const jwt = new SignJWT({
+        scope: 'openid profile',
+        client_id: 'claude',
+        ...claims,
+      })
+        .setProtectedHeader({ alg: 'RS256', kid: 'k1', typ: (typ as string) ?? 'at+jwt' })
+        .setIssuer((iss as string) ?? 'https://app.example.com/oidc')
+        .setSubject((sub as string) ?? 'acc-1')
+        .setAudience((aud as string) ?? 'https://app.example.com/mcp')
+        .setIssuedAt();
+      if (!withoutExp) jwt.setExpirationTime((exp as number) ?? '5m');
+      return jwt.sign(privateKey);
+    },
+  };
 }
 
 const validToken: FakeToken = {
@@ -227,6 +258,91 @@ describe('authKitAuth() → a personal agent (Poppy) token', () => {
     );
     expect((await auth.verify('t1')).extra.actor).toEqual({ id: 'acc-1' });
     expect(seen[0]?.personalAgent).toBe(false);
+  });
+});
+
+describe('authKitAuth() → a JWT access token (RFC 9068)', () => {
+  it('accepts the JWT authkit minted for this endpoint and never touches the adapter', async () => {
+    const issuer = await jwtIssuer();
+    const { app, grantFind } = fakeAuthKit({ tokens: {}, publicJwks: issuer.publicJwks });
+    const token = await issuer.sign({ scope: 'openid profile email' });
+    const seen: AuthKitActorInfo[] = [];
+    const auth = await resolveMcpAuth(
+      authKitAuth({
+        toActor: (info) => {
+          seen.push(info);
+          return { id: info.accountId };
+        },
+      }),
+      { app },
+    );
+
+    const result = await auth.verify(token, { resource: 'https://app.example.com/mcp' });
+    expect(result.extra.actor).toEqual({ id: 'acc-1' });
+    expect(result.clientId).toBe('claude');
+    expect(result.scopes).toEqual(['openid', 'profile', 'email']);
+    expect(seen[0]).toMatchObject({ accountId: 'acc-1', personalAgent: false });
+    // A JWT is self-contained: no grant lookup (and no grant to revoke).
+    expect(grantFind).not.toHaveBeenCalled();
+  });
+
+  it('refuses a JWT for another resource, and one with a bad signature', async () => {
+    const issuer = await jwtIssuer();
+    const { app } = fakeAuthKit({ tokens: {}, publicJwks: issuer.publicJwks });
+    const auth = await resolveMcpAuth(authKitAuth(), { app });
+
+    const otherResource = await issuer.sign({ aud: 'https://other.example.com/mcp' });
+    await expect(
+      auth.verify(otherResource, { resource: 'https://app.example.com/mcp' }),
+    ).rejects.toThrow('token was not issued for this MCP server');
+
+    // This issuer's token with a tampered signature: a refusal, not "somebody else's token".
+    const forged = `${await issuer.sign({})}x`;
+    await expect(
+      auth.verify(forged, { resource: 'https://app.example.com/mcp' }),
+    ).rejects.toBeInstanceOf(McpAuthError);
+  });
+
+  it('refuses a JWT without exp or expired, the same way an opaque token is refused', async () => {
+    const issuer = await jwtIssuer();
+    const { app } = fakeAuthKit({ tokens: {}, publicJwks: issuer.publicJwks });
+    const auth = await resolveMcpAuth(authKitAuth(), { app });
+
+    // RFC 9068 requires `exp`, and a token without one would be immortal.
+    const noExp = await issuer.sign({ withoutExp: true });
+    await expect(
+      auth.verify(noExp, { resource: 'https://app.example.com/mcp' }),
+    ).rejects.toBeInstanceOf(McpAuthError);
+
+    const expired = await issuer.sign({ exp: Math.floor(Date.now() / 1000) - 3600 });
+    await expect(
+      auth.verify(expired, { resource: 'https://app.example.com/mcp' }),
+    ).rejects.toBeInstanceOf(McpAuthError);
+  });
+
+  it('a JWT of another issuer, or a non-JWT, stays a plain Error', async () => {
+    const issuer = await jwtIssuer();
+    const { app } = fakeAuthKit({ tokens: {}, publicJwks: issuer.publicJwks });
+    const auth = await resolveMcpAuth(authKitAuth(), { app });
+
+    const foreign = await issuer.sign({ iss: 'https://other.example.com/oidc' });
+    const foreignErr = await auth
+      .verify(foreign, { resource: 'https://app.example.com/mcp' })
+      .catch((e: unknown) => e);
+    expect(foreignErr).not.toBeInstanceOf(McpAuthError);
+
+    const opaque = await auth
+      .verify('opaque-token', { resource: 'https://app.example.com/mcp' })
+      .catch((e: unknown) => e);
+    expect(opaque).not.toBeInstanceOf(McpAuthError);
+  });
+
+  it('ignores the JWT path when the issuer exposes no JWKS', async () => {
+    const issuer = await jwtIssuer();
+    const { app } = fakeAuthKit({ tokens: {} });
+    const auth = await resolveMcpAuth(authKitAuth(), { app });
+    const token = await issuer.sign({});
+    await expect(auth.verify(token)).rejects.toThrow('invalid or expired access token');
   });
 });
 
