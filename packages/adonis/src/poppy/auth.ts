@@ -66,7 +66,9 @@ export type PoppyAuthFailure = {
   /** `null`: a challenge without a code (§8, the request needs the account) or a rate limit (§5.6). */
   error:
     | 'invalid_session'
+    | 'session_ended'
     | 'version_unsupported'
+    | 'extension_required'
     | 'invalid_token'
     | 'insufficient_scope'
     | 'invalid_dpop_proof'
@@ -78,6 +80,11 @@ export type PoppyAuthFailure = {
   wwwAuthenticate: string | null;
   /** For logs and `invalid_session`'s `error_description` — never a token. */
   description?: string;
+  /**
+   * The JSON body to answer with, when the resolver built one (the Session and version errors:
+   * `invalid_session`, `session_ended`, `version_unsupported`, `extension_required`).
+   */
+  body?: Record<string, string> | null;
   /** Extra headers to answer with (`DPoP-Nonce`, `Retry-After`). */
   headers?: Record<string, string>;
 };

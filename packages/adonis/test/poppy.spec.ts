@@ -75,6 +75,15 @@ const fakeResolver: PoppyAuthenticate = async (request, options) => {
       wwwAuthenticate: null,
     };
   }
+  if (user === 'ended') {
+    return {
+      ok: false,
+      status: 400,
+      error: 'session_ended',
+      wwwAuthenticate: null,
+      body: { error: 'session_ended', error_description: 'The Session ended' },
+    };
+  }
   if (user === 'limited') {
     return {
       ok: false,
@@ -344,6 +353,14 @@ describe('Poppy routing and auth', () => {
     expect(limited.status).toBe(429);
     expect(limited.headers.get('retry-after')).toBe('30');
     expect(limited.headers.get('www-authenticate')).toBeNull();
+  });
+
+  it('answers with the JSON body the resolver built (session_ended), with no challenge', async () => {
+    harness = await setup(() => ({ text: 'hi' }));
+    const res = await post(harness, '', msg('hi'), auth('ended'));
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'session_ended', error_description: 'The Session ended' });
+    expect(res.headers.get('www-authenticate')).toBeNull();
   });
 
   it('forwards a refusal headers (DPoP-Nonce) and description, under its status', async () => {

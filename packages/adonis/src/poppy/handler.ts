@@ -17,6 +17,14 @@ import {
   parseSendBody,
 } from './protocol.js';
 
+/** Auth failures answered with a JSON body instead of a `WWW-Authenticate` challenge (§3.4, §5.3). */
+const JSON_BODY_ERRORS = new Set([
+  'invalid_session',
+  'session_ended',
+  'version_unsupported',
+  'extension_required',
+]);
+
 /**
  * One HTTP exchange, framework-free: what the Poppy handler reads and writes. `adonisExchange`
  * and `nodeExchange` build one; any other server can too.
@@ -150,16 +158,21 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
       ...(result.wwwAuthenticate ? { 'WWW-Authenticate': result.wwwAuthenticate } : {}),
       'Cache-Control': 'no-store',
     };
-    // Token errors are in `WWW-Authenticate`, as in OAuth; `invalid_session` and
-    // `version_unsupported` are a JSON body (§3.4, §5.3).
+    // Token errors are in `WWW-Authenticate`, as in OAuth; the Session and version errors
+    // (`invalid_session`, `session_ended`, `version_unsupported`, `extension_required`) are a JSON
+    // body (§3.4, §5.3). A resolver that already built that body hands it over as `body`.
     exchange.json(
       result.status,
-      result.error === 'invalid_session' || result.error === 'version_unsupported'
-        ? {
-            error: result.error,
-            ...(result.description !== undefined ? { error_description: result.description } : {}),
-          }
-        : {},
+      result.body
+        ? result.body
+        : result.error !== null && JSON_BODY_ERRORS.has(result.error)
+          ? {
+              error: result.error,
+              ...(result.description !== undefined
+                ? { error_description: result.description }
+                : {}),
+            }
+          : {},
       headers,
     );
     return null;
