@@ -6,11 +6,10 @@ icon: Bot
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-<Callout type="warn" title="Experimental — tracks a draft spec">
-This implements the [Personal Agent Protocol (Poppy)](https://personalagentprotocol.org/docs/spec)
-**Draft 0.3** (`protocol_version` exactly `0.3`). The spec is still in development and can change in ways
-that aren't backward compatible; this client tracks it and **will change, possibly in breaking ways and
-outside semver majors**, as the spec evolves.
+<Callout type="warn" title="Experimental">
+This implements the [Personal Agent Protocol (Poppy)](https://personalagentprotocol.org/docs/1.0/spec)
+**1.0**: it uses Companies that serve a 1.x version, directly or through `supported_versions`, and sends
+`Poppy-Version: 1.0`. The API **can still change outside semver majors**.
 </Callout>
 
 A reference **Personal Agent** (the client side of Poppy), as a library and a CLI (`poppy-agent`).
@@ -21,25 +20,30 @@ to end. It is written strictly against the spec, not against any particular serv
 
 | Spec | Implemented |
 | --- | --- |
-| 3 Discovery | `/.well-known/poppy.json` over HTTPS, HTTPS-only redirects that must end at the well-known path with no query, `organization.domain` is the host that served it (ignoring case only), exact `protocol_version`, the issuer from protected resource metadata (RFC 9728), `protected_resources` checked, no fallback to the domain after an error, unknown fields/extensions/API types ignored |
+| 3 Discovery | `/.well-known/poppy.json` over HTTPS, HTTPS-only redirects that must end at the well-known path with no query, `organization.domain` is the host that served it (ignoring case only, with its port when not 443), the issuer from protected resource metadata (RFC 9728), `protected_resources` checked, no fallback to the domain after an error, unknown fields/extensions/API types ignored |
+| 3.1 Ports | a Company on a port other than 443 only with `allowPorts` (or `--insecure-dev`) |
+| 3.4 Versions | the newest version compatible with 1.0 among `protocol_version` and `supported_versions` (a linked document only on the same host, without redirects, with the version it's listed under); `Poppy-Version` on every request with the Session header; `Poppy-Extensions` for the extensions you pass in `extensions` that the Company lists in that version; new values start a new Session; `version_unsupported` → `poppy.json` again without the cache, retried once only when that chooses another version |
 | 3 Addresses | every connection to a Company's URL, redirects included, refuses loopback, private and link-local addresses: checked in the socket's own lookup, so the IP checked is the IP connected. `--insecure-dev` lifts it; a `fetch` you inject replaces it |
-| 3.2 Companies without an issuer | signed-out Sessions only, identified by `https://{domain}`; 404 or metadata without servers establish it; a known issuer isn't dropped on a 404 |
-| 4.1 Agent identity | ES256 keys, Client ID Metadata Document, `private_key_jwt` client assertions with `aud` = the issuer as a string |
-| 4.2 Direct | authorization code + PKCE S256 + `state`, RFC 9207 `iss` exact check; callback via `serve-identity` (relayed through the state dir) or an in-process listener |
-| 4.3 Device | RFC 8628 polling with `interval`, `authorization_pending`, `slow_down` (+5s); the link's host checked against the issuer and `protected_resources`, shown with the Company's name and domain |
-| 4.4–4.7 Tokens | refresh tokens per Company + local profile in a 0600 state file, rotation honoured, one refresh at a time, a response may omit `refresh_token` and `scope`, `invalid_grant` → continue signed out, replaced tokens revoked, narrower tokens |
-| 4.5 Access tokens | DPoP proofs only when the issuer lists `ES256` (nonce retry included), scheme from `token_type`; `resource` from a service's protected resource metadata, refetched on `invalid_token` |
-| 5.1–5.3 Sessions | a `Poppy-Session` JWT per request (`typ`, `kid` thumbprint, `pap_dlg`, `sid`, `sub`, `htm`, `htu`, `ath`), a delegated key per User ID with a `pap-delegation+jwt` of 7 hours and rounded times; `invalid_session` → one new Session |
+| 3.2 Companies without an issuer | signed-out Sessions only, identified by `https://{domain}`; 404 or metadata without servers establish it; a known issuer isn't dropped on a 404; `auth.disabled` → no sign-in type offered |
+| 4.1 Agent identity | ES256 keys, Client ID Metadata Document (no `extensions`), `private_key_jwt` client assertions with `aud` = the issuer as a string and `exp` one minute after `iat` |
+| 4.2 Direct (preferred) | authorization code + PKCE S256 + `state` + `prompt=consent`, RFC 9207 `iss` exact check; pushed (PAR, RFC 9126) with the client assertion and a DPoP proof whenever the issuer lists `pushed_authorization_request_endpoint`; callback via `serve-identity` (relayed through the state dir) or an in-process listener |
+| 4.3 Device | RFC 8628 polling with `interval`, `authorization_pending`, `slow_down` (+5s); the link's host must be the issuer's or `organization.domain` (or a subdomain), shown with the Company's name and domain |
+| 4.4–4.7 Tokens | refresh tokens per Company + local profile in a 0600 state file, rotation honoured, one refresh at a time, every refresh proves the DPoP key the sign-in used, a response may omit `refresh_token` and `scope`, `invalid_grant` → continue signed out, replaced tokens revoked, narrower tokens; sign-in never names a `resource`; `scopesForSignIn` asks for every scope still needed, the granted ones included |
+| 4.5 Access tokens | DPoP proofs only when the issuer lists `ES256` (nonce retry included), scheme from `token_type`; `resource` from a service's protected resource metadata when its `resource` is the service's URL, refetched on `invalid_token`; `invalid_target` → that service is used signed out |
+| 4.7 Scopes | `offeredScopes`: the issuer's and the domain's `scopes_supported`; `poppy:browser-sign-in` only when there is a `browser_session_endpoint` |
+| 5.1–5.3 Sessions | a `Poppy-Session` JWT per request (`typ`, `kid` thumbprint, `poppy_dlg`, `sid`, `sub`, `htm`, `htu`, `ath`), a delegated key per User ID with a `poppy-delegation+jwt` of 7 hours and rounded times; `session_ended` → one new Session and the request again; `invalid_session` isn't retried |
+| 5.2 Website pages | `company.fetchPage(url)`: the Session header, signed out, only on `organization.domain`; a redirect to another host goes without it; `invalid_session` → once more without the header |
 | 5.5 Sign-out | `disconnect` → RFC 7009 with `token_type_hint=refresh_token`; the Session continues signed out |
-| 6 Web browsing | the code read from the page of the agent's own browser (`browserJoinCode`), authorized with `authorizeBrowserJoin`. The browser itself is yours to drive |
-| 7 APIs | `openapi`: generic calls, base URL from `servers[0]`, nothing sent to a foreign origin, `WWW-Authenticate` errors mapped (a code-less challenge is `insufficient_scope`); `mcp`: MCP TypeScript SDK client over Streamable HTTP with a Bearer token for `resource` = its `url`, or signed out with the Session header only |
-| 8 Conversations | start/send with agent-chosen idempotent message IDs (safe retries), `author`, `context`, `data`, events by long-poll or SSE with `Last-Event-ID`, `text-delta`, handoff, Direct Conversations, `authorization` events, unknown `status`/`responder` values |
-| 9 Task coverage | `excludedTasks` and `sendFeedback`, with alternatives whose unlisted references are dropped |
-| Mediated Sign-In extension | prompts for `extensions.mediated-sign-in.fields` (secret ones hidden, never logged), credentials only to the token endpoint, `code_required` → `sign_in_id` + `one_time_code` |
+| 6 Web browsing | the code read from the page of the agent's own browser (`browserJoinCode`), authorized with `authorizeBrowserJoin` (without `poppy:browser-sign-in` the same code is authorized signed out); `browsingDisabled` reads `web.disabled`. The browser itself is yours to drive |
+| 7 APIs | `openapi`: generic calls, base URL from `servers[0]`, nothing sent to a foreign origin, `WWW-Authenticate` errors mapped (a code-less challenge is `insufficient_scope`); `mcp`: MCP TypeScript SDK client over Streamable HTTP with a token for `resource` = its `url`, used as its `token_type` says, or signed out with the Session header only |
+| 8 Conversations | the `poppy` entries with their `description` (`poppyProtocols`); every POST with a request `id` (safe retries), messages without an `id`, `author`, `context` (`null` clears), `data`, `as_of_cursor` on the agent's own messages; responses read as accepted; state as `working`/`handoff`/`responder`/`closed`, `working` SSE events; events by long-poll or SSE with `Last-Event-ID`, `text-delta`; handoff and `cancelHandoff`, close (202), Direct Conversations (also accepting `user_requested` without a message); `authorization` events; unknown roles read as the Company's, unknown `author.type` as `agent`, unknown event types and SSE events skipped, unknown error codes by HTTP status; `version_mismatch` with its `protocolVersion` |
+| 9 Task coverage | `taskCoverage` from `tasks.endpoint`, once per Session, signed out: `excludedTasks`, skills of a known index (URLs resolved against the endpoint), and the feedback endpoint for `sendFeedback`; alternatives whose unlisted references are dropped |
+| Mediated Sign-In extension | version 1 of `extensions.mediated-sign-in`: prompts for its `fields` (secret ones hidden, never logged), credentials only to the token endpoint, `code_required` → `sign_in_id` + `one_time_code` |
 | LLM mode | `ask`: tiny autonomous agent via OpenRouter tool calling (conversation + MCP tools), `--max-steps` cap, MCP tools without `readOnlyHint` need consent (`--yes` or a prompt), tokens never exposed to the model |
 
-Not implemented: the Operations extension, Web Bot Auth operator signatures (a SHOULD, for edges that
-need them), blind signing, Agent IDs, anonymous User IDs, Personal Agent-side OpenAPI schema validation.
+Not implemented: the Operations and Browser Control extensions, Web Bot Auth operator signatures (a
+SHOULD, for edges that need them), blind signing (PS384), Agent IDs, anonymous User IDs, fetching and
+verifying skill artifacts, Personal Agent-side OpenAPI schema validation.
 
 ## CLI
 
@@ -92,7 +96,7 @@ poppy-agent api example.com GET /orders
 poppy-agent api example.com POST /addresses --data '{"line1":"…"}'
 poppy-agent mcp tools example.com
 poppy-agent mcp call example.com search_products '{"query":"jacket"}'
-poppy-agent chat example.com          # /help inside for /data /context /as /handoff /signin /direct /decline /leave /close
+poppy-agent chat example.com          # /help inside for /data /context /as /handoff /cancel-handoff /signin /direct /decline /leave /status /close
 poppy-agent open example.com [--page <file>]
 poppy-agent disconnect example.com
 OPENROUTER_API_KEY=… poppy-agent ask example.com "Is the insulated jacket available in M?" [--model …] [--max-steps 8] [--yes]
@@ -100,7 +104,8 @@ OPENROUTER_API_KEY=… poppy-agent ask example.com "Is the insulated jacket avai
 
 In `chat`, what you type is sent with `author.type: "agent"` by default (you act as the agent's brain).
 `/as human` marks messages as the User's own words (8.8); in a Direct Conversation they are always
-`human`. `open` authorizes a browser join (section 6): load the printed endpoint in a browser the agent controls,
+`human`. `/signin` after an `authorization` event asks for its scopes plus the ones already granted.
+`open` authorizes a browser join (section 6): load the printed endpoint in a browser the agent controls,
 never the User's own, give the command the code from that page (or the saved page with `--page`), and
 submit the form there.
 
@@ -139,6 +144,9 @@ package's [conversation endpoint](/docs/agent/poppy)):
 7. **Sign out**: `poppy-agent disconnect localhost:3333 --insecure-dev`, then `session` again shows
    `signed_in: false` on the same `session_id`.
 
+A local app on a port other than 443 is used only with `--insecure-dev` (the CLI) or `allowPorts` /
+`insecureDev` (the library); its `organization.domain` must include the port (`localhost:3333`).
+
 Watch stderr for tracing: retries (DPoP nonce, Retry-After, new Sessions) are logged.
 
 ## Library
@@ -148,15 +156,33 @@ module tree (a test enforces it), only Node built-ins, `jose` and the MCP SDK cl
 CLI, a worker, or any server.
 
 ```ts
-import { AgentIdentity, ConversationClient, PoppyAgent, StateStore, newMessageId } from '@adonis-agora/agent/poppy-client';
+import {
+  AgentIdentity,
+  ConversationClient,
+  PoppyAgent,
+  StateStore,
+  taskCoverage,
+} from '@adonis-agora/agent/poppy-client';
 
 const store = await StateStore.open();
-const agent = new PoppyAgent({ store, identity: new AgentIdentity(store.data.identity!) });
+const agent = new PoppyAgent({
+  store,
+  identity: new AgentIdentity(store.data.identity!),
+  // Extensions you implement, by major version: declared to Companies that list them.
+  extensions: { 'example.com/gift-wrap': '1' },
+});
 const company = await agent.company('example.com');
+const { excludedTasks, skills } = await taskCoverage(company); // once per Session
+
 const conv = new ConversationClient(company);
-const { conversation_id } = await conv.start({ id: newMessageId(), author: { type: 'agent' }, text: 'Hi' });
+const { conversation_id } = await conv.start({ author: { type: 'agent' }, text: 'Hi' });
+// Until the Company's reply is complete (`working` is false).
 for await (const item of conv.follow(conversation_id, { untilSettled: true })) console.log(item);
+const { events, state } = await conv.collect(conversation_id); // the same, as one result
 ```
+
+When a call answers `insufficient_scope`, sign in again with `scopesForSignIn(company, error.scope)`:
+the Company grants only the scopes a sign-in names, so it asks for the granted ones too.
 
 ## Tests
 
@@ -165,7 +191,7 @@ in-process **fake Poppy Company** (`test/poppy-client/fixtures/fake_company.ts`)
 RFC 8414 metadata, a token endpoint verifying `private_key_jwt` and DPoP (nonce, `ath`, `jti` replay, key
 binding), Session JWT and delegation checks, authorization/device/mediated sign-in, revocation, an OpenAPI
 API, a conversation endpoint with JSON long-poll and SSE (deltas, dropped streams), a three-step
-browser join, feedback and excluded tasks, and an MCP server. Each check a Company MUST perform is recorded as a violation
+browser join, a tasks endpoint, PAR, and an MCP server. Each check a Company MUST perform is recorded as a violation
 when the client breaks it, so the fake doubles as a conformance check of the client.
 
 To try the CLI by hand against the fake:

@@ -1,4 +1,6 @@
 import { stat } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { afterEach, assert, describe, it, vi } from 'vitest';
 import { callOpenApi } from '../../src/poppy-client/api.js';
 import {
@@ -6,9 +8,12 @@ import {
   browserJoinCode,
   browserSessionEndpoint,
 } from '../../src/poppy-client/browser.js';
+import { PoppyAgent } from '../../src/poppy-client/company.js';
 import {
+  authorTypeOf,
   ConversationClient,
-  newMessageId,
+  isFromCompany,
+  readState,
   type StreamItem,
 } from '../../src/poppy-client/conversations.js';
 import { ConversationError, ResourceAuthError } from '../../src/poppy-client/errors.js';
@@ -16,14 +21,18 @@ import { waitForRelayedCallback } from '../../src/poppy-client/identity_server.j
 import { ask } from '../../src/poppy-client/llm.js';
 import { connectMcp } from '../../src/poppy-client/mcp.js';
 import {
+  assertDeviceLinkHost,
   completeDirectSignIn,
   deviceSignIn,
   eligibleSignInTypes,
   mediatedSignIn,
+  offeredScopes,
+  offeredSignInTypes,
+  scopesForSignIn,
   startDirectSignIn,
   submitMediatedCode,
 } from '../../src/poppy-client/signin.js';
-import { excludedTasks, sendFeedback } from '../../src/poppy-client/task_coverage.js';
+import { excludedTasks, sendFeedback, taskCoverage } from '../../src/poppy-client/task_coverage.js';
 import { rejects } from './fixtures/assert.js';
 import type { World } from './fixtures/setup.js';
 import { browse, world } from './fixtures/setup.js';
@@ -83,7 +92,7 @@ describe('sessions (section 5)', () => {
     noViolations(assert);
   });
 
-  it('invalid_session starts a new Session once, then stops', async () => {
+  it('session_ended starts a new Session and sends again once, then stops', async () => {
     w = await world();
     const c = await w.agent.company(w.fake.domain);
     await callOpenApi(c, { method: 'GET', path: '/public' });
@@ -92,16 +101,29 @@ describe('sessions (section 5)', () => {
     const r = await callOpenApi(c, { method: 'GET', path: '/public' });
     assert.equal(r.status, 200);
     assert.notEqual(c.sessionId, old);
-    assert.isTrue(w.logs.some((l) => l.includes('invalid_session')));
+    assert.isTrue(w.logs.some((l) => l.includes('session_ended')));
     noViolations(assert);
 
-    const original = w.fake.sessions.set.bind(w.fake.sessions);
-    w.fake.sessions.set = ((k: string, v: { ended?: boolean }) => {
-      v.ended = true;
-      return original(k, v as never);
-    }) as never;
     for (const s of w.fake.sessions.values()) s.ended = true;
+    w.fake.endNextSession = true;
+    const before = w.fake.versionHeaders.length;
+    const again = await callOpenApi(c, { method: 'GET', path: '/public' });
+    assert.equal(again.status, 400);
+    assert.deepEqual(again.body, { error: 'session_ended' });
+    assert.equal(w.fake.versionHeaders.length - before, 2, 'sent once more, then stopped');
+  });
+
+  it('invalid_session is not retried: a new Session would not fix it', async () => {
+    w = await world();
+    const c = await w.agent.company(w.fake.domain);
+    await callOpenApi(c, { method: 'GET', path: '/public' });
+    const sid = c.sessionId;
+    // A broken delegation: the Company refuses the header.
+    c.state.delegation!.jwt = `${c.state.delegation!.jwt}x`;
+    const before = w.fake.versionHeaders.length;
     await rejects(() => callOpenApi(c, { method: 'GET', path: '/public' }), /invalid_session/);
+    assert.equal(w.fake.versionHeaders.length - before, 1);
+    assert.equal(c.sessionId, sid);
   });
 
   it('429 Retry-After is waited out', async () => {
@@ -135,6 +157,8 @@ describe('sign-in (section 4)', () => {
     assert.equal(w.callbacks.length, 1);
     const r = await callOpenApi(c, { method: 'GET', path: '/orders' });
     assert.equal(r.status, 200);
+    assert.equal(w.fake.authorizeRequests[0]?.get('prompt'), 'consent');
+    assert.isFalse(w.fake.authorizeRequests[0]?.has('resource'));
     noViolations(assert);
   });
 
@@ -154,6 +178,7 @@ describe('sign-in (section 4)', () => {
     const c = await w.agent.company(w.fake.domain);
     const pending = await startDirectSignIn(c, 'orders:read');
     const back = await browse(pending.url);
+    assert.equal(new URL(pending.url).searchParams.get('prompt'), 'consent');
     const swapped = new URLSearchParams(back.searchParams);
     swapped.set('iss', 'https://other.example');
     await rejects(() => completeDirectSignIn(c, pending, swapped), /iss/);
@@ -406,7 +431,6 @@ describe('conversations (7)', () => {
     const c = await w.agent.company(w.fake.domain);
     const conv = new ConversationClient(c);
     const start = await conv.start({
-      id: newMessageId(),
       author: { type: 'agent' },
       text: 'hello',
       context: { locale: 'en-US', time_zone: 'America/Los_Angeles', user_available: true },
@@ -425,7 +449,6 @@ describe('conversations (7)', () => {
     );
     await new Promise((r) => setTimeout(r, 100));
     await conv.send(start.conversation_id, {
-      id: newMessageId(),
       author: { type: 'agent' },
       text: 'second',
       data: { n: 2 },
@@ -440,7 +463,10 @@ describe('conversations (7)', () => {
       messages.filter((m) => m.message?.role === 'company')[0]?.message?.text,
       'You said: hello',
     );
-    assert.isTrue(items.some((i) => i.kind === 'event' && i.event.type === 'state'));
+    assert.isTrue(
+      items.some((i) => i.kind === 'working'),
+      'working arrives as an SSE event',
+    );
     const ids = items.flatMap((i) => (i.kind === 'event' ? [i.event.id] : []));
     assert.equal(new Set(ids).size, ids.length, 'no event handled twice');
     assert.isAbove(w.fake.lastEventIdHeaders.length, 0);
@@ -451,11 +477,7 @@ describe('conversations (7)', () => {
     w = await world({ dropStreamAfterFirstMessage: true });
     const c = await w.agent.company(w.fake.domain);
     const conv = new ConversationClient(c);
-    const start = await conv.start({
-      id: newMessageId(),
-      author: { type: 'agent' },
-      text: 'hello',
-    });
+    const start = await conv.start({ author: { type: 'agent' }, text: 'hello' });
     await new Promise((r) => setTimeout(r, 150)); // the reply is already in the backlog
     const ac = new AbortController();
     const items = await collect(
@@ -468,31 +490,38 @@ describe('conversations (7)', () => {
     );
   });
 
-  it('long-poll reads, idempotent retries, message_id_conflict, handoff, close', async () => {
+  it('long-poll reads, request ids, request_id_conflict, handoff, close', async () => {
     w = await world();
     const c = await w.agent.company(w.fake.domain);
     const conv = new ConversationClient(c);
-    const m = { id: newMessageId(), author: { type: 'agent' } as const, text: 'hi' };
-    const a = await conv.start(m);
-    const b = await conv.start(m);
+    const m = { author: { type: 'agent' } as const, text: 'hi' };
+    const a = await conv.start(m, { requestId: 'msg_retry1' });
+    assert.deepEqual(Object.keys(a), ['conversation_id'], 'accepted: only conversation_id');
+    const b = await conv.start(m, { requestId: 'msg_retry1' });
     assert.equal(b.conversation_id, a.conversation_id);
-    await rejects(() => conv.start({ ...m, text: 'different' }), /message_id_conflict/);
+    await rejects(
+      () => conv.start({ ...m, text: 'different' }, { requestId: 'msg_retry1' }),
+      /request_id_conflict/,
+    );
     const { events, state } = await conv.collect(a.conversation_id);
-    assert.equal(state.status, 'idle');
-    assert.isTrue(events.some((e) => e.message?.text === 'You said: hi'));
-    const h = await conv.handoff(a.conversation_id);
-    assert.equal(h.status, 'queued');
-    await new Promise((r) => setTimeout(r, 80));
+    assert.deepEqual(state, { working: false, handoff: 'none', responder: 'agent', closed: false });
+    const mine = events.find((e) => e.message?.role === 'user');
+    assert.equal(mine?.message?.id, 'msg_retry1', "a message's ID is its request's");
+    const reply = events.find((e) => e.message?.text === 'You said: hi');
+    assert.equal(reply?.message?.as_of_request, 'msg_retry1');
+    await conv.handoff(a.conversation_id);
+    const pendingState = await conv.read(a.conversation_id);
+    assert.equal(pendingState.handoff, 'pending');
+    assert.equal(pendingState.responder, 'agent');
+    await new Promise((r) => setTimeout(r, 120));
     const after = await conv.collect(a.conversation_id);
     assert.equal(after.state.responder, 'human');
+    assert.equal(after.state.handoff, 'none');
     const closed = await conv.close(a.conversation_id);
-    assert.equal(closed.status, 'closed');
+    assert.deepEqual(closed, { conversation_id: a.conversation_id });
+    assert.isTrue((await conv.read(a.conversation_id)).closed);
     try {
-      await conv.send(a.conversation_id, {
-        id: newMessageId(),
-        author: { type: 'agent' },
-        text: 'more',
-      });
+      await conv.send(a.conversation_id, { author: { type: 'agent' }, text: 'more' });
       assert.fail('expected conversation_closed');
     } catch (e) {
       assert.instanceOf(e, ConversationError);
@@ -505,7 +534,7 @@ describe('conversations (7)', () => {
     w = await world();
     const c = await w.agent.company(w.fake.domain);
     const conv = new ConversationClient(c);
-    const a = await conv.start({ id: newMessageId(), author: { type: 'agent' }, text: 'hi' });
+    const a = await conv.start({ author: { type: 'agent' }, text: 'hi' });
     await conv.collect(a.conversation_id);
     // Nothing changes the state now (like a handoff with no one available): no `state` event.
     const drained = (async () => {
@@ -525,7 +554,6 @@ describe('conversations (7)', () => {
     const c = await w.agent.company(w.fake.domain);
     const conv = new ConversationClient(c);
     const { conversation_id: id } = await conv.start({
-      id: newMessageId(),
       author: { type: 'agent' },
       text: 'show my orders',
     });
@@ -534,7 +562,7 @@ describe('conversations (7)', () => {
     assert.equal(auth?.error, 'insufficient_scope');
     assert.equal(auth?.scope, 'orders:read');
     await directSignIn('orders:read');
-    await conv.send(id, { id: newMessageId(), author: { type: 'agent' }, text: 'orders please' });
+    await conv.send(id, { author: { type: 'agent' }, text: 'orders please' });
     const second = await conv.collect(id);
     const reply = second.events.find((e) => e.type === 'message' && e.message?.role === 'company');
     assert.deepEqual(reply?.message?.data, { orders: [{ id: 'ord_1042', item: 'jacket' }] });
@@ -546,18 +574,29 @@ describe('conversations (7)', () => {
     const c = await w.agent.company(w.fake.domain);
     const conv = new ConversationClient(c);
     const { conversation_id: parent } = await conv.start({
-      id: newMessageId(),
       author: { type: 'agent' },
       text: 'need a specialist',
     });
     const r = await conv.collect(parent);
-    assert.isTrue(r.events.some((e) => e.type === 'user_requested'));
-    const direct = await conv.start(
-      { id: newMessageId(), author: { type: 'human' }, text: 'Hi, it is me' },
-      { parentConversationId: parent },
-    );
+    const invitation = r.events.find((e) => e.type === 'user_requested');
+    assert.isDefined(invitation);
+    // Accepting without a message: the Company speaks first (8.10).
+    const direct = await conv.start(undefined, {
+      parentConversationId: parent,
+      userRequestedEventId: invitation!.id,
+      requestId: 'dir_accept1',
+    });
+    const again = await conv.start(undefined, {
+      parentConversationId: parent,
+      userRequestedEventId: invitation!.id,
+      requestId: 'dir_accept1',
+    });
+    assert.equal(again.conversation_id, direct.conversation_id);
+    const first = await conv.collect(direct.conversation_id);
+    assert.isTrue(first.events.some((e) => e.message?.role === 'company'));
+    await conv.send(direct.conversation_id, { author: { type: 'human' }, text: 'Hi, it is me' });
     await rejects(
-      () => conv.send(parent, { id: newMessageId(), author: { type: 'agent' }, text: 'x' }),
+      () => conv.send(parent, { author: { type: 'agent' }, text: 'x' }),
       /direct_conversation_open/,
     );
     await conv.close(direct.conversation_id);
@@ -587,11 +626,11 @@ describe('web browsing (6)', () => {
 
   it('the three steps: page, authorize with the access token, submit with the cookie', async () => {
     w = await world();
-    const { c } = await directSignIn();
+    const { c } = await directSignIn('orders:read orders:write poppy:browser-sign-in');
     const endpoint = browserSessionEndpoint(c);
     const { html, cookie } = await loadPage(endpoint);
     const code = browserJoinCode(html);
-    await authorizeBrowserJoin(c, code);
+    assert.deepEqual(await authorizeBrowserJoin(c, code), { signedIn: true });
     const res = await submit(endpoint, code, cookie);
     assert.equal(res.status, 303);
     assert.deepEqual(w.fake.browserJoins, [{ sessionId: c.sessionId, account: 'acct_1' }]);
@@ -622,7 +661,7 @@ describe('web browsing (6)', () => {
 describe('task coverage (9)', () => {
   afterEach(async () => w.cleanup());
 
-  it('excluded tasks: public, and references to unlisted APIs or unknown types are dropped', async () => {
+  it('excluded tasks: from tasks.endpoint, and references to unlisted APIs or unknown types are dropped', async () => {
     w = await world();
     const c = await w.agent.company(w.fake.domain);
     const tasks = await excludedTasks(c);
@@ -716,7 +755,277 @@ describe('LLM mode', () => {
     assert.include(toolMsgs[2], 'You said: Is it warm?');
     const all = JSON.stringify(requests);
     for (const t of Object.values(c.state.tokens)) assert.notInclude(all, t.accessToken);
-    assert.isTrue(w.fake.conversations.get(r.conversationId!)?.status === 'closed');
+    assert.isTrue(w.fake.conversations.get(r.conversationId!)?.closed === true);
+    noViolations(assert);
+  });
+});
+
+describe('1.0: versions and extensions (3.4)', () => {
+  afterEach(async () => w.cleanup());
+
+  it('every request with the Session header carries Poppy-Version; extensions only as listed', async () => {
+    w = await world();
+    const c = await w.agent.company(w.fake.domain);
+    assert.equal(c.protocolVersion, '1.0');
+    await callOpenApi(c, { method: 'GET', path: '/public' });
+    assert.deepEqual(w.fake.versionHeaders.at(-1), { version: '1.0', extensions: undefined });
+    assert.notInclude(JSON.stringify(w.identity.metadata()), 'extensions');
+    const plainSid = c.sessionId;
+
+    // An agent that uses gift-wrap v1 (listed) and v1 of an unlisted extension declares only the first.
+    const agent = new PoppyAgent({
+      ...w.agent.opts,
+      extensions: { 'example.com/gift-wrap': '1', 'example.com/other': '1' },
+    });
+    const c2 = await agent.company(w.fake.domain);
+    const sid = c2.sessionId;
+    assert.notEqual(sid, plainSid, 'other extensions: a new Session');
+    await callOpenApi(c2, { method: 'GET', path: '/public' });
+    assert.deepEqual(w.fake.versionHeaders.at(-1), {
+      version: '1.0',
+      extensions: '"example.com/gift-wrap";v="1"',
+    });
+    assert.equal(c2.sessionId, sid);
+    noViolations(assert);
+  });
+
+  it('a later minor version is used as is; an incompatible major uses supported_versions', async () => {
+    w = await world({ versions: 'later-minor' });
+    const later = await w.agent.company(w.fake.domain);
+    assert.equal(later.document.protocol_version, '1.3');
+    assert.equal(later.protocolVersion, '1.0');
+    await w.cleanup();
+
+    w = await world({ versions: 'link-only' });
+    const linked = await w.agent.company(w.fake.domain);
+    assert.equal(linked.document.protocol_version, '1.0');
+    assert.equal(linked.protocolVersion, '1.0');
+    assert.include(w.fake.log, 'GET /poppy/1.0.json');
+    assert.notInclude(w.fake.log, 'GET /poppy/0.3.json');
+    await callOpenApi(linked, { method: 'GET', path: '/public' });
+    noViolations(assert);
+  });
+
+  it('version_unsupported: poppy.json again without the cache, then stop when nothing changed', async () => {
+    w = await world({ servedVersion: '2.0' });
+    const c = await w.agent.company(w.fake.domain);
+    const fetchesBefore = w.fake.log.filter((l) => l === 'GET /.well-known/poppy.json').length;
+    const r = await callOpenApi(c, { method: 'GET', path: '/public' });
+    assert.equal(r.status, 400);
+    assert.deepEqual(r.body, { error: 'version_unsupported' });
+    const fetchesAfter = w.fake.log.filter((l) => l === 'GET /.well-known/poppy.json').length;
+    assert.equal(fetchesAfter, fetchesBefore + 1, 'fetched again, past the max-age cache');
+  });
+});
+
+describe('1.0: sign-in (4)', () => {
+  afterEach(async () => w.cleanup());
+
+  it('PAR when offered: the URL carries only client_id and request_uri; the code is bound', async () => {
+    w = await world({ par: 'offered', requireNonce: true });
+    const { c, pending } = await directSignIn();
+    const url = new URL(pending.url);
+    assert.deepEqual([...url.searchParams.keys()].sort(), ['client_id', 'request_uri']);
+    assert.isAbove(pending.expiresAt ?? 0, Date.now());
+    assert.equal(w.fake.authorizeRequests.length, 1);
+    assert.equal(c.state.tokens.default?.tokenType, 'DPoP');
+    noViolations(assert);
+  });
+
+  it('PAR when required', async () => {
+    w = await world({ par: 'required', noDpop: true });
+    const { result } = await directSignIn('orders:read');
+    assert.equal(result.grantedScope, 'orders:read');
+    noViolations(assert);
+  });
+
+  it('every refresh proves the DPoP key of the sign-in, Bearer MCP tokens included', async () => {
+    w = await world();
+    const { c } = await directSignIn('orders:read');
+    assert.isTrue(c.state.accountToken?.dpop);
+    const mcp = await connectMcp(c);
+    await mcp.client.listTools();
+    await mcp.close();
+    assert.equal(c.state.tokens[`${w.fake.mcpUrl}|`]?.tokenType, 'Bearer');
+    noViolations(assert);
+  });
+
+  it('more scopes: the new sign-in names every scope still needed (4.7)', async () => {
+    w = await world();
+    const { c } = await directSignIn('orders:read');
+    assert.equal(scopesForSignIn(c, 'addresses'), 'orders:read addresses');
+    assert.equal(scopesForSignIn(c, ['orders:read']), 'orders:read');
+    const pending = await startDirectSignIn(c, scopesForSignIn(c, 'addresses'));
+    await completeDirectSignIn(c, pending, (await browse(pending.url)).searchParams);
+    assert.equal(c.accountToken?.scope, 'orders:read addresses');
+  });
+
+  it('auth.disabled: no sign-in type is offered', async () => {
+    w = await world({ authDisabled: true });
+    const c = await w.agent.company(w.fake.domain);
+    assert.deepEqual(offeredSignInTypes(c), []);
+    await rejects(() => startDirectSignIn(c, 'orders:read'), /not offered/);
+  });
+
+  it('a device link is shown only on the issuer or organization.domain', async () => {
+    w = await world({ devicePendingPolls: 0 });
+    const c = await w.agent.company(w.fake.domain);
+    assert.throws(
+      () => assertDeviceLinkHost(c, 'https://fake.example/device'),
+      /isn't this Company's/,
+    );
+    assertDeviceLinkHost(c, `${w.fake.origin}/device`);
+  });
+
+  it('invalid_target: the service is used signed out', async () => {
+    w = await world({ apiResource: true, rejectApiResource: true, noDpop: true });
+    const { c } = await directSignIn('orders:read');
+    const r = await callOpenApi(c, { method: 'GET', path: '/public' });
+    assert.deepEqual(r.body, { hello: 'world', signed_in: false });
+    assert.isTrue(w.logs.some((l) => l.includes('invalid_target')));
+  });
+
+  it('offered scopes: issuer and resource metadata; poppy:browser-sign-in only with a browser endpoint', async () => {
+    w = await world();
+    const c = await w.agent.company(w.fake.domain);
+    assert.include(offeredScopes(c), 'poppy:browser-sign-in');
+    assert.include(offeredScopes(c), 'orders:read');
+  });
+});
+
+describe('1.0: Sessions, pages, browser join, tasks', () => {
+  afterEach(async () => w.cleanup());
+
+  it('website pages: the Session header only on organization.domain, never a token', async () => {
+    w = await world();
+    const { c } = await directSignIn('orders:read');
+    const page = await c.fetchPage(`${w.fake.origin}/moved`);
+    assert.equal(page.status, 200);
+    assert.deepEqual(w.fake.pages, [
+      { path: '/moved', session: true, token: false },
+      { path: '/help', session: true, token: false },
+    ]);
+    // A redirect off the host goes without the header.
+    const other = createServer((req, res) => {
+      seen.push(typeof req.headers['poppy-session'] === 'string');
+      res.end('ok');
+    });
+    const seen: boolean[] = [];
+    await new Promise<void>((r) => other.listen(0, '127.0.0.1', r));
+    w.fake.movedTo = `http://localhost:${(other.address() as AddressInfo).port}/x`;
+    try {
+      await c.fetchPage(`${w.fake.origin}/moved`);
+    } catch {
+      // localhost may not resolve the same way everywhere; what matters is what was sent.
+    }
+    other.close();
+    assert.isFalse(seen.includes(true));
+    noViolations(assert);
+  });
+
+  it('a signed-in join without poppy:browser-sign-in authorizes the same code signed out', async () => {
+    w = await world();
+    const { c } = await directSignIn('orders:read');
+    const endpoint = browserSessionEndpoint(c);
+    const res = await fetch(endpoint);
+    const code = browserJoinCode(await res.text());
+    assert.deepEqual(await authorizeBrowserJoin(c, code), { signedIn: false });
+  });
+
+  it('tasks.endpoint: once per Session, no token, skills resolved against it', async () => {
+    w = await world();
+    const { c } = await directSignIn('orders:read');
+    const coverage = await taskCoverage(c);
+    assert.deepEqual(
+      coverage.skills.map((s) => s.url),
+      [`${w.fake.origin}/poppy/skills/manage-orders/SKILL.md`],
+    );
+    assert.equal(coverage.feedbackEndpoint, `${w.fake.origin}/poppy/feedback`);
+    await taskCoverage(c);
+    assert.equal(w.fake.tasksFetches.length, 1);
+    await c.newSession();
+    await taskCoverage(c);
+    assert.equal(w.fake.tasksFetches.length, 2, 'not reused in another Session');
+    assert.isFalse(w.fake.tasksFetches.some((f) => f.token));
+    await rejects(
+      () => sendFeedback(c, { task: 'x'.repeat(201), description: 'too long' }),
+      /at most 200/,
+    );
+    noViolations(assert);
+  });
+});
+
+describe('1.0: conversations (8)', () => {
+  afterEach(async () => w.cleanup());
+
+  it('follow(untilSettled) over SSE ends when working is false, with every message', async () => {
+    w = await world();
+    const c = await w.agent.company(w.fake.domain);
+    const conv = new ConversationClient(c);
+    const { conversation_id: id } = await conv.start({ author: { type: 'agent' }, text: 'hello' });
+    const items: StreamItem[] = [];
+    for await (const item of conv.follow(id, { untilSettled: true })) items.push(item);
+    assert.isTrue(
+      items.some((i) => i.kind === 'event' && i.event.message?.text === 'You said: hello'),
+    );
+    noViolations(assert);
+  });
+
+  it('unknown roles, author types, event types and SSE events', async () => {
+    w = await world();
+    const c = await w.agent.company(w.fake.domain);
+    const conv = new ConversationClient(c);
+    const { conversation_id: id } = await conv.start({
+      author: { type: 'agent' },
+      text: 'from the future',
+    });
+    const { events } = await conv.collect(id);
+    const future = events.find((e) => e.message?.text === 'From the future');
+    assert.isTrue(isFromCompany(future?.message));
+    assert.equal(authorTypeOf(future?.message), 'agent');
+    assert.isTrue(events.some((e) => e.type === 'future_event_type'));
+    assert.deepEqual(
+      readState({ working: false, handoff: 'later', responder: 'bot', closed: false }),
+      {
+        working: false,
+        handoff: 'pending',
+        responder: 'human',
+        closed: false,
+      },
+    );
+  });
+
+  it('as_of_cursor on the agent’s messages, never on the User’s own words', async () => {
+    w = await world();
+    const c = await w.agent.company(w.fake.domain);
+    const conv = new ConversationClient(c);
+    const { conversation_id: id } = await conv.start({ author: { type: 'agent' }, text: 'one' });
+    await conv.collect(id);
+    const cursor = conv.cursorOf(id);
+    await conv.send(id, { author: { type: 'agent' }, text: 'two' });
+    await conv.send(id, { author: { type: 'human' }, text: 'three' });
+    const sent = w.fake.conversations
+      .get(id)!
+      .events.filter((e) => e.type === 'message')
+      .map((e) => e.message as Record<string, unknown>)
+      .filter((m) => m.role === 'user');
+    assert.equal(sent[1]?.as_of_cursor, cursor);
+    assert.notProperty(sent[2] ?? {}, 'as_of_cursor');
+    noViolations(assert);
+  });
+
+  it('handoff cancel: the state says what happened', async () => {
+    w = await world();
+    const c = await w.agent.company(w.fake.domain);
+    const conv = new ConversationClient(c);
+    const { conversation_id: id } = await conv.start({ author: { type: 'agent' }, text: 'hi' });
+    await conv.collect(id);
+    await conv.handoff(id);
+    await conv.cancelHandoff(id);
+    await new Promise((r) => setTimeout(r, 80));
+    const state = await conv.read(id);
+    assert.equal(state.handoff, 'none');
+    assert.equal(state.responder, 'agent');
     noViolations(assert);
   });
 });

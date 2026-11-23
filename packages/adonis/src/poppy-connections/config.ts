@@ -86,7 +86,7 @@ export const DEFAULT_POPPY_CONNECTIONS_TEXTS: PoppyConnectionsTexts = {
 /**
  * `config/poppy_connections.ts` — this app's agent acting on OTHER Poppy Companies for its users.
  *
- * @experimental Tracks Personal Agent Protocol Draft 0.3 (https://personalagentprotocol.org/docs/spec):
+ * @experimental Tracks Personal Agent Protocol 1.0 (https://personalagentprotocol.org/docs/1.0/spec):
  * this API WILL change as the spec evolves — possibly in breaking ways, outside semver majors.
  */
 export interface PoppyConnectionsConfig {

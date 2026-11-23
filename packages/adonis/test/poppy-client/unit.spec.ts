@@ -1,8 +1,10 @@
 import { decodeJwt, decodeProtectedHeader } from 'jose';
-import { afterEach, assert, describe, it } from 'vitest';
+import { assert, describe, it } from 'vitest';
 import {
   authServerMetadataUrl,
+  chooseVersion,
   discover,
+  implementedVersionFor,
   protectedResourceMetadataUrl,
   validatePoppyDocument,
   wellKnownUrlFor,
@@ -22,11 +24,17 @@ import {
 import { rejects } from './fixtures/assert.js';
 
 const doc = (over: Record<string, unknown> = {}) => ({
-  protocol_version: '0.3',
+  protocol_version: '1.0',
   organization: { name: 'Ex', domain: 'example.com' },
   auth: { scopes: { 'orders:read': 'See your orders' } },
   agent: {
-    protocols: [{ type: 'poppy', endpoint: 'https://api.example.com/poppy/conversations' }],
+    protocols: [
+      {
+        type: 'poppy',
+        endpoint: 'https://api.example.com/poppy/conversations',
+        description: 'Orders',
+      },
+    ],
   },
   ...over,
 });
@@ -135,14 +143,95 @@ describe('discovery (section 3)', () => {
     assert.throws(() => validatePoppyDocument(doc(), 'evil.com'), /is not the host/);
   });
 
-  it('before 1.0 only the exact major.minor is usable', () => {
-    for (const version of ['1.0', '0.2', '0.4']) {
+  it('versions: same major from 1.0, the exact minor before it (3.4)', () => {
+    for (const version of ['0.3', '0.4', '2.0', '1']) {
       assert.throws(
         () => validatePoppyDocument(doc({ protocol_version: version }), 'example.com'),
-        /not supported/,
+        /no version compatible|major.minor/,
       );
     }
-    assert.doesNotThrow(() => validatePoppyDocument(doc(), 'example.com'));
+    for (const version of ['1.0', '1.7']) {
+      assert.doesNotThrow(() =>
+        validatePoppyDocument(doc({ protocol_version: version }), 'example.com'),
+      );
+    }
+    assert.equal(implementedVersionFor('1.7'), '1.0');
+    assert.isUndefined(implementedVersionFor('0.4'));
+    assert.equal(
+      chooseVersion({
+        protocol_version: '2.1',
+        supported_versions: { '1.2': 'x', '0.3': 'y', '1.0': 'z' },
+      }),
+      '1.2',
+    );
+    assert.isUndefined(
+      chooseVersion({ protocol_version: '0.4', supported_versions: { '3.0': 'x' } }),
+    );
+  });
+
+  it('supported_versions: same host, no redirects, the version it is listed under', async () => {
+    const root = doc({
+      protocol_version: '2.0',
+      supported_versions: { '1.0': 'https://example.com/poppy/1.0.json' },
+    });
+    const ok = await discover('example.com', {
+      fetch: mockFetch({
+        'https://example.com/.well-known/poppy.json': json(root),
+        'https://example.com/poppy/1.0.json': json(doc()),
+        [PRM]: json(prm()),
+        [AS]: json(meta()),
+      }).fn,
+    });
+    assert.equal(ok.document.protocol_version, '1.0');
+    assert.equal(ok.version, '1.0');
+    for (const [routes, why] of [
+      [
+        { 'https://example.com/poppy/1.0.json': json(doc({ protocol_version: '1.1' })) },
+        /listed for 1.0/,
+      ],
+      [
+        { 'https://example.com/poppy/1.0.json': redirect('https://example.com/other.json') },
+        /redirect/,
+      ],
+    ] as const) {
+      await rejects(
+        () =>
+          discover('example.com', {
+            fetch: mockFetch({
+              'https://example.com/.well-known/poppy.json': json(root),
+              ...routes,
+            }).fn,
+          }),
+        why,
+      );
+    }
+    const foreign = doc({
+      protocol_version: '2.0',
+      supported_versions: { '1.0': 'https://uploads.example.net/1.0.json' },
+    });
+    await rejects(
+      () =>
+        discover('example.com', {
+          fetch: mockFetch({ 'https://example.com/.well-known/poppy.json': json(foreign) }).fn,
+        }),
+      /another host/,
+    );
+  });
+
+  it('a Company on another port only when configured to (3.1)', async () => {
+    const routes = {
+      'https://example.com:8443/.well-known/poppy.json': json(
+        doc({ organization: { name: 'Ex', domain: 'example.com:8443' } }),
+      ),
+    };
+    await rejects(
+      () => discover('example.com:8443', { fetch: mockFetch(routes).fn }),
+      /another port/,
+    );
+    const d = await discover('example.com:8443', { fetch: mockFetch(routes).fn, allowPorts: true });
+    assert.equal(d.identifier, 'https://example.com:8443');
+    // The port is part of the domain: a document without it doesn't speak for that host.
+    assert.throws(() => validatePoppyDocument(doc(), 'example.com:8443'), /is not the host/);
   });
 
   it('auth is optional; one of agent/apis/web required', () => {
@@ -150,7 +239,7 @@ describe('discovery (section 3)', () => {
     assert.throws(
       () =>
         validatePoppyDocument(
-          { protocol_version: '0.3', organization: { name: 'x', domain: 'example.com' } },
+          { protocol_version: '1.0', organization: { name: 'x', domain: 'example.com' } },
           'example.com',
         ),
       /at least one/,
@@ -320,11 +409,12 @@ describe('assertions and proofs', () => {
     assert.equal(a.iss, m.client_id);
     assert.equal(a.sub, m.client_id);
     assert.equal(a.aud, 'https://auth.example.com');
-    assert.isAtMost(Number(a.exp) - Number(a.iat), 60);
+    assert.isAtMost(Number(a.exp) - Number(a.iat), 300, 'at most 5 minutes (4.1)');
+    assert.notProperty(m, 'extensions');
 
     const key = await generateEs256Key();
     const { jwt, exp } = await id.delegate(key.publicJwk);
-    assert.equal(decodeProtectedHeader(jwt).typ, 'pap-delegation+jwt');
+    assert.equal(decodeProtectedHeader(jwt).typ, 'poppy-delegation+jwt');
     const dlg = decodeJwt(jwt);
     assert.equal(dlg.exp, exp);
     assert.isAtMost(Number(dlg.exp) - Number(dlg.iat), 24 * 3600);
@@ -338,7 +428,7 @@ describe('assertions and proofs', () => {
     );
   });
 
-  it('Session JWT: typ, kid, pap_dlg, htu without query, ath only with a token', async () => {
+  it('Session JWT: typ, kid, poppy_dlg, htu without query, ath only with a token', async () => {
     const key = await generateEs256Key();
     const base = {
       key,
@@ -355,7 +445,8 @@ describe('assertions and proofs', () => {
     assert.equal(h.typ, 'poppy-session+jwt');
     assert.equal(h.alg, 'ES256');
     assert.equal(h.kid, key.kid);
-    assert.equal(h.pap_dlg, 'dlg');
+    assert.equal(h.poppy_dlg, 'dlg');
+    assert.notProperty(h, 'pap_dlg');
     const c = decodeJwt(signedOut);
     assert.equal(c.htm, 'POST');
     assert.equal(c.htu, 'https://api.example.com/x');

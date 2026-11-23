@@ -14,7 +14,7 @@ export interface McpConnection {
 
 /**
  * Connects to a listed MCP server over Streamable HTTP (section 7): the Session header on every
- * request and, when signed in, a Bearer access token requested with `resource` set to the server's
+ * request and, when signed in, an access token requested with `resource` set to the server's
  * `url`. A challenge rejects the call with a {@link ResourceAuthError} naming the needed `scope`.
  */
 export async function connectMcp(
@@ -32,9 +32,9 @@ export async function connectMcp(
       headers,
       ...(typeof init?.body === 'string' ? { body: init.body } : {}),
       ...(init?.signal ? { signal: init.signal } : {}),
-      // `resource` MUST be the MCP server's `url` from poppy.json, and Bearer is MCP's baseline (7).
+      // `resource` MUST be the MCP server's `url` from poppy.json; the token's `token_type` says
+      // whether it's Bearer or DPoP-bound (7, 4.5).
       resource: api.url,
-      bearer: true,
     });
     const challenge = res.headers.get('www-authenticate');
     if ((res.status === 401 || res.status === 403) && challenge) {

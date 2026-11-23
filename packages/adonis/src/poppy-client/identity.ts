@@ -11,13 +11,11 @@ export interface IdentityConfig {
   logoUri?: string | undefined;
   /** Signing keys; the first one signs. Public halves go in `jwks_uri`. */
   keys: StoredKey[];
-  /** Extensions this agent supports (3.3). None by default. */
-  extensions?: Record<string, { version: string }> | undefined;
 }
 
-/** Lifetime of a client assertion (the guides suggest at most five minutes). */
+/** Lifetime of a client assertion: `exp` MUST be at most 5 minutes after `iat` (4.1). */
 export const ASSERTION_TTL_SECONDS = 60;
-export const DELEGATION_TYP = 'pap-delegation+jwt';
+export const DELEGATION_TYP = 'poppy-delegation+jwt';
 /** How long a delegation lasts, within the 24 hours 5.2 allows. */
 export const DELEGATION_TTL_SECONDS = 7 * 3600;
 
@@ -30,7 +28,6 @@ export class AgentIdentity {
   readonly clientName: string;
   readonly logoUri: string;
   readonly keys: StoredKey[];
-  readonly extensions?: Record<string, { version: string }> | undefined;
 
   constructor(cfg: IdentityConfig, sec: SecurityOptions = {}) {
     const base = requireSecureUrl(cfg.baseUrl, 'identity base URL', sec);
@@ -40,7 +37,6 @@ export class AgentIdentity {
     this.logoUri = cfg.logoUri ?? `${this.baseUrl}/logo.svg`;
     if (cfg.keys.length === 0) throw new TypeError('identity needs at least one signing key');
     this.keys = cfg.keys;
-    this.extensions = cfg.extensions;
   }
 
   /** `client_id` is the URL the metadata document is fetched from (4.1). */
@@ -57,8 +53,9 @@ export class AgentIdentity {
     return `${this.baseUrl}/oauth/callback`;
   }
 
+  /** Extensions aren't declared here: each request declares them in `Poppy-Extensions` (3.4). */
   metadata(): ClientMetadata {
-    const doc: ClientMetadata = {
+    return {
       client_id: this.clientId,
       client_name: this.clientName,
       logo_uri: this.logoUri,
@@ -66,10 +63,6 @@ export class AgentIdentity {
       redirect_uris: [this.redirectUri],
       token_endpoint_auth_method: 'private_key_jwt',
     };
-    if (this.extensions && Object.keys(this.extensions).length > 0) {
-      doc.extensions = this.extensions;
-    }
-    return doc;
   }
 
   /** The public key set. Never contains private members. */
@@ -87,7 +80,7 @@ export class AgentIdentity {
 
   /**
    * `private_key_jwt` client assertion (4.1, RFC 7523): `iss` = `sub` = `client_id`, `aud` = the
-   * Company's issuer as a single string, short-lived, with `iat` and a fresh `jti`.
+   * Company's issuer as a single string, with `iat`, `exp` at most 5 minutes later and a fresh `jti`.
    */
   clientAssertion(issuer: string): Promise<string> {
     const iat = nowSeconds();

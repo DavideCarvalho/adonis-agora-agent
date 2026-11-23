@@ -1,24 +1,38 @@
 export { apiBaseUrl, callOpenApi, listApis, loadOpenApi, pickApi } from './api.js';
-export { authorizeBrowserJoin, browserJoinCode, browserSessionEndpoint } from './browser.js';
+export {
+  authorizeBrowserJoin,
+  BROWSER_SIGN_IN_SCOPE,
+  browserJoinCode,
+  browserSessionEndpoint,
+  browsingDisabled,
+} from './browser.js';
 export {
   CompanyClient,
+  formatExtensionsHeader,
   PoppyAgent,
   type PoppyAgentOptions,
   type SignInResult,
   throwForResponse,
 } from './company.js';
 export {
+  authorTypeOf,
   ConversationClient,
   type FollowOptions,
+  isFromCompany,
   newMessageId,
+  newRequestId,
   poppyProtocol,
+  poppyProtocols,
+  readState,
   type StreamItem,
 } from './conversations.js';
 export {
   authServerMetadataUrl,
+  chooseVersion,
   type Discovered,
   discover,
   HttpJsonCache,
+  implementedVersionFor,
   SUPPORTED_PROTOCOL_VERSIONS,
   validateMetadata,
   validatePoppyDocument,
@@ -48,15 +62,18 @@ export {
   type MediatedOutcome,
   mediatedExtension,
   mediatedSignIn,
+  offeredScopes,
   offeredSignInTypes,
   type PendingDirectSignIn,
   pollDeviceSignInOnce,
   type SignInType,
+  scopesForSignIn,
+  signInDisabled,
   startDirectSignIn,
   submitMediatedCode,
 } from './signin.js';
 export { parseSse } from './sse.js';
 export { defaultStatePath, StateStore } from './store.js';
-export { excludedTasks, sendFeedback } from './task_coverage.js';
+export { excludedTasks, SKILL_INDEX_SCHEMA, sendFeedback, taskCoverage } from './task_coverage.js';
 export { TokenClient } from './token_client.js';
 export type * from './types.js';

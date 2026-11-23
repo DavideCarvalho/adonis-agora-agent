@@ -1,5 +1,5 @@
 /**
- * An in-process FAKE Poppy Company, written strictly from the spec (Draft 0.3). It doubles as a
+ * An in-process FAKE Poppy Company, written strictly from the spec (1.0). It doubles as a
  * conformance check of the client: every request the agent makes is verified the way a real
  * Company MUST verify it (private_key_jwt, the Session JWT and its delegation, DPoP proofs with
  * nonce/ath/jti replay, PKCE, iss, scopes, browser join rules), and violations are recorded in
@@ -57,6 +57,8 @@ interface AccountToken {
   scope: string;
   revoked?: boolean | undefined;
   via: string;
+  /** The DPoP key the sign-in proved: every refresh must prove it too (4.4). */
+  jkt?: string | undefined;
 }
 interface Conversation {
   id: string;
@@ -65,11 +67,17 @@ interface Conversation {
   userId: string;
   account?: string | undefined;
   events: Record<string, unknown>[];
-  status: 'working' | 'idle' | 'queued' | 'closed';
+  /** Requests accepted but not acted on, plus replies being written (8.7). */
+  pending: number;
+  handoff: 'none' | 'pending';
   responder: 'agent' | 'human';
+  closed: boolean;
   parent?: string | undefined;
   openDirect?: string | undefined;
-  messageIds: Map<string, string>;
+  /** Direct Conversations started by accepting a user_requested event: `{parent}|{event}` → id. */
+  accepted?: Map<string, string> | undefined;
+  /** Handoff requests the Company hasn't acted on; a cancel withdraws them. */
+  handoffTimer?: ReturnType<typeof setTimeout> | undefined;
 }
 
 export interface FakeOptions {
@@ -91,6 +99,16 @@ export interface FakeOptions {
   noIssuer?: boolean | undefined;
   /** A service with its own tokens: `/api` publishes metadata whose `resource` isn't the domain. */
   apiResource?: boolean | undefined;
+  /** Offer PAR (RFC 9126); `required` sets `require_pushed_authorization_requests`. */
+  par?: 'offered' | 'required' | undefined;
+  /** Serve only this protocol version at its endpoints (others get version_unsupported). */
+  servedVersion?: string | undefined;
+  /** `poppy.json` is a later minor version, linking a 1.0 document in `supported_versions`. */
+  versions?: 'later-minor' | 'link-only' | undefined;
+  /** `auth.disabled`: no sign-in for Personal Agents. */
+  authDisabled?: boolean | undefined;
+  /** The `/api` service isn't offered to Personal Agents: its resource gets invalid_target. */
+  rejectApiResource?: boolean | undefined;
 }
 
 export class FakeCompany {
@@ -113,8 +131,30 @@ export class FakeCompany {
   readonly accountTokens = new Map<string, AccountToken>();
   readonly codes = new Map<
     string,
-    { clientId: string; redirectUri: string; challenge: string; scope: string; used?: boolean }
+    {
+      clientId: string;
+      redirectUri: string;
+      challenge: string;
+      scope: string;
+      used?: boolean;
+      jkt?: string | undefined;
+    }
   >();
+  /** Pushed authorization requests (RFC 9126): request_uri → parameters. */
+  readonly pushed = new Map<string, { params: URLSearchParams; jkt?: string | undefined }>();
+  /** Every authorization request's parameters, as the browser brought them. */
+  readonly authorizeRequests: URLSearchParams[] = [];
+  /** `Poppy-Version` / `Poppy-Extensions` of every request with the Session header. */
+  readonly versionHeaders: { version?: string | undefined; extensions?: string | undefined }[] = [];
+  /** Request bodies of conversation POSTs, by request id: the first one wins (8.3). */
+  readonly requestIds = new Map<
+    string,
+    { userId: string; path: string; body: string; response: unknown; status: number }
+  >();
+  /** End the next Session the Company sees (session_ended once). */
+  endNextSession = false;
+  /** Answer the tasks endpoint per Session (private), counting fetches. */
+  tasksFetches: { sid: string; token: boolean }[] = [];
   readonly devices = new Map<
     string,
     { clientId: string; scope: string; polls: number; lastPoll?: number }
@@ -150,6 +190,9 @@ export class FakeCompany {
   get identifier() {
     return this.origin;
   }
+  get version() {
+    return this.opts.servedVersion ?? '1.0';
+  }
   get domain() {
     return new URL(this.origin).host;
   }
@@ -178,15 +221,17 @@ export class FakeCompany {
     await new Promise<void>((r) => this.server.close(() => r()));
   }
 
-  poppyJson() {
+  poppyJson(version = '1.0') {
     return {
-      protocol_version: '0.3',
-      organization: { name: 'Fake Co', domain: '127.0.0.1' },
+      protocol_version: version,
+      organization: { name: 'Fake Co', domain: this.domain },
       auth: {
+        ...(this.opts.authDisabled ? { disabled: true } : {}),
         scopes: {
           'orders:read': 'See your orders',
           'orders:write': 'Change your orders',
           addresses: 'Manage saved shipping addresses',
+          'poppy:browser-sign-in': 'Use the website signed in, with the other access you approve',
         },
         scope_hints: {
           'orders:read': { changes: 'none', personal_data: true },
@@ -196,30 +241,61 @@ export class FakeCompany {
       },
       agent: {
         protocols: [
-          { type: 'something-else', endpoint: 'https://ignored.example/x' },
-          { type: 'poppy', endpoint: `${this.origin}/poppy/conversations` },
+          {
+            type: 'something-else',
+            endpoint: 'https://ignored.example/x',
+            description: 'Something else',
+          },
+          {
+            type: 'poppy',
+            endpoint: `${this.origin}/poppy/conversations`,
+            description: 'Anything about your orders',
+          },
         ],
       },
       web: { browser_session_endpoint: `${this.origin}/poppy/browser-session` },
-      feedback: { endpoint: `${this.origin}/poppy/feedback` },
-      excluded_tasks: { url: `${this.origin}/poppy/excluded-tasks.json` },
+      tasks: { endpoint: `${this.origin}/poppy/tasks` },
       apis: [
         { type: 'graphql', url: 'https://ignored.example/graphql', description: 'unknown type' },
         { type: 'openapi', url: `${this.origin}/openapi.json`, description: 'Orders' },
         { type: 'mcp', url: this.mcpUrl, description: 'Tools' },
       ],
       extensions: {
-        'example.com/unknown': { version: '9' },
-        'mediated-sign-in': {
-          version: '1',
-          fields: [
-            { name: 'email', label: 'Email', secret: false },
-            { name: 'password', label: 'Password', secret: true },
-          ],
-          scopes: ['orders:read'],
-        },
+        'example.com/unknown': [{ version: '9' }],
+        'example.com/gift-wrap': [{ version: '2' }, { version: '1' }],
+        'mediated-sign-in': [
+          {
+            version: '1',
+            fields: [
+              { name: 'email', label: 'Email', secret: false },
+              { name: 'password', label: 'Password', secret: true },
+            ],
+            scopes: ['orders:read'],
+          },
+          { version: '7', fields: 'from the future' },
+        ],
       },
     };
+  }
+
+  /** `/.well-known/poppy.json`, with `supported_versions` per `opts.versions` (3.4). */
+  private rootDocument() {
+    if (this.opts.versions === 'later-minor') {
+      return {
+        ...this.poppyJson('1.3'),
+        supported_versions: { '1.0': `${this.origin}/poppy/1.0.json` },
+      };
+    }
+    if (this.opts.versions === 'link-only') {
+      return {
+        ...this.poppyJson('2.0'),
+        supported_versions: {
+          '1.0': `${this.origin}/poppy/1.0.json`,
+          '0.3': `${this.origin}/poppy/0.3.json`,
+        },
+      };
+    }
+    return this.poppyJson();
   }
 
   /* ------------------------------------------------------------------ helpers */
@@ -314,6 +390,12 @@ export class FakeCompany {
       );
       if (typeof payload.aud !== 'string')
         this.violation('client assertion aud should be a single string');
+      if (
+        typeof payload.exp !== 'number' ||
+        typeof payload.iat !== 'number' ||
+        payload.exp - payload.iat > 300
+      )
+        this.violation('client assertion exp must be at most 5 minutes after iat');
       if (!this.checkJti(payload.jti, 'client assertion')) return undefined;
       return clientId;
     } catch (e) {
@@ -396,10 +478,11 @@ export class FakeCompany {
   }
 
   /** End of every sign-in type (4.7): a refresh token. The server doesn't know the Session. */
-  private signIn(clientId: string, scope: string, via: string) {
+  private signIn(clientId: string, scope: string, via: string, jkt?: string | undefined) {
     const account = 'acct_1';
     const rt = id('pat_');
-    this.accountTokens.set(rt, { clientId, account, scope, via });
+    // Bound to the DPoP key of the request that issued it (4.4, MAY).
+    this.accountTokens.set(rt, { clientId, account, scope, via, jkt });
     return { rt, grant: { clientId, account, viaToken: rt } };
   }
   /* ------------------------------------------------------------------ router */
@@ -409,11 +492,14 @@ export class FakeCompany {
     const p = url.pathname;
     this.log.push(`${req.method} ${p}`);
     if (p === '/.well-known/poppy.json')
-      return this.send(res, 200, this.poppyJson(), { 'cache-control': 'max-age=60' });
+      return this.send(res, 200, this.rootDocument(), { 'cache-control': 'max-age=60' });
+    if (p === '/poppy/1.0.json') return this.send(res, 200, this.poppyJson('1.0'));
+    if (p === '/poppy/0.3.json') return this.send(res, 200, this.poppyJson('0.3'));
     if (p === '/.well-known/oauth-protected-resource') {
       return this.send(res, 200, {
         resource: this.origin,
         ...(this.opts.noIssuer ? {} : { authorization_servers: [this.origin] }),
+        scopes_supported: ['poppy:browser-sign-in'],
       });
     }
     if (p === '/.well-known/oauth-protected-resource/mcp') {
@@ -432,6 +518,10 @@ export class FakeCompany {
         revocation_endpoint: `${this.origin}/oauth/revoke`,
         authorization_endpoint: `${this.origin}/oauth/authorize`,
         device_authorization_endpoint: `${this.origin}/oauth/device`,
+        ...(this.opts.par
+          ? { pushed_authorization_request_endpoint: `${this.origin}/oauth/par` }
+          : {}),
+        ...(this.opts.par === 'required' ? { require_pushed_authorization_requests: true } : {}),
         grant_types_supported: [
           'refresh_token',
           'authorization_code',
@@ -446,6 +536,7 @@ export class FakeCompany {
     }
     if (p === '/oauth/token' && req.method === 'POST') return this.token(req, res);
     if (p === '/oauth/revoke' && req.method === 'POST') return this.revoke(req, res);
+    if (p === '/oauth/par' && req.method === 'POST') return this.par(req, res);
     if (p === '/oauth/authorize') return this.authorize(url, res);
     if (p === '/oauth/device' && req.method === 'POST') return this.deviceAuthorize(req, res);
     if (p === '/device/approve') {
@@ -460,23 +551,46 @@ export class FakeCompany {
     if (p === '/poppy/browser-session' && req.method === 'POST')
       return this.browserSession(req, res);
     if (p === '/poppy/feedback' && req.method === 'POST') return this.feedbackRoute(req, res, url);
-    if (p === '/poppy/excluded-tasks.json') {
-      return this.send(res, 200, {
-        tasks: [
-          {
-            task: 'Send a wire transfer',
-            alternative: {
-              instructions: 'Only in the app',
-              references: [
-                { type: 'web', url: `${this.origin}/wire` },
-                { type: 'openapi', url: 'https://evil.example/openapi.json', operation_id: 'x' },
-                { type: 'future', url: 'x' },
-              ],
-            },
+    if (p === '/poppy/tasks' && req.method === 'GET') {
+      const t = await this.resourceAuth(req, res, url);
+      if (!t) return;
+      if (req.headers.authorization) this.violation('access token sent to tasks.endpoint');
+      this.tasksFetches.push({ sid: t.sessionId, token: req.headers.authorization !== undefined });
+      return this.send(
+        res,
+        200,
+        {
+          skill_index: {
+            $schema: 'https://schemas.agentskills.io/discovery/0.2.0/schema.json',
+            skills: [
+              {
+                name: 'manage-orders',
+                description: 'Manage orders',
+                type: 'skill-md',
+                url: 'skills/manage-orders/SKILL.md',
+                digest: `sha256:${'a'.repeat(64)}`,
+              },
+              { name: 'future', description: 'x', type: 'future', url: '/x', digest: 'sha256:00' },
+            ],
           },
-          { task: 'Close an account' },
-        ],
-      });
+          feedback: { endpoint: `${this.origin}/poppy/feedback` },
+          excluded_tasks: [
+            {
+              task: 'Send a wire transfer',
+              alternative: {
+                instructions: 'Only in the app',
+                references: [
+                  { type: 'web', url: `${this.origin}/wire` },
+                  { type: 'openapi', url: 'https://evil.example/openapi.json', operation_id: 'x' },
+                  { type: 'future', url: 'x' },
+                ],
+              },
+            },
+            { task: 'Close an account' },
+          ],
+        },
+        { 'cache-control': 'private, max-age=600' },
+      );
     }
     if (p.startsWith('/poppy/conversations')) return this.conversationsRoute(req, res, url);
     if (p === '/openapi.json') {
@@ -492,6 +606,7 @@ export class FakeCompany {
       });
     }
     if (p.startsWith('/api/')) return this.api(req, res, url);
+    if (p === '/help' || p === '/moved') return this.page(req, res, url);
     if (p === '/mcp') return this.mcp(req, res, url);
     this.send(res, 404, { error: 'not_found' });
   }
@@ -514,10 +629,14 @@ export class FakeCompany {
       jkt = d.jkt;
     }
     const resource = form.get('resource') ?? undefined;
-    if (resource && resource !== this.mcpUrl && resource !== `${this.origin}/api`) {
+    if (
+      (resource && resource !== this.mcpUrl && resource !== `${this.origin}/api`) ||
+      (resource === `${this.origin}/api` && this.opts.rejectApiResource)
+    ) {
       return this.oauthError(res, 400, 'invalid_target');
     }
-    if (resource === this.mcpUrl) jkt = undefined; // Bearer is the MCP baseline (7).
+    // The MCP server doesn't take DPoP: its tokens are Bearer (4.5, 7).
+    const issueJkt = resource === this.mcpUrl ? undefined : jkt;
     const grant = form.get('grant_type');
     const scopeReq = form.get('scope');
     if (grant === 'refresh_token') {
@@ -525,6 +644,10 @@ export class FakeCompany {
       const at = this.accountTokens.get(rt);
       if (!at || at.revoked || at.clientId !== clientId)
         return this.oauthError(res, 400, 'invalid_grant');
+      if (at.jkt && jkt !== at.jkt) {
+        this.violation('refresh without a proof from the key the refresh token was issued with');
+        return this.oauthError(res, 400, 'invalid_grant');
+      }
       const scope = this.narrow(scopeReq, at.scope);
       if (scope === null) return this.oauthError(res, 400, 'invalid_scope');
       let rotated: string | undefined;
@@ -536,7 +659,7 @@ export class FakeCompany {
       return this.issue(
         res,
         { clientId, account: at.account, viaToken: rotated ?? rt },
-        { jkt, scope, resource, refreshToken: rotated },
+        { jkt: issueJkt, scope, resource, refreshToken: rotated },
       );
     }
     if (grant === 'authorization_code') {
@@ -551,7 +674,12 @@ export class FakeCompany {
         this.violation('PKCE verifier mismatch');
         return this.oauthError(res, 400, 'invalid_grant');
       }
-      const { rt, grant: g } = this.signIn(clientId, c.scope, 'direct');
+      // A code pushed with a DPoP proof is bound to its key (RFC 9449 section 10.1).
+      if (c.jkt && c.jkt !== jkt) {
+        this.violation('code exchanged with another DPoP key than the pushed request');
+        return this.oauthError(res, 400, 'invalid_grant');
+      }
+      const { rt, grant: g } = this.signIn(clientId, c.scope, 'direct', jkt);
       return this.issue(res, g, { jkt, scope: c.scope, refreshToken: rt });
     }
     if (grant === 'urn:ietf:params:oauth:grant-type:device_code') {
@@ -562,7 +690,7 @@ export class FakeCompany {
       if (d.polls <= pending) return this.oauthError(res, 400, 'authorization_pending');
       if (d.polls === pending + 1) return this.oauthError(res, 400, 'slow_down');
       this.devices.delete(form.get('device_code')!);
-      const { rt, grant: g } = this.signIn(clientId, d.scope, 'device');
+      const { rt, grant: g } = this.signIn(clientId, d.scope, 'device', jkt);
       return this.issue(res, g, { jkt, scope: d.scope, refreshToken: rt });
     }
     if (grant === MEDIATED_GRANT) return this.mediatedGrant(res, form, clientId, jkt);
@@ -596,7 +724,7 @@ export class FakeCompany {
         });
       }
       this.mediated.delete(signInId);
-      const { rt, grant } = this.signIn(clientId, pending.scope, 'mediated');
+      const { rt, grant } = this.signIn(clientId, pending.scope, 'mediated', jkt);
       return this.issue(res, grant, { jkt, scope: pending.scope, refreshToken: rt });
     }
     if (form.get('scope') !== 'orders:read') return this.oauthError(res, 400, 'invalid_scope');
@@ -622,8 +750,48 @@ export class FakeCompany {
     if (at && at.clientId === clientId) at.revoked = true;
     this.send(res, 200);
   }
+  /** RFC 9126: the authorization request's parameters, with the client assertion. */
+  private async par(req: IncomingMessage, res: ServerResponse) {
+    const form = new URLSearchParams(await this.body(req));
+    const clientId = await this.clientAuth(form);
+    if (!clientId) return this.oauthError(res, 401, 'invalid_client');
+    let jkt: string | undefined;
+    if (req.headers.dpop) {
+      const d = await this.dpop(req, `${this.origin}/oauth/par`);
+      if (d.error === 'use_dpop_nonce')
+        return this.oauthError(res, 400, 'use_dpop_nonce', { 'dpop-nonce': this.nonce });
+      if (d.error) return this.oauthError(res, 400, d.error);
+      jkt = d.jkt;
+    } else if (!this.opts.noDpop) {
+      this.violation('PAR without a DPoP proof');
+    }
+    const params = new URLSearchParams(form);
+    for (const k of ['client_assertion', 'client_assertion_type']) params.delete(k);
+    const requestUri = `urn:ietf:params:oauth:request_uri:${id('')}`;
+    this.pushed.set(requestUri, { params, jkt });
+    this.send(res, 201, { request_uri: requestUri, expires_in: 60 });
+  }
+
   private async authorize(url: URL, res: ServerResponse) {
-    const q = url.searchParams;
+    let q = url.searchParams;
+    this.authorizeRequests.push(new URLSearchParams(q));
+    let jkt: string | undefined;
+    const requestUri = q.get('request_uri');
+    if (requestUri) {
+      const pushed = this.pushed.get(requestUri);
+      this.pushed.delete(requestUri);
+      if (!pushed || pushed.params.get('client_id') !== q.get('client_id')) {
+        return this.send(res, 400, { error: 'invalid_request_uri' });
+      }
+      if ([...q.keys()].some((k) => k !== 'client_id' && k !== 'request_uri'))
+        this.violation('PAR authorization URL carries more than client_id and request_uri');
+      q = pushed.params;
+      jkt = pushed.jkt;
+    } else if (this.opts.par === 'required') {
+      return this.send(res, 400, { error: 'invalid_request' });
+    }
+    if (q.get('prompt') !== 'consent') this.violation('Direct Sign-In without prompt=consent');
+    if (q.has('resource')) this.violation('sign-in names a resource');
     const clientId = q.get('client_id') ?? '';
     const { metadata } = await this.client(clientId);
     const redirectUri = q.get('redirect_uri') ?? '';
@@ -648,6 +816,7 @@ export class FakeCompany {
         redirectUri,
         challenge: q.get('code_challenge') ?? '',
         scope,
+        jkt,
       });
       back.searchParams.set('code', code);
     }
@@ -659,8 +828,10 @@ export class FakeCompany {
     const form = new URLSearchParams(await this.body(req));
     const clientId = await this.clientAuth(form);
     if (!clientId) return this.oauthError(res, 401, 'invalid_client');
+    if (form.has('resource')) this.violation('sign-in names a resource');
     const scope = form.get('scope') ?? '';
-    if (!scope.split(' ').every((s) => ['orders:read', 'orders:write', 'addresses'].includes(s)))
+    const known = ['orders:read', 'orders:write', 'addresses', 'poppy:browser-sign-in'];
+    if (!scope.split(' ').every((s) => known.includes(s)))
       return this.oauthError(res, 400, 'invalid_scope');
     const deviceCode = id('dc_');
     this.devices.set(deviceCode, { clientId, scope, polls: 0 });
@@ -687,6 +858,18 @@ export class FakeCompany {
       this.violation(`no Session header on ${req.method} ${url.pathname}`);
       return 'no Session header';
     }
+    const version = req.headers['poppy-version'];
+    const extensions = req.headers['poppy-extensions'];
+    this.versionHeaders.push({
+      version: typeof version === 'string' ? version : undefined,
+      extensions: typeof extensions === 'string' ? extensions : undefined,
+    });
+    // 3.4: without Poppy-Version, or with one this Company doesn't serve.
+    if (typeof version !== 'string') {
+      this.violation(`no Poppy-Version on ${req.method} ${url.pathname}`);
+      return 'version_unsupported';
+    }
+    if (version.split('.')[0] !== this.version.split('.')[0]) return 'version_unsupported';
     const fail = (why: string) => {
       this.violation(`Session JWT: ${why}`);
       return why;
@@ -695,16 +878,16 @@ export class FakeCompany {
       const h = decodeProtectedHeader(jwt);
       if (h.typ !== 'poppy-session+jwt') return fail('typ');
       if (h.alg !== 'ES256') return fail('alg');
-      if (typeof h.pap_dlg !== 'string') return fail('no pap_dlg');
+      if (typeof h.poppy_dlg !== 'string') return fail('no poppy_dlg');
       const claims = decodeJwt(jwt);
       const clientId = String(claims.iss);
       const { jwks } = await this.client(clientId);
       const { payload: dlg, protectedHeader: dh } = await jwtVerify(
-        h.pap_dlg,
+        h.poppy_dlg,
         createLocalJWKSet(jwks),
-        { typ: 'pap-delegation+jwt', issuer: clientId, algorithms: ['ES256'] },
+        { typ: 'poppy-delegation+jwt', issuer: clientId, algorithms: ['ES256'] },
       );
-      if (dh.typ !== 'pap-delegation+jwt') return fail('delegation typ');
+      if (dh.typ !== 'poppy-delegation+jwt') return fail('delegation typ');
       if (!dlg.iat || !dlg.exp || dlg.exp - dlg.iat > 24 * 3600) return fail('delegation lifetime');
       if ('sub' in dlg || 'aud' in dlg) return fail('delegation names a User or Company');
       const jwk = (dlg.cnf as { jwk: JWK }).jwk;
@@ -747,6 +930,10 @@ export class FakeCompany {
     if (url.search.includes('access_token')) this.violation('token in URL');
     const [scheme, token] = auth.split(' ');
     const v = await this.verifySession(req, url, token);
+    if (v === 'version_unsupported') {
+      this.send(res, 400, { error: 'version_unsupported' });
+      return undefined;
+    }
     if (typeof v === 'string') {
       this.send(res, 400, { error: 'invalid_session', error_description: v });
       return undefined;
@@ -797,19 +984,25 @@ export class FakeCompany {
     } else if (req.headers.dpop) {
       this.violation('DPoP proof without an access token');
     }
-    const key = `${v.clientId}|${v.sid}`;
+    // 5.3: Sessions are found by client_id, sid and User ID.
+    const key = `${v.clientId}|${v.sid}|${v.sub}`;
     let s = this.sessions.get(key);
     if (!s) {
       s = { key, id: v.sid, clientId: v.clientId, userId: v.sub };
       this.sessions.set(key, s);
+      if (this.endNextSession) {
+        this.endNextSession = false;
+        s.ended = true;
+      }
     }
-    if (s.ended || s.userId !== v.sub) {
-      this.send(res, 400, { error: 'invalid_session' });
+    if (s.ended) {
+      this.send(res, 400, { error: 'session_ended' });
       return undefined;
     }
     if (signedIn) {
+      // 5.4: another account in the same Session.
       if (s.account && s.account !== signedIn.account) {
-        this.send(res, 400, { error: 'invalid_session' });
+        this.send(res, 400, { error: 'session_ended' });
         return undefined;
       }
       s.account = signedIn.account;
@@ -855,6 +1048,29 @@ export class FakeCompany {
     this.send(res, 404, { error: 'not_found' });
   }
 
+  /** Website pages fetched without a browser (5.2): the Session header, never a token. */
+  readonly pages: { path: string; session: boolean; token: boolean }[] = [];
+  /** Where `/moved` redirects. */
+  movedTo = '/help';
+  private async page(req: IncomingMessage, res: ServerResponse, url: URL) {
+    this.pages.push({
+      path: url.pathname,
+      session: typeof req.headers['poppy-session'] === 'string',
+      token: req.headers.authorization !== undefined,
+    });
+    if (req.headers.authorization) this.violation('access token sent with a website page');
+    if (url.pathname === '/moved') {
+      res.writeHead(302, { location: this.movedTo });
+      return res.end();
+    }
+    if (req.headers['poppy-session']) {
+      const v = await this.verifySession(req, url, undefined);
+      if (typeof v === 'string') return this.send(res, 400, { error: 'invalid_session' });
+    }
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<h1>Help</h1>');
+  }
+
   /* ------------------------------------------------------------------ browser join (6) */
   private browserPage(res: ServerResponse) {
     const code = id('bc_');
@@ -872,6 +1088,12 @@ export class FakeCompany {
   private async browserAuthorize(req: IncomingMessage, res: ServerResponse, url: URL) {
     const t = await this.resourceAuth(req, res, url);
     if (!t) return;
+    // A signed-in join needs poppy:browser-sign-in (section 6).
+    if (t.signedIn && !t.scope.split(' ').includes('poppy:browser-sign-in')) {
+      return this.send(res, 403, undefined, {
+        'www-authenticate': 'Bearer error="insufficient_scope", scope="poppy:browser-sign-in"',
+      });
+    }
     const body = JSON.parse((await this.body(req)) || '{}');
     const entry = this.browserCodes.get(String(body.code));
     if (!entry || entry.sessionId) return this.send(res, 400, { error: 'invalid_request' });
@@ -903,7 +1125,9 @@ export class FakeCompany {
     const t = await this.resourceAuth(req, res, url);
     if (!t) return;
     const body = JSON.parse((await this.body(req)) || '{}');
-    if ('kind' in body) this.violation('feedback has no kind in 0.3');
+    if ('kind' in body) this.violation('feedback has no kind');
+    if (String(body.task).length > 200 || String(body.description).length > 2000)
+      return this.send(res, 400, { error: 'invalid_request' });
     this.feedback.push(body);
     if (this.feedbackAlternative) return this.send(res, 200, this.feedbackAlternative);
     res.writeHead(202);
@@ -1027,63 +1251,99 @@ export class FakeCompany {
       fn(`id: ${full.id}\ndata: ${JSON.stringify(full)}\n\n`);
     return full;
   }
-  private setState(c: Conversation, status: Conversation['status'], responder = c.responder) {
-    if (c.status === status && c.responder === responder) return;
-    c.status = status;
-    c.responder = responder;
-    this.push(c, { type: 'state', status, responder });
+  /** `working` isn't an event: a stream gets it as a `working` SSE event with no id (8.6). */
+  private setWorking(c: Conversation, delta: number) {
+    const before = c.pending > 0;
+    c.pending += delta;
+    const after = c.pending > 0;
+    if (before === after) return;
+    for (const fn of this.subscribers.get(c.id) ?? [])
+      fn(`event: working\ndata: ${JSON.stringify({ working: after })}\n\n`);
+  }
+  /** Every change to handoff, responder or closed adds a state event with all three (8.7). */
+  private setState(
+    c: Conversation,
+    patch: Partial<Pick<Conversation, 'handoff' | 'responder' | 'closed'>>,
+  ) {
+    const next = { handoff: c.handoff, responder: c.responder, closed: c.closed, ...patch };
+    if (next.handoff === c.handoff && next.responder === c.responder && next.closed === c.closed)
+      return;
+    Object.assign(c, next);
+    this.push(c, { type: 'state', ...next });
+  }
+  private state(c: Conversation) {
+    return { working: c.pending > 0, handoff: c.handoff, responder: c.responder, closed: c.closed };
   }
   private delta(c: Conversation, messageId: string, text: string) {
     for (const fn of this.subscribers.get(c.id) ?? []) {
       fn(`event: text-delta\ndata: ${JSON.stringify({ message_id: messageId, text })}\n\n`);
+      fn(`event: future-event\ndata: {"ignored":true}\n\n`);
     }
   }
 
-  /** The fake Company Agent. */
-  private respond(c: Conversation, t: Principal, msg: Record<string, unknown>) {
-    this.setState(c, 'working');
+  /** The fake Company Agent: acts on an accepted message later (8.3). */
+  private respond(c: Conversation, t: Principal, msg: Record<string, unknown>, requestId: string) {
+    this.setWorking(c, +1);
     setTimeout(() => {
-      if (c.status === 'closed') return;
-      const text = String(msg.text ?? '');
-      const reply = (replyText: string, data?: Record<string, unknown>) => {
-        const mid = id('msg_');
-        const half = Math.ceil(replyText.length / 2);
-        this.delta(c, mid, replyText.slice(0, half));
-        this.delta(c, mid, replyText.slice(half));
-        this.push(c, {
-          type: 'message',
-          message: {
-            id: mid,
-            role: 'company',
-            author: { type: c.responder },
-            text: replyText,
-            ...(data ? { data } : {}),
-          },
-        });
-      };
-      if (/order/i.test(text)) {
-        if (!t.signedIn || !t.scope.split(' ').includes('orders:read')) {
+      try {
+        if (c.closed) return;
+        const text = String(msg.text ?? '');
+        const reply = (replyText: string, data?: Record<string, unknown>) => {
+          const mid = id('msg_');
+          const half = Math.ceil(replyText.length / 2);
+          this.delta(c, mid, replyText.slice(0, half));
+          this.delta(c, mid, replyText.slice(half));
           this.push(c, {
-            type: 'authorization',
-            error: 'insufficient_scope',
-            scope: 'orders:read',
+            type: 'message',
+            message: {
+              id: mid,
+              role: 'company',
+              author: { type: c.responder },
+              ...(c.responder === 'agent' ? { as_of_request: requestId } : {}),
+              text: replyText,
+              ...(data ? { data } : {}),
+            },
           });
-          reply('Please sign in so I can look up your orders.');
-        } else {
-          c.owner = 'acct_1';
-          c.account = c.owner;
-          reply('Here are your orders.', { orders: [{ id: 'ord_1042', item: 'jacket' }] });
+        };
+        if (/order/i.test(text)) {
+          if (!t.signedIn || !t.scope.split(' ').includes('orders:read')) {
+            this.push(c, {
+              type: 'authorization',
+              error: 'insufficient_scope',
+              scope: 'orders:read',
+            });
+            reply('Please sign in so I can look up your orders.');
+          } else {
+            c.owner = 'acct_1';
+            c.account = c.owner;
+            reply('Here are your orders.', { orders: [{ id: 'ord_1042', item: 'jacket' }] });
+          }
+        } else if (/stronger/i.test(text)) {
+          this.push(c, { type: 'authorization', error: 'step_up_required', scope: 'orders:read' });
+          reply('I need a stronger sign-in.');
+        } else if (/specialist|talk to the user/i.test(text)) {
+          this.push(c, {
+            type: 'user_requested',
+            reason: 'A specialist needs to confirm with the customer.',
+          });
+          reply('I need to talk with the user directly.');
+        } else if (/future/i.test(text)) {
+          this.push(c, { type: 'future_event_type', anything: 1 });
+          this.push(c, {
+            type: 'message',
+            message: {
+              id: id('msg_'),
+              role: 'system',
+              author: { type: 'bot' },
+              text: 'From the future',
+            },
+          });
+        } else if (msg.text !== undefined || msg.data !== undefined) {
+          reply(`You said: ${text}${msg.data ? ` + data ${JSON.stringify(msg.data)}` : ''}`);
         }
-      } else if (/specialist|talk to the user/i.test(text)) {
-        this.push(c, {
-          type: 'user_requested',
-          reason: 'A specialist needs to confirm with the customer.',
-        });
-        reply('I need to talk with the user directly.');
-      } else if (msg.text !== undefined || msg.data !== undefined) {
-        reply(`You said: ${text}${msg.data ? ` + data ${JSON.stringify(msg.data)}` : ''}`);
+      } finally {
+        this.setWorking(c, -1);
       }
-      this.setState(c, 'idle');
     }, 20);
   }
 
@@ -1093,40 +1353,79 @@ export class FakeCompany {
     return true;
   }
 
+  /**
+   * Request IDs (8.3): the same ID, path and body returns the original response; another path or
+   * body is request_id_conflict. Unique for the User across all its requests.
+   */
+  private replay(
+    res: ServerResponse,
+    t: Principal,
+    path: string,
+    body: Record<string, unknown>,
+  ): boolean {
+    const rid = body.id;
+    if (typeof rid !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(rid)) {
+      this.violation(`conversation POST without a valid request id on ${path}`);
+      this.send(res, 400, { error: 'invalid_request' });
+      return true;
+    }
+    const prior = this.requestIds.get(`${t.userId}|${rid}`);
+    if (!prior) return false;
+    if (prior.path !== path || prior.body !== JSON.stringify(body)) {
+      this.send(res, 409, { error: 'request_id_conflict' });
+    } else {
+      this.send(res, prior.status, prior.response);
+    }
+    return true;
+  }
+  private accept(
+    res: ServerResponse,
+    t: Principal,
+    path: string,
+    body: Record<string, unknown>,
+    status: number,
+    response: unknown,
+  ) {
+    this.requestIds.set(`${t.userId}|${String(body.id)}`, {
+      userId: t.userId,
+      path,
+      body: JSON.stringify(body),
+      response,
+      status,
+    });
+    this.send(res, status, response);
+  }
+
   private async conversationsRoute(req: IncomingMessage, res: ServerResponse, url: URL) {
     const t = await this.resourceAuth(req, res, url);
     if (!t) return;
-    const parts = url.pathname.split('/').filter(Boolean); // poppy, conversations, {id}, {action}
+    const parts = url.pathname.split('/').filter(Boolean); // poppy, conversations, {id}, {action}, {sub}
     const convId = parts[2];
-    const action = parts[3];
+    const action = parts.slice(3).join('/');
     if (!convId && req.method === 'POST') {
       const body = JSON.parse(await this.body(req));
+      if (this.replay(res, t, url.pathname, body)) return;
       const m = body.message;
-      this.checkOutgoing(m);
-      const prior = [...this.conversations.values()].find(
-        (c) => c.userId === t.userId && c.messageIds.has(m.id),
-      );
-      if (prior) {
-        if (prior.messageIds.get(m.id) !== JSON.stringify(m))
-          return this.send(res, 409, { error: 'message_id_conflict' });
-        return this.send(res, 201, {
-          conversation_id: prior.id,
-          status: prior.status,
-          responder: prior.responder,
-        });
-      }
+      if (m !== undefined) this.checkOutgoing(m);
       let parent: Conversation | undefined;
       if (body.parent_conversation_id) {
         parent = this.conversations.get(body.parent_conversation_id);
-        if (!parent || parent.userId !== t.userId || parent.parent)
+        if (!parent || parent.userId !== t.userId)
           return this.send(res, 404, { error: 'conversation_not_found' });
-        if (parent.status === 'closed')
-          return this.send(res, 409, { error: 'conversation_closed' });
+        if (parent.parent) return this.send(res, 400, { error: 'invalid_request' });
+        if (parent.closed) return this.send(res, 409, { error: 'conversation_closed' });
         if (parent.openDirect)
           return this.send(res, 409, {
             error: 'direct_conversation_open',
             conversation_id: parent.openDirect,
           });
+      }
+      if (body.user_requested_event_id !== undefined) {
+        const ev = parent?.events.find((e) => e.id === body.user_requested_event_id);
+        if (ev?.type !== 'user_requested') return this.send(res, 400, { error: 'invalid_request' });
+      } else if (m === undefined) {
+        this.violation('a conversation start without a message');
+        return this.send(res, 400, { error: 'invalid_request' });
       }
       const c: Conversation = {
         id: id('cnv_'),
@@ -1134,81 +1433,101 @@ export class FakeCompany {
         userId: t.userId,
         owner: t.userId,
         events: [],
-        status: 'idle',
+        pending: 0,
+        handoff: 'none',
         responder: 'agent',
+        closed: false,
         parent: parent?.id,
-        messageIds: new Map([[m.id, JSON.stringify(m)]]),
       };
       this.conversations.set(c.id, c);
       if (parent) {
         parent.openDirect = c.id;
         this.push(parent, { type: 'direct_opened', conversation_id: c.id });
       }
-      this.push(c, { type: 'message', message: { ...m, role: 'user' } });
-      this.respond(c, t, m);
-      return this.send(res, 201, {
-        conversation_id: c.id,
-        status: c.status,
-        responder: c.responder,
-      });
+      if (m !== undefined) {
+        this.push(c, { type: 'message', message: { ...m, id: body.id, role: 'user' } });
+        this.respond(c, t, m, body.id);
+      } else {
+        this.respond(c, t, { text: 'Hello, how can I help?' }, body.id);
+      }
+      return this.accept(res, t, url.pathname, body, 201, { conversation_id: c.id });
     }
     const c = this.conversations.get(convId ?? '');
     const owns = c ? this.owns(c, t) : false;
     if (!c || owns === false) return this.send(res, 404, { error: 'conversation_not_found' });
     if (owns === 'account_required')
-      return this.send(res, 403, undefined, {
+      return this.send(res, 401, undefined, {
         'www-authenticate': 'Bearer scope="orders:read"',
       });
 
-    if (action === 'messages' && req.method === 'POST') {
-      const m = JSON.parse(await this.body(req)).message;
-      this.checkOutgoing(m);
-      const seen = [...this.conversations.values()].find(
-        (x) => x.userId === t.userId && x.messageIds.has(m.id),
-      );
-      if (seen) {
-        if (seen.messageIds.get(m.id) !== JSON.stringify(m))
-          return this.send(res, 409, { error: 'message_id_conflict' });
-        return this.send(res, 202, { status: c.status, responder: c.responder });
+    if (req.method === 'POST') {
+      const body = JSON.parse((await this.body(req)) || '{}');
+      if (this.replay(res, t, url.pathname, body)) return;
+      const accepted = () =>
+        this.accept(res, t, url.pathname, body, 202, { conversation_id: c.id });
+      if (action === 'close') {
+        // 8.12: doesn't wait its turn; a closed one returns 202 and changes nothing.
+        if (c.handoffTimer) clearTimeout(c.handoffTimer);
+        this.setState(c, { closed: true, handoff: 'none' });
+        c.pending = 0;
+        if (c.parent) {
+          const parent = this.conversations.get(c.parent);
+          if (parent && parent.openDirect === c.id) {
+            parent.openDirect = undefined;
+            this.push(parent, { type: 'direct_closed', conversation_id: c.id });
+          }
+        }
+        return accepted();
       }
-      if (c.status === 'closed') return this.send(res, 409, { error: 'conversation_closed' });
+      if (!['messages', 'handoff', 'handoff/cancel'].includes(action))
+        return this.send(res, 404, { error: 'not_found' });
+      if (c.closed) return this.send(res, 409, { error: 'conversation_closed' });
       if (c.openDirect)
         return this.send(res, 409, {
           error: 'direct_conversation_open',
           conversation_id: c.openDirect,
         });
-      c.messageIds.set(m.id, JSON.stringify(m));
-      this.push(c, { type: 'message', message: { ...m, role: 'user' } });
-      this.respond(c, t, m);
-      return this.send(res, 202, { status: c.status, responder: c.responder });
-    }
-    if (action === 'handoff' && req.method === 'POST') {
-      if (c.status === 'closed') return this.send(res, 409, { error: 'conversation_closed' });
-      this.setState(c, 'queued', 'agent');
-      setTimeout(() => this.setState(c, 'idle', 'human'), 20);
-      return this.send(res, 202, { status: c.status, responder: c.responder });
-    }
-    if (action === 'close' && req.method === 'POST') {
-      this.setState(c, 'closed');
-      if (c.parent) {
-        const parent = this.conversations.get(c.parent);
-        if (parent) {
-          parent.openDirect = undefined;
-          this.push(parent, { type: 'direct_closed', conversation_id: c.id });
-        }
+      if (action === 'messages') {
+        const m = body.message;
+        this.checkOutgoing(m);
+        this.push(c, { type: 'message', message: { ...m, id: body.id, role: 'user' } });
+        this.respond(c, t, m, body.id);
+        return accepted();
       }
-      return this.send(res, 200, { status: c.status, responder: c.responder });
+      if (action === 'handoff') {
+        if (c.handoff === 'none' && c.responder === 'agent') {
+          this.setState(c, { handoff: 'pending' });
+          c.handoffTimer = setTimeout(
+            () => this.setState(c, { handoff: 'none', responder: 'human' }),
+            40,
+          );
+        }
+        return accepted();
+      }
+      // handoff/cancel: the Company MAY stop looking (8.9).
+      if (c.handoff === 'pending') {
+        if (c.handoffTimer) clearTimeout(c.handoffTimer);
+        this.setState(c, { handoff: 'none' });
+      }
+      return accepted();
     }
     if (action === 'events' && req.method === 'GET') return this.events(req, res, url, c);
     this.send(res, 404, { error: 'not_found' });
   }
 
   private checkOutgoing(m: Record<string, unknown>) {
-    if (typeof m?.id !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(m.id))
-      this.violation('bad message id');
+    if (m && 'id' in m) this.violation('a message the Personal Agent sends has no id (8.3)');
+    if (m && 'role' in m) this.violation('a message the Personal Agent sends has no role');
     const authorType = (m?.author as { type?: string } | undefined)?.type;
     if (authorType !== 'agent' && authorType !== 'human') this.violation('bad author');
-    if (m?.text === undefined && m?.data === undefined && m?.context === undefined)
+    if (authorType === 'human' && m && 'as_of_cursor' in m)
+      this.violation("as_of_cursor on the User's own words");
+    if (
+      m?.text === undefined &&
+      m?.data === undefined &&
+      m?.context === undefined &&
+      m?.extensions === undefined
+    )
       this.violation('empty message');
   }
 
@@ -1227,6 +1546,8 @@ export class FakeCompany {
       if (!backlog) return this.send(res, 400, { error: 'invalid_cursor' });
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
       res.write(': hello\n\n');
+      // `working` when the stream opens (8.6), before the backlog.
+      res.write(`event: working\ndata: ${JSON.stringify({ working: c.pending > 0 })}\n\n`);
       let sentMessage = false;
       // Declared before `write`: the backlog below can already hold the first company message
       // (the stream connected after the reply), and dropping the stream then needs it.
@@ -1260,7 +1581,9 @@ export class FakeCompany {
     let events = this.after(c, cursor);
     if (!events) return this.send(res, 400, { error: 'invalid_cursor' });
     const deadline = Date.now() + wait * 1000;
-    while (events.length === 0 && Date.now() < deadline) {
+    const wasWorking = c.pending > 0;
+    // Held until there is an event, or until working changes from true to false (8.5).
+    while (events.length === 0 && Date.now() < deadline && !(wasWorking && c.pending === 0)) {
       await new Promise((r) => setTimeout(r, 25));
       events = this.after(c, cursor) ?? [];
     }
@@ -1270,8 +1593,7 @@ export class FakeCompany {
       events: page,
       cursor: page.length ? page[page.length - 1]?.id : cursor,
       has_more: events.length > page.length,
-      status: c.status,
-      responder: c.responder,
+      ...this.state(c),
     });
   }
 }

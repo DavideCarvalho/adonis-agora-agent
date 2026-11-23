@@ -7,7 +7,7 @@ export const SESSION_JWT_TYP = 'poppy-session+jwt';
 
 /**
  * The `Poppy-Session` JWT for one request (5.2), signed with the delegated key and carrying its
- * delegation in `pap_dlg`. `kid` is the delegated key's thumbprint, which `StoredKey.kid` holds.
+ * delegation in `poppy_dlg`. `kid` is the delegated key's thumbprint, which `StoredKey.kid` holds.
  */
 export function signSessionJwt(input: {
   key: StoredKey;
@@ -43,7 +43,7 @@ async function signWith(input: Parameters<typeof signSessionJwt>[0]): Promise<st
       typ: SESSION_JWT_TYP,
       alg: 'ES256',
       kid: input.key.kid,
-      pap_dlg: input.delegation,
+      poppy_dlg: input.delegation,
     })
     .sign(await importSigningKey(input.key));
 }

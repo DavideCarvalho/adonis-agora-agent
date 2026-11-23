@@ -71,20 +71,31 @@ export class ResourceAuthError extends PoppyError {
   }
 }
 
-/** A request refused with a JSON `error` body (5.3, 8.13), such as `invalid_session`. */
+/**
+ * A request refused with a JSON `error` body (5.3, 8.13), such as `invalid_session`. Later versions
+ * may add codes: one this client doesn't know is handled by its HTTP `status` (8.13).
+ */
 export class ConversationError extends PoppyError {
   /** For `direct_conversation_open`: the open Direct Conversation. */
   readonly conversationId?: string | undefined;
+  /** For `version_mismatch`: the protocol version the conversation started in (8.2). */
+  readonly protocolVersion?: string | undefined;
+  /** For `extension_required`: the extension the request needs (3.3). */
+  readonly extension?: string | undefined;
   constructor(
     code: string,
     opts: {
       status?: number | undefined;
       description?: string | undefined;
       conversationId?: string | undefined;
+      protocolVersion?: string | undefined;
+      extension?: string | undefined;
     } = {},
   ) {
     super(code, undefined, opts);
     this.name = 'ConversationError';
     this.conversationId = opts.conversationId;
+    this.protocolVersion = opts.protocolVersion;
+    this.extension = opts.extension;
   }
 }

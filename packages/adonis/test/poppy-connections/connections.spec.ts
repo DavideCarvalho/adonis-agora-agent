@@ -459,9 +459,14 @@ describe('poppy-connections: tools at the company', () => {
       error: 'needs_permission',
       scopes: ['orders:write'],
     });
-    // Step up through connect (Direct grants orders:write), then the write runs.
+    // Step up through connect (Direct grants orders:write), then the write runs. The new sign-in
+    // names every scope still needed, the granted orders:read too (§4.7).
     const more = await connectLink(app, { scopes: ['orders:write'] }, 'call-2');
     await direct(app, more);
+    expect(app.fake.authorizeRequests.at(-1)?.get('scope')).toBe('orders:read orders:write');
+    expect((await app.store.listConnections('account-1'))[0]?.scope).toBe(
+      'orders:read orders:write',
+    );
     expect(
       await tool(app, 'write', {
         company: app.fake.domain,
@@ -535,6 +540,7 @@ describe('poppy-connections: tools at the company', () => {
       message: 'show my orders',
     })) as Record<string, unknown>;
     expect(asked.reply).toContain('Here are your orders.');
+    expect(asked.status).toBe('idle');
     const used = [...app.fake.tokens.values()].filter((t) => !t.resource);
     expect(used.some((t) => t.scope === 'orders:read')).toBe(true);
     const requested = (await tool(app, 'request', {
@@ -547,6 +553,34 @@ describe('poppy-connections: tools at the company', () => {
     ).toMatchObject({
       status: 'ready',
       confirmation: { title: 'Ask Fake Co to act', detail: 'cancel ord_1042' },
+    });
+  });
+});
+
+describe('poppy-connections: Poppy 1.0 sign-in', () => {
+  it('Direct Sign-In pushed (PAR) when the person opens the page; state carries the connect', async () => {
+    app = await setup({}, { par: 'required' });
+    const link = await connectLink(app);
+    const page = await direct(app, link);
+    expect(page).toContain('Fake Co');
+    const authorize = app.fake.authorizeRequests.at(-1)!;
+    expect([...authorize.keys()].sort()).toEqual(['client_id', 'request_uri']);
+    expect((await app.store.listConnections('account-1'))[0]).toMatchObject({ status: 'active' });
+    // Never poppy:browser-sign-in: this agent doesn't browse.
+    expect((await app.store.listConnections('account-1'))[0]?.scope).not.toContain(
+      'poppy:browser-sign-in',
+    );
+    expect(app.fake.violations).toEqual([]);
+  });
+
+  it('auth.disabled: the connect page offers no sign-in', async () => {
+    app = await setup({}, { authDisabled: true });
+    const id = (await app.connections.startConnect({ actor, domain: app.fake.domain })).id;
+    expect(await app.connections.page(id)).toMatchObject({
+      kind: 'open',
+      direct: false,
+      device: false,
+      mediated: null,
     });
   });
 });

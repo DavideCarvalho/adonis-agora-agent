@@ -14,7 +14,7 @@ export interface TokenRecord {
   resource?: string | undefined;
 }
 
-/** The refresh token of a sign-in (4.4). Stored as `accountToken`, its name before Draft 0.3. */
+/** The refresh token of a sign-in (4.4). Stored as `accountToken`, its name before 0.3. */
 export interface AccountTokenRecord {
   /** A secret: never logged or shown (10.2). */
   refreshToken: string;
@@ -22,12 +22,17 @@ export interface AccountTokenRecord {
   obtainedAt: number;
   /** Which sign-in type produced it. */
   via: 'direct' | 'device' | 'mediated';
+  /**
+   * Whether the sign-in sent a DPoP proof. Then every refresh of it, and of the refresh tokens that
+   * replace it, MUST carry a proof from the same key (4.4).
+   */
+  dpop?: boolean | undefined;
 }
 
 /** The delegated key that signs this User ID's Session JWTs, with its delegation (5.2). */
 export interface DelegationRecord {
   key: StoredKey;
-  /** The `pap-delegation+jwt`, compact. */
+  /** The `poppy-delegation+jwt`, compact. */
   jwt: string;
   /** Epoch seconds: the delegation's `exp`. */
   exp: number;
@@ -62,6 +67,11 @@ export interface CompanyState {
   tokens: Record<string, TokenRecord>;
   /** The current Session's `sid`: random, used for no other Session (5.2). Not a credential. */
   sessionId?: string | undefined;
+  /**
+   * `Poppy-Version` and `Poppy-Extensions` of the current Session. They stay the same throughout a
+   * Session, so a change starts a new one (3.4).
+   */
+  sessionVersions?: string | undefined;
   conversations: Record<string, ConversationRecord>;
 }
 

@@ -112,7 +112,10 @@ export class TokenClient {
     return t;
   }
 
-  /** Refresh (4.4). A token response may leave `refresh_token` out: keep using the one you have. */
+  /**
+   * Refresh (4.4). A token response may leave `refresh_token` out: keep using the one you have. A
+   * refresh token got with a DPoP proof is refreshed with a proof from the same key.
+   */
   refresh(
     input: {
       refreshToken: string;
@@ -151,6 +154,30 @@ export class TokenClient {
       input.scope,
       input.dpop,
     );
+  }
+
+  /**
+   * A Pushed Authorization Request (RFC 9126, 4.2): the authorization request's parameters with the
+   * client assertion, and a DPoP proof when one is given so the Company can bind the code.
+   */
+  async pushAuthorization(
+    params: Record<string, string>,
+    dpop?: DpopKey | undefined,
+  ): Promise<{ requestUri: string; expiresIn: number }> {
+    const endpoint = this.metadata.pushed_authorization_request_endpoint;
+    if (!endpoint) {
+      throw new OAuthError('unsupported', {
+        description: 'no pushed_authorization_request_endpoint',
+      });
+    }
+    const r = await this.post(endpoint, async () => params, dpop);
+    if ((r.status !== 201 && r.status !== 200) || !r.body) throw this.toError(r);
+    const requestUri = r.body.request_uri;
+    if (typeof requestUri !== 'string' || !requestUri) {
+      throw new OAuthError('invalid_response', { description: 'no request_uri in PAR response' });
+    }
+    const expiresIn = typeof r.body.expires_in === 'number' ? r.body.expires_in : 60;
+    return { requestUri, expiresIn };
   }
 
   /** Device Sign-In step 1 (4.3). */

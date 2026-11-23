@@ -30,8 +30,12 @@ import {
   wwwAuthError,
 } from './util.js';
 
-/** The protocol version `CompanyState` is written for. */
-const STATE_PROTOCOL = '0.3';
+/**
+ * The protocol version `CompanyState` is written for. A state from 0.3 keeps its refresh token and
+ * keys (they are plain OAuth and unchanged in 1.0); its Session restarts with the new headers.
+ */
+const STATE_PROTOCOL = '1.0';
+const COMPATIBLE_STATES = ['0.3', STATE_PROTOCOL];
 
 export interface PoppyAgentOptions extends SecurityOptions {
   store: StateStore;
@@ -41,6 +45,13 @@ export interface PoppyAgentOptions extends SecurityOptions {
   fetch?: FetchLike | undefined;
   log?: ((line: string) => void) | undefined;
   maxRetryAfterSeconds?: number | undefined;
+  /**
+   * Extensions this agent uses, by name, with the major version of each (3.3). With a Company that
+   * lists the same version, each request declares it in `Poppy-Extensions` (3.4). None by default.
+   */
+  extensions?: Record<string, string> | undefined;
+  /** Use Companies on ports other than 443, for testing (3.1). `insecureDev` implies it. */
+  allowPorts?: boolean | undefined;
 }
 
 /** Entry point: one agent identity, one local state file, one local user. */
@@ -68,13 +79,20 @@ export class PoppyAgent {
     this.opts.log?.(line);
   }
 
-  /** Discovers a Company and loads (or creates) this user's state there, by its identifier. */
-  async company(domain: string): Promise<CompanyClient> {
-    const discovered = await discover(domain, {
+  /** Discovery (section 3) with this agent's fetch, cache and options. */
+  discover(domain: string, opts: { fresh?: boolean | undefined } = {}): Promise<Discovered> {
+    return discover(domain, {
       fetch: this.http.fetch,
       insecureDev: this.opts.insecureDev,
+      allowPorts: this.opts.allowPorts,
       cache: this.cache,
+      fresh: opts.fresh,
     });
+  }
+
+  /** Discovers a Company and loads (or creates) this user's state there, by its identifier. */
+  async company(domain: string): Promise<CompanyClient> {
+    const discovered = await this.discover(domain);
     const { identifier } = discovered;
     const companies = this.store.profile(this.profile).companies;
     const org = discovered.document.organization.domain.toLowerCase();
@@ -102,11 +120,12 @@ export class PoppyAgent {
       companies[identifier] = state;
     }
     // A state from before Draft 0.3: its tokens and Session belong to a protocol that's gone.
-    if (state.protocol !== STATE_PROTOCOL) {
-      state.protocol = STATE_PROTOCOL;
+    if (!COMPATIBLE_STATES.includes(state.protocol ?? '')) {
       state.tokens = {};
+      state.accountToken = undefined;
       state.sessionId = undefined;
     }
+    state.protocol = STATE_PROTOCOL;
     state.hasIssuer = discovered.metadata !== undefined;
     if (!state.domains.includes(org)) state.domains.push(org);
     await this.store.save();
@@ -120,14 +139,20 @@ const DELEGATION_RENEW_SECONDS = 3600;
 const DEFAULT_TOKEN_KEY = 'default';
 
 interface TokenOptions extends NarrowingParams {
-  /** No DPoP proof: MCP servers take Bearer tokens (section 7). */
-  bearer?: boolean | undefined;
   forceRenew?: boolean | undefined;
 }
 
 function tokenKey(opts: TokenOptions): string {
-  if (!opts.scope && !opts.resource && !opts.bearer) return DEFAULT_TOKEN_KEY;
-  return `${opts.resource ?? ''}|${opts.scope ?? ''}|${opts.bearer ? 'bearer' : ''}`;
+  if (!opts.scope && !opts.resource) return DEFAULT_TOKEN_KEY;
+  return `${opts.resource ?? ''}|${opts.scope ?? ''}`;
+}
+
+/** `Poppy-Extensions`: an RFC 9651 List of Strings, each with its version in `v` (3.4). */
+export function formatExtensionsHeader(declared: Record<string, string>): string {
+  const str = (v: string) => `"${v.replace(/[\\"]/g, (c) => `\\${c}`)}"`;
+  return Object.entries(declared)
+    .map(([name, version]) => `${str(name)};v=${str(version)}`)
+    .join(', ');
 }
 
 export interface SignInResult {
@@ -143,25 +168,70 @@ export type CompanyFetchInit = Omit<
   NarrowingParams & {
     /** The service's URL, whose protected resource metadata says if it needs its own tokens (4.5). */
     service?: string | undefined;
-    bearer?: boolean | undefined;
     /** Only the Session header, even with a refresh token. */
     signedOut?: boolean | undefined;
   };
 
+/** The JSON `error` of a 400/409 Session or version refusal, if it is one. */
+async function jsonError(res: Response): Promise<string | undefined> {
+  if (res.status !== 400) return undefined;
+  const body = await readJson<{ error?: unknown }>(res.clone());
+  return typeof body?.error === 'string' ? body.error : undefined;
+}
+
 /** One User at one Company: the Session, the refresh token, and requests to its endpoints. */
 export class CompanyClient {
   readonly dpop: DpopKey;
+  #discovered: Discovered;
   #tokens: TokenClient | undefined;
+  /** Resources the Company answered `invalid_target` for: used signed out (4.5). */
+  readonly #noTarget = new Set<string>();
   /** Each service's `resource`, or `null` when the default token works there (4.5). */
   readonly #resources = new Map<string, string | null>();
   #refreshing: Promise<unknown> = Promise.resolve();
 
   constructor(
     readonly agent: PoppyAgent,
-    readonly discovered: Discovered,
+    discovered: Discovered,
     readonly state: CompanyState,
   ) {
+    this.#discovered = discovered;
     this.dpop = new DpopKey(state.dpopKey);
+  }
+
+  /** The discovery this client works with: the chosen version's document (3.4). */
+  get discovered(): Discovered {
+    return this.#discovered;
+  }
+
+  /** `Poppy-Version`: the version this agent implements, compatible with the chosen document (3.4). */
+  get protocolVersion(): string {
+    return this.#discovered.version;
+  }
+
+  /**
+   * The extensions each request declares (3.4): those this agent uses, in a version the chosen
+   * document lists. Never one only a later version defines (3.4, minor versions).
+   */
+  get declaredExtensions(): Record<string, string> {
+    const out: Record<string, string> = {};
+    const listed = this.document.extensions ?? {};
+    for (const [name, version] of Object.entries(this.agent.opts.extensions ?? {})) {
+      const entries = listed[name];
+      if (Array.isArray(entries) && entries.some((e) => e?.version === version))
+        out[name] = version;
+    }
+    return out;
+  }
+
+  /** The version headers of every request with the Session header (3.4). */
+  versionHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { 'poppy-version': this.protocolVersion };
+    const declared = this.declaredExtensions;
+    if (Object.keys(declared).length > 0) {
+      headers['poppy-extensions'] = formatExtensionsHeader(declared);
+    }
+    return headers;
   }
 
   /** The Company's OAuth calls. A Company without an issuer offers no sign-in (3.2). */
@@ -202,8 +272,16 @@ export class CompanyClient {
   get accountToken(): AccountTokenRecord | undefined {
     return this.state.accountToken;
   }
-  /** The current Session's `sid`, chosen here at random (5.2). */
+  /**
+   * The current Session's `sid`, chosen here at random (5.2). A Session keeps its `Poppy-Version` and
+   * `Poppy-Extensions`, so new values start a new Session (3.4).
+   */
   get sessionId(): string {
+    const versions = JSON.stringify(this.versionHeaders());
+    if (this.state.sessionVersions !== versions) {
+      this.state.sessionId = undefined;
+      this.state.sessionVersions = versions;
+    }
     this.state.sessionId ??= randomId('', 16);
     return this.state.sessionId;
   }
@@ -222,6 +300,17 @@ export class CompanyClient {
   tokenDpop(): DpopKey | undefined {
     const algs = this.metadata.dpop_signing_alg_values_supported;
     return Array.isArray(algs) && algs.includes('ES256') ? this.dpop : undefined;
+  }
+
+  /**
+   * The proof key of a refresh (4.4): the key the refresh token was got with, for every refresh of it
+   * and of the tokens that replace it, whatever the metadata says now. The key changes only with a
+   * new sign-in.
+   */
+  refreshDpop(): DpopKey | undefined {
+    const bound = this.accountToken?.dpop;
+    if (bound === undefined) return this.tokenDpop();
+    return bound ? this.dpop : undefined;
   }
 
   /** The delegated key of this User ID, with a live delegation (5.2). */
@@ -269,16 +358,23 @@ export class CompanyClient {
   async #refresh(key: string, opts: TokenOptions): Promise<TokenRecord | null> {
     const acct = this.accountToken;
     if (!acct) return null;
+    if (opts.resource && this.#noTarget.has(opts.resource)) return null;
     let resp: TokenResponse;
     try {
       resp = await this.tokens.refresh({
         refreshToken: acct.refreshToken,
         grantedScope: acct.scope,
-        dpop: opts.bearer ? undefined : this.tokenDpop(),
+        dpop: this.refreshDpop(),
         scope: opts.scope,
         resource: opts.resource,
       });
     } catch (e) {
+      // 4.5: a service the Company doesn't offer this agent is used signed out.
+      if (e instanceof OAuthError && e.code === 'invalid_target' && opts.resource) {
+        this.agent.log(`invalid_target for ${opts.resource}; using it signed out`);
+        this.#noTarget.add(opts.resource);
+        return null;
+      }
       if (!(e instanceof OAuthError) || e.code !== 'invalid_grant') throw e;
       this.agent.log('refresh token rejected (invalid_grant); continuing signed out');
       this.state.accountToken = undefined;
@@ -318,7 +414,10 @@ export class CompanyClient {
       scope,
       obtainedAt: Date.now(),
       via,
+      // Every grant sends `tokenDpop()`: its refreshes MUST prove the same key (4.4).
+      dpop: this.tokenDpop() !== undefined,
     };
+    this.#noTarget.clear();
     this.state.tokens = {
       [DEFAULT_TOKEN_KEY]: {
         accessToken: resp.access_token,
@@ -371,7 +470,15 @@ export class CompanyClient {
     if (res.ok) {
       const doc = await readJson<{ resource?: unknown }>(res);
       const domain = new URL(this.discovered.wellKnownUrl).origin;
-      if (typeof doc?.resource === 'string' && doc.resource !== domain) resource = doc.resource;
+      // RFC 9728 3.3: metadata whose `resource` isn't the URL it was derived from is ignored (4.5).
+      const same = (a: string, b: string) => a.replace(/\/+$/, '') === b.replace(/\/+$/, '');
+      if (
+        typeof doc?.resource === 'string' &&
+        same(doc.resource, service) &&
+        !same(doc.resource, domain)
+      ) {
+        resource = doc.resource;
+      }
     } else {
       await res.body?.cancel().catch(() => {});
     }
@@ -380,12 +487,15 @@ export class CompanyClient {
   }
 
   /**
-   * A request to one of the Company's APIs or endpoints: the Session header and, when signed in, an
-   * access token (5.2, 4.5). `invalid_session` starts a new Session once (section 7), and
-   * `invalid_token` refreshes once, falling back to signed out when the sign-in is gone (5.5).
+   * A request to one of the Company's APIs or endpoints: the Session header with `Poppy-Version` (and
+   * `Poppy-Extensions`), and, when signed in, an access token (5.2, 3.4, 4.5). Retries once on:
+   * `session_ended` in a new Session (5.5); `version_unsupported` after fetching `poppy.json` again,
+   * when that chooses another version (3.4); `invalid_token` after a refresh, falling back to signed
+   * out when the sign-in is gone (5.5). `invalid_session` isn't retried: a new Session doesn't fix it
+   * (section 7).
    */
   async fetch(url: string, init: CompanyFetchInit = {}): Promise<Response> {
-    const { scope, service, bearer, signedOut, ...rest } = init;
+    const { scope, service, signedOut, ...rest } = init;
     const method = (rest.method ?? 'GET').toUpperCase();
     const wantsAccount = !signedOut && this.accountToken !== undefined;
     let resource = init.resource;
@@ -395,27 +505,35 @@ export class CompanyClient {
     delete (rest as { resource?: unknown }).resource;
     let forceRenew = false;
     let sessionRetried = false;
+    let versionRetried = false;
     let tokenRetried = false;
     for (;;) {
-      const rec = wantsAccount ? await this.token({ scope, resource, bearer, forceRenew }) : null;
+      const rec = wantsAccount ? await this.token({ scope, resource, forceRenew }) : null;
       forceRenew = false;
       const scheme = rec?.tokenType.toLowerCase() === 'dpop' ? 'DPoP' : 'Bearer';
       const res = await this.http.request(url, {
         ...rest,
+        headers: { ...rest.headers, ...this.versionHeaders() },
         method,
         session: () => this.sessionJwt(method, url, rec?.accessToken),
         ...(rec ? { accessToken: rec.accessToken, scheme } : {}),
         ...(scheme === 'DPoP' && rec ? { dpop: this.dpop } : {}),
       });
-      if (res.status === 400 && !sessionRetried) {
-        const body = await readJson<{ error?: unknown }>(res.clone());
-        if (body?.error === 'invalid_session') {
-          sessionRetried = true;
-          this.agent.log('invalid_session: starting a new Session');
+      const error = await jsonError(res);
+      if (error === 'session_ended' && !sessionRetried) {
+        sessionRetried = true;
+        this.agent.log('session_ended: starting a new Session');
+        await res.body?.cancel().catch(() => {});
+        await this.newSession();
+        continue;
+      }
+      if (error === 'version_unsupported' && !versionRetried) {
+        versionRetried = true;
+        if (await this.#chooseVersionAgain()) {
           await res.body?.cancel().catch(() => {});
-          await this.newSession();
           continue;
         }
+        return res;
       }
       if (res.status === 401 && rec && !tokenRetried) {
         const err = wwwAuthError(res.headers.get('www-authenticate'));
@@ -432,6 +550,67 @@ export class CompanyClient {
       }
       return res;
     }
+  }
+
+  /**
+   * After `version_unsupported` (3.4): fetches `poppy.json` again without the cache and chooses again.
+   * True when that chose another version, and a new Session uses it.
+   */
+  async #chooseVersionAgain(): Promise<boolean> {
+    const before = `${this.protocolVersion}|${this.document.protocol_version}`;
+    let again: Discovered;
+    try {
+      again = await this.agent.discover(this.discovered.domain, { fresh: true });
+    } catch (e) {
+      this.agent.log(`version_unsupported: discovery failed: ${(e as Error).message}`);
+      return false;
+    }
+    // Every version's document selects the same issuer (3.4); anything else is another Company.
+    if (again.identifier !== this.issuer) return false;
+    this.#discovered = again;
+    this.#tokens = undefined;
+    if (`${again.version}|${again.document.protocol_version}` === before) return false;
+    this.agent.log(`version_unsupported: now using ${again.document.protocol_version}`);
+    await this.newSession();
+    return true;
+  }
+
+  /**
+   * A page of the Company's website fetched with this agent's own HTTP client, not a browser (5.2):
+   * the Session header, always signed out, only on HTTPS pages whose host is `organization.domain`.
+   * A redirect gets a new Session JWT only while it stays on that host. After `invalid_session` the
+   * page is fetched once more without the header.
+   */
+  async fetchPage(url: string, init: { headers?: Record<string, string> } = {}): Promise<Response> {
+    const home = this.document.organization.domain.toLowerCase();
+    const onHome = (u: URL) =>
+      u.host.toLowerCase() === home &&
+      (u.protocol === 'https:' || (u.protocol === 'http:' && !!this.agent.opts.insecureDev));
+    let current = new URL(url);
+    let withSession = true;
+    for (let hop = 0; hop <= 5; hop++) {
+      const signed = withSession && onHome(current);
+      const target = current.toString();
+      const res = await this.http.request(target, {
+        method: 'GET',
+        headers: { ...init.headers, ...(signed ? this.versionHeaders() : {}) },
+        redirect: 'manual',
+        ...(signed ? { session: () => this.sessionJwt('GET', target) } : {}),
+      });
+      const location = res.headers.get('location');
+      if (res.status >= 300 && res.status < 400 && location) {
+        await res.body?.cancel().catch(() => {});
+        current = new URL(location, current);
+        continue;
+      }
+      if (signed && (await jsonError(res)) === 'invalid_session') {
+        await res.body?.cancel().catch(() => {});
+        withSession = false;
+        continue;
+      }
+      return res;
+    }
+    throw new PoppyError('too_many_redirects', `${url}: too many redirects`);
   }
 
   /** `fetch` + JSON, mapping failures to typed errors (section 7, 8.13). */
@@ -457,10 +636,13 @@ export async function throwForResponse(res: Response): Promise<never> {
     });
   }
   const body = await readJson<Record<string, unknown>>(res);
+  // A code this client doesn't know is handled by the HTTP status (8.13): callers branch on `status`.
   const code = typeof body?.error === 'string' ? body.error : `http_${res.status}`;
   throw new ConversationError(code, {
     status: res.status,
     description: typeof body?.error_description === 'string' ? body.error_description : undefined,
     conversationId: typeof body?.conversation_id === 'string' ? body.conversation_id : undefined,
+    protocolVersion: typeof body?.protocol_version === 'string' ? body.protocol_version : undefined,
+    extension: typeof body?.extension === 'string' ? body.extension : undefined,
   });
 }
