@@ -311,9 +311,9 @@ open by default. Write a tool for them with `roles: ['personal_agent']` (anyone'
 `['scope:<id>']` (a granted scope: a PACT delegation scope, or `scope:orders:read` / `scope:orders:write` /
 a custom Poppy scope).
 
-> **Experimental:** Poppy (Personal Agent Protocol) is a Draft 0.3 spec still in development
-> (https://personalagentprotocol.org/docs/spec). The Poppy surface implements Draft 0.3 and WILL change
-> as the spec evolves — possibly breaking, outside semver majors while it is a draft.
+> **Experimental:** Poppy conversations implement Personal Agent Protocol **1.0**
+> (https://personalagentprotocol.org/docs/1.0/spec). Everything under `@adonis-agora/agent/poppy` and
+> `poppy_provider` is experimental and may still change between minor releases.
 > To test your Poppy surface end to end, the package ships a reference **personal agent**:
 > `@adonis-agora/agent/poppy-client` (framework-agnostic library, no AdonisJS imports) and the
 > `poppy-agent` CLI (`npx poppy-agent --help`; `--insecure-dev` for a local http app). Source:
