@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.40
+
+### Patch Changes
+
+- [#677](https://github.com/DavideCarvalho/adonis-agora-agent/pull/677) [`7ae1d02`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/7ae1d02b6d60d29b55048d98a55985520591cd17) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - poppy-connections: approving an MCP operation on its card now repeats the tool call with the approval, instead of first calling it again without one. A Company that answers each unapproved call with a new operation no longer turns the approval into "the terms changed".
+
 ## 1.0.0-rc.39
 
 ### Minor Changes
