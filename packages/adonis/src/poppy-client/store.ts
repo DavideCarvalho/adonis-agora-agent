@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promise
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { StoredKey } from './keys.js';
+import type { Approver, PoppyOperation } from './types.js';
 
 export interface TokenRecord {
   accessToken: string;
@@ -72,7 +73,50 @@ export interface CompanyState {
    * Session, so a change starts a new one (3.4).
    */
   sessionVersions?: string | undefined;
+  /**
+   * Agent IDs (5.1), by the local name of the agent a Session is for: opaque, random, per Company.
+   * Never derived from personal information.
+   */
+  agentIds?: Record<string, string> | undefined;
+  /** The current Session of each named agent: a Session keeps one `agent_id` (5.2). */
+  agentSessions?: Record<string, { sessionId?: string | undefined; versions?: string | undefined }>;
+  /**
+   * The `sid`s this agent joined its browser to (section 6). A `Poppy-Operation` header counts only
+   * when its `sid` is one of them (Operations section 4).
+   */
+  browserSessions?: string[] | undefined;
+  /** The operations this User met at this Company, by `operation_id` (Operations extension). */
+  operations?: Record<string, OperationRecord> | undefined;
   conversations: Record<string, ConversationRecord>;
+}
+
+/**
+ * What this agent remembers about one operation: enough to never send a declined approval again, to
+ * ask the User when an agent approval met new terms, and to approve a parked one later.
+ */
+export interface OperationRecord {
+  via: 'api' | 'mcp' | 'conversation' | 'website';
+  /** The latest revision the Company returned. */
+  operation: PoppyOperation;
+  /** What the agent asked for when the Company returned it (to resend it with the approval). */
+  asked?: Record<string, unknown> | undefined;
+  /** Approvals sent, oldest first. */
+  approvals: {
+    revision: string;
+    approver: Approver;
+    reference: string;
+    approvedAt: number;
+  }[];
+  /**
+   * `pending` (waiting for an approval), `sent` (approval sent, outcome not in), `performed`,
+   * `declined`, `unknown` (a retry answered with new terms: whether it took effect is unknown).
+   */
+  status: 'pending' | 'sent' | 'performed' | 'declined' | 'unknown';
+  /** A decline for this action: a new revision needs the User (Operations section 6). */
+  declined?: boolean | undefined;
+  /** On a website: the reference from `Poppy-Operation`, and the `sid` it named. */
+  webRef?: string | undefined;
+  updatedAt: number;
 }
 
 export interface IdentityState {

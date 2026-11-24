@@ -2,6 +2,8 @@ import type { CompanyClient } from './company.js';
 import { authorTypeOf, ConversationClient, isFromCompany, poppyProtocol } from './conversations.js';
 import { PoppyError, ResourceAuthError } from './errors.js';
 import { connectMcp, type McpConnection } from './mcp.js';
+import { disclosuresOf, linksOf } from './message_extensions.js';
+import { approveInConversation, declineOf, operationOf } from './operations.js';
 import type { ConversationEvent, MessageContext } from './types.js';
 import type { FetchLike } from './util.js';
 
@@ -38,14 +40,20 @@ interface ToolDef {
   function: { name: string; description: string; parameters: Record<string, unknown> };
 }
 
-function summarize(events: ConversationEvent[]) {
+function summarize(company: CompanyClient, events: ConversationEvent[]) {
   const out: Record<string, unknown>[] = [];
   for (const ev of events) {
     if (ev.type === 'message' && isFromCompany(ev.message)) {
+      const links = linksOf(company, ev.message);
+      const disclosures = disclosuresOf(company, ev.message).map((d) => d.text);
+      const declined = declineOf(ev.message, company);
       out.push({
         from: `company:${authorTypeOf(ev.message)}`,
         text: ev.message?.text,
         data: ev.message?.data,
+        ...(links.length > 0 ? { links } : {}),
+        ...(disclosures.length > 0 ? { disclosures } : {}),
+        ...(declined ? { declined: { reason: declined.reason, performed: false } } : {}),
       });
     } else if (ev.type === 'authorization') {
       out.push({
@@ -162,7 +170,17 @@ export async function ask(
       } else {
         await conv.send(conversationId, message);
       }
-      const { events, state } = await conv.collect(conversationId);
+      let { events, state } = await conv.collect(conversationId);
+      // Operations: the User decides each approval the Company Agent asks for (never the model).
+      for (const op of events.map((e) => operationOf(e.message)).filter((o) => o !== undefined)) {
+        const outcome = await approveInConversation(conv, conversationId, op);
+        opts.log(`  operation ${op.operation_id}: ${outcome.status}`);
+        if (outcome.status === 'sent') {
+          const more = await conv.collect(conversationId);
+          events = [...events, ...more.events];
+          state = more.state;
+        }
+      }
       for (const ev of events) {
         if (ev.type === 'message' && isFromCompany(ev.message)) {
           opts.log(
@@ -178,7 +196,7 @@ export async function ask(
           });
         }
       }
-      return { ...state, replies: summarize(events) };
+      return { ...state, replies: summarize(company, events) };
     }
     const mt = mcpTools.get(name);
     if (mt && mcp) {
@@ -189,8 +207,14 @@ export async function ask(
         if (!ok)
           return { error: 'refused: this tool may change things and the user did not allow it' };
       }
-      const r = await mcp.client.callTool({ name: mt.name, arguments: args });
-      return r;
+      // An operation is decided by the User through the agent's approver, never by the model.
+      const { result, operation } = await mcp.callTool(mt.name, args);
+      return operation
+        ? {
+            ...result,
+            operation: { status: operation.status, performed: operation.status === 'performed' },
+          }
+        : result;
     }
     return { error: `unknown tool ${name}` };
   };

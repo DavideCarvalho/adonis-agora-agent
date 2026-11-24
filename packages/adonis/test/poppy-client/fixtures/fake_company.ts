@@ -21,10 +21,100 @@ import {
   jwtVerify,
 } from 'jose';
 import { z } from 'zod';
+import { tarGz, zip } from './archives.js';
 
 const MEDIATED_GRANT = 'https://personalagentprotocol.org/grant/mediated-sign-in';
 const id = (p: string) => p + randomBytes(9).toString('base64url');
 const now = () => Math.floor(Date.now() / 1000);
+const sha256 = (b: string | Buffer) => `sha256:${createHash('sha256').update(b).digest('hex')}`;
+
+/** An independent RFC 9651 reader for the fake: Strings, Integers, Tokens, Booleans, parameters. */
+function sfMembers(
+  input: string,
+): { key: string; value: unknown; params: Record<string, unknown> }[] {
+  const out: { key: string; value: unknown; params: Record<string, unknown> }[] = [];
+  const s = input.trim();
+  let i = 0;
+  const value = (): unknown => {
+    if (s[i] === '"') {
+      let v = '';
+      i++;
+      while (i < s.length && s[i] !== '"') {
+        if (s[i] === '\\') i++;
+        v += s[i++];
+      }
+      if (s[i] !== '"') throw new Error('unterminated string');
+      i++;
+      return v;
+    }
+    if (s[i] === '?') {
+      i += 2;
+      return s[i - 1] === '1';
+    }
+    const m =
+      /^-?\d+/.exec(s.slice(i)) ?? /^[A-Za-z*][A-Za-z0-9:/!#$%&'*+.^_`|~-]*/.exec(s.slice(i));
+    if (!m) throw new Error(`bad item at ${i}`);
+    i += m[0].length;
+    return /^-?\d+$/.test(m[0]) ? Number(m[0]) : { token: m[0] };
+  };
+  const params = () => {
+    const p: Record<string, unknown> = {};
+    while (s[i] === ';') {
+      i++;
+      const k = /^[a-z*][a-z0-9_.*-]*/.exec(s.slice(i))?.[0];
+      if (!k) throw new Error('bad param');
+      i += k.length;
+      if (s[i] === '=') {
+        i++;
+        p[k] = value();
+      } else p[k] = true;
+    }
+    return p;
+  };
+  while (i < s.length) {
+    let key = '';
+    if (s[i] === '"') {
+      // A List member: a String item.
+      const v = value();
+      out.push({ key: '', value: v, params: params() });
+    } else {
+      key = /^[a-z*][a-z0-9_.*-]*/.exec(s.slice(i))?.[0] ?? '';
+      if (!key) throw new Error('bad key');
+      i += key.length;
+      let v: unknown = true;
+      if (s[i] === '=') {
+        i++;
+        v = value();
+      }
+      out.push({ key, value: v, params: params() });
+    }
+    while (s[i] === ' ') i++;
+    if (i < s.length) {
+      if (s[i] !== ',') throw new Error('expected comma');
+      i++;
+      while (s[i] === ' ') i++;
+    }
+  }
+  return out;
+}
+
+/** One operation the fake Company returned (Operations extension v3). */
+interface FakeOperation {
+  id: string;
+  via: 'api' | 'mcp' | 'conversation' | 'website';
+  /** Who can approve it: `{client}|{user}` signed out, `{client}|acct:{account}` signed in. */
+  owner: string;
+  /** What the request asks, canonical. */
+  key: string;
+  revisions: Map<string, { terms: Record<string, unknown>; expiresAt: number }>;
+  current: string;
+  status: 'open' | 'performing' | 'performed';
+  response?: { status: number; body: unknown } | undefined;
+  conversationId?: string | undefined;
+  /** Website: references, and an approval recorded at the endpoint, waiting for the browser. */
+  refs: Set<string>;
+  recorded?: { revision: string } | undefined;
+}
 
 interface Session {
   key: string;
@@ -33,6 +123,9 @@ interface Session {
   userId: string;
   account?: string | undefined;
   ended?: boolean | undefined;
+  /** The first request's `Poppy-Extensions` and `agent_id`: the same on every request (3.4, 5.2). */
+  extensions?: string | undefined;
+  agentId?: string | undefined;
 }
 /** What a verified request is: the shape the Company's handlers use. */
 interface Principal {
@@ -41,6 +134,10 @@ interface Principal {
   userId: string;
   scope: string;
   signedIn: boolean;
+  /** `Poppy-Extensions`: name → version (3.4). */
+  extensions: Map<string, string>;
+  account?: string | undefined;
+  agentId?: string | undefined;
 }
 interface AccessToken {
   clientId: string;
@@ -109,6 +206,10 @@ export interface FakeOptions {
   authDisabled?: boolean | undefined;
   /** The `/api` service isn't offered to Personal Agents: its resource gets invalid_target. */
   rejectApiResource?: boolean | undefined;
+  /** Operations: decline every agent approval (Operations section 6). */
+  declineAgentApprovals?: boolean | undefined;
+  /** Operations: the first approved API request answers 503 + Retry-After while it performs. */
+  performing503Once?: boolean | undefined;
 }
 
 export class FakeCompany {
@@ -166,11 +267,37 @@ export class FakeCompany {
   readonly browserJoins: { sessionId: string; account?: string | undefined }[] = [];
   readonly browserCodes = new Map<
     string,
-    { cookie: string; sessionId?: string; account?: string | undefined; used?: boolean }
+    {
+      cookie: string;
+      sessionId?: string;
+      account?: string | undefined;
+      used?: boolean;
+      owner?: string;
+      extensions?: Map<string, string>;
+    }
   >();
   readonly feedback: unknown[] = [];
   /** Answer feedback with this alternative (HTTP 200) instead of 202. */
   feedbackAlternative: unknown;
+  /** Operations (v3): by id, and the website references that name them. */
+  readonly operations = new Map<string, FakeOperation>();
+  readonly operationRefs = new Map<string, string>();
+  /** Every exchange actually performed: an operation's id, once (Operations section 7). */
+  readonly exchanges: string[] = [];
+  /** The price difference the terms carry now: change it to change the terms. */
+  price = 70;
+  /** Change `price` once the first approval of an API request arrives, after failing it with 503. */
+  failFirstApprovalThenReprice = false;
+  /** Approval references seen: reference → `{operation_id} {revision}`. */
+  private readonly approvalReferences = new Map<string, string>();
+  private readonly declinedReferences = new Set<string>();
+  /** Joined browsers by their cookie: the Session, account and extensions of the join (6). */
+  private readonly browserCookies = new Map<
+    string,
+    { sessionId: string; owner: string; extensions: Map<string, string> }
+  >();
+  /** Skill artifacts served under /poppy/skills, by path. */
+  readonly skillFiles = new Map<string, { body: Buffer; type: string }>();
   /** Delegated key thumbprint → the one User ID it may sign for (5.2). */
   private readonly delegatedKeys = new Map<string, string>();
   private nonce = id('n_');
@@ -212,6 +339,42 @@ export class FakeCompany {
     });
     await new Promise<void>((r) => this.server.listen(port, '127.0.0.1', r));
     this.origin = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}`;
+    const md = (body: string) => ({ body: Buffer.from(body), type: 'text/markdown' });
+    this.skillFiles.set('manage-orders/SKILL.md', md('---\nname: manage-orders\n---\n# Orders'));
+    this.skillFiles.set('tampered/SKILL.md', md('# Changed after the index was written'));
+    this.skillFiles.set('bundle.tar.gz', {
+      body: tarGz([
+        { path: 'SKILL.md', data: '# Bundle' },
+        { path: 'scripts/', type: '5' },
+        { path: 'scripts/run.sh', data: 'echo never run' },
+        { path: 'scripts/latest', type: '2', link: 'run.sh' },
+      ]),
+      type: 'application/gzip',
+    });
+    this.skillFiles.set('bundle.zip', {
+      body: zip(
+        [
+          { path: 'SKILL.md', data: '# Zipped' },
+          { path: 'references/GUIDE.md', data: 'guide' },
+        ],
+        true,
+      ),
+      type: 'application/zip',
+    });
+    this.skillFiles.set('evil.tar.gz', {
+      body: tarGz([
+        { path: 'SKILL.md', data: '# Evil' },
+        { path: '../escape.md', data: 'outside' },
+      ]),
+      type: 'application/gzip',
+    });
+    this.skillFiles.set('escaping-link.zip', {
+      body: zip([
+        { path: 'SKILL.md', data: '# Link' },
+        { path: 'secrets', type: '2', data: '../../etc/passwd' },
+      ]),
+      type: 'application/octet-stream',
+    });
     return this;
   }
 
@@ -261,6 +424,10 @@ export class FakeCompany {
         { type: 'mcp', url: this.mcpUrl, description: 'Tools' },
       ],
       extensions: {
+        operations: [{ version: '3', endpoint: `${this.origin}/poppy/operations` }],
+        links: [{ version: '1' }],
+        disclosures: [{ version: '1' }],
+        'browser-control': [{ version: '1' }],
         'example.com/unknown': [{ version: '9' }],
         'example.com/gift-wrap': [{ version: '2' }, { version: '1' }],
         'mediated-sign-in': [
@@ -385,7 +552,8 @@ export class FakeCompany {
           issuer: clientId,
           subject: clientId,
           audience: this.origin,
-          algorithms: ['ES256'],
+          // 4.1: Companies MUST accept ES256 and PS384 (blind signing).
+          algorithms: ['ES256', 'PS384'],
         },
       );
       if (typeof payload.aud !== 'string')
@@ -568,7 +736,49 @@ export class FakeCompany {
                 description: 'Manage orders',
                 type: 'skill-md',
                 url: 'skills/manage-orders/SKILL.md',
-                digest: `sha256:${'a'.repeat(64)}`,
+                digest: sha256(this.skillFiles.get('manage-orders/SKILL.md')!.body),
+              },
+              {
+                name: 'tampered',
+                description: 'Changed after indexing',
+                type: 'skill-md',
+                url: 'skills/tampered/SKILL.md',
+                digest: sha256('# The original'),
+              },
+              {
+                name: 'bundle',
+                description: 'An archive',
+                type: 'archive',
+                url: `${this.origin}/poppy/skills/bundle.tar.gz`,
+                digest: sha256(this.skillFiles.get('bundle.tar.gz')!.body),
+              },
+              {
+                name: 'bundle-zip',
+                description: 'A zip archive',
+                type: 'archive',
+                url: '/poppy/skills/bundle.zip',
+                digest: sha256(this.skillFiles.get('bundle.zip')!.body),
+              },
+              {
+                name: 'evil',
+                description: 'Path traversal',
+                type: 'archive',
+                url: 'skills/evil.tar.gz',
+                digest: sha256(this.skillFiles.get('evil.tar.gz')!.body),
+              },
+              {
+                name: 'escaping-link',
+                description: 'A link outside the skill',
+                type: 'archive',
+                url: 'skills/escaping-link.zip',
+                digest: sha256(this.skillFiles.get('escaping-link.zip')!.body),
+              },
+              {
+                name: 'moved',
+                description: 'Redirected',
+                type: 'skill-md',
+                url: 'skills/moved',
+                digest: sha256(this.skillFiles.get('manage-orders/SKILL.md')!.body),
               },
               { name: 'future', description: 'x', type: 'future', url: '/x', digest: 'sha256:00' },
             ],
@@ -591,6 +801,26 @@ export class FakeCompany {
         },
         { 'cache-control': 'private, max-age=600' },
       );
+    }
+    if (p.startsWith('/poppy/skills/')) {
+      if (req.headers['poppy-session'] || req.headers.authorization)
+        this.violation('credentials or Session header sent for a skill artifact');
+      const rest = p.slice('/poppy/skills/'.length);
+      if (rest === 'moved') {
+        res.writeHead(302, { location: '/poppy/skills/manage-orders/SKILL.md' });
+        return res.end();
+      }
+      const file = this.skillFiles.get(rest);
+      if (!file) return this.send(res, 404, { error: 'not_found' });
+      res.writeHead(200, { 'content-type': file.type, 'content-length': String(file.body.length) });
+      return res.end(file.body);
+    }
+    if (p === '/poppy/operations' && req.method === 'POST')
+      return this.operationsEndpoint(req, res, url);
+    if (p === '/shop/exchange' && req.method === 'POST') return this.shopExchange(req, res);
+    if (p === '/check-in' && req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      return res.end(CHECK_IN_PAGE);
     }
     if (p.startsWith('/poppy/conversations')) return this.conversationsRoute(req, res, url);
     if (p === '/openapi.json') {
@@ -852,7 +1082,16 @@ export class FakeCompany {
     req: IncomingMessage,
     url: URL,
     token: string | undefined,
-  ): Promise<{ clientId: string; sid: string; sub: string } | string> {
+  ): Promise<
+    | {
+        clientId: string;
+        sid: string;
+        sub: string;
+        agentId?: string | undefined;
+        extensions: string;
+      }
+    | string
+  > {
     const jwt = req.headers['poppy-session'];
     if (typeof jwt !== 'string') {
       this.violation(`no Session header on ${req.method} ${url.pathname}`);
@@ -885,7 +1124,7 @@ export class FakeCompany {
       const { payload: dlg, protectedHeader: dh } = await jwtVerify(
         h.poppy_dlg,
         createLocalJWKSet(jwks),
-        { typ: 'poppy-delegation+jwt', issuer: clientId, algorithms: ['ES256'] },
+        { typ: 'poppy-delegation+jwt', issuer: clientId, algorithms: ['ES256', 'PS384'] },
       );
       if (dh.typ !== 'poppy-delegation+jwt') return fail('delegation typ');
       if (!dlg.iat || !dlg.exp || dlg.exp - dlg.iat > 24 * 3600) return fail('delegation lifetime');
@@ -914,7 +1153,20 @@ export class FakeCompany {
       this.delegatedKeys.set(thumb, sub);
       const ath = token ? createHash('sha256').update(token).digest('base64url') : undefined;
       if (payload.ath !== ath) return fail('ath');
-      return { clientId, sid: payload.sid, sub };
+      let agentId: string | undefined;
+      if (payload.agent_id !== undefined) {
+        agentId = String(payload.agent_id);
+        // 5.1: opaque, like a User ID.
+        if (!/^[A-Za-z0-9_-]{16,}$/.test(agentId) || agentId === sub)
+          return fail(`Agent ID looks non-opaque: ${agentId}`);
+      }
+      return {
+        clientId,
+        sid: payload.sid,
+        sub,
+        agentId,
+        extensions: typeof extensions === 'string' ? extensions : '',
+      };
     } catch (e) {
       return fail((e as Error).message);
     }
@@ -988,7 +1240,14 @@ export class FakeCompany {
     const key = `${v.clientId}|${v.sid}|${v.sub}`;
     let s = this.sessions.get(key);
     if (!s) {
-      s = { key, id: v.sid, clientId: v.clientId, userId: v.sub };
+      s = {
+        key,
+        id: v.sid,
+        clientId: v.clientId,
+        userId: v.sub,
+        extensions: v.extensions,
+        agentId: v.agentId,
+      };
       this.sessions.set(key, s);
       if (this.endNextSession) {
         this.endNextSession = false;
@@ -999,6 +1258,8 @@ export class FakeCompany {
       this.send(res, 400, { error: 'session_ended' });
       return undefined;
     }
+    if (s.extensions !== v.extensions) this.violation('Poppy-Extensions changed within a Session');
+    if (s.agentId !== v.agentId) this.violation('agent_id changed within a Session');
     if (signedIn) {
       // 5.4: another account in the same Session.
       if (s.account && s.account !== signedIn.account) {
@@ -1007,12 +1268,24 @@ export class FakeCompany {
       }
       s.account = signedIn.account;
     }
+    const extensions = new Map<string, string>();
+    try {
+      for (const m of v.extensions ? sfMembers(v.extensions) : []) {
+        if (typeof m.value === 'string' && typeof m.params.v === 'string')
+          extensions.set(m.value, m.params.v);
+      }
+    } catch {
+      // 3.4: a header that fails to parse declares no extensions.
+    }
     return {
       sessionId: s.id,
       clientId: s.clientId,
       userId: s.userId,
       scope: signedIn?.scope ?? '',
       signedIn: signedIn !== undefined,
+      extensions,
+      account: signedIn?.account,
+      agentId: v.agentId,
     };
   }
   private async api(req: IncomingMessage, res: ServerResponse, url: URL) {
@@ -1034,6 +1307,18 @@ export class FakeCompany {
         });
       }
       return this.send(res, 200, { orders: [{ id: 'ord_1042', item: 'jacket' }] });
+    }
+    if (url.pathname === '/api/exchanges' && req.method === 'POST') {
+      const body = JSON.parse((await this.body(req)) || '{}');
+      const header = req.headers['poppy-approval'];
+      if (t.extensions.get('operations') !== '3') {
+        if (header) this.violation('Poppy-Approval without declaring operations');
+        return this.send(res, 403, { error: 'extension_required', extension: 'operations' });
+      }
+      const key = JSON.stringify({ item_id: body.item_id, replacement_sku: body.replacement_sku });
+      const approval = typeof header === 'string' ? this.headerApproval(header) : undefined;
+      const verdict = this.judge(t, 'api', key, approval, {}, true);
+      return this.answer(res, verdict);
     }
     if (url.pathname === '/api/addresses') {
       if (!t.signedIn)
@@ -1099,6 +1384,8 @@ export class FakeCompany {
     if (!entry || entry.sessionId) return this.send(res, 400, { error: 'invalid_request' });
     entry.sessionId = t.sessionId;
     entry.account = t.signedIn ? 'acct_1' : undefined;
+    entry.owner = this.ownerOf(t);
+    entry.extensions = t.extensions;
     res.writeHead(204);
     res.end();
   }
@@ -1114,6 +1401,11 @@ export class FakeCompany {
     }
     entry.used = true;
     this.browserJoins.push({ sessionId: entry.sessionId, account: entry.account });
+    this.browserCookies.set(entry.sessionId, {
+      sessionId: entry.sessionId,
+      owner: entry.owner ?? '',
+      extensions: entry.extensions ?? new Map(),
+    });
     res.writeHead(303, {
       location: '/',
       'set-cookie': `__Host-fake_session=${entry.sessionId}; Path=/; Secure; HttpOnly`,
@@ -1230,6 +1522,55 @@ export class FakeCompany {
         return { content: [{ type: 'text', text: JSON.stringify({ status: 'booked', city }) }] };
       },
     );
+    // Operations (v3): approval in `_meta` under personalagentprotocol.org/approval.
+    server.registerTool(
+      'exchange_item',
+      {
+        description: 'Exchange an item (needs approval)',
+        inputSchema: { item_id: z.string(), replacement_sku: z.string() },
+      },
+      async ({ item_id, replacement_sku }, extra) => {
+        const raw = (extra._meta as Record<string, unknown> | undefined)?.[
+          'personalagentprotocol.org/approval'
+        ];
+        if (t.extensions.get('operations') !== '3') {
+          if (raw !== undefined) this.violation('MCP approval without declaring operations');
+          // 2: a tool that needs the extension returns an ordinary tool error.
+          return { isError: true, content: [{ type: 'text', text: 'This needs approval.' }] };
+        }
+        const key = JSON.stringify({ item_id, replacement_sku });
+        const verdict = this.judge(
+          t,
+          'mcp',
+          key,
+          raw === undefined ? undefined : this.checkApproval(raw),
+          {},
+        );
+        if (verdict.kind === 'required') {
+          return {
+            isError: true,
+            content: [
+              {
+                type: 'text',
+                text: `Not done yet. This needs approval: ${verdict.operation.summary}`,
+              },
+            ],
+            structuredContent: { operation: verdict.operation },
+          };
+        }
+        if (verdict.kind === 'declined') {
+          return {
+            isError: true,
+            content: [{ type: 'text', text: 'Not done: the approval was declined.' }],
+            structuredContent: verdict.body,
+          };
+        }
+        if (verdict.kind === 'performed') {
+          return { content: [{ type: 'text', text: JSON.stringify(verdict.body) }] };
+        }
+        return { isError: true, content: [{ type: 'text', text: 'Still being performed.' }] };
+      },
+    );
     // Stateless (no session id); the SDK's option types disagree under exactOptionalPropertyTypes.
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
@@ -1240,6 +1581,318 @@ export class FakeCompany {
     });
     await server.connect(transport as unknown as Parameters<typeof server.connect>[0]);
     await transport.handleRequest(req, res, rpc);
+  }
+
+  /* ------------------------------------------------------------------ operations (v3) */
+
+  /** Who can approve an operation: the account when signed in, else the User ID (Operations 3). */
+  private ownerOf(t: Principal) {
+    return t.signedIn ? `${t.clientId}|acct:${t.account}` : `${t.clientId}|${t.userId}`;
+  }
+
+  private operationJson(op: FakeOperation) {
+    const r = op.revisions.get(op.current)!;
+    const price = (r.terms.price_difference as { amount: string }).amount;
+    return {
+      operation_id: op.id,
+      revision: op.current,
+      // Basic Markdown is allowed; links, images and HTML must be shown as text.
+      summary: `Exchange item ${String(r.terms.item_id)} for **${String(r.terms.replacement_sku)}**, for $${price} more. [Details](https://evil.example/x) <img src=x>`,
+      terms: r.terms,
+      expires_at: new Date(r.expiresAt).toISOString(),
+    };
+  }
+
+  private termsFor(key: string) {
+    return {
+      ...(JSON.parse(key) as Record<string, unknown>),
+      price_difference: { amount: this.price.toFixed(2), currency: 'USD' },
+    };
+  }
+
+  /** A new revision whenever the terms change; never the same revision for other terms. */
+  private revise(op: FakeOperation) {
+    const terms = this.termsFor(op.key);
+    const cur = op.revisions.get(op.current);
+    if (cur && JSON.stringify(cur.terms) === JSON.stringify(terms) && cur.expiresAt > Date.now())
+      return;
+    const rev = `${now()}-${id('')}`;
+    op.revisions.set(rev, { terms, expiresAt: Date.now() + 600_000 });
+    op.current = rev;
+  }
+
+  /** The open operation for this action, or a new one: a performed one is never reused. */
+  private operationFor(
+    via: FakeOperation['via'],
+    owner: string,
+    key: string,
+    extra: { conversationId?: string | undefined },
+  ): FakeOperation {
+    let op = [...this.operations.values()].find(
+      (o) =>
+        o.via === via &&
+        o.owner === owner &&
+        o.key === key &&
+        o.status !== 'performed' &&
+        o.conversationId === extra.conversationId,
+    );
+    if (!op) {
+      op = {
+        id: id('exc_'),
+        via,
+        owner,
+        key,
+        revisions: new Map(),
+        current: '',
+        status: 'open',
+        refs: new Set(),
+        conversationId: extra.conversationId,
+      };
+      this.operations.set(op.id, op);
+    }
+    this.revise(op);
+    return op;
+  }
+
+  private headerApproval(header: string): Record<string, unknown> | undefined {
+    let members: ReturnType<typeof sfMembers>;
+    try {
+      members = sfMembers(header);
+    } catch (e) {
+      this.violation(`Poppy-Approval is not a valid Dictionary: ${(e as Error).message}`);
+      return undefined;
+    }
+    const raw: Record<string, unknown> = {};
+    for (const m of members) {
+      if (typeof m.value === 'object') this.violation(`Poppy-Approval ${m.key} is not a String`);
+      raw[m.key] = m.value;
+    }
+    if (raw.approved_at !== undefined && !Number.isInteger(raw.approved_at))
+      this.violation('Poppy-Approval approved_at is not an Integer');
+    return this.checkApproval(raw);
+  }
+
+  /** What every approval must be (Operations section 6). */
+  private checkApproval(raw: unknown): Record<string, unknown> | undefined {
+    if (typeof raw !== 'object' || raw === null) {
+      this.violation('approval is not an object');
+      return undefined;
+    }
+    const a = raw as Record<string, unknown>;
+    if (typeof a.operation_id !== 'string' || typeof a.revision !== 'string')
+      this.violation('approval without operation_id or revision');
+    if (a.approver !== 'user' && a.approver !== 'agent')
+      this.violation(`approval without a valid approver: ${String(a.approver)}`);
+    if (a.approver === 'agent' && a.input_type !== undefined)
+      this.violation('input_type sent with an agent approval');
+    if (a.approved_at !== undefined && !Number.isInteger(a.approved_at))
+      this.violation('approved_at is not Unix seconds');
+    if (typeof a.reference === 'string') {
+      const what = `${String(a.operation_id)} ${String(a.revision)}`;
+      const seen = this.approvalReferences.get(a.reference);
+      if (seen && seen !== what) this.violation('the same approval reference for another approval');
+      this.approvalReferences.set(a.reference, what);
+      if (this.declinedReferences.has(a.reference))
+        this.violation('an approval sent again after approval_declined');
+    }
+    return a;
+  }
+
+  /**
+   * Checks an approval as Operations section 6 says (Session can approve, not performed already,
+   * the revision describes exactly this request), then declines or performs it, at most once.
+   */
+  private judge(
+    t: Principal,
+    via: FakeOperation['via'],
+    key: string,
+    approval: Record<string, unknown> | undefined,
+    extra: { conversationId?: string | undefined },
+    canBePerforming = false,
+  ):
+    | { kind: 'required'; operation: ReturnType<FakeCompany['operationJson']> }
+    | { kind: 'declined'; body: Record<string, unknown> }
+    | { kind: 'performed'; status: number; body: unknown }
+    | { kind: 'performing' } {
+    const owner = this.ownerOf(t);
+    const op = approval ? this.operations.get(String(approval.operation_id)) : undefined;
+    // 1: a Session that can't approve it is handled as a request without an approval.
+    if (!op || !approval || op.owner !== owner || op.via !== via) {
+      return {
+        kind: 'required',
+        operation: this.operationJson(this.operationFor(via, owner, key, extra)),
+      };
+    }
+    // 2: performed already, or being performed.
+    if (op.status === 'performed' && op.response)
+      return { kind: 'performed', status: op.response.status, body: op.response.body };
+    if (op.status === 'performing') return { kind: 'performing' };
+    // 3: a revision returned for it, not expired, describing exactly this request.
+    const rev = op.revisions.get(String(approval.revision));
+    const fresh =
+      rev !== undefined &&
+      rev.expiresAt > Date.now() &&
+      op.key === key &&
+      JSON.stringify(rev.terms) === JSON.stringify(this.termsFor(key));
+    if (!fresh) {
+      const target = op.key === key ? op : this.operationFor(via, owner, key, extra);
+      this.revise(target);
+      if (target.current === approval.revision)
+        this.violation('fake: answered with the same revision');
+      return { kind: 'required', operation: this.operationJson(target) };
+    }
+    if (this.opts.declineAgentApprovals && approval.approver === 'agent') {
+      if (typeof approval.reference === 'string') this.declinedReferences.add(approval.reference);
+      return {
+        kind: 'declined',
+        body: {
+          error: 'approval_declined',
+          operation_id: op.id,
+          revision: String(approval.revision),
+          reason: 'Only the account holder can approve exchanges.',
+          alternative: {
+            instructions: 'Exchange it on our website.',
+            references: [
+              { type: 'web', url: 'https://example.com/exchanges' },
+              { type: 'openapi', url: 'https://evil.example/openapi.json', operation_id: 'x' },
+            ],
+          },
+        },
+      };
+    }
+    const perform = () => {
+      this.exchanges.push(op.id);
+      op.status = 'performed';
+      op.response = { status: 201, body: { exchange_id: id('xch_'), status: 'exchanged' } };
+    };
+    if (canBePerforming && this.failFirstApprovalThenReprice) {
+      this.failFirstApprovalThenReprice = false;
+      this.price += 5;
+      return { kind: 'performing' };
+    }
+    if (canBePerforming && this.opts.performing503Once) {
+      this.opts.performing503Once = false;
+      op.status = 'performing';
+      setTimeout(perform, 20);
+      return { kind: 'performing' };
+    }
+    perform();
+    return { kind: 'performed', status: op.response!.status, body: op.response!.body };
+  }
+
+  /** An API's answer to a verdict (Operations sections 4, 6, 7). */
+  private answer(res: ServerResponse, verdict: ReturnType<FakeCompany['judge']>) {
+    if (verdict.kind === 'required')
+      return this.send(res, 403, { error: 'approval_required', operation: verdict.operation });
+    if (verdict.kind === 'declined') return this.send(res, 403, verdict.body);
+    if (verdict.kind === 'performing')
+      return this.send(res, 503, undefined, { 'retry-after': '0' });
+    return this.send(res, verdict.status, verdict.body);
+  }
+
+  /** The website's operations endpoint (Operations sections 4 and 6). */
+  private async operationsEndpoint(req: IncomingMessage, res: ServerResponse, url: URL) {
+    const t = await this.resourceAuth(req, res, url);
+    if (!t) return;
+    if (t.extensions.get('operations') !== '3')
+      return this.send(res, 403, { error: 'extension_required', extension: 'operations' });
+    const body = JSON.parse((await this.body(req)) || '{}');
+    const op = this.operations.get(this.operationRefs.get(String(body.ref)) ?? '');
+    const owner = this.ownerOf(t);
+    if (op?.owner.includes('|acct:') && !t.signedIn) {
+      return this.send(res, 401, undefined, { 'www-authenticate': 'Bearer scope="orders:write"' });
+    }
+    if (!op || op.owner !== owner || op.via !== 'website')
+      return this.send(res, 400, { error: 'invalid_request' });
+    const header = req.headers['poppy-approval'];
+    if (typeof header !== 'string') {
+      if (op.recorded || op.status !== 'open') {
+        const status = op.status === 'open' ? 'approved' : op.status;
+        return this.send(res, 200, { operation_id: op.id, status });
+      }
+      if ((op.revisions.get(op.current)?.expiresAt ?? 0) <= Date.now())
+        return this.send(res, 400, { error: 'invalid_request' });
+      return this.send(res, 403, { error: 'approval_required', operation: this.operationJson(op) });
+    }
+    const approval = this.headerApproval(header);
+    if (!approval || approval.operation_id !== op.id) {
+      return this.send(res, 403, { error: 'approval_required', operation: this.operationJson(op) });
+    }
+    const rev = op.revisions.get(String(approval.revision));
+    if (
+      !rev ||
+      rev.expiresAt <= Date.now() ||
+      JSON.stringify(rev.terms) !== JSON.stringify(this.termsFor(op.key))
+    ) {
+      this.revise(op);
+      return this.send(res, 403, { error: 'approval_required', operation: this.operationJson(op) });
+    }
+    if (this.opts.declineAgentApprovals && approval.approver === 'agent') {
+      if (typeof approval.reference === 'string') this.declinedReferences.add(approval.reference);
+      return this.send(res, 403, {
+        error: 'approval_declined',
+        operation_id: op.id,
+        revision: approval.revision,
+        reason: 'Only the account holder can approve exchanges.',
+      });
+    }
+    op.recorded = { revision: String(approval.revision) };
+    res.writeHead(204);
+    res.end();
+  }
+
+  /** The website's exchange form, posted by the agent's joined browser (Operations section 4). */
+  private async shopExchange(req: IncomingMessage, res: ServerResponse) {
+    const cookie = /__Host-fake_session=([^;]+)/.exec(req.headers.cookie ?? '')?.[1];
+    const join = cookie ? this.browserCookies.get(cookie) : undefined;
+    if (!join) {
+      res.writeHead(401, { 'content-type': 'text/html' });
+      return res.end('<p>Sign in first.</p>');
+    }
+    if (join.extensions.get('operations') !== '3') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      return res.end('<p>Confirm the exchange on this page.</p>');
+    }
+    const form = new URLSearchParams(await this.body(req));
+    const key = JSON.stringify({
+      item_id: form.get('item_id'),
+      replacement_sku: form.get('replacement_sku'),
+    });
+    const ready = [...this.operations.values()].find(
+      (o) =>
+        o.via === 'website' &&
+        o.owner === join.owner &&
+        o.key === key &&
+        o.status === 'open' &&
+        o.recorded !== undefined &&
+        o.recorded.revision === o.current,
+    );
+    if (
+      ready &&
+      JSON.stringify(ready.revisions.get(ready.current)?.terms) ===
+        JSON.stringify(this.termsFor(key))
+    ) {
+      ready.recorded = undefined; // used up
+      this.exchanges.push(ready.id);
+      ready.status = 'performed';
+      res.writeHead(200, { 'content-type': 'text/html', 'cache-control': 'no-store' });
+      return res.end('<p>Exchanged.</p>');
+    }
+    const op = this.operationFor('website', join.owner, key, {});
+    const ref = `${op.id}.${op.current}`;
+    op.refs.add(ref);
+    this.operationRefs.set(ref, op.id);
+    const json = (req.headers.accept ?? '').includes('application/json');
+    res.writeHead(403, {
+      'content-type': json ? 'application/json' : 'text/html',
+      'cache-control': 'no-store',
+      'poppy-operation': `sid="${join.sessionId}", ref="${ref}"`,
+    });
+    res.end(
+      json
+        ? JSON.stringify({ error: 'approval_required' })
+        : '<p>This exchange is waiting for your approval in your personal agent.</p><button>Continue</button>',
+    );
   }
 
   /* ------------------------------------------------------------------ conversations */
@@ -1288,7 +1941,11 @@ export class FakeCompany {
       try {
         if (c.closed) return;
         const text = String(msg.text ?? '');
-        const reply = (replyText: string, data?: Record<string, unknown>) => {
+        const reply = (
+          replyText: string,
+          data?: Record<string, unknown>,
+          extensions?: Record<string, unknown>,
+        ) => {
           const mid = id('msg_');
           const half = Math.ceil(replyText.length / 2);
           this.delta(c, mid, replyText.slice(0, half));
@@ -1302,9 +1959,79 @@ export class FakeCompany {
               ...(c.responder === 'agent' ? { as_of_request: requestId } : {}),
               text: replyText,
               ...(data ? { data } : {}),
+              ...(extensions ? { extensions } : {}),
             },
           });
         };
+        const operations = t.extensions.get('operations') === '3';
+        const approvalRaw = (msg.extensions as { operations?: { approval?: unknown } } | undefined)
+          ?.operations?.approval;
+        if (approvalRaw !== undefined) {
+          const approval = this.checkApproval(approvalRaw);
+          const op = approval ? this.operations.get(String(approval.operation_id)) : undefined;
+          if (!op || op.conversationId !== c.id) {
+            reply('That approval is not for anything in this conversation.');
+            return;
+          }
+          const verdict = this.judge(t, 'conversation', op.key, approval, { conversationId: c.id });
+          if (verdict.kind === 'performed') reply('Done: the exchange went through.');
+          else if (verdict.kind === 'declined') {
+            const { error: _e, ...declined } = verdict.body as Record<string, unknown>;
+            reply('I could not do the exchange.', undefined, { operations: { declined } });
+          } else if (verdict.kind === 'required') {
+            reply('The terms changed; please approve these.', undefined, {
+              operations: { operation: verdict.operation },
+            });
+          }
+          return;
+        }
+        if (/exchange/i.test(text)) {
+          if (!operations) {
+            reply('Exchanges need your approval on our website.');
+            return;
+          }
+          const key = JSON.stringify({
+            item_id: 'itm_4Qa',
+            replacement_sku: 'stormline-insulated-m',
+          });
+          const verdict = this.judge(t, 'conversation', key, undefined, { conversationId: c.id });
+          if (verdict.kind === 'required') {
+            reply(
+              `I can exchange it for $${this.price} more. I will once you approve.`,
+              undefined,
+              {
+                operations: { operation: verdict.operation },
+              },
+            );
+          }
+          return;
+        }
+        if (/ship|track/i.test(text)) {
+          const links = t.extensions.get('links') === '1';
+          const disclosures = t.extensions.get('disclosures') === '1';
+          const notice = 'Lithium batteries ship by ground only.';
+          const ext: Record<string, unknown> = {};
+          if (links) {
+            ext.links = {
+              items: [
+                {
+                  url: `https://${this.domain.split(':')[0]}.example/orders/ord_1/tracking`,
+                  title: 'Tracking',
+                },
+                { url: 'javascript:alert(1)', title: 'Not HTTPS' },
+                { url: 'https://example.com/help/returns' },
+              ],
+            };
+          }
+          if (disclosures) ext.disclosures = { items: [{ text: notice }] };
+          // 8.4: content only for a declared extension; otherwise the notice goes in text.
+          reply(
+            `Your jacket shipped this morning.${disclosures ? '' : ` ${notice}`}`,
+            undefined,
+            Object.keys(ext).length > 0 ? ext : undefined,
+          );
+          return;
+        }
         if (/order/i.test(text)) {
           if (!t.signedIn || !t.scope.split(' ').includes('orders:read')) {
             this.push(c, {
@@ -1406,7 +2133,7 @@ export class FakeCompany {
       const body = JSON.parse(await this.body(req));
       if (this.replay(res, t, url.pathname, body)) return;
       const m = body.message;
-      if (m !== undefined) this.checkOutgoing(m);
+      if (m !== undefined) this.checkOutgoing(m, t);
       let parent: Conversation | undefined;
       if (body.parent_conversation_id) {
         parent = this.conversations.get(body.parent_conversation_id);
@@ -1489,7 +2216,7 @@ export class FakeCompany {
         });
       if (action === 'messages') {
         const m = body.message;
-        this.checkOutgoing(m);
+        this.checkOutgoing(m, t);
         this.push(c, { type: 'message', message: { ...m, id: body.id, role: 'user' } });
         this.respond(c, t, m, body.id);
         return accepted();
@@ -1515,7 +2242,13 @@ export class FakeCompany {
     this.send(res, 404, { error: 'not_found' });
   }
 
-  private checkOutgoing(m: Record<string, unknown>) {
+  private checkOutgoing(m: Record<string, unknown>, t: Principal) {
+    for (const name of Object.keys((m?.extensions as Record<string, unknown> | undefined) ?? {})) {
+      if (name === 'links' || name === 'disclosures')
+        this.violation(`the Personal Agent sent ${name} content: only Company messages carry it`);
+      else if (!t.extensions.has(name))
+        this.violation(`extension content for ${name}, which the request doesn't declare (8.4)`);
+    }
     if (m && 'id' in m) this.violation('a message the Personal Agent sends has no id (8.3)');
     if (m && 'role' in m) this.violation('a message the Personal Agent sends has no role');
     const authorType = (m?.author as { type?: string } | undefined)?.type;
@@ -1597,3 +2330,18 @@ export class FakeCompany {
     });
   }
 }
+
+/** A check-in page with marked steps (Browser Control extension, section 4). */
+export const CHECK_IN_PAGE = `<!doctype html>
+<form id="check-in" action="/check-in" method="post" data-poppy-user-step="submission">
+  <label>Seat <select id="seat" name="seat"><option>12C</option><option>14D</option></select></label>
+  <label>Passport <input id="passport" name="passport" data-poppy-user-step="interaction"></label>
+  <input id="meal" name="meal">
+  <button id="more" type="button">More seats</button>
+  <button id="submit" type="submit"><span id="label">Check in</span></button>
+</form>
+<input id="outside" name="bags" form="check-in">
+<form id="newsletter" data-poppy-user-step="interaction"><input id="email" name="email"><button id="join">Join</button></form>
+<form id="search" data-poppy-user-step="something-new"><input id="q" name="q"></form>
+<div data-poppy-user-step="submission"><button id="div-marked" type="button">Odd</button></div>
+<form id="plain"><input id="free" name="free"><button id="go">Go</button></form>`;

@@ -1,10 +1,15 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
-import { ResourceAuthError } from '../poppy-client/index.js';
+import { type OperationOutcome, ResourceAuthError } from '../poppy-client/index.js';
 import type { AiToolCtx, ToolHandler, ToolPreflightResult } from '../spi/tool.js';
 import type { ToolRegistry } from '../tool-registry.js';
 import type { ToolSpec } from '../types.js';
 import { normalizeDomain, type TwoStepConvention } from './config.js';
-import { OAuthError, PoppyCompanyNotAllowedError, type PoppyConnections } from './service.js';
+import {
+  OAuthError,
+  operationView,
+  PoppyCompanyNotAllowedError,
+  type PoppyConnections,
+} from './service.js';
 
 type JsonType = 'string' | 'object' | 'array';
 interface Field {
@@ -177,6 +182,54 @@ function previewOf(
   return { token, summary: field ? (body[field] as string) : null };
 }
 
+/**
+ * What an operation's outcome tells the model (Operations extension): only `performed` means the
+ * action was done. Anything waiting for approval goes to the person on the approve card.
+ */
+function explainOperation(
+  outcome: OperationOutcome,
+  prefix: string,
+  company: string,
+): Record<string, unknown> | null {
+  switch (outcome.status) {
+    case 'performed':
+    case 'sent':
+    case 'recorded':
+      return null;
+    case 'not_approved':
+      return {
+        error: 'approval_required',
+        company,
+        operation: operationView(outcome.operation),
+        message: 'Not done: the company asks the person to approve these exact terms first.',
+        next: `Tell the person what it would do, then call ${prefix}approve with company and operation_id: they approve it on its card.`,
+      };
+    case 'expired':
+      return {
+        error: 'expired',
+        message: 'Not done: the terms expired before they were approved.',
+        next: 'Ask again for new terms.',
+      };
+    case 'declined':
+      return {
+        error: 'approval_declined',
+        message: 'Not done: the company declined the approval.',
+        ...(outcome.decline.reason !== undefined ? { reason: outcome.decline.reason } : {}),
+        ...(outcome.decline.alternative !== undefined
+          ? { alternative: outcome.decline.alternative }
+          : {}),
+      };
+    case 'unknown':
+      return {
+        error: 'outcome_unknown',
+        message:
+          'The approved request failed; whether the company performed it is unknown. Check (for example the order) before trying again — do not ask for a new approval yet.',
+      };
+    case 'refused':
+      return { error: 'failed', message: 'The company refused the approved request.' };
+  }
+}
+
 export interface CallCompanyToolOptions {
   prefix?: string;
   /** The Company's two-step confirmation convention (default `confirm` / `confirmToken`); `false` = off. */
@@ -214,7 +267,12 @@ export async function callCompanyTool(
         };
       }
       const args = input.arguments ?? {};
-      let result = await conn.client.callTool({ name: input.tool, arguments: args });
+      const first = await conn.callTool(input.tool, args);
+      if (first.operation) {
+        const explained = explainOperation(first.operation, prefix, input.company);
+        if (explained) return explained;
+      }
+      let result = first.result;
       const twoStep = readOnly ? null : twoStepOf(tool as McpTool, opts.twoStep);
       if (twoStep && !result.isError && args[twoStep.confirm] === undefined) {
         const pending = previewOf(textOf(result), twoStep);
@@ -282,6 +340,15 @@ export async function talkToCompany(
       Array.isArray(r.data?.actions) ? (r.data.actions as unknown[]) : [],
     );
     if (actions.length > 0) out.actions = actions;
+    const links = reply.replies.flatMap((r) => r.links ?? []);
+    if (links.length > 0) out.links = links;
+    const disclosures = reply.replies.flatMap((r) => r.disclosures ?? []);
+    if (disclosures.length > 0) out.disclosures = disclosures;
+    if (reply.operation) {
+      out.approval_required = reply.operation;
+      out.next = `The company's assistant waits for the person's approval of these terms: tell them, then call ${prefix}approve with company and operation_id (they approve it on its card).`;
+    }
+    if (reply.declined) out.declined = reply.declined;
     if (reply.authorization) {
       if (reply.authorization.error === 'no_read_scope') {
         out.error = 'needs_permission';
@@ -345,7 +412,7 @@ export function registerPoppyConnectionTools(
   const names: string[] = [];
   const notAllowed = (domain: string) =>
     `${domain} is not a company this assistant may use. Call ${p}companies for the domains you can use.`;
-  const writeTools = new Set([`${p}write`, `${p}request`, `${p}disconnect`]);
+  const writeTools = new Set([`${p}write`, `${p}request`, `${p}disconnect`, `${p}approve`]);
   const register = <I>(
     spec: Omit<ToolSpec, 'inputSchema'> & { inputSchema: StandardSchemaV1<unknown, I> },
     raw: ToolHandler<I>,
@@ -676,6 +743,116 @@ export function registerPoppyConnectionTools(
         };
       },
       execute: (input, ctx) => talkToCompany(connections, owner(ctx), input, true, p),
+    },
+  );
+
+  register<CompanyInput & { operation_id: string }>(
+    {
+      name: `${p}approve`,
+      kind: 'action',
+      description:
+        'Ask the person to approve an action a company wants approved first (approval_required): its card shows the company and the exact terms, and only the person approves it. Nothing is done until then.',
+      inputSchema: objectSchema(
+        {
+          company,
+          operation_id: {
+            type: 'string',
+            description: 'The operation_id from approval_required.',
+          },
+        },
+        ['company', 'operation_id'],
+      ),
+    },
+    {
+      async preflight(input, ctx): Promise<ToolPreflightResult> {
+        const domain = normalizeDomain(input.company);
+        if (connections.policy(domain) === null) {
+          return { status: 'denied', reason: notAllowed(domain) };
+        }
+        const pending = await connections
+          .pendingOperation(owner(ctx), domain, input.operation_id)
+          .catch(() => null);
+        if (pending === null) {
+          return {
+            status: 'denied',
+            reason: `Nothing is waiting for approval at ${domain} as ${input.operation_id}.`,
+          };
+        }
+        if (pending.expired) {
+          return { status: 'denied', reason: 'Those terms expired: ask the company again.' };
+        }
+        // 5: the Company's name and the exact terms, in this app's own interface.
+        const { summary, terms } = pending.operation;
+        return {
+          status: 'ready',
+          confirmation: {
+            title: fill(texts.confirmOperationTitle, { company: pending.organization }),
+            verb: texts.confirmOperationVerb,
+            detail: summary ? `${summary}\n\n${preview(terms)}` : preview(terms),
+          },
+        };
+      },
+      async execute(input, ctx) {
+        try {
+          // How the person answered: a tap on the web card, typed on a text channel.
+          const inputType = ctx.channel === undefined || ctx.channel === 'web' ? 'tap' : 'typed';
+          const done = await connections.approveOperation(
+            owner(ctx),
+            normalizeDomain(input.company),
+            input.operation_id,
+            { inputType },
+          );
+          if (done.outcome === 'not_found') {
+            return { error: 'not_found', message: 'Nothing is waiting for that approval.' };
+          }
+          if (done.outcome === 'not_approved' && done.operation) {
+            return {
+              error: 'approval_required',
+              company: normalizeDomain(input.company),
+              operation: done.operation,
+              message: 'The terms changed before the approval arrived: nothing was done.',
+              next: `Show the person the new terms and call ${p}approve again.`,
+            };
+          }
+          if (done.outcome === 'declined') {
+            return {
+              error: 'approval_declined',
+              message: 'Not done: the company declined the approval.',
+              ...(done.declined ?? {}),
+            };
+          }
+          if (done.outcome === 'unknown') {
+            return {
+              error: 'outcome_unknown',
+              message:
+                'The approved request failed; whether it was performed is unknown. Check before trying again.',
+            };
+          }
+          if (done.outcome === 'expired') {
+            return { error: 'expired', message: 'The terms expired: ask the company again.' };
+          }
+          if (done.reply) {
+            const reply = done.reply;
+            return {
+              approved: true,
+              reply: reply.replies
+                .map((r) => r.text)
+                .filter(Boolean)
+                .join('\n\n'),
+              status: reply.status,
+              ...(done.declined ? { declined: done.declined } : {}),
+              ...(done.operation ? { approval_required: done.operation } : {}),
+            };
+          }
+          return {
+            approved: true,
+            ...(done.isError ? { error: 'tool_error' } : {}),
+            result: done.result ?? '',
+          };
+        } catch (error) {
+          return explain(p, error);
+        }
+      },
     },
   );
 

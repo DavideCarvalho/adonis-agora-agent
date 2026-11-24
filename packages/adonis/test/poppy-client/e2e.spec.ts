@@ -938,7 +938,16 @@ describe('1.0: Sessions, pages, browser join, tasks', () => {
     const coverage = await taskCoverage(c);
     assert.deepEqual(
       coverage.skills.map((s) => s.url),
-      [`${w.fake.origin}/poppy/skills/manage-orders/SKILL.md`],
+      [
+        `${w.fake.origin}/poppy/skills/manage-orders/SKILL.md`,
+        `${w.fake.origin}/poppy/skills/tampered/SKILL.md`,
+        `${w.fake.origin}/poppy/skills/bundle.tar.gz`,
+        `${w.fake.origin}/poppy/skills/bundle.zip`,
+        `${w.fake.origin}/poppy/skills/evil.tar.gz`,
+        `${w.fake.origin}/poppy/skills/escaping-link.zip`,
+        `${w.fake.origin}/poppy/skills/moved`,
+      ],
+      'resolved against tasks.endpoint; the unknown type is skipped',
     );
     assert.equal(coverage.feedbackEndpoint, `${w.fake.origin}/poppy/feedback`);
     await taskCoverage(c);

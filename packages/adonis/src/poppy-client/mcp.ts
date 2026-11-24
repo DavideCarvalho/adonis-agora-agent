@@ -3,12 +3,30 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { pickApi } from './api.js';
 import type { CompanyClient } from './company.js';
 import { ResourceAuthError } from './errors.js';
+import {
+  callToolWithOperations,
+  type OperationOptions,
+  type OperationOutcome,
+} from './operations.js';
 import type { PoppyApiEntry } from './types.js';
 import { wwwAuthError } from './util.js';
 
 export interface McpConnection {
   client: Client;
   api: PoppyApiEntry;
+  /**
+   * Calls a tool. With the Operations extension, a tool that wants approval returns an operation:
+   * it is decided and the same tool is called again with the approval in `_meta`; `operation` says
+   * how it ended (the action was done only when it is `performed`).
+   */
+  callTool(
+    name: string,
+    args?: Record<string, unknown> | undefined,
+    options?: OperationOptions,
+  ): Promise<{
+    result: Awaited<ReturnType<Client['callTool']>>;
+    operation?: OperationOutcome | undefined;
+  }>;
   close(): Promise<void>;
 }
 
@@ -52,5 +70,18 @@ export async function connectMcp(
   const client = new Client({ name: 'poppy-agent', version: '0.0.0' });
   // The SDK's own types disagree under `exactOptionalPropertyTypes`; the transport is the SDK's.
   await client.connect(transport as unknown as Parameters<Client['connect']>[0]);
-  return { client, api, close: () => client.close() };
+  return {
+    client,
+    api,
+    async callTool(name, args, options = {}) {
+      const { result, outcome } = await callToolWithOperations(
+        company,
+        client,
+        { name, arguments: args },
+        options,
+      );
+      return { result, ...(outcome ? { operation: outcome } : {}) };
+    },
+    close: () => client.close(),
+  };
 }

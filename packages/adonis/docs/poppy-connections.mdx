@@ -50,7 +50,10 @@ the JSON in an env var. Several keys rotate: the first signs, all are published.
 | --- | --- | --- |
 | `baseUrl` | — | Your public origin. `client_id` is `{baseUrl}/{path}/agent.json`. |
 | `path` | `'poppy-agent'` | Identity (`agent.json`, `jwks.json`), connect pages, `oauth/callback`. |
-| `identity` | — | `name`, `logoUri` (default: a served `{path}/logo.svg` with the name's initial), `keys`. |
+| `identity` | — | `name`, `logoUri` (default: a served `{path}/logo.svg` with the name's initial), `keys`, `blindSigner` (sign blindly with PS384 through your key service; `keys` may then be `[]`). |
+| `agent` | — | Which of your agents this app is, when you run several for the same people: each gets its own Agent ID at each company. |
+| `extensions` | all on | `{ operations, links, disclosures }`: the optional Poppy extensions declared to companies that list them. |
+| `operations` | — | `{ approve(request) }`: decide approvals yourself (see [Approvals](#approvals)). |
 | `companies` | none | A list, a map to `{ label, scopes, readScopes }`, or a predicate. |
 | `owner` | `actor.tenantRef ?? actor.id` | Whose connection a turn uses. |
 | `store` | `'lucid'` | `'memory'`, `redisPoppyConnectionStore(redis)`, or your own; `connection`, `autoCreateTables`, `schema` (default: `config/agent.ts`'s `schema`). |
@@ -145,6 +148,7 @@ registry: `connect` then returns the link as a read tool, and the app builds its
 | `poppy_write` | **action** | Any other company tool — your confirmation card shows the tool and its arguments (and the company's own preview, for a two-step tool). |
 | `poppy_ask` | read | A question to the company's agent with a token **narrowed to `readScopes`** (default: the scopes whose `auth.scope_hints` say `changes: none`, so without hints set `readScopes`): a question cannot make the company act. Its `status` is `idle`, `waiting_for_person`, `with_person`, `closed`, or `timeout`. |
 | `poppy_request` | **action** | A request for the company's agent to act — the person confirms the message. |
+| `poppy_approve` | **action** | The person approves the exact terms a company asked to approve (see [Approvals](#approvals)). |
 | `poppy_disconnect` | action | Revokes the connection. |
 
 **Two-step company tools.** Some companies confirm writes themselves: called without `confirm`, the
@@ -158,6 +162,46 @@ model as `needs_permission` / `not_connected` with the next step — `poppy_conn
 never as a dead end. Opening the company's website for the person ([Poppy §6](https://personalagentprotocol.org/docs/1.0/spec#web-browsing) browser sessions) is not offered:
 the spec requires the assertion to be posted from a browser the agent controls, not the person's.
 
+
+## Approvals
+
+Some companies ask for approval of the exact terms before they act (the
+[Operations extension](https://personalagentprotocol.org/docs/1.0/extensions/operations)): an
+exchange, a booking change, a cancellation. Nothing is done until the terms are approved.
+
+- A `poppy_write` (or `poppy_request`) the company wants approved returns `error: 'approval_required'`
+  (or `approval_required` with the reply), with the `operation`: its `operation_id`, `summary` and
+  `terms`. The model tells the person and calls `poppy_approve`.
+- `poppy_approve`'s card shows the company's name, its summary (links, images and HTML shown as
+  text) and the terms. Confirming it is the person's approval: the company gets it through the
+  same tool call or conversation, and performs the action once. New terms in the meantime come back
+  to be approved again.
+- A declined approval comes back as `approval_declined` with the company's `reason` and an
+  `alternative`; `outcome_unknown` means an approved request failed and whether it went through is
+  unknown — check (for example the order) before asking again.
+
+To approve without asking, decide in `operations.approve` — only when an instruction the person gave
+you covers these exact terms, never on what the company wrote:
+
+```ts title="config/poppy_connections.ts"
+operations: {
+  async approve({ owner, company, operation }) {
+    const amount = Number((operation.terms.price_difference as { amount?: string })?.amount)
+    const rule = await ApprovalRule.findBy({ owner, domain: company.domain })
+    if (rule && amount <= rule.maxAmount) return { approver: 'agent' }
+    return 'ask' // the approve card
+  },
+},
+```
+
+When the company declines an agent approval, or answers it with new terms, the next approval of that
+action comes only from the person.
+
+## Links and disclosures
+
+The company's replies to `poppy_ask` and `poppy_request` carry the pages it refers to as `links`
+(each with its `domain`: show it, a title can name another page) and notices such as allergen
+warnings as `disclosures`, apart from the text. Show both with the reply.
 
 ## Independent approvals and text channels
 

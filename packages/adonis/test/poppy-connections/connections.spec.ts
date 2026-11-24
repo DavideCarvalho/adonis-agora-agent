@@ -417,6 +417,7 @@ describe('poppy-connections: tools at the company', () => {
       ['search_products', true],
       ['place_order', false],
       ['book_trip', false],
+      ['exchange_item', false],
     ]);
     expect(
       await tool(app, 'read', {
@@ -1076,5 +1077,136 @@ describe('poppy-connections: for loops that do not park on approvals', () => {
     ).toMatchObject({
       result: 'ordered y',
     });
+  });
+});
+
+describe('poppy-connections: approvals (Operations) and the Company’s links and disclosures', () => {
+  /** Connected through Mediated Sign-In (orders:read). */
+  async function connected(
+    overrides: Partial<PoppyConnectionsConfig> = {},
+    fake: FakeOptions = {},
+  ) {
+    app = await setup(overrides, fake);
+    const link = await connectLink(app);
+    await fetch(`${link}/mediated`, {
+      method: 'POST',
+      body: 'email=dana%40example.com&password=hunter2',
+    });
+    await fetch(`${link}/code`, { method: 'POST', body: 'code=123456' });
+    return app;
+  }
+  const exchangeArgs = { item_id: 'itm_4Qa', replacement_sku: 'stormline-insulated-m' };
+
+  it('a write the company wants approved: nothing done, the approve card shows the terms, the person approves', async () => {
+    const a = await connected();
+    expect(a.tools.get('poppy_approve')!.spec.kind).toBe('action');
+    const first = (await tool(a, 'write', {
+      company: a.fake.domain,
+      tool: 'exchange_item',
+      arguments: exchangeArgs,
+    })) as { error: string; operation: { operation_id: string; summary: string } };
+    expect(first.error).toBe('approval_required');
+    expect(a.fake.exchanges).toEqual([]);
+    // Links, images and HTML in the summary are shown as text.
+    expect(first.operation.summary).toContain('\\[Details\\]');
+    const card = await preflight(a, 'approve', {
+      company: a.fake.domain,
+      operation_id: first.operation.operation_id,
+    });
+    expect(card).toMatchObject({
+      status: 'ready',
+      confirmation: {
+        title: 'Approve at Fake Co',
+        verb: 'Approve',
+        detail: expect.stringContaining('"replacement_sku": "stormline-insulated-m"'),
+      },
+    });
+    const done = await tool(a, 'approve', {
+      company: a.fake.domain,
+      operation_id: first.operation.operation_id,
+    });
+    expect(done).toMatchObject({ approved: true, result: expect.stringContaining('exchanged') });
+    expect(a.fake.exchanges).toHaveLength(1);
+    // Performed: nothing waits any more.
+    expect(
+      await preflight(a, 'approve', {
+        company: a.fake.domain,
+        operation_id: first.operation.operation_id,
+      }),
+    ).toMatchObject({ status: 'denied' });
+    expect(a.fake.violations).toEqual([]);
+  });
+
+  it('the app approves on the person’s instruction (an agent approval); a decline is reported', async () => {
+    const seen: unknown[] = [];
+    const a = await connected(
+      {
+        operations: {
+          approve: (req) => {
+            seen.push(req.owner);
+            return { approver: 'agent' };
+          },
+        },
+      },
+      { declineAgentApprovals: true },
+    );
+    const out = await tool(a, 'write', {
+      company: a.fake.domain,
+      tool: 'exchange_item',
+      arguments: exchangeArgs,
+    });
+    expect(out).toMatchObject({
+      error: 'approval_declined',
+      reason: 'Only the account holder can approve exchanges.',
+    });
+    expect(seen).toEqual(['account-1']);
+    expect(a.fake.exchanges).toEqual([]);
+    expect(a.fake.violations).toEqual([]);
+  });
+
+  it('the company’s assistant asks approval in the conversation; the card sends it there', async () => {
+    const a = await connected();
+    const asked = (await tool(a, 'request', {
+      company: a.fake.domain,
+      message: 'Please exchange my jacket for the insulated one',
+    })) as { approval_required: { operation_id: string } };
+    expect(asked.approval_required.operation_id).toMatch(/^exc_/);
+    expect(a.fake.exchanges).toEqual([]);
+    const done = await tool(a, 'approve', {
+      company: a.fake.domain,
+      operation_id: asked.approval_required.operation_id,
+    });
+    expect(done).toMatchObject({ approved: true, reply: 'Done: the exchange went through.' });
+    expect(a.fake.exchanges).toHaveLength(1);
+    expect(a.fake.violations).toEqual([]);
+  });
+
+  it('links and disclosures come back with the reply; nothing approved for an unknown id', async () => {
+    const a = await connected();
+    const reply = await tool(a, 'ask', { company: a.fake.domain, message: 'Has it shipped?' });
+    expect(reply).toMatchObject({
+      reply: 'Your jacket shipped this morning.',
+      links: [
+        { title: 'Tracking', domain: '127.0.0.1.example' },
+        { url: 'https://example.com/help/returns', domain: 'example.com' },
+      ],
+      disclosures: ['Lithium batteries ship by ground only.'],
+    });
+    expect(
+      await preflight(a, 'approve', { company: a.fake.domain, operation_id: 'exc_nope' }),
+    ).toMatchObject({ status: 'denied' });
+    expect(a.fake.violations).toEqual([]);
+  });
+
+  it('extensions off: the company answers in text, and approve is gone with the writes', async () => {
+    const a = await connected({
+      extensions: { operations: false, links: false, disclosures: false },
+    });
+    const reply = await tool(a, 'ask', { company: a.fake.domain, message: 'Has it shipped?' });
+    expect(reply).toMatchObject({
+      reply: 'Your jacket shipped this morning. Lithium batteries ship by ground only.',
+    });
+    expect(reply).not.toHaveProperty('links');
+    expect(a.fake.violations).toEqual([]);
   });
 });

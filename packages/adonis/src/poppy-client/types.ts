@@ -299,3 +299,60 @@ export interface TaskCoverage {
   /** Where to report a task that can't be done (9.3), when the Company takes feedback. */
   feedbackEndpoint?: string | undefined;
 }
+
+/* ---------------------------------------------------------------- Extensions */
+
+/**
+ * An action the Company performs once its terms are approved (Operations extension, version 3,
+ * section 3). Its `summary` and `terms` are content from the Company (10.1).
+ */
+export interface PoppyOperation {
+  operation_id: string;
+  /** Names these terms: an approval covers this revision only. */
+  revision: string;
+  /** The terms in plain language, with basic Markdown at most. Never render links, images or HTML. */
+  summary?: string | undefined;
+  terms: Record<string, unknown>;
+  /** RFC 3339: the last time an approval of this revision is accepted. */
+  expires_at: string;
+  [k: string]: unknown;
+}
+
+/** How an approval was given (Operations section 5). */
+export type Approver = 'user' | 'agent';
+
+/** An approval as it goes on the wire (Operations section 6). */
+export interface OperationApproval {
+  operation_id: string;
+  revision: string;
+  approver: Approver;
+  /** Unix seconds. */
+  approved_at?: number | undefined;
+  /** Only with `user`: how the User answered (`tap`, `typed`, `voice`…). */
+  input_type?: string | undefined;
+  /** This agent's own record of the approval. Never the same at two Companies. */
+  reference?: string | undefined;
+}
+
+/** A Company declined an approval (Operations section 6): nothing was performed. */
+export interface OperationDecline {
+  operation_id: string;
+  revision: string;
+  /** Content from the Company, for the User. */
+  reason?: string | undefined;
+  alternative?: TaskAlternative | undefined;
+  [k: string]: unknown;
+}
+
+/** A web page a Company message refers to (Links extension, version 1). Content from the Company. */
+export interface MessageLink {
+  url: string;
+  title?: string | undefined;
+  /** The URL's host, to show with the link (the guides suggest it). */
+  domain: string;
+}
+
+/** A notice a Company marked apart from the rest of a message (Disclosures extension, version 1). */
+export interface MessageDisclosure {
+  text: string;
+}

@@ -1,24 +1,37 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import { calculateJwkThumbprint, type JWK } from 'jose';
 import type {
+  ApprovalDecision,
   CompanyClient,
   McpConnection,
+  MessageLink,
+  OperationApprover,
+  OperationDecline,
+  OperationOutcome,
   PendingDirectSignIn,
+  PoppyOperation,
   StoredKey,
 } from '../poppy-client/index.js';
 import {
   AgentIdentity,
+  approveInConversation,
   ConversationClient,
   ConversationError,
   offeredScopes as clientOfferedScopes,
   completeDirectSignIn,
   connectMcp,
+  declineOf,
+  disclosuresOf,
   discover,
   isFromCompany,
+  linksOf,
   mediatedExtension,
   mediatedSignIn,
   OAuthError,
   offeredSignInTypes,
+  operationOf,
+  operationRecord,
+  operationSummaryText,
   PoppyAgent,
   PoppyError,
   pollDeviceSignInOnce,
@@ -85,10 +98,55 @@ type Flow =
       scope: string;
     };
 
+/** An operation the person decides on the approve card (Operations extension). */
+export interface PoppyOperationView {
+  operation_id: string;
+  /** The Company's own words, links/images/HTML shown as text. Content from the Company. */
+  summary?: string;
+  terms: Record<string, unknown>;
+  expires_at: string;
+}
+
+/** A declined approval: nothing was performed. `reason`/`alternative` are the Company's words. */
+export interface PoppyDeclineView {
+  operation_id: string;
+  reason?: string;
+  alternative?: OperationDecline['alternative'];
+}
+
+export function operationView(operation: PoppyOperation): PoppyOperationView {
+  const summary = operationSummaryText(operation.summary);
+  return {
+    operation_id: operation.operation_id,
+    ...(summary !== undefined ? { summary } : {}),
+    terms: operation.terms,
+    expires_at: operation.expires_at,
+  };
+}
+
+function declineView(decline: OperationDecline): PoppyDeclineView {
+  return {
+    operation_id: decline.operation_id,
+    ...(decline.reason !== undefined ? { reason: decline.reason } : {}),
+    ...(decline.alternative !== undefined ? { alternative: decline.alternative } : {}),
+  };
+}
+
 /** What `ask`/`request` bring back from the Company's agent. */
 export interface PoppyCompanyReply {
   conversationId: string;
-  replies: { text: string; data?: Record<string, unknown> }[];
+  replies: {
+    text: string;
+    data?: Record<string, unknown>;
+    /** Pages the message refers to (Links extension), each with its domain to show. */
+    links?: MessageLink[];
+    /** Notices to show with the message (Disclosures extension). */
+    disclosures?: string[];
+  }[];
+  /** The Company's agent waits for the person's approval of these terms (Operations). */
+  operation?: PoppyOperationView;
+  /** The Company declined an approval: nothing was performed. */
+  declined?: PoppyDeclineView;
   /**
    * The Company needs sign-in or more scopes (§8.11). An `error` other than `insufficient_scope` means
    * the same: sign in again for `scope`.
@@ -180,7 +238,16 @@ export class PoppyConnections {
           ...(this.#config.identity.logoUri !== undefined
             ? { logoUri: this.#config.identity.logoUri }
             : {}),
-          keys: await normalizeKeys(this.#config.identity.keys),
+          keys:
+            this.#config.identity.blindSigner !== undefined &&
+            (this.#config.identity.keys === '[]' ||
+              (Array.isArray(this.#config.identity.keys) &&
+                this.#config.identity.keys.length === 0))
+              ? []
+              : await normalizeKeys(this.#config.identity.keys),
+          ...(this.#config.identity.blindSigner !== undefined
+            ? { blindSigner: this.#config.identity.blindSigner }
+            : {}),
         },
         { insecureDev: this.insecureDev },
       );
@@ -341,11 +408,35 @@ export class PoppyConnections {
       store,
       identity,
       profile: owner,
+      extensions: this.#extensions(),
+      operations: { approve: this.#approver(owner) },
+      ...(this.#config.agent !== undefined ? { agent: this.#config.agent } : {}),
       insecureDev: this.insecureDev,
       ...(this.#config.fetch !== undefined ? { fetch: this.#config.fetch } : {}),
       log: (line) => this.#log(`poppy-connections: ${line}`),
     });
     return { agent, domains };
+  }
+
+  /** The extensions declared to Companies that list them (each spec's version). */
+  #extensions(): Record<string, string> {
+    const on = { operations: true, links: true, disclosures: true, ...this.#config.extensions };
+    const out: Record<string, string> = {};
+    if (on.operations) out.operations = '3';
+    if (on.links) out.links = '1';
+    if (on.disclosures) out.disclosures = '1';
+    return out;
+  }
+
+  /**
+   * The app's `operations.approve` decides first; otherwise the operation stays parked (in the
+   * sealed connection state) for the approve card, where the person decides.
+   */
+  #approver(owner: string): OperationApprover {
+    return async (request) => {
+      const decided = await this.#config.operations?.approve?.({ ...request, owner });
+      return decided && decided !== 'ask' ? decided : null;
+    };
   }
 
   /** Discover `domain` (allow-listed) and load this owner's state there. */
@@ -761,50 +852,178 @@ export class PoppyConnections {
           client.state.conversations[open] = { ...client.state.conversations[open]!, closed: true };
         conversationId = (await conv.start(message)).conversation_id;
       }
-      const deadline = Date.now() + (this.#config.replyTimeoutMs ?? 90_000);
-      const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), Math.max(1000, deadline - Date.now()));
-      const reply: PoppyCompanyReply = { conversationId, replies: [], status: 'working' };
-      // A request the Company accepted keeps `working` true until it acted on it (§8.7).
-      let state: ConversationState = { ...readState(undefined), working: true };
-      try {
-        for await (const item of conv.follow(conversationId, {
-          untilSettled: true,
-          signal: ac.signal,
-        })) {
-          if (item.kind === 'working') {
-            state = { ...state, working: item.working };
-            continue;
-          }
-          if (item.kind !== 'event') continue;
-          const ev: ConversationEvent = item.event;
-          const m = ev.message;
-          if (ev.type === 'message' && m && isFromCompany(m)) {
-            reply.replies.push({
-              text: m.text ?? '',
-              ...(m.data !== undefined ? { data: m.data } : {}),
-            });
-          } else if (ev.type === 'authorization') {
-            reply.authorization = {
-              error: String(ev.error ?? 'insufficient_scope'),
-              connected: client.accountToken !== undefined,
-              ...(typeof ev.scope === 'string' ? { scope: ev.scope } : {}),
-            };
-          } else if (ev.type === 'state') {
-            state = { ...readState(ev), working: state.working };
-          }
-        }
-      } finally {
-        clearTimeout(timer);
-      }
-      // `follow` returns once the reply is complete: `working` false, or the conversation closed.
-      if (!ac.signal.aborted) state = { ...state, working: false };
-      reply.status = statusOf(state);
-      if (ac.signal.aborted && reply.status === 'working') reply.status = 'timeout';
-      await client.save();
-      return reply;
+      return this.#reply(client, conv, conversationId);
     });
   }
+
+  /**
+   * Follows the Company's agent until its reply is complete (§8.7): its messages with their links and
+   * disclosures, an operation it waits approval for, a decline, an authorization request.
+   */
+  async #reply(
+    client: CompanyClient,
+    conv: ConversationClient,
+    conversationId: string,
+  ): Promise<PoppyCompanyReply> {
+    const deadline = Date.now() + (this.#config.replyTimeoutMs ?? 90_000);
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), Math.max(1000, deadline - Date.now()));
+    const reply: PoppyCompanyReply = { conversationId, replies: [], status: 'working' };
+    // A request the Company accepted keeps `working` true until it acted on it (§8.7).
+    let state: ConversationState = { ...readState(undefined), working: true };
+    try {
+      for await (const item of conv.follow(conversationId, {
+        untilSettled: true,
+        signal: ac.signal,
+      })) {
+        if (item.kind === 'working') {
+          state = { ...state, working: item.working };
+          continue;
+        }
+        if (item.kind !== 'event') continue;
+        const ev: ConversationEvent = item.event;
+        const m = ev.message;
+        if (ev.type === 'message' && m && isFromCompany(m)) {
+          const links = linksOf(client, m);
+          const disclosures = disclosuresOf(client, m).map((d) => d.text);
+          reply.replies.push({
+            text: m.text ?? '',
+            ...(m.data !== undefined ? { data: m.data } : {}),
+            ...(links.length > 0 ? { links } : {}),
+            ...(disclosures.length > 0 ? { disclosures } : {}),
+          });
+          const operation = operationOf(m);
+          if (operation) {
+            // Parked for the approve card, with the conversation it belongs to.
+            const rec = operationRecord(client, operation.operation_id);
+            if (rec) rec.asked = { conversationId };
+            reply.operation = operationView(operation);
+            delete reply.declined;
+          }
+          const decline = declineOf(m, client);
+          if (decline) reply.declined = declineView(decline);
+        } else if (ev.type === 'authorization') {
+          reply.authorization = {
+            error: String(ev.error ?? 'insufficient_scope'),
+            connected: client.accountToken !== undefined,
+            ...(typeof ev.scope === 'string' ? { scope: ev.scope } : {}),
+          };
+        } else if (ev.type === 'state') {
+          state = { ...readState(ev), working: state.working };
+        }
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    // `follow` returns once the reply is complete: `working` false, or the conversation closed.
+    if (!ac.signal.aborted) state = { ...state, working: false };
+    reply.status = statusOf(state);
+    if (ac.signal.aborted && reply.status === 'working') reply.status = 'timeout';
+    await client.save();
+    return reply;
+  }
+
+  // ── approvals (Operations) ────────────────────────────────────────────────
+
+  /** An operation waiting for the person's approval at `domain`, for its card; `null` if none. */
+  async pendingOperation(
+    owner: string,
+    domain: string,
+    operationId: string,
+  ): Promise<{ organization: string; operation: PoppyOperationView; expired: boolean } | null> {
+    return this.withCompany(owner, domain, async (client) => {
+      const rec = operationRecord(client, operationId);
+      if (!rec || rec.status === 'performed' || rec.status === 'unknown') return null;
+      if (rec.status === 'sent' && rec.via === 'conversation') return null;
+      return {
+        organization: client.document.organization.name,
+        operation: operationView(rec.operation),
+        expired: Date.parse(rec.operation.expires_at) <= Date.now(),
+      };
+    });
+  }
+
+  /**
+   * The person approved an operation on the card: the approval goes through the interface that
+   * returned it — the same MCP tool call again, or a message in the conversation (Operations §6).
+   * Approves exactly the revision the card showed; new terms come back to be approved again.
+   */
+  async approveOperation(
+    owner: string,
+    domain: string,
+    operationId: string,
+    decision: { inputType?: string },
+  ): Promise<{
+    outcome: OperationOutcome['status'] | 'not_found';
+    result?: string;
+    isError?: boolean;
+    reply?: PoppyCompanyReply;
+    operation?: PoppyOperationView;
+    declined?: PoppyDeclineView;
+  }> {
+    return this.withCompany(owner, domain, async (client) => {
+      const rec = operationRecord(client, operationId);
+      if (!rec) return { outcome: 'not_found' };
+      const shown = rec.operation;
+      const user: ApprovalDecision = {
+        approver: 'user',
+        ...(decision.inputType !== undefined ? { inputType: decision.inputType } : {}),
+      };
+      // Only the revision the person saw; anything else waits for them again.
+      const approve: OperationApprover = (req) =>
+        req.operation.operation_id === shown.operation_id &&
+        req.operation.revision === shown.revision
+          ? user
+          : null;
+      if (rec.via === 'mcp') {
+        const tool = String(rec.asked?.tool ?? '');
+        const args = (rec.asked?.arguments ?? {}) as Record<string, unknown>;
+        const conn = await connectMcp(client);
+        try {
+          const { result, operation } = await conn.callTool(tool, args, { approve });
+          const out = {
+            outcome: operation?.status ?? ('performed' as const),
+            result: textOf(result),
+            ...(result.isError === true ? { isError: true } : {}),
+          };
+          if (operation?.status === 'not_approved' || operation?.status === 'expired')
+            return { ...out, operation: operationView(operation.operation) };
+          if (operation?.status === 'declined')
+            return { ...out, declined: declineView(operation.decline) };
+          return out;
+        } finally {
+          await conn.close().catch(() => {});
+        }
+      }
+      if (rec.via === 'conversation') {
+        const conversationId = String(rec.asked?.conversationId ?? '');
+        const conv = new ConversationClient(client);
+        const outcome = await approveInConversation(conv, conversationId, shown, { approve });
+        if (outcome.status !== 'sent') return { outcome: outcome.status };
+        const reply = await this.#reply(client, conv, conversationId);
+        return {
+          outcome: 'sent',
+          reply,
+          ...(reply.declined ? { declined: reply.declined } : {}),
+          ...(reply.operation ? { operation: reply.operation } : {}),
+        };
+      }
+      return { outcome: 'not_found' };
+    });
+  }
+}
+
+/** The text parts of an MCP tool result. */
+function textOf(result: unknown): string {
+  const raw = (result as { content?: unknown }).content;
+  return (Array.isArray(raw) ? raw : [])
+    .map((part) =>
+      (part as { type?: string }).type === 'text'
+        ? String((part as { text?: string }).text ?? '')
+        : '',
+    )
+    .filter(Boolean)
+    .join('\n');
 }
 
 /**

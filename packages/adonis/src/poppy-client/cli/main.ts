@@ -17,7 +17,16 @@ import { startIdentityServer, waitForRelayedCallback } from '../identity_server.
 import { generateEs256Key } from '../keys.js';
 import { ask, DEFAULT_MODEL } from '../llm.js';
 import { connectMcp } from '../mcp.js';
+import { disclosuresOf, linksOf } from '../message_extensions.js';
 import { openInBrowser } from '../open_url.js';
+import {
+  approveInConversation,
+  declineOf,
+  type OperationApprover,
+  type OperationOutcome,
+  operationOf,
+  operationSummaryText,
+} from '../operations.js';
 import {
   completeDirectSignIn,
   deviceSignIn,
@@ -31,12 +40,15 @@ import {
   startDirectSignIn,
   submitMediatedCode,
 } from '../signin.js';
+import { fetchSkill } from '../skills.js';
 import { StateStore } from '../store.js';
+import { taskCoverage } from '../task_coverage.js';
 import type {
   ConversationEvent,
   ConversationState,
   MessageContext,
   OutgoingMessage,
+  PoppyOperation,
 } from '../types.js';
 import { isLoopbackHost, requireSecureUrl } from '../util.js';
 import { Prompter } from './prompt.js';
@@ -59,6 +71,8 @@ Sessions & sign-in (4)
   signin <domain> [--method direct|device|mediated] [--scope "<scopes>"] [--no-open]
   status [domain]
   disconnect <domain>                   revoke the refresh token (RFC 7009)
+Task coverage (9)
+  skills <domain> [name]                list the skills; with a name, fetch and verify one
 APIs (7)
   apis <domain>                         list APIs (and OpenAPI operations)
   api <domain> <METHOD> <path> [--data <json>] [--api <n>] [--scope <s>]
@@ -109,14 +123,63 @@ function loadIdentity(ctx: Ctx): AgentIdentity {
   return new AgentIdentity(id, { insecureDev: ctx.insecureDev });
 }
 
+/** Extensions this CLI implements: approvals, and links and disclosures in messages. */
+const CLI_EXTENSIONS = { operations: '3', links: '1', disclosures: '1' };
+
+/** Shows the terms of an operation as text (Operations section 3): never renders links or HTML. */
+function showOperation(c: CompanyClient, op: PoppyOperation): string {
+  const lines = [
+    `${bold(c.document.organization.name)} (${c.document.organization.domain}) asks you to approve:`,
+  ];
+  if (op.summary) lines.push(`  ${operationSummaryText(op.summary)}`);
+  lines.push(dim(`  terms: ${JSON.stringify(op.terms)}`), dim(`  until ${op.expires_at}`));
+  return lines.join('\n');
+}
+
+/** Asks the person at the terminal (Operations section 5): a user approval, typed. */
+function cliApprover(ctx: Ctx, c: () => CompanyClient | undefined): OperationApprover {
+  return async (req) => {
+    const company = c();
+    if (!company || !ctx.prompter.interactive) return null;
+    out(showOperation(company, req.operation));
+    if (req.userOnly)
+      out(dim('  (an earlier approval was not enough: only you can approve these)'));
+    return (await ctx.prompter.confirm('Approve?'))
+      ? { approver: 'user', inputType: 'typed' }
+      : null;
+  };
+}
+
+function describeOutcome(o: OperationOutcome): string {
+  switch (o.status) {
+    case 'performed':
+      return `approved ${o.operation.operation_id}: performed`;
+    case 'declined':
+      return `the Company declined the approval: not performed${o.decline.reason ? ` (${o.decline.reason})` : ''}`;
+    case 'unknown':
+      return 'the approved request failed: whether it was performed is unknown; check before trying again';
+    default:
+      return `${o.operation.operation_id}: ${o.status.replace('_', ' ')} — not performed`;
+  }
+}
+
 function makeAgent(ctx: Ctx): PoppyAgent {
-  return new PoppyAgent({
+  let current: CompanyClient | undefined;
+  const agent: PoppyAgent = new PoppyAgent({
     store: ctx.store,
     identity: loadIdentity(ctx),
     profile: ctx.profile,
     insecureDev: ctx.insecureDev,
+    extensions: CLI_EXTENSIONS,
+    operations: { approve: cliApprover(ctx, () => current) },
     log: (l) => err(dim(`· ${l}`)),
   });
+  const company = agent.company.bind(agent);
+  agent.company = async (domain: string) => {
+    current = await company(domain);
+    return current;
+  };
+  return agent;
 }
 
 async function company(ctx: Ctx, domain: string | undefined): Promise<CompanyClient> {
@@ -296,9 +359,12 @@ async function dispatch(ctx: Ctx, command: string, args: string[]): Promise<numb
         scope: str(v.scope),
       });
       err(dim(`HTTP ${r.status}`));
+      if (r.operation) err(describeOutcome(r.operation));
       out(typeof r.body === 'string' ? r.body : JSON.stringify(r.body, null, 2));
       return r.status < 400 ? 0 : 1;
     }
+    case 'skills':
+      return cmdSkills(ctx, args[0], args[1]);
     case 'mcp':
       return cmdMcp(ctx, args);
     case 'chat':
@@ -542,12 +608,32 @@ async function cmdMcp(ctx: Ctx, args: string[]): Promise<number> {
       }
       return 0;
     }
-    const r = await conn.client.callTool({ name: tool!, arguments: json ? JSON.parse(json) : {} });
+    const { result: r, operation } = await conn.callTool(tool!, json ? JSON.parse(json) : {});
+    if (operation) err(describeOutcome(operation));
     out(JSON.stringify(r, null, 2));
     return r.isError ? 1 : 0;
   } finally {
     await conn.close();
   }
+}
+
+/* --------------------------------------------------------------------------- skills */
+
+async function cmdSkills(ctx: Ctx, domain?: string, name?: string): Promise<number> {
+  const c = await company(ctx, domain);
+  const { skills } = await taskCoverage(c);
+  if (!name) {
+    if (skills.length === 0) out('This Company publishes no skills.');
+    for (const s of skills) out(`${bold(s.name)} ${dim(`[${s.type}]`)} — ${s.description}`);
+    return 0;
+  }
+  const skill = skills.find((s) => s.name === name);
+  if (!skill) throw new PoppyError('not_found', `no skill named ${name}`);
+  const files = await fetchSkill(c, skill);
+  err(dim(`verified ${files.digest}; ${files.files.size} file(s); scripts are never run`));
+  for (const path of files.files.keys()) if (path !== 'SKILL.md') err(dim(`  ${path}`));
+  out(files.skillMd);
+  return 0;
 }
 
 /* --------------------------------------------------------------------------- open */
@@ -619,6 +705,7 @@ const CHAT_HELP = `Type a message to send it. Commands:
   /handoff              ask for a person at the Company (8.9)
   /cancel-handoff       withdraw the request for a person (8.9)
   /signin [method] [scope]  sign in (e.g. after an authorization event); keeps the granted scopes
+  /approve              approve the terms the Company asked you to approve (Operations)
   /direct [text]        open a Direct Conversation (8.10); you then talk as the User
   /decline              decline the Company's request to talk to the User
   /leave                close the Direct Conversation
@@ -640,6 +727,7 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
   let directId: string | undefined;
   let pendingAuth: ConversationEvent | undefined;
   let pendingUserRequest: ConversationEvent | undefined;
+  let pendingOperation: { convId: string; operation: PoppyOperation } | undefined;
   const followers = new Map<string, AbortController>();
   const provisional = new Map<string, string>();
   const rl = ctx.prompter.interface;
@@ -666,6 +754,19 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
         if (!isFromCompany(m)) return; // our own message, echoed back
         let line = `${tag}${bold(`company[${m.author?.name ?? authorTypeOf(m)}]`)}: ${m.text ?? ''}`;
         if (m.data) line += `\n${dim(JSON.stringify(m.data, null, 2))}`;
+        // Links show their domain: a title can name another page (Links extension).
+        for (const l of linksOf(c, m))
+          line += `\n  ↗ ${l.title ?? l.url} ${dim(`(${l.domain}) ${l.url}`)}`;
+        for (const d of disclosuresOf(c, m)) line += `\n  ${bold('Notice:')} ${d.text}`;
+        const op = operationOf(m);
+        if (op) {
+          pendingOperation = { convId, operation: op };
+          line += `\n${showOperation(c, op)}\n  /approve to approve it; otherwise it is not done.`;
+        }
+        const declined = declineOf(m, c);
+        if (declined) {
+          line += `\n  ${bold('Not done')}: the Company declined the approval${declined.reason ? ` (${declined.reason})` : ''}.`;
+        }
         print(line);
         return;
       }
@@ -773,6 +874,19 @@ async function cmdChat(ctx: Ctx, domain?: string): Promise<number> {
           context[k] = val === 'true' ? true : val === 'false' ? false : val;
         }
         await send({ author: { type: 'agent' }, context });
+      } else if (cmd === '/approve') {
+        if (!pendingOperation) {
+          out('Nothing is waiting for your approval.');
+          continue;
+        }
+        const { convId, operation } = pendingOperation;
+        pendingOperation = undefined;
+        // You typed /approve here, in this agent's own interface: a user approval (section 5).
+        const outcome = await approveInConversation(conv, convId, operation, {
+          approve: () => ({ approver: 'user', inputType: 'typed' }),
+          text: 'The user approved it.',
+        });
+        print(dim(`[${outcome.status === 'sent' ? 'approval sent' : describeOutcome(outcome)}]`));
       } else if (cmd === '/status') {
         if (!mainId) out('no conversation yet');
         else {
