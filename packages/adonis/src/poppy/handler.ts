@@ -267,7 +267,7 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
           ...(cursor !== undefined ? { cursor } : {}),
           waitMs: wait,
         });
-        return exchange.json(200, result);
+        return exchange.json(200, result, challengeFor(principal, result.events));
       }
       case 'handoff':
       case 'handoff-cancel':
@@ -304,7 +304,7 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
       ...(cursor !== undefined ? { cursor } : {}),
       waitMs: wait,
     });
-    return exchange.json(answer.status, read);
+    return exchange.json(answer.status, read, challengeFor(principal, read.events));
   }
 
   return async function handle(exchange: PoppyExchange): Promise<boolean> {
@@ -371,6 +371,26 @@ function withVersions(exchange: PoppyExchange, principal: PoppyPrincipal): Poppy
     protocolVersion: version as string,
     extensions: principal.extensions ?? parsePoppyExtensions(exchange.headers['poppy-extensions']),
   };
+}
+
+/**
+ * The `WWW-Authenticate` challenge matching the last `authorization` event of a response (§8.11):
+ * on a successful response whose headers are not sent yet, alongside the event. Signed in, an
+ * `insufficient_scope` challenge in the token's scheme; signed out, the challenge of a request that
+ * needs the account (§7). No event, no header.
+ */
+export function challengeFor(
+  principal: Pick<PoppyPrincipal, 'signedIn' | 'tokenType'>,
+  events: readonly { type: string; [field: string]: unknown }[],
+): Record<string, string> {
+  const event = [...events].reverse().find((candidate) => candidate.type === 'authorization');
+  if (event === undefined) return {};
+  const scope = typeof event.scope === 'string' ? event.scope.replace(/["\\]/g, '') : '';
+  const scopeParam = scope !== '' ? `scope="${scope}"` : '';
+  const challenge = principal.signedIn
+    ? `${principal.tokenType === 'DPoP' ? 'DPoP' : 'Bearer'} error="insufficient_scope"${scopeParam ? `, ${scopeParam}` : ''}`
+    : `Bearer${scopeParam ? ` ${scopeParam}` : ''}`;
+  return { 'WWW-Authenticate': challenge };
 }
 
 function allowFor(rest: string[]): string {

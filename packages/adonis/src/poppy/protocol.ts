@@ -58,6 +58,11 @@ export interface PoppyInboundMessage {
   context?: PoppyContext;
   /** The last cursor the Personal Agent had read when it wrote the message — a hint (§8.4). */
   as_of_cursor?: string;
+  /**
+   * Content defined by extensions, keyed by extension name (§8.4). Only the extensions this surface
+   * supports and the request declares are kept (`operations`); the rest is ignored (§3.3).
+   */
+  extensions?: Record<string, unknown>;
 }
 
 /** A message as it appears in a `message` event (§8.5): `role` says which side it came from. */
@@ -71,7 +76,36 @@ export interface PoppyEventMessage {
   text?: string;
   data?: Record<string, unknown>;
   context?: PoppyContext;
+  /** Content defined by extensions, keyed by extension name (§8.4). */
+  extensions?: Record<string, unknown>;
 }
+
+/** The Links extension (version 1): a page a Company message refers to. */
+export interface PoppyLink {
+  /** The page's HTTPS URL. */
+  url: string;
+  /** The page's name, as the message refers to it. */
+  title?: string;
+}
+
+/** The Disclosures extension (version 1): a notice that matters whatever else the message says. */
+export interface PoppyDisclosure {
+  text: string;
+}
+
+/**
+ * What a Company message can carry besides its text and data — sent as `extensions.links` and
+ * `extensions.disclosures` to a Personal Agent that declares those extensions; otherwise put in the
+ * text, so a disclosure always reaches the User.
+ */
+export interface PoppyMessageAddons {
+  links?: PoppyLink[];
+  disclosures?: PoppyDisclosure[];
+}
+
+/** The versions of the message extensions this surface speaks. */
+export const POPPY_LINKS_VERSION = '1';
+export const POPPY_DISCLOSURES_VERSION = '1';
 
 export type PoppyEventType =
   | 'message'
@@ -242,6 +276,38 @@ function splitList(value: string): string[] {
   return items;
 }
 
+/**
+ * Links and disclosures checked for a Company message: a link needs an HTTPS `url`, a disclosure
+ * its `text` (Links §3, Disclosures §3). Throws on anything else — it is the app's own input.
+ */
+export function checkPoppyAddons(addons: PoppyMessageAddons): PoppyMessageAddons {
+  const links = (addons.links ?? []).map((link) => {
+    let url: URL;
+    try {
+      url = new URL(link.url);
+    } catch {
+      throw new TypeError(`poppy: a link needs an absolute URL, got ${JSON.stringify(link.url)}`);
+    }
+    if (url.protocol !== 'https:') {
+      throw new TypeError(`poppy: a link must be an HTTPS URL, got ${JSON.stringify(link.url)}`);
+    }
+    return {
+      url: link.url,
+      ...(typeof link.title === 'string' && link.title !== '' ? { title: link.title } : {}),
+    };
+  });
+  const disclosures = (addons.disclosures ?? []).map((disclosure) => {
+    if (typeof disclosure?.text !== 'string' || disclosure.text.trim() === '') {
+      throw new TypeError('poppy: a disclosure needs its text');
+    }
+    return { text: disclosure.text };
+  });
+  return {
+    ...(links.length > 0 ? { links } : {}),
+    ...(disclosures.length > 0 ? { disclosures } : {}),
+  };
+}
+
 /** A validated `POST {endpoint}` / `POST {endpoint}/{id}/messages` body (§8.3). */
 export interface PoppySendBody {
   /** The request ID, chosen by the Personal Agent — also its message's ID. */
@@ -326,13 +392,17 @@ function parseMessage(raw: unknown): PoppyInboundMessage {
     message.as_of_cursor !== ''
       ? message.as_of_cursor
       : undefined;
-  // Extension content this surface does not support is ignored (§3.3, §8.4).
+  // Extension content is kept for now: which of it is used depends on what the request declares,
+  // checked by the conversation (§3.3, §8.4).
   return {
     author: { type: authorType },
     ...(asOfCursor !== undefined ? { as_of_cursor: asOfCursor } : {}),
     ...(message.text !== undefined ? { text: message.text as string } : {}),
     ...(message.data !== undefined ? { data: message.data as Record<string, unknown> } : {}),
     ...(context !== undefined ? { context: { ...context } } : {}),
+    ...(message.extensions !== undefined
+      ? { extensions: { ...(message.extensions as Record<string, unknown>) } }
+      : {}),
   };
 }
 

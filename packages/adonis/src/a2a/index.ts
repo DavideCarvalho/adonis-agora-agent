@@ -35,6 +35,8 @@ export {
 } from './store.js';
 export type {
   A2aActionPolicy,
+  A2aParkedAction,
+  A2aParkedDecision,
   A2aTurnOutcome,
   A2aTurnResult,
   A2aTurnService,

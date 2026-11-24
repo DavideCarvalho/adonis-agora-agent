@@ -132,6 +132,45 @@ describe.each(backends)('PoppyStore contract (%s)', (_name, make) => {
     });
   });
 
+  it('keeps the operations of a conversation and the as_of_request of its active run', async () => {
+    const store = await make();
+    await store.createConversation(record('cnv_1'));
+    expect(await store.getConversation('cnv_1')).toMatchObject({
+      operations: {},
+      asOfRequest: null,
+    });
+    const operation = {
+      operationId: 'op_1',
+      revision: 'rev_1',
+      expiresAt: '2026-11-23T12:00:00.000Z',
+      summary: 'Cancel order A-1',
+      terms: { tool: 'cancel_order', input: { id: 'A-1' } },
+      tool: 'cancel_order',
+      input: { id: 'A-1' },
+      proposalId: null,
+      status: 'pending' as const,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    await store.updateConversation('cnv_1', {
+      operations: { op_1: operation },
+      asOfRequest: 'msg_7',
+      grant: {
+        actor: { id: 'a1' },
+        scopes: [],
+        signedIn: false,
+        extensions: { operations: '3' },
+      },
+    });
+    expect(await store.getConversation('cnv_1')).toMatchObject({
+      operations: { op_1: operation },
+      asOfRequest: 'msg_7',
+      grant: { extensions: { operations: '3' } },
+    });
+    await store.updateConversation('cnv_1', { asOfRequest: null });
+    expect((await store.getConversation('cnv_1'))?.asOfRequest).toBeNull();
+  });
+
   it('appends events in order, dedupes by key, finds and pages them', async () => {
     const store = await make();
     await store.createConversation(record('cnv_1'));

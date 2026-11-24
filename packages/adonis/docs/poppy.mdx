@@ -138,7 +138,10 @@ action" ([Poppy §8.11](https://personalagentprotocol.org/docs/1.0/spec#conversa
 
 - A tool behind a scope the token lacks is **offered but not run**. Its refused call ends the turn
   with an **`authorization`** event: always `insufficient_scope`, signed in or out, with `scope`
-  naming what was missing (`"orders:write"`). In a Direct Conversation, where the User reads the
+  naming what was missing (`"orders:write"`). A response that carries the event and has not sent its
+  headers yet (a read, or a POST with `wait`) also has the matching `WWW-Authenticate` challenge —
+  `DPoP error="insufficient_scope", scope="orders:write"` signed in, `Bearer scope="orders:write"`
+  signed out — with its usual success status. In a Direct Conversation, where the User reads the
   messages, the Company Agent also asks in a message (`texts.signIn`). The conversation stays open;
   the personal agent continues it with its new token.
 - With the scope, an `action` that parks for approval is **approved by the scope** (`actions:
@@ -146,6 +149,8 @@ action" ([Poppy §8.11](https://personalagentprotocol.org/docs/1.0/spec#conversa
   proposals (`actionApprovalMode: 'independent'`): the turn decides it, **waits for it to execute**, and
   the reply carries it in `data.actions` — `{ tool, status, summary, result }`, the summary being the
   confirmation your app would have shown the person. A question set (`ask`) is skipped.
+- A personal agent that declares the [Operations extension](#approvals-operations) gets the action's
+  terms to approve instead, and the action runs once it approves them.
 - Every action is also told in the reply's **text** ([Poppy §8](https://personalagentprotocol.org/docs/1.0/spec#conversations): a message must make sense without `data`):
   `status` is `succeeded`, `failed` (with `error`) or `rejected`. When the model wrote nothing, or an
   action did not go through (the model wrote before the result, so its claim is replaced), the text is
@@ -157,8 +162,9 @@ action" ([Poppy §8.11](https://personalagentprotocol.org/docs/1.0/spec#conversa
 A message's `text` and `data` reach the model (data as JSON); its `context` (`locale`, `time_zone`,
 `user_available`, …) is merged into the conversation's — a field set to `null` is cleared — and given
 to the turn as `pageContext: { channel: 'poppy', poppy: { conversationId, direct, sender, signedIn, context } }`.
-A context-only message updates it without a turn. An `author.type` other than `human` counts as `agent`;
-extension content in `extensions` is not read.
+A context-only message updates it without a turn. An `author.type` other than `human` counts as `agent`.
+Of a personal agent's `extensions`, only an Operations approval is read (when the request declares
+`"operations";v="3"`); everything else there is ignored and not kept.
 
 The personal agent's message is recorded with its request's `id` and `role: 'user'`. The reply is a
 `message` event (`role: 'company'`, `author.type: 'agent'`, `as_of_request` naming the latest message it
@@ -200,6 +206,83 @@ export default definePoppyConfig({
     kind === 'read' || started.extensions.links === request.extensions.links,
 })
 ```
+
+## Approvals (Operations)
+
+With the [Operations extension](https://personalagentprotocol.org/docs/1.0/extensions/operations)
+(version 3), an action that waits for approval is not run on the token's scope: the Company Agent's
+reply carries the **operation** — its terms — and the action runs once the personal agent sends an
+approval of exactly those terms. It is used only for a personal agent that declares
+`Poppy-Extensions: "operations";v="3"`; any other gets the usual policy (`actions`).
+
+It needs an operations service in `Symbol.for('@adonis-agora/poppy:operations')`, which AuthKit
+installs when its Poppy operations are enabled (it stores the operations, checks each approval and
+advertises the extension in `poppy.json`). With one installed it is on; `operations: false` turns it
+off. Without one, `operations: true` logs an error at boot and conversations ask for no approvals.
+
+```ts title="config/poppy.ts"
+export default definePoppyConfig({
+  // ...
+  operations: {
+    // Which actions need approval (default: every action that waits for approval).
+    requires: ({ toolName }) => toolName !== 'add_note',
+    // What the User reads, and the terms (default: the tool's confirmation, and { tool, input }).
+    describe: ({ toolName, input }) => ({
+      summary: `Cancel order ${(input as { id: string }).id}. The refund goes to the original card.`,
+      terms: { order_id: (input as { id: string }).id, refund: 'original_payment_method' },
+    }),
+    expiresInMs: 15 * 60_000, // how long an approval may take (default 15 minutes)
+  },
+})
+```
+
+What the personal agent sees:
+
+1. Its message asks for the action. The tool is not run (the model is told it waits for approval),
+   and the reply has `extensions.operations.operation` — `operation_id`, `revision`, `summary`,
+   `terms`, `expires_at`. Several actions in one turn come one operation per message.
+2. It sends a message with `extensions.operations.approval` (`operation_id`, `revision`,
+   `approver`, and optionally `approved_at`, `input_type`, `reference`). The text of that message
+   approves nothing.
+3. The approval is checked by the operations service. Then the action runs: an independent proposal
+   at once (the reply tells it, as in `data.actions`), a held call when the Company Agent makes the
+   same call again with the same input. It runs **at most once**: the same approval again adds
+   nothing.
+
+An approval that does not match any more (expired, or the terms changed) gets the same operation with
+a new revision to approve. A declined approval answers `extensions.operations.declined`
+(`operation_id`, `revision`, `reason`, `alternative`) and nothing is performed. An approval of an
+operation the conversation never asked for performs nothing (`texts.operationUnknown`).
+
+## Links and disclosures
+
+A Company message can carry links ([Links](https://personalagentprotocol.org/docs/1.0/extensions/links))
+and notices ([Disclosures](https://personalagentprotocol.org/docs/1.0/extensions/disclosures)). They are
+sent as `extensions.links` / `extensions.disclosures` to a personal agent whose request declares
+`"links";v="1"` / `"disclosures";v="1"`; to any other, they are added to the text, so a disclosure always
+reaches the User. A link must be an HTTPS URL. AuthKit advertises both extensions in `poppy.json`.
+
+```ts title="config/poppy.ts"
+export default definePoppyConfig({
+  // ...
+  // For each reply of the Company Agent.
+  replyAddons: ({ text }) =>
+    /return/i.test(text)
+      ? { links: [{ url: 'https://acme.com/help/returns', title: 'Return policy' }] }
+      : undefined,
+})
+```
+
+```ts
+await poppy.postMessage(id, {
+  author: { type: 'agent' },
+  text: 'The trail bar comes in boxes of 12 for $18.',
+  disclosures: [{ text: 'Contains peanuts.' }],
+  links: [{ url: 'https://acme.com/products/trail-bar', title: 'Trail bar' }],
+})
+```
+
+Links and disclosures in a personal agent's messages are ignored: only Company messages carry them.
 
 ## Handoff to a person
 
@@ -278,12 +361,13 @@ that scope and signs in again. A **signed-out** Session's MCP token (it lives on
 Conversations, events and request receipts live in `agent_poppy_conversation`, `agent_poppy_event` and
 `agent_poppy_message`, created on first use (`store: 'lucid'`, the default) — missing columns are added
 to existing tables too. With `autoCreateTables: false` you manage them yourself: `poppyTableStatements()`
-gives the DDL and `POPPY_1_0_COLUMNS` the columns to add to tables created before 1.0. `store: 'memory'` keeps them in-process, `redisPoppyStore(redis)` shares them
+gives the DDL and `POPPY_1_0_COLUMNS` the columns to add to tables created by an earlier version. `store: 'memory'` keeps them in-process, `redisPoppyStore(redis)` shares them
 over Redis, any `PoppyStore` works.
 
 The event log is the turn queue: user messages after the last answered one are what the next turn
 answers, by one replica at a time (a lease). A replica that finds a conversation `working` with no one
-writing it takes it up — and a reply whose writer died is written from the run's own stream, once. With
+writing it takes it up — and a reply whose writer died is written from the run's own stream, once,
+with the `as_of_request` the dead turn had. With
 a durable runner whose dispatcher only persists a started run, the turn's pending run is executed in
 this process while it is read (`drive`, like the channels) — so a deployment whose single worker is busy
 never waits on itself.
@@ -304,7 +388,9 @@ gets the complete message only (the spec makes deltas optional).
 | `store` | `'lucid'` | `'memory'`, or a `PoppyStore` (`redisPoppyStore`). `connection`, `autoCreateTables`, `schema` (default: `config/agent.ts`'s `schema`). |
 | `actions` | `'approve-delegated'` | Or `'reject'`. |
 | `handoff`, `direct` | — | Hooks above. |
-| `texts` | English | `handoffUnavailable`, `failed`, `signIn`, `actionSucceeded`, `actionFailed`, `actionRejected`, `userJoined` (`{reason}`, told to the agent, never shown). |
+| `texts` | English | `handoffUnavailable`, `failed`, `signIn`, `actionSucceeded`, `actionFailed`, `actionRejected`, `userJoined` (`{reason}`, told to the agent, never shown); for operations `operationHeld` (told to the agent), `operationRequired` (`{summary}`), `operationDeclined` (`{summary}`, `{reason}`), `operationApproved` (`{summary}`, `{tool}`, `{input}`, told to the agent), `operationUnknown` (`{operation}`), `operationPerforming` (`{summary}`). |
+| `operations` | on with a service | `false`, `true`, or `{ service, requires, describe, expiresInMs }` — [approvals](#approvals-operations). |
+| `replyAddons` | — | `(ctx) => ({ links, disclosures })` for each reply — [links and disclosures](#links-and-disclosures). |
 | `continueVersion` | compatible versions | `({ conversation, started, request, kind }) => boolean` — `false` is `version_mismatch`. |
 | `formatAction` | `formatPoppyAction` | `(action, texts) => string \| null` — how an action reads in the reply. |
 | `timeoutMs` | `120000` | A turn running longer is cancelled. |

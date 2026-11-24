@@ -16,7 +16,10 @@ export type {
   PoppyHandoffDecision,
   PoppyHandoffHooks,
   PoppyHookContext,
+  PoppyOperationsOptions,
+  PoppyOperationTerms,
   PoppyReadResult,
+  PoppyReplyAddons,
   PoppyStreamItem,
   PoppyTexts,
   PoppyVersionCheck,
@@ -38,11 +41,38 @@ export {
   poppyConversationsUrl,
 } from './endpoints.js';
 export type { PoppyExchange, PoppyHandlerOptions, PoppyStreamWriter } from './handler.js';
-export { adonisExchange, createPoppyHandler, nodeExchange, publicOrigin } from './handler.js';
+export {
+  adonisExchange,
+  challengeFor,
+  createPoppyHandler,
+  nodeExchange,
+  publicOrigin,
+} from './handler.js';
+export type {
+  PoppyAlternative,
+  PoppyApproval,
+  PoppyApprover,
+  PoppyDecline,
+  PoppyOperation,
+  PoppyOperationInput,
+  PoppyOperationRequireResult,
+  PoppyOperationsContent,
+  PoppyOperationsService,
+  PoppyStoredOperation,
+} from './operations.js';
+export {
+  formatPoppyApproval,
+  globalPoppyOperations,
+  POPPY_OPERATIONS_EXTENSION,
+  POPPY_OPERATIONS_SLOT,
+  POPPY_OPERATIONS_VERSION,
+  parsePoppyApproval,
+} from './operations.js';
 export type {
   PoppyAuthor,
   PoppyAuthorType,
   PoppyContext,
+  PoppyDisclosure,
   PoppyErrorCode,
   PoppyEvent,
   PoppyEventBody,
@@ -50,13 +80,18 @@ export type {
   PoppyEventType,
   PoppyHandoff,
   PoppyInboundMessage,
+  PoppyLink,
+  PoppyMessageAddons,
   PoppyRequestBody,
   PoppyResponder,
   PoppySendBody,
   PoppyState,
 } from './protocol.js';
 export {
+  checkPoppyAddons,
   isCompatiblePoppyVersion,
+  POPPY_DISCLOSURES_VERSION,
+  POPPY_LINKS_VERSION,
   POPPY_PROTOCOL_TYPE,
   POPPY_PROTOCOL_VERSION,
   PoppyError,
@@ -66,6 +101,7 @@ export type { PoppyRedisClient, RedisPoppyStoreOptions } from './redis-store.js'
 export { redisPoppyStore } from './redis-store.js';
 export type {
   LucidPoppyStoreOptions,
+  PoppyConversationOperation,
   PoppyConversationPatch,
   PoppyConversationRecord,
   PoppyGrant,
