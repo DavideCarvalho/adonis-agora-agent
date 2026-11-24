@@ -15,6 +15,7 @@ import {
 import { PoppyHttp, type PoppyRequestInit, readJson } from './http.js';
 import type { AgentIdentity } from './identity.js';
 import { generateEs256Key } from './keys.js';
+import type { OperationApprover } from './operations.js';
 import { companyFetch } from './safe_fetch.js';
 import { signSessionJwt } from './session_jwt.js';
 import type { AccountTokenRecord, CompanyState, StateStore, TokenRecord } from './store.js';
@@ -52,6 +53,26 @@ export interface PoppyAgentOptions extends SecurityOptions {
   extensions?: Record<string, string> | undefined;
   /** Use Companies on ports other than 443, for testing (3.1). `insecureDev` implies it. */
   allowPorts?: boolean | undefined;
+  /**
+   * Which of the operator's agents acts (5.1), such as `travel` or `shopping`: each name gets its own
+   * Agent ID at each Company, opaque and random, sent as `agent_id` in its Sessions. Leave it out for
+   * an agent that is the only one: then no `agent_id` is sent.
+   */
+  agent?: string | undefined;
+  /**
+   * The Operations extension (declare `operations: '3'` in `extensions`): `approve` decides each
+   * operation a Company returns, asking the User or approving on an instruction they gave
+   * (Operations section 5). Without it, nothing is approved and the action isn't performed.
+   */
+  operations?:
+    | {
+        approve?: OperationApprover | undefined;
+        /** Times a request carrying an approval is sent again after a failure. Default 3. */
+        maxRetries?: number | undefined;
+        /** Longest wait for a `503` with `Retry-After` while an operation is performed. Default 30 s. */
+        maxRetryAfterSeconds?: number | undefined;
+      }
+    | undefined;
 }
 
 /** Entry point: one agent identity, one local state file, one local user. */
@@ -190,13 +211,18 @@ export class CompanyClient {
   readonly #resources = new Map<string, string | null>();
   #refreshing: Promise<unknown> = Promise.resolve();
 
+  /** An anonymous browsing session (5.1): signed out only, and nothing saved. */
+  readonly anonymous: boolean;
+
   constructor(
     readonly agent: PoppyAgent,
     discovered: Discovered,
     readonly state: CompanyState,
+    options: { anonymous?: boolean | undefined } = {},
   ) {
     this.#discovered = discovered;
     this.dpop = new DpopKey(state.dpopKey);
+    this.anonymous = options.anonymous === true;
   }
 
   /** The discovery this client works with: the chosen version's document (3.4). */
@@ -278,6 +304,19 @@ export class CompanyClient {
    */
   get sessionId(): string {
     const versions = JSON.stringify(this.versionHeaders());
+    const name = this.agentName;
+    if (name !== undefined) {
+      // 5.2: a Session keeps one `agent_id`, so each named agent has Sessions of its own.
+      this.state.agentSessions ??= {};
+      const slot = this.state.agentSessions[name] ?? {};
+      this.state.agentSessions[name] = slot;
+      if (slot.versions !== versions) {
+        slot.sessionId = undefined;
+        slot.versions = versions;
+      }
+      slot.sessionId ??= randomId('', 16);
+      return slot.sessionId;
+    }
     if (this.state.sessionVersions !== versions) {
       this.state.sessionId = undefined;
       this.state.sessionVersions = versions;
@@ -286,14 +325,71 @@ export class CompanyClient {
     return this.state.sessionId;
   }
 
+  /**
+   * The local name of the agent this client's Sessions are for (5.1). Never in an anonymous
+   * browsing Session: an Agent ID there would tie it to the User's regular one.
+   */
+  get agentName(): string | undefined {
+    return this.anonymous ? undefined : this.agent.opts.agent;
+  }
+
+  /**
+   * This User's Agent ID for the named agent at this Company (5.1): stable, opaque, random, one per
+   * Company. `undefined` without a named agent.
+   */
+  get agentId(): string | undefined {
+    const name = this.agentName;
+    if (name === undefined) return undefined;
+    this.state.agentIds ??= {};
+    this.state.agentIds[name] ??= randomId('agt_', 16);
+    return this.state.agentIds[name];
+  }
+
   async save() {
+    if (this.anonymous) return;
     await this.agent.store.save();
   }
 
   /** Stops using the current `sid`; the next request starts a new Session (5.5). */
   async newSession() {
-    this.state.sessionId = undefined;
+    const name = this.agentName;
+    if (name !== undefined && this.state.agentSessions?.[name]) {
+      this.state.agentSessions[name].sessionId = undefined;
+    } else {
+      this.state.sessionId = undefined;
+    }
     await this.save();
+  }
+
+  /**
+   * An anonymous browsing session at this Company (5.1), like a private browser window: a new User
+   * ID, its own delegated key and DPoP key, no Agent ID, never an access token. Nothing of it is
+   * saved; `discard()` it when the browsing session ends.
+   */
+  async anonymousSession(): Promise<CompanyClient> {
+    const state: CompanyState = {
+      issuer: this.state.issuer,
+      hasIssuer: this.state.hasIssuer,
+      protocol: this.state.protocol,
+      domains: [...this.state.domains],
+      userId: randomId('usr_'),
+      dpopKey: await generateEs256Key(),
+      tokens: {},
+      conversations: {},
+    };
+    return new CompanyClient(this.agent, this.#discovered, state, { anonymous: true });
+  }
+
+  /** Ends an anonymous browsing session: its User ID, keys and Session are forgotten. */
+  discard(): void {
+    if (!this.anonymous)
+      throw new PoppyError('not_anonymous', 'only an anonymous session is discarded');
+    this.state.userId = '';
+    this.state.delegation = undefined;
+    this.state.sessionId = undefined;
+    this.state.conversations = {};
+    this.state.operations = undefined;
+    this.state.browserSessions = undefined;
   }
 
   /** Sends a proof with token requests when the issuer's metadata lists ES256 (4.5). */
@@ -326,6 +422,19 @@ export class CompanyClient {
 
   /** A `Poppy-Session` JWT good for this one request (5.2). */
   async sessionJwt(method: string, url: string, accessToken?: string | undefined): Promise<string> {
+    if (this.anonymous && accessToken) {
+      throw new PoppyError(
+        'anonymous_session',
+        'an anonymous session never carries an access token',
+      );
+    }
+    if (this.anonymous && !this.state.userId) {
+      throw new PoppyError('discarded', 'this anonymous session was discarded');
+    }
+    const name = this.agentName;
+    const minted = name !== undefined && this.state.agentIds?.[name] === undefined;
+    const agentId = this.agentId;
+    if (minted) await this.save();
     const { key, jwt } = await this.#delegation();
     return signSessionJwt({
       key,
@@ -334,6 +443,7 @@ export class CompanyClient {
       audience: this.issuer,
       sid: this.sessionId,
       userId: this.userId,
+      agentId,
       method,
       url,
       accessToken,
@@ -345,7 +455,7 @@ export class CompanyClient {
    * with `invalid_grant` means the sign-in is gone: the Session continues signed out (5.5).
    */
   async token(opts: TokenOptions = {}): Promise<TokenRecord | null> {
-    if (!this.accountToken) return null;
+    if (!this.accountToken || this.anonymous) return null;
     const key = tokenKey(opts);
     const rec = this.state.tokens[key];
     if (rec && !opts.forceRenew && rec.expiresAt - EXPIRY_SKEW_MS > Date.now()) return rec;
@@ -402,6 +512,9 @@ export class CompanyClient {
     via: AccountTokenRecord['via'],
     requestedScope: string,
   ): Promise<SignInResult> {
+    if (this.anonymous) {
+      throw new PoppyError('anonymous_session', 'an anonymous session never signs in (5.4)');
+    }
     if (!resp.refresh_token) {
       throw new OAuthError('invalid_response', {
         description: 'sign-in returned no refresh token',
@@ -497,7 +610,7 @@ export class CompanyClient {
   async fetch(url: string, init: CompanyFetchInit = {}): Promise<Response> {
     const { scope, service, signedOut, ...rest } = init;
     const method = (rest.method ?? 'GET').toUpperCase();
-    const wantsAccount = !signedOut && this.accountToken !== undefined;
+    const wantsAccount = !signedOut && !this.anonymous && this.accountToken !== undefined;
     let resource = init.resource;
     if (wantsAccount && resource === undefined && service) {
       resource = await this.#resourceOf(service);

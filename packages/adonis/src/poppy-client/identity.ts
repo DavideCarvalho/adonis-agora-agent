@@ -1,4 +1,5 @@
 import { type JWK, SignJWT } from 'jose';
+import { type BlindSigner, signJwtBlindly } from './blind.js';
 import { bareEcPublicJwk, importSigningKey, type StoredKey } from './keys.js';
 import type { ClientMetadata } from './types.js';
 import { nowSeconds, randomId, requireSecureUrl, type SecurityOptions } from './util.js';
@@ -11,6 +12,12 @@ export interface IdentityConfig {
   logoUri?: string | undefined;
   /** Signing keys; the first one signs. Public halves go in `jwks_uri`. */
   keys: StoredKey[];
+  /**
+   * Sign client assertions AND delegations blindly with PS384 (10.7): the JWTs are written here, with
+   * their `jti`, and the signer (the operator's key service) signs them without seeing them. Its
+   * public key is published in `jwks_uri`. `keys` may then be empty.
+   */
+  blindSigner?: BlindSigner | undefined;
 }
 
 /** Lifetime of a client assertion: `exp` MUST be at most 5 minutes after `iat` (4.1). */
@@ -28,6 +35,7 @@ export class AgentIdentity {
   readonly clientName: string;
   readonly logoUri: string;
   readonly keys: StoredKey[];
+  readonly blindSigner: BlindSigner | undefined;
 
   constructor(cfg: IdentityConfig, sec: SecurityOptions = {}) {
     const base = requireSecureUrl(cfg.baseUrl, 'identity base URL', sec);
@@ -35,8 +43,10 @@ export class AgentIdentity {
     this.baseUrl = base.toString().replace(/\/+$/, '');
     this.clientName = cfg.clientName;
     this.logoUri = cfg.logoUri ?? `${this.baseUrl}/logo.svg`;
-    if (cfg.keys.length === 0) throw new TypeError('identity needs at least one signing key');
+    if (cfg.keys.length === 0 && !cfg.blindSigner)
+      throw new TypeError('identity needs at least one signing key');
     this.keys = cfg.keys;
+    this.blindSigner = cfg.blindSigner;
   }
 
   /** `client_id` is the URL the metadata document is fetched from (4.1). */
@@ -67,10 +77,20 @@ export class AgentIdentity {
 
   /** The public key set. Never contains private members. */
   jwks(): { keys: Record<string, unknown>[] } {
-    return { keys: this.keys.map((k) => ({ ...k.publicJwk })) };
+    const keys: Record<string, unknown>[] = this.keys.map((k) => ({ ...k.publicJwk }));
+    if (this.blindSigner) {
+      const { n, e } = this.blindSigner.publicJwk;
+      keys.push({ kty: 'RSA', n, e, kid: this.blindSigner.kid, alg: 'PS384', use: 'sig' });
+    }
+    return { keys };
   }
 
+  /**
+   * Signs with the first key, or blindly with PS384 when a blind signer is set: then BOTH client
+   * assertions and delegations are signed blindly, as 10.7 requires.
+   */
   private async sign(payload: Record<string, unknown>, typ?: string): Promise<string> {
+    if (this.blindSigner) return signJwtBlindly(this.blindSigner, typ ? { typ } : {}, payload);
     const key = this.keys[0];
     if (!key) throw new TypeError('identity has no signing key');
     const header: { alg: string; kid: string; typ?: string } = { alg: 'ES256', kid: key.kid };
@@ -81,6 +101,8 @@ export class AgentIdentity {
   /**
    * `private_key_jwt` client assertion (4.1, RFC 7523): `iss` = `sub` = `client_id`, `aud` = the
    * Company's issuer as a single string, with `iat`, `exp` at most 5 minutes later and a fresh `jti`.
+   * The `jti` is generated here, never by a blind signer: it is what keeps a deterministic blind
+   * signature safe (10.7).
    */
   clientAssertion(issuer: string): Promise<string> {
     const iat = nowSeconds();

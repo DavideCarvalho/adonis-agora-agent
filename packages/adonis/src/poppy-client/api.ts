@@ -2,6 +2,7 @@ import type { CompanyClient } from './company.js';
 import { throwForResponse } from './company.js';
 import { PoppyError } from './errors.js';
 import { readJson } from './http.js';
+import { type OperationOptions, type OperationOutcome, sendWithOperations } from './operations.js';
 import type { PoppyApiEntry } from './types.js';
 import { requireSecureUrl } from './util.js';
 
@@ -60,6 +61,11 @@ export function apiBaseUrl(doc: OpenApiDoc, api: PoppyApiEntry): string {
  * Calls an endpoint of a listed OpenAPI API (section 7), through the Session and, when signed in,
  * with an access token. Refuses absolute URLs outside the API's own origin, so nothing goes to a
  * third party.
+ *
+ * With the Operations extension, an action the Company wants approved comes back as an operation:
+ * it is decided (`operations.approve`, or `options.approve`) and the same request goes again with
+ * `Poppy-Approval`. `operation` then says how it ended; the action was done only when it is
+ * `performed`.
  */
 export async function callOpenApi(
   company: CompanyClient,
@@ -70,7 +76,13 @@ export async function callOpenApi(
     apiIndex?: number | undefined;
     scope?: string | undefined;
   },
-): Promise<{ status: number; headers: Headers; body: unknown }> {
+  options: OperationOptions = {},
+): Promise<{
+  status: number;
+  headers: Headers;
+  body: unknown;
+  operation?: OperationOutcome | undefined;
+}> {
   const api = pickApi(company, 'openapi', input.apiIndex);
   const doc = await loadOpenApi(company, api);
   const base = apiBaseUrl(doc, api);
@@ -87,13 +99,23 @@ export async function callOpenApi(
   requireSecureUrl(url.toString(), 'API URL', company.security);
   const headers: Record<string, string> = { accept: 'application/json' };
   if (input.body !== undefined) headers['content-type'] = 'application/json';
-  const res = await company.fetch(url.toString(), {
-    method: input.method.toUpperCase(),
-    headers,
-    body: input.body === undefined ? undefined : JSON.stringify(input.body),
-    service: base,
-    scope: input.scope,
-  });
+  const method = input.method.toUpperCase();
+  const content = input.body === undefined ? undefined : JSON.stringify(input.body);
+  // 6: the same method, target URI and content each time; only the approval header is added.
+  const { response: res, outcome } = await sendWithOperations(
+    company,
+    'api',
+    { method, url: url.toString(), body: input.body },
+    (approval) =>
+      company.fetch(url.toString(), {
+        method,
+        headers: approval ? { ...headers, 'poppy-approval': approval } : headers,
+        body: content,
+        service: base,
+        scope: input.scope,
+      }),
+    options,
+  );
   if ((res.status === 401 || res.status === 403) && res.headers.get('www-authenticate')) {
     await throwForResponse(res);
   }
@@ -106,5 +128,10 @@ export async function callOpenApi(
   try {
     body = text ? JSON.parse(text) : undefined;
   } catch {}
-  return { status: res.status, headers: res.headers, body };
+  return {
+    status: res.status,
+    headers: res.headers,
+    body,
+    ...(outcome ? { operation: outcome } : {}),
+  };
 }

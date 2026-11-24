@@ -9,9 +9,13 @@ declare module 'jsdom' {
     cookie: string;
     head: { appendChild(element: PageElement): void };
     createElement(tag: string): PageElement;
+    getElementById(id: string): unknown;
   }
   export class JSDOM {
-    constructor(html?: string, options?: { url?: string; pretendToBeVisual?: boolean });
-    readonly window: { document: PageDocument };
+    constructor(
+      html?: string,
+      options?: { url?: string; pretendToBeVisual?: boolean; runScripts?: 'outside-only' },
+    );
+    readonly window: { document: PageDocument; eval(source: string): unknown };
   }
 }

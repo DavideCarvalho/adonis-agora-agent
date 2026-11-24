@@ -69,7 +69,7 @@ function skillsOf(index: unknown, base: string, company: CompanyClient): SkillEn
  * Drops what 9.2 says to ignore: references of a type this client doesn't know, and `openapi` or
  * `mcp` references to an API the Company doesn't list, so an alternative can't aim it elsewhere.
  */
-function safeAlternative(
+export function safeAlternative(
   company: CompanyClient,
   alternative: TaskAlternative | undefined,
 ): TaskAlternative | undefined {

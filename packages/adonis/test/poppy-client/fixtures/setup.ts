@@ -3,7 +3,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PoppyAgent } from '../../../src/poppy-client/company.js';
-import { AgentIdentity } from '../../../src/poppy-client/identity.js';
+import { AgentIdentity, type IdentityConfig } from '../../../src/poppy-client/identity.js';
 import { startIdentityServer } from '../../../src/poppy-client/identity_server.js';
 import { generateEs256Key } from '../../../src/poppy-client/keys.js';
 import { StateStore } from '../../../src/poppy-client/store.js';
@@ -31,7 +31,10 @@ export interface World {
 }
 
 /** A fake Company + a Personal Agent whose identity is served in-process (--insecure-dev). */
-export async function world(opts: FakeOptions = {}): Promise<World> {
+export async function world(
+  opts: FakeOptions = {},
+  identityOverrides: Partial<Pick<IdentityConfig, 'keys' | 'blindSigner'>> = {},
+): Promise<World> {
   const fake = await new FakeCompany(opts).start();
   const dir = await mkdtemp(join(tmpdir(), 'poppy-agent-'));
   const store = await StateStore.open(join(dir, 'state.json'));
@@ -41,6 +44,7 @@ export async function world(opts: FakeOptions = {}): Promise<World> {
       baseUrl: `http://127.0.0.1:${port}`,
       clientName: 'Test Agent',
       keys: [await generateEs256Key()],
+      ...identityOverrides,
     },
     { insecureDev: true },
   );

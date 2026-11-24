@@ -31,12 +31,15 @@ export { type SealedColumnReport, type SealedReport, walkSealed } from './reseal
 export { continueAfterConnect, resumeAfterConnect } from './resume.js';
 export {
   normalizeKeys,
+  operationView,
   PoppyCompanyNotAllowedError,
   type PoppyCompanyReply,
   PoppyConnections,
   type PoppyConnectionsOptions,
   type PoppyConnectionView,
   type PoppyConnectPageData,
+  type PoppyDeclineView,
+  type PoppyOperationView,
 } from './service.js';
 export {
   ensurePoppyConnectionTables,

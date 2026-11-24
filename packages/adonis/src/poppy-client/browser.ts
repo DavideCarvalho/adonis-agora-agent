@@ -62,8 +62,16 @@ export async function authorizeBrowserJoin(
       ...(signedOut ? { signedOut: true } : {}),
     });
   const signedOut = opts.signedOut === true || company.accountToken === undefined;
+  const sid = company.sessionId;
+  const joined = async (signedIn: boolean) => {
+    // A `Poppy-Operation` header counts only when its `sid` names a Session this browser joined.
+    const sids = (company.state.browserSessions ?? []).filter((s) => s !== sid);
+    company.state.browserSessions = [...sids, company.sessionId].slice(-20);
+    await company.save();
+    return { signedIn };
+  };
   let res = await authorize(signedOut);
-  if (res.status === 204) return { signedIn: !signedOut };
+  if (res.status === 204) return joined(!signedOut);
   if (
     !signedOut &&
     res.status === 403 &&
@@ -71,7 +79,7 @@ export async function authorizeBrowserJoin(
   ) {
     await res.body?.cancel().catch(() => {});
     res = await authorize(true);
-    if (res.status === 204) return { signedIn: false };
+    if (res.status === 204) return joined(false);
   }
   return throwForResponse(res);
 }

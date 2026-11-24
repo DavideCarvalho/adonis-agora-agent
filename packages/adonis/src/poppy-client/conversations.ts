@@ -2,6 +2,8 @@ import type { CompanyClient } from './company.js';
 import { throwForResponse } from './company.js';
 import { ConversationError, PoppyError } from './errors.js';
 import { readJson } from './http.js';
+import { COMPANY_ONLY_CONTENT } from './message_extensions.js';
+import { noteOperationEvent } from './operations.js';
 import { parseSse } from './sse.js';
 import type {
   ConversationEvent,
@@ -186,6 +188,33 @@ export class ConversationClient {
     if (patch.parent !== undefined) rec.parentConversationId = patch.parent;
   }
 
+  /**
+   * 8.4: `author.type` agent or human, at least one field; and extension content only for an
+   * extension this agent uses with the Company in the chosen version, never content only Company
+   * messages carry (links, disclosures).
+   */
+  private checkMessage(m: OutgoingMessage) {
+    checkMessage(m);
+    const declared = this.company.declaredExtensions;
+    for (const name of Object.keys(m.extensions ?? {})) {
+      if (COMPANY_ONLY_CONTENT.includes(name)) {
+        throw new ConversationError('invalid_message', {
+          description: `only Company messages carry ${name}`,
+        });
+      }
+      if (declared[name] === undefined) {
+        throw new ConversationError('invalid_message', {
+          description: `${name} isn't an extension this agent uses with the Company`,
+        });
+      }
+    }
+  }
+
+  /** Notes operations and declines in an event (Operations extension), then hands it on. */
+  private note(ev: ConversationEvent) {
+    noteOperationEvent(this.company, ev);
+  }
+
   /** The cursor this client last handled for a conversation, if any. */
   cursorOf(id: string): string | undefined {
     return this.company.state.conversations[id]?.cursor || undefined;
@@ -224,7 +253,7 @@ export class ConversationClient {
         });
       }
     } else {
-      checkMessage(message);
+      this.checkMessage(message);
     }
     const body: { id: string; [k: string]: unknown } = {
       id: opts.requestId ?? (message ? newMessageId() : newRequestId('dir_')),
@@ -248,7 +277,7 @@ export class ConversationClient {
     message: OutgoingMessage,
     opts: PostOptions & { requestId?: string | undefined } = {},
   ): Promise<StartConversationResponse> {
-    checkMessage(message);
+    this.checkMessage(message);
     const r = await this.post<StartConversationResponse>(
       this.url(id, '/messages', { wait: opts.wait, cursor: opts.cursor }),
       { id: opts.requestId ?? newMessageId(), message: this.withAsOf(id, message) },
@@ -344,6 +373,7 @@ export class ConversationClient {
       for (const ev of page.events) {
         if (seen.has(ev.id)) continue;
         seen.add(ev.id);
+        this.note(ev);
         events.push(ev);
       }
       if (page.cursor) cursor = page.cursor;
@@ -374,6 +404,7 @@ export class ConversationClient {
       if (!ev || typeof ev.id !== 'string' || seen.has(ev.id)) return false;
       seen.add(ev.id);
       cursor = ev.id;
+      this.note(ev);
       this.remember(id, { cursor });
       if (ev.type === 'state' && ev.closed === true) {
         closed = true;

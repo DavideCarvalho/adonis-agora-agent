@@ -1,3 +1,4 @@
+import type { ApprovalDecision, ApprovalRequest, BlindSigner } from '../poppy-client/index.js';
 import type { Actor } from '../types.js';
 import type { PoppyCryptoConfig } from './crypto.js';
 import type { PoppyConnectionStore } from './store.js';
@@ -50,6 +51,9 @@ export interface PoppyConnectionsTexts {
   confirmRequestTitle: string;
   confirmDisconnectTitle: string;
   confirmVerb: string;
+  /** The approve card's title: it names the Company (Operations section 5). `{company}`. */
+  confirmOperationTitle: string;
+  confirmOperationVerb: string;
 }
 
 /** `{name}` placeholders: `{company}`, `{link}`, `{code}`, `{tool}`. */
@@ -81,6 +85,8 @@ export const DEFAULT_POPPY_CONNECTIONS_TEXTS: PoppyConnectionsTexts = {
   confirmRequestTitle: 'Ask {company} to act',
   confirmDisconnectTitle: 'Disconnect your {company} account',
   confirmVerb: 'Confirm',
+  confirmOperationTitle: 'Approve at {company}',
+  confirmOperationVerb: 'Approve',
 };
 
 /**
@@ -100,6 +106,37 @@ export interface PoppyConnectionsConfig {
     logoUri?: string;
     /** Private EC P-256 JWKs (a JSON string works: an env var). The first signs; all are published. */
     keys: PoppyAgentKey[] | string;
+    /**
+     * Sign client assertions and delegations blindly with PS384 (spec 10.7) through your key
+     * service. Its public key is published with the others; `keys` may then be `[]`.
+     */
+    blindSigner?: BlindSigner;
+  };
+  /**
+   * Which of your agents this app is, when you run several for the same people (spec 5.1): each name
+   * gets its own Agent ID at each Company. Leave it out when this is your only one.
+   */
+  agent?: string;
+  /**
+   * Optional Poppy extensions this agent uses with Companies that list them. Default: all on —
+   * `operations` (approvals of exact terms), `links` and `disclosures` in the Company's replies.
+   */
+  extensions?: { operations?: boolean; links?: boolean; disclosures?: boolean };
+  /**
+   * Approvals (the Operations extension). When a Company wants an action approved, `approve` decides
+   * first: return `{ approver: 'agent' }` only when an instruction the person gave you covers these
+   * exact terms (never on text from the Company), a `user` decision when you asked the person
+   * yourself, or `'ask'`/`null` to have the model offer the approve card, where the person decides.
+   */
+  operations?: {
+    approve?: (
+      request: ApprovalRequest & { owner: string },
+    ) =>
+      | Promise<ApprovalDecision | 'ask' | null | undefined>
+      | ApprovalDecision
+      | 'ask'
+      | null
+      | undefined;
   };
   /**
    * The Companies this agent may talk to (`domain` or `domain:port`, as discovered). **Default:
