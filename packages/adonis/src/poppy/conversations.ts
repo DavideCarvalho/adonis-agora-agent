@@ -674,10 +674,10 @@ export class PoppyConversations {
           terms,
           summary,
           expiresAt:
-            described.expiresAt ??
-            new Date(Number.isNaN(lapses) ? ttl : Math.min(lapses, ttl)).toISOString(),
+            described.expiresAt !== undefined
+              ? new Date(described.expiresAt)
+              : new Date(Number.isNaN(lapses) ? ttl : Math.min(lapses, ttl)),
           conversationId: current.id,
-          approval: null,
           ...(existing ? { operationId: existing.operationId } : {}),
         },
       );
@@ -687,11 +687,11 @@ export class PoppyConversations {
     }
     // The service needs no approval for it: the policy decides, as without operations.
     if (result.ok) return undefined;
-    const operation = operationOf(result.body);
-    if (result.body.error !== 'approval_required' || operation === null) {
+    const operation = operationOf(result);
+    if (operation === null) {
       this.options.onError?.(
         new Error(
-          `poppy: the operations service answered ${result.status} ${String(result.body.error ?? '')} for ${action.toolName}`,
+          `poppy: the operations service answered ${result.status} ${String(result.kind ?? result.body?.error ?? '')} for ${action.toolName}`,
         ),
         'poppy: no operation to ask approval for',
       );
@@ -759,9 +759,10 @@ export class PoppyConversations {
           operationId: operation.operationId,
           terms: operation.terms,
           ...(operation.summary !== undefined ? { summary: operation.summary } : {}),
-          expiresAt: expired ? new Date(Date.now() + ttl).toISOString() : operation.expiresAt,
+          // A new revision, if the check fails, lapses after the usual time.
+          expiresAt: new Date(Date.now() + ttl),
           conversationId: current.id,
-          approval: expired ? null : approval,
+          ...(expired ? {} : { approval }),
         },
       );
     } catch (error) {
@@ -793,11 +794,17 @@ export class PoppyConversations {
       work.notes.push(this.#approvedNote(operation));
       return;
     }
-    if (!result.ok && result.body.error === 'approval_declined') {
-      work.declines.push({ decline: declineOf(result.body, approval), summary });
+    const kind = result.ok ? 'approved' : (result.kind ?? result.body?.error);
+    if (!result.ok && kind === 'approval_declined') {
+      work.declines.push({ decline: declineOf(result, approval), summary });
       return;
     }
-    const renewed = result.ok ? null : operationOf(result.body);
+    if (!result.ok && kind === 'performed') {
+      // Performed already, elsewhere: this approval adds nothing (Operations §7).
+      await this.#saveOperation(current.id, { ...operation, status: 'performed' });
+      return;
+    }
+    const renewed = result.ok ? null : operationOf(result);
     // Never answer an approval with the revision it names (Operations §6).
     if (renewed !== null && renewed.revision !== approval.revision) {
       await this.#saveOperation(current.id, {
@@ -816,7 +823,7 @@ export class PoppyConversations {
     }
     this.options.onError?.(
       new Error(
-        `poppy: the operations service did not accept the approval of ${operation.operationId} (${result.ok ? 'expired' : `${result.status} ${String(result.body.error ?? '')}`})`,
+        `poppy: the operations service did not accept the approval of ${operation.operationId} (${result.ok ? 'expired' : `${result.status} ${String(kind ?? '')}`})`,
       ),
       'poppy: approval not accepted',
     );

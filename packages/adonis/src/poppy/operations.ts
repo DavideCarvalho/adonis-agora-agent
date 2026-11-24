@@ -81,17 +81,17 @@ export interface PoppyOperationInput {
   terms: Record<string, unknown>;
   /** The terms in plain language (basic Markdown allowed, no links or images). */
   summary?: string;
-  /** When an approval of this revision lapses. Default: the service's. */
-  expiresAt?: Date | string;
+  /** When an approval of this revision lapses — a future `Date`. Default: the service's. */
+  expiresAt?: Date;
   /** Continue this operation (a new revision of the same action). */
   operationId?: string;
   /** The conversation the operation belongs to, for `interface: 'conversation'`. */
   conversationId?: string;
   /**
    * The approval, when it did not come in a `Poppy-Approval` header — a conversation carries it in
-   * the message (`extensions.operations.approval`). `null`: the request carries none.
+   * the message (`extensions.operations.approval`). Omitted when the request carries none.
    */
-  approval?: PoppyApproval | null;
+  approval?: PoppyApproval;
 }
 
 /**
@@ -102,18 +102,33 @@ export interface PoppyOperationInput {
  * performed, a challenge for an operation that belongs to an account, `400` `invalid_request`.
  */
 export type PoppyOperationRequireResult =
-  | { ok: true; approval: PoppyApproval; operation?: PoppyOperation }
+  | { ok: true; kind?: 'approved'; approval: PoppyApproval; operation?: PoppyOperation }
   | {
       ok: false;
+      /**
+       * What happened: `approval_required`, `approval_declined`, `performed` (the first answer is
+       * in `status`/`body`), `performing`, `challenge`, `extension_required`, `invalid_request`.
+       * Optional: without it, `body.error` and `status` tell.
+       */
+      kind?: string;
       status: number;
-      body: Record<string, unknown>;
+      body: Record<string, unknown> | null;
       headers?: Record<string, string>;
+      /** The operation of `approval_required`, when the service gives it apart from `body`. */
+      operation?: PoppyOperation;
+      /** The decline of `approval_declined`, when the service gives it apart from `body`. */
+      declined?: PoppyDecline;
     };
 
-/** An operation as the service keeps it, with where it stands (Operations §6, §7). */
-export type PoppyStoredOperation = PoppyOperation & {
-  status?: 'pending' | 'approved' | 'performing' | 'performed' | (string & {});
-};
+/** An operation as the service keeps it (what {@link PoppyOperationsService.get} answers). */
+export interface PoppyStoredOperation {
+  operationId: string;
+  /** `pending`, `performing`, `performed`, … */
+  status: string;
+  /** The current revision. */
+  operation: PoppyOperation;
+  [field: string]: unknown;
+}
 
 /**
  * The operations service an authorization server installs in {@link POPPY_OPERATIONS_SLOT}
@@ -124,6 +139,8 @@ export type PoppyStoredOperation = PoppyOperation & {
  * @experimental Implements the Operations extension, version 3.
  */
 export interface PoppyOperationsService {
+  /** The version of the Operations extension the service speaks (`'3'`). */
+  version?: string;
   /**
    * Require approval for an action. `request` is the HTTP request (an Adonis `HttpContext` or a
    * {@link PoppyAuthRequest}); its `Poppy-Approval` header, or `input.approval`, is the approval.
@@ -136,7 +153,10 @@ export interface PoppyOperationsService {
   /** An operation the principal may see, or `null`. */
   get(principal: PoppyPrincipal, operationId: string): Promise<PoppyStoredOperation | null>;
   /** The action was performed: later approvals of it get the first answer (Operations §7). */
-  markPerformed(operationId: string): Promise<void>;
+  markPerformed(
+    operationId: string,
+    response?: { status: number; body?: unknown; headers?: Record<string, string> },
+  ): Promise<unknown>;
 }
 
 /**
@@ -216,8 +236,11 @@ export function formatPoppyApproval(approval: PoppyApproval): string {
 }
 
 /** The operation of an `approval_required` answer, when it is one. */
-export function operationOf(body: Record<string, unknown>): PoppyOperation | null {
-  const operation = body.operation;
+export function operationOf(result: {
+  body: Record<string, unknown> | null;
+  operation?: unknown;
+}): PoppyOperation | null {
+  const operation = result.operation ?? result.body?.operation;
   if (!isRecord(operation)) return null;
   if (
     typeof operation.operation_id !== 'string' ||
@@ -237,7 +260,11 @@ export function operationOf(body: Record<string, unknown>): PoppyOperation | nul
 }
 
 /** The decline of an `approval_declined` answer — its members without `error` (Operations §6). */
-export function declineOf(body: Record<string, unknown>, approval: PoppyApproval): PoppyDecline {
+export function declineOf(
+  result: { body: Record<string, unknown> | null; declined?: unknown },
+  approval: PoppyApproval,
+): PoppyDecline {
+  const body = (isRecord(result.declined) ? result.declined : result.body) ?? {};
   return {
     operation_id: typeof body.operation_id === 'string' ? body.operation_id : approval.operation_id,
     revision: typeof body.revision === 'string' ? body.revision : approval.revision,

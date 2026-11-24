@@ -1983,13 +1983,17 @@ const WRITER = { ...auth('u1|poppy:read,poppy:write|in|acct-1'), ...OPS };
  * An operations service like the one authkit installs: an operation per action key, a new
  * revision per ask; an approval of the latest revision passes, unless told to decline or renew.
  */
-function fakeOperations(mode: { decline?: boolean; renew?: boolean } = {}) {
+function fakeOperations(mode: { decline?: boolean; renew?: boolean; performed?: boolean } = {}) {
   const operations = new Map<string, { revision: string; input: PoppyOperationInput }>();
   const byAction = new Map<string, string>();
   const calls: { input: PoppyOperationInput; approvalHeader?: unknown }[] = [];
   const performed: string[] = [];
   let seq = 0;
   const ask = (input: PoppyOperationInput) => {
+    // Like authkit's: a revision needs a future Date.
+    if (!(input.expiresAt instanceof Date) || input.expiresAt.getTime() <= Date.now()) {
+      throw new Error('expiresAt must be a future Date');
+    }
     const id = input.operationId ?? byAction.get(input.action) ?? `op_${++seq}`;
     const revision = `rev_${++seq}`;
     operations.set(id, { revision, input });
@@ -2004,7 +2008,7 @@ function fakeOperations(mode: { decline?: boolean; renew?: boolean } = {}) {
           revision,
           summary: input.summary,
           terms: input.terms,
-          expires_at: new Date(input.expiresAt ?? Date.now() + 60_000).toISOString(),
+          expires_at: (input.expiresAt as Date).toISOString(),
         },
       },
     };
@@ -2017,8 +2021,14 @@ function fakeOperations(mode: { decline?: boolean; renew?: boolean } = {}) {
           'poppy-approval'
         ],
       });
-      const approval = input.approval as PoppyApproval | null | undefined;
-      if (!approval) return ask(input);
+      // Like authkit's: an `approval` member that is there is an approval.
+      if ('approval' in input && input.approval === undefined)
+        throw new Error('approval: undefined');
+      const approval = input.approval as PoppyApproval | undefined;
+      if (approval === undefined) return ask(input);
+      if (mode.performed) {
+        return { ok: false, kind: 'performed', status: 200, body: { ok: true } };
+      }
       if (mode.decline) {
         return {
           ok: false,
@@ -2039,10 +2049,14 @@ function fakeOperations(mode: { decline?: boolean; renew?: boolean } = {}) {
       const stored = operations.get(id);
       return stored
         ? {
-            operation_id: id,
-            revision: stored.revision,
-            terms: stored.input.terms,
-            expires_at: new Date().toISOString(),
+            operationId: id,
+            status: performed.includes(id) ? 'performed' : 'pending',
+            operation: {
+              operation_id: id,
+              revision: stored.revision,
+              terms: stored.input.terms,
+              expires_at: new Date().toISOString(),
+            },
           }
         : null;
     },
@@ -2125,7 +2139,8 @@ describe('Poppy Operations extension (v3) in conversations', () => {
         expires_at: expect.any(String),
       },
     });
-    expect(ops.calls[0]?.input).toMatchObject({ interface: 'conversation', approval: null });
+    expect(ops.calls[0]?.input).toMatchObject({ interface: 'conversation' });
+    expect(ops.calls[0]?.input).not.toHaveProperty('approval');
 
     const approval = {
       operation_id: 'op_1',
@@ -2218,6 +2233,33 @@ describe('Poppy Operations extension (v3) in conversations', () => {
     expect(renewed).toMatchObject({ operation_id: 'op_1' });
     expect(renewed.revision).not.toBe('rev_2');
     expect(h.ran).toEqual([]);
+  });
+
+  it('an operation the service already performed adds nothing', async () => {
+    const ops = fakeOperations({ performed: true });
+    (globalThis as Record<symbol, unknown>)[POPPY_OPERATIONS_SLOT] = ops.service;
+    const h = await withCancel();
+    harness = h;
+    const id = (await post(h, '', msg('cancel A-1'), WRITER)).body.conversation_id;
+    const first = await readUntil(
+      h,
+      id,
+      (e, last) => settled(e, last) && opMessages(e).length > 0,
+      WRITER,
+    );
+    const before = companyMessages(first.events).length;
+    await post(
+      h,
+      `/${id}/messages`,
+      approvalMessage({ operation_id: 'op_1', revision: 'rev_2', approver: 'user' }),
+      WRITER,
+    );
+    await sleep(300);
+    const { events } = await readUntil(h, id, (_e, last) => last.working === false, WRITER);
+    expect(companyMessages(events)).toHaveLength(before);
+    expect(h.ran).toEqual([]);
+    const conversation = await h.conversations.get(id);
+    expect(conversation?.operations?.op_1?.status).toBe('performed');
   });
 
   it('an approval of an operation this conversation never asked for performs nothing', async () => {
