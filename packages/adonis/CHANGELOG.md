@@ -1,5 +1,19 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.39
+
+### Minor Changes
+
+- [#675](https://github.com/DavideCarvalho/adonis-agora-agent/pull/675) [`1dea4d1`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/1dea4d1ab7156def3a9f84632ef729af31f18b6b) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Poppy client (Personal Agent side): the optional parts of Personal Agent Protocol 1.0. The Operations extension (v3) on every interface (APIs with `Poppy-Approval`, MCP `_meta`, conversations, websites through the operations endpoint) with user and agent approvals, declines and at-most-once retries; Browser Control (v1) for the browser you drive; Links and Disclosures in Company messages; skill artifacts fetched and verified (`fetchSkill`, `.tar.gz` and `.zip`); PS384 blind signing, Agent IDs and anonymous User IDs. `poppy-connections` declares Operations, Links and Disclosures, adds the `poppy_approve` tool (the person approves the exact terms on its card) and an `operations.approve` hook, and returns links and disclosures with the Company's replies.
+
+- [#674](https://github.com/DavideCarvalho/adonis-agora-agent/pull/674) [`50fbbbc`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/50fbbbc58b9ec01cb69f2f53b2e9be04bde1e7d3) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Poppy conversations (Company side) implement the optional parts of Personal Agent Protocol 1.0:
+  
+  - **Operations extension (v3)**: for a personal agent that declares `"operations";v="3"`, an action that waits for approval is not run — the Company Agent's reply carries `extensions.operations.operation`, and the action runs, at most once, when the personal agent sends `extensions.operations.approval` in a later message. Declines answer `extensions.operations.declined`; a stale approval gets a new revision. Operations are stored and verified by the service in `Symbol.for('@adonis-agora/poppy:operations')` (AuthKit); without it they stay off. New config: `operations`.
+  - **Links and Disclosures extensions**: `postMessage(id, { links, disclosures })` and the new `replyAddons` hook send them as `extensions.links` / `extensions.disclosures` to a personal agent that declares them, and in the text otherwise. Messages keep and return their extension content; links and disclosures from a personal agent are ignored.
+  - A response carrying an `authorization` event also has the matching `WWW-Authenticate` challenge.
+  - A reply written after its process died keeps its `as_of_request`.
+  - `runA2aTurn` takes an optional `onParked` hook to decide parked actions before the policy.
+
 ## 1.0.0-rc.38
 
 ### Minor Changes
