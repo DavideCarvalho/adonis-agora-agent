@@ -121,6 +121,12 @@ export interface OperationOptions {
   approve?: OperationApprover | undefined;
   /** An earlier approval for this action was an agent approval: the User must be asked. */
   userOnly?: boolean | undefined;
+  /**
+   * The operation this action already returned, waiting for approval (an approve card): the request
+   * is made again WITH its approval (section 6), never first without one — the Company may answer
+   * a request without an approval with a new operation.
+   */
+  operation?: PoppyOperation | undefined;
 }
 
 /** A refusal that carries an operation (section 4) or declines an approval (section 6). */
@@ -542,12 +548,23 @@ export async function callToolWithOperations(
       ...(params.arguments !== undefined ? { arguments: params.arguments } : {}),
       ...(approval ? { _meta: { [APPROVAL_META_KEY]: approvalJson(approval) } } : {}),
     });
-  let result = await call();
-  if (!usesOperations(company)) return { result };
+  type ToolResult = Awaited<ReturnType<Client['callTool']>>;
+  let pending = opts.operation;
+  // Nothing was sent: the operation the caller holds wasn't approved.
+  let result: ToolResult = pending
+    ? ({
+        isError: true,
+        content: [{ type: 'text', text: 'Not sent: the operation was not approved.' }],
+      } as ToolResult)
+    : await call();
+  if (!pending && !usesOperations(company)) return { result };
   const asked: AskedFor = { tool: params.name, arguments: params.arguments ?? {} };
   const named = new Set<string>();
   for (;;) {
-    const refusal = toolRefusal(result, company);
+    const refusal: OperationRefusal | undefined = pending
+      ? { kind: 'required', operation: pending }
+      : toolRefusal(result, company);
+    pending = undefined;
     if (refusal?.kind !== 'required') return { result };
     const { operation } = refusal;
     if (named.has(`${operation.operation_id} ${operation.revision}`)) {
