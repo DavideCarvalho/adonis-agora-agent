@@ -10,6 +10,7 @@ import {
   poppyConversationsUrl,
 } from '../src/poppy/endpoints.js';
 import { adonisExchange, createPoppyHandler } from '../src/poppy/handler.js';
+import { globalPoppyOperations } from '../src/poppy/operations.js';
 import { type PoppyRequestHandler, setPoppyHandler } from '../src/poppy/runtime.js';
 import { InMemoryPoppyStore, LucidPoppyStore, type PoppyStore } from '../src/poppy/store.js';
 import { ToolRegistry } from '../src/tool-registry.js';
@@ -96,7 +97,20 @@ export default class PoppyProvider {
   /** Warn, once the app is up, when no one can verify a Session header: every request is a 501. */
   async ready() {
     const config = poppyConfigOf(this.app);
-    if (!config || config.authenticate !== undefined || globalPoppyAuthenticate()) return;
+    if (!config) return;
+    const operations = config.operations;
+    if (
+      operations !== undefined &&
+      operations !== false &&
+      !(typeof operations === 'object' && operations.service) &&
+      !globalPoppyOperations()
+    ) {
+      const logger = await this.app.container.make('logger');
+      logger.error(
+        "poppy: `operations` is on in config/poppy.ts, but no operations service is installed in Symbol.for('@adonis-agora/poppy:operations') — install @adonis-agora/authkit-poppy with operations enabled, or pass operations.service. Conversations ask for no approvals until then.",
+      );
+    }
+    if (config.authenticate !== undefined || globalPoppyAuthenticate()) return;
     const logger = await this.app.container.make('logger');
     logger.warn(
       'poppy: no Session header resolver — install @adonis-agora/authkit-server with Poppy enabled, or set `authenticate` in config/poppy.ts. Until then the endpoint answers 501.',
@@ -142,6 +156,8 @@ export default class PoppyProvider {
       ...(config.continueVersion !== undefined ? { continueVersion: config.continueVersion } : {}),
       ...(config.formatAction !== undefined ? { formatAction: config.formatAction } : {}),
       ...(config.retentionMs !== undefined ? { retentionMs: config.retentionMs } : {}),
+      ...(config.operations !== undefined ? { operations: config.operations } : {}),
+      ...(config.replyAddons !== undefined ? { replyAddons: config.replyAddons } : {}),
       onError: (error, context) => logger.error({ err: error }, context),
     });
   }

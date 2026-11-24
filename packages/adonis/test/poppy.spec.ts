@@ -14,14 +14,19 @@ import {
   ToolRegistry,
 } from '../src/index.js';
 import {
+  challengeFor,
   createPoppyHandler,
   InMemoryPoppyStore,
   nodeExchange,
   POPPY_AUTHENTICATE_SLOT,
+  POPPY_OPERATIONS_SLOT,
+  type PoppyApproval,
   type PoppyAuthenticate,
   PoppyConversations,
   type PoppyConversationsOptions,
   type PoppyEvent,
+  type PoppyOperationInput,
+  type PoppyOperationsService,
   type PoppyStore,
   poppyActorId,
   publicOrigin,
@@ -1841,6 +1846,7 @@ describe('Poppy durability', () => {
       extensions: {},
       prompt: null,
       activeRunId: runId,
+      asOfRequest: 'msg_before',
       turnSeq: 1,
       grant: {
         actor: { id: 'poppy:x', roles: [PERSONAL_AGENT_ROLE] },
@@ -1854,9 +1860,743 @@ describe('Poppy durability', () => {
     harness = await serve({ service: agent.service, toolRoles: () => undefined, store });
     const { events } = await readUntil(harness, 'cnv_orphan', settled);
     expect(companyMessages(events).map((e) => e.message.text)).toEqual(['recovered reply']);
+    // It still says what the dead process's turn took into account (§8.4).
+    expect(companyMessages(events)[0]?.message.as_of_request).toBe('msg_before');
     await sleep(100);
     const again = await get(harness, '/cnv_orphan/events');
     expect(companyMessages(again.body.events)).toHaveLength(1);
+  });
+});
+
+// ── extensions in messages: Links, Disclosures (§8.4) ────────────────────────
+
+const LINKS = '"links";v="1", "disclosures";v="1"';
+
+describe('Poppy message extensions: links and disclosures (§8.4)', () => {
+  it('the Company sends links and disclosures as extensions to a Personal Agent that declares them', async () => {
+    harness = await setup(() => ({ text: 'ok' }));
+    const headers = { ...U1, 'poppy-extensions': LINKS };
+    const id = (await post(harness, '', msg('hi'), headers)).body.conversation_id;
+    await readUntil(harness, id, settled, headers);
+    await harness.conversations.postMessage(id, {
+      author: { type: 'agent' },
+      text: 'The trail bar comes in boxes of 12 for $18.',
+      links: [{ url: 'https://example.com/help/returns', title: 'Return policy' }],
+      disclosures: [{ text: 'Contains peanuts.' }],
+    });
+    const { events } = await readUntil(harness, id, (e) => companyMessages(e).length > 1, headers);
+    expect(companyMessages(events).at(-1)?.message).toMatchObject({
+      text: 'The trail bar comes in boxes of 12 for $18.',
+      extensions: {
+        links: { items: [{ url: 'https://example.com/help/returns', title: 'Return policy' }] },
+        disclosures: { items: [{ text: 'Contains peanuts.' }] },
+      },
+    });
+  });
+
+  it('without the extensions declared, the notices and links are in the text', async () => {
+    harness = await setup(() => ({ text: 'ok' }));
+    const id = (await post(harness, '', msg('hi'))).body.conversation_id;
+    await readUntil(harness, id, settled);
+    await harness.conversations.postMessage(id, {
+      author: { type: 'agent' },
+      text: 'Boxes of 12.',
+      links: [{ url: 'https://example.com/help/returns', title: 'Return policy' }],
+      disclosures: [{ text: 'Contains peanuts.' }],
+    });
+    const { events } = await readUntil(harness, id, (e) => companyMessages(e).length > 1);
+    const message = companyMessages(events).at(-1)?.message as Record<string, unknown>;
+    expect(message.text).toBe(
+      'Boxes of 12.\n\nContains peanuts.\n\nReturn policy: https://example.com/help/returns',
+    );
+    expect(message.extensions).toBeUndefined();
+  });
+
+  it('a link must be HTTPS', async () => {
+    harness = await setup(() => ({ text: 'ok' }));
+    const id = (await post(harness, '', msg('hi'))).body.conversation_id;
+    await expect(
+      harness.conversations.postMessage(id, {
+        author: { type: 'agent' },
+        text: 'x',
+        links: [{ url: 'http://example.com' }],
+      }),
+    ).rejects.toThrow(/HTTPS/);
+  });
+
+  it("replyAddons adds links and disclosures to the Company Agent's replies", async () => {
+    const seenText: string[] = [];
+    harness = await setup(() => ({ text: 'Your jacket shipped.' }), {
+      replyAddons: ({ text }) => {
+        seenText.push(text);
+        return { links: [{ url: 'https://example.com/orders/1/tracking', title: 'Tracking' }] };
+      },
+    });
+    const headers = { ...U1, 'poppy-extensions': '"links";v="1"' };
+    const id = (await post(harness, '', msg('where is it?'), headers)).body.conversation_id;
+    const { events } = await readUntil(harness, id, settled, headers);
+    expect(seenText).toEqual(['Your jacket shipped.']);
+    expect(companyMessages(events)[0]?.message).toMatchObject({
+      text: 'Your jacket shipped.',
+      extensions: {
+        links: { items: [{ url: 'https://example.com/orders/1/tracking', title: 'Tracking' }] },
+      },
+    });
+  });
+
+  it("ignores links, disclosures and unknown extensions in the Personal Agent's messages", async () => {
+    harness = await setup(() => ({ text: 'ok' }));
+    const headers = { ...U1, 'poppy-extensions': LINKS };
+    const id = (
+      await post(
+        harness,
+        '',
+        msg('hi', {
+          extensions: {
+            links: { items: [{ url: 'https://evil.example' }] },
+            disclosures: { items: [{ text: 'x' }] },
+            custom: { a: 1 },
+          },
+        }),
+        headers,
+      )
+    ).body.conversation_id;
+    const { events } = await readUntil(harness, id, settled, headers);
+    const user = events.find(
+      (e) => e.type === 'message' && (e.message as { role: string }).role === 'user',
+    );
+    expect(user?.message).toEqual({
+      id: expect.any(String),
+      role: 'user',
+      author: { type: 'agent' },
+      text: 'hi',
+    });
+  });
+});
+
+// ── headers of a verified request ────────────────────────────────────────────
+
+describe('Poppy: headers the resolver gives a verified request', () => {
+  it('Deprecation, Sunset and Link go on every response: JSON, POST, SSE and errors', async () => {
+    const deprecation = {
+      Deprecation: '@1767225600',
+      Sunset: 'Wed, 01 Jul 2026 00:00:00 GMT',
+      Link: '<https://shop.example/poppy-1-0-sunset>; rel="deprecation"',
+    };
+    const agent = buildAgent(() => ({ text: 'hi' }));
+    harness = await serve(
+      { service: agent.service, toolRoles: () => undefined },
+      {
+        authenticate: async (request, options) => {
+          const result = await fakeResolver(request, options);
+          return result.ok ? { ...result, headers: deprecation } : result;
+        },
+      },
+    );
+    const h = harness;
+    const expectDeprecated = (headers: Headers) => {
+      expect(headers.get('deprecation')).toBe(deprecation.Deprecation);
+      expect(headers.get('sunset')).toBe(deprecation.Sunset);
+      expect(headers.get('link')).toBe(deprecation.Link);
+    };
+    const started = await post(h, '', msg('hi'));
+    expect(started.status).toBe(201);
+    expectDeprecated(started.headers);
+    const id = started.body.conversation_id;
+    const read = await get(h, `/${id}/events`);
+    expect(read.status).toBe(200);
+    expectDeprecated(read.headers);
+    const waited = await post(h, `/${id}/messages?wait=1`, msg('again'));
+    expect(waited.status).toBe(202);
+    expectDeprecated(waited.headers);
+    const ac = new AbortController();
+    const stream = await fetch(`${h.url}/poppy/conversations/${id}/events`, {
+      headers: { ...U1, accept: 'text/event-stream' },
+      signal: ac.signal,
+    });
+    expect(stream.headers.get('content-type')).toContain('text/event-stream');
+    expectDeprecated(stream.headers);
+    ac.abort();
+    await stream.body?.cancel().catch(() => {});
+    const missing = await get(h, '/cnv_missing/events');
+    expect(missing.status).toBe(404);
+    expectDeprecated(missing.headers);
+    // A refused request carries only what the refusal says.
+    const refused = await get(h, `/${id}/events`, { 'poppy-version': '1.0' } as typeof U1);
+    expect(refused.status).toBe(401);
+    expect(refused.headers.get('deprecation')).toBeNull();
+  });
+});
+
+// ── Operations extension in conversations ────────────────────────────────────
+
+const OPS = { 'poppy-extensions': '"operations";v="3"' };
+const WRITER = { ...auth('u1|poppy:read,poppy:write|in|acct-1'), ...OPS };
+
+/**
+ * An operations service like the one authkit installs: an operation per action key, a new
+ * revision per ask; an approval of the latest revision passes, unless told to decline or renew.
+ */
+function fakeOperations(mode: { decline?: boolean; renew?: boolean; performed?: boolean } = {}) {
+  const operations = new Map<string, { revision: string; input: PoppyOperationInput }>();
+  const byAction = new Map<string, string>();
+  const calls: { input: PoppyOperationInput; approvalHeader?: unknown }[] = [];
+  const performed: string[] = [];
+  const released: string[] = [];
+  let seq = 0;
+  const ask = (input: PoppyOperationInput) => {
+    // Like authkit's: a revision needs a future Date.
+    if (!(input.expiresAt instanceof Date) || input.expiresAt.getTime() <= Date.now()) {
+      throw new Error('expiresAt must be a future Date');
+    }
+    const id = input.operationId ?? byAction.get(input.action) ?? `op_${++seq}`;
+    const revision = `rev_${++seq}`;
+    operations.set(id, { revision, input });
+    byAction.set(input.action, id);
+    return {
+      ok: false as const,
+      status: 403,
+      body: {
+        error: 'approval_required',
+        operation: {
+          operation_id: id,
+          revision,
+          summary: input.summary,
+          terms: input.terms,
+          expires_at: (input.expiresAt as Date).toISOString(),
+        },
+      },
+    };
+  };
+  const service: PoppyOperationsService = {
+    async require(request, _principal, input) {
+      calls.push({
+        input,
+        approvalHeader: (request as { headers?: Record<string, unknown> }).headers?.[
+          'poppy-approval'
+        ],
+      });
+      // Like authkit's: an `approval` member that is there is an approval.
+      if ('approval' in input && input.approval === undefined)
+        throw new Error('approval: undefined');
+      const approval = input.approval as PoppyApproval | undefined;
+      if (approval === undefined) return ask(input);
+      if (mode.performed) {
+        return { ok: false, kind: 'performed', status: 200, body: { ok: true } };
+      }
+      if (mode.decline) {
+        return {
+          ok: false,
+          status: 403,
+          body: {
+            error: 'approval_declined',
+            operation_id: approval.operation_id,
+            revision: approval.revision,
+            reason: 'Only the account holder can do this.',
+          },
+        };
+      }
+      const stored = operations.get(approval.operation_id);
+      if (mode.renew || stored?.revision !== approval.revision) return ask(input);
+      return { ok: true, approval };
+    },
+    async get(_principal, id) {
+      const stored = operations.get(id);
+      return stored
+        ? {
+            operationId: id,
+            status: performed.includes(id) ? 'performed' : 'pending',
+            operation: {
+              operation_id: id,
+              revision: stored.revision,
+              terms: stored.input.terms,
+              expires_at: new Date().toISOString(),
+            },
+          }
+        : null;
+    },
+    async markPerformed(id) {
+      performed.push(id);
+    },
+    async release(id) {
+      released.push(id);
+      return true;
+    },
+  };
+  return { service, calls, performed, released };
+}
+
+/** The model calls `cancel_order` for every message, then says `ok` once the tool answered. */
+const cancelEveryTime: Script = (args) => {
+  const last = args.messages.at(-1);
+  return last?.role === 'user' && !last.toolResults?.length
+    ? { text: '', toolCall: { name: 'cancel_order', input: { id: 'A-1' } } }
+    : { text: 'ok' };
+};
+
+async function withCancel(
+  extra: Partial<PoppyConversationsOptions> = {},
+  script: Script = cancelEveryTime,
+) {
+  const h = await setup(script, extra);
+  const ran: string[] = [];
+  h.agent.registry.register(
+    {
+      name: 'cancel_order',
+      kind: 'action',
+      description: 'Cancel an order',
+      inputSchema: z.object({ id: z.string() }),
+      roles: ['scope:poppy:write'],
+    },
+    {
+      execute: async (input) => {
+        ran.push(`cancel_order:${(input as { id: string }).id}`);
+        return { ok: true };
+      },
+    },
+  );
+  return { ...h, ran };
+}
+
+type OpMessage = { text?: string; extensions?: { operations?: Record<string, any> } };
+const opMessages = (events: PoppyEvent[]) =>
+  companyMessages(events)
+    .map((e) => e.message as OpMessage)
+    .filter((m) => m.extensions?.operations !== undefined);
+
+const approvalMessage = (approval: Record<string, unknown>, text?: string) => ({
+  id: rid('msg'),
+  message: {
+    author: { type: 'agent' },
+    ...(text !== undefined ? { text } : {}),
+    extensions: { operations: { approval } },
+  },
+});
+
+describe('Poppy Operations extension (v3) in conversations', () => {
+  afterEach(() => {
+    delete (globalThis as Record<symbol, unknown>)[POPPY_OPERATIONS_SLOT];
+  });
+
+  it('asks for approval instead of acting, performs once approved, and only once', async () => {
+    const ops = fakeOperations();
+    (globalThis as Record<symbol, unknown>)[POPPY_OPERATIONS_SLOT] = ops.service;
+    const h = await withCancel();
+    harness = h;
+    const id = (await post(h, '', msg('cancel A-1'), WRITER)).body.conversation_id;
+    const first = await readUntil(
+      h,
+      id,
+      (e, last) => settled(e, last) && opMessages(e).length > 0,
+      WRITER,
+    );
+    expect(h.ran).toEqual([]);
+    const asked = opMessages(first.events)[0];
+    expect(asked?.extensions?.operations).toEqual({
+      operation: {
+        operation_id: 'op_1',
+        revision: 'rev_2',
+        summary: expect.stringContaining('Cancel order'),
+        terms: { tool: 'cancel_order', input: { id: 'A-1' } },
+        expires_at: expect.any(String),
+      },
+    });
+    expect(ops.calls[0]?.input).toMatchObject({ interface: 'conversation' });
+    expect(ops.calls[0]?.input).not.toHaveProperty('approval');
+
+    const approval = {
+      operation_id: 'op_1',
+      revision: 'rev_2',
+      approver: 'user',
+      approved_at: 1791487260,
+      input_type: 'tap',
+      ignored_member: true,
+    };
+    const sent = await post(
+      h,
+      `/${id}/messages`,
+      approvalMessage(approval, 'The user approved.'),
+      WRITER,
+    );
+    expect(sent.status).toBe(202);
+    await readUntil(h, id, (_e, last) => last.working === false && h.ran.length > 0, WRITER);
+    expect(h.ran).toEqual(['cancel_order:A-1']);
+    expect(ops.performed).toEqual(['op_1']);
+    // The approval reached the service as the message carried it, and as a Poppy-Approval header.
+    expect(ops.calls[1]?.input.approval).toEqual({
+      operation_id: 'op_1',
+      revision: 'rev_2',
+      approver: 'user',
+      approved_at: 1791487260,
+      input_type: 'tap',
+    });
+    expect(ops.calls[1]?.approvalHeader).toBe(
+      'operation_id="op_1", revision="rev_2", approver="user", approved_at=1791487260, input_type="tap"',
+    );
+    // The approval is stored with the message, as sent (without unknown members).
+    const all = await get(h, `/${id}/events`, WRITER);
+    const stored = all.body.events.filter(
+      (e: PoppyEvent) => e.type === 'message' && (e.message as any).extensions,
+    );
+    expect(stored.at(-1).message.extensions.operations.approval).not.toHaveProperty(
+      'ignored_member',
+    );
+
+    // The same approval in a new message adds nothing (Operations §7).
+    await post(h, `/${id}/messages`, approvalMessage(approval), WRITER);
+    await sleep(300);
+    await readUntil(h, id, (_e, last) => last.working === false, WRITER);
+    expect(h.ran).toEqual(['cancel_order:A-1']);
+    expect(ops.calls).toHaveLength(2);
+  });
+
+  it('a declined approval performs nothing and says so in extensions.operations.declined', async () => {
+    const ops = fakeOperations({ decline: true });
+    (globalThis as Record<symbol, unknown>)[POPPY_OPERATIONS_SLOT] = ops.service;
+    const h = await withCancel();
+    harness = h;
+    const id = (await post(h, '', msg('cancel A-1'), WRITER)).body.conversation_id;
+    await readUntil(h, id, (e, last) => settled(e, last) && opMessages(e).length > 0, WRITER);
+    await post(
+      h,
+      `/${id}/messages`,
+      approvalMessage({ operation_id: 'op_1', revision: 'rev_2', approver: 'agent' }),
+      WRITER,
+    );
+    const { events } = await readUntil(h, id, (e) => opMessages(e).length > 1, WRITER);
+    const declined = opMessages(events).at(-1);
+    expect(declined?.extensions?.operations).toEqual({
+      declined: {
+        operation_id: 'op_1',
+        revision: 'rev_2',
+        reason: 'Only the account holder can do this.',
+      },
+    });
+    expect(declined?.extensions?.operations).not.toHaveProperty('error');
+    expect(declined?.text).toContain('Only the account holder can do this.');
+    expect(h.ran).toEqual([]);
+  });
+
+  it('an approval that no longer matches gets the same operation with a new revision', async () => {
+    const ops = fakeOperations({ renew: true });
+    (globalThis as Record<symbol, unknown>)[POPPY_OPERATIONS_SLOT] = ops.service;
+    const h = await withCancel();
+    harness = h;
+    const id = (await post(h, '', msg('cancel A-1'), WRITER)).body.conversation_id;
+    await readUntil(h, id, (e, last) => settled(e, last) && opMessages(e).length > 0, WRITER);
+    await post(
+      h,
+      `/${id}/messages`,
+      approvalMessage({ operation_id: 'op_1', revision: 'rev_2', approver: 'user' }),
+      WRITER,
+    );
+    const { events } = await readUntil(h, id, (e) => opMessages(e).length > 1, WRITER);
+    const renewed = opMessages(events).at(-1)?.extensions?.operations?.operation;
+    expect(renewed).toMatchObject({ operation_id: 'op_1' });
+    expect(renewed.revision).not.toBe('rev_2');
+    expect(h.ran).toEqual([]);
+  });
+
+  it('an operation the service already performed adds nothing', async () => {
+    const ops = fakeOperations({ performed: true });
+    (globalThis as Record<symbol, unknown>)[POPPY_OPERATIONS_SLOT] = ops.service;
+    const h = await withCancel();
+    harness = h;
+    const id = (await post(h, '', msg('cancel A-1'), WRITER)).body.conversation_id;
+    const first = await readUntil(
+      h,
+      id,
+      (e, last) => settled(e, last) && opMessages(e).length > 0,
+      WRITER,
+    );
+    const before = companyMessages(first.events).length;
+    await post(
+      h,
+      `/${id}/messages`,
+      approvalMessage({ operation_id: 'op_1', revision: 'rev_2', approver: 'user' }),
+      WRITER,
+    );
+    await sleep(300);
+    const { events } = await readUntil(h, id, (_e, last) => last.working === false, WRITER);
+    expect(companyMessages(events)).toHaveLength(before);
+    expect(h.ran).toEqual([]);
+    const conversation = await h.conversations.get(id);
+    expect(conversation?.operations?.op_1?.status).toBe('performed');
+  });
+
+  it('an approval of an operation this conversation never asked for performs nothing', async () => {
+    const ops = fakeOperations();
+    (globalThis as Record<symbol, unknown>)[POPPY_OPERATIONS_SLOT] = ops.service;
+    const h = await withCancel();
+    harness = h;
+    const id = (await post(h, '', msg('cancel A-1'), WRITER)).body.conversation_id;
+    await readUntil(h, id, (e, last) => settled(e, last) && opMessages(e).length > 0, WRITER);
+    await post(
+      h,
+      `/${id}/messages`,
+      approvalMessage({ operation_id: 'op_other', revision: 'rev_1', approver: 'user' }),
+      WRITER,
+    );
+    const { events } = await readUntil(
+      h,
+      id,
+      (e) => companyMessages(e).some((m) => /did not ask for/.test(m.message.text ?? '')),
+      WRITER,
+    );
+    expect(companyMessages(events).at(-1)?.message.text).toContain('op_other');
+    expect(h.ran).toEqual([]);
+    expect(ops.calls).toHaveLength(1);
+  });
+
+  it('an approved call never made before its approval lapses is released (and on close)', async () => {
+    const ops = fakeOperations();
+    (globalThis as Record<symbol, unknown>)[POPPY_OPERATIONS_SLOT] = ops.service;
+    // Calls the tool only when asked in so many words — never on the approval's turn.
+    const onlyWhenAsked: Script = (args) => {
+      const last = args.messages.at(-1);
+      return last?.role === 'user' &&
+        !last.toolResults?.length &&
+        /please cancel/.test(last.content)
+        ? { text: '', toolCall: { name: 'cancel_order', input: { id: 'A-1' } } }
+        : { text: 'ok' };
+    };
+    const h = await withCancel({ operations: { expiresInMs: 1500 } }, onlyWhenAsked);
+    harness = h;
+    const id = (await post(h, '', msg('please cancel A-1'), WRITER)).body.conversation_id;
+    await readUntil(h, id, (e, last) => settled(e, last) && opMessages(e).length > 0, WRITER);
+    await post(
+      h,
+      `/${id}/messages`,
+      approvalMessage({ operation_id: 'op_1', revision: 'rev_2', approver: 'user' }),
+      WRITER,
+    );
+    await readUntil(h, id, (_e, last) => last.working === false && ops.calls.length >= 2, WRITER);
+    expect((await h.conversations.get(id))?.operations?.op_1?.status).toBe('approved');
+    expect(ops.released).toEqual([]);
+    await sleep(1600);
+    // The next turn finds the approval lapsed: released, and pending here.
+    await post(h, `/${id}/messages`, msg('anything else?'), WRITER);
+    await readUntil(h, id, (_e, last) => last.working === false && ops.released.length > 0, WRITER);
+    expect(ops.released).toEqual(['op_1']);
+    expect((await h.conversations.get(id))?.operations?.op_1?.status).toBe('pending');
+    expect(h.ran).toEqual([]);
+
+    // Another conversation: approved, then closed with the call never made.
+    await h.close();
+    const second = await withCancel({ operations: { expiresInMs: 60_000 } }, onlyWhenAsked);
+    harness = second;
+    const ops2 = fakeOperations();
+    (globalThis as Record<symbol, unknown>)[POPPY_OPERATIONS_SLOT] = ops2.service;
+    const id2 = (await post(second, '', msg('please cancel A-1'), WRITER)).body.conversation_id;
+    await readUntil(second, id2, (e, last) => settled(e, last) && opMessages(e).length > 0, WRITER);
+    await post(
+      second,
+      `/${id2}/messages`,
+      approvalMessage({ operation_id: 'op_1', revision: 'rev_2', approver: 'user' }),
+      WRITER,
+    );
+    await readUntil(
+      second,
+      id2,
+      (_e, last) => last.working === false && ops2.calls.length >= 2,
+      WRITER,
+    );
+    expect(ops2.released).toEqual([]);
+    expect((await post(second, `/${id2}/close`, req(), WRITER)).status).toBe(202);
+    expect(ops2.released).toEqual(['op_1']);
+    expect(second.ran).toEqual([]);
+  });
+
+  it('a malformed approval is invalid_request', async () => {
+    (globalThis as Record<symbol, unknown>)[POPPY_OPERATIONS_SLOT] = fakeOperations().service;
+    const h = await withCancel();
+    harness = h;
+    const id = (await post(h, '', msg('hi'), WRITER)).body.conversation_id;
+    const res = await post(
+      h,
+      `/${id}/messages`,
+      approvalMessage({ operation_id: 'op_1', approver: 'user' }),
+      WRITER,
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_request');
+  });
+
+  it('a Personal Agent that does not declare operations gets the usual approval policy', async () => {
+    const ops = fakeOperations();
+    (globalThis as Record<symbol, unknown>)[POPPY_OPERATIONS_SLOT] = ops.service;
+    const h = await withCancel();
+    harness = h;
+    const plain = auth('u1|poppy:read,poppy:write|in|acct-1');
+    const id = (await post(h, '', msg('cancel A-1'), plain)).body.conversation_id;
+    const { events } = await readUntil(h, id, settled, plain);
+    expect(h.ran).toEqual(['cancel_order:A-1']);
+    expect(opMessages(events)).toEqual([]);
+    expect(ops.calls).toEqual([]);
+    // Its approval content is ignored, not refused.
+    const res = await post(
+      h,
+      `/${id}/messages`,
+      approvalMessage({ operation_id: 'op_1', approver: 'user' }, 'hi'),
+      plain,
+    );
+    expect(res.status).toBe(202);
+  });
+
+  it('operations on without a service: a clear error, and the usual policy', async () => {
+    const errors: string[] = [];
+    const h = await withCancel({
+      operations: true,
+      onError: (error) => errors.push(String((error as Error).message)),
+    });
+    harness = h;
+    expect(h.conversations.operationsEnabled).toBe(false);
+    expect(errors[0]).toMatch(/no operations service is installed/);
+    const id = (await post(h, '', msg('cancel A-1'), WRITER)).body.conversation_id;
+    await readUntil(h, id, settled, WRITER);
+    expect(h.ran).toEqual(['cancel_order:A-1']);
+  });
+
+  it('operations: false keeps them off even with a service installed', async () => {
+    const ops = fakeOperations();
+    (globalThis as Record<symbol, unknown>)[POPPY_OPERATIONS_SLOT] = ops.service;
+    const h = await withCancel({ operations: false });
+    harness = h;
+    const id = (await post(h, '', msg('cancel A-1'), WRITER)).body.conversation_id;
+    await readUntil(h, id, settled, WRITER);
+    expect(h.ran).toEqual(['cancel_order:A-1']);
+    expect(ops.calls).toEqual([]);
+  });
+
+  it('a held independent proposal runs when the approval arrives, and is told as an action', async () => {
+    const ops = fakeOperations();
+    let decision = 'pending';
+    const decided: string[] = [];
+    const service = {
+      chat: async () => ({ runId: `r${decided.length}`, threadId: 'thread-p' }),
+      subscribe: async function* () {
+        yield* [
+          { t: 'text', v: 'I can cancel it once you approve.' },
+          {
+            t: 'approval',
+            runId: 'r0',
+            id: 'c1',
+            toolName: 'cancel_order',
+            input: { id: 'A-1' },
+            confirmation: { title: 'Cancel order A-1?', verb: 'Cancel' },
+            target: { kind: 'proposal', proposalId: 'p1' },
+          },
+        ] as never[];
+      },
+      approve: async () => {},
+      reject: async () => {},
+      skip: async () => {},
+      cancel: async () => {},
+      decideActionProposal: async (_a: unknown, _t: string, _id: string, d: string) => {
+        decided.push(d);
+        decision = d;
+        return { status: 'applied' };
+      },
+      listActionProposals: async () => [
+        {
+          id: 'p1',
+          input: { id: 'A-1' },
+          confirmation: { title: 'Cancel order A-1?', verb: 'Cancel' },
+          decision,
+          execution: decision === 'approved' ? { status: 'succeeded', result: { ok: 1 } } : null,
+        },
+      ],
+    };
+    harness = await serve({
+      service: service as never,
+      toolRoles: (name) => (name === 'cancel_order' ? ['scope:poppy:write'] : undefined),
+      operations: { service: ops.service },
+    });
+    const id = (await post(harness, '', msg('cancel A-1'), WRITER)).body.conversation_id;
+    const first = await readUntil(harness, id, (e) => opMessages(e).length > 0, WRITER);
+    // Held: not decided, and the reply carries the operation with the model's words.
+    expect(decided).toEqual([]);
+    expect(opMessages(first.events)[0]).toMatchObject({
+      text: 'I can cancel it once you approve.',
+      extensions: {
+        operations: { operation: { operation_id: 'op_1', summary: 'Cancel order A-1' } },
+      },
+    });
+    // An approval alone: performed, and told without asking the model again.
+    await post(
+      harness,
+      `/${id}/messages`,
+      approvalMessage({ operation_id: 'op_1', revision: 'rev_2', approver: 'agent' }),
+      WRITER,
+    );
+    const { events } = await readUntil(
+      harness,
+      id,
+      (e) => companyMessages(e).some((m) => m.message.data?.actions),
+      WRITER,
+    );
+    expect(decided).toEqual(['approved']);
+    expect(ops.performed).toEqual(['op_1']);
+    expect(companyMessages(events).at(-1)?.message).toMatchObject({
+      text: 'Done: Cancel order A-1',
+      data: { actions: [{ tool: 'cancel_order', status: 'succeeded' }] },
+    });
+  });
+});
+
+// ── WWW-Authenticate with authorization events (§8.11) ───────────────────────
+
+describe('Poppy challenge alongside authorization events (§8.11)', () => {
+  it('a response carrying an authorization event has the matching challenge', async () => {
+    const h = await setup((_args, turn) =>
+      turn === 0 ? { text: '', toolCall: { name: 'list_orders', input: {} } } : { text: 'sign in' },
+    );
+    harness = h;
+    h.agent.registry.register(
+      {
+        name: 'list_orders',
+        kind: 'read',
+        description: 'List orders',
+        inputSchema: z.object({}),
+        roles: ['scope:poppy:read'],
+      },
+      { execute: async () => ({}) },
+    );
+    const body = (await post(h, '', msg('my orders?'))).body;
+    await readUntil(h, body.conversation_id, (e) => e.some((x) => x.type === 'authorization'));
+    // A POST answered with a read (wait) that carries the event: accepted, with the challenge.
+    const res = await fetch(
+      `${h.url}/poppy/conversations/${body.conversation_id}/messages?wait=1`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...U1 },
+        body: JSON.stringify(msg('thanks')),
+      },
+    );
+    expect(res.status).toBe(202);
+    expect((await res.json()).events.some((e: PoppyEvent) => e.type === 'authorization')).toBe(
+      true,
+    );
+    expect(res.headers.get('www-authenticate')).toBe('Bearer scope="poppy:read"');
+    const read = await get(h, `/${body.conversation_id}/events`);
+    expect(read.headers.get('www-authenticate')).toBe('Bearer scope="poppy:read"');
+    // A read without one has no challenge.
+    const after = await get(h, `/${body.conversation_id}/events?cursor=${read.body.cursor}`);
+    expect(after.headers.get('www-authenticate')).toBeNull();
+  });
+
+  it('signed in, an insufficient_scope challenge in the token scheme', () => {
+    const events = [
+      { id: 'e1', type: 'authorization', error: 'insufficient_scope', scope: 'a b' },
+      { id: 'e2', type: 'message' },
+    ];
+    expect(challengeFor({ signedIn: true, tokenType: 'DPoP' }, events)).toEqual({
+      'WWW-Authenticate': 'DPoP error="insufficient_scope", scope="a b"',
+    });
+    expect(challengeFor({ signedIn: false, tokenType: null }, events)).toEqual({
+      'WWW-Authenticate': 'Bearer scope="a b"',
+    });
+    expect(challengeFor({ signedIn: true }, [{ type: 'message' }])).toEqual({});
   });
 });
 

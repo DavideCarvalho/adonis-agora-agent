@@ -31,6 +31,11 @@ export interface PoppyPrincipal {
    */
   protocolVersion?: string;
   /**
+   * The served version whose document answers the request (§3.4) — the one compatible with
+   * `protocolVersion` that the Company serves — when the resolver chose it.
+   */
+  documentVersion?: string;
+  /**
    * The extensions the request declares in `Poppy-Extensions` (§3.4), `{ name: version }`, when the
    * resolver parsed them. Without it the conversation endpoint parses the header itself.
    */
@@ -89,7 +94,17 @@ export type PoppyAuthFailure = {
   headers?: Record<string, string>;
 };
 
-export type PoppyAuthResult = { ok: true; principal: PoppyPrincipal } | PoppyAuthFailure;
+export type PoppyAuthResult =
+  | {
+      ok: true;
+      principal: PoppyPrincipal;
+      /**
+       * Headers every response to the request carries — `Deprecation`, `Sunset` and `Link` when the
+       * request's version is being retired (§3.4).
+       */
+      headers?: Record<string, string>;
+    }
+  | PoppyAuthFailure;
 
 /**
  * Verifies a request's Session header and any access token. `@adonis-agora/authkit-server` installs one in the global

@@ -17,6 +17,31 @@ import { PERMISSION_COMPONENT } from './permission-tool.js';
  */
 export type A2aActionPolicy = 'approve-delegated' | 'reject';
 
+/** An `action` call that parked for approval, as {@link A2aTurnInput.onParked} sees it. */
+export interface A2aParkedAction {
+  /** `call` — the run waits on it now; `proposal` — an independent proposal, decided after the run. */
+  kind: 'call' | 'proposal';
+  runId: string;
+  toolCallId: string;
+  /** The proposal, for `kind: 'proposal'`. */
+  proposalId?: string;
+  toolName: string;
+  input: unknown;
+  /** The app's own words for it, when its tool has a confirmation. */
+  confirmation?: { title: string; detail?: string };
+  /** When the request lapses, if it does. */
+  expiresAt?: string;
+}
+
+/**
+ * What a surface decides for a parked action, ahead of {@link A2aActionPolicy}:
+ *  - `'approve'` — approve it now, whatever the policy says;
+ *  - `{ hold: reason }` — do not perform it now: a call is refused with `reason` (what the model
+ *    reads), a proposal is left undecided for the surface to decide later;
+ *  - `undefined` — the policy decides.
+ */
+export type A2aParkedDecision = 'approve' | { hold: string } | undefined;
+
 export interface A2aTurnInput {
   actor: Actor;
   text: string;
@@ -44,6 +69,8 @@ export interface A2aTurnInput {
    * turn is read — for a durable runner whose dispatcher only persists a started run.
    */
   drive?: (runId: string) => Promise<void>;
+  /** Decide a parked action before the policy does (see {@link A2aParkedDecision}). */
+  onParked?: (action: A2aParkedAction) => A2aParkedDecision | Promise<A2aParkedDecision>;
 }
 
 export interface A2aTurnAction {
@@ -184,7 +211,14 @@ export async function runA2aTurn(
   // Announced calls, by id, until their output says they ran.
   const calls = new Map<string, { name: string; input: unknown }>();
   // Independent proposals the run left behind, decided once it ends.
-  const proposals: { id: string; toolName: string; toolCallId: string }[] = [];
+  const proposals: {
+    id: string;
+    toolName: string;
+    toolCallId: string;
+    input: unknown;
+    confirmation?: { title: string; detail?: string };
+    expiresAt?: string;
+  }[] = [];
   // Set once the turn answered (or gave up): a wait still polling stops there.
   let finished = false;
   const cancel = () => service.cancel(runId).catch(() => {});
@@ -199,7 +233,20 @@ export async function runA2aTurn(
     if (!decideActionProposal || !listActionProposals) return;
     for (const proposal of proposals) {
       const scopes = scopesOf(proposal.toolName);
-      const approve = input.actions === 'approve-delegated' && scopes.length > 0;
+      const decided = await input.onParked?.({
+        kind: 'proposal',
+        runId,
+        toolCallId: proposal.toolCallId,
+        proposalId: proposal.id,
+        toolName: proposal.toolName,
+        input: proposal.input,
+        ...(proposal.confirmation ? { confirmation: proposal.confirmation } : {}),
+        ...(proposal.expiresAt ? { expiresAt: proposal.expiresAt } : {}),
+      });
+      // Held: the surface decides it later, and it is not an outcome of this turn.
+      if (typeof decided === 'object') continue;
+      const approve =
+        decided === 'approve' || (input.actions === 'approve-delegated' && scopes.length > 0);
       try {
         await decideActionProposal.call(
           service,
@@ -329,10 +376,27 @@ export async function runA2aTurn(
             id: frame.target.proposalId,
             toolName: frame.toolName,
             toolCallId: frame.id,
+            input: frame.input,
+            ...(frame.confirmation ? { confirmation: frame.confirmation } : {}),
+            ...(frame.expiresAt ? { expiresAt: frame.expiresAt } : {}),
           });
           continue;
         }
-        if (input.actions === 'approve-delegated' && scopesOf(frame.toolName).length > 0) {
+        const decided = await input.onParked?.({
+          kind: 'call',
+          runId: frame.runId,
+          toolCallId: frame.id,
+          toolName: frame.toolName,
+          input: frame.input,
+          ...(frame.confirmation ? { confirmation: frame.confirmation } : {}),
+          ...(frame.expiresAt ? { expiresAt: frame.expiresAt } : {}),
+        });
+        if (
+          decided === 'approve' ||
+          (decided === undefined &&
+            input.actions === 'approve-delegated' &&
+            scopesOf(frame.toolName).length > 0)
+        ) {
           await service.approve(frame.runId, frame.id, {
             executedByRef: input.actor.id,
             via,
@@ -341,7 +405,9 @@ export async function runA2aTurn(
           await service.reject(
             frame.runId,
             frame.id,
-            'A personal agent may not run this action without a delegated permission for it.',
+            typeof decided === 'object'
+              ? decided.hold
+              : 'A personal agent may not run this action without a delegated permission for it.',
             { executedByRef: input.actor.id, via },
           );
         }

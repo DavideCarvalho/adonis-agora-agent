@@ -4,17 +4,37 @@ import { scopeRole } from '../a2a/gate.js';
 import { PERSONAL_AGENT_ROLE } from '../a2a/permission-tool.js';
 import {
   type A2aActionPolicy,
+  type A2aParkedAction,
+  type A2aParkedDecision,
   type A2aTurnOutcome,
   type A2aTurnService,
   runA2aTurn,
 } from '../a2a/turn.js';
 import type { StreamFrame } from '../spi/token-stream-sink.js';
+import { humanizeToolName } from '../tool-presentation.js';
 import type { Actor } from '../types.js';
-import type { PoppyPrincipal } from './auth.js';
+import type { PoppyAuthRequest, PoppyPrincipal } from './auth.js';
+import { announcedPoppyEndpoints } from './endpoints.js';
 import {
+  declineOf,
+  formatPoppyApproval,
+  globalPoppyOperations,
+  operationOf,
+  POPPY_OPERATIONS_EXTENSION,
+  POPPY_OPERATIONS_VERSION,
+  type PoppyApproval,
+  type PoppyDecline,
+  type PoppyOperation,
+  type PoppyOperationsService,
+  parsePoppyApproval,
+} from './operations.js';
+import {
+  checkPoppyAddons,
   derivedPoppyId,
   isCompatiblePoppyVersion,
   newPoppyId,
+  POPPY_DISCLOSURES_VERSION,
+  POPPY_LINKS_VERSION,
   POPPY_PROTOCOL_VERSION,
   type PoppyAuthor,
   type PoppyContext,
@@ -23,14 +43,15 @@ import {
   type PoppyEventBody,
   type PoppyEventMessage,
   type PoppyInboundMessage,
+  type PoppyMessageAddons,
   type PoppyRequestBody,
-  type PoppyResponder,
   type PoppySendBody,
   type PoppyState,
   requestFingerprint,
 } from './protocol.js';
 import {
   eventIdSeq,
+  type PoppyConversationOperation,
   type PoppyConversationPatch,
   type PoppyConversationRecord,
   type PoppyGrant,
@@ -107,6 +128,24 @@ export interface PoppyTexts {
    * opens a Direct Conversation (§8.10), so it speaks first. `{reason}` is the event's reason.
    */
   userJoined: string;
+  /**
+   * What the Company Agent reads for an action held for approval (Operations extension) — the
+   * tool's answer; the action did not run.
+   */
+  operationHeld: string;
+  /** A message that carries an operation, when nothing else was said. `{summary}`. */
+  operationRequired: string;
+  /** A message that carries a declined approval. `{summary}`, `{reason}`. */
+  operationDeclined: string;
+  /**
+   * Given to the Company Agent — never shown — when an approval lets it perform a held action:
+   * `{summary}`, `{tool}`, `{input}` (JSON).
+   */
+  operationApproved: string;
+  /** An approval of an operation this conversation never asked for. `{operation}`. */
+  operationUnknown: string;
+  /** An approved action that is still being performed. `{summary}`. */
+  operationPerforming: string;
 }
 
 export const DEFAULT_POPPY_TEXTS: PoppyTexts = {
@@ -118,7 +157,52 @@ export const DEFAULT_POPPY_TEXTS: PoppyTexts = {
   actionRejected: 'This was not done: {title}',
   userJoined:
     'The user has now joined this conversation themselves, because you asked to talk with them: "{reason}". Speak to them directly.',
+  operationHeld:
+    "Not done yet: this action needs the approval of the user's personal agent. Say what it will do; it runs once they approve.",
+  operationRequired: 'This needs your approval: {summary}',
+  operationDeclined: 'This was not done: {summary}',
+  operationApproved:
+    "The user's personal agent approved this action: {summary}. Perform it now: call `{tool}` with exactly this input: {input}",
+  operationUnknown:
+    'An approval arrived for operation {operation}, which this conversation did not ask for. Nothing was performed.',
+  operationPerforming: 'This is still being done: {summary}',
 };
+
+/**
+ * Conversations with the Operations extension (version 3): an action that waits for approval is
+ * not performed — the Company Agent's message carries the operation, and the action runs once the
+ * Personal Agent sends its approval in a later message. Used only when the request declares
+ * `"operations";v="3"`; the operations service stores and verifies them.
+ */
+export interface PoppyOperationsOptions {
+  /** The operations service. Default: the one in `Symbol.for('@adonis-agora/poppy:operations')`. */
+  service?: PoppyOperationsService;
+  /** Which actions are operations. Default: every action that waits for approval. */
+  requires?: (
+    action: A2aParkedAction & { conversation: PoppyConversationRecord },
+  ) => boolean | Promise<boolean>;
+  /**
+   * The operation's words and terms. Default: the tool's confirmation as `summary` (its name and
+   * input without one), `{ tool, input }` as `terms`.
+   */
+  describe?: (
+    action: A2aParkedAction & { conversation: PoppyConversationRecord },
+  ) => PoppyOperationTerms | Promise<PoppyOperationTerms>;
+  /** How long an approval may take, in ms. Default 15 minutes. */
+  expiresInMs?: number;
+}
+
+/** What {@link PoppyOperationsOptions.describe} answers. */
+export interface PoppyOperationTerms {
+  summary?: string;
+  terms?: Record<string, unknown>;
+  expiresAt?: Date | string;
+}
+
+/** What the Company Agent's reply carries besides text and data: links, disclosures. */
+export type PoppyReplyAddons = (
+  ctx: PoppyHookContext & { text: string; data?: Record<string, unknown> },
+) => PoppyMessageAddons | undefined | Promise<PoppyMessageAddons | undefined>;
 
 /** An action of the turn, as the reply's `data.actions` carries it. */
 export type PoppyActionOutcome = A2aTurnOutcome;
@@ -190,6 +274,13 @@ export interface PoppyConversationsOptions {
   pollMs?: number;
   /** Logs what fails outside a request (a turn, a hook). */
   onError?: (error: unknown, context: string) => void;
+  /**
+   * The Operations extension. Default: on when an operations service is installed in
+   * `Symbol.for('@adonis-agora/poppy:operations')`; `false` turns it off.
+   */
+  operations?: boolean | PoppyOperationsOptions;
+  /** Links and disclosures for each reply of the Company Agent (Links and Disclosures extensions). */
+  replyAddons?: PoppyReplyAddons;
 }
 
 /** What a read answers (§8.5): the events, and the state when the Company responds (§8.7). */
@@ -232,8 +323,69 @@ function directKey(parentId: string): string {
   return createHash('sha256').update(`direct\n${parentId}`).digest('hex');
 }
 
-const hasContent = (message: Pick<PoppyEventMessage, 'text' | 'data'>) =>
+/** Whether a message says something to the Company Agent: text or data. */
+const saysSomething = (message: Pick<PoppyEventMessage, 'text' | 'data'>) =>
   (message.text !== undefined && message.text.trim() !== '') || message.data !== undefined;
+
+/** The approval a message carries (`extensions.operations.approval`), if any. */
+function approvalOf(message: Pick<PoppyEventMessage, 'extensions'>): PoppyApproval | null {
+  const content = message.extensions?.[POPPY_OPERATIONS_EXTENSION] as
+    | { approval?: unknown }
+    | undefined;
+  return content?.approval !== undefined ? parsePoppyApproval(content.approval) : null;
+}
+
+/** Whether a message needs acting on: something said, or an approval. */
+const hasContent = (message: Pick<PoppyEventMessage, 'text' | 'data' | 'extensions'>) =>
+  saysSomething(message) || approvalOf(message) !== null;
+
+/** Stable JSON, keys sorted — what tells an action's input apart from another's. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (typeof value === 'object' && value !== null) {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .filter((key) => record[key] !== undefined)
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/** Which action a tool call is: its tool and input. */
+function actionKey(tool: string, input: unknown): string {
+  return createHash('sha256')
+    .update(`${tool}\n${canonicalJson(input)}`)
+    .digest('base64url');
+}
+
+/** What an approval leaves for the turn that answers it. */
+interface ApprovalWork {
+  /** Said to the Company Agent before the messages. */
+  notes: string[];
+  /** Approved proposals that ran (or did not). */
+  outcomes: PoppyActionOutcome[];
+  /** New operations (revisions) and declines to send. */
+  operations: PoppyOperation[];
+  declines: { decline: PoppyDecline; summary: string }[];
+  /** Plain statements for the User (an approval still being performed). */
+  said: string[];
+  /** Approved calls the Company Agent is to make now. */
+  approvedCalls: number;
+}
+
+const DEFAULT_OPERATION_TTL_MS = 15 * 60_000;
+
+/** An operation's default summary: the tool's confirmation, else its name and input. */
+function defaultSummary(action: A2aParkedAction): string {
+  const confirmation = action.confirmation;
+  if (confirmation) {
+    const title = confirmation.title.trim().replace(/\?+$/, '');
+    return confirmation.detail ? `${title}\n\n${confirmation.detail}` : title;
+  }
+  return `${humanizeToolName(action.toolName) || action.toolName}: ${JSON.stringify(action.input ?? null)}`;
+}
 
 /** Merge a message's context into the conversation's: `null` clears a field (§8.4). */
 function mergeContext(current: PoppyContext, update: PoppyContext): PoppyContext {
@@ -339,11 +491,446 @@ export class PoppyConversations {
   }
 
   #grant(principal: PoppyPrincipal, actor: Actor): PoppyGrant {
+    const { actor: _actor, ...rest } = principal;
     return {
       actor,
       scopes: principal.signedIn ? [...principal.scopes] : [],
       signedIn: principal.signedIn,
+      extensions: { ...(principal.extensions ?? {}) },
+      principal: rest,
     };
+  }
+
+  /**
+   * The extension content of a Personal Agent message this surface acts on (§3.3, §8.4): an
+   * Operations approval, when the request declares Operations v3 and operations are on. Everything
+   * else is ignored — links and disclosures too, which only Company messages carry.
+   */
+  #inbound(principal: PoppyPrincipal, message: PoppyInboundMessage): PoppyInboundMessage {
+    if (message.extensions === undefined) return message;
+    const { extensions, ...rest } = message;
+    const kept: Record<string, unknown> = {};
+    const content = extensions[POPPY_OPERATIONS_EXTENSION] as { approval?: unknown } | undefined;
+    if (
+      content?.approval !== undefined &&
+      this.#operationsFor(principal.extensions) !== undefined
+    ) {
+      const approval = parsePoppyApproval(content.approval);
+      if (approval === null) {
+        throw new PoppyError(
+          'invalid_request',
+          'extensions.operations.approval needs operation_id, revision and approver',
+        );
+      }
+      kept[POPPY_OPERATIONS_EXTENSION] = { approval };
+    }
+    return Object.keys(kept).length > 0 ? { ...rest, extensions: kept } : rest;
+  }
+
+  // ── operations ─────────────────────────────────────────────────────────────
+
+  #operationsWarned = false;
+
+  /** The operations service, when operations are on; `undefined` → off. */
+  #operationsService(): PoppyOperationsService | undefined {
+    const setting = this.options.operations;
+    if (setting === false) return undefined;
+    const service =
+      (typeof setting === 'object' ? setting.service : undefined) ?? globalPoppyOperations();
+    if (service === undefined && setting !== undefined && !this.#operationsWarned) {
+      this.#operationsWarned = true;
+      this.options.onError?.(
+        new Error(
+          "poppy: operations are on, but no operations service is installed in Symbol.for('@adonis-agora/poppy:operations') — install @adonis-agora/authkit-poppy with operations enabled, or pass operations.service. Until then conversations ask for no approvals.",
+        ),
+        'poppy: operations are off',
+      );
+    }
+    return service;
+  }
+
+  /** Whether conversations ask for approval with operations (a service is there, and not turned off). */
+  get operationsEnabled(): boolean {
+    return this.#operationsService() !== undefined;
+  }
+
+  /** The operations service, when the request declared Operations v3 (Operations §2). */
+  #operationsFor(extensions: Record<string, string> | undefined) {
+    if (extensions?.[POPPY_OPERATIONS_EXTENSION] !== POPPY_OPERATIONS_VERSION) return undefined;
+    return this.#operationsService();
+  }
+
+  #operationsOptions(): PoppyOperationsOptions {
+    return typeof this.options.operations === 'object' ? this.options.operations : {};
+  }
+
+  /** Who an operation is asked for: the conversation's latest request. */
+  #principalOf(conversation: PoppyConversationRecord, grant: PoppyGrant): PoppyPrincipal {
+    return grant.principal
+      ? { ...grant.principal, actor: grant.actor }
+      : {
+          userId: conversation.userId,
+          clientId: conversation.clientId,
+          accountId: grant.signedIn ? conversation.accountRef : null,
+          scopes: grant.scopes,
+          sessionId: '',
+          signedIn: grant.signedIn,
+          actor: grant.actor,
+          extensions: grant.extensions ?? {},
+        };
+  }
+
+  /**
+   * The request the operations service is given for a conversation: the messages URL, and the
+   * approval also as a `Poppy-Approval` header, for a service that reads only that.
+   */
+  #operationsRequest(
+    conversation: PoppyConversationRecord,
+    grant: PoppyGrant,
+    approval: PoppyApproval | null,
+  ): PoppyAuthRequest {
+    const endpoint = announcedPoppyEndpoints().conversations;
+    return {
+      method: 'POST',
+      url: endpoint
+        ? `${endpoint}/${conversation.id}/messages`
+        : `urn:poppy:conversation:${conversation.id}`,
+      headers: {
+        'poppy-version': grant.principal?.protocolVersion ?? POPPY_PROTOCOL_VERSION,
+        'poppy-extensions': `"${POPPY_OPERATIONS_EXTENSION}";v="${POPPY_OPERATIONS_VERSION}"`,
+        ...(approval !== null ? { 'poppy-approval': formatPoppyApproval(approval) } : {}),
+      },
+    };
+  }
+
+  async #saveOperation(conversationId: string, operation: PoppyConversationOperation) {
+    const current = await this.options.store.getConversation(conversationId);
+    await this.options.store.updateConversation(conversationId, {
+      operations: {
+        ...(current?.operations ?? {}),
+        [operation.operationId]: { ...operation, updatedAt: Date.now() },
+      },
+    });
+  }
+
+  /**
+   * An approved call that will not be performed under its approval (it lapsed, or the conversation
+   * closed): back to `pending` here, and `release` tells the operations service, which marked it
+   * `performing` when it accepted the approval — so its state stays truthful.
+   */
+  async #releaseOperation(
+    conversationId: string,
+    service: PoppyOperationsService | undefined,
+    operation: PoppyConversationOperation,
+  ): Promise<void> {
+    await this.#saveOperation(conversationId, { ...operation, status: 'pending' });
+    if (service?.release === undefined) return;
+    try {
+      await service.release(operation.operationId);
+    } catch (error) {
+      this.options.onError?.(error, 'poppy: release failed');
+    }
+  }
+
+  /**
+   * Release every approved call of a conversation that was never made: those whose approval lapsed,
+   * or all of them (`all`, when it closes).
+   */
+  async #releaseUnperformed(conversationId: string, all = false): Promise<void> {
+    const service = this.#operationsService();
+    const conversation = await this.options.store.getConversation(conversationId);
+    const now = Date.now();
+    for (const operation of Object.values(conversation?.operations ?? {})) {
+      if (operation.status !== 'approved') continue;
+      if (!all && Date.parse(operation.expiresAt) > now) continue;
+      await this.#releaseOperation(conversationId, service, operation);
+    }
+  }
+
+  #operationAction(conversationId: string, tool: string, input: unknown): string {
+    return `poppy-conversation:${conversationId}:${actionKey(tool, input)}`;
+  }
+
+  #approvedNote(operation: PoppyConversationOperation): string {
+    return this.#texts.operationApproved
+      .replaceAll('{summary}', operation.summary ?? humanizeToolName(operation.tool))
+      .replaceAll('{tool}', operation.tool)
+      .replaceAll('{input}', JSON.stringify(operation.input ?? null));
+  }
+
+  /**
+   * An action parked for approval during a turn. Approved already (same tool, same input, not
+   * expired) → it runs now, once. Otherwise it is held, and the operations service returns the
+   * operation the reply carries (Operations §4).
+   */
+  async #onParked(
+    conversation: PoppyConversationRecord,
+    grant: PoppyGrant,
+    service: PoppyOperationsService,
+    action: A2aParkedAction,
+    held: Map<string, PoppyOperation>,
+    performing: string[],
+  ): Promise<A2aParkedDecision> {
+    const current = await this.#fresh(conversation);
+    const key = actionKey(action.toolName, action.input);
+    const existing = Object.values(current.operations ?? {}).find(
+      (operation) =>
+        operation.status !== 'performed' && actionKey(operation.tool, operation.input) === key,
+    );
+    const summaryOf = (operation: PoppyConversationOperation) =>
+      operation.summary ?? humanizeToolName(operation.tool);
+    if (existing?.status === 'approved' && action.kind === 'call') {
+      if (Date.parse(existing.expiresAt) > Date.now()) {
+        await this.#saveOperation(current.id, { ...existing, status: 'performing' });
+        performing.push(existing.operationId);
+        return 'approve';
+      }
+      // The approval lapsed before the call came: it is not performed under it.
+      await this.#releaseOperation(current.id, service, existing);
+    }
+    if (existing?.status === 'performing') {
+      return { hold: this.#texts.operationPerforming.replaceAll('{summary}', summaryOf(existing)) };
+    }
+    const options = this.#operationsOptions();
+    const context = { ...action, conversation: current };
+    if (options.requires && !(await options.requires(context))) return undefined;
+    const described = options.describe ? await options.describe(context) : {};
+    const ttl = Date.now() + (options.expiresInMs ?? DEFAULT_OPERATION_TTL_MS);
+    const lapses = action.expiresAt !== undefined ? Date.parse(action.expiresAt) : Number.NaN;
+    const summary = described.summary ?? defaultSummary(action);
+    const terms = described.terms ?? { tool: action.toolName, input: action.input ?? null };
+    let result: Awaited<ReturnType<PoppyOperationsService['require']>>;
+    try {
+      result = await service.require(
+        this.#operationsRequest(current, grant, null),
+        this.#principalOf(current, grant),
+        {
+          interface: 'conversation',
+          action: this.#operationAction(current.id, action.toolName, action.input),
+          terms,
+          summary,
+          expiresAt:
+            described.expiresAt !== undefined
+              ? new Date(described.expiresAt)
+              : new Date(Number.isNaN(lapses) ? ttl : Math.min(lapses, ttl)),
+          conversationId: current.id,
+          ...(existing ? { operationId: existing.operationId } : {}),
+        },
+      );
+    } catch (error) {
+      this.options.onError?.(error, 'poppy: the operations service failed');
+      return { hold: this.#texts.operationHeld };
+    }
+    // The service needs no approval for it: the policy decides, as without operations.
+    if (result.ok) return undefined;
+    const operation = operationOf(result);
+    if (operation === null) {
+      this.options.onError?.(
+        new Error(
+          `poppy: the operations service answered ${result.status} ${String(result.kind ?? result.body?.error ?? '')} for ${action.toolName}`,
+        ),
+        'poppy: no operation to ask approval for',
+      );
+      return { hold: this.#texts.operationHeld };
+    }
+    const now = Date.now();
+    await this.#saveOperation(current.id, {
+      operationId: operation.operation_id,
+      revision: operation.revision,
+      expiresAt: operation.expires_at,
+      summary: operation.summary ?? summary,
+      terms: operation.terms,
+      tool: action.toolName,
+      input: action.input ?? null,
+      proposalId: action.kind === 'proposal' ? (action.proposalId ?? null) : null,
+      status: 'pending',
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    });
+    held.set(operation.operation_id, operation);
+    return { hold: this.#texts.operationHeld };
+  }
+
+  /**
+   * An approval in a message (Operations §6): the operation must be this conversation's and not
+   * performed; the operations service checks the revision. Then a held proposal runs now, a held
+   * call when the Company Agent makes it again — or the approval is declined, or a new revision
+   * is returned. A performed operation's approval adds nothing (§7).
+   */
+  async #onApproval(
+    conversation: PoppyConversationRecord,
+    grant: PoppyGrant,
+    service: PoppyOperationsService,
+    approval: PoppyApproval,
+    work: ApprovalWork,
+  ): Promise<void> {
+    const current = await this.#fresh(conversation);
+    const operation = current.operations?.[approval.operation_id];
+    if (operation === undefined) {
+      work.said.push(this.#texts.operationUnknown.replaceAll('{operation}', approval.operation_id));
+      return;
+    }
+    const summary = operation.summary ?? humanizeToolName(operation.tool);
+    if (operation.status === 'performed') return;
+    if (operation.status === 'performing') {
+      work.said.push(this.#texts.operationPerforming.replaceAll('{summary}', summary));
+      return;
+    }
+    if (operation.status === 'approved') {
+      work.approvedCalls++;
+      work.notes.push(this.#approvedNote(operation));
+      return;
+    }
+    // An expired revision fails the check: a new one is returned (Operations §6).
+    const expired = Date.parse(operation.expiresAt) <= Date.now();
+    const ttl = this.#operationsOptions().expiresInMs ?? DEFAULT_OPERATION_TTL_MS;
+    let result: Awaited<ReturnType<PoppyOperationsService['require']>>;
+    try {
+      result = await service.require(
+        this.#operationsRequest(current, grant, expired ? null : approval),
+        this.#principalOf(current, grant),
+        {
+          interface: 'conversation',
+          action: this.#operationAction(current.id, operation.tool, operation.input),
+          operationId: operation.operationId,
+          terms: operation.terms,
+          ...(operation.summary !== undefined ? { summary: operation.summary } : {}),
+          // A new revision, if the check fails, lapses after the usual time.
+          expiresAt: new Date(Date.now() + ttl),
+          conversationId: current.id,
+          ...(expired ? {} : { approval }),
+        },
+      );
+    } catch (error) {
+      this.options.onError?.(error, 'poppy: the operations service failed');
+      work.said.push(this.#texts.failed);
+      return;
+    }
+    if (result.ok && !expired) {
+      if (operation.proposalId !== null) {
+        await this.#saveOperation(current.id, { ...operation, status: 'performing' });
+        const outcome = await this.#performProposal(current, grant, operation);
+        if (outcome === null) {
+          work.said.push(this.#texts.operationPerforming.replaceAll('{summary}', summary));
+          return;
+        }
+        await this.#saveOperation(current.id, { ...operation, status: 'performed' });
+        await service
+          .markPerformed(operation.operationId)
+          .catch((error) => this.options.onError?.(error, 'poppy: markPerformed failed'));
+        work.outcomes.push(outcome);
+        return;
+      }
+      await this.#saveOperation(current.id, {
+        ...operation,
+        revision: approval.revision,
+        status: 'approved',
+      });
+      work.approvedCalls++;
+      work.notes.push(this.#approvedNote(operation));
+      return;
+    }
+    const kind = result.ok ? 'approved' : (result.kind ?? result.body?.error);
+    if (!result.ok && kind === 'approval_declined') {
+      work.declines.push({ decline: declineOf(result, approval), summary });
+      return;
+    }
+    if (!result.ok && kind === 'performed') {
+      // Performed already, elsewhere: this approval adds nothing (Operations §7).
+      await this.#saveOperation(current.id, { ...operation, status: 'performed' });
+      return;
+    }
+    const renewed = result.ok ? null : operationOf(result);
+    // Never answer an approval with the revision it names (Operations §6).
+    if (renewed !== null && renewed.revision !== approval.revision) {
+      await this.#saveOperation(current.id, {
+        ...operation,
+        revision: renewed.revision,
+        expiresAt: renewed.expires_at,
+        terms: renewed.terms,
+        summary: renewed.summary ?? operation.summary ?? summary,
+      });
+      work.operations.push(renewed);
+      return;
+    }
+    if (!result.ok && result.status === 503) {
+      work.said.push(this.#texts.operationPerforming.replaceAll('{summary}', summary));
+      return;
+    }
+    this.options.onError?.(
+      new Error(
+        `poppy: the operations service did not accept the approval of ${operation.operationId} (${result.ok ? 'expired' : `${result.status} ${String(kind ?? '')}`})`,
+      ),
+      'poppy: approval not accepted',
+    );
+    work.said.push(
+      this.#texts.operationDeclined.replaceAll('{summary}', summary).replaceAll('{reason}', ''),
+    );
+  }
+
+  /** Decide a held proposal approved and wait for it to run. `null`: still running at the deadline. */
+  async #performProposal(
+    conversation: PoppyConversationRecord,
+    grant: PoppyGrant,
+    operation: PoppyConversationOperation,
+  ): Promise<PoppyActionOutcome | null> {
+    const service = this.options.service;
+    const fallback = { title: operation.summary ?? humanizeToolName(operation.tool) };
+    const { decideActionProposal, listActionProposals } = service;
+    const threadId = conversation.threadId;
+    const proposalId = operation.proposalId;
+    if (!decideActionProposal || !listActionProposals || threadId === null || proposalId === null) {
+      return { tool: operation.tool, status: 'failed', summary: fallback, error: 'not available' };
+    }
+    try {
+      await decideActionProposal.call(
+        service,
+        grant.actor,
+        threadId,
+        proposalId,
+        'approved',
+        {},
+        'poppy',
+      );
+    } catch (error) {
+      return {
+        tool: operation.tool,
+        status: 'failed',
+        summary: fallback,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const deadline = Date.now() + (this.options.timeoutMs ?? 120_000);
+    while (Date.now() < deadline && !this.#closed) {
+      const listed = await listActionProposals.call(service, grant.actor, threadId);
+      const found = listed.find((proposal) => proposal.id === proposalId);
+      const confirmation = found?.confirmation;
+      const summary = confirmation
+        ? {
+            title: confirmation.title,
+            ...(confirmation.detail ? { detail: confirmation.detail } : {}),
+          }
+        : fallback;
+      const status = found?.execution?.status;
+      if (found?.decision !== 'approved' || status === 'failed') {
+        return {
+          tool: operation.tool,
+          status: 'failed',
+          summary,
+          error: found?.execution?.error ?? `${operation.tool} did not run`,
+        };
+      }
+      if (status === 'succeeded') {
+        return {
+          tool: operation.tool,
+          status: 'succeeded',
+          summary,
+          ...(found.execution?.result !== undefined ? { result: found.execution.result } : {}),
+        };
+      }
+      await sleep(250);
+    }
+    return null;
   }
 
   /** What a request on a conversation patches: who the next turn runs as, and the account (§8.2). */
@@ -521,6 +1108,7 @@ export class PoppyConversations {
     author: PoppyAuthor,
     id = newPoppyId('msg'),
     asOfRequest?: string,
+    extensions?: Record<string, unknown>,
   ): PoppyEventMessage {
     return {
       id,
@@ -532,7 +1120,51 @@ export class PoppyConversations {
         : {}),
       ...(text !== undefined && text !== '' ? { text } : {}),
       ...(data !== undefined ? { data } : {}),
+      ...(extensions !== undefined && Object.keys(extensions).length > 0 ? { extensions } : {}),
     };
+  }
+
+  /**
+   * Links and disclosures in a Company message (Links, Disclosures extensions): as extension
+   * content to a Personal Agent whose latest request declares them in the same version (§8.4);
+   * otherwise in the text — a disclosure always reaches the User.
+   */
+  #withAddons(
+    declared: Record<string, string>,
+    text: string,
+    addons: PoppyMessageAddons | undefined,
+  ): { text: string; extensions: Record<string, unknown> } {
+    if (addons === undefined) return { text, extensions: {} };
+    const checked = checkPoppyAddons(addons);
+    const extensions: Record<string, unknown> = {};
+    const inText: string[] = [];
+    if (checked.disclosures) {
+      if (declared.disclosures === POPPY_DISCLOSURES_VERSION) {
+        extensions.disclosures = { items: checked.disclosures };
+      } else {
+        inText.push(...checked.disclosures.map((disclosure) => disclosure.text));
+      }
+    }
+    if (checked.links) {
+      if (declared.links === POPPY_LINKS_VERSION) {
+        extensions.links = { items: checked.links };
+      } else {
+        inText.push(
+          checked.links
+            .map((link) => (link.title ? `${link.title}: ${link.url}` : link.url))
+            .join('\n'),
+        );
+      }
+    }
+    return {
+      text: [text, ...inText].filter((part) => part.trim() !== '').join('\n\n'),
+      extensions,
+    };
+  }
+
+  /** The extensions a conversation's latest request declared (§3.4). */
+  #declared(conversation: PoppyConversationRecord): Record<string, string> {
+    return conversation.grant?.extensions ?? conversation.extensions;
   }
 
   // ── Personal Agent requests ─────────────────────────────────────────────────
@@ -546,6 +1178,8 @@ export class PoppyConversations {
     principal: PoppyPrincipal,
     body: PoppySendBody,
   ): Promise<PoppyAccepted & { conversationId: string }> {
+    if (body.message !== undefined)
+      body = { ...body, message: this.#inbound(principal, body.message) };
     const fingerprintBody = {
       message: body.message ?? null,
       parent: body.parentConversationId ?? null,
@@ -765,8 +1399,8 @@ export class PoppyConversations {
     conversationId: string,
     body: PoppySendBody,
   ): Promise<PoppyAccepted> {
-    const message = body.message;
-    if (message === undefined) throw new PoppyError('invalid_request', 'message is required');
+    if (body.message === undefined) throw new PoppyError('invalid_request', 'message is required');
+    const message = this.#inbound(principal, body.message);
     return this.#acceptOn(
       principal,
       conversationId,
@@ -1167,6 +1801,10 @@ export class PoppyConversations {
       // Closed: not working, handoff none, responder whoever handled it last (§8.7).
       return this.#update(current, { closed: true, working: false, handoff: 'none', prompt: null });
     });
+    // Approved calls the Company Agent never made are not performed now: say so (Operations §7).
+    await this.#releaseUnperformed(conversationId, true).catch((error) =>
+      this.options.onError?.(error, 'poppy: releasing operations failed'),
+    );
     if (before.handoff === 'pending' || before.responder === 'human') {
       await this.#hook('handoff.cancel', () =>
         this.options.handoff?.cancel?.({
@@ -1273,11 +1911,30 @@ export class PoppyConversations {
    */
   async postMessage(
     conversationId: string,
-    message: { text?: string; data?: Record<string, unknown>; author: PoppyAuthor },
+    message: {
+      text?: string;
+      data?: Record<string, unknown>;
+      author: PoppyAuthor;
+      /** Pages the message refers to (Links extension). */
+      links?: PoppyMessageAddons['links'];
+      /** Notices that matter whatever else it says (Disclosures extension). */
+      disclosures?: PoppyMessageAddons['disclosures'];
+    },
   ): Promise<string> {
     const conversation = await this.#require(conversationId);
     if (conversation.closed) throw new PoppyError('conversation_closed');
-    const event = this.#companyMessage(message.text, message.data, message.author);
+    const composed = this.#withAddons(this.#declared(conversation), message.text ?? '', {
+      ...(message.links !== undefined ? { links: message.links } : {}),
+      ...(message.disclosures !== undefined ? { disclosures: message.disclosures } : {}),
+    });
+    const event = this.#companyMessage(
+      composed.text,
+      message.data,
+      message.author,
+      undefined,
+      undefined,
+      composed.extensions,
+    );
     await this.#append(conversationId, { type: 'message', message: event });
     return event.id;
   }
@@ -1413,7 +2070,51 @@ export class PoppyConversations {
     // The latest request the turn takes into account (§8.4): its last message — whose ID is its
     // request's. A turn on the prompt alone has none.
     const asOfRequest = messages.at(-1)?.id;
-    const text = [prompt ?? '', turnText(messages)].filter((part) => part !== '').join('\n\n');
+    // Approvals first (Operations §6): what they ran, declined or renewed, and what the Company
+    // Agent is to do now.
+    const operations = this.#operationsFor(grant.extensions);
+    const work: ApprovalWork = {
+      notes: [],
+      outcomes: [],
+      operations: [],
+      declines: [],
+      said: [],
+      approvedCalls: 0,
+    };
+    if (operations !== undefined) {
+      await this.#releaseUnperformed(conversation.id);
+      for (const message of messages) {
+        const approval = approvalOf(message);
+        if (approval !== null) {
+          await this.#onApproval(conversation, grant, operations, approval, work);
+        }
+      }
+    }
+    if (prompt === null && !messages.some(saysSomething) && work.approvedCalls === 0) {
+      // Only approvals: the Company answers them without the model.
+      const key = `operations:${asOfRequest ?? upToSeq}`;
+      await this.options.store.updateConversation(conversation.id, {
+        turnSeq: upToSeq,
+        prompt: null,
+      });
+      await this.#reply(conversation, grant, key, {
+        text: '',
+        components: [],
+        outcomes: work.outcomes,
+        permission: null,
+        failed: false,
+        operations: work.operations,
+        declines: work.declines,
+        said: work.said,
+        ...(asOfRequest !== undefined ? { asOfRequest } : {}),
+      });
+      return;
+    }
+    const held = new Map<string, PoppyOperation>();
+    const performing: string[] = [];
+    const text = [prompt ?? '', ...work.notes, turnText(messages)]
+      .filter((part) => part !== '')
+      .join('\n\n');
     const deadline = Date.now() + (this.options.timeoutMs ?? 120_000);
     const components = new Map<string, Extract<StreamFrame, { t: 'component' }>>();
     let replyId: string | null = null;
@@ -1451,12 +2152,20 @@ export class PoppyConversations {
           ...(this.options.drive !== false && service.drive
             ? { drive: (id: string) => service.drive?.(id) ?? Promise.resolve() }
             : {}),
+          ...(operations !== undefined
+            ? {
+                onParked: (action: A2aParkedAction) =>
+                  this.#onParked(conversation, grant, operations, action, held, performing),
+              }
+            : {}),
           onStarted: async (startedThreadId, startedRunId) => {
             runId = startedRunId;
             replyId = derivedPoppyId('msg', `reply:${startedRunId}`);
             await this.options.store.updateConversation(conversation.id, {
               threadId: startedThreadId,
               activeRunId: startedRunId,
+              // A reply written by another process after this one died still says it (§8.4).
+              asOfRequest: asOfRequest ?? null,
               turnSeq: upToSeq,
               prompt: null,
             });
@@ -1480,12 +2189,25 @@ export class PoppyConversations {
             components.set(frame.id ?? `ui:${components.size}`, frame);
           },
         });
+        // A held call approved this turn ran once: it is performed (Operations §7).
+        for (const operationId of performing) {
+          const current = (await this.#fresh(conversation)).operations?.[operationId];
+          if (current !== undefined) {
+            await this.#saveOperation(conversation.id, { ...current, status: 'performed' });
+          }
+          await operations
+            ?.markPerformed(operationId)
+            .catch((error) => this.options.onError?.(error, 'poppy: markPerformed failed'));
+        }
         await this.#reply(conversation, grant, runId ?? randomUUID(), {
           text: result.text,
           components: [...components.values()],
-          outcomes: result.outcomes,
+          outcomes: [...work.outcomes, ...result.outcomes],
           permission: result.permission,
           failed: result.error !== null,
+          operations: [...work.operations, ...held.values()],
+          declines: work.declines,
+          said: work.said,
           ...(asOfRequest !== undefined ? { asOfRequest } : {}),
         });
         return;
@@ -1556,6 +2278,8 @@ export class PoppyConversations {
         outcomes: [],
         permission: null,
         failed,
+        // What the dead process's turn took into account (§8.4).
+        ...(conversation.asOfRequest ? { asOfRequest: conversation.asOfRequest } : {}),
       },
     );
   }
@@ -1575,11 +2299,17 @@ export class PoppyConversations {
       permission: string[] | null;
       failed: boolean;
       asOfRequest?: string;
+      /** Operations to ask approval for, in this message and the next ones (Operations §4). */
+      operations?: PoppyOperation[];
+      /** Declined approvals, each said in a message (Operations §6). */
+      declines?: { decline: PoppyDecline; summary: string }[];
+      /** Statements added to the text. */
+      said?: string[];
     },
   ): Promise<void> {
     const store = this.options.store;
     const current = await store.getConversation(conversation.id);
-    await store.updateConversation(conversation.id, { activeRunId: null });
+    await store.updateConversation(conversation.id, { activeRunId: null, asOfRequest: null });
     // A closed conversation takes no more message events (§8.12).
     if (!current || current.closed) return;
 
@@ -1608,27 +2338,108 @@ export class PoppyConversations {
       const allDone = turn.outcomes.every((action) => action.status === 'succeeded');
       if (!allDone || text === '') text = told;
     }
-    if (text === '' && turn.failed && components.length === 0 && turn.outcomes.length === 0) {
+    const said = (turn.said ?? []).filter((line) => line.trim() !== '');
+    if (said.length > 0) text = [text, ...said].filter((part) => part !== '').join('\n\n');
+    // Operations content goes only to a Personal Agent that declared Operations v3 (§8.4); one
+    // operation or decline per message.
+    const declared = this.#declared(current);
+    const operationsContent =
+      declared[POPPY_OPERATIONS_EXTENSION] === POPPY_OPERATIONS_VERSION
+        ? [
+            ...(turn.operations ?? []).map((operation) => ({
+              content: { operation },
+              text: this.#texts.operationRequired.replaceAll('{summary}', operation.summary ?? ''),
+            })),
+            ...(turn.declines ?? []).map(({ decline, summary }) => ({
+              content: { declined: decline },
+              text: [
+                this.#texts.operationDeclined
+                  .replaceAll('{summary}', summary)
+                  .replaceAll('{reason}', decline.reason ?? ''),
+                decline.reason ?? '',
+              ]
+                .filter((part) => part.trim() !== '')
+                .join('\n'),
+            })),
+          ]
+        : [];
+    if (
+      text === '' &&
+      turn.failed &&
+      components.length === 0 &&
+      turn.outcomes.length === 0 &&
+      operationsContent.length === 0
+    ) {
       text = this.#texts.failed;
     }
+    const [first, ...others] = operationsContent;
+    if (text === '' && first !== undefined) text = first.text;
     const data: Record<string, unknown> = {
       ...(components.length > 0 ? { components } : {}),
       ...(turn.outcomes.length > 0 ? { actions: turn.outcomes } : {}),
     };
-    if (text !== '' || Object.keys(data).length > 0) {
+    let addons: PoppyMessageAddons | undefined;
+    if (this.options.replyAddons && text !== '') {
+      try {
+        addons = await this.options.replyAddons({
+          conversationId: current.id,
+          conversation: current,
+          actor: grant.actor,
+          text,
+          ...(Object.keys(data).length > 0 ? { data } : {}),
+        });
+      } catch (error) {
+        this.options.onError?.(error, 'poppy: replyAddons hook failed');
+      }
+    }
+    let composed: { text: string; extensions: Record<string, unknown> } = { text, extensions: {} };
+    try {
+      composed = this.#withAddons(declared, text, addons);
+    } catch (error) {
+      this.options.onError?.(error, 'poppy: replyAddons answered an invalid link or disclosure');
+    }
+    const extensions = {
+      ...composed.extensions,
+      ...(first !== undefined ? { [POPPY_OPERATIONS_EXTENSION]: first.content } : {}),
+    };
+    if (
+      composed.text !== '' ||
+      Object.keys(data).length > 0 ||
+      Object.keys(extensions).length > 0
+    ) {
       await this.#append(
         conversation.id,
         {
           type: 'message',
           message: this.#companyMessage(
-            text,
+            composed.text,
             Object.keys(data).length > 0 ? data : undefined,
             { type: 'agent' },
             derivedPoppyId('msg', `reply:${runId}`),
             turn.asOfRequest,
+            extensions,
           ),
         },
         `reply:${runId}`,
+      );
+    }
+    // Every other operation or decline in a message of its own (Operations §4, §6).
+    for (const [index, item] of others.entries()) {
+      const key = `reply:${runId}:operations:${index + 1}`;
+      await this.#append(
+        conversation.id,
+        {
+          type: 'message',
+          message: this.#companyMessage(
+            item.text,
+            undefined,
+            { type: 'agent' },
+            derivedPoppyId('msg', key),
+            turn.asOfRequest,
+            { [POPPY_OPERATIONS_EXTENSION]: item.content },
+          ),
+        },
+        key,
       );
     }
 

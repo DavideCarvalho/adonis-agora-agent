@@ -9,6 +9,7 @@ import type { LucidClientLike, LucidRawRunner } from '../stores/lucid.js';
 import { addMissingColumns, forDialect } from '../stores/lucid-schema.js';
 import { isMySql } from '../stores/sql-dialect.js';
 import type { Actor } from '../types.js';
+import type { PoppyPrincipal } from './auth.js';
 import type {
   PoppyContext,
   PoppyEvent,
@@ -53,6 +54,16 @@ export interface PoppyConversationRecord {
   /** The run whose reply is being written, while there is one. */
   activeRunId: string | null;
   /**
+   * The latest request the active run takes into account — the `as_of_request` of its reply (§8.4),
+   * kept so a reply written after its process died still says it.
+   */
+  asOfRequest?: string | null;
+  /**
+   * The operations this conversation asked approval for (Operations extension), by `operation_id`:
+   * what each one performs, and where it stands.
+   */
+  operations?: Record<string, PoppyConversationOperation>;
+  /**
    * The position of the last message event a turn has taken up. The event log IS the turn queue:
    * user messages after it are what the next turn answers — on whichever replica picks it up.
    */
@@ -71,6 +82,40 @@ export interface PoppyGrant {
   /** The token's account scopes; empty when signed out. */
   scopes: string[];
   signedIn: boolean;
+  /**
+   * The extensions the latest request declared, `{ name: version }` (§3.4) — which extension
+   * content the Company may send (§8.4).
+   */
+  extensions?: Record<string, string>;
+  /** The latest request's principal (without its actor) — who an operation is asked for. */
+  principal?: Omit<PoppyPrincipal, 'actor'>;
+}
+
+/**
+ * An operation a conversation asked approval for (Operations §3, §4): the action it performs —
+ * the tool call, or the independent proposal — and its state.
+ */
+export interface PoppyConversationOperation {
+  operationId: string;
+  /** The latest revision returned for it. */
+  revision: string;
+  expiresAt: string;
+  summary?: string;
+  /** The terms of the latest revision. */
+  terms: Record<string, unknown>;
+  /** The tool the action calls, and its input. */
+  tool: string;
+  input: unknown;
+  /** The independent proposal that performs it, when the action is one. */
+  proposalId: string | null;
+  /**
+   * `pending` — waiting for an approval; `approved` — approved, the Company Agent performs it on
+   * its next call of the same tool with the same input; `performing`; `performed` — done, never
+   * again (Operations §7).
+   */
+  status: 'pending' | 'approved' | 'performing' | 'performed';
+  createdAt: number;
+  updatedAt: number;
 }
 
 export type PoppyConversationPatch = Partial<
@@ -86,6 +131,8 @@ export type PoppyConversationPatch = Partial<
     | 'context'
     | 'prompt'
     | 'activeRunId'
+    | 'asOfRequest'
+    | 'operations'
     | 'turnSeq'
     | 'grant'
     | 'prunedSeq'
@@ -199,6 +246,8 @@ export function upgradePoppyRecord(
     protocolVersion: raw.protocolVersion ?? null,
     extensions: raw.extensions ?? {},
     prompt: raw.prompt ?? null,
+    asOfRequest: raw.asOfRequest ?? null,
+    operations: raw.operations ?? {},
   };
 }
 
@@ -338,6 +387,8 @@ export function poppyTableStatements(schema?: string): string[] {
       "prompt" TEXT NULL,
       "context" TEXT NULL,
       "active_run_id" VARCHAR(255) NULL,
+      "as_of_request" VARCHAR(256) NULL,
+      "operations" TEXT NULL,
       "turn_seq" BIGINT NOT NULL,
       "grant_info" TEXT NULL,
       "reader_holder" VARCHAR(255) NULL,
@@ -380,6 +431,8 @@ export const POPPY_1_0_COLUMNS = [
   { table: POPPY_TABLES.conversations, column: 'protocol_version', type: 'VARCHAR(16) NULL' },
   { table: POPPY_TABLES.conversations, column: 'extensions', type: 'TEXT NULL' },
   { table: POPPY_TABLES.conversations, column: 'prompt', type: 'TEXT NULL' },
+  { table: POPPY_TABLES.conversations, column: 'as_of_request', type: 'VARCHAR(256) NULL' },
+  { table: POPPY_TABLES.conversations, column: 'operations', type: 'TEXT NULL' },
 ] as const;
 
 /**
@@ -420,6 +473,8 @@ const PATCH_COLUMNS: Record<keyof PoppyConversationPatch, string> = {
   context: 'context',
   prompt: 'prompt',
   activeRunId: 'active_run_id',
+  asOfRequest: 'as_of_request',
+  operations: 'operations',
   turnSeq: 'turn_seq',
   grant: 'grant_info',
   prunedSeq: 'pruned_seq',
@@ -490,6 +545,8 @@ export class LucidPoppyStore implements PoppyStore {
       prompt: record.prompt,
       context: JSON.stringify(record.context),
       active_run_id: record.activeRunId,
+      as_of_request: record.asOfRequest ?? null,
+      operations: JSON.stringify(record.operations ?? {}),
       turn_seq: record.turnSeq,
       grant_info: record.grant === null ? null : JSON.stringify(record.grant),
       reader_holder: null,
@@ -528,6 +585,11 @@ export class LucidPoppyStore implements PoppyStore {
       responder: String(row.responder) as PoppyResponder,
       context: row.context == null ? {} : (JSON.parse(String(row.context)) as PoppyContext),
       activeRunId: nullable(row.active_run_id),
+      asOfRequest: nullable(row.as_of_request),
+      operations:
+        row.operations == null
+          ? {}
+          : (JSON.parse(String(row.operations)) as Record<string, PoppyConversationOperation>),
       turnSeq: toInt(row.turn_seq),
       grant: row.grant_info == null ? null : (JSON.parse(String(row.grant_info)) as PoppyGrant),
       prunedSeq: toInt(row.pruned_seq),
@@ -543,7 +605,7 @@ export class LucidPoppyStore implements PoppyStore {
       const value = patch[key as keyof PoppyConversationPatch];
       if (value === undefined) continue;
       row[column] =
-        key === 'context' || (key === 'grant' && value !== null)
+        key === 'context' || key === 'operations' || (key === 'grant' && value !== null)
           ? JSON.stringify(value)
           : typeof value === 'boolean'
             ? Number(value)

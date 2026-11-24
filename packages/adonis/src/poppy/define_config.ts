@@ -6,6 +6,8 @@ import type {
   PoppyActionFormatter,
   PoppyDirectHooks,
   PoppyHandoffHooks,
+  PoppyOperationsOptions,
+  PoppyReplyAddons,
   PoppyTexts,
   PoppyVersionCheck,
 } from './conversations.js';
@@ -90,6 +92,19 @@ export interface PoppyConfig {
    * `data.actions` carries them structured. Default: `texts.action*` + the confirmation detail.
    */
   formatAction?: PoppyActionFormatter;
+  /**
+   * Ask for approval with the Operations extension (version 3): an action that waits for approval
+   * is not run — the reply carries the operation, and it runs once the personal agent sends its
+   * approval. Only for a personal agent that declares `"operations";v="3"`. Default: on when an
+   * operations service is installed (`@adonis-agora/authkit-poppy` with operations); `false` turns
+   * it off; `true` or options without a service log an error and stay off.
+   */
+  operations?: boolean | PoppyOperationsOptions;
+  /**
+   * Links and disclosures for each reply of the Company Agent (Links and Disclosures extensions):
+   * sent as extension content to a personal agent that declares them, otherwise in the text.
+   */
+  replyAddons?: PoppyReplyAddons;
   /** Give up on a turn after this many ms. Default 120 000. */
   timeoutMs?: number;
   /** Largest accepted request body, in bytes. Default 1 MiB. */
