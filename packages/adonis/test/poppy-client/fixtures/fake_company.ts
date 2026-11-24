@@ -208,6 +208,12 @@ export interface FakeOptions {
   rejectApiResource?: boolean | undefined;
   /** Operations: decline every agent approval (Operations section 6). */
   declineAgentApprovals?: boolean | undefined;
+  /**
+   * Operations: every request without an approval gets a NEW operation (the Company decides which
+   * requests are for the same action, section 3), so a client must send the approval with the
+   * repeated request instead of repeating it bare first.
+   */
+  newOperationPerRequest?: boolean | undefined;
   /** Operations: the first approved API request answers 503 + Retry-After while it performs. */
   performing503Once?: boolean | undefined;
 }
@@ -1628,14 +1634,16 @@ export class FakeCompany {
     key: string,
     extra: { conversationId?: string | undefined },
   ): FakeOperation {
-    let op = [...this.operations.values()].find(
-      (o) =>
-        o.via === via &&
-        o.owner === owner &&
-        o.key === key &&
-        o.status !== 'performed' &&
-        o.conversationId === extra.conversationId,
-    );
+    let op = this.opts.newOperationPerRequest
+      ? undefined
+      : [...this.operations.values()].find(
+          (o) =>
+            o.via === via &&
+            o.owner === owner &&
+            o.key === key &&
+            o.status !== 'performed' &&
+            o.conversationId === extra.conversationId,
+        );
     if (!op) {
       op = {
         id: id('exc_'),

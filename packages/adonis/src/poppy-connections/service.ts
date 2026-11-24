@@ -980,7 +980,10 @@ export class PoppyConnections {
         const args = (rec.asked?.arguments ?? {}) as Record<string, unknown>;
         const conn = await connectMcp(client);
         try {
-          const { result, operation } = await conn.callTool(tool, args, { approve });
+          const { result, operation } = await conn.callTool(tool, args, {
+            approve,
+            operation: shown,
+          });
           const out = {
             outcome: operation?.status ?? ('performed' as const),
             result: textOf(result),

@@ -1137,6 +1137,23 @@ describe('poppy-connections: approvals (Operations) and the Company’s links an
     expect(a.fake.violations).toEqual([]);
   });
 
+  it('the approve card sends the approval with the repeated MCP call (a new operation per request)', async () => {
+    const a = await connected({}, { newOperationPerRequest: true });
+    const first = (await tool(a, 'write', {
+      company: a.fake.domain,
+      tool: 'exchange_item',
+      arguments: exchangeArgs,
+    })) as { error: string; operation: { operation_id: string } };
+    expect(first.error).toBe('approval_required');
+    const done = await tool(a, 'approve', {
+      company: a.fake.domain,
+      operation_id: first.operation.operation_id,
+    });
+    expect(done).toMatchObject({ approved: true, result: expect.stringContaining('exchanged') });
+    expect(a.fake.exchanges).toHaveLength(1);
+    expect(a.fake.violations).toEqual([]);
+  });
+
   it('the app approves on the person’s instruction (an agent approval); a decline is reported', async () => {
     const seen: unknown[] = [];
     const a = await connected(
