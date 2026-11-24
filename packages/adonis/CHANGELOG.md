@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.41
+
+### Patch Changes
+
+- fix(deps): update dependency jose to v6.2.18 ([#670](https://github.com/DavideCarvalho/adonis-agora-agent/issues/670))
+
 ## 1.0.0-rc.40
 
 ### Patch Changes
