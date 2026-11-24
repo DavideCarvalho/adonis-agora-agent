@@ -332,7 +332,7 @@
     "@tailwindcss/browser": "4.3.5",
     "acorn": "8.19.0",
     "acorn-jsx": "5.3.2",
-    "jose": "6.2.17"
+    "jose": "6.2.18"
   },
   "peerDependencies": {
     "@adonis-agora/authkit-client": ">=1.0.0-rc.7 <2.0.0",
