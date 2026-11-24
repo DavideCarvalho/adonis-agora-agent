@@ -1974,6 +1974,60 @@ describe('Poppy message extensions: links and disclosures (§8.4)', () => {
   });
 });
 
+// ── headers of a verified request ────────────────────────────────────────────
+
+describe('Poppy: headers the resolver gives a verified request', () => {
+  it('Deprecation, Sunset and Link go on every response: JSON, POST, SSE and errors', async () => {
+    const deprecation = {
+      Deprecation: '@1767225600',
+      Sunset: 'Wed, 01 Jul 2026 00:00:00 GMT',
+      Link: '<https://shop.example/poppy-1-0-sunset>; rel="deprecation"',
+    };
+    const agent = buildAgent(() => ({ text: 'hi' }));
+    harness = await serve(
+      { service: agent.service, toolRoles: () => undefined },
+      {
+        authenticate: async (request, options) => {
+          const result = await fakeResolver(request, options);
+          return result.ok ? { ...result, headers: deprecation } : result;
+        },
+      },
+    );
+    const h = harness;
+    const expectDeprecated = (headers: Headers) => {
+      expect(headers.get('deprecation')).toBe(deprecation.Deprecation);
+      expect(headers.get('sunset')).toBe(deprecation.Sunset);
+      expect(headers.get('link')).toBe(deprecation.Link);
+    };
+    const started = await post(h, '', msg('hi'));
+    expect(started.status).toBe(201);
+    expectDeprecated(started.headers);
+    const id = started.body.conversation_id;
+    const read = await get(h, `/${id}/events`);
+    expect(read.status).toBe(200);
+    expectDeprecated(read.headers);
+    const waited = await post(h, `/${id}/messages?wait=1`, msg('again'));
+    expect(waited.status).toBe(202);
+    expectDeprecated(waited.headers);
+    const ac = new AbortController();
+    const stream = await fetch(`${h.url}/poppy/conversations/${id}/events`, {
+      headers: { ...U1, accept: 'text/event-stream' },
+      signal: ac.signal,
+    });
+    expect(stream.headers.get('content-type')).toContain('text/event-stream');
+    expectDeprecated(stream.headers);
+    ac.abort();
+    await stream.body?.cancel().catch(() => {});
+    const missing = await get(h, '/cnv_missing/events');
+    expect(missing.status).toBe(404);
+    expectDeprecated(missing.headers);
+    // A refused request carries only what the refusal says.
+    const refused = await get(h, `/${id}/events`, { 'poppy-version': '1.0' } as typeof U1);
+    expect(refused.status).toBe(401);
+    expect(refused.headers.get('deprecation')).toBeNull();
+  });
+});
+
 // ── Operations extension in conversations ────────────────────────────────────
 
 const OPS = { 'poppy-extensions': '"operations";v="3"' };
@@ -1988,6 +2042,7 @@ function fakeOperations(mode: { decline?: boolean; renew?: boolean; performed?: 
   const byAction = new Map<string, string>();
   const calls: { input: PoppyOperationInput; approvalHeader?: unknown }[] = [];
   const performed: string[] = [];
+  const released: string[] = [];
   let seq = 0;
   const ask = (input: PoppyOperationInput) => {
     // Like authkit's: a revision needs a future Date.
@@ -2063,8 +2118,12 @@ function fakeOperations(mode: { decline?: boolean; renew?: boolean; performed?: 
     async markPerformed(id) {
       performed.push(id);
     },
+    async release(id) {
+      released.push(id);
+      return true;
+    },
   };
-  return { service, calls, performed };
+  return { service, calls, performed, released };
 }
 
 /** The model calls `cancel_order` for every message, then says `ok` once the tool answered. */
@@ -2075,8 +2134,11 @@ const cancelEveryTime: Script = (args) => {
     : { text: 'ok' };
 };
 
-async function withCancel(extra: Partial<PoppyConversationsOptions> = {}) {
-  const h = await setup(cancelEveryTime, extra);
+async function withCancel(
+  extra: Partial<PoppyConversationsOptions> = {},
+  script: Script = cancelEveryTime,
+) {
+  const h = await setup(script, extra);
   const ran: string[] = [];
   h.agent.registry.register(
     {
@@ -2284,6 +2346,65 @@ describe('Poppy Operations extension (v3) in conversations', () => {
     expect(companyMessages(events).at(-1)?.message.text).toContain('op_other');
     expect(h.ran).toEqual([]);
     expect(ops.calls).toHaveLength(1);
+  });
+
+  it('an approved call never made before its approval lapses is released (and on close)', async () => {
+    const ops = fakeOperations();
+    (globalThis as Record<symbol, unknown>)[POPPY_OPERATIONS_SLOT] = ops.service;
+    // Calls the tool only when asked in so many words — never on the approval's turn.
+    const onlyWhenAsked: Script = (args) => {
+      const last = args.messages.at(-1);
+      return last?.role === 'user' &&
+        !last.toolResults?.length &&
+        /please cancel/.test(last.content)
+        ? { text: '', toolCall: { name: 'cancel_order', input: { id: 'A-1' } } }
+        : { text: 'ok' };
+    };
+    const h = await withCancel({ operations: { expiresInMs: 1500 } }, onlyWhenAsked);
+    harness = h;
+    const id = (await post(h, '', msg('please cancel A-1'), WRITER)).body.conversation_id;
+    await readUntil(h, id, (e, last) => settled(e, last) && opMessages(e).length > 0, WRITER);
+    await post(
+      h,
+      `/${id}/messages`,
+      approvalMessage({ operation_id: 'op_1', revision: 'rev_2', approver: 'user' }),
+      WRITER,
+    );
+    await readUntil(h, id, (_e, last) => last.working === false && ops.calls.length >= 2, WRITER);
+    expect((await h.conversations.get(id))?.operations?.op_1?.status).toBe('approved');
+    expect(ops.released).toEqual([]);
+    await sleep(1600);
+    // The next turn finds the approval lapsed: released, and pending here.
+    await post(h, `/${id}/messages`, msg('anything else?'), WRITER);
+    await readUntil(h, id, (_e, last) => last.working === false && ops.released.length > 0, WRITER);
+    expect(ops.released).toEqual(['op_1']);
+    expect((await h.conversations.get(id))?.operations?.op_1?.status).toBe('pending');
+    expect(h.ran).toEqual([]);
+
+    // Another conversation: approved, then closed with the call never made.
+    await h.close();
+    const second = await withCancel({ operations: { expiresInMs: 60_000 } }, onlyWhenAsked);
+    harness = second;
+    const ops2 = fakeOperations();
+    (globalThis as Record<symbol, unknown>)[POPPY_OPERATIONS_SLOT] = ops2.service;
+    const id2 = (await post(second, '', msg('please cancel A-1'), WRITER)).body.conversation_id;
+    await readUntil(second, id2, (e, last) => settled(e, last) && opMessages(e).length > 0, WRITER);
+    await post(
+      second,
+      `/${id2}/messages`,
+      approvalMessage({ operation_id: 'op_1', revision: 'rev_2', approver: 'user' }),
+      WRITER,
+    );
+    await readUntil(
+      second,
+      id2,
+      (_e, last) => last.working === false && ops2.calls.length >= 2,
+      WRITER,
+    );
+    expect(ops2.released).toEqual([]);
+    expect((await post(second, `/${id2}/close`, req(), WRITER)).status).toBe(202);
+    expect(ops2.released).toEqual(['op_1']);
+    expect(second.ran).toEqual([]);
   });
 
   it('a malformed approval is invalid_request', async () => {

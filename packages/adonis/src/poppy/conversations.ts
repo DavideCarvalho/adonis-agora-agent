@@ -613,6 +613,40 @@ export class PoppyConversations {
     });
   }
 
+  /**
+   * An approved call that will not be performed under its approval (it lapsed, or the conversation
+   * closed): back to `pending` here, and `release` tells the operations service, which marked it
+   * `performing` when it accepted the approval — so its state stays truthful.
+   */
+  async #releaseOperation(
+    conversationId: string,
+    service: PoppyOperationsService | undefined,
+    operation: PoppyConversationOperation,
+  ): Promise<void> {
+    await this.#saveOperation(conversationId, { ...operation, status: 'pending' });
+    if (service?.release === undefined) return;
+    try {
+      await service.release(operation.operationId);
+    } catch (error) {
+      this.options.onError?.(error, 'poppy: release failed');
+    }
+  }
+
+  /**
+   * Release every approved call of a conversation that was never made: those whose approval lapsed,
+   * or all of them (`all`, when it closes).
+   */
+  async #releaseUnperformed(conversationId: string, all = false): Promise<void> {
+    const service = this.#operationsService();
+    const conversation = await this.options.store.getConversation(conversationId);
+    const now = Date.now();
+    for (const operation of Object.values(conversation?.operations ?? {})) {
+      if (operation.status !== 'approved') continue;
+      if (!all && Date.parse(operation.expiresAt) > now) continue;
+      await this.#releaseOperation(conversationId, service, operation);
+    }
+  }
+
   #operationAction(conversationId: string, tool: string, input: unknown): string {
     return `poppy-conversation:${conversationId}:${actionKey(tool, input)}`;
   }
@@ -651,6 +685,8 @@ export class PoppyConversations {
         performing.push(existing.operationId);
         return 'approve';
       }
+      // The approval lapsed before the call came: it is not performed under it.
+      await this.#releaseOperation(current.id, service, existing);
     }
     if (existing?.status === 'performing') {
       return { hold: this.#texts.operationPerforming.replaceAll('{summary}', summaryOf(existing)) };
@@ -1765,6 +1801,10 @@ export class PoppyConversations {
       // Closed: not working, handoff none, responder whoever handled it last (§8.7).
       return this.#update(current, { closed: true, working: false, handoff: 'none', prompt: null });
     });
+    // Approved calls the Company Agent never made are not performed now: say so (Operations §7).
+    await this.#releaseUnperformed(conversationId, true).catch((error) =>
+      this.options.onError?.(error, 'poppy: releasing operations failed'),
+    );
     if (before.handoff === 'pending' || before.responder === 'human') {
       await this.#hook('handoff.cancel', () =>
         this.options.handoff?.cancel?.({
@@ -2042,6 +2082,7 @@ export class PoppyConversations {
       approvedCalls: 0,
     };
     if (operations !== undefined) {
+      await this.#releaseUnperformed(conversation.id);
       for (const message of messages) {
         const approval = approvalOf(message);
         if (approval !== null) {

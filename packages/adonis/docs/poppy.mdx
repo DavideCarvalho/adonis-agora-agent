@@ -111,7 +111,9 @@ its `WWW-Authenticate`, its extra headers (`DPoP-Nonce`) and its description as 
 
 Every request must say `Poppy-Version: 1.0` (or a later `1.x`, handled as 1.0). A missing or
 incompatible version is `400 { "error": "version_unsupported" }`. The declared `Poppy-Extensions` are
-recorded with the conversation.
+recorded with the conversation. Headers the resolver gives an accepted request (AuthKit's
+`Deprecation`, `Sunset` and `Link` for a version you are retiring) go on every response to it, streams
+and errors included.
 
 A turn runs as `principal.actor`, else your `actorFor(principal, defaults)`, else the default: signed
 in, **the account** — `{ id: accountId }`, as a PACT delegation runs as the account; signed out,
@@ -252,7 +254,9 @@ What the personal agent sees:
 An approval that does not match any more (expired, or the terms changed) gets the same operation with
 a new revision to approve. A declined approval answers `extensions.operations.declined`
 (`operation_id`, `revision`, `reason`, `alternative`) and nothing is performed. An approval of an
-operation the conversation never asked for performs nothing (`texts.operationUnknown`).
+operation the conversation never asked for performs nothing (`texts.operationUnknown`). A held call
+approved but never made again before its approval expires — or before the conversation closes — is
+not performed: the operations service is told (`release`), and a later call asks for a new revision.
 
 ## Links and disclosures
 

@@ -157,6 +157,13 @@ export interface PoppyOperationsService {
     operationId: string,
     response?: { status: number; body?: unknown; headers?: Record<string, string> },
   ): Promise<unknown>;
+  /**
+   * An approved action was not performed, and won't be under that approval (it expired before the
+   * Company Agent made the call, or the conversation closed): the operation stops being
+   * `performing` (authkit puts it back to `pending`, so the next ask is a new revision of it).
+   * Optional — a service without it keeps its own state.
+   */
+  release?(operationId: string): Promise<unknown>;
 }
 
 /**

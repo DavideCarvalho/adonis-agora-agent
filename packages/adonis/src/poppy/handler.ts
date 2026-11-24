@@ -137,7 +137,7 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
   const maxWait = options.maxWaitSeconds ?? 30;
   const conversations = options.conversations;
 
-  async function authenticate(exchange: PoppyExchange): Promise<PoppyPrincipal | null> {
+  async function authenticate(exchange: HeaderedExchange): Promise<PoppyPrincipal | null> {
     const resolver = options.authenticate ?? globalPoppyAuthenticate();
     if (!resolver) {
       throw new PoppyError(
@@ -152,7 +152,14 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
       url: exchange.url,
       headers: exchange.rawHeaders,
     });
-    if (result.ok) return withVersions(exchange, result.principal);
+    if (result.ok) {
+      // `Deprecation`/`Sunset`/`Link` of a version being retired go on every response to the
+      // request, a stream and an error included (§3.4).
+      for (const [name, value] of Object.entries(result.headers ?? {})) {
+        if (typeof value === 'string') exchange.extraHeaders[name] = value;
+      }
+      return withVersions(exchange, result.principal);
+    }
     const headers: Record<string, string> = {
       ...(result.headers ?? {}),
       ...(result.wwwAuthenticate ? { 'WWW-Authenticate': result.wwwAuthenticate } : {}),
@@ -179,7 +186,7 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
   }
 
   async function stream(
-    exchange: PoppyExchange,
+    exchange: HeaderedExchange,
     principal: PoppyPrincipal,
     id: string,
   ): Promise<void> {
@@ -238,7 +245,7 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
     }
   }
 
-  async function route(exchange: PoppyExchange, route: Route): Promise<void> {
+  async function route(exchange: HeaderedExchange, route: Route): Promise<void> {
     const principal = await authenticate(exchange);
     if (principal === null) return;
 
@@ -291,7 +298,7 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
    * from `cursor` (the start without one), still under the POST's status (§8.3).
    */
   async function answerPost(
-    exchange: PoppyExchange,
+    exchange: HeaderedExchange,
     principal: PoppyPrincipal,
     conversationId: string,
     answer: { status: number; body: Record<string, unknown> },
@@ -307,8 +314,8 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
     return exchange.json(answer.status, read, challengeFor(principal, read.events));
   }
 
-  return async function handle(exchange: PoppyExchange): Promise<boolean> {
-    const path = exchange.path.replace(/\/+$/, '');
+  return async function handle(raw: PoppyExchange): Promise<boolean> {
+    const path = raw.path.replace(/\/+$/, '');
     if (path !== base && !path.startsWith(`${base}/`)) return false;
     const rest = path
       .slice(base.length)
@@ -320,7 +327,8 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
     } catch {
       decoded = ['', ''];
     }
-    const matched = matchRoute(exchange.method.toUpperCase(), decoded);
+    const matched = matchRoute(raw.method.toUpperCase(), decoded);
+    const exchange = withExtraHeaders(raw);
     try {
       if (matched === 404) throw new PoppyError('not_found');
       if (matched === 405) throw new PoppyError('method_not_allowed');
@@ -353,6 +361,28 @@ export function createPoppyHandler(options: PoppyHandlerOptions) {
       }
     }
     return true;
+  };
+}
+
+/** An exchange whose every response also carries `extraHeaders` (set once the request is verified). */
+interface HeaderedExchange extends PoppyExchange {
+  extraHeaders: Record<string, string>;
+}
+
+function withExtraHeaders(exchange: PoppyExchange): HeaderedExchange {
+  const extraHeaders: Record<string, string> = {};
+  return {
+    method: exchange.method,
+    path: exchange.path,
+    query: exchange.query,
+    url: exchange.url,
+    headers: exchange.headers,
+    rawHeaders: exchange.rawHeaders,
+    readBody: (limit) => exchange.readBody(limit),
+    extraHeaders,
+    json: (status, body, headers = {}) =>
+      exchange.json(status, body, { ...extraHeaders, ...headers }),
+    openStream: (headers) => exchange.openStream({ ...extraHeaders, ...headers }),
   };
 }
 
