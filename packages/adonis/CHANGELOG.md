@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.0-rc.42
+
+### Patch Changes
+
+- [#682](https://github.com/DavideCarvalho/adonis-agora-agent/pull/682) [`80df498`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/80df498c409642d71a4f97eb6edc554465a6d381) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Security: close prototype-pollution paths (CWE-1321). An AG-UI `ACTIVITY_DELTA` patch whose path names `__proto__`, `constructor` or `prototype` no longer applies, and patches walk only an object's own members, so `add`/`remove` can no longer write to or delete from `Object.prototype`. A `"__proto__"` key in streamed tool-call arguments (`parsePartialJson`) or in a RAG metadata patch (`applyMetadataPatch`) is now a plain own key, as `JSON.parse` makes it, instead of replacing the object's prototype.
+
 ## 1.0.0-rc.41
 
 ### Patch Changes
