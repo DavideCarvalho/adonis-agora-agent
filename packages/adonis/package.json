@@ -493,7 +493,7 @@
     "@adonisjs/assembler": "8.6.0",
     "@adonisjs/auth": "10.1.1",
     "@adonisjs/core": "7.7.0",
-    "@adonisjs/lucid": "22.4.2",
+    "@adonisjs/lucid": "22.5.0",
     "@adonisjs/redis": "11.0.0",
     "@adonisjs/session": "8.3.0",
     "@ag-ui/client": "1.0.5",
