@@ -275,7 +275,14 @@ export function applyMetadataPatch(
       delete next[key]; // JSON Merge Patch: null REMOVES the key.
       continue;
     }
-    next[key] = value; // Replaced wholesale — shallow, so no recursive merge.
+    // Replaced wholesale — shallow, so no recursive merge. Defined as an own property (as the
+    // spread above copies them), so a `__proto__` key is plain metadata, never the object's prototype.
+    Object.defineProperty(next, key, {
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
   }
   return next;
 }

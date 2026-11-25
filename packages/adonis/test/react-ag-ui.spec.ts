@@ -307,6 +307,58 @@ describe('reframeAgUiStream — what the Adonis producer says beyond AG-UI', () 
   });
 });
 
+describe('reframeAgUiStream — ACTIVITY_DELTA patches', () => {
+  const activity = (patch: unknown[]) =>
+    reframe([
+      { type: 'RUN_STARTED', threadId: 't', runId: 'r' },
+      {
+        type: 'ACTIVITY_SNAPSHOT',
+        messageId: 'm',
+        activityType: 'plan',
+        content: { steps: ['a'] },
+      },
+      { type: 'ACTIVITY_DELTA', messageId: 'm', patch },
+      { type: 'RUN_FINISHED', threadId: 't', runId: 'r' },
+    ]).then((frames) =>
+      frames
+        .filter((frame) => frame.id === 'activity:m')
+        .map((frame) => (frame.props as { content: unknown }).content),
+    );
+
+  it('applies a patch to the activity content', async () => {
+    expect(
+      await activity([
+        { op: 'add', path: '/steps/-', value: 'b' },
+        { op: 'replace', path: '/steps/0', value: 'z' },
+        { op: 'add', path: '/done', value: false },
+      ]),
+    ).toEqual([{ steps: ['a'] }, { steps: ['z', 'b'], done: false }]);
+  });
+
+  it('never reaches Object.prototype through __proto__, constructor or prototype', async () => {
+    const originalToString = Object.prototype.toString;
+    try {
+      for (const patch of [
+        [{ op: 'add', path: '/__proto__/polluted', value: true }],
+        [{ op: 'add', path: '/constructor/prototype/polluted', value: true }],
+        [{ op: 'replace', path: '/__proto__', value: { polluted: true } }],
+        [{ op: 'remove', path: '/__proto__/toString' }],
+        [{ op: 'remove', path: '/toString' }],
+        [{ op: 'replace', path: '/hasOwnProperty', value: 1 }],
+      ]) {
+        // The patch does not apply: the activity keeps its snapshot content only.
+        expect(await activity(patch)).toEqual([{ steps: ['a'] }]);
+      }
+      expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+      expect(Object.prototype.toString).toBe(originalToString);
+      expect(Object.hasOwn(Object.prototype, 'toString')).toBe(true);
+    } finally {
+      delete (Object.prototype as Record<string, unknown>).polluted;
+      Object.prototype.toString = originalToString;
+    }
+  });
+});
+
 describe('agUiChatStream — the Adonis re-export', () => {
   it('reads the CSRF token per call, under the headers the caller passes', async () => {
     const headers: Array<Record<string, string>> = [];

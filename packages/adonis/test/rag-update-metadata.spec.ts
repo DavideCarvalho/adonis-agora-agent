@@ -162,6 +162,16 @@ describe('applyMetadataPatch / effectivePatchKeys — the shared merge, in one p
     applyMetadataPatch(before, { a: 9, b: null, c: 3 });
     expect(before).toEqual({ a: 1, b: 2 });
   });
+
+  it('keeps a "__proto__" key as plain metadata, never the prototype of the result', () => {
+    const patch = JSON.parse('{"__proto__":{"polluted":true},"a":1}') as Record<string, unknown>;
+    const out = applyMetadataPatch({}, patch);
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    expect(Object.hasOwn(out, '__proto__')).toBe(true);
+    expect(out.polluted).toBeUndefined();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(applyMetadataPatch(out, JSON.parse('{"__proto__":null}'))).toEqual({ a: 1 });
+  });
 });
 
 describe('MemoryVectorStore.updateMetadata', () => {

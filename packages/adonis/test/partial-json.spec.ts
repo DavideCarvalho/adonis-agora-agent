@@ -89,4 +89,18 @@ describe('parsePartialJson', () => {
     }
     expect(parse(text)?.value).toEqual(tree);
   });
+
+  it('reads a "__proto__" key as a plain own member, as JSON.parse does', () => {
+    const text = '{"__proto__":{"polluted":true},"a":1}';
+    const value = parse(text)?.value as Record<string, unknown>;
+    expect(Object.getPrototypeOf(value)).toBe(Object.prototype);
+    expect(Object.hasOwn(value, '__proto__')).toBe(true);
+    expect(value.polluted).toBeUndefined();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(Object.keys(value)).toEqual(Object.keys(JSON.parse(text)));
+    // Cut mid-way too.
+    const cut = parse('{"__proto__":{"polluted":tr')?.value as Record<string, unknown>;
+    expect(Object.getPrototypeOf(cut)).toBe(Object.prototype);
+    expect(Object.hasOwn(cut, '__proto__')).toBe(true);
+  });
 });

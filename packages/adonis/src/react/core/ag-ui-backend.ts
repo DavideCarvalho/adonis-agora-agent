@@ -601,9 +601,14 @@ function contentText(content: unknown): string {
     .join('');
 }
 
+/** Pointer tokens a patch may never walk through or write: they reach shared prototypes. */
+const UNSAFE_POINTER_TOKENS = new Set(['__proto__', 'constructor', 'prototype']);
+
 /**
  * RFC 6902 on a copy: `add`, `replace`, `remove` (and `test`, which fails the patch). `undefined`
  * when the patch does not apply — the activity then keeps its last good content until a snapshot.
+ * Objects are walked through their own members only, and a path naming `__proto__`, `constructor`
+ * or `prototype` does not apply, so a patch can never reach `Object.prototype`.
  */
 function applyPatch(
   target: Record<string, unknown>,
@@ -618,11 +623,17 @@ function applyPatch(
       .map((token) => token.replace(/~1/g, '/').replace(/~0/g, '~'));
     const key = tokens.pop();
     if (key === undefined) return undefined;
+    if (
+      UNSAFE_POINTER_TOKENS.has(key) ||
+      tokens.some((token) => UNSAFE_POINTER_TOKENS.has(token))
+    ) {
+      return undefined;
+    }
     let parent: unknown = doc;
     for (const token of tokens) {
       parent = Array.isArray(parent)
         ? parent[Number(token)]
-        : isRecord(parent)
+        : isRecord(parent) && Object.hasOwn(parent, token)
           ? parent[token]
           : undefined;
       if (parent === undefined) return undefined;
@@ -637,11 +648,13 @@ function applyPatch(
         if (JSON.stringify(parent[index]) !== JSON.stringify(operation.value)) return undefined;
       } else return undefined;
     } else if (isRecord(parent)) {
-      if (operation.op === 'add' || (operation.op === 'replace' && key in parent)) {
+      const present = Object.hasOwn(parent, key);
+      if (operation.op === 'add' || (operation.op === 'replace' && present)) {
         parent[key] = operation.value;
-      } else if (operation.op === 'remove' && key in parent) delete parent[key];
+      } else if (operation.op === 'remove' && present) delete parent[key];
       else if (operation.op === 'test') {
-        if (JSON.stringify(parent[key]) !== JSON.stringify(operation.value)) return undefined;
+        const current = present ? parent[key] : undefined;
+        if (JSON.stringify(current) !== JSON.stringify(operation.value)) return undefined;
       } else return undefined;
     } else return undefined;
   }
