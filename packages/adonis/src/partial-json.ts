@@ -159,7 +159,14 @@ export function parsePartialJson(text: string): PartialJson | undefined {
         pending.set(object, key.value);
         return { value: object, cut: true };
       }
-      object[key.value] = member.value;
+      // An own data property, as JSON.parse makes: a `"__proto__"` key is a plain member here, never
+      // a write to the object's prototype.
+      Object.defineProperty(object, key.value, {
+        value: member.value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
       if (member.cut) {
         pending.set(object, key.value);
         return { value: object, cut: true };
