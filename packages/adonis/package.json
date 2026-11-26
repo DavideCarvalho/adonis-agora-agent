@@ -495,7 +495,7 @@
     "@adonisjs/core": "7.7.0",
     "@adonisjs/lucid": "22.5.0",
     "@adonisjs/redis": "11.0.0",
-    "@adonisjs/session": "8.3.0",
+    "@adonisjs/session": "8.4.0",
     "@ag-ui/client": "1.0.5",
     "@ag-ui/core": "1.0.5",
     "@ai-sdk/react": "4.0.184",
