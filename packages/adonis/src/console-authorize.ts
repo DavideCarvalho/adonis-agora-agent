@@ -1,56 +1,45 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
 import type { HttpContext } from '@adonisjs/core/http';
-import { type AuthorizeResult, resolveAuthorizeResult } from './authorize-decision.js';
+import type { AuthorizeResult } from './authorize-decision.js';
+import {
+  type ConsoleAccess,
+  type ConsoleAuthorize,
+  type ConsoleAuthorizeResult,
+  type ConsoleAuthorizer,
+  type ConsoleAuthorizerClass,
+  type AuthorizeByTokenOptions as SharedAuthorizeByTokenOptions,
+  authorizeByToken as sharedAuthorizeByToken,
+  normalizeConsoleAuthorizeResult as sharedNormalize,
+} from './dashboard/console_authorize.js';
 import type { Actor } from './types.js';
 
 /**
- * What a console `authorize` returns — the contract shared by every `@adonis-agora/*` console
- * (durable, telescope, media, payments, agent, authkit admin). Each lib carries its own identical
- * copy, so one authorizer class satisfies every console.
- *
- * - `true` / `{ allowed: true }` → allowed.
- * - `false` / `{ allowed: false }` / `reason: 'forbidden'` → `403`.
- * - `{ allowed: false, reason: 'unauthenticated' }` → `401`.
- * - `{ redirectTo }` → a `302` to that path for a page navigation, `401` for anything else.
+ * The agent's layer over the console access contract every Agora console shares
+ * (`./dashboard/console_authorize.ts`, a byte-identical copy apart from its package name): the
+ * agent hands `authorize` the resolved {@link Actor} and what the request intends
+ * ({@link ConsoleAuthorizeRequest}), reads a machine token as read-only by default, and normalizes
+ * every answer to the {@link ConsoleAuthorizeDecision} its gates use.
  */
-export type ConsoleAuthorizeResult =
-  | boolean
-  | {
-      allowed: true;
-      /**
-       * With tenancy on: which tenants (organizations) the viewer may see. `'*'` = every tenant plus
-       * rows with none. Omitted = the viewer's own active tenant.
-       */
-      tenants?: ConsoleTenants;
-      /**
-       * The federated console: which of the other apps in `dashboard.apps` the viewer may pick, by
-       * key, or `'*'` for all of them. Omitted = all. This app is always shown.
-       */
-      apps?: ConsoleTenants;
-    }
-  | { allowed: false; reason?: 'unauthenticated' | 'forbidden' }
-  | { redirectTo: string };
+
+export type {
+  ConsoleAccess,
+  ConsoleAuthorize,
+  ConsoleAuthorizeResult,
+  ConsoleAuthorizer,
+  ConsoleAuthorizerClass,
+};
 
 /** The tenants a console viewer may see: every one (`'*'`), or these ids. */
 export type ConsoleTenants = '*' | string[];
 
-/** A class form, for an authorizer in its own file (`@inject()` works). */
-export interface ConsoleAuthorizer {
-  authorize(ctx: HttpContext): ConsoleAuthorizeResult | Promise<ConsoleAuthorizeResult>;
-}
-
-// biome-ignore lint/suspicious/noExplicitAny: a constructor of any arity — the container fills it.
-export type ConsoleAuthorizerClass = new (...args: any[]) => ConsoleAuthorizer;
-
 /**
- * A console `authorize` in one of three forms: an inline function, an authorizer class (built
- * through the container, so `@inject()` works), or a lazy import of a module whose default export
- * is that class.
+ * What the request asks of the console, handed to the agent console's `authorize` as its third
+ * argument: `action: 'read'` for a read (a `GET`), `'write'` for a change (a price, a cross-actor
+ * approval or cancellation, an action tool). A hook may decide on it, or answer
+ * `{ allowed: true, access: 'read' }` and let the console refuse every change.
  */
-export type ConsoleAuthorize =
-  | ((ctx: HttpContext) => ConsoleAuthorizeResult | Promise<ConsoleAuthorizeResult>)
-  | ConsoleAuthorizerClass
-  | (() => Promise<{ default: ConsoleAuthorizerClass }>);
+export interface ConsoleAuthorizeRequest {
+  action: ConsoleAccess;
+}
 
 /**
  * What the agent's console hooks may return: the shared {@link ConsoleAuthorizeResult}, or an
@@ -68,6 +57,7 @@ export interface AgentConsoleAuthorizer {
   authorize(
     ctx: HttpContext,
     actor?: Actor,
+    request?: ConsoleAuthorizeRequest,
   ): AgentConsoleAuthorizeResult | Promise<AgentConsoleAuthorizeResult>;
 }
 
@@ -82,6 +72,7 @@ export type AgentConsoleAuthorizerClass = new (...args: any[]) => AgentConsoleAu
  * authorize: (ctx) => ctx.auth.user?.isAdmin === true,
  * authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false,
  * authorize: authorizeByRoles({ roles: ['ADMIN'] }),
+ * authorize: (ctx, actor, { action }) => action === 'read' || actor?.roles?.includes('ADMIN'),
  * authorize: ConsoleAccess,
  * authorize: () => import('#policies/console_access'),
  * ```
@@ -90,48 +81,47 @@ export type AgentConsoleAuthorize =
   | ((
       ctx: HttpContext,
       actor?: Actor,
+      request?: ConsoleAuthorizeRequest,
     ) => AgentConsoleAuthorizeResult | Promise<AgentConsoleAuthorizeResult>)
   | AgentConsoleAuthorizerClass
   | (() => Promise<{ default: AgentConsoleAuthorizerClass }>);
 
 /**
- * A console authorize result, normalised. A denial carries its HTTP status, the `redirectTo` path
- * when the hook asked for one, and the thrown error when the hook threw.
+ * A console authorize result, normalised the agent's way: an allow with its grant (`tenants`,
+ * `apps`, `capabilities`, `access`), or a denial with its HTTP status, the `redirectTo` path when
+ * the hook asked for one (answered `401` to anything but a page navigation), and the thrown error
+ * when the hook threw.
  */
 export type ConsoleAuthorizeDecision =
-  | { allowed: true; tenants?: ConsoleTenants; apps?: ConsoleTenants }
+  | {
+      allowed: true;
+      tenants?: ConsoleTenants;
+      apps?: ConsoleTenants;
+      access?: ConsoleAccess;
+      capabilities?: string[];
+    }
   | { allowed: false; status: 401 | 403; redirectTo?: string; error?: unknown };
 
-/** Normalise any value an authorize hook returned. Anything unrecognised denies (`403`). */
+/**
+ * Normalise any value an authorize hook returned (the shared contract's rules, fail closed: a
+ * malformed `capabilities` allows nothing, a malformed `apps`/`tenants` none), mapped to the agent's
+ * {@link ConsoleAuthorizeDecision}. Anything unrecognised denies (`403`).
+ */
 export function normalizeConsoleAuthorizeResult(result: unknown): ConsoleAuthorizeDecision {
+  // `{ allowed: false, redirectTo }` (a denial that names the sign-in page) is a sign-in, as
+  // `{ redirectTo }` alone is: a page navigation is redirected, an API call answered `401`.
   if (typeof result === 'object' && result !== null) {
-    const redirectTo = (result as { redirectTo?: unknown }).redirectTo;
-    if ((result as { allowed?: unknown }).allowed !== true && typeof redirectTo === 'string') {
+    const { allowed, redirectTo } = result as { allowed?: unknown; redirectTo?: unknown };
+    if (allowed !== true && typeof redirectTo === 'string' && redirectTo !== '') {
       return { allowed: false, status: 401, redirectTo };
     }
   }
-  const resolved = resolveAuthorizeResult(result);
-  if (resolved.allowed) {
-    const tenants = consoleTenantsOf(result, 'tenants');
-    const apps = consoleTenantsOf(result, 'apps');
-    return {
-      allowed: true,
-      ...(tenants !== undefined ? { tenants } : {}),
-      ...(apps !== undefined ? { apps } : {}),
-    };
-  }
-  return resolved;
-}
-
-/** The `tenants` (or `apps`) an allowing result carried (`'*'` or a list of non-empty ids). */
-function consoleTenantsOf(result: unknown, key: 'tenants' | 'apps'): ConsoleTenants | undefined {
-  if (typeof result !== 'object' || result === null) return undefined;
-  const tenants = (result as Record<string, unknown>)[key];
-  if (tenants === '*') return '*';
-  if (Array.isArray(tenants)) {
-    return tenants.filter((id): id is string => typeof id === 'string' && id !== '');
-  }
-  return undefined;
+  const decision = sharedNormalize(result);
+  if (decision.allowed) return decision;
+  if (decision.status === 302)
+    return { allowed: false, status: 401, redirectTo: decision.redirectTo };
+  if (decision.status === 401) return { allowed: false, status: 401 };
+  return { allowed: false, status: 403 };
 }
 
 function isAuthorizerClass(value: unknown): value is AgentConsoleAuthorizerClass {
@@ -163,6 +153,7 @@ async function instantiate(
 export type ResolvedConsoleAuthorize = (
   ctx: HttpContext,
   actor?: Actor,
+  request?: ConsoleAuthorizeRequest,
 ) => Promise<ConsoleAuthorizeDecision>;
 
 /**
@@ -175,26 +166,32 @@ export function resolveConsoleAuthorize(
 ): ResolvedConsoleAuthorize {
   let lazyClass: AgentConsoleAuthorizerClass | undefined;
 
-  return async (ctx, actor) => {
+  return async (ctx, actor, request) => {
+    // Every hook is told what the request intends; a caller that does not say is reading.
+    const intent: ConsoleAuthorizeRequest = request ?? { action: 'read' };
     try {
       if (lazyClass !== undefined) {
         return normalizeConsoleAuthorizeResult(
-          await (await instantiate(lazyClass, ctx)).authorize(ctx, actor),
+          await (await instantiate(lazyClass, ctx)).authorize(ctx, actor, intent),
         );
       }
       if (isAuthorizerClass(authorize)) {
         return normalizeConsoleAuthorizeResult(
-          await (await instantiate(authorize, ctx)).authorize(ctx, actor),
+          await (await instantiate(authorize, ctx)).authorize(ctx, actor, intent),
         );
       }
       const result: unknown = await (
-        authorize as (ctx: HttpContext, actor?: Actor) => unknown | Promise<unknown>
-      )(ctx, actor);
+        authorize as (
+          ctx: HttpContext,
+          actor?: Actor,
+          request?: ConsoleAuthorizeRequest,
+        ) => unknown | Promise<unknown>
+      )(ctx, actor, intent);
       const imported = lazyAuthorizerClass(result);
       if (imported !== undefined) {
         lazyClass = imported;
         return normalizeConsoleAuthorizeResult(
-          await (await instantiate(imported, ctx)).authorize(ctx, actor),
+          await (await instantiate(imported, ctx)).authorize(ctx, actor, intent),
         );
       }
       return normalizeConsoleAuthorizeResult(result);
@@ -231,38 +228,34 @@ export function isPageNavigation(ctx: HttpContext): boolean {
   return accept.includes('text/html');
 }
 
-/** Options for {@link authorizeByToken}. */
-export interface AuthorizeByTokenOptions {
-  /** The shared secret callers send as `Authorization: Bearer <token>`. */
-  token: string | undefined;
-}
-
-function digest(value: string): Buffer {
-  return createHash('sha256').update(value).digest();
+/** Options for {@link authorizeByToken}: the shared ones, read-only unless `access: 'write'`. */
+export interface AuthorizeByTokenOptions extends SharedAuthorizeByTokenOptions {
+  /**
+   * What the token's holder may do. Default `'read'`: the console's reads (what an MCP client or a
+   * dashboard scraper needs), and every change (a price, a cross-actor approval, an action tool)
+   * answers `403`. `'write'` lets the holder change things too.
+   */
+  access?: ConsoleAccess;
 }
 
 /**
  * An `authorize` check for machine access: allows a request whose `Authorization` header is
  * `Bearer <token>`, and answers `{ allowed: false, reason: 'unauthenticated' }` (`401`) otherwise.
+ * The shared check, with the agent's default: the token reads (`access: 'read'`); pass
+ * `access: 'write'` for one that may also change prices or settle other actors' approvals.
  *
  * ```ts
  * dashboard: { authorize: authorizeByToken({ token: env.get('CONSOLE_TOKEN') }) },
  * ```
  *
- * Throws at config time when `token` is empty or undefined.
+ * Throws at config time when `token` is empty or undefined, or `access` is not `'read'`/`'write'`.
  */
 export function authorizeByToken(options: AuthorizeByTokenOptions): ConsoleAuthorize {
-  const token = options?.token;
-  if (typeof token !== 'string' || token === '') {
-    throw new Error('authorizeByToken: `token` must be a non-empty string');
+  const access = options?.access ?? 'read';
+  if (access !== 'read' && access !== 'write') {
+    throw new Error("[@adonis-agora/agent] authorizeByToken: `access` must be 'read' or 'write'");
   }
-  const expected = digest(token);
-  return (ctx: HttpContext): ConsoleAuthorizeResult => {
-    const header = ctx.request.header('authorization');
-    const match = typeof header === 'string' ? /^Bearer\s+(.+)$/i.exec(header.trim()) : null;
-    if (match?.[1] && timingSafeEqual(digest(match[1]), expected)) return { allowed: true };
-    return { allowed: false, reason: 'unauthenticated' };
-  };
+  return sharedAuthorizeByToken({ ...options, access });
 }
 
 /**
@@ -279,25 +272,41 @@ export function authorizeByToken(options: AuthorizeByTokenOptions): ConsoleAutho
  * ```
  *
  * When none allows: `401` if any of them said "unauthenticated" (redirecting when one asked to),
- * `403` otherwise. A throwing authorizer counts as a `403` and the next one is still tried.
+ * `403` otherwise. A throwing authorizer counts as a `403` and the next one is still tried. For a
+ * change (`action: 'write'`), an allow limited to reading does not stop the search: a later one
+ * that grants writing wins, and only when none does is the read-only allow returned (so the change
+ * answers `403`).
  */
 export function anyAuthorize(...authorizers: AgentConsoleAuthorize[]): AgentConsoleAuthorize {
   if (authorizers.length === 0) {
-    throw new Error('anyAuthorize: pass at least one authorize');
+    throw new Error('[@adonis-agora/agent] anyAuthorize: pass at least one authorize');
   }
   const resolved = authorizers.map((authorize) => resolveConsoleAuthorize(authorize));
-  return async (ctx: HttpContext, actor?: Actor): Promise<ConsoleAuthorizeResult> => {
+  return async (
+    ctx: HttpContext,
+    actor?: Actor,
+    request?: ConsoleAuthorizeRequest,
+  ): Promise<ConsoleAuthorizeResult> => {
     let unauthenticated = false;
     let redirectTo: string | undefined;
+    let readOnly: ConsoleAuthorizeResult | undefined;
     for (const authorize of resolved) {
-      const decision = await authorize(ctx, actor);
-      if (decision.allowed) return { allowed: true };
+      const decision = await authorize(ctx, actor, request);
+      if (decision.allowed) {
+        const { allowed: _allowed, ...grant } = decision;
+        if (decision.access === 'read' && request?.action === 'write') {
+          readOnly ??= { allowed: true, ...grant };
+          continue;
+        }
+        return { allowed: true, ...grant };
+      }
       if (decision.status !== 401) continue;
       if (decision.redirectTo !== undefined && redirectTo === undefined) {
         redirectTo = decision.redirectTo;
       }
       unauthenticated = true;
     }
+    if (readOnly !== undefined) return readOnly;
     if (redirectTo !== undefined) return { redirectTo };
     return unauthenticated
       ? { allowed: false, reason: 'unauthenticated' }

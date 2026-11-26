@@ -21,6 +21,7 @@ import {
   tenantFillingResolver,
   tenantLabels,
 } from '../src/agora/tenancy.js';
+import { appKeyOf } from '../src/app_key_of.js';
 import {
   DEFAULT_ALLOWED_ATTACHMENT_CONTENT_TYPES,
   DEFAULT_MAX_ATTACHMENT_BYTES,
@@ -28,6 +29,7 @@ import {
 import type { ConsoleTenants } from '../src/console-authorize.js';
 import { warnNoConsoleAuthorizeOnce } from '../src/console-authorize.js';
 import { listVisibleConsoles, readAgoraConsoles, searchConsoles } from '../src/console-switcher.js';
+import { publicJwk } from '../src/crypto-kit/index.js';
 import { resolveDashboardConfig } from '../src/dashboard/define_config.js';
 import { answerConsoleDenialJson, evaluateDashboardGate } from '../src/dashboard/gate.js';
 import { AGENT_CONSOLE_ID } from '../src/dashboard/switcher.js';
@@ -38,14 +40,38 @@ import { registerDoctorChecks } from '../src/doctor/agora_doctor.js';
 import { agentDoctorChecks } from '../src/doctor/checks.js';
 import { type AgentEngine, assertRunnable, engineOnlyModel } from '../src/engine.js';
 import {
+  authkitClientOf,
+  CONSOLE_KEY_PURPOSE,
+  cryptoRuntimeOf,
+  ensureConsoleCryptoKey,
+  hasKeyDirectory,
+  type OkpJwkLike,
+} from '../src/federation/auto_crypto.js';
+import {
+  agentConsoleCapabilities,
   agentConsoleCommandHandler,
   buildFederatedAgentApp,
+  consoleCommandKeys,
   type FederatedApp,
   FederatedAppError,
   type FederatedConsoleApp,
   validateFederatedConsoleApp,
 } from '../src/federation/console.js';
-import { RedisConsoleChannel, resolveRedisConnection } from '../src/federation/redis_channel.js';
+import {
+  type AppConsoleAuth,
+  appConsoleModesLine,
+  appUnauthenticatedMessage,
+  ConsoleAuthConfigError,
+  consoleUnauthenticatedMessage,
+  resolveAppConsoleAuth,
+  resolveFederatedAppAuth,
+} from '../src/federation/console_auth.js';
+import {
+  AgentConsoleChannelError,
+  RedisConsoleChannel,
+  resolveRedisConnection,
+} from '../src/federation/redis_channel.js';
+import { AGENT_CONSOLE_SCOPES } from '../src/federation/tenant_auth.js';
 import type { Catalog } from '../src/genui/index.js';
 import type { SandboxClientConfig } from '../src/genui/sandbox-kit.js';
 import { AgentGovernanceConsole } from '../src/governance-console.js';
@@ -157,6 +183,7 @@ import type { PresentationErrorHandler } from '../src/spi/tool.js';
 import { describeStackUse, modelProviderUses } from '../src/stack.js';
 import { assertSchemaName } from '../src/stores/db-schema.js';
 import { setTelescopeGovernanceQueries } from '../src/telescope/governance-registry.js';
+import { isValidThreadId } from '../src/thread-id.js';
 import {
   decideToolCall,
   decisionRefusal,
@@ -391,7 +418,11 @@ export default class AgentProvider {
   #federatedApps: Record<string, FederatedConsoleApp> = {};
   #appLabel = 'This app';
   /** What `consoleCommands` answers with, set at boot and wired in `start()` (web only). */
-  #consoleCommands: { service: AgentService; pricing: AgentPricingStore | undefined } | null = null;
+  #consoleCommands: {
+    service: AgentService;
+    pricing: AgentPricingStore | undefined;
+    auth: AppConsoleAuth;
+  } | null = null;
   #consoleChannel: RedisConsoleChannel | null = null;
   #mcpTools: McpToolImporter | null = null;
   /** Whatever was built at boot that may own a schema: the store, the pricing store, the read-model. */
@@ -428,6 +459,7 @@ export default class AgentProvider {
   }
 
   async boot() {
+    this.#resolvedAppKey = await appKeyOf(this.app);
     const config = this.app.config.get<AgentConfig>('agent', {} as AgentConfig);
     const registry = await this.app.container.make(ToolRegistry);
     const agents = await this.app.container.make(AgentRegistry);
@@ -782,13 +814,33 @@ export default class AgentProvider {
 
     const dashboard = resolveDashboardConfig(config.dashboard);
     const redisConnections = this.#redisConnections();
+    const keyDirectory =
+      Object.keys(dashboard.apps).length > 0 &&
+      hasKeyDirectory(await authkitClientOf(this.app.container as never));
     for (const [key, entry] of Object.entries(dashboard.apps)) {
-      validateFederatedConsoleApp(key, entry, redisConnections);
+      validateFederatedConsoleApp(key, entry, redisConnections, keyDirectory);
     }
-    this.#federatedApps = dashboard.apps;
+    this.#federatedApps = await this.#resolveFederatedApps(dashboard.apps);
     this.#appLabel = dashboard.appLabel;
-    if (config.consoleCommands !== undefined) {
-      this.#consoleCommands = { service, pricing: pricingStore };
+    // The channel only starts in a web process: resolve its authentication here, in `boot()`, so a
+    // misconfiguration fails before the HTTP server listens, naming the line to add.
+    if (config.consoleCommands !== undefined && this.app.getEnvironment() === 'web') {
+      const appKey = this.#appKey().appKey;
+      const auth = resolveAppConsoleAuth(config.consoleCommands, {
+        crypto: await cryptoRuntimeOf(this.app.container as never),
+        authkit: await authkitClientOf(this.app.container as never),
+        hasAppKey: appKey !== undefined,
+        ...(appKey !== undefined
+          ? {
+              appKeyId: `key ${consoleCommandKeys(appKey, config.consoleCommands.prefix).publicKey.kid.slice(0, 8)}`,
+            }
+          : {}),
+        logKey: (note) => void this.#log(note.level, note.line),
+      });
+      if (auth.modes.length === 0) {
+        throw new ConsoleAuthConfigError(appUnauthenticatedMessage(auth.notes));
+      }
+      this.#consoleCommands = { service, pricing: pricingStore, auth };
     }
 
     await this.#registerRoutes(
@@ -879,30 +931,152 @@ export default class AgentProvider {
     this.#consoleCommands = null;
     const options = this.app.config.get<AgentConfig>('agent', {} as AgentConfig).consoleCommands;
     if (deps === null || options === undefined || this.app.getEnvironment() !== 'web') return;
+    const appKey = this.#appKey().appKey;
+    const auth = deps.auth;
+    await this.#log('info', appConsoleModesLine(auth.modes, options.actions === true));
+    // The key: created now where crypto is embedded (the first command retries), checked once with
+    // a decrypt probe on a crypto tenant (the commands' own decrypts are the retry).
+    await auth.checkKey?.();
+    const loggedReasons = new Set<string>();
     try {
+      const app = options.partition ?? options.prefix;
+      // Token mode without crypto: commands arrive sealed to a key derived from APP_KEY, whose
+      // public half the console is given out of band (`node ace agent:console-key`), never Redis.
+      const keys =
+        auth.sealedToAppKey && appKey !== undefined
+          ? consoleCommandKeys(appKey, options.prefix)
+          : undefined;
+      // Token mode: publish the public half in authkit's key directory, so consoles find it with no
+      // `controlPlane.publicKey` to copy. Background and retried by authkit-client; never fails boot.
+      // §13e: only when token mode is how consoles reach this app. With crypto on, it stays
+      // unpublished (and quiet): a console finding no key here uses crypto; unless crypto commands
+      // must carry a token too (explicit crypto + verifyTenant, migrating), as config does.
+      if (keys !== undefined && (auth.crypto === undefined || auth.tokenRequired === true)) {
+        const authkit = await authkitClientOf(this.app.container as never);
+        if (typeof authkit?.publishAppKey === 'function') {
+          void authkit
+            .publishAppKey({
+              purpose: CONSOLE_KEY_PURPOSE,
+              jwk: publicJwk(keys.publicKey) as unknown as OkpJwkLike,
+            })
+            .catch(() => undefined);
+        } else if (auth.secret === undefined) {
+          // Token mode is this app's only way to be reached, and no console can find its key.
+          await this.#log(
+            'warn',
+            "[@adonis-agora/agent] console commands: token mode is this app's only way to be reached, but authkit-client's `service` is not configured, so its key is not in authkit's key directory: configure it, or give each console controlPlane.publicKey (`node ace agent:console-key` prints it)",
+          );
+        }
+      }
       const channel = new RedisConsoleChannel({
         client: await resolveRedisConnection(this.app.container as never, options.connection),
         prefix: options.prefix,
+        app,
+        ...(auth.secret !== undefined ? { secret: auth.secret } : {}),
+        ...(auth.crypto !== undefined ? { crypto: auth.crypto } : {}),
+        ...(auth.verifyTenant !== undefined ? { verifyTenant: auth.verifyTenant } : {}),
+        ...(auth.tokenOptional === true ? { tokenOptional: true } : {}),
+        ...(keys !== undefined ? { keys } : {}),
       });
       await channel.answer(
         agentConsoleCommandHandler({
           service: deps.service,
           pricing: deps.pricing,
-          log: (line) => console.info(line),
+          actions: options.actions === true,
+          app,
+          log: (line) => void this.#log('info', line),
         }),
         {
-          onError: (error) =>
-            console.error(
-              `[agent] federated console command failed: ${error instanceof Error ? error.message : String(error)}`,
-            ),
+          // Each reason once: a stream of garbage on Redis does not flood the log.
+          onError: (error) => {
+            const reason =
+              error instanceof AgentConsoleChannelError && error.reason !== undefined
+                ? error.reason
+                : undefined;
+            const line =
+              reason !== undefined
+                ? `[@adonis-agora/agent] console commands: refused a command (${reason})`
+                : `[@adonis-agora/agent] console commands: a command failed (${error instanceof Error ? error.message : String(error)})`;
+            if (loggedReasons.has(line)) return;
+            if (loggedReasons.size < 100) loggedReasons.add(line);
+            void this.#log('warn', line);
+          },
         },
       );
       this.#consoleChannel = channel;
     } catch (error) {
-      console.error(
-        `[agent] consoleCommands is on, but ${error instanceof Error ? error.message : String(error)}`,
+      await this.#log(
+        'error',
+        `[@adonis-agora/agent] consoleCommands is on, but ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+  }
+
+  /** A line on the app's logger (`console` when none is bound). */
+  async #log(level: 'info' | 'warn' | 'error', line: string): Promise<void> {
+    try {
+      if (this.app.container.hasBinding('logger')) {
+        const logger = (await this.app.container.make('logger')) as unknown as Record<
+          string,
+          (message: string) => void
+        >;
+        if (typeof logger[level] === 'function') {
+          logger[level](line);
+          return;
+        }
+      }
+    } catch {
+      // No usable logger yet: the console below.
+    }
+    console[level](line);
+  }
+
+  /**
+   * The console side of `dashboard.apps`, in a web process: each entry's authentication resolved
+   * (explicit, else automatic with `@adonis-agora/crypto` / authkit in this app). An entry that
+   * may take actions and resolves none fails the boot; ace commands never do (they send nothing).
+   */
+  async #resolveFederatedApps(
+    apps: Record<string, FederatedConsoleApp>,
+  ): Promise<Record<string, FederatedConsoleApp>> {
+    const keys = Object.keys(apps);
+    if (keys.length === 0 || this.app.getEnvironment() !== 'web') return apps;
+    const env = {
+      crypto: await cryptoRuntimeOf(this.app.container as never),
+      authkit: await authkitClientOf(this.app.container as never),
+      warn: (line: string) => void this.#log('warn', line),
+      info: (line: string) => void this.#log('info', line),
+    };
+    const resolved: Record<string, FederatedConsoleApp> = {};
+    for (const key of keys) {
+      const auth = resolveFederatedAppAuth(key, apps[key] as FederatedConsoleApp, env);
+      if (auth.actions && auth.modes.length === 0) {
+        throw new ConsoleAuthConfigError(consoleUnauthenticatedMessage(key, auth.notes));
+      }
+      await this.#log(
+        'info',
+        `[@adonis-agora/agent] console commands to "${key}": ${auth.actions ? auth.modes.join(' + ') : 'browse-only (actions: false)'}`,
+      );
+      if (auth.ensureKey !== undefined && env.crypto?.service !== undefined) {
+        const { partition, key: name } = auth.ensureKey;
+        // Never fails the boot: the first command creates it again (the encrypt-only cipher retries).
+        try {
+          if ((await ensureConsoleCryptoKey(env.crypto.service, partition, name)) === 'created') {
+            await this.#log(
+              'info',
+              `[@adonis-agora/agent] console commands: created the crypto key "${name}" in partition ${partition}`,
+            );
+          }
+        } catch (error) {
+          await this.#log(
+            'warn',
+            `[@adonis-agora/agent] console commands: could not create the crypto key "${name}" in partition ${partition} (${error instanceof Error ? error.message : String(error)}); retried on the first command. Or run \`node ace crypto:keys:create ${name} --type aes256-gcm --application ${partition}\`.`,
+          );
+        }
+      }
+      resolved[key] = auth.entry;
+    }
+    return resolved;
   }
 
   /**
@@ -935,15 +1109,17 @@ export default class AgentProvider {
     if (!app) {
       const spec = this.#federatedApps[id];
       if (!spec) return Promise.reject(new FederatedAppError('unknown app', 404));
-      app = buildFederatedAgentApp(id, spec, this.app).catch((error: unknown) => {
-        // A console-side failure to set the app up (its Redis connection, a store factory that
-        // throws): the documented 503 naming the app, the cause in this app's log.
-        throw new FederatedAppError(
-          `${spec.label ?? id}: the console could not reach this app`,
-          503,
-          error instanceof Error ? error.message : String(error),
-        );
-      });
+      app = buildFederatedAgentApp(id, spec, this.app, { via: this.#appLabel }).catch(
+        (error: unknown) => {
+          // A console-side failure to set the app up (its Redis connection, a store factory that
+          // throws): the documented 503 naming the app, the cause in this app's log.
+          throw new FederatedAppError(
+            `${spec.label ?? id}: the console could not reach this app`,
+            503,
+            error instanceof Error ? error.message : String(error),
+          );
+        },
+      );
       // A failed build (a bad connection name) is retried on the next request, not cached.
       app.catch(() => this.#federated.delete(id));
       this.#federated.set(id, app);
@@ -1043,13 +1219,12 @@ export default class AgentProvider {
 
   /** The app's `APP_KEY` (a `Secret` in `config/app.ts`), for an engine that signs something. */
   #appKey(): { appKey?: string } {
-    const raw = this.app.config.get<unknown>('app.appKey', undefined);
-    const released =
-      typeof (raw as { release?: unknown } | undefined)?.release === 'function'
-        ? (raw as { release(): unknown }).release()
-        : raw;
-    return typeof released === 'string' && released.length > 0 ? { appKey: released } : {};
+    const appKey = this.#resolvedAppKey;
+    return appKey !== undefined ? { appKey } : {};
   }
+
+  /** The app's APP_KEY ({@link appKeyOf}: app.appKey → config/encryption.ts → APP_KEY), at boot. */
+  #resolvedAppKey: string | undefined;
 
   async #resolveModel(config: AgentConfig): Promise<ModelProvider> {
     const model = config.model as AgentConfig['model'] & {};
@@ -1302,6 +1477,14 @@ export default class AgentProvider {
       const resolver = resolveActorResolver(actorResolver, agents.get(agentName));
       const actor = await this.#resolveActor(ctx, resolver);
       if (actor === null) return;
+      if (body.threadId !== undefined && !isValidThreadId(body.threadId)) {
+        // The id is echoed in the `X-Agent-Thread-Id` response header: refuse what a header cannot
+        // carry (or should not) before it reaches a store or `writeHead`.
+        return ctx.response.badRequest({
+          message: 'threadId must be 1-200 letters, digits or _ - . : @',
+          code: 'invalid_thread_id',
+        });
+      }
       if (body.threadId !== undefined) {
         const owner = await service.threadOwner(body.threadId);
         if (!(await this.#assertOwner(ctx, actor, owner, 'thread', consoleAuthorize))) return;
@@ -2261,10 +2444,18 @@ export default class AgentProvider {
             id,
             label: app.label ?? id,
             mode: 'federated' as const,
-            actions: 'app' as const,
+            actions: app.actions === false ? ('none' as const) : ('app' as const),
           }));
         return ctx.response.json({
           local: { label: this.#appLabel },
+          // What this viewer may do (authorize's `capabilities` / `access`), for the UI to disable
+          // the rest: `null` = everything.
+          viewer: {
+            capabilities:
+              verdict.access === 'read' || verdict.capabilities !== undefined
+                ? viewerConsoleCapabilities(verdict)
+                : null,
+          },
           apps,
           selected: this.#pickedApp(ctx, granted) ?? null,
         });
@@ -2511,6 +2702,13 @@ export default class AgentProvider {
           const picked = this.#pickedApp(ctx, verdict.apps);
           if (picked === null) return ctx.response.status(404).json({ message: 'unknown app' });
           if (picked === undefined && pricing === undefined) return noPricing(ctx);
+          // The viewer's grant (authorize's `capabilities` / `access`) applies here as on another app.
+          if (!viewerConsoleCapabilities(verdict).includes(PRICING_WRITE)) {
+            return ctx.response.status(403).json({
+              error: 'forbidden',
+              message: `the viewer lacks ${PRICING_WRITE}`,
+            });
+          }
           const price = parseModelPriceInput(ctx.request.body());
           if (price === null) {
             return ctx.response.status(400).json({ message: `body must be ${PRICE_INPUT_SHAPE}` });
@@ -2522,6 +2720,7 @@ export default class AgentProvider {
                 'upsertPrice',
                 [price],
                 await this.#consoleActorId(ctx, actorResolver, verdict.actor),
+                viewerConsoleCapabilities(verdict),
               );
               return ctx.response.json({ ok: true });
             });
@@ -2573,11 +2772,20 @@ export default class AgentProvider {
     ctx: HttpContext,
     actorResolver: ActorResolver,
     consoleAuthorize: AgentConsoleAuthorize | undefined,
-  ): Promise<{ tenants?: ConsoleTenants; apps?: ConsoleTenants; actor?: Actor } | null> {
+  ): Promise<{
+    tenants?: ConsoleTenants;
+    apps?: ConsoleTenants;
+    actor?: Actor;
+    access?: 'read' | 'write';
+    capabilities?: string[];
+  } | null> {
     const verdict = await evaluateDashboardGate(ctx, {
       actorResolver,
       authorize: consoleAuthorize,
       inProduction: this.app.inProduction,
+      // A change (`POST /governance/pricing`, a federated approval) needs a write-level grant: an
+      // `authorize` answering `access: 'read'` (e.g. `authorizeByToken`) only reads.
+      action: requestAction(ctx),
     });
     if (!verdict.ok) {
       answerConsoleDenialJson(ctx, verdict);
@@ -2587,6 +2795,8 @@ export default class AgentProvider {
       ...(verdict.tenants !== undefined ? { tenants: verdict.tenants } : {}),
       ...(verdict.apps !== undefined ? { apps: verdict.apps } : {}),
       ...(verdict.actor !== undefined ? { actor: verdict.actor } : {}),
+      ...(verdict.access !== undefined ? { access: verdict.access } : {}),
+      ...(verdict.capabilities !== undefined ? { capabilities: verdict.capabilities } : {}),
     };
   }
 
@@ -2680,7 +2890,7 @@ export default class AgentProvider {
     kind: 'run' | 'thread',
     consoleAuthorize: AgentConsoleAuthorize | undefined,
   ): Promise<boolean> {
-    const privileged = await this.#privileged(ctx, actor, consoleAuthorize);
+    const privileged = (await this.#privileged(ctx, actor, consoleAuthorize)) === true;
     const verdict = evaluateOwnership(actor.id, ownerRef, privileged);
     if (!verdict.ok) {
       const error = verdict.status === 404 ? `${kind} not found` : 'forbidden';
@@ -2729,25 +2939,51 @@ export default class AgentProvider {
     toolCallId: string,
     consoleAuthorize: AgentConsoleAuthorize | undefined,
   ): Promise<boolean> {
+    let lacks: string | undefined;
     const refusal = await decisionRefusal(service, {
       actor,
       runId,
       toolCallId,
-      privileged: () => this.#privileged(ctx, actor, consoleAuthorize),
+      privileged: async () => {
+        const verdict = await this.#privileged(ctx, actor, consoleAuthorize, DECIDE);
+        if (verdict === 'lacks') lacks = DECIDE;
+        return verdict === true;
+      },
     });
     if (refusal === null) return true;
-    ctx.response.status(refusal.status).json({ message: refusal.message });
+    ctx.response.status(refusal.status).json({
+      message:
+        refusal.status === 403 && lacks !== undefined
+          ? `the viewer lacks ${lacks}`
+          : refusal.message,
+    });
     return false;
   }
 
-  /** May `actor` act across actors? It passes the console's `authorize` (none configured → no). */
+  /**
+   * May `actor` act across actors? It passes the console's `authorize` (none configured → no). With
+   * `capability`, the viewer's grant must also hold it (`'lacks'` when `authorize` narrowed it away:
+   * the same rule as for another app's console, applied to this one).
+   */
   async #privileged(
     ctx: HttpContext,
     actor: Actor,
     consoleAuthorize: AgentConsoleAuthorize | undefined,
-  ): Promise<boolean> {
+    capability?: string,
+  ): Promise<boolean | 'lacks'> {
     if (consoleAuthorize === undefined) return false;
-    return (await evaluateGovernanceGate(actor, ctx, consoleAuthorize, !this.app.inProduction)).ok;
+    const verdict = await evaluateGovernanceGate(
+      actor,
+      ctx,
+      consoleAuthorize,
+      !this.app.inProduction,
+      requestAction(ctx),
+    );
+    if (!verdict.ok) return false;
+    if (capability !== undefined && !viewerConsoleCapabilities(verdict).includes(capability)) {
+      return 'lacks';
+    }
+    return true;
   }
 
   /**
@@ -2795,6 +3031,11 @@ export default class AgentProvider {
     if (picked === null || picked === undefined) {
       return ctx.response.status(404).json({ message: 'unknown app' });
     }
+    if (!viewerConsoleCapabilities(verdict).includes(DECIDE)) {
+      return ctx.response
+        .status(403)
+        .json({ error: 'forbidden', message: `the viewer lacks ${DECIDE}` });
+    }
     const body = (ctx.request.body() ?? {}) as {
       runId?: unknown;
       toolCallId?: unknown;
@@ -2837,6 +3078,7 @@ export default class AgentProvider {
           },
         ],
         by,
+        viewerConsoleCapabilities(verdict),
       );
       return ctx.response.json({ ok: true });
     });
@@ -2850,15 +3092,22 @@ export default class AgentProvider {
     consoleAuthorize: AgentConsoleAuthorize | undefined,
     decision: ToolCallDecision,
   ): Promise<void> {
+    let lacks: string | undefined;
     const outcome = await decideToolCall(service, {
       actor,
       toolCallId: body.toolCallId,
       runId: body.runId,
       decision,
-      privileged: () => this.#privileged(ctx, actor, consoleAuthorize),
+      privileged: async () => {
+        const verdict = await this.#privileged(ctx, actor, consoleAuthorize, DECIDE);
+        if (verdict === 'lacks') lacks = DECIDE;
+        return verdict === true;
+      },
     });
     if (outcome.ok) return ctx.response.json({ ok: true });
-    const { status, message, code } = outcome.refusal;
+    const { status, code } = outcome.refusal;
+    const message =
+      status === 403 && lacks !== undefined ? `the viewer lacks ${lacks}` : outcome.refusal.message;
     ctx.response.status(status).json({ message, ...(code !== undefined ? { code } : {}) });
   }
 
@@ -3014,7 +3263,8 @@ export default class AgentProvider {
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
       'X-Agent-Run-Id': runId,
-      ...(threadId !== undefined ? { 'X-Agent-Thread-Id': threadId } : {}),
+      // Validated at the door; checked again here so no store-supplied id reaches `writeHead` raw.
+      ...(isValidThreadId(threadId) ? { 'X-Agent-Thread-Id': threadId } : {}),
     };
     // Headers the request already set on Adonis's response (the anonymous identity cookie, a
     // session) — `writeHead` on the raw response would otherwise skip them.
@@ -3073,3 +3323,30 @@ function describeModelThunk(configured: AgentConfig['model'], model: ModelProvid
   const uses = modelProviderUses(model);
   if (uses.length > 0) describeStackUse(configured, uses);
 }
+
+/**
+ * What a console request intends, for `authorize`: a `GET`/`HEAD`/`OPTIONS` reads, anything else
+ * changes something (and needs a write-level grant).
+ */
+function requestAction(ctx: HttpContext): 'read' | 'write' {
+  const method = (ctx.request as { method?: () => string } | undefined)?.method?.();
+  return method === undefined || ['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())
+    ? 'read'
+    : 'write';
+}
+
+/**
+ * The viewer capabilities the console sends with an action to another app (§4b of the Agora
+ * contract): what `authorize` returned, narrowed to the agent's console set, or the full set when it
+ * returned none. A read-level grant (`access: 'read'`) carries no write capability.
+ */
+function viewerConsoleCapabilities(verdict: {
+  access?: 'read' | 'write';
+  capabilities?: string[];
+}): string[] {
+  if (verdict.access === 'read') return [];
+  return agentConsoleCapabilities(verdict.capabilities);
+}
+
+const DECIDE = AGENT_CONSOLE_SCOPES.decide;
+const PRICING_WRITE = AGENT_CONSOLE_SCOPES.pricingWrite;

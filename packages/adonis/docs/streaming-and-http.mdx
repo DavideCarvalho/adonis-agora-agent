@@ -133,6 +133,8 @@ A failed run ends with `event: error` + `data: {"code","message"}` instead of `d
 
 Frames are written from inside the loop's existing checkpoints, so a durable replay never streams one twice and no checkpoint moved.
 
+A `threadId` in the body is 1-200 letters, digits or `_ - . : @`, starting with a letter or digit (UUIDs and ids like `thread-1` or `conv:42` fit); anything else answers `400 { code: 'invalid_thread_id' }` before it reaches the store or a header.
+
 The response also sets `X-Agent-Run-Id` and `X-Agent-Thread-Id` headers (plus `Cache-Control: no-cache, no-transform` and `X-Accel-Buffering: no` so proxies don't buffer the stream). The stream ends only on run **completion** — the token sink stays open across a HITL suspend, so an approved-then-resumed run keeps one continuous stream. When the client closes the connection first, the route (native, AG-UI and A2UI alike) ends its subscription to the run; the run itself keeps going.
 
 ## Persisted history

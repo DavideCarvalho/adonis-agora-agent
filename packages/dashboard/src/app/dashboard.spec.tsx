@@ -793,6 +793,24 @@ describe('ApprovalsSection', () => {
     expect(client.approveToolCall).not.toHaveBeenCalled();
   });
 
+  it("turns approve/reject off when the viewer's capabilities do not include deciding", async () => {
+    const client = fakeClient({
+      apps: vi.fn().mockResolvedValue({
+        local: { label: 'Hub' },
+        viewer: { capabilities: ['agent:pricing:write'] },
+        apps: [],
+        selected: null,
+      }),
+    } as Partial<AgentClient>);
+    renderWith(client, <ApprovalsSection />);
+    await waitFor(() => expect(screen.getByText('refund_order')).toBeTruthy());
+    const approve = screen.getByText('Approve').closest('button') as HTMLButtonElement;
+    await waitFor(() => expect(approve.disabled).toBe(true));
+    expect(approve.title).toBe('Your access does not include this (agent:approvals:decide).');
+    fireEvent.click(approve);
+    expect(client.approveToolCall).not.toHaveBeenCalled();
+  });
+
   it('keeps approve/reject on for a federated app that runs its own actions', async () => {
     pickEntreTextos();
     const client = fakeClient({ apps: actingApp } as Partial<AgentClient>);

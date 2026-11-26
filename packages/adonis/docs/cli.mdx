@@ -106,6 +106,18 @@ and values in the pre-1.0 format. `--all` rewrites every value (after rotating `
 `--dry-run` opens them without writing. Exits 1 when a value can't be opened. See
 [Rotating the sealing key](/docs/agent/poppy-connections#rotating-the-sealing-key).
 
+## Federated console key
+
+```sh
+node ace agent:console-key
+node ace agent:console-key --prefix entretextos
+```
+
+Prints this app's console-command public key (a JSON Web Key derived from `APP_KEY` and
+`consoleCommands.prefix`): what another app's [federated console](/docs/agent/governance/federated-console#with-authkit-token-mode)
+sets as `controlPlane.publicKey` in token mode. It is public; a new `APP_KEY` or prefix makes a new
+one.
+
 ## Organizations
 
 ```sh

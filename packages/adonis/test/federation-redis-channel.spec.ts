@@ -21,7 +21,11 @@ describe.skipIf(!url)('RedisConsoleChannel (real Redis)', () => {
     return redis;
   };
   const channel = (redis: Redis | AdonisRedisLike, name = prefix) => {
-    const ch = new RedisConsoleChannel({ client: redis as never, prefix: name });
+    const ch = new RedisConsoleChannel({
+      client: redis as never,
+      prefix: name,
+      secret: 'federation-secret-0123456789',
+    });
     channels.push(ch);
     return ch;
   };
@@ -84,7 +88,7 @@ describe.skipIf(!url)('RedisConsoleChannel (real Redis)', () => {
         { id: randomUUID(), verb: 'disks', args: [] },
         { timeoutMs: 100 },
       ),
-    ).rejects.toThrow(/answered .* within 100ms/);
+    ).rejects.toThrow(/answered within 0.1s — the app may have refused the command/);
   });
 
   it('works over an @adonisjs/redis-shaped connection too', async () => {

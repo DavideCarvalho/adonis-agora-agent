@@ -52,3 +52,7 @@ export type { OidcActorInfo, OidcActorResolver, OidcMcpAuthOptions } from './oid
 export { oidcAuth } from './oidc-auth.js';
 export type { CreateMcpServerOptions, McpToolContextOptions } from './server.js';
 export { createMcpServer } from './server.js';
+export {
+  DEFAULT_MCP_SESSION_LIMITS,
+  type McpSessionLimits,
+} from './session-pool.js';

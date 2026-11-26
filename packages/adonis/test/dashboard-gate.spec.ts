@@ -92,7 +92,15 @@ describe('evaluateDashboardGate — authorize set', () => {
       }) as unknown as HttpContext;
     expect(
       await evaluateDashboardGate(withHeader('Bearer t0k'), { authorize, inProduction: true }),
-    ).toEqual({ ok: true });
+    ).toEqual({ ok: true, access: 'read' });
+    // A change with that read-level token is refused.
+    expect(
+      await evaluateDashboardGate(withHeader('Bearer t0k'), {
+        authorize,
+        inProduction: true,
+        action: 'write',
+      }),
+    ).toEqual({ ok: false, status: 403, error: 'forbidden' });
     expect(
       await evaluateDashboardGate(withHeader(undefined), { authorize, inProduction: true }),
     ).toEqual({ ok: false, status: 401, error: 'unauthenticated' });

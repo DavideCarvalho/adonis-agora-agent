@@ -44,4 +44,9 @@ export class RedisBus {
       },
     };
   }
+
+  /** Everything that crossed the bus, as one string (to assert a secret never did). */
+  get wire(): string {
+    return this.published.map((p) => p.message).join('\n');
+  }
 }

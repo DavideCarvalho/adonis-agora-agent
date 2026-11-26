@@ -40,6 +40,11 @@ import {
 import { registerOAuthResource } from '../src/mcp/oauth-resource.js';
 import { missingScopes } from '../src/mcp/scope.js';
 import { createMcpServer, isExposable } from '../src/mcp/server.js';
+import {
+  McpSessionPool,
+  mcpPrincipalOf,
+  resolveMcpSessionLimits,
+} from '../src/mcp/session-pool.js';
 import type { RolesPolicy } from '../src/spi/roles-policy.js';
 import { ToolRegistry } from '../src/tool-registry.js';
 
@@ -105,6 +110,7 @@ export default class McpProvider {
         new DefaultToolAuthorizer(defaultRoles, { emptyRoles: config.emptyRoles ?? 'allow' }),
     );
     const ctx = { app: this.app };
+    const sessionLimits = resolveMcpSessionLimits(config.sessions);
     const auth = config.auth !== undefined ? await resolveMcpAuth(config.auth, ctx) : undefined;
     this.#publicOrigin =
       config.publicUrl !== undefined ? publicOrigin(config.publicUrl) : undefined;
@@ -124,7 +130,7 @@ export default class McpProvider {
       ...(config.describeTool !== undefined ? { describeTool: config.describeTool } : {}),
       stateless: config.stateless === true,
       metadataRouteName: 'mcp.oauth_protected_resource',
-      transports: new Map(),
+      sessions: new McpSessionPool(sessionLimits),
     };
     this.#endpoints.push(base);
     for (const extra of config.endpoints ?? []) {
@@ -141,8 +147,14 @@ export default class McpProvider {
         ...(extra.describeTool !== undefined ? { describeTool: extra.describeTool } : {}),
         metadataRouteName:
           extra.metadataRouteName ?? `mcp.${path.split('/').join('.')}.oauth_protected_resource`,
-        transports: new Map(),
+        sessions: new McpSessionPool(sessionLimits),
       });
+    }
+    // Only a process that serves keeps a timer: never an ace command or a REPL.
+    if (this.app.getEnvironment() === 'web') {
+      for (const endpoint of this.#endpoints) {
+        if (!endpoint.stateless) endpoint.sessions.startSweeping();
+      }
     }
 
     const router = await this.app.container.make('router');
@@ -286,9 +298,7 @@ export default class McpProvider {
   }
 
   async shutdown() {
-    const transports = this.#endpoints.flatMap((endpoint) => [...endpoint.transports.values()]);
-    await Promise.all(transports.map((transport) => transport.close()));
-    for (const endpoint of this.#endpoints) endpoint.transports.clear();
+    await Promise.all(this.#endpoints.map((endpoint) => endpoint.sessions.closeAll()));
   }
 
   // ── auth helpers ──────────────────────────────────────────────────────────
@@ -435,7 +445,6 @@ export default class McpProvider {
     if (await this.#refuseMissingScope(ctx, endpoint, authInfo, body)) return;
 
     try {
-      let transport: StreamableHTTPServerTransport | undefined;
       if (endpoint.stateless) {
         // No session: this request gets its own transport and server, closed once answered — and a
         // plain JSON answer, since there is no stream to keep open.
@@ -447,27 +456,24 @@ export default class McpProvider {
         });
         await server.connect(stateless as Transport);
         await stateless.handleRequest(req, res, body);
-      } else if (sessionId && endpoint.transports.has(sessionId)) {
-        // Session resume — reuse the existing transport (already connected to its own server).
-        transport = endpoint.transports.get(sessionId)!;
-        await transport.handleRequest(req, res, body);
-      } else if (!sessionId && isInitializeRequest(body)) {
-        // New session — create transport + server, connect, then handle so responses flow through it.
-        transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (sid) => {
-            if (transport) endpoint.transports.set(sid, transport);
-          },
-        });
-        transport.onclose = () => {
-          const sid = transport?.sessionId;
-          if (sid && endpoint.transports.get(sid) === transport) {
-            endpoint.transports.delete(sid);
-          }
-        };
-        const server = this.#newServer(endpoint);
-        await server.connect(transport as Transport);
-        await transport.handleRequest(req, res, body);
+      } else if (sessionId) {
+        // Session resume — only by the principal that opened it, on a session still live.
+        await this.#session(ctx, endpoint, sessionId, authInfo)?.handleRequest(req, res, body);
+      } else if (isInitializeRequest(body)) {
+        // New session — make room for it (idle ones, then this caller's oldest past its cap), bind it
+        // to this caller, then connect and handle so responses flow through it.
+        const sid = randomUUID();
+        const created = new StreamableHTTPServerTransport({ sessionIdGenerator: () => sid });
+        if (endpoint.sessions.open(sid, mcpPrincipalOf(authInfo), created) !== true) {
+          this.#sessionRefusal(ctx, 503, 'Service Unavailable: too many MCP sessions; retry later');
+        } else {
+          created.onclose = () => endpoint.sessions.delete(sid, created);
+          const server = this.#newServer(endpoint);
+          await server.connect(created as Transport);
+          await created.handleRequest(req, res, body);
+          // A refused initialize (bad protocol version, a malformed body) opens no session.
+          if (created.sessionId === undefined) endpoint.sessions.delete(sid, created);
+        }
       } else {
         res.statusCode = 400;
         res.setHeader('content-type', 'application/json');
@@ -507,14 +513,13 @@ export default class McpProvider {
     if (authInfo === null) return;
     req.auth = authInfo;
 
-    const transport = sessionId ? endpoint.transports.get(sessionId) : undefined;
-    if (transport === undefined) {
+    if (!sessionId) {
       res.statusCode = 400;
       res.end('Invalid or missing session ID');
       await this.#awaitFinish(res);
       return;
     }
-    await transport.handleRequest(req, res);
+    await this.#session(ctx, endpoint, sessionId, authInfo)?.handleRequest(req, res);
     await this.#awaitFinish(res);
   }
 
@@ -527,15 +532,45 @@ export default class McpProvider {
     if (authInfo === null) return;
     req.auth = authInfo;
 
-    const transport = sessionId ? endpoint.transports.get(sessionId) : undefined;
-    if (transport === undefined) {
+    if (!sessionId) {
       res.statusCode = 400;
       res.end('Invalid or missing session ID');
       await this.#awaitFinish(res);
       return;
     }
-    await transport.handleRequest(req, res);
+    await this.#session(ctx, endpoint, sessionId, authInfo)?.handleRequest(req, res);
     await this.#awaitFinish(res);
+  }
+
+  /**
+   * The live session `sessionId` of this caller, or `null` once answered: `404` for an unknown or
+   * expired one (the client starts a new session, MCP Streamable HTTP §2.5.3), `403` for a session
+   * another principal opened.
+   */
+  #session(
+    ctx: HttpContext,
+    endpoint: Endpoint,
+    sessionId: string,
+    authInfo: McpAuthInfo,
+  ): StreamableHTTPServerTransport | null {
+    const found = endpoint.sessions.get(sessionId, mcpPrincipalOf(authInfo));
+    if (found === 'unknown') {
+      this.#sessionRefusal(ctx, 404, 'Not Found: unknown or expired session; initialize again');
+      return null;
+    }
+    if (found === 'other-principal' || found === 'full') {
+      this.#sessionRefusal(ctx, 403, 'Forbidden: this session belongs to another caller');
+      return null;
+    }
+    return found;
+  }
+
+  /** A JSON-RPC error answer for a session problem. */
+  #sessionRefusal(ctx: HttpContext, status: number, message: string): void {
+    const res = ctx.response.response;
+    res.statusCode = status;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message }, id: null }));
   }
 
   /**
@@ -555,6 +590,7 @@ export default class McpProvider {
   /** Resolve only when the raw response is finished so Adonis doesn't try to handle the response again. */
   #awaitFinish(res: ServerResponse): Promise<void> {
     return new Promise((resolve) => {
+      if (res.writableFinished || res.destroyed) return resolve();
       res.on('finish', () => resolve());
       res.on('close', () => resolve());
     });
@@ -576,6 +612,6 @@ interface Endpoint {
   describeTool?: McpToolDescriber;
   stateless: boolean;
   metadataRouteName: string;
-  /** Live session transports, keyed by MCP session id (in-memory; unused when stateless). */
-  transports: Map<string, StreamableHTTPServerTransport>;
+  /** Live sessions, keyed by MCP session id, bound to their principal (unused when stateless). */
+  sessions: McpSessionPool<StreamableHTTPServerTransport>;
 }

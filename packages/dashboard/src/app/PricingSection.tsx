@@ -12,7 +12,7 @@ import { isUnavailable } from '../client/agent-client.js';
 import { defaultRange } from '../client/default-range.js';
 import { formatTimestamp, formatUsd } from '../client/format.js';
 import type { CurrentModelPrice } from '../client/types.js';
-import { actionsBlockedFor, usePickedApp } from './AppPicker.js';
+import { actionsBlockedFor, usePickedApp, useViewerLacks } from './AppPicker.js';
 import { TagIcon } from './icons.js';
 import { fieldClass, Notice, numClass, RecordDate, TableSkeleton } from './ui.js';
 import { asQuery, useAgentClient, usePricing, useSpendByModel } from './use-governance.js';
@@ -194,7 +194,8 @@ export function PricingSection() {
   const [formKey, setFormKey] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const blocked = actionsBlockedFor(usePickedApp());
+  const lacks = useViewerLacks('agent:pricing:write');
+  const blocked = actionsBlockedFor(usePickedApp()) ?? lacks;
   // Read at submit time, not from the render that built this handler.
   const blockedRef = useRef(blocked);
   blockedRef.current = blocked;

@@ -105,6 +105,12 @@ export interface ConsoleAppEntry {
 /** What `GET /governance/apps` answers: this app, then the other apps the console shows. */
 export interface ConsoleAppsView {
   local: { label: string };
+  /**
+   * What the viewer may do, as the console's `authorize` narrowed it (`capabilities` /
+   * `access: 'read'`): the console capabilities they hold, or `null` (or absent, older servers) for
+   * everything.
+   */
+  viewer?: { capabilities: string[] | null } | undefined;
   apps: ConsoleAppEntry[];
   selected: string | null;
 }

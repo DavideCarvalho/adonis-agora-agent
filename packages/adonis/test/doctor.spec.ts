@@ -243,6 +243,8 @@ describe('agent doctor checks', () => {
       'agent.dev-tools-authkit-mcp',
       'agent.dev-tools-auth',
       'agent.tenancy-store',
+      'agent.console-commands',
+      'agent.console-commands-key',
     ]);
   });
 });
@@ -267,7 +269,7 @@ describe('agent_provider registers its checks into agora.doctor', () => {
     await app.init();
     await app.boot();
     const checks = await readDoctorChecks(app.container);
-    expect(checks.filter((check) => check.lib === 'agent')).toHaveLength(9);
+    expect(checks.filter((check) => check.lib === 'agent')).toHaveLength(11);
     const { report } = await runAgoraDoctor(app, checks, { only: 'agent.console-gate' });
     expect(report.results).toEqual([
       expect.objectContaining({ id: 'agent.console-gate', status: 'warn' }),

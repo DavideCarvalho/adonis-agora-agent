@@ -110,8 +110,11 @@ export class DevToolsActionsGate {
   }
 
   async #run(authorize: ConsoleAuthorize): Promise<true | DevToolsActionRefusal> {
-    const decision = await consoleAuthorizeFor(authorize)(this.#ctx);
-    if (decision.allowed) return true;
+    // An action tool changes something: a grant limited to reading (`access: 'read'`) is a denial.
+    const decision = await consoleAuthorizeFor(authorize)(this.#ctx, undefined, {
+      action: 'write',
+    });
+    if (decision.allowed) return decision.access === 'read' ? { reason: 'denied' } : true;
     // `{ redirectTo }` and `401` are denials too: there is no page to send an MCP client to.
     return decision.error !== undefined
       ? { reason: 'threw', error: decision.error }

@@ -1,6 +1,7 @@
 import type { HttpContext } from '@adonisjs/core/http';
 import {
   type AgentConsoleAuthorize,
+  type ConsoleAccess,
   type ConsoleTenants,
   consoleAuthorizeFor,
 } from './console-authorize.js';
@@ -24,6 +25,10 @@ export interface GovernanceGateVerdict {
   tenants?: ConsoleTenants;
   /** When allowed: the federated apps `authorize` granted (`'*'` or keys); absent = all. */
   apps?: ConsoleTenants;
+  /** When allowed: what `authorize` granted (`access: 'read'` → none of the write ones). */
+  access?: ConsoleAccess;
+  /** When allowed: the viewer's console capabilities `authorize` returned; absent = all. */
+  capabilities?: string[];
 }
 
 /**
@@ -38,21 +43,34 @@ export interface GovernanceGateVerdict {
  * - `{ allowed: false, reason: 'unauthenticated' }` → `401 unauthenticated`.
  * - `{ redirectTo }` → `401 unauthenticated` carrying `redirectTo`.
  * - a throw → `403 forbidden`; with `debug` the thrown message rides along as `detail`.
+ * - `action: 'write'` (a change) and `{ allowed: true, access: 'read' }` → `403 forbidden`: a
+ *   read-level grant never changes anything.
  */
 export async function evaluateGovernanceGate(
   actor: Actor | undefined,
   ctx: HttpContext,
   authorize?: AgentConsoleAuthorize,
   debug = false,
+  action: ConsoleAccess = 'read',
 ): Promise<GovernanceGateVerdict> {
   if (authorize === undefined) return { ok: true, status: 200 };
-  const decision = await consoleAuthorizeFor(authorize)(ctx, actor);
+  const decision = await consoleAuthorizeFor(authorize)(ctx, actor, { action });
+  if (decision.allowed && action === 'write' && decision.access === 'read') {
+    return {
+      ok: false,
+      status: 403,
+      error: 'forbidden',
+      ...(debug ? { detail: "this access is read-only (`access: 'read'`)" } : {}),
+    };
+  }
   if (decision.allowed) {
     return {
       ok: true,
       status: 200,
       ...(decision.tenants !== undefined ? { tenants: decision.tenants } : {}),
       ...(decision.apps !== undefined ? { apps: decision.apps } : {}),
+      ...(decision.access !== undefined ? { access: decision.access } : {}),
+      ...(decision.capabilities !== undefined ? { capabilities: decision.capabilities } : {}),
     };
   }
   if (decision.error !== undefined) {

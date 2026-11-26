@@ -143,8 +143,10 @@ export {
   type AuthorizeByTokenOptions,
   anyAuthorize,
   authorizeByToken,
+  type ConsoleAccess,
   type ConsoleAuthorize,
   type ConsoleAuthorizeDecision,
+  type ConsoleAuthorizeRequest,
   type ConsoleAuthorizeResult,
   type ConsoleAuthorizer,
   type ConsoleAuthorizerClass,
@@ -267,16 +269,49 @@ export {
   type AgentEngineFactory,
   assertRunnable,
 } from './engine.js';
-export type { AgentConsoleVerb, FederatedConsoleApp } from './federation/console.js';
+export type {
+  AuthkitClientLike,
+  CryptoRuntimeLike,
+} from './federation/auto_crypto.js';
+export type {
+  AgentConsoleVerb,
+  FederatedConsoleApp,
+  FederatedControlPlane,
+} from './federation/console.js';
 export {
+  AGENT_CONSOLE_CAPABILITIES,
+  AGENT_CONSOLE_VERB_CAPABILITY,
   AGENT_CONSOLE_VERBS,
+  agentConsoleCapabilities,
   agentConsoleCommandHandler,
   buildFederatedAgentApp,
+  consoleCommandKeys,
   FederatedApp,
   FederatedAppError,
 } from './federation/console.js';
-export type { AgentConsoleCommand, AgentConsoleReply } from './federation/redis_channel.js';
-export { RedisConsoleChannel } from './federation/redis_channel.js';
+export { ConsoleAuthConfigError } from './federation/console_auth.js';
+export type {
+  AgentConsoleCommand,
+  AgentConsoleReply,
+  ChannelSecret,
+  ConsoleChannelAuthOptions,
+  ConsoleCipher,
+  ConsoleCipherSource,
+  ConsoleCryptoOptions,
+} from './federation/redis_channel.js';
+export {
+  CONSOLE_CRYPTO_KEY,
+  RedisConsoleChannel,
+  UNAUTHORIZED_CONSOLE,
+  UNSIGNED_CHANNEL,
+} from './federation/redis_channel.js';
+export type {
+  TenantTokenSource,
+  TenantVerifier,
+  TenantVerifierInput,
+  VerifiedTenant,
+} from './federation/tenant_auth.js';
+export { AGENT_CONSOLE_RESOURCE, AGENT_CONSOLE_SCOPES } from './federation/tenant_auth.js';
 export {
   AgentGenui,
   type GenuiFactory,

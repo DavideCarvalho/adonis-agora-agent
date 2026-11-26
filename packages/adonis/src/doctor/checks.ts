@@ -10,6 +10,7 @@ import type { LucidDatabaseLike } from '../stores/lucid.js';
 import { AGENT_TABLES, agentTables, rowsOf } from '../stores/lucid-schema.js';
 import { isMySql } from '../stores/sql-dialect.js';
 import type { AgoraDoctorCheck, AgoraDoctorResult } from './agora_doctor.js';
+import { checkConsoleCommands, consoleCommandsInput } from './console_commands.js';
 
 const DOCS = 'https://davidecarvalho.github.io/agora/docs/agent';
 
@@ -505,6 +506,19 @@ export function agentDoctorChecks(
         const enabled = resolveAgentTenancy(agent?.tenancy as never).enabled;
         return checkTenancyStore(agent, enabled, deps.store?.());
       },
+    },
+    {
+      id: 'agent.console-commands',
+      lib: 'agent',
+      title: 'Federated console commands are authenticated',
+      run: async (app) => checkConsoleCommands(await consoleCommandsInput(app, false)),
+    },
+    {
+      id: 'agent.console-commands-key',
+      lib: 'agent',
+      title: 'Federated console crypto key works',
+      cost: 'deep',
+      run: async (app) => checkConsoleCommands(await consoleCommandsInput(app, true)),
     },
     ...schemaCheck,
   ];

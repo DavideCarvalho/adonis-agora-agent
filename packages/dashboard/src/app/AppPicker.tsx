@@ -184,6 +184,18 @@ export function usePickedApp(): ConsoleAppEntry | null | undefined {
   return view.apps.find((entry) => entry.id === view.selected) ?? null;
 }
 
+/**
+ * Why the viewer may not do what `capability` allows, or undefined when they may (or the server does
+ * not say): the console's `authorize` narrowed them (`capabilities`, or `access: 'read'`). The
+ * server refuses it too; this only keeps the button from offering it.
+ */
+export function useViewerLacks(capability: string): string | undefined {
+  const answer = useAppsAnswer(usePageApp());
+  const capabilities = answer?.view?.viewer?.capabilities;
+  if (!Array.isArray(capabilities) || capabilities.includes(capability)) return undefined;
+  return `Your access does not include this (${capability}).`;
+}
+
 /** Shown while the picked app's `/apps` answer is pending: actions wait until it is known. */
 export const ACTIONS_PENDING = 'Checking who runs actions for this app…';
 

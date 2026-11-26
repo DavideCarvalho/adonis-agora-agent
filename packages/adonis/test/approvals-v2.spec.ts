@@ -242,6 +242,43 @@ describe('approvals v2 over HTTP', () => {
     expect(statuses).toEqual([403, 200]);
   });
 
+  it("narrows a cross-actor approval to the viewer's capabilities (authorize)", async () => {
+    booted = await bootAgentApp({
+      model: new FakeModelProvider(refundOnce),
+      tools: [refund],
+      // The console's authorize: `x-narrow: 1` viewers may change prices but not settle approvals.
+      dashboard: {
+        authorize: (ctx) =>
+          ctx.request.header('x-narrow') === '1'
+            ? { allowed: true, capabilities: ['agent:pricing:write'] }
+            : true,
+      },
+    });
+    const url = booted.url;
+    const answers: Array<[number, unknown]> = [];
+    const response = await fetch(`${url}/agent/chat`, {
+      method: 'POST',
+      headers: headers('u1', 'USER'),
+      body: JSON.stringify({ message: 'refund 7' }),
+    });
+    await readSse(response, async (frame) => {
+      if (frame.data.kind !== 'approval-requested') return;
+      // Another actor (not the run's owner) settles it from the console.
+      for (const narrow of ['1', '0']) {
+        const decided = await fetch(`${url}/agent/tool-call/approve`, {
+          method: 'POST',
+          headers: { ...headers('boss', 'ADMIN'), 'x-narrow': narrow },
+          body: JSON.stringify({ toolCallId: frame.data.id, via: 'console' }),
+        });
+        answers.push([decided.status, await decided.json()]);
+      }
+    });
+    expect(answers).toEqual([
+      [403, { message: 'the viewer lacks agent:approvals:decide' }],
+      [200, { ok: true }],
+    ]);
+  });
+
   it('answers 410 on a lapsed request and 400 on a malformed decision', async () => {
     booted = await bootAgentApp({
       model: new FakeModelProvider(refundOnce),

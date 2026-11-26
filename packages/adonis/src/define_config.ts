@@ -5,6 +5,8 @@ import type { AgentTenancyOption } from './agora/tenancy.js';
 import type { BrandedFunctionalTool } from './ai-tool-ref.js';
 import type { AgentDashboardConfig } from './dashboard/define_config.js';
 import type { AgentEngine, AgentEngineFactory } from './engine.js';
+import type { ConsoleCryptoOptions } from './federation/redis_channel.js';
+import type { TenantVerifierInput } from './federation/tenant_auth.js';
 import type { GenuiFactory } from './genui/factory.js';
 import type { McpServerConfig } from './mcp-client/options.js';
 import type { MemoryConfig } from './memory.js';
@@ -469,10 +471,16 @@ export interface AgentConfig {
    * each command and runs it, and logs it with who sent it.
    *
    * ```ts
-   * consoleCommands: { connection: 'main', prefix: 'entretextos' },
+   * // With @adonis-agora/crypto (and/or authkit's calls between apps) in the app: nothing else.
+   * consoleCommands: { connection: 'main', prefix: 'entretextos', actions: true },
+   * // Without them: a shared secret (or `verifyTenant`, or `crypto` of your own).
+   * consoleCommands: { prefix: 'entretextos', actions: true, secret: env.get('AGENT_CONSOLE_SECRET') },
    * ```
    *
-   * Needs `@adonisjs/redis`. Off when omitted.
+   * Needs `@adonisjs/redis`, and a way to authenticate the console: automatic when
+   * `@adonis-agora/crypto` is booted in this app (the key `console-agent`), else `secret`,
+   * `verifyTenant` or `crypto`. With none, the web process fails to start, saying which line to add.
+   * Off when omitted.
    */
   consoleCommands?: AgentConsoleCommandsConfig;
 }
@@ -486,6 +494,50 @@ export interface AgentConsoleCommandsConfig {
    * console names in its `dashboard.apps` entry. Not the connection's `keyPrefix`.
    */
   prefix: string;
+  /**
+   * Take actions from another console: settle pending tool calls (`decide`) and change model
+   * prices (`upsertPrice`). Default `false`: the console can read this app's tables, and every
+   * action it sends is refused with a `403`.
+   */
+  actions?: boolean;
+  /**
+   * This app's partition, as the console's token names it (token mode): a token for any other
+   * partition is refused with a `403`. Default: `prefix`.
+   */
+  partition?: string;
+  /**
+   * How this app tells a real console from anyone who can publish on Redis. With none of
+   * `verifyTenant`, `crypto` or `secret` set, the automatic modes apply: `@adonis-agora/crypto`
+   * booted in this app seals commands with its key `console-agent`, and authkit's calls between apps
+   * (`authkit.client`) adds a token check. Set one of them and only what is set is used. Several may
+   * be set at once (while moving from one to another): every configured way is accepted.
+   *
+   * Token mode (with authkit): `verifyTenant` checks the token each command carries, e.g.
+   * `authkitTenantVerifier({ issuer, resource: 'urn:agora:agent' })`. The token's `partition` must
+   * be `app`, and its capabilities cap what the console may do (`agent:approvals:decide` for
+   * approvals, `agent:pricing:write` for prices). Commands arrive sealed to a key derived from
+   * `APP_KEY`; `node ace agent:console-key` prints its public half for the console's
+   * `controlPlane.publicKey` (the boot log shows only its short id). A verifier answering `audienceBound:
+   * true` (an app-call token whose audience is this app) skips the partition rule. `false` turns off
+   * the automatic authkit token check.
+   */
+  verifyTenant?: TenantVerifierInput | false;
+  /**
+   * Sealed with `@adonis-agora/crypto` (in the Agora Hub, in a separate crypto app, or embedded in
+   * this one): commands arrive encrypted with a crypto key (`console-agent` by default) that this
+   * app may `decrypt` and the console may `encrypt`. Crypto keeps, rotates and audits the key.
+   * `cipher` is `() => crypto.client!` on a tenant of a crypto server. With `verifyTenant` set too,
+   * each command must also carry a valid token; without it, whoever may encrypt with the key is the
+   * console. Any cipher with `encrypt`/`decrypt` works (a KMS, Vault transit); give `owns` when its
+   * ciphertext is not `agora:ct1:…`. `false` turns off the automatic crypto mode.
+   */
+  crypto?: ConsoleCryptoOptions | false;
+  /**
+   * Shared-secret mode (no authkit, no crypto): the secret this app and the console share (the
+   * console's `dashboard.apps.<app>.controlPlane.secret`), at least 16 characters. Every command and
+   * answer carries an HMAC under it.
+   */
+  secret?: string | { release(): string };
 }
 
 /** Identity helper giving `config/agent.ts` full type-checking. */

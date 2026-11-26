@@ -1,5 +1,6 @@
 import type { HttpContext } from '@adonisjs/core/http';
 import {
+  type ConsoleAccess,
   type ConsoleTenants,
   consoleClosedByDefault,
   isPageNavigation,
@@ -12,7 +13,14 @@ import type { AccessDeniedOption, AgentDashboardAuthorize } from './define_confi
 
 /** The outcome of the console access gate: proceed (with the actor, when one resolved), or deny. */
 export type DashboardGateVerdict =
-  | { ok: true; actor?: Actor; tenants?: ConsoleTenants; apps?: ConsoleTenants }
+  | {
+      ok: true;
+      actor?: Actor;
+      tenants?: ConsoleTenants;
+      apps?: ConsoleTenants;
+      access?: ConsoleAccess;
+      capabilities?: string[];
+    }
   | {
       ok: false;
       status: 401 | 403;
@@ -30,6 +38,11 @@ export interface DashboardGateOptions {
   authorize?: AgentDashboardAuthorize | undefined;
   /** `app.inProduction`: without `authorize`, the console is open outside production, closed in it. */
   inProduction?: boolean;
+  /**
+   * What the request intends, handed to `authorize`: `'write'` for a change (refused with `403`
+   * when the hook grants `access: 'read'` only). Default `'read'`.
+   */
+  action?: ConsoleAccess | undefined;
 }
 
 /** The request's actor, or `undefined` when there is no resolver or it rejects the request. */
@@ -66,13 +79,21 @@ export async function evaluateDashboardGate(
   }
   if (options.authorize === undefined) return { ok: true };
   const actor = await resolveActorQuietly(ctx, options.actorResolver);
-  const verdict = await evaluateGovernanceGate(actor, ctx, options.authorize, !inProduction);
+  const verdict = await evaluateGovernanceGate(
+    actor,
+    ctx,
+    options.authorize,
+    !inProduction,
+    options.action ?? 'read',
+  );
   if (verdict.ok) {
     return {
       ok: true,
       ...(actor !== undefined ? { actor } : {}),
       ...(verdict.tenants !== undefined ? { tenants: verdict.tenants } : {}),
       ...(verdict.apps !== undefined ? { apps: verdict.apps } : {}),
+      ...(verdict.access !== undefined ? { access: verdict.access } : {}),
+      ...(verdict.capabilities !== undefined ? { capabilities: verdict.capabilities } : {}),
     };
   }
   return {
