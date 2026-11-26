@@ -1,5 +1,11 @@
 # @adonis-agora/agent-dashboard
 
+## 1.0.0-rc.20
+
+### Minor Changes
+
+- [`5ff9157`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/5ff9157a7eba0bf2054957e5f3bb840731da8d9b) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - The console follows the viewer's capabilities: actions the viewer may not run are disabled with the reason, using the shared console capability rules (write implies read; a `*` counts only as the last segment of a capability). Ships with the federated-console authentication changes.
+
 ## 1.0.0-rc.19
 
 ### Minor Changes
