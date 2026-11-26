@@ -2,7 +2,7 @@
 '@adonis-agora/agent': minor
 ---
 
-Security: the federated console's Redis channel is authenticated, governance writes need a write-level grant, MCP sessions are bounded and bound to their caller, and thread ids are validated before they reach a header (reported privately).
+Security: the federated console's Redis channel is authenticated, governance writes need a write-level grant, MCP sessions are bounded and bound to their caller, and thread ids are validated before they reach a header (found in an internal security audit).
 
 **Breaking:**
 
