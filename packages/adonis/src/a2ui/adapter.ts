@@ -5,6 +5,7 @@ import { type UiAction, uiActionText } from '../genui/actions.js';
 import { validateUiCapabilities } from '../genui/capabilities.js';
 import { untilClosed } from '../interruptible.js';
 import type { ProtocolAdapter, ProtocolAdapterHost } from '../spi/protocol-adapter.js';
+import { isValidThreadId } from '../thread-id.js';
 import {
   A2UI_APPROVE_ACTION,
   A2UI_REJECT_ACTION,
@@ -193,7 +194,10 @@ export function a2uiAdapter(options: A2uiAdapterOptions = {}): ProtocolAdapter {
               if (host.refuseSend(ctx, error)) return;
               throw error;
             }
-            writeHead(ctx, { 'X-Agent-Thread-Id': address.threadId });
+            writeHead(
+              ctx,
+              isValidThreadId(address.threadId) ? { 'X-Agent-Thread-Id': address.threadId } : {},
+            );
             const projector = new A2uiProjector(projection);
             const messageId = `proposal-${address.proposalId}`;
             for (const event of [
@@ -243,6 +247,12 @@ export function a2uiAdapter(options: A2uiAdapterOptions = {}): ProtocolAdapter {
         }
         const threadId =
           typeof body.threadId === 'string' && body.threadId.length > 0 ? body.threadId : undefined;
+        if (threadId !== undefined && !isValidThreadId(threadId)) {
+          return ctx.response.badRequest({
+            message: 'threadId must be 1-200 letters, digits or _ - . : @',
+            code: 'invalid_thread_id',
+          });
+        }
         const owner = threadId !== undefined ? await service.threadOwner(threadId) : null;
         if (owner !== null && !(await host.assertOwner(ctx, actor, owner, 'thread'))) return;
         let started: { runId: string; threadId: string };
@@ -292,7 +302,7 @@ async function stream(
   const raw = ctx.response.response;
   writeHead(ctx, {
     'X-Agent-Run-Id': runId,
-    ...(options.threadId !== undefined ? { 'X-Agent-Thread-Id': options.threadId } : {}),
+    ...(isValidThreadId(options.threadId) ? { 'X-Agent-Thread-Id': options.threadId } : {}),
   });
   const projector = new A2uiProjector({
     ...options.projection,

@@ -2,6 +2,7 @@ import type { RolesPolicy } from '../spi/roles-policy.js';
 import type { EmptyRoles, ToolRegistry } from '../tool-registry.js';
 import type { McpAuth, McpAuthContext, McpAuthFactory } from './auth.js';
 import { anyOf, apiKeyAuth, authKitAuth, McpAuthError } from './auth.js';
+import type { McpSessionLimits } from './session-pool.js';
 
 /**
  * Shape of `config/mcp.ts`. The MCP provider exposes the agent's {@link ToolRegistry} over the Model
@@ -93,6 +94,14 @@ export interface McpConfig {
    * lose nothing: each carries its own token, and tools are stateless here. Default: `false`.
    */
   stateless?: boolean;
+  /**
+   * Limits on the in-memory sessions (not stateless): each session is bound to the caller that
+   * opened it (another token's request on its id answers `403`), a caller keeps at most
+   * `maxPerPrincipal` (default 16; its least recently used one is closed to make room), the
+   * endpoint at most `max` (default 1000; past it `initialize` answers `503`), and a session unused
+   * for `idleTimeoutMs` (default 30 minutes) is closed. Each endpoint has its own pool.
+   */
+  sessions?: McpSessionLimits;
   /**
    * How each tool reads in `tools/list`: its `title` and its MCP `annotations` (`readOnlyHint`,
    * `destructiveHint`…), which clients use to run reads without asking and confirm writes. Default:

@@ -98,6 +98,7 @@ import type { ListActionProposals } from '../src/spi/action-proposal-store.js';
 import type { DescribedModel } from '../src/spi/model-provider.js';
 import type { PresentationErrorHandler } from '../src/spi/tool.js';
 import { setTelescopeGovernanceQueries } from '../src/telescope/governance-registry.js';
+import { isValidThreadId } from '../src/thread-id.js';
 import type { UiCapabilities } from '../src/ui-capabilities.js';
 import { validateUiCapabilities } from '../src/ui-capabilities.js';
 
@@ -926,6 +927,14 @@ export default class AgentProvider {
       const resolver = resolveActorResolver(actorResolver, agents.get(agentName));
       const actor = await this.#resolveActor(ctx, resolver);
       if (actor === null) return;
+      if (body.threadId !== undefined && !isValidThreadId(body.threadId)) {
+        // The id is echoed in the `X-Agent-Thread-Id` response header: refuse what a header cannot
+        // carry (or should not) before it reaches a store or `writeHead`.
+        return ctx.response.badRequest({
+          message: 'threadId must be 1-200 letters, digits or _ - . : @',
+          code: 'invalid_thread_id',
+        });
+      }
       if (body.threadId !== undefined) {
         const owner = await service.threadOwner(body.threadId);
         if (!(await this.#assertOwner(ctx, actor, owner, 'thread', governanceAuthorize))) return;
@@ -2426,7 +2435,8 @@ export default class AgentProvider {
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
       'X-Agent-Run-Id': runId,
-      ...(threadId !== undefined ? { 'X-Agent-Thread-Id': threadId } : {}),
+      // Validated at the door; checked again here so no store-supplied id reaches `writeHead` raw.
+      ...(isValidThreadId(threadId) ? { 'X-Agent-Thread-Id': threadId } : {}),
     };
     // Headers the request already set on Adonis's response (the anonymous identity cookie, a
     // session) — `writeHead` on the raw response would otherwise skip them.
