@@ -10,7 +10,7 @@ import { PageBody } from '../agora-kit/shell/app-shell';
 import { Button } from '../agora-kit/ui/button';
 import { formatTimestamp } from '../client/format.js';
 import type { PendingApprovalRow } from '../client/types.js';
-import { actionsBlockedFor, usePickedApp } from './AppPicker.js';
+import { actionsBlockedFor, usePickedApp, useViewerLacks } from './AppPicker.js';
 import { ApprovalIcon } from './icons.js';
 import { payload, TableSkeleton } from './ui.js';
 import { asQuery, useAgentClient, usePendingApprovals } from './use-governance.js';
@@ -115,7 +115,8 @@ export function ApprovalsSection() {
   const approvalsState = usePendingApprovals();
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [decisionError, setDecisionError] = useState<Error | null>(null);
-  const blocked = actionsBlockedFor(usePickedApp());
+  const lacks = useViewerLacks('agent:approvals:decide');
+  const blocked = actionsBlockedFor(usePickedApp()) ?? lacks;
   // Read at click time: a click in the render before `/apps` answered must not see a stale value.
   const blockedRef = useRef(blocked);
   blockedRef.current = blocked;
