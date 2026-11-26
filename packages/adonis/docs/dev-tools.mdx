@@ -358,6 +358,10 @@ export default defineConfig({
 })
 ```
 
+`authorizeByToken` reads by default (`access: 'read'`): its holder sees every console table but
+cannot change a model price, settle another actor's approval or run an action tool. Pass
+`authorizeByToken({ token, access: 'write' })` for a token that may.
+
 ### Libs without a console
 
 Resilience, authz, diagnostics and filter have no console, so they have no `authorize` of their own.

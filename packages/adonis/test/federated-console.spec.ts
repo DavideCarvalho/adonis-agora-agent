@@ -12,6 +12,9 @@ import { InMemoryPricingStore } from '../src/testing/in-memory-pricing.js';
 import type { Actor } from '../src/types.js';
 import { RedisBus } from './support/redis_bus.js';
 
+/** The secret the console and the owning app share (shared-secret mode). */
+const SECRET = 'federation-secret-0123456789';
+
 /**
  * The federated agent console over HTTP: a real AdonisJS app (the console app) whose
  * `dashboard.apps` names another app. That app's governance read-model is read directly; its
@@ -109,7 +112,11 @@ async function bootConsole(
                 label: 'Entre Textos',
                 governance: governanceOf('et'),
                 pricing: etPricing,
-                controlPlane: new RedisConsoleChannel({ client: bus.connection(), prefix: 'et' }),
+                controlPlane: new RedisConsoleChannel({
+                  client: bus.connection(),
+                  prefix: 'et',
+                  secret: SECRET,
+                }),
                 timeoutMs: 2_000,
               },
             },
@@ -165,14 +172,17 @@ async function owningApp(bus: RedisBus, instances = 1) {
     const handler = agentConsoleCommandHandler({
       service: owner.service,
       pricing: etPricing,
+      actions: true,
       log: (line) => lines.push(line),
     });
-    await new RedisConsoleChannel({ client: bus.connection(), prefix: 'et' }).answer(
-      async (command) => {
-        runs.push(command.verb);
-        return handler(command);
-      },
-    );
+    await new RedisConsoleChannel({
+      client: bus.connection(),
+      prefix: 'et',
+      secret: SECRET,
+    }).answer(async (command) => {
+      runs.push(command.verb);
+      return handler(command);
+    });
   }
   return { ...owner, lines, runs };
 }
@@ -185,6 +195,7 @@ describe('federated agent console', () => {
     const apps = await fetch(`${booted.url}/agent/governance/apps`, as('ana'));
     expect(await apps.json()).toEqual({
       local: { label: 'Hub' },
+      viewer: { capabilities: null },
       apps: [{ id: 'entre-textos', label: 'Entre Textos', mode: 'federated', actions: 'app' }],
       selected: null,
     });
@@ -236,7 +247,9 @@ describe('federated agent console', () => {
       via: 'web',
     });
     expect(owner.runs.filter((verb) => verb === 'decide')).toHaveLength(1);
-    expect(owner.lines).toContain('[agent] federated console: approve call-1 by ana');
+    expect(owner.lines).toContain(
+      '[@adonis-agora/agent] federated console: approve call-1 by ana via Hub',
+    );
 
     const rejected = await fetch(
       `${booted.url}/agent/tool-call/reject?app=entre-textos`,
@@ -310,7 +323,11 @@ describe('federated agent console', () => {
             if (builds === 1) throw new Error('connection "pg2" is not defined');
             return governanceOf('et');
           },
-          controlPlane: new RedisConsoleChannel({ client: bus.connection(), prefix: 'et' }),
+          controlPlane: new RedisConsoleChannel({
+            client: bus.connection(),
+            prefix: 'et',
+            secret: SECRET,
+          }),
         },
       },
     });
@@ -360,7 +377,11 @@ describe('federated agent console', () => {
 describe('RedisConsoleChannel reply subscription', () => {
   it('retries the reply subscription on the next send after a first one fails', async () => {
     const bus = new RedisBus();
-    await new RedisConsoleChannel({ client: bus.connection(), prefix: 'et' }).answer(async () => ({
+    await new RedisConsoleChannel({
+      client: bus.connection(),
+      prefix: 'et',
+      secret: SECRET,
+    }).answer(async () => ({
       ok: true,
     }));
     const hub = bus.connection();
@@ -370,7 +391,7 @@ describe('RedisConsoleChannel reply subscription', () => {
       if (failures-- > 0) throw new Error('connection reset');
       return subscribe(channel, handler);
     };
-    const channel = new RedisConsoleChannel({ client: hub, prefix: 'et' });
+    const channel = new RedisConsoleChannel({ client: hub, prefix: 'et', secret: SECRET });
     await expect(channel.send({ id: 'a', verb: 'decide', args: [] })).rejects.toMatchObject({
       code: 'federated-app-unreachable',
       message: expect.stringContaining('connection reset'),

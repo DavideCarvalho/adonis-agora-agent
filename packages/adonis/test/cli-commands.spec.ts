@@ -12,6 +12,7 @@ import {
   AgentToolsList,
   AgentToolsStats,
 } from '../commands/agent_catalog.js';
+import { AgentConsoleKey } from '../commands/agent_console_key.js';
 import {
   AgentApprovalsList,
   AgentRunsList,
@@ -29,6 +30,7 @@ import {
 } from '../commands/agent_usage.js';
 import loader from '../commands/main.js';
 import { cliActorRef } from '../src/cli/agent_command.js';
+import { consoleCommandKeys } from '../src/federation/console.js';
 import type { AgentRunner, HumanReply } from '../src/index.js';
 import { FakeModelProvider } from '../src/testing/fake-model-provider.js';
 import { InMemoryGovernanceQueries } from '../src/testing/in-memory-governance-queries.js';
@@ -162,6 +164,7 @@ describe('agent:* commands', { timeout: 60_000 }, () => {
         'agent:pricing:list',
         'agent:pricing:set',
         'agent:tenants:list',
+        'agent:console-key',
       ]),
     );
   });
@@ -484,6 +487,45 @@ describe('agent:* commands', { timeout: 60_000 }, () => {
       const { app } = await setup();
       const { exitCode } = await run(app, AgentPricingSet, ['gpt-x', '--input', '1']);
       expect(exitCode).toBe(1);
+    });
+  });
+
+  describe('agent:console-key', () => {
+    it("prints the public half of the APP_KEY-derived command key a console's publicKey names", async () => {
+      const { app } = await setup({
+        agent: { consoleCommands: { prefix: 'et', verifyTenant: () => null } },
+      });
+      const appKey = 'entre-textos-app-key-0123456789';
+      app.config.set('app.appKey', { release: () => appKey });
+      const { logs, exitCode } = await run(app, AgentConsoleKey, []);
+      expect(exitCode).toBe(0);
+      const printed = JSON.parse(logs.join('\n'));
+      const expected = consoleCommandKeys(appKey, 'et').publicKey;
+      expect(printed).toMatchObject({
+        kty: 'OKP',
+        crv: 'X25519',
+        x: expected.x,
+        kid: expected.kid,
+      });
+      expect(printed).not.toHaveProperty('d');
+      // Another prefix, another key.
+      const other = JSON.parse((await run(app, AgentConsoleKey, ['--prefix', 'shop'])).logs[0]!);
+      expect(other.x).not.toBe(expected.x);
+    });
+
+    it('refuses without a prefix or an APP_KEY', async () => {
+      const { app } = await setup();
+      expect((await run(app, AgentConsoleKey, [])).exitCode).toBe(1);
+      // No APP_KEY anywhere (§13c: config/app.ts, config/encryption.ts, the environment).
+      app.config.set('app.appKey', undefined);
+      app.config.set('encryption', undefined);
+      const env = process.env.APP_KEY;
+      delete process.env.APP_KEY;
+      try {
+        expect((await run(app, AgentConsoleKey, ['--prefix', 'et'])).exitCode).toBe(1);
+      } finally {
+        if (env !== undefined) process.env.APP_KEY = env;
+      }
     });
   });
 });

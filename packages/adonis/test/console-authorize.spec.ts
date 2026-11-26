@@ -57,11 +57,51 @@ describe('normalizeConsoleAuthorizeResult', () => {
 });
 
 describe('resolveConsoleAuthorize — inline function', () => {
-  it('passes ctx first and the resolved actor second', async () => {
+  it('passes ctx first, the resolved actor second, and what the request intends third', async () => {
     const ctx = makeCtx();
     const hook = vi.fn((_ctx: HttpContext, _actor?: Actor) => true);
     expect(await resolveConsoleAuthorize(hook)(ctx, actor)).toEqual({ allowed: true });
-    expect(hook).toHaveBeenCalledWith(ctx, actor);
+    expect(hook).toHaveBeenCalledWith(ctx, actor, { action: 'read' });
+    await resolveConsoleAuthorize(hook)(ctx, actor, { action: 'write' });
+    expect(hook).toHaveBeenLastCalledWith(ctx, actor, { action: 'write' });
+  });
+
+  it('treats `{ allowed: false, redirectTo }` as a sign-in, like `{ redirectTo }`', async () => {
+    for (const answer of [{ allowed: false, redirectTo: '/login' }, { redirectTo: '/login' }]) {
+      expect(await resolveConsoleAuthorize(() => answer as never)(makeCtx())).toEqual({
+        allowed: false,
+        status: 401,
+        redirectTo: '/login',
+      });
+    }
+  });
+
+  it('keeps the capabilities an allow returns (strings only)', async () => {
+    expect(
+      await resolveConsoleAuthorize(() => ({
+        allowed: true as const,
+        capabilities: ['agent:approvals:decide', 7 as never, ''],
+      }))(makeCtx()),
+    ).toEqual({ allowed: true, capabilities: ['agent:approvals:decide'] });
+    // Malformed: none (fail closed), never the full set.
+    expect(
+      await resolveConsoleAuthorize(() => ({ allowed: true, capabilities: 'agent:*' }) as never)(
+        makeCtx(),
+      ),
+    ).toEqual({ allowed: true, capabilities: [] });
+  });
+
+  it("keeps an `access: 'read'` grant, and nothing else narrows", async () => {
+    const ctx = makeCtx();
+    expect(
+      await resolveConsoleAuthorize(() => ({ allowed: true, access: 'read' as const }))(ctx),
+    ).toEqual({ allowed: true, access: 'read' });
+    expect(
+      await resolveConsoleAuthorize(() => ({ allowed: true, access: 'write' as const }))(ctx),
+    ).toEqual({ allowed: true, access: 'write' });
+    expect(
+      await resolveConsoleAuthorize(() => ({ allowed: true, access: 'bogus' }) as never)(ctx),
+    ).toEqual({ allowed: true });
   });
 
   it('accepts a ctx-only function (the shared ConsoleAuthorize shape)', async () => {
@@ -238,11 +278,23 @@ describe('authorizeByToken', () => {
       request: { header: (name: string) => (name === 'authorization' ? value : undefined) },
     }) as unknown as HttpContext;
 
-  it('allows a matching Bearer token', async () => {
+  it('allows a matching Bearer token, for reading by default', async () => {
     const authorize = authorizeByToken({ token: 's3cret' });
     expect(await resolveConsoleAuthorize(authorize)(withAuthorization('Bearer s3cret'))).toEqual({
       allowed: true,
+      access: 'read',
     });
+  });
+
+  it("grants writing only with `access: 'write'`, and refuses another value", async () => {
+    const authorize = authorizeByToken({ token: 's3cret', access: 'write' });
+    expect(await resolveConsoleAuthorize(authorize)(withAuthorization('Bearer s3cret'))).toEqual({
+      allowed: true,
+      access: 'write',
+    });
+    expect(() => authorizeByToken({ token: 's3cret', access: 'admin' as never })).toThrow(
+      /`access` must be 'read' or 'write'/,
+    );
   });
 
   it.each([

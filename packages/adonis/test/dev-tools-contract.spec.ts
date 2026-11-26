@@ -384,6 +384,19 @@ describe('dev tools actions', () => {
     expect(runs).toBe(2);
   });
 
+  it("map: a read-only grant (`access: 'read'`) does not run an action tool", async () => {
+    const seen: unknown[] = [];
+    const readOnly = (_ctx: unknown, _actor: unknown, request: unknown) => {
+      seen.push(request);
+      return { allowed: true as const, access: 'read' as const };
+    };
+    const gate = new DevToolsActionsGate({ flags: readOnly as never }, ctx, caller);
+    expect(
+      await gate.decide({ lib: 'flags', tool: 'flags_save_flag', destructive: false }),
+    ).toEqual({ reason: 'denied' });
+    expect(seen).toEqual([{ action: 'write' }]);
+  });
+
   it('map: takes an authorizer class (built through the container) and a lazy import', async () => {
     class Owner {
       authorize() {
@@ -490,7 +503,7 @@ describe('anyAuthorize', () => {
     const gate = resolveConsoleAuthorize(
       anyAuthorize(authorizeByToken({ token: 'tok' }), () => ({ redirectTo: '/login' })),
     );
-    expect(await gate(ctxWith('Bearer tok'))).toEqual({ allowed: true });
+    expect(await gate(ctxWith('Bearer tok'))).toEqual({ allowed: true, access: 'read' });
     expect(await gate(ctxWith())).toEqual({ allowed: false, status: 401, redirectTo: '/login' });
     const forbidden = resolveConsoleAuthorize(
       anyAuthorize(
@@ -502,6 +515,26 @@ describe('anyAuthorize', () => {
     );
     expect(await forbidden(ctxWith())).toEqual({ allowed: false, status: 403 });
     expect(() => anyAuthorize()).toThrow(/at least one/);
+  });
+
+  it('for a change, prefers a later write grant over an earlier read-only one', async () => {
+    const admin = () => ({ allowed: true as const, tenants: '*' as const });
+    const gate = resolveConsoleAuthorize(anyAuthorize(authorizeByToken({ token: 'tok' }), admin));
+    const ctx = ctxWith('Bearer tok');
+    expect(await gate(ctx, undefined, { action: 'write' })).toEqual({
+      allowed: true,
+      tenants: '*',
+    });
+    // Reading: the first allow wins, as before.
+    expect(await gate(ctx)).toEqual({ allowed: true, access: 'read' });
+    // No write grant anywhere: the read-only allow comes back, and the route refuses the change.
+    const readOnly = resolveConsoleAuthorize(
+      anyAuthorize(authorizeByToken({ token: 'tok' }), () => false),
+    );
+    expect(await readOnly(ctx, undefined, { action: 'write' })).toEqual({
+      allowed: true,
+      access: 'read',
+    });
   });
 });
 

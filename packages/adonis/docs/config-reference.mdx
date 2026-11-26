@@ -245,7 +245,7 @@ The console is not read-only: its Approvals section decides pending HITL calls a
 
 ### `consoleCommands`
 
-`{ connection?: string; prefix: string }`. Answer another app's [federated console](/docs/agent/governance/federated-console) over Redis: approvals and price changes it sends for this app's agents. Every web process listens; one runs each command. Needs `@adonisjs/redis`. Off when omitted.
+`{ connection?: string; prefix: string; actions?: boolean; verifyTenant?; partition?: string; crypto?: { cipher, key?, owns? } | false; secret? }`. Answer another app's [federated console](/docs/agent/governance/federated-console) over Redis: approvals and price changes it sends for this app's agents. Every web process listens; one runs each command. Needs `@adonisjs/redis` and one way to [authenticate the console](/docs/agent/governance/federated-console#authenticating-the-console) (automatic with `@adonis-agora/crypto`, else `verifyTenant`, `crypto` or `secret`): without one the web process fails to boot. `actions` (**default `false`**) must be on for any approval or price change to run. Off when omitted.
 
 ### `emitDiagnostics`
 

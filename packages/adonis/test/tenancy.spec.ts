@@ -170,9 +170,15 @@ describe('console tenant scope', () => {
       allowed: true,
       tenants: '*',
     });
-    expect(normalizeConsoleAuthorizeResult({ allowed: true, tenants: ['a', '', 3] })).toEqual({
+    // The shared contract's rule: names (numbers as strings), empty ones dropped, duplicates once.
+    expect(normalizeConsoleAuthorizeResult({ allowed: true, tenants: ['a', '', 3, 'a'] })).toEqual({
       allowed: true,
-      tenants: ['a'],
+      tenants: ['a', '3'],
+    });
+    // A malformed list narrows to none, never wider.
+    expect(normalizeConsoleAuthorizeResult({ allowed: true, tenants: 'a' })).toEqual({
+      allowed: true,
+      tenants: [],
     });
     expect(normalizeConsoleAuthorizeResult(true)).toEqual({ allowed: true });
   });

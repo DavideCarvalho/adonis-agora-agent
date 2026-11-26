@@ -141,6 +141,15 @@ export default defineConfig({
 
 - **Omitted:** the routes are open while the app is not in production; in production every `/agent/governance/*` request answers `403 { "error": "forbidden" }`, and the app logs one warning at boot.
 - **Set:** it decides with `ctx` and the resolved actor (optional — `undefined` when the request has none, e.g. a machine caller using `authorizeByToken`). `false`, `{ allowed: false }` and `reason: 'forbidden'` answer `403 { "error": "forbidden" }`; `reason: 'unauthenticated'` answers `401 { "error": "unauthenticated" }`; `{ redirectTo }` redirects a page navigation and answers `401 { "error": "unauthenticated", "redirectTo" }` to an API call; a throw answers `403`. See [the authorize contract](/docs/agent/governance/dashboard#the-authorize-contract) for the three forms (function, class, lazy import).
+- **Reads and changes.** `authorize` gets a third argument, `{ action: 'read' | 'write' }`: `'write'` for every change (`POST /agent/governance/pricing`, an approval sent to a federated app, a cross-actor approve/reject/cancel, an action tool over MCP), `'read'` otherwise. An allow may carry `access: 'read'`: that viewer reads everything `authorize` lets them see, and every change answers `403 { "error": "forbidden" }`. An allow without `access` (or `true`) is full access, as before. `authorizeByToken` (the machine token for MCP clients and scrapers) grants `access: 'read'` by default; pass `authorizeByToken({ token, access: 'write' })` for a token that may change prices. With `anyAuthorize`, a change goes to the first authorizer that grants writing.
+
+  An allow may also carry `capabilities: string[]`, the viewer's console capabilities: the federated console sends exactly those (narrowed to `agent:approvals:decide` / `agent:pricing:write`; wildcards like `agent:console:*` cover both) with each action to another app, which refuses an action whose capability is missing. Without it, the full set is sent. `access: 'read'` means none of them. See [Bring your own](/docs/agent/governance/federated-console#bring-your-own).
+
+  ```ts title="config/agent.ts"
+  authorize: (ctx, actor, { action }) =>
+    actor?.roles?.includes('ADMIN') ? true : { allowed: action === 'read', access: 'read' },
+  ```
+
 - `GET /agent/approvals/mine` is **never** gated by it: it is always scoped to the calling actor's own pending approvals, so a non-admin surface can poll its own approvals even while the cross-actor read-model is ADMIN-only.
 
 <Callout type="warn" title="A thrown message never reaches production clients">
