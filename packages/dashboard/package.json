@@ -1,6 +1,6 @@
 {
   "name": "@adonis-agora/agent-dashboard",
-  "version": "1.0.0-rc.20",
+  "version": "1.0.0",
   "description": "Read-only governance console (spend by model/actor, usage trend, recent threads & tool calls, quota) for @adonis-agora/agent — a dependency-light React SPA served by a thin AdonisJS provider. Part of the Agora ecosystem.",
   "license": "MIT",
   "repository": {
@@ -68,7 +68,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.tests.json"
   },
   "peerDependencies": {
-    "@adonis-agora/agent": ">=0.26.0 <2.0.0 || >=1.0.0-rc.0 <2.0.0",
+    "@adonis-agora/agent": ">=0.26.0 <2.0.0",
     "@adonisjs/core": "^7.3.0"
   },
   "peerDependenciesMeta": {
@@ -109,6 +109,6 @@
     "node": ">=24"
   },
   "dependencies": {
-    "@adonis-agora/filter-client": ">=1.0.0-rc.1 <2.0.0"
+    "@adonis-agora/filter-client": "^1.0.0"
   }
 }
