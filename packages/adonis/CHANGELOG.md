@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.1
+
+### Patch Changes
+
+- [#696](https://github.com/DavideCarvalho/adonis-agora-agent/pull/696) [`cec2ad1`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/cec2ad171f503b71689b059fc1a72fe22f45a7ac) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Fix `tokenSinks.lucid()` failing an append with a duplicate-key (Postgres) or deadlock (MySQL) error when several writers stream into one run at once. Each append still takes `MAX(seq) + 1` in a single statement, but a writer that collides no longer re-enters the same race up to eight times: it appends inside a transaction holding a per-run lock (a Postgres advisory lock, a MySQL named lock), and the single-statement path yields to that lock, so contending writers take turns and every append lands. An uncontended append is still one statement.
+
 ## 1.0.0
 
 ### Major Changes
