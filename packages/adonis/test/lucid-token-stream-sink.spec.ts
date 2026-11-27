@@ -15,6 +15,7 @@ import {
   tokenSinks,
 } from '../src/index.js';
 import { portableSql } from '../src/stores/sql-dialect.js';
+import { countingDb } from './helpers/counting-db.js';
 import { indexNames } from './helpers/index-names.js';
 import { makeMemoryDb } from './helpers/make-db.js';
 import { openBackend } from './helpers/real-db.js';
@@ -237,13 +238,27 @@ describe.each(backends)('LucidTokenStreamSink on $name', (backend) => {
     });
 
     it('writes gathered text on its own once the flush window passes', async () => {
-      const sink = sinkOn(0, { flushMs: 10 });
+      // Counted at the sink's own connection rather than timed, so a loaded machine cannot fail it:
+      // nothing goes to the database while the deltas are gathered, and then — with no flush() or
+      // end() — exactly one statement writes them, as one row.
+      const { db: counted, traffic } = countingDb(asDb(dbs[0] as Database));
+      const sink = new LucidTokenStreamSink(counted, {
+        tableName: backend.table,
+        pollIntervalMs: 5,
+        flushMs: 10,
+        autoPurge: false,
+      });
       await sink.ensureSchema();
+      traffic.statements = 0;
       const writer = sink.open(runId);
       await writer.write({ t: 'text', v: 'a' });
       await writer.write({ t: 'text', v: 'b' });
-      expect(await rowCount(runId)).toBe(0);
-      await sleep(60);
+      expect(traffic.statements).toBe(0);
+      for (let waited = 0; (await rowCount(runId)) === 0; waited += 5) {
+        if (waited >= 10_000) throw new Error('the gathered text was never written on its own');
+        await sleep(5);
+      }
+      expect(traffic.statements).toBe(1);
       expect(await rowCount(runId)).toBe(1);
       await writer.end();
       expect(await collect(sink, runId)).toEqual([{ t: 'text', v: 'ab' }]);
@@ -307,6 +322,117 @@ describe.each(backends)('LucidTokenStreamSink on $name', (backend) => {
       expect(frames).toHaveLength(20);
       expect(new Set(frames.map((frame) => JSON.stringify(frame))).size).toBe(20);
     });
+
+    // SQLite has one writer at a time by construction, so there is no race to stage there.
+    it.skipIf(backend.name === 'sqlite')(
+      'never fails a writer whose every attempt another replica wins',
+      { timeout: 60_000 },
+      async () => {
+        // The worst case of a run with two writers, staged deterministically: every time replica W
+        // sends its insert, replica C (a real sink) is already inside an insert of its own into the
+        // same run and wins the same number. A trigger holds C's insert open for a moment —
+        // Postgres: after its row is in (W reads the old MAX and then hits C's key); MySQL: after
+        // its locking read and before its row (W reads the same MAX, and InnoDB settles the two
+        // inserts as a deadlock whose victim is W, the lighter transaction). A bare `MAX(seq) + 1`
+        // with a bounded retry gives up after APPEND_ATTEMPTS lost rounds; the sink must instead
+        // stop racing and take its turn.
+        const table = backend.table;
+        const writerDb = asDb(dbs[0] as Database);
+        const adversary = new LucidTokenStreamSink(asDb(dbs[1 % dbs.length] as Database), {
+          tableName: table,
+          flushMs: 0,
+          autoPurge: false,
+        });
+        await adversary.ensureSchema();
+        const raw = (sql: string) => writerDb.rawQuery(sql);
+        if (backend.name === 'postgres') {
+          await raw(
+            `CREATE OR REPLACE FUNCTION "${table}_slow"() RETURNS trigger LANGUAGE plpgsql AS $fn$ ` +
+              `BEGIN IF NEW.frame LIKE '%slow-%' THEN PERFORM pg_sleep(0.4); END IF; RETURN NEW; END $fn$`,
+          );
+          await raw(
+            `CREATE TRIGGER "${table}_slow" AFTER INSERT ON "${table}" ` +
+              `FOR EACH ROW EXECUTE FUNCTION "${table}_slow"()`,
+          );
+        } else {
+          await raw(`DROP TABLE IF EXISTS \`${table}_ballast\``);
+          await raw(`CREATE TABLE \`${table}_ballast\` (id INT AUTO_INCREMENT PRIMARY KEY)`);
+          await raw(
+            `CREATE TRIGGER \`${table}_slow\` BEFORE INSERT ON \`${table}\` FOR EACH ROW BEGIN ` +
+              `IF NEW.frame LIKE '%slow-%' THEN ` +
+              `INSERT INTO \`${table}_ballast\` () VALUES (); DO SLEEP(0.4); END IF; END`,
+          );
+        }
+        try {
+          const rival = adversary.open(runId);
+          const rivalWrites: Promise<void>[] = [];
+          // Replica W's database: before each insert it sends — outside or inside a transaction —
+          // replica C starts one of its own, and W waits until C's is under way.
+          const contested = async (sql: string, send: () => Promise<unknown>) => {
+            if (/^\s*INSERT\b/i.test(sql)) {
+              rivalWrites.push(
+                Promise.resolve(rival.write({ t: 'text', v: `slow-${rivalWrites.length}` })),
+              );
+              await sleep(150);
+            }
+            return send();
+          };
+          const withContest = <T extends object>(client: T): T =>
+            new Proxy(client, {
+              get(target, prop, receiver) {
+                const value = Reflect.get(target, prop, receiver);
+                if (prop === 'rawQuery') {
+                  return (sql: string, bindings?: unknown) =>
+                    contested(sql, () =>
+                      (value as (s: string, b?: unknown) => Promise<unknown>).call(
+                        target,
+                        sql,
+                        bindings,
+                      ),
+                    );
+                }
+                if (prop === 'transaction') {
+                  return (callback: (trx: object) => Promise<unknown>) =>
+                    (value as (cb: (trx: object) => Promise<unknown>) => Promise<unknown>).call(
+                      target,
+                      (trx: object) => callback(withContest(trx)),
+                    );
+                }
+                return typeof value === 'function' ? value.bind(target) : value;
+              },
+            });
+          const writer = new LucidTokenStreamSink(withContest(writerDb), {
+            tableName: table,
+            flushMs: 0,
+            autoPurge: false,
+          });
+
+          await expect(writer.open(runId).write(step(0))).resolves.toBeUndefined();
+          await Promise.all(rivalWrites);
+
+          const rows = await writerDb
+            .from(table)
+            .where('run_id', runId)
+            .orderBy('seq', 'asc')
+            .select('seq', 'frame');
+          // W lost at least once, and still landed exactly once.
+          expect(rivalWrites.length).toBeGreaterThanOrEqual(2);
+          expect(rows.map((row) => Number(row.seq))).toEqual(
+            Array.from({ length: rivalWrites.length + 1 }, (_, index) => index + 1),
+          );
+          expect(rows.filter((row) => String(row.frame) === JSON.stringify(step(0)))).toHaveLength(
+            1,
+          );
+        } finally {
+          if (backend.name === 'postgres') {
+            await raw(`DROP FUNCTION IF EXISTS "${table}_slow"() CASCADE`);
+          } else {
+            await raw(`DROP TRIGGER IF EXISTS \`${table}_slow\``);
+            await raw(`DROP TABLE IF EXISTS \`${table}_ballast\``);
+          }
+        }
+      },
+    );
 
     it("writes out a delegated run's gathered text when the child ends, before its parent's next frame", async () => {
       // The child ran on replica B and forwarded into the parent's stream; the parent resumes on A.
