@@ -26,7 +26,7 @@
     "tanstack-intent",
     "agora"
   ],
-  "author": "Davi Carvalho <davi@goflip.ai>",
+  "author": "Davi Carvalho <davi_carvalho96@hotmail.com>",
   "type": "module",
   "main": "./dist/providers/agent_dashboard_provider.js",
   "types": "./dist/providers/agent_dashboard_provider.d.ts",
