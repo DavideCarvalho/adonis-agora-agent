@@ -53,7 +53,7 @@ jobs:
     # and the Lucid store suites run on it too.
     services:
       postgres:
-        image: postgres:18-alpine
+        image: postgres:19-alpine
         env:
           POSTGRES_PASSWORD: postgres
         ports:
