@@ -328,6 +328,11 @@ export class LucidTokenStreamSink implements TokenStreamSink {
             // it waits for — and counts — a row the previous turn has not committed yet.
             await insert();
           } finally {
+            // A named lock belongs to the session, not the transaction, and the connection goes back
+            // to the pool at commit, so it is released here, just BEFORE the commit. The next turn
+            // can then start while this row is still uncommitted. That is safe: under REPEATABLE
+            // READ its locking read waits for this commit, and under READ COMMITTED it collides on
+            // the primary key and the retry below sends it again, after this row is visible.
             await run('SELECT RELEASE_LOCK(?)', [key]);
           }
           return true;

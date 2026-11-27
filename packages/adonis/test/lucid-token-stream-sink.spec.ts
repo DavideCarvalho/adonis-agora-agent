@@ -427,6 +427,7 @@ describe.each(backends)('LucidTokenStreamSink on $name', (backend) => {
           if (backend.name === 'postgres') {
             await raw(`DROP FUNCTION IF EXISTS "${table}_slow"() CASCADE`);
           } else {
+            await raw(`DROP TRIGGER IF EXISTS \`${table}_slow\``);
             await raw(`DROP TABLE IF EXISTS \`${table}_ballast\``);
           }
         }
