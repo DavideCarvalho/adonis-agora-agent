@@ -318,6 +318,9 @@ importers:
       '@opencode/client':
         specifier: 2.4.1
         version: 2.4.1(effect@4.1.0)
+      '@poppinss/hooks':
+        specifier: 7.3.1
+        version: 7.3.1
       '@qdrant/js-client-rest':
         specifier: 1.20.0
         version: 1.20.0(typescript@7.0.2)
