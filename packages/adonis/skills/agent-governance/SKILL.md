@@ -44,11 +44,15 @@ export default defineConfig({
   // Reads ctx.auth.user (populated by @adonisjs/auth). Throws when unauthenticated —
   // no identity is ever invented. Map non-standard user shapes with toActor.
   actorResolver: new AuthActorResolver({
-    toActor: (user) => ({
-      id: String(user.id),
-      roles: user.roleNames,     // e.g. pulled from a relation
-      tenantRef: user.tenantId,
-    }),
+    // toActor receives ctx.auth.user as `unknown`: narrow it to your model first.
+    toActor: (user) => {
+      const u = user as User
+      return {
+        id: String(u.id),
+        roles: u.roleNames,      // e.g. pulled from a relation
+        tenantRef: u.tenantId,
+      }
+    },
   }),
   defaultRoles: ['STAFF'],       // roles a tool requires when it declares none
   // emptyRoles: 'deny',         // an empty roles list reaches nobody (default 'allow': open since 0.46)
@@ -138,7 +142,7 @@ authorization"), `packages/adonis/docs/governance/dashboard.mdx` ("Access"),
 Both decision cores are exported pure functions, so you can test them without booting an
 app:
 
-```ts
+```ts no-check
 import { evaluateOwnership, evaluateGovernanceGate } from '@adonis-agora/agent'
 
 evaluateOwnership('u_1', 'u_1', false) // → { ok: true,  status: 200 }  owner
@@ -257,7 +261,7 @@ export default defineConfig({ store: 'lucid', stores: { lucid: stores.lucid() } 
 // Correct — decide who may read spend/threads/approvals (with tenancy on, only the
 // viewer's organization unless `tenants: '*' | ids` widens it).
 export default defineConfig({
-  ...,
+  // ...
   dashboard: { authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false },
 })
 ```
@@ -271,14 +275,22 @@ Source: `packages/adonis/src/dashboard/gate.ts` (`evaluateDashboardGate`),
 
 ### HIGH — still setting `governanceAuthorize` (removed in 1.0)
 
-```ts
+```ts expect-error=TS2353
 // Wrong — the key no longer exists (TypeScript rejects it); actor-first hooks also break.
-governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
+import { defineConfig } from '@adonis-agora/agent'
+
+export default defineConfig({
+  governanceAuthorize: (actor) => actor.roles?.includes('ADMIN') ?? false,
+})
 ```
 
 ```ts
 // Correct — one option, ctx first, actor optional.
-dashboard: { authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false },
+import { defineConfig } from '@adonis-agora/agent'
+
+export default defineConfig({
+  dashboard: { authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false },
+})
 ```
 
 Mechanism: 1.0 folded both gates into `dashboard.authorize`; there is no alias, and
@@ -293,7 +305,7 @@ Source: `packages/adonis/docs/migrating-to-1-0.mdx`.
 if (await (config.dashboard?.authorize as any)(ctx, actor)) serveAdminData()
 ```
 
-```ts
+```ts no-check
 // Correct — let the gate resolve and normalise it (true/{allowed:true} allow; reason
 // 'unauthenticated' → 401; { redirectTo } → redirect for a page navigation, 401 for an API
 // call; false/{allowed:false}/reason 'forbidden'/throw → 403).

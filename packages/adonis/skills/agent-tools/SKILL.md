@@ -267,7 +267,7 @@ Source: `packages/adonis/docs/authoring/component-rendering.mdx`,
 
 ## Feature flags and per-user gates — `enabled`, `isEnabled()`, `canUse(actor)`
 
-```ts
+```ts no-check
 // A flag with no service behind it: on the options (boolean, or a predicate re-read every turn).
 static tool = { name: 'search_docs', description: '...', input, enabled: () => env.get('DOCS') === true }
 
@@ -290,13 +290,13 @@ Source: `packages/adonis/docs/authoring/tools.mdx`, `packages/adonis/src/tool-fi
 
 ### CRITICAL — shipping a privileged tool without `roles`
 
-```ts
+```ts no-check
 // Wrong — no roles → inherits defaultRoles, which is [] (open) by default: every actor
 // except personal agents (A2A, Poppy), an anonymous visitor included, is offered this tool.
 static tool = { name: 'refund_order', kind: 'action', description: '...', input }
 ```
 
-```ts
+```ts no-check
 // Correct — declare who may invoke (or set defaultRoles: ['ADMIN'] to close every tool by default).
 static tool = { name: 'refund_order', kind: 'action', description: '...', input, roles: ['ADMIN'] }
 ```
@@ -333,14 +333,14 @@ Source: `packages/adonis/docs/governance/authorization.mdx`,
 
 ### HIGH — trusting an id from the model's arguments instead of `ctx.actor`
 
-```ts
+```ts no-check
 // Wrong — the MODEL chose this customerId; any caller can read anyone's orders.
 async execute({ customerId }: Input) {
   return Order.query().where('customer_id', customerId)
 }
 ```
 
-```ts
+```ts no-check
 // Correct — scope to the acting identity the resolver authenticated.
 async execute(_input: Input, ctx: AiToolCtx) {
   return Order.query().where('customer_ref', ctx.actor.id)

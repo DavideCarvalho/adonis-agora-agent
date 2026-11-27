@@ -253,6 +253,7 @@ function Chat() {
   // transcript.items[].blocks — text / tools (approvals) / elicitation / ui
   // queue.items — messages sent while a turn was running, waiting server-side
   // composer.text / setText / submit() / canSend / files
+  return null // render transcript, queue and composer here
 }
 ```
 
@@ -382,7 +383,7 @@ Source: `packages/adonis/docs/ag-ui.mdx`.
 
 ```tsx
 // Wrong — falls back to a bare client with no CSRF header: shield answers every POST with 403.
-function Chat() { const chat = useAgentChat() }  // no provider above
+function Chat() { const chat = useAgentChat(); return null }  // no provider above
 
 // Correct — the provider reads XSRF-TOKEN (or <meta name="csrf-token">) per request.
 <AgentProvider><Chat /></AgentProvider>
@@ -453,12 +454,12 @@ Source: `packages/adonis/docs/governance/quota-and-cost.mdx` ("`null` in the led
 
 ```ts
 // Wrong — 400: a send names uploads by id only; a url from the client is never trusted.
-{ message, attachments: [{ mediaId, url, contentType, name }] }
+const body = { message, attachments: [{ mediaId, url, contentType, name }] }
 ```
 
 ```ts
 // Correct — the configured store (attachments: attachmentStores.media()) resolves the url.
-{ message, attachments: [{ mediaId }] }
+const body = { message, attachments: [{ mediaId }] }
 ```
 
 Mechanism: the chat route refuses any key besides `mediaId`, then resolves each id through

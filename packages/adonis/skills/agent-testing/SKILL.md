@@ -217,14 +217,14 @@ Source: `packages/adonis/src/testing/fake-model-provider.ts` (`turnIndex` deriva
 
 ### MEDIUM — registering a tool the test actor's roles cannot reach, then asserting it ran
 
-```ts
+```ts no-check
 // Wrong — DefaultRolesPolicy(['ADMIN']) + actor roles: ['USER'] → the tool is never OFFERED.
 registry.register({ name: 'get_weather', kind: 'read', description: '', inputSchema: zodSchema }, handler)
 const { text } = await runAgentLoop({ ..., rolesPolicy: new DefaultRolesPolicy() },
   { actor: { id: 'u1', roles: ['USER'] }, ... }, hooks)
 ```
 
-```ts
+```ts no-check
 // Correct — align the actor's roles with the tool spec (or the policy's defaults).
 await runAgentLoop({ ..., rolesPolicy: new DefaultRolesPolicy() },
   { actor: { id: 'u1', roles: ['ADMIN'] }, ... }, hooks)
