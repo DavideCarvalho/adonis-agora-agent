@@ -505,7 +505,7 @@
     "@json-render/core": "0.23.2",
     "@json-render/react": "0.23.2",
     "@mui/material": "9.6.0",
-    "@opencode/client": "2.3.2",
+    "@opencode/client": "2.4.1",
     "@qdrant/js-client-rest": "1.20.0",
     "@resvg/resvg-js": "2.6.2",
     "@streamdown/code": "2.0.0",
