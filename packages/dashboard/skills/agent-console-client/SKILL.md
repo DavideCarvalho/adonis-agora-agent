@@ -26,9 +26,9 @@ sources:
 
 # The governance console & browser client
 
-`@adonis-agora/agent-dashboard` is a read-only React SPA over `@adonis-agora/agent`'s
+`@adonis-agora/agent-dashboard` is a React SPA over `@adonis-agora/agent`'s
 cross-actor `/agent/governance/*` read routes — spend by model/actor, usage trend,
-threads, tool calls, quota, and the HITL approvals inbox. With tenancy on, those reads are
+threads, tool calls, quota — plus two writes: the HITL approvals inbox and the pricing table. With tenancy on, those reads are
 scoped to the viewer's organization (the header Organization picker keeps the choice in
 `?tenant=`; `tenants` on the `authorize` result widens it). Since agent@0.21.0 the same SPA
 ships EMBEDDED in `@adonis-agora/agent`; this package remains for standalone installs and
@@ -139,6 +139,14 @@ other app gets the console. A `403` on every request in production with the boot
 
 Source: `packages/adonis/src/dashboard/define_config.ts` (`decideDashboardMount`),
 `packages/adonis/src/console-authorize.ts` (`NO_CONSOLE_AUTHORIZE_WARNING`).
+
+Other apps in the selector (`dashboard.apps`, the federated console): an action on one answers
+`403` while that app's `consoleCommands.actions` is off (its default) or the entry has
+`actions: false` (browse-only), and `503` when the console has no authenticated channel to it. A
+web process whose entry may take actions but cannot authenticate refuses to boot; `node ace
+agora:doctor` shows why. Setup and auth modes: `agent-governance/SKILL.md` (Pattern 5).
+
+Source: `packages/adonis/docs/governance/federated-console.mdx`.
 
 ## Common mistakes
 
