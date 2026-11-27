@@ -77,6 +77,7 @@ import { inject } from '@adonisjs/core'
 import { z } from 'zod'
 import { ActionTool } from '@adonis-agora/agent'
 import type { AiToolCtx } from '@adonis-agora/agent'
+import CacheService from '#services/cache_service'
 
 const input = z.object({ key: z.string() })
 type Input = z.infer<typeof input>
@@ -125,6 +126,8 @@ truncates oversized results before they hit the model's context:
 ```ts
 // config/agent.ts
 import { defineConfig, dataTool } from '@adonis-agora/agent'
+import { aiSdkModel } from '@adonis-agora/agent/ai-sdk'
+import { openai } from '@ai-sdk/openai'
 import db from '@adonisjs/lucid/services/db'
 
 export default defineConfig({
@@ -156,16 +159,13 @@ yourself in `adonisrc.ts`:
 
 ```ts
 // adonisrc.ts
-import { defineConfig } from '@adonisjs/core'
+import { defineConfig } from '@adonisjs/core/app'
 import { toolsHook } from '@adonis-agora/agent/hooks/tools'
 
 export default defineConfig({
   hooks: {
-    init: [
-      async () => ({
-        default: toolsHook({ source: 'app/ai/tools', importAlias: '#ai_tools' }),
-      }),
-    ],
+    // toolsHook returns the hook object ({ run }), which the assembler takes as is
+    init: [toolsHook({ source: 'app/ai/tools', importAlias: '#ai_tools' })],
   },
 })
 ```
@@ -188,7 +188,11 @@ called — the MCP client's own confirmation stands in for the loop's approval g
 apply to the `/mcp/agora` dev endpoint, which has its own `devTools.actions`.)
 
 ```ts
+import { z } from 'zod'
+import db from '@adonisjs/lucid/services/db'
+import env from '#start/env'
 import { defineConfirmedTool, LucidConfirmTokenStore } from '@adonis-agora/agent'
+import { loadRefundableOrder, refund } from '#services/refunds'
 
 export const refundOrder = defineConfirmedTool(
   {
@@ -226,6 +230,7 @@ not retry a successful write. Methods keep their receiver, including injected se
 import { defineTool } from '@adonis-agora/agent'
 import { table } from '@adonis-agora/agent/genui'
 import { z } from 'zod'
+import { recordsFor } from '#services/records'
 
 export const listRecords = defineTool({
   name: 'list_records',
@@ -355,11 +360,15 @@ Source: `packages/adonis/docs/authoring/tools.mdx` ("The tool context"),
 ### MEDIUM — renaming the generated barrel's output path
 
 ```ts
+import { toolsHook } from '@adonis-agora/agent/hooks/tools'
+
 // Wrong — the provider imports .adonisjs/agent/tools.js; elsewhere = silently ignored.
 toolsHook({ source: 'app/ai/tools', importAlias: '#ai_tools', output: '.adonisjs/mytools.ts' })
 ```
 
 ```ts
+import { toolsHook } from '@adonis-agora/agent/hooks/tools'
+
 // Correct — change source + importAlias together; leave output at its default.
 toolsHook({ source: 'app/ai/tools', importAlias: '#ai_tools' })
 ```
@@ -392,16 +401,36 @@ message).
 ### LOW — declaring `kind` on a ReadTool/ActionTool subclass
 
 ```ts
+import { z } from 'zod'
+import { ActionTool } from '@adonis-agora/agent'
+
+const input = z.object({ ticketId: z.string() })
+type Input = z.infer<typeof input>
+
 // Wrong — the base already pins kind; the literal widens and fights the inherited static type.
-export default class CloseTicket extends ActionTool<Input, Row> {
+export default class CloseTicket extends ActionTool<Input, { closed: string }> {
   static tool = { name: 'close_ticket', kind: 'action', description: '...', input }
+
+  async execute({ ticketId }: Input) {
+    return { closed: ticketId }
+  }
 }
 ```
 
 ```ts
+import { z } from 'zod'
+import { ActionTool } from '@adonis-agora/agent'
+
+const input = z.object({ ticketId: z.string() })
+type Input = z.infer<typeof input>
+
 // Correct — truly bare static; the base carries kind.
-export default class CloseTicket extends ActionTool<Input, Row> {
+export default class CloseTicket extends ActionTool<Input, { closed: string }> {
   static tool = { name: 'close_ticket', description: '...', input }
+
+  async execute({ ticketId }: Input) {
+    return { closed: ticketId }
+  }
 }
 ```
 

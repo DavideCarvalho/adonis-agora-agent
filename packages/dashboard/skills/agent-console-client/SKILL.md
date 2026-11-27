@@ -43,7 +43,9 @@ and answer 403 in production:
 
 ```ts
 // config/agent.ts
-import { defineConfig } from '@adonis-agora/agent'
+import { defineConfig, stores, AuthActorResolver } from '@adonis-agora/agent'
+import { aiSdkModel } from '@adonis-agora/agent/ai-sdk'
+import { openai } from '@ai-sdk/openai'
 
 export default defineConfig({
   model: () => aiSdkModel(openai('gpt-4o-mini')),
@@ -94,9 +96,12 @@ const quota = await client.quotaToday()
 const { data: approvals, meta } = await client.pendingApprovals({ first: 50 })
 const failed = await client.listRuns({ status: 'failed', from: '2026-03-01' })
 
-// HITL decisions from your own UI:
-await client.approveToolCall(runId, toolCallId)
-await client.rejectToolCall(runId, toolCallId, 'not this account')
+// HITL decisions from your own UI, on a row of `approvals`:
+for (const { runId, toolCallId } of approvals) {
+  if (runId === null) continue // a call recorded before run tracking
+  await client.approveToolCall(runId, toolCallId)
+  // or: await client.rejectToolCall(runId, toolCallId, 'not this account')
+}
 
 // Pricing table maintenance:
 await client.upsertPrice({ modelId: 'gpt-4o-mini', inputPricePer1m: 0.15, outputPricePer1m: 0.6 })
@@ -117,6 +122,7 @@ signed-out visitor: a page navigation gets a 302, an API call gets
 
 ```ts
 // config/agent.ts
+import { defineConfig } from '@adonis-agora/agent'
 import { authorizeByRoles } from '@adonis-agora/authz'
 
 export default defineConfig({
@@ -178,6 +184,8 @@ Source: `packages/dashboard/README.md` ("Register only ONE of the two providers"
 ```ts
 // config/agent.ts — Wrong: open in dev, then every console page and governance call is 403 in production.
 import { defineConfig } from '@adonis-agora/agent'
+import { aiSdkModel } from '@adonis-agora/agent/ai-sdk'
+import { openai } from '@ai-sdk/openai'
 
 export default defineConfig({
   model: () => aiSdkModel(openai('gpt-4o-mini')),
@@ -188,6 +196,8 @@ export default defineConfig({
 ```ts
 // config/agent.ts — Correct: one authorize gates the console and the data it reads.
 import { defineConfig } from '@adonis-agora/agent'
+import { aiSdkModel } from '@adonis-agora/agent/ai-sdk'
+import { openai } from '@ai-sdk/openai'
 
 export default defineConfig({
   model: () => aiSdkModel(openai('gpt-4o-mini')),
@@ -204,12 +214,15 @@ Source: `packages/adonis/src/dashboard/gate.ts` (`evaluateDashboardGate`).
 
 ```ts
 // Wrong — breaks the moment the app mounts the agent under a prefix like /api/agent.
+import { AgentClient } from '@adonis-agora/agent-dashboard/client'
+
 const client = new AgentClient({ baseUrl: '/agent' })
 ```
 
 ```ts
 // Correct — reuse the same resolution the SPA uses: injected value wins, else derive.
-import { resolveApiBase } from '@adonis-agora/agent-dashboard/client'
+import { AgentClient, resolveApiBase } from '@adonis-agora/agent-dashboard/client'
+
 const client = new AgentClient({ baseUrl: resolveApiBase() })
 ```
 

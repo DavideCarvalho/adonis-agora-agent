@@ -2,7 +2,7 @@
   "name": "adonis-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "Governed, durable-backed AI agent (chat + tool-calling + governance) for AdonisJS — part of the Agora ecosystem.",
+  "description": "Governed, durable-backed AI agent (chat + tool-calling + governance) for AdonisJS \u2014 part of the Agora ecosystem.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -27,6 +27,7 @@
     "check:package": "node scripts/check-package.mjs"
   },
   "devDependencies": {
+    "@ai-sdk/openai": "4.0.122",
     "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "2.6.9",
     "@changesets/changelog-github": "1.0.1",

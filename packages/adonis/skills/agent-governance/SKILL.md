@@ -38,6 +38,9 @@ Wire identity once; everything downstream keys off it:
 ```ts
 // config/agent.ts
 import { defineConfig, AuthActorResolver } from '@adonis-agora/agent'
+import { aiSdkModel } from '@adonis-agora/agent/ai-sdk'
+import { openai } from '@ai-sdk/openai'
+import type User from '#models/user'
 
 export default defineConfig({
   model: () => aiSdkModel(openai('gpt-4o-mini')),
@@ -118,6 +121,7 @@ one boot warning. With tenancy on, the console reads only the viewer's organizat
 
 ```ts
 // config/agent.ts — ctx first; the resolved actor is an optional 2nd argument.
+import { defineConfig } from '@adonis-agora/agent'
 import { authorizeByRoles } from '@adonis-agora/authz'
 
 export default defineConfig({
@@ -188,6 +192,10 @@ Redis is not a trust boundary, so every command is authenticated:
 ```ts
 import env from '#start/env'
 import { defineConfig, governanceQueries } from '@adonis-agora/agent'
+import { aiSdkModel } from '@adonis-agora/agent/ai-sdk'
+import { openai } from '@ai-sdk/openai'
+
+const model = () => aiSdkModel(openai('gpt-4o-mini'))
 
 // The OWNING app answers the console. With @adonis-agora/crypto booted (key `console-agent`)
 // or authkit-client's `service` configured (an authkit app-call token), nothing else:
@@ -234,13 +242,17 @@ Source: `packages/adonis/docs/governance/federated-console.mdx` ("Authenticating
 ### CRITICAL — assuming `HeaderActorResolver` is production-safe
 
 ```ts
+import { defineConfig, HeaderActorResolver } from '@adonis-agora/agent'
+
 // Wrong — anyone can send x-actor-id: u_admin and become admin unless a gateway strips these.
-actorResolver: new HeaderActorResolver()
+export default defineConfig({ actorResolver: new HeaderActorResolver() })
 ```
 
 ```ts
+import { defineConfig, AuthActorResolver } from '@adonis-agora/agent'
+
 // Correct — read a VERIFIED principal in production; headers are for dev/gateway use only.
-actorResolver: new AuthActorResolver()
+export default defineConfig({ actorResolver: new AuthActorResolver() })
 ```
 
 Mechanism: `HeaderActorResolver` trusts client-sent `x-actor-id` / `x-actor-role` /
@@ -253,11 +265,15 @@ Source: `packages/adonis/src/actor-resolver.ts` (`HeaderActorResolver` security 
 ### CRITICAL — deploying without `dashboard.authorize`
 
 ```ts
+import { defineConfig, stores } from '@adonis-agora/agent'
+
 // Wrong — works in dev (open), then every console and /agent/governance/* request is 403 in production.
 export default defineConfig({ store: 'lucid', stores: { lucid: stores.lucid() } })
 ```
 
 ```ts
+import { defineConfig } from '@adonis-agora/agent'
+
 // Correct — decide who may read spend/threads/approvals (with tenancy on, only the
 // viewer's organization unless `tenants: '*' | ids` widens it).
 export default defineConfig({
@@ -300,9 +316,16 @@ Source: `packages/adonis/docs/migrating-to-1-0.mdx`.
 ### HIGH — calling the hook and truth-testing its result yourself
 
 ```ts
+import type { HttpContext } from '@adonisjs/core/http'
+import type { Actor } from '@adonis-agora/agent'
+import config from '#config/agent'
+import { serveAdminData } from '#services/admin_data'
+
 // Wrong — { allowed: false } and { redirectTo } are truthy objects, so this lets a denied actor
 // through; and the hook may be a class or a lazy import, not a plain function.
-if (await (config.dashboard?.authorize as any)(ctx, actor)) serveAdminData()
+export async function adminData(ctx: HttpContext, actor: Actor) {
+  if (await (config.dashboard?.authorize as any)(ctx, actor)) return serveAdminData()
+}
 ```
 
 ```ts no-check
@@ -323,18 +346,30 @@ Source: `packages/adonis/src/console-authorize.ts`, `packages/adonis/src/governa
 ### MEDIUM — giving a per-agent resolver a different identity than the global one
 
 ```ts
+import { defineConfig, AuthActorResolver } from '@adonis-agora/agent'
+import BodyActorResolver from '#services/body_actor_resolver' // your resolver: reads the body
+
 // Wrong — webhook agents resolve actor 'body:svc-1'; the global resolver would say 'user_9'.
-agents: [{ name: 'webhook', actorResolver: new BodyActorResolver() }]
+export default defineConfig({
+  actorResolver: new AuthActorResolver(),
+  agents: [{ name: 'webhook', actorResolver: new BodyActorResolver() }],
+})
 ```
 
 ```ts
+import { defineConfig, AuthActorResolver } from '@adonis-agora/agent'
+import { mapServicePrincipal } from '#services/actors' // your user → Actor mapping
+
 // Correct — a per-agent resolver must yield an id the GLOBAL resolver could also produce.
-agents: [
-  {
-    name: 'webhook',
-    actorResolver: new AuthActorResolver({ toActor: mapServicePrincipal }), // same id space
-  },
-]
+export default defineConfig({
+  actorResolver: new AuthActorResolver(),
+  agents: [
+    {
+      name: 'webhook',
+      actorResolver: new AuthActorResolver({ toActor: mapServicePrincipal }), // same id space
+    },
+  ],
+})
 ```
 
 Mechanism: the override applies ONLY to `POST /agent/chat`; stream re-attach, cancel,
@@ -347,11 +382,21 @@ to POST /agent/chat only").
 ### MEDIUM — designing a client around a thrown gate's message
 
 ```ts
+import type { AgentApiError } from '@adonis-agora/agent-dashboard/client'
+
+declare const err: AgentApiError // what a governance call threw
+declare function showTenantPicker(): void // your UI
+
 // Wrong — reading error.message from a 403 to branch UI logic; prod never carries it.
 if (err.message.includes('missing tenant')) showTenantPicker()
 ```
 
 ```ts
+import type { AgentApiError } from '@adonis-agora/agent-dashboard/client'
+
+declare const err: AgentApiError // what a governance call threw
+declare function showForbidden(): void // your UI
+
 // Correct — treat 403 as opaque; debug details exist only outside production.
 if (err.status === 403) showForbidden() // body is exactly { "error": "forbidden" } in prod
 ```
