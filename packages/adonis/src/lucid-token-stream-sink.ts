@@ -1,10 +1,11 @@
+import { createHash } from 'node:crypto';
 import { CoalescedWrites } from './coalesced-writes.js';
 import { interruptible, sleepUnlessAborted } from './interruptible.js';
 import type { SinkWriter, StreamFrame, TokenStreamSink } from './spi/token-stream-sink.js';
 import { qualifiedName, qualifiedSql, validateSchema } from './stores/db-schema.js';
-import type { LucidDatabaseLike } from './stores/lucid.js';
+import { affectedRows, type LucidDatabaseLike, type LucidRawRunner } from './stores/lucid.js';
 import { AGENT_TABLES, ensureStreamFrameTable, rowsOf } from './stores/lucid-schema.js';
-import { portableSql } from './stores/sql-dialect.js';
+import { dialectOf, isMySql, portableSql } from './stores/sql-dialect.js';
 
 /** Default TTL (seconds) for a run's rows: 1h past its last write, the same window the Redis sink keeps. */
 const DEFAULT_TTL_SECONDS = 3600;
@@ -32,6 +33,16 @@ const AUTO_PURGE_EVERY_MS = 60_000;
 
 /** Attempts at one append before a sequence-number collision is reported instead of retried. */
 const APPEND_ATTEMPTS = 8;
+
+/** The longest (seconds) a MySQL writer waits for its turn at a contended run before giving up. */
+const TURN_WAIT_SECONDS = 30;
+
+/**
+ * The per-run lock that takes contended appends in turn, on the databases that have one: a
+ * transaction-scoped advisory lock on Postgres, a named lock on MySQL. SQLite needs none (it has
+ * one writer at a time, and an `INSERT … SELECT` reads and writes under the same lock).
+ */
+type TurnLock = 'postgres' | 'mysql';
 
 export interface LucidTokenStreamSinkOptions {
   /** The frame table. Defaults to `agent_stream_frame` (`AGENT_TABLES.streamFrames`). */
@@ -125,10 +136,12 @@ function isUniqueViolation(error: unknown): boolean {
  *    token), which only matters to a cursor carried across a change of sink.
  *
  * Sequence numbers are per run, start at 1 and have no gaps: each append takes `MAX(seq) + 1` for
- * its run in the same statement that inserts it, and the `(run_id, seq)` primary key turns a
- * collision into a retry. A run normally has ONE writer, and then no append ever collides; the
- * retry exists for a parent whose delegated children (each forwarding into its stream, possibly
- * from another replica) write at once. Nothing depends on ordering across runs.
+ * its run in the same statement that inserts it, and the `(run_id, seq)` primary key refuses a
+ * second row under a number already taken. A run normally has ONE writer, and then no append ever
+ * collides and each costs one statement. Several writers at once — a parent whose delegated
+ * children forward into its stream, possibly from other replicas — are taken in turn under a
+ * per-run lock once they collide (Postgres advisory lock, MySQL named lock), so every append lands
+ * however many writers contend. Nothing depends on ordering across runs.
  *
  * A subscriber notices when the rows it has read are gone: it ends when the run has none left
  * (purged past its TTL, or `close()`d), and starts over from the first row when the run's numbering
@@ -201,22 +214,125 @@ export class LucidTokenStreamSink implements TokenStreamSink {
     return this.provisioned;
   }
 
-  /** Append one row to the run — a frame, or the end marker (`null`). */
+  /** The per-run lock this database takes contended appends under, or `undefined` for none. */
+  private turnLock(): TurnLock | undefined {
+    if (isMySql(this.db)) return 'mysql';
+    return /postgres|^pg$/i.test(dialectOf(this.db)) ? 'postgres' : undefined;
+  }
+
+  /** The lock's name for a run: an advisory-lock key text on Postgres, a named lock on MySQL. */
+  private turnKey(runId: string, lock: TurnLock): string {
+    const key = `${this.tableRef}:${runId}`;
+    // MySQL caps a lock name at 64 characters, so the run is named by its digest.
+    return lock === 'mysql' ? `agent_seq:${createHash('sha1').update(key).digest('hex')}` : key;
+  }
+
+  /** The append statement: the run's next number and the row, in one `INSERT … SELECT`. */
+  private insertSql(guard = ''): string {
+    return portableSql(
+      this.db,
+      `INSERT INTO ${this.tableSql} ("run_id", "seq", "frame", "created_at") ` +
+        `SELECT ?, COALESCE(MAX("seq"), 0) + 1, ?, ? FROM ${this.tableSql} WHERE "run_id" = ?${guard}`,
+    );
+  }
+
+  /**
+   * Append one row to the run — a frame, or the end marker (`null`).
+   *
+   * The next number and the insert are one statement, and that is what keeps the numbering safe to
+   * follow: a row's number is computed only once every lower number is committed, so a subscriber
+   * reading `seq > cursor` never sees a number before the ones under it. Two writers that compute
+   * the same number lose nothing either — the `(run_id, seq)` primary key refuses the second row.
+   *
+   * What a collision must not do is send the loser straight back into the same race: against a
+   * writer that keeps appending, it can lose every round (a bounded retry then fails a perfectly
+   * good write with a duplicate-key error, and an unbounded one may spin). So on Postgres and MySQL
+   * an append is tried ONCE as a bare statement — the uncontended path, one round trip, as before —
+   * and a writer that collides, or that finds another writer taking its turn, appends inside a
+   * transaction holding the run's lock ({@link appendInTurn}). The bare statement yields to that
+   * lock (it only inserts while nobody holds it), so once writers contend they append one at a
+   * time and each gets through on its turn, however many there are.
+   */
   private async append(runId: string, frame: string | null): Promise<void> {
     await this.ensureSchema();
+    const lock = this.turnLock();
+    if (lock !== undefined) {
+      const key = this.turnKey(runId, lock);
+      // Postgres: take the run's lock for this statement if it is free, else insert nothing.
+      // MySQL: insert only while no writer is taking its turn (a named lock outlives the statement).
+      const guard =
+        lock === 'postgres'
+          ? ' HAVING pg_try_advisory_xact_lock(hashtextextended(?, 0))'
+          : ' HAVING IS_FREE_LOCK(?) = 1';
+      try {
+        const result = await this.db.rawQuery(this.insertSql(guard), [
+          runId,
+          frame,
+          Date.now(),
+          runId,
+          key,
+        ]);
+        if (affectedRows(result) > 0) return;
+      } catch (error) {
+        if (!isUniqueViolation(error)) throw error;
+      }
+      if (await this.appendInTurn(runId, frame, lock, key)) return;
+    }
     for (let attempt = 1; ; attempt += 1) {
       try {
-        // The next number and the insert are one statement; see the class comment for why the
-        // primary key, not a lock, is what settles two writers asking at once.
-        await this.db.rawQuery(
-          portableSql(
-            this.db,
-            `INSERT INTO ${this.tableSql} ("run_id", "seq", "frame", "created_at") ` +
-              `SELECT ?, COALESCE(MAX("seq"), 0) + 1, ?, ? FROM ${this.tableSql} WHERE "run_id" = ?`,
-          ),
-          [runId, frame, Date.now(), runId],
-        );
+        await this.db.rawQuery(this.insertSql(), [runId, frame, Date.now(), runId]);
         return;
+      } catch (error) {
+        if (attempt >= APPEND_ATTEMPTS || !isUniqueViolation(error)) throw error;
+      }
+    }
+  }
+
+  /**
+   * Append under the run's lock, in a transaction of its own: the contended path. Writers in their
+   * turn never collide with each other; the retry covers a bare append that passed its guard just
+   * before this writer took the lock. Returns `false` (nothing written) when the database's
+   * transaction client cannot run raw SQL, leaving the caller to its plain retry.
+   */
+  private async appendInTurn(
+    runId: string,
+    frame: string | null,
+    lock: TurnLock,
+    key: string,
+  ): Promise<boolean> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const appended = await this.db.transaction(async (trx) => {
+          const client = trx as Partial<LucidRawRunner>;
+          if (typeof client.rawQuery !== 'function') return false;
+          const run = (sql: string, bindings?: unknown[]) =>
+            (client.rawQuery as LucidRawRunner['rawQuery']).call(trx, sql, bindings);
+          const insert = () => run(this.insertSql(), [runId, frame, Date.now(), runId]);
+          if (lock === 'postgres') {
+            // Read the run as it is once the lock is ours, whatever isolation the app defaults to.
+            await run('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
+            await run('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [key]);
+            await insert();
+            return true; // the lock goes with the commit
+          }
+          const granted = rowsOf(
+            await run('SELECT GET_LOCK(?, ?) AS granted', [key, TURN_WAIT_SECONDS]),
+          )[0]?.granted;
+          if (Number(granted) !== 1) {
+            throw new Error(
+              `LucidTokenStreamSink: waited ${TURN_WAIT_SECONDS}s for a turn to append to run "${runId}"`,
+            );
+          }
+          try {
+            // Under the default REPEATABLE READ the insert's read of the run is a locking read, so
+            // it waits for — and counts — a row the previous turn has not committed yet.
+            await insert();
+          } finally {
+            await run('SELECT RELEASE_LOCK(?)', [key]);
+          }
+          return true;
+        });
+        return appended;
       } catch (error) {
         if (attempt >= APPEND_ATTEMPTS || !isUniqueViolation(error)) throw error;
       }

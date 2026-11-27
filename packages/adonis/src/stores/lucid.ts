@@ -272,7 +272,7 @@ function safeJson(value: unknown): string | null {
  * `affectedRows` — read whichever is there. Unknown → `0` (a compare-and-set that cannot prove it
  * won must say it lost).
  */
-function affectedRows(result: unknown): number {
+export function affectedRows(result: unknown): number {
   if (typeof result === 'number') return result;
   if (typeof result === 'bigint') return Number(result);
   if (Array.isArray(result)) return result.length === 0 ? 0 : affectedRows(result[0]);
