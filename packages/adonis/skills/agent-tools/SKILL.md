@@ -164,8 +164,8 @@ import { toolsHook } from '@adonis-agora/agent/hooks/tools'
 
 export default defineConfig({
   hooks: {
-    // toolsHook returns the hook object ({ run }), which the assembler takes as is
-    init: [toolsHook({ source: 'app/ai/tools', importAlias: '#ai_tools' })],
+    // toolsHook returns the hook function: register it as a lazy import's default
+    init: [async () => ({ default: toolsHook({ source: 'app/ai/tools', importAlias: '#ai_tools' }) })],
   },
 })
 ```

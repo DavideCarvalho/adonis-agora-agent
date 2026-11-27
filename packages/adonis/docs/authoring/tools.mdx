@@ -402,7 +402,7 @@ export default defineConfig({
 })
 ```
 
-The default export is a ready hook over `app/agent_tools`. To scan somewhere else — a package of shared tools, a differently-named directory — call `toolsHook` yourself:
+The default export is a ready hook over `app/agent_tools`. To scan somewhere else — a package of shared tools, a differently-named directory — call `toolsHook` yourself. It returns the hook function, so register it as the `default` of a lazy import, the shape the assembler expects of every `init` hook:
 
 ```ts title="adonisrc.ts"
 import { toolsHook } from '@adonis-agora/agent/hooks/tools'
@@ -413,6 +413,10 @@ export default defineConfig({
   },
 })
 ```
+
+<Callout type="warn" title="Don't put toolsHook() straight in the array">
+`init: [toolsHook({ ... })]` hands the assembler a function where it expects a lazy import, so it calls the hook with no arguments and the build fails. Wrap it as above.
+</Callout>
 
 | Option | Default | Meaning |
 | --- | --- | --- |
