@@ -54,6 +54,9 @@
     "skills"
   ],
   "sideEffects": false,
+  "publishConfig": {
+    "tag": "v0"
+  },
   "scripts": {
     "build": "pnpm run clean && pnpm run build:spa && tsc -p tsconfig.build.json && pnpm run check:dist",
     "build:spa": "vite build",
