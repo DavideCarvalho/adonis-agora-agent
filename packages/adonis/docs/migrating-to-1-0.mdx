@@ -8,13 +8,13 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 1.0 removes the options that 0.x kept only for older code. Your app compiles against 1.0 once each change below is applied. Nothing here touches your database: the agent tables, the published migration and runs already journaled by a durable worker all work as before.
 
-## Install the release candidate
+## Install 1.0
 
 ```bash
-pnpm add @adonis-agora/agent@rc @adonis-agora/agent-dashboard@rc
+pnpm add @adonis-agora/agent@^1.0.0 @adonis-agora/agent-dashboard@^1.0.0
 ```
 
-Upgrade the other `@adonis-agora/*` packages you use to their 1.0 release candidates at the same time. The agent accepts both their 0.x and their 1.x releases.
+Upgrade the other `@adonis-agora/*` packages you use to 1.x at the same time. The agent accepts both their 0.x and their 1.x releases.
 
 ## Node 24 or later
 
