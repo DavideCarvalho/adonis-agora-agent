@@ -1,5 +1,11 @@
 # @adonis-agora/agent
 
+## 1.0.2
+
+### Patch Changes
+
+- [#707](https://github.com/DavideCarvalho/adonis-agora-agent/pull/707) [`0fe16d7`](https://github.com/DavideCarvalho/adonis-agora-agent/commit/0fe16d70ff9c8eb584576a3124c4ea60bb87b2e4) Thanks [@DavideCarvalho](https://github.com/DavideCarvalho)! - Fix the `@adonis-agora/agent/hooks/tools` assembler hook, which `node ace configure` registers and which failed every build with `handler.handle is not a function` on @adonisjs/assembler 8.6: `toolsHook()` and the default export are now plain hook functions (as `@adonis-agora/durable` did for its hooks), matching the assembler's `LazyImport` hook type. If you called `toolsHook().run(...)` directly, call the returned function itself; with options, register `async () => ({ default: toolsHook({ ... }) })`.
+
 ## 1.0.1
 
 ### Patch Changes
