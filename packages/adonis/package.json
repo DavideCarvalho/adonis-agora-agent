@@ -509,7 +509,7 @@
     "@qdrant/js-client-rest": "1.20.0",
     "@resvg/resvg-js": "2.6.2",
     "@streamdown/code": "2.0.0",
-    "@streamdown/math": "1.0.3",
+    "@streamdown/math": "1.0.4",
     "@streamdown/mermaid": "1.0.4",
     "@tailwindcss/vite": "4.3.5",
     "@tanstack/intent": "0.5.6",
