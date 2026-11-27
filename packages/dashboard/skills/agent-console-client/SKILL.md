@@ -41,7 +41,7 @@ provider that serves the SPA at `<path>/dashboard`. `dashboard.authorize` gates 
 AND the `/agent/governance/*` routes its panels read; omitted, both are open outside production
 and answer 403 in production:
 
-```ts
+```ts no-check
 // config/agent.ts
 import { defineConfig } from '@adonis-agora/agent'
 
@@ -61,7 +61,7 @@ pnpm add @adonis-agora/agent-dashboard
 node ace add @adonis-agora/agent-dashboard
 ```
 
-```ts
+```ts no-check
 // adonisrc.ts — AFTER the agent provider; register only ONE of the two.
 providers: [
   () => import('@adonis-agora/agent/agent_provider'),
@@ -82,7 +82,7 @@ The framework-free fetch client mirrors the read surface plus pricing and HITL a
 it sends `credentials: 'same-origin'`, so the host's session cookie gates every call
 exactly as the routes do server-side:
 
-```ts
+```ts no-check
 import { AgentClient } from '@adonis-agora/agent-dashboard/client'
 
 const client = new AgentClient({ baseUrl: '/agent' })
@@ -115,7 +115,7 @@ signed-out visitor: a page navigation gets a 302, an API call gets
 `401 { error: 'unauthenticated', redirectTo }`. `authorizeByRoles({ loginPath })` from
 `@adonis-agora/authz` does exactly this:
 
-```ts
+```ts no-check
 // config/agent.ts
 import { authorizeByRoles } from '@adonis-agora/authz'
 
@@ -152,7 +152,7 @@ Source: `packages/adonis/docs/governance/federated-console.mdx`.
 
 ### HIGH — registering both dashboard providers
 
-```ts
+```ts no-check
 // Wrong — embedded AND standalone serve <path>/dashboard.
 providers: [
   () => import('@adonis-agora/agent/agent_provider'),
@@ -161,7 +161,7 @@ providers: [
 ]
 ```
 
-```ts
+```ts no-check
 // Correct — exactly one of the two.
 providers: [
   () => import('@adonis-agora/agent/agent_provider'), // its embedded dashboard_provider rides along
@@ -175,12 +175,12 @@ Source: `packages/dashboard/README.md` ("Register only ONE of the two providers"
 
 ### HIGH — shipping to production without `dashboard.authorize`
 
-```ts
+```ts no-check
 // Wrong — open in dev, then every console page and governance call is 403 in production.
 dashboard: { enabled: true }
 ```
 
-```ts
+```ts no-check
 // Correct — one authorize gates the console and the data it reads.
 dashboard: { authorize: (ctx, actor) => actor?.roles?.includes('ADMIN') ?? false },
 ```
@@ -192,12 +192,12 @@ Source: `packages/adonis/src/dashboard/gate.ts` (`evaluateDashboardGate`).
 
 ### LOW — hard-coding `/agent` as the client base in a custom UI
 
-```ts
+```ts no-check
 // Wrong — breaks the moment the app mounts the agent under a prefix like /api/agent.
 const client = new AgentClient({ baseUrl: '/agent' })
 ```
 
-```ts
+```ts no-check
 // Correct — reuse the same resolution the SPA uses: injected value wins, else derive.
 import { resolveApiBase } from '@adonis-agora/agent-dashboard/client'
 const client = new AgentClient({ baseUrl: resolveApiBase() })
