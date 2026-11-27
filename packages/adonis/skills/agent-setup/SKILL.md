@@ -97,8 +97,7 @@ delegate to the same `createAgentTables` helper, so the two schemas can never dr
 Only with `autoCreateTables: false` does an upgrade need a migration that calls
 `createAgentTables` again.
 
-Source: `packages/adonis/docs/getting-started.mdx`,
-`packages/adonis/docs/stores/lucid.mdx`.
+Source: `packages/adonis/docs/getting-started.mdx`, `packages/adonis/docs/stores/lucid.mdx`.
 
 ## Core patterns
 
@@ -109,6 +108,8 @@ never enforced. With limits, a send while a window is exhausted is refused with 
 `{ code: 'quota_exceeded', period }` before the turn starts — no tokens spent.
 
 ```ts
+import { defineConfig } from '@adonis-agora/agent'
+
 export default defineConfig({
   // ...
   quota: { limits: { day: { tokens: 200_000 }, month: { usd: 20 } } },
@@ -168,8 +169,10 @@ hand-copying rates — `<provider>/<model>` is required, and a model missing fro
 catalog throws rather than being skipped:
 
 ```ts
-import { seedPricesFromModelsDev } from '@adonis-agora/agent'
+import db from '@adonisjs/lucid/services/db'
+import { seedPricesFromModelsDev, LucidPricingStore } from '@adonis-agora/agent'
 
+const pricing = new LucidPricingStore(db.connection())
 await seedPricesFromModelsDev(pricing, ['openai/gpt-4o-mini'])
 ```
 
@@ -184,9 +187,7 @@ Rollups (`spendByModel`/`spendByActor`) are sums, so an unpriced row contributes
 even though the ledger row keeps `cost_usd: null` — if a total looks implausibly low,
 check the pricing table first.
 
-Source: `packages/adonis/docs/governance/quota-and-cost.mdx`,
-`packages/adonis/src/spi/pricing-store.ts` (`seedModelPrices`, `estimateCost`,
-`resolveModelPrice`), `packages/adonis/src/pricing/models-dev.ts`.
+Source: `packages/adonis/docs/governance/quota-and-cost.mdx`, `packages/adonis/src/spi/pricing-store.ts` (`seedModelPrices`, `estimateCost`, `resolveModelPrice`), `packages/adonis/src/pricing/models-dev.ts`.
 
 ### Pattern 3 — multi-replica SSE with `tokenSinks.redis`
 
@@ -214,6 +215,8 @@ arguments) are coalesced into one row per `flushMs` (default 50), so it is slowe
 it is there. Rows lapse `ttlSeconds` after a run's last write (`purgeExpired()`).
 
 ```ts
+import { defineConfig, tokenSinks } from '@adonis-agora/agent'
+
 export default defineConfig({
   // ...
   durable: true,                 // approvals and questions park on a durable signal
@@ -226,10 +229,7 @@ export default defineConfig({
 parked question can only be answered on the replica that started the turn; several
 replicas need `durable: true`.
 
-Source: `packages/adonis/src/stores/factory.ts` (`tokenSinks`),
-`packages/adonis/src/lucid-token-stream-sink.ts`,
-`packages/adonis/docs/sql-streaming.mdx`,
-`packages/adonis/docs/streaming-and-http.mdx` ("Single-replica by default" callout).
+Source: `packages/adonis/src/stores/factory.ts` (`tokenSinks`), `packages/adonis/src/lucid-token-stream-sink.ts`, `packages/adonis/docs/sql-streaming.mdx`, `packages/adonis/docs/streaming-and-http.mdx` ("Single-replica by default" callout).
 
 ### Pattern 4 — a React chat with `@adonis-agora/agent/react`
 
@@ -240,15 +240,15 @@ session cookie and shield's CSRF token. No Aviary package or release is required
 ```tsx
 import { AgentProvider, useAgentChat } from '@adonis-agora/agent/react'
 
-export default function ChatPage() {
+export default function ChatPage({ threadId }: { threadId?: string }) {
   return (
     <AgentProvider>
-      <Chat />
+      <Chat threadId={threadId} />
     </AgentProvider>
   )
 }
 
-function Chat() {
+function Chat({ threadId }: { threadId?: string }) {
   const { transcript, composer, queue } = useAgentChat({ threadId, agent: 'support' })
   // transcript.items[].blocks — text / tools (approvals) / elicitation / ui
   // queue.items — messages sent while a turn was running, waiting server-side
@@ -265,6 +265,7 @@ match `config/agent.ts`'s `path`.
 
 ```ts
 // config/agent.ts
+import { defineConfig } from '@adonis-agora/agent'
 import { agUiAdapter } from '@adonis-agora/agent/ag-ui'
 
 export default defineConfig({
@@ -292,12 +293,17 @@ Source: `packages/adonis/docs/ag-ui.mdx`, `packages/adonis/src/ag-ui/`.
 
 ```ts
 // start/routes.ts
+import router from '@adonisjs/core/services/router'
+import env from '#start/env'
 import { channels, evolutionApi } from '@adonis-agora/agent/channels'
+import { actorForPhone, saveThread, threadFor } from '#services/channel_threads' // your lookups
 
 router.post(
   '/webhooks/whatsapp',
   channels.handle(
-    evolutionApi({ url, instance, apiKey, webhookToken }), // or whatsappCloud({…}) / telegram({…})
+    evolutionApi({ url: env.get('EVOLUTION_URL'), instance: env.get('EVOLUTION_INSTANCE'),
+      apiKey: env.get('EVOLUTION_API_KEY'), webhookToken: env.get('EVOLUTION_WEBHOOK_TOKEN') }),
+    // or whatsappCloud({…}) / telegram({…})
     {
       actor: (message) => actorForPhone(message.from), // null → not answered
       thread: (actor, message) => threadFor(message.conversation), // null → new thread
@@ -364,8 +370,7 @@ PNG/PDF output takes a capture adapter; the optional Playwright implementation l
 `@adonis-agora/agent/react/genui/server/playwright` and needs `playwright-core`. A supplied
 browser remains caller-owned. Binary captures are attachments, not durable UI-frame props.
 
-Source: `packages/adonis/docs/authoring/component-rendering.mdx`,
-`packages/adonis/docs/react.mdx`.
+Source: `packages/adonis/docs/authoring/component-rendering.mdx`, `packages/adonis/docs/react.mdx`.
 
 ## Common mistakes
 
@@ -378,10 +383,11 @@ A `file` handle with `provider: 'agora'` naming an upload this agent staged is r
 
 Source: `packages/adonis/docs/ag-ui.mdx`.
 
-
 ### HIGH — calling `useAgentChat()` outside `<AgentProvider>`
 
 ```tsx
+import { AgentProvider, useAgentChat } from '@adonis-agora/agent/react'
+
 // Wrong — falls back to a bare client with no CSRF header: shield answers every POST with 403.
 function Chat() { const chat = useAgentChat(); return null }  // no provider above
 
@@ -397,76 +403,96 @@ Outside React, `createAgentClient()` from the same entry builds the client with 
 // Wrong for an app with users — no resolver means the endpoints are PUBLIC: every browser
 // is its own anonymous actor (anon:<sha256 of an HttpOnly cookie>), and your users'
 // threads are not tied to their accounts.
+import { defineConfig } from '@adonis-agora/agent'
+import { aiSdkModel } from '@adonis-agora/agent/ai-sdk'
+import { openai } from '@ai-sdk/openai'
+
 export default defineConfig({ model: () => aiSdkModel(openai('gpt-4o-mini')) })
 ```
 
 ```ts
 // Correct — one line requires login (reads ctx.auth.user; 401 without).
-import { AuthActorResolver } from '@adonis-agora/agent'
+import { AuthActorResolver, defineConfig } from '@adonis-agora/agent'
+import { aiSdkModel } from '@adonis-agora/agent/ai-sdk'
+import { openai } from '@ai-sdk/openai'
+
 export default defineConfig({
   model: () => aiSdkModel(openai('gpt-4o-mini')),
   actorResolver: new AuthActorResolver(),
 })
 ```
 
-Mechanism: with no resolver the provider installs `AnonymousActorResolver` and logs a boot
-notice that the endpoints are public. Right for a free public chat (set a `quota` there);
-wrong for an app whose users log in.
-Source: `packages/adonis/src/anonymous-actor-resolver.ts`,
-`packages/adonis/docs/governance/authorization.mdx` ("No resolver: the endpoints are public").
+Mechanism: with no resolver the provider installs `AnonymousActorResolver` and logs a boot notice that the endpoints are public. Right for a free public chat (set a `quota` there); wrong for an app whose users log in.
+Source: `packages/adonis/src/anonymous-actor-resolver.ts`, `packages/adonis/docs/governance/authorization.mdx` ("No resolver: the endpoints are public").
 
 ### MEDIUM — shipping a public (anonymous) chat without a budget
 
 ```ts
 // Wrong — no actorResolver (public) and no quota: model spend is unbounded.
-export default defineConfig({ model })
+import { defineConfig } from '@adonis-agora/agent'
+import { aiSdkModel } from '@adonis-agora/agent/ai-sdk'
+import { openai } from '@ai-sdk/openai'
+
+export default defineConfig({ model: () => aiSdkModel(openai('gpt-4o-mini')) })
 ```
 
 ```ts
 // Correct — by default limits apply per actor, i.e. per browser in anonymous mode
 // (`per: 'tenant'` shares one budget across the active organization instead).
-export default defineConfig({ model, quota: { limits: { day: { tokens: 50_000 } } } })
+import { defineConfig } from '@adonis-agora/agent'
+import { aiSdkModel } from '@adonis-agora/agent/ai-sdk'
+import { openai } from '@ai-sdk/openai'
+
+export default defineConfig({ model: () => aiSdkModel(openai('gpt-4o-mini')), quota: { limits: { day: { tokens: 50_000 } } } })
 ```
 
-Mechanism: without `quota`, `GET /agent/quota` reports usage off the ledger but nothing
-gates a send. With it, the chat route checks the report before starting the turn.
+Mechanism: without `quota`, `GET /agent/quota` reports usage off the ledger but nothing gates a send. With it, the chat route checks the report before starting the turn.
 Source: `packages/adonis/docs/governance/quota-and-cost.mdx` ("Budgets").
 
 ### MEDIUM — reading `$0.00` rollups as "this model is free"
 
 ```ts
 // Wrong — no prices seeded: usage rows persist costUsd null, but spendByModel sums them as 0.
+import { AgentClient } from '@adonis-agora/agent-dashboard/client'
+
+const client = new AgentClient({ baseUrl: '/agent' })
 await client.spendByModel({ fromDay: '2026-01-01', toDay: '2026-01-31' })
 ```
 
 ```ts
 // Correct — seed current prices so estimates fold into costUsd.
+import db from '@adonisjs/lucid/services/db'
+import { seedModelPrices, LucidPricingStore } from '@adonis-agora/agent'
+
+const pricingStore = new LucidPricingStore(db.connection())
 await seedModelPrices(pricingStore, [{ modelId: 'gpt-4o-mini', inputPricePer1m: 0.15, outputPricePer1m: 0.6 }])
 ```
 
-Mechanism: an unpriced turn is deliberately `null` ("unknown") in the ledger, but SUM
-rollups cannot preserve null — every unpriced row adds `$0.00`, which reads exactly like
-a free model. Per-run/per-usage rows keep their nulls.
-Source: `packages/adonis/docs/governance/quota-and-cost.mdx` ("`null` in the ledger,
-`0` in the rollups").
+Mechanism: an unpriced turn is deliberately `null` ("unknown") in the ledger, but SUM rollups cannot preserve null — every unpriced row adds `$0.00`, which reads exactly like a free model. Per-run/per-usage rows keep their nulls.
+Source: `packages/adonis/docs/governance/quota-and-cost.mdx` ("`null` in the ledger, `0` in the rollups").
 
 ### HIGH — sending attachment objects instead of `{ mediaId }` refs
 
 ```ts
+import type { AgentChatRequestBody } from '@adonis-agora/agent/client'
+
+declare const message: string, upload: { mediaId: string; url: string; contentType: string; name: string }
+
 // Wrong — 400: a send names uploads by id only; a url from the client is never trusted.
-const body = { message, attachments: [{ mediaId, url, contentType, name }] }
+const { mediaId, url, contentType, name } = upload
+const body: AgentChatRequestBody = { message, attachments: [{ mediaId, url, contentType, name }] }
 ```
 
 ```ts
+import type { AgentChatRequestBody } from '@adonis-agora/agent/client'
+
+declare const message: string, upload: { mediaId: string } // the composer's text, a staged upload
+
 // Correct — the configured store (attachments: attachmentStores.media()) resolves the url.
-const body = { message, attachments: [{ mediaId }] }
+const body: AgentChatRequestBody = { message, attachments: [{ mediaId: upload.mediaId }] }
 ```
 
-Mechanism: the chat route refuses any key besides `mediaId`, then resolves each id through
-`AttachmentStagingStore.resolve({ mediaId, actor })` (`403` for another actor's upload).
-Limits come from the store (`attachmentStores.media({ maxBytes, allowedContentTypes })`);
-`allowedContentTypes` replaces the default list and matches exactly.
+Mechanism: the chat route refuses any key besides `mediaId`, then resolves each id through `AttachmentStagingStore.resolve({ mediaId, actor })` (`403` for another actor's upload). Limits come from the store (`attachmentStores.media({ maxBytes, allowedContentTypes })`); `allowedContentTypes` replaces the default list and matches exactly.
 Source: `packages/adonis/docs/authoring/attachments.mdx`.
 
-See also: `agent-tools/SKILL.md` — registering tools the model can actually call;
-`agent-governance/SKILL.md` — what `AuthActorResolver` feeds into.
+See also: `agent-tools/SKILL.md` — registering tools the model can actually call; `agent-governance/SKILL.md` — what `AuthActorResolver` feeds into.

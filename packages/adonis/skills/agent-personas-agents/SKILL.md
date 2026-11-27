@@ -40,6 +40,10 @@ the thread:
 
 ```ts
 // config/agent.ts
+import { defineConfig, stores, AuthActorResolver } from '@adonis-agora/agent'
+import { aiSdkModel } from '@adonis-agora/agent/ai-sdk'
+import { openai } from '@ai-sdk/openai'
+
 export default defineConfig({
   model: () => aiSdkModel(openai('gpt-4o-mini')),
   store: 'lucid',
@@ -101,6 +105,8 @@ handler — the loop runs the target and feeds the answer back:
 
 ```ts
 // config/agent.ts
+import { defineConfig } from '@adonis-agora/agent'
+
 export default defineConfig({
   // ...
   defaultAgent: {
@@ -214,13 +220,28 @@ authoring/personas-and-agents.mdx` ("A denied delegation is recorded, not retrie
 ### MEDIUM — answering a delegated sub-agent's approval against the wrong run
 
 ```ts
+import app from '@adonisjs/core/services/app'
+import { AgentService } from '@adonis-agora/agent'
+
+const service = await app.container.make(AgentService)
+const actor = { id: 'user-1', roles: ['ADMIN'] }
+
 // Wrong — the nested researcher parked, but this signals the ORCHESTRATOR's run, so the
 // child stays suspended and the delegation never returns.
 const { runId } = await service.chat({ actor, message: 'go', agentName: 'orchestrator' })
-await service.approve(runId, toolCallId)
+for await (const frame of service.subscribe(runId)) {
+  if (frame.t === 'approval') await service.approve(runId, frame.id)
+}
 ```
 
 ```ts
+import app from '@adonisjs/core/services/app'
+import { AgentService } from '@adonis-agora/agent'
+
+const service = await app.container.make(AgentService)
+const actor = { id: 'user-1', roles: ['ADMIN'] }
+const { runId } = await service.chat({ actor, message: 'go', agentName: 'orchestrator' })
+
 // Correct — read the parked run off the frame. It is the CHILD's run, not the stream's.
 for await (const frame of service.subscribe(runId)) {
   if (frame.t === 'approval') await service.approve(frame.runId, frame.id)
@@ -254,11 +275,15 @@ Source: `packages/adonis/src/agent-loop.ts` (`resolveTurnPersona`),
 ### LOW — using wall-clock time or randomness inside a PromptBuilder
 
 ```ts
+import type { PromptBuilder } from '@adonis-agora/agent'
+
 // Wrong — non-deterministic prompt; a durable replay recomputes a DIFFERENT prompt.
 const builder: PromptBuilder = async (ctx) => `${ctx.basePrompt}\nNow: ${new Date().toISOString()}`
 ```
 
 ```ts
+import type { PromptBuilder } from '@adonis-agora/agent'
+
 // Correct — derive from stable inputs (actor/persona/pageContext) resolved once per turn.
 const builder: PromptBuilder = (ctx) => `${ctx.basePrompt}\nAssist ${ctx.actor.id} in ${ctx.actor.tenantRef ?? 'the org'}.`
 ```

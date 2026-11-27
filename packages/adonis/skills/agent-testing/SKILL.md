@@ -160,10 +160,16 @@ emissions separately. The SSE wire encoding happens later, in the provider's rou
 handler; a test never sees it:
 
 ```ts
-const components: { name: string; data: unknown }[] = []
-for await (const frame of sink.subscribe(runId)) {
-  if (frame.t === 'text') text += frame.v
-  if (frame.t === 'component') components.push({ name: frame.name, data: frame.data })
+import type { InMemoryTokenStreamSink } from '@adonis-agora/agent/testing'
+
+async function collect(sink: InMemoryTokenStreamSink, runId: string) {
+  let text = ''
+  const components: { name: string; data: unknown }[] = []
+  for await (const frame of sink.subscribe(runId)) {
+    if (frame.t === 'text') text += frame.v
+    if (frame.t === 'component') components.push({ name: frame.name, data: frame.data })
+  }
+  return { text, components }
 }
 ```
 
@@ -197,12 +203,16 @@ Source: `packages/adonis/test/tool-present.spec.ts`,
 ### MEDIUM — keeping mutable state in a FakeModelProvider script
 
 ```ts
+import { FakeModelProvider } from '@adonis-agora/agent/testing'
+
 // Wrong — a closure counter: the script is no longer a pure function of its inputs.
 let calls = 0
 const model = new FakeModelProvider(() => (calls++ === 0 ? { text: 'call tool' } : { text: 'done' }))
 ```
 
 ```ts
+import { FakeModelProvider } from '@adonis-agora/agent/testing'
+
 // Correct — derive the turn from turnIndex (assistant turns already in history).
 const model = new FakeModelProvider((_args, turnIndex) =>
   turnIndex === 0 ? { text: 'call tool' } : { text: 'done' },
@@ -239,15 +249,24 @@ Source: `packages/adonis/src/tool-registry.ts` (`definitionsFor`, `invoke`),
 ### LOW — asserting on the in-memory sink's frames as if they were SSE text
 
 ```ts
+import { expect } from 'vitest'
+
 // Wrong — frames are typed objects, not an SSE byte stream.
-const raw = await res.text() // 'id: 1\ndata: {"kind":"text","text":"..."}\n\n'
-expect(raw).toContain('"kind":"text"')
+async function assertStreamed(res: Response) {
+  const raw = await res.text() // 'id: 1\ndata: {"kind":"text","text":"..."}\n\n'
+  expect(raw).toContain('"kind":"text"')
+}
 ```
 
 ```ts
+import { expect } from 'vitest'
+import type { InMemoryTokenStreamSink } from '@adonis-agora/agent/testing'
+
 // Correct — narrow on t and assert the payload.
-for await (const frame of sink.subscribe(runId)) {
-  if (frame.t === 'text') expect(frame.v).toBeDefined()
+async function assertStreamed(sink: InMemoryTokenStreamSink, runId: string) {
+  for await (const frame of sink.subscribe(runId)) {
+    if (frame.t === 'text') expect(frame.v).toBeDefined()
+  }
 }
 ```
 
