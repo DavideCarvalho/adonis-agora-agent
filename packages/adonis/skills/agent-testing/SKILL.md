@@ -60,7 +60,7 @@ const { text } = await runAgentLoop(
   {
     runId: crypto.randomUUID(),
     openSink: () => sink.open('run-1'),
-    awaitApproval: async () => 'approve',
+    awaitApproval: async () => ({ approved: true }),
     step: (_name, fn) => fn(),
   },
 )
@@ -68,7 +68,8 @@ const { text } = await runAgentLoop(
 
 `hooks.step(name, fn)` is the checkpoint seam: inline it just calls `fn`; the durable
 runner memoizes each named step. `hooks.awaitApproval` is where a HITL decision comes
-from — return `{ approved: true }` (or a bare `'approve'`) to auto-approve in tests.
+from — return a `Decision`, `{ approved: true }` (or `{ approved: false, reason }`), to
+decide in tests.
 
 Source: `packages/adonis/README.md` ("Framework-agnostic core"),
 `packages/adonis/src/agent-loop.ts` (`AgentLoopHooks`).

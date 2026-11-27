@@ -68,10 +68,11 @@ binding; tools keep both annotations:
 // config/agent.ts
 import { defineConfig } from '@adonis-agora/agent'
 import { authzToolAuthorizer } from '@adonis-agora/agent/authz'
+import authz from '@adonis-agora/authz/services/main'
 
 export default defineConfig({
   // ...
-  authorizer: authzToolAuthorizer, // alias: rolesPolicy — one seam, both filter layers follow
+  authorizer: authzToolAuthorizer({ authz }), // alias: rolesPolicy — one seam, both filter layers follow
 })
 ```
 
@@ -173,6 +174,56 @@ ended) and record `cli:<os user>` via `cli`. A call routed to an approver role s
 role — the CLI holds none — and deciding needs the durable runner (an in-process turn is refused).
 
 Source: `packages/adonis/docs/cli.mdx`, `packages/adonis/src/tool-call-decision.ts`.
+
+### Pattern 5 — a federated console: authenticated `consoleCommands`
+
+One app's console can also show other apps (`dashboard.apps`); it reads their governance tables
+itself and sends what only the owning app can do (settle an approval, change a price) over Redis.
+Redis is not a trust boundary, so every command is authenticated:
+
+```ts
+import env from '#start/env'
+import { defineConfig, governanceQueries } from '@adonis-agora/agent'
+
+// The OWNING app answers the console. With @adonis-agora/crypto booted (key `console-agent`)
+// or authkit-client's `service` configured (an authkit app-call token), nothing else:
+export const owningApp = defineConfig({
+  model,
+  consoleCommands: { connection: 'main', prefix: 'entretextos', actions: true },
+  // Neither? A shared secret (16+ chars), the console's controlPlane.secret:
+  // consoleCommands: { prefix: 'entretextos', actions: true, secret: env.get('AGENT_CONSOLE_SECRET') },
+})
+
+// The CONSOLE app reads that app's tables (SELECT only) and sends it actions over Redis.
+export const consoleApp = defineConfig({
+  model,
+  dashboard: {
+    authorize: (_ctx, actor) => actor?.roles?.includes('ADMIN') ?? false,
+    apps: {
+      entretextos: {
+        governance: governanceQueries.lucid({ connection: 'pg', schema: 'entretextos' }),
+        controlPlane: { connection: 'main', prefix: 'entretextos' }, // + secret without crypto/authkit
+        // actions: false → browse-only: no controlPlane needed, every action answers 403
+      },
+    },
+  },
+})
+```
+
+- `consoleCommands.actions` defaults to **off**: the console can read, every decide/price change
+  is refused `403` until you set `actions: true`. A console entry's `actions` defaults to `true`.
+- With authkit, grant the console app `agent:console:*` on the owning app (or
+  `agent:approvals:decide` / `agent:pricing:write`); the token's capabilities cap the command.
+- Bring your own: `verifyTenant` (e.g. `authkitTenantVerifier`) or your own `crypto` cipher on the
+  app; `token` / `crypto` / `secret` on `controlPlane`. Any explicit mode replaces the automatic
+  ones; `crypto: false`, `verifyTenant: false` (app) and `token: false` (console) switch one off.
+- Every command carries the viewer's `capabilities`; one without is refused
+  (`capabilities-required`).
+- A web process with a side that cannot authenticate refuses to boot (`ConsoleAuthConfigError`);
+  `node ace agora:doctor` shows every Agora lib's console auth at once.
+
+Source: `packages/adonis/docs/governance/federated-console.mdx` ("Authenticating the console"),
+`packages/adonis/src/federation/console_auth.ts`, `packages/adonis/src/federation/console.ts`.
 
 ## Common mistakes
 

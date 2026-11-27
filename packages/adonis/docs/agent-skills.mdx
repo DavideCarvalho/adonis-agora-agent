@@ -1,0 +1,56 @@
+---
+title: AI agent skills
+description: The agent skills @adonis-agora/agent ships for coding agents (Claude Code, Cursor, Copilot, Codex) and how to load them with TanStack Intent.
+icon: Sparkles
+---
+
+`@adonis-agora/agent` ships [Agent Skills](https://agentskills.io): short `SKILL.md` files that tell a
+coding agent how to use the library, the patterns to follow and the mistakes to avoid. They live
+inside the npm package (its `skills/` folder), so they always match the version you installed:
+upgrade the package and the skills come with it.
+
+## Skills in this package
+
+| Skill | Package | Load it when |
+| --- | --- | --- |
+| `agent-setup` | `@adonis-agora/agent` | setting up the agent: `config/agent.ts`, stores and tables, quota, pricing, multi-replica token sinks, the React chat, AG-UI and channels |
+| `agent-tools` | `@adonis-agora/agent` | writing or registering tools: class and functional tools, discovery, roles and abilities, `dataTool`, confirmed tools over MCP |
+| `agent-personas-agents` | `@adonis-agora/agent` | shaping behavior per request: personas, named agents, `delegatesTo` delegation, HITL approvals, `maxSteps`, prompt builders |
+| `agent-governance` | `@adonis-agora/agent` | locking it down: actor resolvers, tool authorization, object ownership, `dashboard.authorize`, the `agent:*` CLI, the federated console's authenticated commands |
+| `agent-testing` | `@adonis-agora/agent` | testing offline: the fake model, in-memory doubles, driving the loop or the inline runner, asserting on stream frames |
+| `agent-console-client` | `@adonis-agora/agent-dashboard` | serving or consuming the governance console: embedded vs standalone provider, the `dashboard` block, the `AgentClient` browser client |
+
+## Load them with TanStack Intent
+
+[TanStack Intent](https://github.com/TanStack/intent) finds the skills in your installed packages
+and tells your agent when to load them.
+
+```bash
+npm i -D @tanstack/intent    # pnpm add -D @tanstack/intent
+npx intent install
+```
+
+The first `intent install` runs in a terminal: it asks which packages' skills to allow (saved as
+`intent.skills` in your `package.json`) and writes a short skill-loading block into `AGENTS.md`
+(or into the `CLAUDE.md`, `.cursorrules` or `.github/copilot-instructions.md` that already carries
+it). To allow every Agora library without the prompt, for example in CI, add this to
+`package.json` first:
+
+```json
+{
+  "intent": { "skills": ["@adonis-agora/*"] }
+}
+```
+
+Then your agent, or you, can list and load them:
+
+```bash
+npx intent list
+npx intent load @adonis-agora/agent#agent-setup
+```
+
+`npx intent hooks install` adds hooks that remind Claude Code, Codex and Copilot to load a matching
+skill before editing. Without Intent, point your agent at
+`node_modules/@adonis-agora/agent/skills/<skill>/SKILL.md`.
+
+See [AI agent skills](/docs/agent-skills) for every Agora library that ships skills.
