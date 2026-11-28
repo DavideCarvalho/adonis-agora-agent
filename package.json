@@ -27,7 +27,7 @@
     "check:package": "node scripts/check-package.mjs"
   },
   "devDependencies": {
-    "@ai-sdk/openai": "4.0.122",
+    "@ai-sdk/openai": "4.0.123",
     "@arethetypeswrong/cli": "0.18.5",
     "@biomejs/biome": "2.6.9",
     "@changesets/changelog-github": "1.0.1",
